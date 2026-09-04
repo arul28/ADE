@@ -37,15 +37,20 @@ function normalizeRunStatus(value) {
 }
 
 /**
- * The latest run refines the coarse agent-list status; an unknown run status on
- * a live agent reads as `creating` — the agent exists and has finished nothing.
+ * The latest run refines the coarse agent-list status.
+ *
+ * Cursor's agent list now says IDLE for a finished cloud agent (the run is
+ * FINISHED; the agent is sitting idle). Mapping that to `creating` made every
+ * historical row look live, with a Stop button and a 1h age from `updatedAt`.
  */
 function fleetRunStatus(entry) {
   if (entry.runStatus) return entry.runStatus;
   const lower = typeof entry.agent.status === "string" ? entry.agent.status.toLowerCase() : "";
   if (lower === "running" || lower === "active") return "running";
-  if (lower === "finished") return "finished";
-  if (lower === "error") return "error";
+  if (lower === "finished" || lower === "idle" || lower === "completed") return "finished";
+  if (lower === "error" || lower === "failed") return "error";
+  if (lower === "cancelled") return "cancelled";
+  if (lower === "expired") return "expired";
   if (lower === "creating") return "creating";
   return "creating";
 }
@@ -78,7 +83,9 @@ function formatAge(value, now = Date.now()) {
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
+  const days = Math.round(hours / 24);
+  if (days < 45) return `${days}d`;
+  return `${Math.round(days / 30)}mo`;
 }
 
 /** Cents to a dollar chip. `null` when nothing was billed or nothing is known. */

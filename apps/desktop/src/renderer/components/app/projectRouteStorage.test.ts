@@ -85,4 +85,13 @@ describe("stored project routes", () => {
     writeStoredProjectRoute("proj", "/settings?tab=stats");
     expect(readStoredProjectSettingsRoute("proj")).toBe("/settings?tab=stats");
   });
+
+  it("keeps the last settings place after the project route moves to a plugin tab", () => {
+    writeStoredProjectRoute("proj", "/settings?tab=integrations#plugin-section-ade-linear");
+    writeStoredProjectRoute("proj", "/plugin/ade-linear");
+    expect(readStoredProjectRoute("proj")).toBe("/plugin/ade-linear");
+    expect(readStoredProjectSettingsRoute("proj")).toBe(
+      "/settings?tab=integrations#plugin-section-ade-linear",
+    );
+  });
 });

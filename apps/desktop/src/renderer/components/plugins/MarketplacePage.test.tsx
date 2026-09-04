@@ -20,6 +20,7 @@ import type { MarketplaceListing } from "./marketplaceModel";
  */
 
 const calls: string[] = [];
+let activeThemeId: string | null = null;
 /** What `uninstallPlugin` does. The gate's refusal is the interesting case. */
 let uninstallOutcome: () => Promise<void> = async () => {};
 
@@ -32,7 +33,11 @@ vi.mock("../../state/appStore", () => ({
       pluginsLoaded: true,
       pluginsLoadFailure: null,
       projectBinding: null,
-      pluginThemeId: null,
+      pluginThemeId: activeThemeId,
+      setPluginThemeId: (pluginId: string | null) => {
+        activeThemeId = pluginId;
+        calls.push(`setPluginThemeId:${pluginId ?? "none"}`);
+      },
       refreshInstalledPlugins: async () => {
         registry.refreshes += 1;
         return true;
@@ -129,6 +134,8 @@ const { MarketplacePage } = await import("./MarketplacePage");
 
 beforeEach(() => {
   calls.length = 0;
+  activeThemeId = null;
+  CATALOGUE.listings = [listing()];
   registry.plugins = [installedPlugin()];
   uninstallOutcome = async () => {};
 });
@@ -236,6 +243,41 @@ describe("the quick-action menu on a plugin row", () => {
     await openRowMenu();
     expect(document.querySelector('[data-tour="plugin:marketplace.row-install-tipsy"]')).toBeTruthy();
     expect(screen.queryByText("Remove…")).toBeNull();
+  });
+
+  it("uses theme language and activates an installed theme", async () => {
+    CATALOGUE.listings = [listing({ isTheme: true })];
+    registry.plugins = [installedPlugin({
+      status: "none",
+      theme: { displayName: "Tipsy", tokens: { dark: {}, light: {} } },
+    })];
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+    await openRowMenu();
+
+    expect(screen.getByText("Use theme")).toBeTruthy();
+    expect(screen.queryByText("Turn off")).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Use theme"));
+    });
+    expect(calls).toEqual(["setPluginThemeId:tipsy"]);
+  });
+
+  it("stops using the active theme without disabling or uninstalling it", async () => {
+    activeThemeId = "tipsy";
+    CATALOGUE.listings = [listing({ isTheme: true })];
+    registry.plugins = [installedPlugin({
+      status: "none",
+      theme: { displayName: "Tipsy", tokens: { dark: {}, light: {} } },
+    })];
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+    await openRowMenu();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stop using"));
+    });
+    expect(calls).toEqual(["setPluginThemeId:none"]);
   });
 });
 

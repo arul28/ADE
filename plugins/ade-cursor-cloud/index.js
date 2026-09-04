@@ -228,9 +228,18 @@ function chatHost() {
 
 /* ── Reading ADE ─────────────────────────────────────────────────────────── */
 
+function unwrapLaneList(listed) {
+  if (Array.isArray(listed)) return listed;
+  if (Array.isArray(listed?.lanes)) return listed.lanes;
+  if (Array.isArray(listed?.result)) return listed.result;
+  return [];
+}
+
 async function listLanes() {
-  const result = await sdk.actions.invoke("lane", "list", {});
-  return Array.isArray(result) ? result : Array.isArray(result?.lanes) ? result.lanes : [];
+  if (sdk?.lanes?.list) {
+    return unwrapLaneList(await sdk.lanes.list());
+  }
+  return unwrapLaneList(await sdk.actions.invoke("lane", "list", {}));
 }
 
 /**
@@ -251,17 +260,33 @@ async function readLaneRemote(laneId) {
 }
 
 /**
- * This project's `origin`, for the fleet's repo matching.
+ * This project's `origin` URLs, for the fleet's repo matching.
  *
- * Every lane of one project is a worktree of one repository, so the first lane
- * answers for all of them. A project with no lane has no remote to match
- * against, and the fleet then holds only the agents a chat here owns.
+ * Every lane of one project is a worktree of one repository, so any lane with
+ * a remote answers for all of them. Primary is tried first. Returning several
+ * URLs (SSH vs HTTPS, a worktree override) is cheaper than dropping the fleet
+ * because the first lane in the list had none.
  */
 async function getOriginRemote() {
   const lanes = await listLanes().catch(() => []);
-  const laneId = lanes.find((lane) => typeof lane?.id === "string" && lane.id)?.id ?? null;
-  if (!laneId) return null;
-  return (await readLaneRemote(laneId)).remoteUrl;
+  const urls = [];
+  const seen = new Set();
+  const ordered = [
+    ...lanes.filter((lane) => lane?.laneType === "primary"),
+    ...lanes,
+  ];
+  for (const lane of ordered) {
+    const laneId = typeof lane?.id === "string" && lane.id ? lane.id : null;
+    if (!laneId || seen.has(laneId)) continue;
+    seen.add(laneId);
+    try {
+      const url = (await readLaneRemote(laneId)).remoteUrl;
+      if (typeof url === "string" && url.trim()) urls.push(url.trim());
+    } catch {
+      // Try the next lane rather than failing the whole probe.
+    }
+  }
+  return urls;
 }
 
 /* ── Publishing ──────────────────────────────────────────────────────────── */
@@ -354,8 +379,8 @@ async function readWebhookSnapshot() {
     caption = "Live updates hit an error";
     tone = "warning";
   } else if (state === "unconfigured" || state === "undeclared" || !state) {
-    caption = "Live updates not configured yet";
-    tone = "warning";
+    caption = "Refreshing while this tab is open";
+    tone = "neutral";
   }
   const drainError = typeof status?.lastError === "string" && status.lastError.trim()
     ? status.lastError.trim()
@@ -402,7 +427,13 @@ async function refreshFleet(options = {}) {
   let assembled;
   try {
     assembled = await assembleFleet(
-      { api: client, listLanes, originCache, listSessionLinks: links.list },
+      {
+        api: client,
+        listLanes,
+        originCache,
+        listSessionLinks: links.list,
+        listPrs: async () => sdk.actions.invoke("pr", "list", {}).catch(() => []),
+      },
       { includeArchived: true, limit: clampFleetBudget(options.limit), now },
     );
   } catch (error) {
@@ -1100,8 +1131,8 @@ exports.actions = {
       return {
         ok: true,
         state: "unconfigured",
-        status: "Live updates not configured yet",
-        tone: "warning",
+        status: "Refreshing while this tab is open",
+        tone: "neutral",
         url: null,
         lastEvent: null,
         pendingDeliveries: 0,

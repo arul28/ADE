@@ -94,6 +94,8 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   const catalogue = useMarketplaceCatalogue();
   const installed = useRootAppStore((state) => state.installedPlugins);
   const refreshInstalledPlugins = useRootAppStore((state) => state.refreshInstalledPlugins);
+  const pluginThemeId = useRootAppStore((state) => state.pluginThemeId);
+  const setPluginThemeId = useRootAppStore((state) => state.setPluginThemeId);
   const presence = usePluginPresence(true);
   const machineName = useMarketplaceMachineName();
   /* A machine that did not answer for its own registry has an EMPTY installed
@@ -211,6 +213,14 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   // The catalogue flags themes it knows about; the installed manifest is the
   // answer for one it does not.
   const isTheme = listing.isTheme || manifest?.theme !== undefined;
+  const isActiveTheme = isTheme && pluginThemeId === pluginId;
+
+  const useTheme = async (): Promise<void> => {
+    if (installedPlugin && !installedPlugin.enabled) {
+      await setPluginEnabled(pluginId, true);
+    }
+    setPluginThemeId(pluginId);
+  };
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -235,8 +245,12 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
         canInstall={canInstall}
         canManage={registryReady && (catalogue.capabilities.enable || catalogue.capabilities.uninstall)}
         enabled={installedPlugin?.enabled ?? false}
+        isTheme={isTheme}
+        isActiveTheme={isActiveTheme}
         onInstall={() => setInstallTarget({ kind: "listing", listing })}
         onToggleEnabled={(enabled) => void run(() => setPluginEnabled(pluginId, enabled))}
+        onUseTheme={() => void run(useTheme)}
+        onStopUsingTheme={() => setPluginThemeId(null)}
         onUninstall={() => setConfirmUninstall(true)}
         onRestart={() => void run(() => restartPlugin(pluginId))}
         onLogs={() => void openPluginLogs(pluginId).catch(() => setActionError("Could not open the logs."))}
@@ -454,7 +468,10 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               data-tour="plugin:marketplace.uninstall-confirm"
               onClick={() => {
                 setConfirmUninstall(false);
-                void run(() => uninstallPlugin(pluginId));
+                void run(async () => {
+                  await uninstallPlugin(pluginId);
+                  if (isActiveTheme) setPluginThemeId(null);
+                });
               }}
               style={dangerButton({ height: 30, fontSize: 12 })}
             >
@@ -526,11 +543,15 @@ function DetailHeader({
   busy,
   stars,
   enabled,
+  isTheme,
+  isActiveTheme,
   canInstall,
   canManage,
   showRuntimeActions,
   onInstall,
   onToggleEnabled,
+  onUseTheme,
+  onStopUsingTheme,
   onUninstall,
   onRestart,
   onLogs,
@@ -540,11 +561,15 @@ function DetailHeader({
   busy: boolean;
   stars: number | null;
   enabled: boolean;
+  isTheme: boolean;
+  isActiveTheme: boolean;
   canInstall: boolean;
   canManage: boolean;
   showRuntimeActions: boolean;
   onInstall: () => void;
   onToggleEnabled: (enabled: boolean) => void;
+  onUseTheme: () => void;
+  onStopUsingTheme: () => void;
   onUninstall: () => void;
   onRestart: () => void;
   onLogs: () => void;
@@ -582,7 +607,8 @@ function DetailHeader({
           </h1>
           {listing.official ? <OfficialBadge /> : null}
           {listing.isTheme ? <QuietTag>Theme</QuietTag> : null}
-          {state.kind === "disabled" ? <QuietTag>Turned off</QuietTag> : null}
+          {state.kind === "disabled" && !isTheme ? <QuietTag>Turned off</QuietTag> : null}
+          {isActiveTheme ? <QuietTag>Active theme</QuietTag> : null}
           {listing.origin === "installed" ? <QuietTag>Installed directly</QuietTag> : null}
         </div>
         {/* The author row survives the card's single official chip: here there
@@ -646,6 +672,21 @@ function DetailHeader({
               Install
             </button>
           ) : null
+        ) : isTheme ? (
+          <button
+            type="button"
+            onClick={isActiveTheme ? onStopUsingTheme : onUseTheme}
+            disabled={busy || !canManage}
+            data-tour="plugin:marketplace.detail-theme-action"
+            style={{
+              ...(isActiveTheme
+                ? outlineButton({ height: 30, fontSize: 12 })
+                : primaryButton({ height: 30, fontSize: 12 })),
+              opacity: busy || !canManage ? 0.6 : 1,
+            }}
+          >
+            {isActiveTheme ? "Stop using" : "Use theme"}
+          </button>
         ) : (
           <button
             type="button"

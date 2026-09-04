@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "./TabNav";
+import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { useAppStore, rootAppStoreApi } from "../../state/appStore";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
 
@@ -230,6 +231,21 @@ describe("TabNav", () => {
 
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(
       "/settings?tab=appearance#chat-launch-clipboard",
+    );
+  });
+
+  it("reopens settings after the last project route became a plugin tab", () => {
+    writeStoredProjectRoute("local:/Users/arul/ADE", "/settings?tab=integrations");
+    writeStoredProjectRoute("local:/Users/arul/ADE", "/plugin/ade-linear");
+
+    render(
+      <MemoryRouter initialEntries={["/plugin/ade-linear"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(
+      "/settings?tab=integrations",
     );
   });
 

@@ -295,6 +295,10 @@ function isLanesRoutePath(pathname: string): boolean {
   return pathname === "/lanes" || pathname.startsWith("/lanes/");
 }
 
+function isSettingsRoutePath(pathname: string): boolean {
+  return pathname === "/settings" || pathname.startsWith("/settings/");
+}
+
 function pluginIdFromRoute(route: string): string | null {
   const path = route.split(/[?#]/, 1)[0] || "";
   if (!path.startsWith("/plugin/")) return null;
@@ -498,14 +502,18 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const settingsSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const pathname = route.split(/[?#]/, 1)[0] || "/work";
   const isWorkRoute = isWorkRoutePath(pathname);
   const isLanesRoute = isLanesRoutePath(pathname);
+  const isSettingsRoute = isSettingsRoutePath(pathname);
   const currentPluginId = pluginIdFromRoute(route);
   const isPluginRoute = currentPluginId !== null;
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
+  const [settingsRoute, setSettingsRoute] = React.useState(() => isSettingsRoute ? route : "/settings");
+  const [settingsMounted, setSettingsMounted] = React.useState(isSettingsRoute);
   const [keptPluginIds, setKeptPluginIds] = React.useState<string[]>(() => (
     currentPluginId ? [currentPluginId] : []
   ));
@@ -515,8 +523,10 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
   const shouldRenderLanes = active && isLanesRoute;
+  const shouldRenderSettings = settingsMounted || isSettingsRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
+  const visibleSettingsRoute = isSettingsRoute ? route : settingsRoute;
   const displayedPluginIds = React.useMemo(() => {
     if (!currentPluginId) return keptPluginIds;
     if (keptPluginIds[0] === currentPluginId) return keptPluginIds;
@@ -534,6 +544,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    if (!isSettingsRoute) return;
+    setSettingsRoute(route);
+    setSettingsMounted(true);
+  }, [isSettingsRoute, route]);
 
   React.useEffect(() => {
     const id = pluginIdFromRoute(route);
@@ -633,6 +649,13 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     else node.setAttribute("inert", "");
   }, [isLanesRoute, shouldRenderLanes]);
 
+  React.useEffect(() => {
+    const node = settingsSurfaceRef.current;
+    if (!node) return;
+    if (isSettingsRoute) node.removeAttribute("inert");
+    else node.setAttribute("inert", "");
+  }, [isSettingsRoute, shouldRenderSettings]);
+
   const workSurface = shouldRenderWork ? (
     <Routes location={visibleWorkRoute}>
       <Route path="/work/*" element={
@@ -689,6 +712,34 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     </Routes>
   ) : null;
 
+  const settingsSurface = shouldRenderSettings ? (
+    <Routes location={visibleSettingsRoute}>
+      <Route path="/settings" element={
+        <div
+          ref={settingsSurfaceRef}
+          className="h-full min-h-0 w-full"
+          aria-hidden={!isSettingsRoute}
+          data-ade-animation-state={isSettingsRoute ? "running" : "paused"}
+          style={!isSettingsRoute
+            ? {
+              position: "absolute",
+              inset: 0,
+              zIndex: -1,
+              opacity: 0,
+              pointerEvents: "none",
+            }
+            : undefined}
+        >
+          <PageErrorBoundary>
+            <React.Suspense fallback={LazyFallback}>
+              <SettingsPage active={active && isSettingsRoute} />
+            </React.Suspense>
+          </PageErrorBoundary>
+        </div>
+      } />
+    </Routes>
+  ) : null;
+
   const pluginSurfaces = displayedPluginIds.map((id) => {
     const isCurrent = isPluginRoute && currentPluginId === id;
     const location = isCurrent ? route : (pluginRoutesById[id] ?? `/plugin/${id}`);
@@ -707,8 +758,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     <div className="relative h-full min-h-0 w-full">
       {workSurface}
       {lanesSurface}
+      {settingsSurface}
       {pluginSurfaces}
-      {active && !isWorkRoute && !isLanesRoute && !isPluginRoute ? (
+      {active && !isWorkRoute && !isLanesRoute && !isSettingsRoute && !isPluginRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
           <Route path="/onboarding" element={<Navigate to="/work" replace />} />
@@ -759,13 +811,10 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             </PageErrorBoundary>
           } />
           {/* Plugin tabs stay mounted in `pluginSurfaces` so switching away
-              does not destroy the guest. The Marketplace is still here: it is
-              machine-level, alongside Chats and Account. */}
-          <Route path="/settings" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
+              does not destroy the guest. Settings stays mounted the same way
+              so leaving and coming back restores the tab and scroll. The
+              Marketplace is still here: it is machine-level, alongside Chats
+              and Account. */}
           <Route path="*" element={<Navigate to="/work" replace />} />
         </Routes>
       ) : null}

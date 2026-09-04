@@ -32,6 +32,7 @@
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import type { MarketplaceListing } from "./marketplaceModel";
 import { surfacesFromManifest } from "./marketplaceModel";
+import { MARKETPLACE_OFFICIAL_THEMES } from "./marketplaceThemeCatalog";
 
 /**
  * Where the official packages are published.
@@ -2067,6 +2068,10 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "hard-coded colours are unchanged by any theme, this one included.",
     ].join("\n"),
   }),
+  ...MARKETPLACE_OFFICIAL_THEMES.map((theme) => listing(theme.manifest, {
+    author: "ADE",
+    readme: theme.readme,
+  })),
 ];
 
 /* ── The mirror seam ────────────────────────────────────────────────────── */

@@ -1,0 +1,28 @@
+{
+  "name": "ade-theme-grove",
+  "version": "1.0.0",
+  "displayName": "Grove",
+  "description": "Moss, pine and soft stone. Calm, grounded, and built for long focus.",
+  "icon": "palette",
+  "accent": "#3F8F62",
+  "vocabVersion": 1,
+  "official": true,
+  "theme": { "tokens": {
+    "light": {
+      "--color-bg": "#F3F6F1", "--color-fg": "#1C2921", "--color-surface": "#F8FAF7", "--color-card": "#FFFFFF", "--color-card-fg": "#1C2921", "--color-card-rgb": "255, 255, 255",
+      "--color-secondary": "#E1EAE0", "--color-secondary-fg": "#405449", "--color-muted": "#E9EFE7", "--color-muted-fg": "#617267", "--color-border": "#CCD8CC",
+      "--color-accent": "#2F7D50", "--color-accent-fg": "#FFFFFF", "--color-accent-bright": "#489A68", "--color-accent-deep": "#205D3A",
+      "--color-surface-raised": "#FFFFFF", "--color-surface-recessed": "#E4EBE2", "--color-surface-overlay": "#FFFFFF", "--color-popup-bg": "#FBFCFA", "--color-modal-bg": "#FFFFFF", "--color-composer-bg": "#F8FAF7", "--color-glass-card": "#F8FAF7", "--color-card-solid": "#FFFFFF",
+      "--pane-bg": "#F8FAF7", "--pane-border": "#CCD8CC", "--chat-canvas-bg": "#F3F6F1", "--shell-header-bg": "#F8FAF7", "--shell-header-fg": "#1C2921", "--shell-header-border": "#CCD8CC", "--shell-surface": "#FBFCFA",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #EAF1E8 0%, #DDE8DC 100%)", "--shell-sidebar-border": "#CCD8CC", "--work-sidebar-bg": "#F8FAF7", "--work-session-sidebar-bg": "#E4EBE2", "--work-popover-bg": "#FBFCFA", "--work-popover-border": "#CCD8CC"
+    },
+    "dark": {
+      "--color-bg": "#101712", "--color-fg": "#E7F0E9", "--color-surface": "#151F18", "--color-card": "#1B281F", "--color-card-fg": "#E7F0E9", "--color-card-rgb": "27, 40, 31",
+      "--color-secondary": "#223328", "--color-secondary-fg": "#B2C5B6", "--color-muted": "#1B2920", "--color-muted-fg": "#8FA594", "--color-border": "#2C4032",
+      "--color-accent": "#78C792", "--color-accent-fg": "#102016", "--color-accent-bright": "#9DDFB1", "--color-accent-deep": "#438C5E",
+      "--color-surface-raised": "#203026", "--color-surface-recessed": "#0C120E", "--color-surface-overlay": "#1B281F", "--color-popup-bg": "#19251D", "--color-modal-bg": "#1B281F", "--color-composer-bg": "#151F18", "--color-glass-card": "#151F18", "--color-card-solid": "#1B281F",
+      "--pane-bg": "#151F18", "--pane-border": "#2C4032", "--chat-canvas-bg": "#101712", "--shell-header-bg": "#151F18", "--shell-header-fg": "#E7F0E9", "--shell-header-border": "#2C4032", "--shell-surface": "#19251D",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #1A291F 0%, #0E1510 100%)", "--shell-sidebar-border": "#2C4032", "--work-sidebar-bg": "#151F18", "--work-session-sidebar-bg": "#0C120E", "--work-popover-bg": "#19251D", "--work-popover-border": "#2C4032"
+    }
+  } }
+}

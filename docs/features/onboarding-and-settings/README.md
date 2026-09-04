@@ -329,7 +329,12 @@ Renderer — settings:
   container. It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The ten tabs are General, Appearance, Agents & Models,
+  entries. The page stays mounted after the first visit in a project
+  session (same keep-alive as Work), so leaving Settings and coming back
+  restores the tab and scroll. The rail and "Go to Settings" reopen the
+  last Settings URL even after the last project route has moved to a
+  plugin tab (`settingsNavTarget` in `projectRouteStorage.ts`). Deeplinks
+  that name a tab or hash still win. The ten tabs are General, Appearance, Agents & Models,
   Lanes, Integrations, Notifications, Activity, Secrets, Diagnostics, and
   Usage. Every tab id ADE has ever shipped in
   a URL still resolves via `LEGACY_TAB_ALIASES`

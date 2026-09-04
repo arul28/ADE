@@ -15,7 +15,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBannerHost } from "./IntegrationBannerHost";
 import { TabNav } from "./TabNav";
-import { isProjectSurfacePathname } from "./projectRouteStorage";
+import { isProjectSurfacePathname, writeStoredSettingsPlace } from "./projectRouteStorage";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
@@ -185,6 +185,8 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
 function writeStoredProjectRoute(projectRoot: string, route: string): void {
   try {
     window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
+    writeStoredSettingsPlace(projectRoot, route);
+    writeStoredSettingsPlace(`local:${projectRoot}`, route);
   } catch {
     // localStorage can be unavailable in private/test environments.
   }

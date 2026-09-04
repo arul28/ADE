@@ -23,6 +23,7 @@ import type { MarketplaceListing } from "./marketplaceModel";
  */
 
 const calls: string[] = [];
+let activeThemeId: string | null = null;
 
 const registry = {
   plugins: [] as InstalledPlugin[],
@@ -37,7 +38,11 @@ vi.mock("../../state/appStore", () => ({
       pluginsLoaded: registry.loaded,
       pluginsLoadFailure: registry.failure,
       projectBinding: null,
-      pluginThemeId: null,
+      pluginThemeId: activeThemeId,
+      setPluginThemeId: (pluginId: string | null) => {
+        activeThemeId = pluginId;
+        calls.push(`setPluginThemeId:${pluginId ?? "none"}`);
+      },
       refreshInstalledPlugins: async () => registry.loaded,
     }),
 }));
@@ -201,6 +206,8 @@ beforeEach(() => {
     },
   };
   calls.length = 0;
+  activeThemeId = null;
+  catalogue.listings = [LISTING];
   registry.plugins = [];
   registry.loaded = true;
   registry.failure = null;
@@ -321,5 +328,38 @@ describe("every install control on the plugin detail page", () => {
 
     await waitFor(() => expect(screen.getByText(/isn’t answering about plugins/)).toBeTruthy());
     expect(installControls()).toEqual([]);
+  });
+});
+
+describe("an installed theme detail page", () => {
+  beforeEach(() => {
+    catalogue.listings = [{ ...LISTING, isTheme: true }];
+    registry.plugins = [installedPlugin({
+      status: "none",
+      theme: { displayName: "Tipsy", tokens: { dark: {}, light: {} } },
+    })];
+  });
+
+  it("offers Use theme instead of the generic enable toggle", async () => {
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Use theme")).toBeTruthy());
+    expect(document.querySelector('[data-tour="plugin:marketplace.detail-theme-action"]')).toBeTruthy();
+    expect(document.querySelector('[data-tour="plugin:marketplace.detail-toggle"]')).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Use theme"));
+    });
+    expect(calls).toEqual(["setPluginThemeId:tipsy"]);
+  });
+
+  it("shows the active state and stops using the theme without disabling it", async () => {
+    activeThemeId = "tipsy";
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Active theme")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stop using"));
+    });
+    expect(calls).toEqual(["setPluginThemeId:none"]);
   });
 });

@@ -10,6 +10,7 @@ import {
   applyPluginTheme,
   buildPluginThemeCss,
   currentPluginThemeCss,
+  expandPluginThemeTokens,
   isPreviewingPluginTheme,
   previewPluginTheme,
   resetPluginThemeEngine,
@@ -122,11 +123,30 @@ describe("sanitizePluginThemeTokens", () => {
 describe("buildPluginThemeCss", () => {
   it("scopes each base under a doubled attribute selector so order cannot decide the winner", () => {
     const css = buildPluginThemeCss({ dark: { "--color-accent": "#3B82F6" } });
-    expect(css).toBe('[data-theme="dark"][data-theme] {\n  --color-accent: #3B82F6;\n}');
+    expect(css).toContain('[data-theme="dark"][data-theme] {');
+    expect(css).toContain("  --chat-accent: var(--color-accent);");
+    expect(css).toContain("  --pr-thread-card: var(--color-card);");
+    expect(css).toContain("  --color-accent: #3B82F6;");
   });
 
   it("emits nothing for an empty token set", () => {
     expect(buildPluginThemeCss({})).toBe("");
+  });
+});
+
+describe("expandPluginThemeTokens", () => {
+  it("fills deep product roles while preserving explicit art direction", () => {
+    const expanded = expandPluginThemeTokens({
+      dark: {
+        "--color-accent": "#3B82F6",
+        "--chat-card-bg": "#101828",
+      },
+    });
+
+    expect(expanded.dark?.["--chat-accent"]).toBe("var(--color-accent)");
+    expect(expanded.dark?.["--shell-control-open-bg"]).toContain("var(--color-accent)");
+    expect(expanded.dark?.["--pr-panel-card"]).toContain("var(--color-card)");
+    expect(expanded.dark?.["--chat-card-bg"]).toBe("#101828");
   });
 });
 

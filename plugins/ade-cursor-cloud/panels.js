@@ -280,7 +280,7 @@ function buildFleetPanel(input = {}) {
     body.push({
       component: "text",
       variant: "caption",
-      text: "Live updates not configured yet — this list updates on refresh and when agents finish.",
+      text: "Statuses refresh every few seconds. Paste a webhook URL into Cursor for push updates.",
     });
   }
 

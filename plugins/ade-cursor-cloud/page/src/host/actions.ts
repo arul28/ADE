@@ -143,6 +143,9 @@ export const unarchiveAgent = (agentId: string): Promise<PageActionResult> =>
 export const deleteAgent = (agentId: string): Promise<PageActionResult> =>
   call("pageDeleteAgent", { agentId });
 
+export const copyWebhookUrl = (): Promise<PageActionResult> =>
+  call("pageCopyWebhookUrl");
+
 /**
  * The unread-finished badge, as a REFCOUNT rather than a reset.
  *

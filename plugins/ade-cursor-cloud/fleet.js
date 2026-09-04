@@ -10,7 +10,9 @@
 //     the phone and the web client render the same fleet the Mac assembled.
 //
 // Everything else — the enrich rule, the concurrency, the origin cache, the
-// grouping order — is core's, unchanged.
+// grouping order — is core's. Enrich now also walks finished IDLE agents that
+// still name a latest run, because Cursor's list no longer carries branch / PR
+// on those rows.
 
 "use strict";
 
@@ -40,6 +42,13 @@ function isLiveAgentListStatus(status) {
   return lower === "running" || lower === "active" || lower === "creating" || status == null || status === "";
 }
 
+/** A finished IDLE agent still has a latest run we need for branch / PR / diffs. */
+function shouldEnrichAgent(agent) {
+  if (!agent || agent.archived) return false;
+  if (isLiveAgentListStatus(agent.status)) return true;
+  return Boolean(agent.latestRunId);
+}
+
 function readEpoch(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -56,22 +65,23 @@ function readEpoch(value) {
  * degrade to a thinner row, never to a thrown fleet.
  */
 function agentSummary(raw) {
-  const agentId = readString(raw?.id);
+  const agentId = readString(raw?.id) ?? readString(raw?.agentId);
   if (!agentId) return null;
   const repos = Array.isArray(raw?.repos)
-    ? raw.repos.map((repo) => readString(repo?.url)).filter(Boolean)
+    ? raw.repos.map((repo) => (typeof repo === "string" ? readString(repo) : readString(repo?.url))).filter(Boolean)
     : [];
   const status = readString(raw?.status)?.toLowerCase();
+  const envName = readString(raw?.env?.name) ?? readString(raw?.envName);
   return {
     agentId,
     name: readString(raw?.name) ?? agentId,
     summary: readString(raw?.summary) ?? readString(raw?.name) ?? "",
-    // The agent list says ACTIVE or ARCHIVED; the run says what it is doing.
     archived: status === "archived",
     status: status === "archived" ? undefined : status,
     createdAt: readEpoch(raw?.createdAt),
     lastModified: readEpoch(raw?.updatedAt) ?? readEpoch(raw?.createdAt),
     repos,
+    envName,
     webUrl: readString(raw?.url) ?? agentWebUrl(agentId),
     latestRunId: readString(raw?.latestRunId),
   };
@@ -100,10 +110,11 @@ function readRunPushedBranches(run) {
 }
 
 function pickBranch(run, originKey) {
+  const keys = Array.isArray(originKey) ? originKey.filter(Boolean) : originKey ? [originKey] : [];
   const rows = readRunPushedBranches(run);
-  const ours = originKey ? rows.filter((row) => row.repoKey === originKey) : [];
+  const ours = keys.length ? rows.filter((row) => keys.includes(row.repoKey)) : [];
   const unattributed = rows.filter((row) => row.repoKey == null);
-  return ours[0] ?? unattributed[0] ?? null;
+  return ours[0] ?? unattributed[0] ?? rows[0] ?? null;
 }
 
 /**
@@ -116,16 +127,22 @@ function pickBranch(run, originKey) {
 function createOriginCache(getOriginRemote, ttlMs = ORIGIN_CACHE_TTL_MS) {
   let cached = null;
   return {
-    async key(now = Date.now()) {
-      if (cached && now - cached.at < ttlMs) return cached.key;
-      let key = "";
+    async keys(now = Date.now()) {
+      if (cached && now - cached.at < ttlMs) return cached.keys;
+      let keys = [];
       try {
-        key = repoMatchKey(await getOriginRemote());
+        const raw = await getOriginRemote();
+        const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        keys = [...new Set(list.map((url) => repoMatchKey(url)).filter(Boolean))];
       } catch {
-        key = "";
+        keys = [];
       }
-      cached = { key, at: now };
-      return key;
+      cached = { keys, at: now };
+      return keys;
+    },
+    async key(now = Date.now()) {
+      const keys = await this.keys(now);
+      return keys[0] ?? "";
     },
     reset() {
       cached = null;
@@ -159,18 +176,42 @@ async function mapWithConcurrency(items, limit, worker) {
  * origin probe and this plugin's own session index. Every one is injected, so
  * the whole assembly is testable with no network and no host.
  */
+function prUrlKey(url) {
+  const text = readString(url);
+  return text ? text.replace(/\/+$/, "").toLowerCase() : "";
+}
+
+function readPrDiff(pr) {
+  if (!pr || typeof pr !== "object") return null;
+  const additions = Number.isFinite(pr.additions)
+    ? pr.additions
+    : Number.isFinite(pr.diffStat?.insertions) ? pr.diffStat.insertions : null;
+  const deletions = Number.isFinite(pr.deletions)
+    ? pr.deletions
+    : Number.isFinite(pr.diffStat?.deletions) ? pr.diffStat.deletions : null;
+  const filesChanged = Number.isFinite(pr.changedFiles)
+    ? pr.changedFiles
+    : Number.isFinite(pr.diffStat?.filesChanged) ? pr.diffStat.filesChanged : null;
+  const state = readString(pr.mergedAt) || pr.merged === true
+    ? "merged"
+    : readString(pr.state)?.toLowerCase();
+  if (additions == null && deletions == null && filesChanged == null && !state) return null;
+  return { additions, deletions, filesChanged, prState: state ?? null };
+}
+
 async function assembleFleet(deps, args = {}) {
   const { api, listLanes, originCache, listSessionLinks } = deps;
   const includeArchived = args.includeArchived === true;
   const budget = clampFleetBudget(args.limit);
   const now = args.now ?? Date.now();
 
-  const [agentsRaw, originKey, lanes, sessionLinks] = await Promise.all([
+  const [agentsRaw, originKeys, lanes, sessionLinks] = await Promise.all([
     api.listAgentsPaged({ budget }),
-    originCache.key(now),
+    originCache.keys ? originCache.keys(now) : originCache.key(now).then((key) => (key ? [key] : [])),
     Promise.resolve().then(listLanes).catch(() => []),
     Promise.resolve().then(listSessionLinks).catch(() => []),
   ]);
+  const originSet = new Set(Array.isArray(originKeys) ? originKeys.filter(Boolean) : []);
 
   const linkByAgentId = new Map();
   for (const link of sessionLinks) {
@@ -186,14 +227,15 @@ async function assembleFleet(deps, args = {}) {
   }
 
   // An agent belongs to this project when a chat here owns it, or when one of
-  // its repos IS this project's origin. Everything else is somebody else's.
+  // its repos IS this project's origin. If we could not read origin at all,
+  // drop nothing — an empty list here is a probe failure, not "no agents".
   const scoped = [];
   for (const raw of agentsRaw) {
     const agent = agentSummary(raw);
     if (!agent) continue;
     const link = linkByAgentId.get(agent.agentId) ?? null;
-    const repoHit = Boolean(originKey) && agent.repos.some((repo) => repoMatchKey(repo) === originKey);
-    if (!link && !repoHit) continue;
+    const repoHit = originSet.size > 0 && agent.repos.some((repo) => originSet.has(repoMatchKey(repo)));
+    if (!link && originSet.size > 0 && !repoHit) continue;
     scoped.push({
       agent,
       link,
@@ -206,23 +248,37 @@ async function assembleFleet(deps, args = {}) {
     });
   }
 
-  // Only live rows are enriched. A finished agent's run adds nothing the list
-  // did not already say, and it would cost one request per row.
-  const activeOnly = scoped.filter(({ agent }) => !agent.archived && isLiveAgentListStatus(agent.status));
+  const toEnrich = scoped.filter(({ agent }) => shouldEnrichAgent(agent));
 
-  await mapWithConcurrency(activeOnly, ENRICH_CONCURRENCY, async (entry) => {
+  await mapWithConcurrency(toEnrich, ENRICH_CONCURRENCY, async (entry) => {
     const page = await api.listRuns(entry.agent.agentId, { limit: 1 });
     const run = Array.isArray(page?.items) ? page.items[0] : null;
     if (!run) return;
     entry.runStatus = normalizeRunStatus(run.status);
     entry.latestRunId = readString(run.id) ?? entry.latestRunId;
     entry.modelId = readString(run.model?.id) ?? readString(run.modelId);
-    const picked = pickBranch(run, originKey);
+    const picked = pickBranch(run, [...originSet]);
     if (picked) {
       entry.branch = picked.branch;
       entry.prUrl = picked.prUrl;
     }
   });
+
+  const prByUrl = new Map();
+  if (typeof deps.listPrs === "function") {
+    const listed = await Promise.resolve().then(deps.listPrs).catch(() => []);
+    const rows = Array.isArray(listed)
+      ? listed
+      : Array.isArray(listed?.items)
+        ? listed.items
+        : Array.isArray(listed?.prs)
+          ? listed.prs
+          : [];
+    for (const pr of rows) {
+      const key = prUrlKey(pr?.htmlUrl ?? pr?.url ?? pr?.prUrl);
+      if (key) prByUrl.set(key, pr);
+    }
+  }
 
   const items = scoped.map((entry) => {
     // The lane comes from the owning chat first, then from an exact branch
@@ -230,6 +286,8 @@ async function assembleFleet(deps, args = {}) {
     const lane = entry.link?.laneId
       ? laneById.get(entry.link.laneId) ?? null
       : entry.branch ? laneByBranch.get(entry.branch) ?? null : null;
+    const pr = entry.prUrl ? prByUrl.get(prUrlKey(entry.prUrl)) : null;
+    const diff = readPrDiff(pr);
     return {
       agent: entry.agent,
       ...(entry.runStatus ? { runStatus: entry.runStatus } : {}),
@@ -237,6 +295,12 @@ async function assembleFleet(deps, args = {}) {
       branch: entry.branch,
       prUrl: entry.prUrl,
       modelId: entry.modelId,
+      repoLabel: entry.agent.repos[0] ? repoLabel(entry.agent.repos[0]) : null,
+      envName: entry.agent.envName ?? null,
+      filesChanged: diff?.filesChanged ?? null,
+      additions: diff?.additions ?? null,
+      deletions: diff?.deletions ?? null,
+      prState: diff?.prState ?? null,
       matchedBy: entry.matchedBy,
       ownership: {
         sessionId: entry.link?.sessionId ?? null,
@@ -258,7 +322,9 @@ async function assembleFleet(deps, args = {}) {
 
 /** Newest first, by whatever timestamp the agent actually carried. */
 function recency(entry) {
-  return entry.agent.lastModified ?? entry.agent.createdAt ?? 0;
+  // `updatedAt` on Cursor's list is often the list-call time, so createdAt is
+  // the date the row actually happened (Cursor's own "2mo" chip).
+  return entry.agent.createdAt ?? entry.agent.lastModified ?? 0;
 }
 
 /**
@@ -322,12 +388,21 @@ function fleetRow(entry, options = {}) {
   const now = options.now ?? Date.now();
   const status = fleetDisplayStatus(entry);
   const active = isFleetEntryActive(entry);
-  const age = formatAge(entry.agent.lastModified ?? entry.agent.createdAt, now);
+  const age = formatAge(
+    active
+      ? (entry.agent.lastModified ?? entry.agent.createdAt)
+      : (entry.agent.createdAt ?? entry.agent.lastModified),
+    now,
+  );
   const cost = formatCost(options.costCents);
   const agentId = entry.agent.agentId;
 
   const secondLine = [
-    entry.branch ?? (entry.agent.repos[0] ? repoLabel(entry.agent.repos[0]) : null),
+    entry.repoLabel ?? (entry.agent.repos[0] ? repoLabel(entry.agent.repos[0]) : null),
+    entry.branch,
+    entry.additions != null || entry.deletions != null
+      ? `+${entry.additions ?? 0} −${entry.deletions ?? 0}`
+      : null,
     entry.modelId,
     entry.ownership.linearIssueId && entry.ownership.laneName
       ? `${entry.ownership.linearIssueId} · ${entry.ownership.laneName}`

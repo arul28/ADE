@@ -143,20 +143,22 @@ export function isPluginWebviewPlacement(value: unknown): value is PluginWebview
 /**
  * Whether a hidden guest should stay alive.
  *
- * Tabs and Work-rail panes are places the reader comes back to within a
- * session. Destroying them on hide made every plugin tab flash a reload.
- * Anchored placements (popover, picker, overlay, dialog) still die when
- * hidden — those are not a surface the reader returns to.
+ * Tabs, Work-rail panes, and settings sections are places the reader comes
+ * back to within a session. Destroying them on hide made every plugin tab
+ * flash a reload, and made a Linear OAuth wait in Settings forget that the
+ * token had already landed. Anchored placements (popover, picker, overlay,
+ * dialog) still die when hidden — those are not a surface the reader returns
+ * to.
  */
 export function pluginWebviewKeepsGuestWhileHidden(placement: PluginWebviewPlacement): boolean {
   switch (placement) {
     case "tab":
     case "pane":
+    case "settings-section":
       return true;
     case "drawer":
     case "overlay":
     case "popover":
-    case "settings-section":
     case "composer-picker":
     case "dialog-picker":
       return false;
@@ -166,6 +168,17 @@ export function pluginWebviewKeepsGuestWhileHidden(placement: PluginWebviewPlace
     }
   }
 }
+
+/**
+ * Dispatched into a guest when its host becomes visible again.
+ *
+ * `document.visibilityState` tracks the ADE window, not the rail tab. A
+ * keep-alive Linear tab that was CSS-hidden during Settings OAuth never
+ * sees a visibility change when the reader comes back to it, so the host
+ * tells the guest directly. The page cannot import this constant — it is
+ * duplicated in each page that listens, with this name as the contract.
+ */
+export const PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT = "ade-plugin-surface-revealed";
 
 /**
  * The whole context envelope, as bytes on the source URL, is capped here.

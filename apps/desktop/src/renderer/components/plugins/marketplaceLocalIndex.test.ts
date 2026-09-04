@@ -181,6 +181,26 @@ describe("bundled manifests mirror the plugins that ship on disk", () => {
     expect(onDisk.size).toBeGreaterThanOrEqual(12);
   });
 
+  it("ships ten official themes", () => {
+    const themeIds = Object.values(BUNDLED_MANIFESTS_BY_ID)
+      .filter((manifest) => manifest.theme !== undefined)
+      .map((manifest) => manifest.name)
+      .sort();
+
+    expect(themeIds).toEqual([
+      "ade-theme-contrast",
+      "ade-theme-ember",
+      "ade-theme-grove",
+      "ade-theme-ink",
+      "ade-theme-iris",
+      "ade-theme-ocean",
+      "ade-theme-paper",
+      "ade-theme-phosphor",
+      "ade-theme-sakura",
+      "ade-theme-synthwave",
+    ]);
+  });
+
   for (const [pluginId, manifestPath] of [...onDisk].sort(([a], [b]) => a.localeCompare(b))) {
     const relative = path.relative(repoRoot, manifestPath);
 

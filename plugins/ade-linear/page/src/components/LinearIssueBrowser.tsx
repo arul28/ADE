@@ -38,6 +38,7 @@ import {
   setIssueState,
 } from "../host/actions";
 import { confirm as hostConfirm, openLink, prompt as hostPrompt, toast } from "../host/ui";
+import { useResumeWhenShown } from "../host/resume";
 import { clearSelection, loadFilters, loadSelection, saveFilters, saveSelection } from "../host/uiState";
 import { useCollectionChanges } from "../host/useHostEntities";
 import type {
@@ -161,9 +162,11 @@ type LinearIssueBrowserCacheEntry = {
   quickView: CtoLinearQuickView | null;
   quickViewFetchedAt: number;
   quickViewPromise: Promise<CtoLinearQuickView> | null;
+  quickViewGen: number;
   catalog: CtoGetLinearIssuePickerDataResult | null;
   catalogFetchedAt: number;
   catalogPromise: Promise<CtoGetLinearIssuePickerDataResult> | null;
+  catalogGen: number;
   searches: Map<string, LinearIssueSearchCacheEntry>;
 };
 
@@ -201,9 +204,11 @@ function getBrowserCacheEntry(key: string): LinearIssueBrowserCacheEntry {
     quickView: null,
     quickViewFetchedAt: 0,
     quickViewPromise: null,
+    quickViewGen: 0,
     catalog: null,
     catalogFetchedAt: 0,
     catalogPromise: null,
+    catalogGen: 0,
     searches: new Map(),
   };
   linearIssueBrowserCache.set(key, next);
@@ -463,9 +468,11 @@ function invalidateBrowserCache(key: string): void {
   entry.quickView = null;
   entry.quickViewFetchedAt = 0;
   entry.quickViewPromise = null;
+  entry.quickViewGen += 1;
   entry.catalog = null;
   entry.catalogFetchedAt = 0;
   entry.catalogPromise = null;
+  entry.catalogGen += 1;
   entry.searches.clear();
 }
 
@@ -655,20 +662,25 @@ export function LinearIssueBrowser({
     }
     const requestId = quickViewRequestIdRef.current + 1;
     quickViewRequestIdRef.current = requestId;
+    const gen = force ? entry.quickViewGen + 1 : entry.quickViewGen;
+    if (force) entry.quickViewGen = gen;
     setLoadingQuickView(force || !entry.quickView);
     setError(null);
-    const promise = entry.quickViewPromise ?? getQuickView();
+    const promise = (!force && entry.quickViewPromise) ? entry.quickViewPromise : getQuickView();
     entry.quickViewPromise = promise;
     void promise
       .then((data) => {
+        if (entry.quickViewGen !== gen) return;
         entry.quickView = data;
         entry.quickViewFetchedAt = Date.now();
         entry.quickViewPromise = null;
         if (quickViewRequestIdRef.current !== requestId) return;
         setQuickView(data);
+        if (data.connection.connected || data.connection.tokenStored) setError(null);
         onConnectionVisibilityChange?.(data.connection.connected === true);
       })
       .catch((err) => {
+        if (entry.quickViewGen !== gen) return;
         entry.quickViewPromise = null;
         if (quickViewRequestIdRef.current !== requestId) return;
         if (!entry.quickView || force) {
@@ -693,12 +705,15 @@ export function LinearIssueBrowser({
     if (entry.catalog) setCatalog(entry.catalog);
     const requestId = catalogRequestIdRef.current + 1;
     catalogRequestIdRef.current = requestId;
+    const gen = force ? entry.catalogGen + 1 : entry.catalogGen;
+    if (force) entry.catalogGen = gen;
     setLoadingCatalog(force || !entry.catalog);
     setError(null);
-    const promise = entry.catalogPromise ?? getCatalog();
+    const promise = (!force && entry.catalogPromise) ? entry.catalogPromise : getCatalog();
     entry.catalogPromise = promise;
     void promise
       .then((data) => {
+        if (entry.catalogGen !== gen) return;
         entry.catalog = data;
         entry.catalogFetchedAt = Date.now();
         entry.catalogPromise = null;
@@ -706,6 +721,7 @@ export function LinearIssueBrowser({
         setCatalog(data);
       })
       .catch((err) => {
+        if (entry.catalogGen !== gen) return;
         entry.catalogPromise = null;
         if (catalogRequestIdRef.current !== requestId) return;
         if (!entry.catalog || force) {
@@ -742,7 +758,7 @@ export function LinearIssueBrowser({
     if (append) setAppendingMore(true);
     else setAppendingMore(false);
     setError(null);
-    const promise = cached?.promise ?? searchLinearIssues(args);
+    const promise = (!force && cached?.promise) ? cached.promise : searchLinearIssues(args);
     entry.searches.set(key, {
       result: cachedResult,
       fetchedAt: cached?.fetchedAt ?? 0,
@@ -750,8 +766,8 @@ export function LinearIssueBrowser({
     });
     void promise
       .then((result) => {
-        rememberSearchResult(entry, key, result);
         if (searchRequestIdRef.current !== requestId) return;
+        rememberSearchResult(entry, key, result);
         setIssues((current) => append ? mergeIssuePages(current, result.issues) : result.issues);
         setPageInfo(result.pageInfo);
       })
@@ -796,6 +812,14 @@ export function LinearIssueBrowser({
   useCollectionChanges(useCallback(() => {
     reloadLinear(true);
   }, [reloadLinear]));
+
+  const signedOutRef = useRef(false);
+  useResumeWhenShown(
+    () => reloadLinear(true),
+    () => {
+      if (signedOutRef.current) reloadLinear(true);
+    },
+  );
 
   const updateFilters = useCallback((patch: Partial<LinearIssueBrowserFilters>) => {
     filterWriteRef.current += 1;
@@ -1037,8 +1061,12 @@ export function LinearIssueBrowser({
   }, [actionBusyIssueId, actionDisabled, localActionIssueId, onIssueAction]);
 
   const showSettingsAction = Boolean(error && onOpenLinearSettings && isConnectionError(error));
-  const signedOut = isCredentialError(error)
-    || Boolean(quickView && !quickView.connection.tokenStored && !quickView.connection.connected);
+  const connected = Boolean(quickView?.connection.connected || quickView?.connection.tokenStored);
+  const signedOut = !connected && (
+    isCredentialError(error)
+    || Boolean(quickView && !quickView.connection.tokenStored && !quickView.connection.connected)
+  );
+  signedOutRef.current = signedOut;
   const busyIssueId = actionBusyIssueId ?? localActionIssueId;
   const filtersActive = hasActiveFilters(filters);
   const issueCountLabel = issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : null;

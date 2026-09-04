@@ -148,6 +148,27 @@ describe("destroy when hidden", () => {
     expect(guests(view.container)).toHaveLength(1);
   });
 
+  it("keeps a settings-section guest when the surface is hidden", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active
+        placement="settings-section"
+      />,
+    );
+    expect(guests(view.container)).toHaveLength(1);
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active={false}
+        placement="settings-section"
+      />,
+    );
+    expect(guests(view.container)).toHaveLength(1);
+  });
+
   it("creates nothing until a popover is first shown", () => {
     const view = render(
       <PluginWebviewHost

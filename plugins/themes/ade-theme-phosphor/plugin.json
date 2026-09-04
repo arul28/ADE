@@ -1,0 +1,21 @@
+{
+  "name": "ade-theme-phosphor", "version": "1.0.0", "displayName": "Phosphor", "description": "Terminal green, smoked glass and old-computer charm without the eye strain.", "icon": "palette", "accent": "#42B883", "vocabVersion": 1, "official": true,
+  "theme": { "tokens": {
+    "light": {
+      "--color-bg": "#F3F7F1", "--color-fg": "#1C2A22", "--color-surface": "#F8FBF6", "--color-card": "#FFFFFF", "--color-card-fg": "#1C2A22", "--color-card-rgb": "255, 255, 255",
+      "--color-secondary": "#E0EAE2", "--color-secondary-fg": "#3F5648", "--color-muted": "#E9F0E8", "--color-muted-fg": "#607568", "--color-border": "#CAD8CD",
+      "--color-accent": "#287D55", "--color-accent-fg": "#FFFFFF", "--color-accent-bright": "#42A873", "--color-accent-deep": "#185C3B",
+      "--color-surface-raised": "#FFFFFF", "--color-surface-recessed": "#E2EAE0", "--color-surface-overlay": "#FFFFFF", "--color-popup-bg": "#FBFDF9", "--color-modal-bg": "#FFFFFF", "--color-composer-bg": "#F8FBF6", "--color-glass-card": "#F8FBF6", "--color-card-solid": "#FFFFFF",
+      "--pane-bg": "#F8FBF6", "--pane-border": "#CAD8CD", "--chat-canvas-bg": "#F3F7F1", "--shell-header-bg": "#F8FBF6", "--shell-header-fg": "#1C2A22", "--shell-header-border": "#CAD8CD", "--shell-surface": "#FBFDF9",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #E7F0E7 0%, #D9E6DB 100%)", "--shell-sidebar-border": "#CAD8CD", "--work-sidebar-bg": "#F8FBF6", "--work-session-sidebar-bg": "#E2EAE0", "--work-popover-bg": "#FBFDF9", "--work-popover-border": "#CAD8CD"
+    },
+    "dark": {
+      "--color-bg": "#08110C", "--color-fg": "#DDF7E7", "--color-surface": "#0D1912", "--color-card": "#13231A", "--color-card-fg": "#DDF7E7", "--color-card-rgb": "19, 35, 26",
+      "--color-secondary": "#1A3023", "--color-secondary-fg": "#ADD2BA", "--color-muted": "#14271C", "--color-muted-fg": "#7FA28B", "--color-border": "#264332",
+      "--color-accent": "#63D492", "--color-accent-fg": "#07170E", "--color-accent-bright": "#8BE9AF", "--color-accent-deep": "#319D61",
+      "--color-surface-raised": "#193024", "--color-surface-recessed": "#050A07", "--color-surface-overlay": "#13231A", "--color-popup-bg": "#102017", "--color-modal-bg": "#13231A", "--color-composer-bg": "#0D1912", "--color-glass-card": "#0D1912", "--color-card-solid": "#13231A",
+      "--pane-bg": "#0D1912", "--pane-border": "#264332", "--chat-canvas-bg": "#08110C", "--shell-header-bg": "#0D1912", "--shell-header-fg": "#DDF7E7", "--shell-header-border": "#264332", "--shell-surface": "#102017",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #14271C 0%, #060E09 100%)", "--shell-sidebar-border": "#264332", "--work-sidebar-bg": "#0D1912", "--work-session-sidebar-bg": "#050A07", "--work-popover-bg": "#102017", "--work-popover-border": "#264332"
+    }
+  } }
+}

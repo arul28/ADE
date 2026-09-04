@@ -35,6 +35,8 @@ export type CloudAgent = {
   createdAt: number | null;
   lastModified: number | null;
   repos: string[];
+  /** Cursor environment name, e.g. `arul28/ADE`. */
+  envName?: string | null;
   webUrl: string | null;
   latestRunId: string | null;
 };
@@ -57,6 +59,15 @@ export type CloudFleetEntry = {
   prUrl: string | null;
   modelId: string | null;
   matchedBy: "both" | "session" | "repo";
+  /** `owner/repo` for the row's second line. */
+  repoLabel?: string | null;
+  /** Cursor environment name, e.g. `arul28/ADE`. */
+  envName?: string | null;
+  filesChanged?: number | null;
+  additions?: number | null;
+  deletions?: number | null;
+  /** `open` / `merged` / `closed` when we could read the PR. */
+  prState?: string | null;
   ownership: CloudOwnership;
   /** Pre-formatted by the child, because a page must not do date maths. */
   age: string | null;

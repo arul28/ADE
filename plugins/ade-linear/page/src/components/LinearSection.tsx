@@ -22,21 +22,24 @@
  * Register lives on the Automations tile. Both sentences here match
  * `panels/settings.js` word for word.
  *
- * ## The OAuth flow, and what is gone
+ * ## The OAuth flow
  *
  * The compiled section started a flow with `startLinearOAuth()`, opened the URL
- * itself, then POLLED `getLinearOAuthSession({sessionId})` every 1500 ms for up
- * to five minutes. All of that machinery is DELETED. The plugin's OAuth is
- * host-driven: `connectOAuth(origin)` answers `{authSession}`, the bridge
- * applies that control-flow answer — opening the browser or the phone's auth
- * view — before the promise resolves, and the plugin's child settles the
- * sign-in on its own `auth.completed` listener. So there is no session id for
- * the page to hold and nothing for it to poll. The page awaits the action,
- * refetches the connection, and if the credential has not landed yet it waits
- * on the host's `changed` event (`useCollectionChanges`) rather than on a
- * timer. The five-minute give-up is kept, with the compiled section's own
- * wording, because a reader who closed the browser tab still needs the button
- * to come back.
+ * itself, then polled `getLinearOAuthSession({sessionId})` every 1500 ms for up
+ * to five minutes. The plugin's OAuth is host-driven: `connectOAuth(origin)`
+ * answers `{authSession}` as soon as the browser opens, not when Linear
+ * comes back, and the child settles the sign-in on its own `auth.completed`
+ * listener. There is no session id for the page to hold.
+ *
+ * Waiting on `changed` alone is not enough. ADE is often in the background
+ * while Linear's site finishes, a catalog write storm can invalidate an
+ * in-flight `getConnection()`, and a keep-alive settings guest does not
+ * remount when the window comes forward. So while the button says "Waiting
+ * for Linear…" this page also polls `getConnection()` on the compiled
+ * interval, refetches on window focus / visibility, and coalesces those
+ * reads so the connected answer cannot be dropped. The five-minute give-up
+ * and its sentence stay, because a reader who closed the browser tab still
+ * needs the button to come back.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -71,6 +74,7 @@ import {
   type PageWebhookStatus,
 } from "../host/actions";
 import { openLink } from "../host/ui";
+import { useResumeWhenShown } from "../host/resume";
 import { useCollectionChanges } from "../host/useHostEntities";
 
 const LINEAR_BRAND = "#5E6AD2";
@@ -88,6 +92,9 @@ const AUTH_ORIGIN_SETTINGS = "settings";
 
 /** How long the page waits for a host-driven sign-in before giving the button back. */
 const OAUTH_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Same interval the compiled section used while an OAuth session was open. */
+const OAUTH_POLL_MS = 1500;
 
 /** The setting keys `plugin.json` declares. Spelled once, as `panels/settings.js` does. */
 const SETTING_DEFAULT_TEAM = "defaultTeamKey";
@@ -223,8 +230,12 @@ export function LinearSection({
   const [teamKeyDraft, setTeamKeyDraft] = useState<string | null>(null);
   const validatingRef = useRef(false);
   const oauthStartingRef = useRef(false);
+  const connectionRef = useRef<LinearConnectionStatus | null>(null);
+  const loadStatusInFlightRef = useRef(false);
+  const loadStatusAgainRef = useRef(false);
   const requestEpochRef = useRef(0);
   const autolinksRequestIdRef = useRef(0);
+  connectionRef.current = connection;
 
   const invalidateLoadRequests = useCallback(() => {
     requestEpochRef.current += 1;
@@ -372,25 +383,36 @@ export function LinearSection({
     }
   }, []);
 
-  const loadStatus = useCallback(async () => {
-    const requestId = invalidateLoadRequests();
-    try {
-      const status = await getConnection();
-      if (!isCurrentLoadRequest(requestId)) return;
-      setConnection(status);
-      if (status?.connected) {
-        if (isCurrentLoadRequest(requestId)) {
-          void loadProjects(requestId);
-        }
-      } else {
-        setProjects([]);
-      }
-    } catch {
-      if (!isCurrentLoadRequest(requestId)) return;
-      setConnection(null);
-      setProjects([]);
+  const loadStatus = useCallback(() => {
+    if (loadStatusInFlightRef.current) {
+      loadStatusAgainRef.current = true;
+      return Promise.resolve();
     }
-  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects]);
+    loadStatusInFlightRef.current = true;
+    const requestId = requestEpochRef.current;
+    return getConnection()
+      .then((status) => {
+        if (!isCurrentLoadRequest(requestId)) return;
+        setConnection(status);
+        if (status?.connected) {
+          void loadProjects(requestId);
+        } else {
+          setProjects([]);
+        }
+      })
+      .catch(() => {
+        if (!isCurrentLoadRequest(requestId)) return;
+        setConnection(null);
+        setProjects([]);
+      })
+      .finally(() => {
+        loadStatusInFlightRef.current = false;
+        if (loadStatusAgainRef.current) {
+          loadStatusAgainRef.current = false;
+          void loadStatus();
+        }
+      });
+  }, [isCurrentLoadRequest, loadProjects]);
 
   /**
    * The plugin's own settings, read through the bridge rather than from a
@@ -427,8 +449,9 @@ export function LinearSection({
 
   /* ── Initial load + reload on active-project change ── */
   useEffect(() => {
+    invalidateLoadRequests();
     void loadStatus();
-  }, [loadStatus, projectRoot]);
+  }, [invalidateLoadRequests, loadStatus, projectRoot]);
 
   useEffect(() => {
     void loadGithubAutolinks();
@@ -461,17 +484,33 @@ export function LinearSection({
   }, [projectRoot, connection?.connected]);
 
   /**
-   * The replacement for the compiled section's OAuth POLLING LOOP.
-   *
-   * There is no session id and no interval. The child settles the sign-in on
-   * `auth.completed` and publishes; the host relays that as a `changed` event,
-   * and the page refetches the connection once — only while it is actually
-   * waiting, so a background publish does not churn the card.
+   * Refetch while signed out or waiting. A connected card does not churn on
+   * every catalog write; a waiting card must, because `auth.completed` can
+   * land while ADE is in the background and the first `getConnection()` after
+   * `begin` still answers disconnected.
    */
   useCollectionChanges(useCallback(() => {
-    if (!oauthStartingRef.current) return;
+    if (!oauthStartingRef.current && connectionRef.current?.connected) return;
     void loadStatus();
   }, [loadStatus]));
+
+  useResumeWhenShown(() => {
+    void loadStatus();
+  });
+
+  /**
+   * Poll `getConnection()` while waiting, on the compiled section's interval.
+   * `changed` is still the happy path; this is what covers a backgrounded
+   * window and a dropped event.
+   */
+  useEffect(() => {
+    if (!oauthStarting) return;
+    const timer = window.setInterval(() => {
+      if (!oauthStartingRef.current) return;
+      void loadStatus();
+    }, OAUTH_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadStatus, oauthStarting]);
 
   /**
    * Give the button back if the sign-in never lands. The compiled section's own
@@ -558,7 +597,7 @@ export function LinearSection({
     setError(null);
     try {
       // Host-driven: the bridge acts on `{authSession}` before this resolves.
-      // There is nothing to open here and nothing to poll afterwards.
+      // The token is not here yet; the wait loop and `changed` refetch it.
       const result = await connectOAuth(AUTH_ORIGIN_SETTINGS);
       if (!oauthStartingRef.current || validatingRef.current) return;
       if (result && result.ok === false) {

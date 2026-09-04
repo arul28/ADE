@@ -22,6 +22,7 @@ import {
   pluginWebviewPartition,
   pluginWebviewKeepsGuestWhileHidden,
   pluginWebviewUrl,
+  PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT,
   type PluginWebviewContext,
   type PluginWebviewPlacement,
 } from "../../../shared/plugins/webviewBridge";
@@ -74,6 +75,7 @@ const WebPluginPageHost = React.lazy(async () => ({
 type PluginWebviewElement = HTMLElement & {
   reload?: () => void;
   getWebContentsId?: () => number;
+  executeJavaScript?: (code: string) => Promise<unknown>;
 };
 
 type LoadState =
@@ -374,6 +376,19 @@ export function PluginWebviewHost({
       guestRef.current = null;
     };
   }, [webClient, pluginId, src, reloadToken, reloadKey, mounted, placement, surfaceId]);
+
+  const wasActiveRef = React.useRef(active);
+  React.useEffect(() => {
+    const becameActive = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!becameActive) return;
+    const guest = guestRef.current;
+    const run = guest?.executeJavaScript;
+    if (typeof run !== "function") return;
+    void run(
+      `window.dispatchEvent(new Event(${JSON.stringify(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT)}))`,
+    ).catch(() => undefined);
+  }, [active]);
 
   // The frame the host actually drew, for the engine clamp. Measured with a
   // `ResizeObserver` rather than read once, because a pane resize changes the

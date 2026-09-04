@@ -14,16 +14,15 @@ import { RailSection } from "./marketplaceUi";
  * Trying a theme on.
  *
  * A theme cannot be judged from a swatch strip — the question is what a full
- * screen of ADE looks like — so preview here is STICKY: pressing Preview paints
- * the whole app and leaves it painted while you go and look at Work, PRs, a
- * transcript. It ends two ways and only two ways: Escape puts the old palette
- * back, or Apply everywhere makes it the real one.
+ * screen of ADE looks like — so pressing Preview paints the entire current app
+ * chrome and Marketplace view, not a miniature sample card. It remains active
+ * until Escape, Revert, or leaving the detail page.
  *
  * That is a deliberate departure from the hover-preview in Appearance, which is
  * momentary and correct there — Appearance is a settings row you are already
  * looking at. Here the whole point is to leave the page.
  *
- * The floating pill is not decoration. A sticky preview with no persistent
+ * The floating pill is not decoration. A live preview with no persistent
  * marker is a mode you can forget you are in; the pill is what stops "why do my
  * colours look wrong" being a bug report.
  */
@@ -58,9 +57,8 @@ export function PluginThemePreview({
     setPreviewing(false);
   }, []);
 
-  // Escape ends the preview from anywhere in the app, which is the whole point
-  // of a sticky preview — you are not expected to be on this page when you
-  // decide against it. Capture phase so a focused input cannot swallow it.
+  // Escape ends the preview anywhere in the current ADE view. Capture phase so
+  // a focused input cannot swallow it.
   React.useEffect(() => {
     if (!previewing) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -120,7 +118,7 @@ export function PluginThemePreview({
           data-tour="plugin:marketplace.theme-preview"
           style={outlineButton({ height: 27, fontSize: 11.5 })}
         >
-          {previewing ? "Stop preview" : "Preview"}
+          {previewing ? "Stop preview" : "Preview theme"}
         </button>
         {installed && !isApplied ? (
           <button
@@ -129,7 +127,7 @@ export function PluginThemePreview({
             data-tour="plugin:marketplace.theme-apply"
             style={primaryButton({ height: 27, fontSize: 11.5 })}
           >
-            Apply everywhere
+            Use theme
           </button>
         ) : null}
         {isApplied ? (
@@ -138,7 +136,7 @@ export function PluginThemePreview({
             onClick={() => setPluginThemeId(null)}
             style={outlineButton({ height: 27, fontSize: 11.5 })}
           >
-            Use ADE’s own colours
+            Stop using
           </button>
         ) : null}
       </div>
@@ -163,8 +161,7 @@ export function PluginThemePreview({
 
 /**
  * The persistent marker for a running preview. Fixed to the viewport rather
- * than the rail so it survives scrolling away and navigating to another tab —
- * the two things a sticky preview is for.
+ * than the rail so it survives scrolling around the detail page.
  */
 function PreviewPill({
   displayName,
@@ -202,7 +199,7 @@ function PreviewPill({
       </span>
       {canApply ? (
         <button type="button" onClick={onApply} style={primaryButton({ height: 24, padding: "0 10px", fontSize: 11 })}>
-          Apply everywhere
+          Use theme
         </button>
       ) : null}
       <button

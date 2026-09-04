@@ -115,11 +115,17 @@ function emptyGroups() {
  * one set of display rules.
  */
 function decorate(entry, now) {
+  const live = isFleetEntryActive(entry);
   return {
     ...entry,
-    age: formatAge(entry.agent.lastModified ?? entry.agent.createdAt, now),
+    age: formatAge(
+      live
+        ? (entry.agent.lastModified ?? entry.agent.createdAt)
+        : (entry.agent.createdAt ?? entry.agent.lastModified),
+      now,
+    ),
     status: fleetDisplayStatus(entry),
-    active: isFleetEntryActive(entry),
+    active: live,
   };
 }
 

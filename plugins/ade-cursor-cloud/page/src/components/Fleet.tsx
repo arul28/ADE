@@ -11,10 +11,9 @@
  * What is kept, exactly:
  *
  * - the five bodies, with the compiled sentence for each
- * - the Filters overlay (status, lane, archived) and refresh
- * - the section order (Active runs, then lanes, then Unlinked) and the archived
- *   reveal
- * - the relay banner's two sentences and the rule that a ready relay draws none
+ * - search, status chips, and a Filters overlay (lane, archived, live-update URL)
+ * - a flat recency list (Cursor's own agents index), plus the archived reveal
+ * - an error banner when the relay is broken; no unconfigured nag
  * - the footer's `All agents on cursor.com` link, with no query parameters
  *
  * What moved out of the page entirely is the arithmetic. The compiled modal
@@ -26,12 +25,23 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ArrowsClockwise, CircleNotch, CloudArrowUp, Funnel, Warning, X } from "@phosphor-icons/react";
+import {
+  ArrowSquareOut,
+  ArrowsClockwise,
+  CircleNotch,
+  CloudArrowUp,
+  Copy,
+  Funnel,
+  MagnifyingGlass,
+  Warning,
+  X,
+} from "@phosphor-icons/react";
 import { cn } from "@ade-dev/ui";
 
 import type { CloudFleetEntry, CloudFleetPage, CloudUsage } from "../types";
 import {
   archiveAgent,
+  copyWebhookUrl,
   deleteAgent,
   getFleetPage,
   openInAde,
@@ -45,7 +55,7 @@ import { useCollectionChanges, useHostEntities, useVisible } from "../host/useHo
 import { loadFilters, loadSelectedAgentId, saveFilters, saveSelectedAgentId } from "../host/uiState";
 import { CURSOR_VIOLET } from "../lib/cursorCloud";
 import { AgentDetail } from "./AgentDetail";
-import { FleetRow, SectionHeader } from "./FleetRow";
+import { FleetRow } from "./FleetRow";
 
 type FleetFilter = "all" | "active" | "finished" | "failed";
 
@@ -56,6 +66,16 @@ type FleetFilters = {
 };
 
 const DEFAULT_FILTERS: FleetFilters = { status: "all", lane: "all", showArchived: false };
+
+const STATUS_CHIPS: { id: FleetFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "active", label: "Running" },
+  { id: "finished", label: "Done" },
+  { id: "failed", label: "Failed" },
+];
+
+/** How often the visible fleet re-reads Cursor when no webhook is wired. */
+const FLEET_POLL_MS = 15_000;
 
 /**
  * Cursor's own agents index, with NO query parameters.
@@ -113,17 +133,39 @@ function normalizeStoredFilters(parsed: Partial<FleetFilters>): FleetFilters {
  * visibility drift apart.
  */
 function filterMatches(entry: CloudFleetEntry, filter: FleetFilter): boolean {
-  const status = entry.runStatus ?? entry.agent.status;
   switch (filter) {
     case "active":
       return entry.active;
     case "finished":
-      return status === "finished";
+      return entry.status === "finished";
     case "failed":
-      return status === "error" || status === "expired";
-    default:
+      return entry.status === "error" || entry.status === "expired";
+    case "all":
       return true;
+    default: {
+      const exhaustive: never = filter;
+      void exhaustive;
+      return true;
+    }
   }
+}
+
+function searchMatches(entry: CloudFleetEntry, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [
+    entry.agent.name,
+    entry.agent.summary,
+    entry.branch,
+    entry.repoLabel,
+    entry.envName,
+    entry.ownership.laneName,
+    entry.ownership.linearIssueId,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(needle);
 }
 
 export function Fleet({
@@ -139,6 +181,8 @@ export function Fleet({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FleetFilters>(DEFAULT_FILTERS);
+  const [search, setSearch] = useState("");
+  const [webhookCopyMessage, setWebhookCopyMessage] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(initialAgentId ?? null);
   const [busyAgentId, setBusyAgentId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ agentId: string; message: string } | null>(null);
@@ -236,7 +280,7 @@ export function Fleet({
     void saveSelectedAgentId(projectRoot, agentId);
   }, [projectRoot]);
 
-  /* ── Freshness: the relay, the host, and the reader's hand. No timer. ─── */
+  /* ── Freshness: the relay, a poll while it is missing, and the reader's hand. ─── */
 
   const softRefresh = useCallback(() => load(true), [load]);
 
@@ -260,6 +304,27 @@ export function Fleet({
   useVisible(softRefresh);
   // The reader's own hand always wins: a pull-down is never skipped.
   useHostRefresh(softRefresh);
+
+  /**
+   * Cursor has no API to register a webhook. While the relay is not `ready`,
+   * poll the fleet so the list does not sit on a guilt banner. A ready relay
+   * still wakes us through `useCollectionChanges`.
+   */
+  useEffect(() => {
+    const state = page?.webhook?.state;
+    if (!state || state === "ready") return;
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      load(true);
+    };
+    const handle = window.setInterval(tick, FLEET_POLL_MS);
+    return () => window.clearInterval(handle);
+  }, [load, page?.webhook?.state]);
+
+  useEffect(() => {
+    if (showFiltersPanel) return;
+    setWebhookCopyMessage(null);
+  }, [showFiltersPanel]);
 
   /* ── Row actions ──────────────────────────────────────────────────────── */
 
@@ -392,39 +457,27 @@ export function Fleet({
   /* ── What actually draws ──────────────────────────────────────────────── */
 
   /**
-   * The child grouped; this only hides.
+   * The child still groups for the TUI/vocabulary panel. This page draws a
+   * flat recency list, like Cursor's own agents index, and only hides rows
+   * the filters and search asked to hide.
    *
-   * `page.groups` is `fleet.js:groupFleet`'s answer, already sorted by
-   * descending recency at both levels. Re-grouping here would be a second
-   * implementation of the section rules, and the two would disagree the first
-   * time either changed. So the filters are applied INSIDE each group and a
-   * group left with nothing is dropped — the order the child chose survives.
-   *
-   * The lane filter deliberately hides every unlinked row: an unlinked agent
-   * has no `ownership.laneId`, so it can never equal the chosen lane. That is
-   * the compiled behaviour and it is the right one — "show me lane X" is not a
-   * request to also see the agents that belong to no lane at all.
+   * The lane filter still hides every unlinked row: an unlinked agent has no
+   * `ownership.laneId`, so it can never equal the chosen lane. "Show me lane
+   * X" is not a request to also see agents that belong to no lane at all.
    */
   const keep = useCallback((entry: CloudFleetEntry): boolean => {
     if (!filters.showArchived && entry.agent.archived) return false;
     if (filters.lane !== "all" && entry.ownership.laneId !== filters.lane) return false;
+    if (!searchMatches(entry, search)) return false;
     return filterMatches(entry, filters.status);
-  }, [filters]);
+  }, [filters, search]);
 
-  const groups = useMemo(() => {
-    const source = page?.groups ?? { active: [], lanes: [], unlinked: [] };
-    return {
-      active: source.active.filter(keep),
-      lanes: source.lanes
-        .map((group) => ({ ...group, entries: group.entries.filter(keep) }))
-        .filter((group) => group.entries.length > 0),
-      unlinked: source.unlinked
-        .map((group) => ({ ...group, entries: group.entries.filter(keep) }))
-        .filter((group) => group.entries.length > 0),
-    };
+  const visibleEntries = useMemo(() => {
+    const rows = (page?.entries ?? []).filter(keep);
+    rows.sort((a, b) => (b.agent.createdAt ?? 0) - (a.agent.createdAt ?? 0));
+    return rows;
   }, [keep, page]);
 
-  const unlinkedCount = groups.unlinked.reduce((total, group) => total + group.entries.length, 0);
   const laneOptions = page?.laneOptions ?? [];
   const archivedCount = page?.archivedCount ?? 0;
   const state = error ? "error" : page?.state ?? "loading";
@@ -461,11 +514,7 @@ export function Fleet({
         </div>
       );
     }
-    return (
-      <div className="shrink-0 border-b border-white/[0.05] px-4 py-1.5 text-[11px] text-fg/45">
-        Live updates not configured yet — this list updates on refresh and when agents finish.
-      </div>
-    );
+    return null;
   })();
 
   return (
@@ -477,101 +526,137 @@ export function Fleet({
          * Filters live in an overlay so the header stays one row, the same
          * pattern Graph uses. Refresh stays on the bar.
          */}
-        <div className="flex shrink-0 items-center justify-end gap-1.5 border-b border-white/10 px-3.5 py-2">
-          <div className="relative" ref={filtersPanelRef}>
+        <div className="flex shrink-0 flex-col gap-2 border-b border-white/10 px-3.5 py-2">
+          <div className="flex items-center gap-1.5">
+            <label className="relative min-w-0 flex-1">
+              <MagnifyingGlass
+                size={12}
+                weight="bold"
+                className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg/35"
+              />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search agents"
+                aria-label="Search agents"
+                className="h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] pl-7 pr-2 text-[11px] text-fg/80 outline-none placeholder:text-fg/35 hover:border-white/[0.16] focus:border-violet-300/35"
+              />
+            </label>
+            <div className="relative" ref={filtersPanelRef}>
+              <button
+                type="button"
+                onClick={() => setShowFiltersPanel((current) => !current)}
+                aria-expanded={showFiltersPanel}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium",
+                  showFiltersPanel || activeFilterCount(filters) > 0
+                    ? "border-violet-300/30 bg-violet-500/[0.10] text-violet-100/90"
+                    : "border-white/[0.07] text-fg/60 hover:border-white/[0.16] hover:text-fg/85",
+                )}
+              >
+                <Funnel size={12} weight="bold" />
+                Filters
+                {activeFilterCount(filters) > 0 ? (
+                  <span className="rounded-full bg-violet-400/30 px-1.5 py-px text-[10px]">
+                    {activeFilterCount(filters)}
+                  </span>
+                ) : null}
+              </button>
+              {showFiltersPanel ? (
+                <div className="absolute right-0 top-8 z-40 w-[280px] rounded-lg border border-white/[0.10] bg-[#17151f] p-2.5 shadow-xl shadow-black/50">
+                  {laneOptions.length > 0 ? (
+                    <>
+                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
+                        Lane
+                      </div>
+                      <select
+                        value={filters.lane}
+                        onChange={(event) => updateFilters({ lane: event.target.value })}
+                        aria-label="Filter by lane"
+                        className="mb-2 h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16]"
+                      >
+                        <option value="all">All lanes</option>
+                        {laneOptions.map((lane) => (
+                          <option key={lane.id} value={lane.id}>{lane.name}</option>
+                        ))}
+                      </select>
+                    </>
+                  ) : null}
+                  <label className="mb-2 flex items-center gap-2 text-[11px] text-fg/70">
+                    <input
+                      type="checkbox"
+                      checked={filters.showArchived}
+                      onChange={(event) => updateFilters({ showArchived: event.target.checked })}
+                    />
+                    Show archived
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void copyWebhookUrl().then((result) => {
+                        setWebhookCopyMessage(result.ok ? "Copied live-update URL" : (result.message ?? "Could not copy"));
+                      });
+                    }}
+                    className="mb-2 inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-white/[0.10] px-2 text-[11px] text-fg/70 hover:border-white/[0.2] hover:text-fg/90"
+                  >
+                    <Copy size={11} weight="bold" />
+                    {webhookCopyMessage ?? "Copy live-update URL"}
+                  </button>
+                  <div className="flex justify-end gap-1.5 border-t border-white/[0.06] pt-2">
+                    <button
+                      type="button"
+                      onClick={() => updateFilters(DEFAULT_FILTERS)}
+                      className="h-7 rounded-md px-2 text-[11px] text-fg/50 hover:text-fg/80"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowFiltersPanel(false)}
+                      className="h-7 rounded-md border border-white/[0.10] px-2 text-[11px] text-fg/75 hover:border-white/[0.2]"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
-              onClick={() => setShowFiltersPanel((current) => !current)}
-              aria-expanded={showFiltersPanel}
+              onClick={() => load(true)}
+              disabled={loading || refreshing}
               className={cn(
-                "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium",
-                showFiltersPanel || activeFilterCount(filters) > 0
-                  ? "border-violet-300/30 bg-violet-500/[0.10] text-violet-100/90"
-                  : "border-white/[0.07] text-fg/60 hover:border-white/[0.16] hover:text-fg/85",
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] text-fg/50",
+                "transition-colors hover:border-white/[0.16] hover:text-fg/85 disabled:opacity-40",
               )}
+              title="Refresh"
+              aria-label="Refresh fleet"
             >
-              <Funnel size={12} weight="bold" />
-              Filters
-              {activeFilterCount(filters) > 0 ? (
-                <span className="rounded-full bg-violet-400/30 px-1.5 py-px text-[10px]">
-                  {activeFilterCount(filters)}
-                </span>
-              ) : null}
+              <ArrowsClockwise size={12} weight="bold" className={refreshing ? "animate-spin" : undefined} />
             </button>
-            {showFiltersPanel ? (
-              <div className="absolute right-0 top-8 z-40 w-[280px] rounded-lg border border-white/[0.10] bg-[#17151f] p-2.5 shadow-xl shadow-black/50">
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
-                  Status
-                </div>
-                <select
-                  value={filters.status}
-                  onChange={(event) => updateFilters({ status: event.target.value as FleetFilter })}
-                  aria-label="Filter by status"
-                  className="mb-2 h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16]"
-                >
-                  <option value="all">All</option>
-                  <option value="active">Active</option>
-                  <option value="finished">Finished</option>
-                  <option value="failed">Failed</option>
-                </select>
-                {laneOptions.length > 0 ? (
-                  <>
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
-                      Lane
-                    </div>
-                    <select
-                      value={filters.lane}
-                      onChange={(event) => updateFilters({ lane: event.target.value })}
-                      aria-label="Filter by lane"
-                      className="mb-2 h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16]"
-                    >
-                      <option value="all">All lanes</option>
-                      {laneOptions.map((lane) => (
-                        <option key={lane.id} value={lane.id}>{lane.name}</option>
-                      ))}
-                    </select>
-                  </>
-                ) : null}
-                <label className="mb-2 flex items-center gap-2 text-[11px] text-fg/70">
-                  <input
-                    type="checkbox"
-                    checked={filters.showArchived}
-                    onChange={(event) => updateFilters({ showArchived: event.target.checked })}
-                  />
-                  Show archived
-                </label>
-                <div className="flex justify-end gap-1.5 border-t border-white/[0.06] pt-2">
-                  <button
-                    type="button"
-                    onClick={() => updateFilters(DEFAULT_FILTERS)}
-                    className="h-7 rounded-md px-2 text-[11px] text-fg/50 hover:text-fg/80"
-                  >
-                    Reset
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowFiltersPanel(false)}
-                    className="h-7 rounded-md border border-white/[0.10] px-2 text-[11px] text-fg/75 hover:border-white/[0.2]"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            ) : null}
           </div>
-          <button
-            type="button"
-            onClick={() => load(true)}
-            disabled={loading || refreshing}
-            className={cn(
-              "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] text-fg/50",
-              "transition-colors hover:border-white/[0.16] hover:text-fg/85 disabled:opacity-40",
-            )}
-            title="Refresh"
-            aria-label="Refresh fleet"
-          >
-            <ArrowsClockwise size={12} weight="bold" className={refreshing ? "animate-spin" : undefined} />
-          </button>
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filter by status">
+            {STATUS_CHIPS.map((chip) => {
+              const pressed = filters.status === chip.id;
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  aria-pressed={pressed}
+                  onClick={() => updateFilters({ status: chip.id })}
+                  className={cn(
+                    "h-6 rounded-full border px-2.5 text-[11px] font-medium transition-colors",
+                    pressed
+                      ? "border-violet-300/35 bg-violet-500/[0.14] text-violet-100/95"
+                      : "border-white/[0.08] text-fg/55 hover:border-white/[0.16] hover:text-fg/80",
+                  )}
+                >
+                  {chip.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {relayBanner}
@@ -629,46 +714,16 @@ export function Fleet({
               </div>
             </div>
           ) : (
-            <div className="space-y-4 px-4 py-3.5">
-              {groups.active.length > 0 ? (
-                <section>
-                  <SectionHeader label={`Active runs (${groups.active.length})`} accent />
-                  <div className="mt-1.5 space-y-1.5">
-                    {groups.active.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
-                  </div>
-                </section>
-              ) : null}
-
-              {groups.lanes.map((group) => (
-                <section key={group.laneId}>
-                  <SectionHeader label={group.laneName} count={group.entries.length} />
-                  <div className="mt-1.5 space-y-1.5">
-                    {group.entries.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
-                  </div>
-                </section>
-              ))}
-
-              {groups.unlinked.length > 0 ? (
-                <section>
-                  <SectionHeader
-                    label="Unlinked"
-                    hint="not started from a linked ADE chat"
-                    count={unlinkedCount}
-                  />
-                  <div className="mt-1.5 space-y-3">
-                    {groups.unlinked.map((group) => (
-                      <div key={group.key}>
-                        <div className="px-1 pb-1 font-mono text-[10px] uppercase tracking-[0.6px] text-fg/35">
-                          {group.label}
-                        </div>
-                        <div className="space-y-1.5">
-                          {group.entries.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ) : null}
+            <div className="space-y-1.5 px-4 py-3">
+              {visibleEntries.length === 0 ? (
+                <div className="px-2 py-10 text-center text-[12px] text-fg/45">
+                  No agents match these filters.
+                </div>
+              ) : (
+                visibleEntries.map((entry) => (
+                  <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />
+                ))
+              )}
 
               {archivedCount > 0 && !filters.showArchived ? (
                 <div className="pt-1 text-center">

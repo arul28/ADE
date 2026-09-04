@@ -52,8 +52,10 @@ export type FakeBridge = {
     picker: "model" | "provider" | "lane" | "permissionMode" | "reasoningEffort",
     answer: { id: string; label: string; provider?: string | null } | null,
   ) => void;
-  /** The connection the scripted child reports. Sign-in flips it. */
+  /** Replace the connection the scripted child reports. Sign-in flips it. */
   connection: LinearConnectionStatus;
+  /** Flip the scripted connection without going through `pageConnectOAuth`. */
+  setConnected: (connected: boolean) => void;
   /** Push a `changed`, `theme`, `host` or `refresh` event at the page. */
   emit: (event: "changed" | "theme" | "host" | "refresh", payload: unknown) => void;
   /** Every collection write, as `collection/key`. */
@@ -533,6 +535,9 @@ export function installFakeBridge(options: {
     },
     get connection() {
       return state.connection;
+    },
+    setConnected: (connected) => {
+      state.connection = connected ? { ...CONNECTED } : { ...DISCONNECTED };
     },
     emit: (event, payload) => {
       for (const listener of listeners[event] ?? []) {

@@ -91,7 +91,7 @@ import {
 import { cn } from "../ui/cn";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
-import { writeStoredProjectRoute } from "./projectRouteStorage";
+import { writeStoredProjectRoute, settingsNavTarget } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
@@ -765,7 +765,13 @@ export function CommandPalette({
         title: "Go to Settings",
         shortcut: "G S",
         group: "Navigation",
-        run: () => navigate("/settings"),
+        run: () => {
+          const root = projectBinding?.kind === "remote"
+            ? projectBinding.rootPath
+            : (project?.rootPath ?? null);
+          const key = projectBinding?.key ?? (root ? `local:${root}` : null);
+          navigate(settingsNavTarget(key, root));
+        },
       },
       // Plugins the same way settings tabs are: generated from the registry, so
       // the palette can never offer a tab the rail does not have — or miss one
@@ -956,6 +962,7 @@ export function CommandPalette({
     pluginCommands,
     pluginSearchRows,
     project?.rootPath,
+    projectBinding,
     selectLane,
     selectedLaneId,
     startProjectBrowse,

@@ -1948,10 +1948,12 @@ alone as well.
   taller ADE surface rather than filling a frame the host already sized, and it
   is the only placement `dialog.submit` is honoured from.
 
-**Every placement destroys its guest when it is hidden.** Not "keeps it alive
-and stops painting": one live guest per placement, and state lives in the
-plugin's collections rather than in the guest, whose partition is
-non-persistent anyway.
+**Tabs, Work-rail panes, and settings sections keep their guest while hidden.**
+Anchored placements (popover, picker, overlay, dialog) still destroy the guest
+when hidden — those are not a surface the reader returns to. Not "keeps it
+alive and stops painting" for those anchored hosts: one live guest per
+placement, and state lives in the plugin's collections rather than in the
+guest, whose partition is non-persistent anyway.
 
 A page in an anchored placement may ask for a size. `popover: { width, height }`
 on the manifest surface is a HINT, not a size the plugin sets — the host clamps
@@ -2757,7 +2759,19 @@ Theme plugins omit `entry` entirely and run no code. The engine injects a single
 rather than calling `setProperty` inline, which would shadow the cascade.
 Only design-token namespaces are settable: `--color-*`, `--shell-*`, `--chat-*`,
 `--work-*`, `--pane-*`, `--pr-*`, `--gradient-*`. Preview applies without
-persisting and Esc reverts; Apply persists the chosen theme in root prefs.
+persisting and Esc reverts. The theme engine derives coordinated chat glass,
+code, PR cards, project tabs, controls, work panes, gradients, and focus states
+from each palette's foundation; an explicitly supplied token still wins. The
+Marketplace uses theme-specific lifecycle language: **Preview theme** paints the
+current ADE window before installation, **Use theme** persists it in root prefs,
+and **Stop using** returns to ADE's own colours without uninstalling the theme.
+Uninstall remains a separate action and clears the selection when it removes the
+active theme.
+
+ADE bundles ten official themes: Paper, Ink, High contrast, Grove, Ocean, Ember,
+Iris, Sakura, Synthwave, and Phosphor. Each ships coordinated light and dark
+palettes and can be evaluated against the full current workspace from its
+Marketplace page.
 
 ### Discovery
 
@@ -2888,7 +2902,7 @@ therefore still draws vocabulary panels, and the table describes that.
 | plugin | polarity | own code | state |
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
-| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. The rail tab carries an unread-finished badge (`row-badge` on `app`, cleared by `viewAction`). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). The fleet page is a flat recency list: Cursor `IDLE` is finished, idle age uses `createdAt`, empty origin does not zero the list, and the visible tab polls when no webhook is wired. `{openSettings}` opens the Cursor provider page or the host Secrets tab. The rail tab carries an unread-finished badge (`row-badge` on `app`, cleared by `viewAction`). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop, web, and iOS draw the plugin's Graph page (React Flow inside the guest). Phone and TUI keep the vocabulary panels (`graph` list, `lane` detail); wave 2 does not ship a phone Graph page. The host workspace engine stays in core until the compiled tab is deleted after the walk. |
 | `ade-review` | `supersedes` | real plugin | A real plugin. Desktop draws the Review page (runs, launch, findings, learnings, PR toolbar). Phone and TUI keep the vocabulary panels; compiled Review was desktop-only. The engine stays in core. |
 | `ade-history` | `supersedes` | real plugin | A real plugin. Desktop draws the History page (commit DAG and activity timeline inside the guest). Phone and TUI keep the vocabulary panels; wave 2 does not ship a phone History page. The git and operation engines stay in core. |

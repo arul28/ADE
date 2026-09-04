@@ -261,9 +261,20 @@ function fakeHost(options = {}) {
       attachBranch: async () => {},
       setArtifacts: async () => {},
     },
+    lanes: {
+      list: async () => options.lanes ?? [{
+        id: "lane-1",
+        name: "sync-fix",
+        branchRef: "ade/sync-fix",
+        laneType: "primary",
+      }],
+    },
     actions: {
       invoke: async (domain, action, args) => {
         record(`${domain}.${action}`, args);
+        if (domain === "pr" && action === "list") {
+          return options.prs ?? [];
+        }
         if (domain === "lane" && action === "list") {
           return options.lanes ?? [{ id: "lane-1", name: "sync-fix", branchRef: "ade/sync-fix" }];
         }

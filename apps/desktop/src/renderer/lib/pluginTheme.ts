@@ -90,6 +90,118 @@ export type SanitizedPluginTheme = {
 };
 
 /**
+ * Theme roles ADE can safely derive from the small set of foundational colours
+ * every useful palette already supplies. Explicit plugin values win over these
+ * defaults, so a theme can still art-direct any individual surface.
+ *
+ * This is what makes a theme feel like a whole product skin instead of an
+ * accent swap: chat glass, code, PR cards, project tabs, controls, work panes,
+ * gradients and status treatments all follow the palette automatically.
+ */
+const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
+  "--color-bg-panel": "var(--color-surface)",
+  "--color-fg-muted": "var(--color-muted-fg)",
+  "--color-accent-strong": "var(--color-accent-deep)",
+  "--color-accent-muted": "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+  "--color-accent-glow-strong": "color-mix(in srgb, var(--color-accent) 24%, transparent)",
+  "--color-glow": "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+  "--gradient-accent": "linear-gradient(135deg, var(--color-accent-deep), var(--color-accent-bright))",
+  "--gradient-accent-soft": "linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 22%, transparent), color-mix(in srgb, var(--color-accent-bright) 10%, transparent))",
+  "--gradient-surface": "linear-gradient(180deg, var(--color-surface-raised), var(--color-bg))",
+  "--gradient-panel": "linear-gradient(180deg, var(--color-card), var(--color-surface))",
+  "--gradient-popup-border": "linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 24%, var(--color-border)), var(--color-border))",
+  "--pane-bg": "color-mix(in srgb, var(--color-card) 94%, transparent)",
+  "--pane-border": "color-mix(in srgb, var(--color-border) 78%, transparent)",
+  "--pr-surface": "var(--color-bg)",
+  "--pr-thread-card": "var(--color-card)",
+  "--pr-panel-card": "color-mix(in srgb, var(--color-accent) 7%, var(--color-card))",
+  "--chat-fg": "var(--color-fg)",
+  "--chat-accent": "var(--color-accent)",
+  "--chat-accent-soft": "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+  "--chat-accent-faint": "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+  "--chat-accent-glow": "color-mix(in srgb, var(--color-accent) 24%, transparent)",
+  "--chat-surface-bg": "var(--color-surface)",
+  "--chat-surface-raised": "var(--color-surface-raised)",
+  "--chat-card-bg": "color-mix(in srgb, var(--color-card) 88%, transparent)",
+  "--chat-card-bg-strong": "color-mix(in srgb, var(--color-card) 96%, transparent)",
+  "--chat-card-border": "color-mix(in srgb, var(--color-border) 76%, transparent)",
+  "--chat-panel-bg": "color-mix(in srgb, var(--color-card) 84%, transparent)",
+  "--chat-panel-bg-strong": "color-mix(in srgb, var(--color-card) 94%, transparent)",
+  "--chat-panel-border": "color-mix(in srgb, var(--color-border) 80%, transparent)",
+  "--chat-composer-bg": "color-mix(in srgb, var(--color-composer-bg) 92%, transparent)",
+  "--chat-glass-bg": "color-mix(in srgb, var(--color-glass-card) 78%, transparent)",
+  "--chat-glass-border": "color-mix(in srgb, var(--color-border) 72%, transparent)",
+  "--chat-glass-highlight": "color-mix(in srgb, var(--color-fg) 10%, transparent)",
+  "--chat-glass-lowlight": "color-mix(in srgb, var(--color-bg) 34%, transparent)",
+  "--chat-glass-sheen": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--chat-block-bg": "color-mix(in srgb, var(--color-surface-recessed) 76%, transparent)",
+  "--chat-block-border": "color-mix(in srgb, var(--color-border) 72%, transparent)",
+  "--chat-inline-code-bg": "color-mix(in srgb, var(--color-surface-recessed) 82%, transparent)",
+  "--chat-code-bg": "var(--color-surface-recessed)",
+  "--chat-code-fg": "var(--color-fg)",
+  "--chat-code-border": "var(--color-border)",
+  "--chat-table-border": "color-mix(in srgb, var(--color-border) 82%, transparent)",
+  "--chat-notice-bg": "color-mix(in srgb, var(--color-accent) 8%, var(--color-card))",
+  "--chat-notice-border": "color-mix(in srgb, var(--color-accent) 28%, var(--color-border))",
+  "--chat-user-bubble-gradient": "linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 18%, var(--color-card)), color-mix(in srgb, var(--color-accent-deep) 10%, var(--color-card)))",
+  "--chat-user-border-accent-mix": "color-mix(in srgb, var(--color-accent) 34%, var(--color-border))",
+  "--chat-user-shadow-accent-mix": "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+  "--chat-streaming-shimmer": "linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent)",
+  "--shell-border": "var(--color-border)",
+  "--shell-project-tab-bg": "transparent",
+  "--shell-project-tab-fg": "var(--color-muted-fg)",
+  "--shell-project-tab-hover-bg": "color-mix(in srgb, var(--color-accent) 9%, transparent)",
+  "--shell-project-tab-hover-fg": "var(--color-fg)",
+  "--shell-project-tab-hover-border": "color-mix(in srgb, var(--color-accent) 26%, var(--color-border))",
+  "--shell-project-tab-active-bg": "color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-raised))",
+  "--shell-project-tab-active-fg": "color-mix(in srgb, var(--color-accent) 28%, var(--color-fg))",
+  "--shell-project-tab-active-border": "color-mix(in srgb, var(--color-accent) 46%, transparent)",
+  "--shell-project-tab-open-bg": "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+  "--shell-project-tab-open-fg": "var(--color-fg)",
+  "--shell-project-tab-open-border": "color-mix(in srgb, var(--color-accent) 40%, var(--color-border))",
+  "--shell-project-tab-focus-bg": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--shell-project-tab-focus-fg": "var(--color-fg)",
+  "--shell-project-tab-focus-border": "color-mix(in srgb, var(--color-accent) 34%, var(--color-border))",
+  "--shell-project-tab-focus-ring": "color-mix(in srgb, var(--color-accent) 24%, transparent)",
+  "--shell-sidebar-item-fg": "var(--color-muted-fg)",
+  "--shell-sidebar-item-hover-fg": "var(--color-fg)",
+  "--shell-sidebar-item-hover-bg": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--shell-sidebar-item-active-fg": "var(--color-accent-bright)",
+  "--shell-sidebar-item-active-bg": "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+  "--shell-sidebar-item-active-rail": "var(--color-accent)",
+  "--shell-sidebar-separator": "color-mix(in srgb, var(--color-border) 72%, transparent)",
+  "--shell-control-bg": "var(--color-surface-recessed)",
+  "--shell-control-fg": "var(--color-muted-fg)",
+  "--shell-control-border": "var(--color-border)",
+  "--shell-control-hover-bg": "color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-recessed))",
+  "--shell-control-hover-fg": "var(--color-fg)",
+  "--shell-control-hover-border": "color-mix(in srgb, var(--color-accent) 30%, var(--color-border))",
+  "--shell-control-open-bg": "color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-recessed))",
+  "--shell-control-open-fg": "var(--color-fg)",
+  "--shell-control-open-border": "color-mix(in srgb, var(--color-accent) 44%, var(--color-border))",
+  "--shell-control-focus-bg": "var(--shell-control-hover-bg)",
+  "--shell-control-focus-fg": "var(--shell-control-hover-fg)",
+  "--shell-control-focus-border": "color-mix(in srgb, var(--color-accent) 38%, var(--color-border))",
+  "--shell-control-focus-ring": "color-mix(in srgb, var(--color-accent) 26%, transparent)",
+  "--work-chrome-surface": "var(--color-surface)",
+  "--work-pane-border": "color-mix(in srgb, var(--color-border) 74%, transparent)",
+  "--work-pane-header-bg": "color-mix(in srgb, var(--color-card) 88%, transparent)",
+  "--work-popover-item-hover": "color-mix(in srgb, var(--color-accent) 9%, transparent)",
+  "--work-popover-item-active": "color-mix(in srgb, var(--color-accent) 15%, var(--color-card))",
+  "--work-rail-plugin": "var(--color-muted-fg)",
+});
+
+export function expandPluginThemeTokens(tokens: PluginThemeTokens): PluginThemeTokens {
+  const expanded: PluginThemeTokens = {};
+  for (const base of ["dark", "light"] as const) {
+    const source = tokens[base];
+    if (!source) continue;
+    expanded[base] = { ...DERIVED_THEME_TOKENS, ...source };
+  }
+  return expanded;
+}
+
+/**
  * The name half of the allowlist lives in the manifest parser so a theme is
  * judged identically at parse time and at paint time. Both halves matter: the
  * name is interpolated on the left of the colon, so a name that is merely
@@ -164,8 +276,9 @@ export function sanitizePluginThemeTokens(tokens: PluginThemeTokens | null | und
  */
 export function buildPluginThemeCss(tokens: PluginThemeTokens): string {
   const blocks: string[] = [];
+  const expanded = expandPluginThemeTokens(tokens);
   for (const base of ["dark", "light"] as const) {
-    const entries = Object.entries(tokens[base] ?? {});
+    const entries = Object.entries(expanded[base] ?? {});
     if (entries.length === 0) continue;
     const declarations = entries.map(([name, value]) => `  ${name}: ${value};`).join("\n");
     blocks.push(`[data-theme="${base}"][data-theme] {\n${declarations}\n}`);

@@ -12,9 +12,11 @@ components the app shipped, with four things changed and nothing else.
    client, no API key and no secret VALUE; the child process holds all three.
 2. **No arithmetic.** The compiled modal grouped its rows, sorted them by
    recency, summed cost cents and formatted an age against `Date.now()`. The
-   child does all four. `groups`, `age`, `cost` and `footer` arrive finished, so
-   a phone and a Mac reading the same fleet print the same words — and a page in
-   another time zone cannot claim a run finished in the future.
+   child still does the assembly, the grouping (for the TUI panel), cost, and
+   age. The HTML page draws a flat recency list from `entries`. `age`, `cost`
+   and `footer` arrive finished, so a phone and a Mac reading the same fleet
+   print the same words — and a page in another time zone cannot claim a run
+   finished in the future.
 3. **Persistence.** The status filter, the lane filter, the archived reveal and
    the selected row live in the plugin's `ui-state` collection. A guest's
    storage partition is non-persistent — it dies when the placement hides — so

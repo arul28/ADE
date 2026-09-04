@@ -33,17 +33,17 @@ connection, not from this machine, so a repository Cursor has never seen cannot
 be worked on. The launch form checks first and tells you which of the two is
 missing.
 
-**Paste the webhook URL into Cursor** for live status. `ade plugin doctor
-ade-cursor-cloud` prints the URL for the `cursor` channel. Without it everything
-still works — the fleet updates on refresh, and an open chat polls while you are
-looking at it — but a run that finishes while nothing is on screen is only
-noticed the next time you look.
+**Paste the webhook URL into Cursor** for push updates. `ade plugin doctor
+ade-cursor-cloud` prints the URL for the `cursor` channel. Without it the fleet
+still refreshes every few seconds while the tab is visible, and an open chat
+polls while you are looking at it. A webhook is what wakes a chat nobody is
+watching.
 
 ## What it puts where
 
 | Where | What |
 |---|---|
-| Rail tab **Cursor Cloud** | The fleet: active runs, agents by lane, everything unlinked. An unread pill appears when a run finishes while you are not looking. |
+| Rail tab **Cursor Cloud** | The fleet: a flat recency list with search and status chips. An unread pill appears when a run finishes while you are not looking. |
 | Work rail pane | The same fleet, beside a chat. |
 | Chat composer | **Cursor Cloud** in the machine picker. Enter launches; Advanced opens the launch page. |
 | Chat header | **Cursor Cloud** opens the agent on cursor.com, with "Open the Cursor Cloud fleet", "Pull this run into the lane" and "Stop this cloud run" behind it. |

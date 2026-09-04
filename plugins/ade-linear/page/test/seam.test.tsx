@@ -845,4 +845,69 @@ describe("the contract itself", () => {
       expect(host.callsTo("invoke:pageSearchIssues").length).toBeGreaterThan(before);
     });
   });
+
+  it("leaves Waiting once Linear finishes while ADE was in the background", async () => {
+    host.setAction("pageConnectOAuth", () => ({ ok: true, authSession: { id: "linear" } }));
+    render(
+      <SettingsEntry context={tabContext({ surfaceId: "settings", placement: "settings-section" })} />,
+    );
+    const connect = await screen.findByRole("button", { name: "Sign in with Linear" }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(connect);
+    });
+    expect(await screen.findByRole("button", { name: "Waiting for Linear..." }, { timeout: 3_000 })).toBeTruthy();
+
+    host.setConnected(true);
+    await act(async () => {
+      host.emit("changed", { kind: "viewer" });
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Signed in as Ada/)).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Waiting for Linear..." })).toBeNull();
+  });
+
+  it("leaves Waiting when the window comes forward after Linear finishes", async () => {
+    host.setAction("pageConnectOAuth", () => ({ ok: true, authSession: { id: "linear" } }));
+    render(
+      <SettingsEntry context={tabContext({ surfaceId: "settings", placement: "settings-section" })} />,
+    );
+    const connect = await screen.findByRole("button", { name: "Sign in with Linear" }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(connect);
+    });
+    expect(await screen.findByRole("button", { name: "Waiting for Linear..." }, { timeout: 3_000 })).toBeTruthy();
+
+    host.setConnected(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Signed in as Ada/)).toBeTruthy();
+    });
+  });
+
+  it("leaves Sign in on a keep-alive tab when the connection lands", async () => {
+    render(<BrowserEntry context={tabContext()} />);
+    expect(await screen.findByRole("button", { name: "Sign in" }, { timeout: 3_000 })).toBeTruthy();
+
+    host.setConnected(true);
+    await act(async () => {
+      host.emit("changed", { kind: "viewer" });
+    });
+    await issueRow("ADE-1");
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
+
+  it("leaves Sign in when the window comes forward after the connection lands", async () => {
+    render(<BrowserEntry context={tabContext()} />);
+    expect(await screen.findByRole("button", { name: "Sign in" }, { timeout: 3_000 })).toBeTruthy();
+
+    host.setConnected(true);
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await issueRow("ADE-1");
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
 });

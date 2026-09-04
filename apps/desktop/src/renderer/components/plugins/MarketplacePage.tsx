@@ -95,6 +95,8 @@ function MarketplaceGallery() {
   const location = useLocation();
   const catalogue = useMarketplaceCatalogue();
   const installed = useRootAppStore((state) => state.installedPlugins);
+  const pluginThemeId = useRootAppStore((state) => state.pluginThemeId);
+  const setPluginThemeId = useRootAppStore((state) => state.setPluginThemeId);
   const presence = usePluginPresence(true);
   const machineName = useMarketplaceMachineName();
 
@@ -295,6 +297,14 @@ function MarketplaceGallery() {
                         listing.pluginId,
                         () => setPluginEnabled(listing.pluginId, !(installedPlugin?.enabled ?? false)),
                       )}
+                      themeActive={listing.isTheme && pluginThemeId === listing.pluginId}
+                      onUseTheme={() => void runRowAction(listing.pluginId, async () => {
+                        if (installedPlugin && !installedPlugin.enabled) {
+                          await setPluginEnabled(listing.pluginId, true);
+                        }
+                        setPluginThemeId(listing.pluginId);
+                      })}
+                      onStopUsingTheme={() => setPluginThemeId(null)}
                       onRestart={() => void runRowAction(
                         listing.pluginId,
                         () => restartPlugin(listing.pluginId),
@@ -339,7 +349,10 @@ function MarketplaceGallery() {
               onClick={() => {
                 const target = confirmRemove;
                 setConfirmRemove(null);
-                if (target) void runRowAction(target.pluginId, () => uninstallPlugin(target.pluginId));
+                if (target) void runRowAction(target.pluginId, async () => {
+                  await uninstallPlugin(target.pluginId);
+                  if (pluginThemeId === target.pluginId) setPluginThemeId(null);
+                });
               }}
               style={dangerButton({ height: 30, fontSize: 12 })}
             >
@@ -778,6 +791,9 @@ function ListingRow({
   onOpen,
   onInstall,
   onToggleEnabled,
+  themeActive,
+  onUseTheme,
+  onStopUsingTheme,
   onRestart,
   onRemove,
 }: {
@@ -792,6 +808,9 @@ function ListingRow({
   onOpen: () => void;
   onInstall: () => void;
   onToggleEnabled: () => void;
+  themeActive: boolean;
+  onUseTheme: () => void;
+  onStopUsingTheme: () => void;
   onRestart: () => void;
   onRemove: () => void;
 }) {
@@ -940,12 +959,16 @@ function ListingRow({
               busy={busy}
               installed={installedPlugin !== null}
               enabled={installedPlugin?.enabled ?? false}
+              isTheme={listing.isTheme}
+              themeActive={themeActive}
               /* A plugin with no child process has nothing to restart, and
                  `status: "none"` is that fact without a manifest round trip. */
               showRestart={installedPlugin != null && (installedPlugin.status ?? "none") !== "none"}
               showInstall={state.kind === "available" || state.kind === "update"}
               onInstall={onInstall}
               onToggleEnabled={onToggleEnabled}
+              onUseTheme={onUseTheme}
+              onStopUsingTheme={onStopUsingTheme}
               onRestart={onRestart}
               onRemove={onRemove}
             />
@@ -977,10 +1000,14 @@ function RowQuickActions({
   busy,
   installed,
   enabled,
+  isTheme,
+  themeActive,
   showRestart,
   showInstall,
   onInstall,
   onToggleEnabled,
+  onUseTheme,
+  onStopUsingTheme,
   onRestart,
   onRemove,
 }: {
@@ -990,10 +1017,14 @@ function RowQuickActions({
   busy: boolean;
   installed: boolean;
   enabled: boolean;
+  isTheme: boolean;
+  themeActive: boolean;
   showRestart: boolean;
   showInstall: boolean;
   onInstall: () => void;
   onToggleEnabled: () => void;
+  onUseTheme: () => void;
+  onStopUsingTheme: () => void;
   onRestart: () => void;
   onRemove: () => void;
 }) {
@@ -1051,7 +1082,14 @@ function RowQuickActions({
                 onClick={onInstall}
               />
             ) : null}
-            {installed ? (
+            {installed && isTheme ? (
+              <RowMenuItem
+                icon={<Power size={13} weight="bold" />}
+                label={themeActive ? "Stop using" : "Use theme"}
+                tour={`plugin:marketplace.row-theme-${pluginId}`}
+                onClick={themeActive ? onStopUsingTheme : onUseTheme}
+              />
+            ) : installed ? (
               <RowMenuItem
                 icon={<Power size={13} weight="bold" />}
                 label={enabled ? "Turn off" : "Turn on"}

@@ -177,12 +177,15 @@ reference links, one line pointing at Automations:
   `statusAction` answers them. What is left here is one line saying where they
   went and whether anything is registered yet.
 
-Changed on purpose: **OAuth does not poll.** The compiled section started a
-session and polled `getLinearOAuthSession` every 1.5 s. The plugin's sign-in is
-host-driven — the action answers `{authSession}`, the host opens it, and the
-child settles it on its own `auth.completed` — so the page awaits one call and
-then refetches. The compiled five-minute give-up and its sentence are kept as a
-timeout rather than a poll.
+Changed on purpose: **OAuth still waits, without a session id.** The compiled
+section started a session and polled `getLinearOAuthSession` every 1.5 s. The
+plugin's sign-in is host-driven — the action answers `{authSession}` as soon
+as the browser opens, not when Linear comes back, and the child settles it
+on its own `auth.completed`. The page therefore polls `pageConnection` on
+that same interval while the button says "Waiting for Linear…", refetches
+on window focus / visibility and on `changed`, and coalesces those reads so
+a catalog write storm cannot drop the connected answer. The compiled
+five-minute give-up and its sentence stay.
 
 ## The gaps
 

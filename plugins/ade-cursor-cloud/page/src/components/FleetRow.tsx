@@ -19,6 +19,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ArrowSquareOut,
   CaretDown,
+  GitBranch,
   GitPullRequest,
   Stop,
   Trash,
@@ -26,7 +27,7 @@ import {
 import { cn } from "@ade-dev/ui";
 
 import type { CloudFleetEntry, CloudUsage } from "../types";
-import { CURSOR_CREATING_SKY, CURSOR_VIOLET, cursorCloudStatusToneClass } from "../lib/cursorCloud";
+import { cursorCloudStatusToneClass } from "../lib/cursorCloud";
 import { openLink } from "../host/ui";
 
 export function StatusPill({ status }: { status: string }): React.ReactElement {
@@ -82,6 +83,37 @@ function OwnershipChip({ entry }: { entry: CloudFleetEntry }): React.ReactElemen
           {ownership.linearIssueId ? `· ${ownership.laneName}` : ownership.laneName}
         </span>
       ) : null}
+    </span>
+  );
+}
+
+function GitMark({ entry }: { entry: CloudFleetEntry }): React.ReactElement {
+  const closed = entry.prState === "closed" || entry.status === "error" || entry.status === "expired";
+  const merged = entry.prState === "merged";
+  const live = entry.status === "running" || entry.status === "creating";
+  const color = closed
+    ? "text-red-400/85"
+    : merged
+      ? "text-violet-300/90"
+      : live
+        ? "text-sky-300/85"
+        : "text-sky-400/75";
+  return (
+    <span className={cn("mt-0.5 shrink-0", color)} title={entry.prUrl ? "Pull request" : "Branch"}>
+      {closed || entry.prUrl ? <GitPullRequest size={15} weight="bold" /> : <GitBranch size={15} weight="bold" />}
+    </span>
+  );
+}
+
+function DiffStats({ entry }: { entry: CloudFleetEntry }): React.ReactElement | null {
+  if (entry.additions == null && entry.deletions == null && entry.filesChanged == null) return null;
+  return (
+    <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+      {entry.filesChanged != null ? (
+        <span className="mr-1.5 text-fg/40">{entry.filesChanged} files</span>
+      ) : null}
+      {entry.additions != null ? <span className="text-emerald-400/80">+{entry.additions}</span> : null}
+      {entry.deletions != null ? <span className="ml-1 text-red-400/75">-{entry.deletions}</span> : null}
     </span>
   );
 }
@@ -156,41 +188,30 @@ export function FleetRow({
         aria-expanded={expanded}
         className="flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left"
       >
-        <span className="relative mt-1.5 flex h-2 w-2 shrink-0">
-          {active ? (
-            <>
-              <span
-                className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-50"
-                style={{ background: status === "creating" ? CURSOR_CREATING_SKY : CURSOR_VIOLET }}
-              />
-              <span
-                className="relative inline-flex h-2 w-2 rounded-full"
-                style={{ background: status === "creating" ? CURSOR_CREATING_SKY : CURSOR_VIOLET }}
-              />
-            </>
-          ) : (
-            <span
-              className={cn("inline-flex h-2 w-2 rounded-full", {
-                "bg-emerald-400/70": status === "finished",
-                "bg-red-400/70": status === "error" || status === "expired",
-                "bg-white/25": status === "cancelled" || status === "archived",
-              })}
-            />
-          )}
-        </span>
-        <span className="min-w-0 flex-1 space-y-1">
+        <GitMark entry={entry} />
+        <span className="min-w-0 flex-1 space-y-0.5">
           <span className="flex items-center gap-2">
-            <span className="min-w-0 truncate font-sans text-[12.5px] font-semibold tracking-tight text-fg/88">
+            <span className="min-w-0 truncate font-sans text-[13px] font-medium tracking-tight text-fg/90">
               {agent.name || agent.agentId.slice(0, 12)}
             </span>
-            <StatusPill status={status} />
-            {age ? <span className="shrink-0 font-mono text-[10px] text-fg/35">{age}</span> : null}
-            {cost ? (
-              <span className="shrink-0 font-mono text-[10px] font-medium text-emerald-200/70">{cost}</span>
-            ) : null}
+            {active || status === "error" || status === "expired" ? <StatusPill status={status} /> : null}
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              <DiffStats entry={entry} />
+              {age ? <span className="font-mono text-[10.5px] text-fg/38">{age}</span> : null}
+              {cost ? (
+                <span className="font-mono text-[10px] font-medium text-emerald-200/70">{cost}</span>
+              ) : null}
+            </span>
           </span>
-          <span className="flex items-center gap-2 font-mono text-[10.5px] text-fg/42">
+          <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-fg/42">
+            {entry.repoLabel ? <span className="shrink-0">{entry.repoLabel}</span> : null}
+            {entry.repoLabel && branchOrRepo ? <span className="text-fg/25">/</span> : null}
             {branchOrRepo ? <span className="min-w-0 truncate">{branchOrRepo}</span> : null}
+            {entry.envName ? (
+              <span className="shrink-0 rounded border border-white/[0.08] px-1 py-px text-[9.5px] text-fg/45">
+                {entry.envName}
+              </span>
+            ) : null}
             {entry.modelId ? <span className="shrink-0 text-fg/35">{entry.modelId}</span> : null}
             <OwnershipChip entry={entry} />
             {entry.prUrl ? (

@@ -14,6 +14,7 @@ import {
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   PLUGIN_WEBVIEW_METHODS,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
+  PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT,
   PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS,
   PLUGIN_WEBVIEW_UI_TIMEOUT_MS,
   pluginWebviewGuestKey,
@@ -217,18 +218,22 @@ describe("plugin webview events", () => {
     expect(isPluginWebviewEventName("refresh")).toBe(true);
     expect(isPluginWebviewEventName("unknown")).toBe(false);
   });
+
+  it("names the surface-revealed event the guest listens for", () => {
+    expect(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT).toBe("ade-plugin-surface-revealed");
+  });
 });
 
 describe("pluginWebviewKeepsGuestWhileHidden", () => {
-  it("keeps tabs and panes, and destroys anchored placements", () => {
+  it("keeps tabs, panes, and settings sections, and destroys anchored placements", () => {
     expect(pluginWebviewKeepsGuestWhileHidden("tab")).toBe(true);
     expect(pluginWebviewKeepsGuestWhileHidden("pane")).toBe(true);
+    expect(pluginWebviewKeepsGuestWhileHidden("settings-section")).toBe(true);
     expect(pluginWebviewKeepsGuestWhileHidden("popover")).toBe(false);
     expect(pluginWebviewKeepsGuestWhileHidden("overlay")).toBe(false);
     expect(pluginWebviewKeepsGuestWhileHidden("drawer")).toBe(false);
     expect(pluginWebviewKeepsGuestWhileHidden("composer-picker")).toBe(false);
     expect(pluginWebviewKeepsGuestWhileHidden("dialog-picker")).toBe(false);
-    expect(pluginWebviewKeepsGuestWhileHidden("settings-section")).toBe(false);
   });
 });
 

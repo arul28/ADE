@@ -43,6 +43,7 @@ import {
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   pluginWebviewKeepsGuestWhileHidden,
+  PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT,
   type PluginWebviewChatTurn,
   type PluginWebviewContext,
   type PluginWebviewHostEvent,
@@ -151,9 +152,21 @@ export function WebPluginPageHost({
   // render does not tear the guest down, exactly as the desktop host does it.
   const contextKey = React.useMemo(() => (context ? JSON.stringify(context) : ""), [context]);
 
+  const wasActiveRef = React.useRef(active);
   React.useEffect(() => {
-    // Tabs and panes stay alive while this host is mounted. Anchored placements
-    // still die when they hide — the effect keys on `shouldBoot`.
+    const becameActive = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!becameActive) return;
+    try {
+      frameRef.current?.contentWindow?.dispatchEvent(new Event(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT));
+    } catch {
+      // An opaque-origin guest cannot be reached from here; visibility still fires.
+    }
+  }, [active]);
+
+  React.useEffect(() => {
+    // Tabs, panes, and settings sections stay alive while this host is mounted.
+    // Anchored placements still die when they hide — the effect keys on `shouldBoot`.
     if (!shouldBoot) return;
     let cancelled = false;
     let bootTimer: ReturnType<typeof setTimeout> | null = null;

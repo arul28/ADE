@@ -47,6 +47,13 @@ const PACKAGE_DIRS = [
   "themes/ade-theme-paper",
   "themes/ade-theme-ink",
   "themes/ade-theme-contrast",
+  "themes/ade-theme-grove",
+  "themes/ade-theme-ocean",
+  "themes/ade-theme-ember",
+  "themes/ade-theme-iris",
+  "themes/ade-theme-sakura",
+  "themes/ade-theme-synthwave",
+  "themes/ade-theme-phosphor",
 ];
 
 function readManifest(dir: string): PluginManifest {
@@ -303,7 +310,7 @@ describe("ade-log-viewer", () => {
   });
 });
 
-describe("starter themes", () => {
+describe("official themes", () => {
   const themeDirs = PACKAGE_DIRS.filter((dir) => dir.startsWith("themes/"));
 
   it.each(themeDirs)("%s ships both palettes", (dir) => {

@@ -1,0 +1,21 @@
+{
+  "name": "ade-theme-sakura", "version": "1.0.0", "displayName": "Sakura", "description": "Soft blossom pink, plum ink and porcelain surfaces. Playful but precise.", "icon": "palette", "accent": "#C65A83", "vocabVersion": 1, "official": true,
+  "theme": { "tokens": {
+    "light": {
+      "--color-bg": "#FFF6F8", "--color-fg": "#35242C", "--color-surface": "#FFFAFB", "--color-card": "#FFFFFF", "--color-card-fg": "#35242C", "--color-card-rgb": "255, 255, 255",
+      "--color-secondary": "#F6E2E9", "--color-secondary-fg": "#674B58", "--color-muted": "#FAEBF0", "--color-muted-fg": "#846875", "--color-border": "#E9CED8",
+      "--color-accent": "#B94D77", "--color-accent-fg": "#FFFFFF", "--color-accent-bright": "#D66F98", "--color-accent-deep": "#8A3357",
+      "--color-surface-raised": "#FFFFFF", "--color-surface-recessed": "#F6E4EA", "--color-surface-overlay": "#FFFFFF", "--color-popup-bg": "#FFFCFD", "--color-modal-bg": "#FFFFFF", "--color-composer-bg": "#FFFAFB", "--color-glass-card": "#FFFAFB", "--color-card-solid": "#FFFFFF",
+      "--pane-bg": "#FFFAFB", "--pane-border": "#E9CED8", "--chat-canvas-bg": "#FFF6F8", "--shell-header-bg": "#FFFAFB", "--shell-header-fg": "#35242C", "--shell-header-border": "#E9CED8", "--shell-surface": "#FFFCFD",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #FBEAF0 0%, #F3DCE5 100%)", "--shell-sidebar-border": "#E9CED8", "--work-sidebar-bg": "#FFFAFB", "--work-session-sidebar-bg": "#F6E4EA", "--work-popover-bg": "#FFFCFD", "--work-popover-border": "#E9CED8"
+    },
+    "dark": {
+      "--color-bg": "#180F14", "--color-fg": "#F8EAF0", "--color-surface": "#21151B", "--color-card": "#2A1B23", "--color-card-fg": "#F8EAF0", "--color-card-rgb": "42, 27, 35",
+      "--color-secondary": "#36232D", "--color-secondary-fg": "#DDB9C8", "--color-muted": "#2A1D24", "--color-muted-fg": "#AF8C9B", "--color-border": "#49313C",
+      "--color-accent": "#F08BAD", "--color-accent-fg": "#2A121D", "--color-accent-bright": "#FFACC6", "--color-accent-deep": "#B95678",
+      "--color-surface-raised": "#321F29", "--color-surface-recessed": "#11090E", "--color-surface-overlay": "#2A1B23", "--color-popup-bg": "#261820", "--color-modal-bg": "#2A1B23", "--color-composer-bg": "#21151B", "--color-glass-card": "#21151B", "--color-card-solid": "#2A1B23",
+      "--pane-bg": "#21151B", "--pane-border": "#49313C", "--chat-canvas-bg": "#180F14", "--shell-header-bg": "#21151B", "--shell-header-fg": "#F8EAF0", "--shell-header-border": "#49313C", "--shell-surface": "#261820",
+      "--shell-sidebar-bg": "linear-gradient(180deg, #2B1A23 0%, #130B10 100%)", "--shell-sidebar-border": "#49313C", "--work-sidebar-bg": "#21151B", "--work-session-sidebar-bg": "#11090E", "--work-popover-bg": "#261820", "--work-popover-border": "#49313C"
+    }
+  } }
+}

@@ -211,9 +211,7 @@ describe("the fleet", () => {
     await open(context(), "invoke:pageFleet");
 
     fireEvent.click(await screen.findByRole("button", { name: /Filters/ }));
-    fireEvent.change(await screen.findByLabelText("Filter by status"), {
-      target: { value: "finished" },
-    });
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
 
     await waitFor(() => {
       expect(fake.callsTo("collections.put").some((call) => call.args.collection === "ui-state")).toBe(true);

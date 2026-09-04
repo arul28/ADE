@@ -96,8 +96,8 @@ describe("enriching a row", () => {
       }),
     }));
 
-    // A finished agent's list row is already complete, and enriching it would
-    // cost one request per row for nothing.
+    // A finished agent without a latestRunId stays thin; one with a latest
+    // run is enriched so the row can show branch / PR.
     assert.deepEqual(asked, ["live"]);
     const live = result.items.find((entry) => entry.agent.agentId === "live");
     assert.equal(live.runStatus, "running");
@@ -118,6 +118,84 @@ describe("enriching a row", () => {
     assert.deepEqual(asked, ["live"]);
     assert.equal(result.items[0].runStatus, "running");
     assert.equal(result.items[0].branch, "ade/fix");
+  });
+
+  it("keeps every agent when origin cannot be read", async () => {
+    const result = await assembleFleet(deps({
+      originCache: createOriginCache(async () => { throw new Error("no remote"); }),
+      api: api({
+        listAgentsPaged: async () => [
+          agent("here"),
+          agent("elsewhere", { repos: [{ url: "https://github.com/other/thing" }] }),
+        ],
+      }),
+    }));
+    assert.equal(result.items.length, 2);
+  });
+
+  it("accepts Cursor's agentId field when id is missing", async () => {
+    const result = await assembleFleet(deps({
+      api: api({
+        listAgentsPaged: async () => [{
+          agentId: "bc-from-sdk",
+          name: "sdk shape",
+          status: "IDLE",
+          repos: [{ url: ORIGIN }],
+          createdAt: "2026-07-01T10:00:00.000Z",
+        }],
+      }),
+    }));
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].agent.agentId, "bc-from-sdk");
+  });
+
+  it("enriches an IDLE agent that still has a latest run", async () => {
+    const asked = [];
+    const result = await assembleFleet(deps({
+      api: api({
+        listAgentsPaged: async () => [agent("done", { status: "IDLE", latestRunId: "r-done" })],
+        listRuns: async (agentId) => {
+          asked.push(agentId);
+          return {
+            items: [{
+              id: "r-done",
+              status: "FINISHED",
+              git: { branches: [{ repoUrl: ORIGIN, branch: "cursor/mobile", prUrl: "https://github.com/acme/app/pull/1" }] },
+            }],
+          };
+        },
+      }),
+    }));
+    assert.deepEqual(asked, ["done"]);
+    assert.equal(result.items[0].runStatus, "finished");
+    assert.equal(result.items[0].branch, "cursor/mobile");
+    assert.equal(result.items[0].prUrl, "https://github.com/acme/app/pull/1");
+  });
+
+  it("attaches PR diff stats from the host list", async () => {
+    const result = await assembleFleet(deps({
+      api: api({
+        listAgentsPaged: async () => [agent("done", { status: "IDLE", latestRunId: "r1" })],
+        listRuns: async () => ({
+          items: [{
+            id: "r1",
+            status: "FINISHED",
+            git: { branches: [{ repoUrl: ORIGIN, branch: "ade/x", prUrl: "https://github.com/acme/app/pull/42" }] },
+          }],
+        }),
+      }),
+      listPrs: async () => [{
+        htmlUrl: "https://github.com/acme/app/pull/42",
+        additions: 528,
+        deletions: 353,
+        changedFiles: 11,
+        state: "open",
+      }],
+    }));
+    assert.equal(result.items[0].additions, 528);
+    assert.equal(result.items[0].deletions, 353);
+    assert.equal(result.items[0].filesChanged, 11);
+    assert.equal(result.items[0].prState, "open");
   });
 
   it("survives an agent whose run cannot be read", async () => {
@@ -154,6 +232,7 @@ describe("the origin cache", () => {
     }, 60_000);
 
     assert.equal(await cache.key(1_000), "");
+    assert.deepEqual(await cache.keys(1_000), []);
     assert.equal(await cache.key(2_000), "");
     // A failed probe retried on every row would spawn a git process per agent.
     assert.equal(probes, 1);
@@ -315,6 +394,12 @@ describe("grouping", () => {
     assert.deepEqual(grouped.active.map((entry) => entry.agent.agentId), ["newer", "older"]);
   });
 
+  it("does not put a Cursor IDLE agent in Active runs", () => {
+    const grouped = groupFleet([entryFor("idle", { status: "idle" })]);
+    assert.equal(grouped.active.length, 0);
+    assert.equal(grouped.unlinked.length, 1);
+  });
+
   it("offers only lanes that actually hold an agent, capped for the control", () => {
     const entries = Array.from({ length: 12 }, (_, i) =>
       entryFor(`a${i}`, { laneId: `lane-${i}`, laneName: `Lane ${i}` }));
@@ -334,6 +419,11 @@ describe("display helpers", () => {
     assert.equal(statusTone("archived"), "neutral");
   });
 
+  it("treats Cursor IDLE as finished, not creating", () => {
+    assert.equal(fleetDisplayStatus({ agent: { archived: false, status: "idle" } }), "finished");
+    assert.equal(fleetDisplayStatus({ agent: { archived: false, status: "IDLE" } }), "finished");
+  });
+
   it("says archived over whatever the run was doing", () => {
     const base = { agent: { archived: true, status: "running" }, runStatus: "running" };
     assert.equal(fleetDisplayStatus(base), "archived");
@@ -344,6 +434,7 @@ describe("display helpers", () => {
     assert.equal(formatAge("not a date"), null);
     assert.equal(formatAge(Date.now() + 60_000), null, "a future timestamp has no age");
     assert.equal(formatAge(Date.now() - 5_000), "just now");
+    assert.equal(formatAge(Date.now() - 60 * 24 * 60 * 60 * 1000), "2mo");
   });
 
   it("formats a cost, and nothing when nothing was billed", () => {
