@@ -8,6 +8,7 @@ import {
   scoreActivityDays,
   trimLeadingInactiveDays,
 } from "./activityIntensity";
+import { readThemeColor, usePluginThemeRevision } from "../../lib/usePluginThemeRevision";
 import { USAGE_TEXT } from "./usageDesign";
 import { cn } from "../ui/cn";
 
@@ -41,7 +42,7 @@ const HEATMAP_MIN_CELL = 6;
  */
 type RampPair = { light: string; dark: string };
 
-const HEATMAP_RAMP: Record<Exclude<ActivityLevel, 0>, RampPair> = {
+const HEATMAP_RAMP_FALLBACK: Record<Exclude<ActivityLevel, 0>, RampPair> = {
   // desaturated slate — quiet, but unmistakably "something happened"
   1: { light: "#BCCEDA", dark: "#3A4E63" },
   // teal — the midpoint, still cool
@@ -51,6 +52,25 @@ const HEATMAP_RAMP: Record<Exclude<ActivityLevel, 0>, RampPair> = {
   // the top quartile, and the only tone allowed to shout
   4: { light: "#B23A20", dark: "#FF9A3D" },
 };
+
+/**
+ * Resolves one ramp step.
+ *
+ * The four steps are now `--color-heat-1..4` in `index.css`, declared with
+ * exactly the pairs above as their per-theme defaults — so this reads the same
+ * colours it always did unless a theme overrides them. It has to be a runtime
+ * read rather than a `var()` string because callers hand the result to inline
+ * `style` objects that are memoised across 365 cells: a `var()` would work in
+ * the DOM but would make every step indistinguishable to the legend and to any
+ * future canvas renderer, and the fallback pair is the honest source of truth
+ * when the stylesheet has not loaded (tests, first paint).
+ *
+ * `theme` picks the fallback only; the token itself already resolves against
+ * whatever `data-theme` the document is wearing.
+ */
+export function heatmapRampColor(level: Exclude<ActivityLevel, 0>, theme: ThemeId): string {
+  return readThemeColor(`--color-heat-${level}`, HEATMAP_RAMP_FALLBACK[level][theme]);
+}
 
 /** Empty day: structure, not damage — a visible tile, not a hole in the card. */
 const HEATMAP_EMPTY_BG = "color-mix(in srgb, var(--color-fg) 7%, transparent)";
@@ -224,12 +244,16 @@ type LevelStyles = {
  * no per-cell state.
  */
 function useLevelStyles(theme: ThemeId, contrast: boolean, reduced: boolean): LevelStyles {
+  // A plugin theme swaps the stylesheet without re-rendering anything; these
+  // styles are literal strings baked into memoised objects, so without this the
+  // grid keeps painting the previous palette until something else re-renders it.
+  const pluginThemeRevision = usePluginThemeRevision();
   return useMemo(() => {
     const transition = reduced ? undefined : "background 120ms ease";
     const cell = {} as Record<ActivityLevel, React.CSSProperties>;
     const today = {} as Record<ActivityLevel, React.CSSProperties>;
     for (const level of [0, 1, 2, 3, 4] as const) {
-      const background = level === 0 ? HEATMAP_EMPTY_BG : HEATMAP_RAMP[level][theme];
+      const background = level === 0 ? HEATMAP_EMPTY_BG : heatmapRampColor(level, theme);
       const edge = contrast ? HEATMAP_CONTRAST_EDGE : level === 0 ? HEATMAP_EMPTY_EDGE : null;
       cell[level] = { background, transition, cursor: "default", ...(edge ? { boxShadow: edge } : null) };
       today[level] = {
@@ -240,7 +264,10 @@ function useLevelStyles(theme: ThemeId, contrast: boolean, reduced: boolean): Le
       };
     }
     return { cell, today };
-  }, [theme, contrast, reduced]);
+    // The revision is a cache-buster, not a value the callback reads; dropping
+    // it leaves all 365 memoised cells on the previous plugin theme's ramp.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme, contrast, reduced, pluginThemeRevision]);
 }
 
 type HeatmapTooltip = {

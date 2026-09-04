@@ -1,12 +1,5 @@
 ## Paper
 
-Warm paper and ink, with a clay accent — the palette of something printed rather
-than something emitted. Made for working in daylight, where ADE's default dark
-surfaces go flat.
+Paper is the daylight theme. Warm off-white stock, ink-brown text and a clay accent, with every hue pulled toward earth so a bright room does not turn the screen into a mirror. Its dark mode is the same paper after sundown, not a different theme.
 
-Ships both a light and a dark set. A theme that defines only one of them silently
-gives up half of itself the moment you switch, so the dark set here is the same
-palette after sundown: warm browns, the same clay accent lifted for contrast.
-
-Preview it before applying — the Marketplace paints the whole app while you look
-at it, and Escape puts it back.
+Sets all 86 spec tokens in both light and dark. Preview it from the Marketplace without installing, then use it when you are ready.

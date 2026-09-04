@@ -1,4 +1,5 @@
 import type { ThemeId } from "../../state/appStore";
+import { readThemeColor } from "../../lib/usePluginThemeRevision";
 
 /**
  * Brand-anchored provider colors for usage bars and legends in the Settings
@@ -34,7 +35,19 @@ const PROVIDER_COLORS: Record<string, ProviderColorPair> = {
 /**
  * Deterministic fallback palette for providers without a brand token, so an
  * unknown provider still gets a stable, distinct color instead of the default
- * accent. Theme-aware pairs, indexed by a hash of the provider name.
+ * accent. Indexed by a hash of the provider name.
+ *
+ * This is the app's data-series palette, `--color-chart-1..6` — the pairs below
+ * are exactly the tokens' defaults in `index.css`, so the shipped themes look
+ * identical and a plugin theme can now recolour an unknown provider.
+ *
+ * The token is resolved to a literal here rather than returned as a `var()`
+ * string, because `providerColor()` feeds SVG presentation attributes:
+ * `UsageDailyChart.tsx` writes `fill={seriesColor(...)}` and
+ * `stroke={seriesColor(...)}`. A presentation attribute is not a CSS
+ * declaration, so `var()` never substitutes there — the bar would render with
+ * no fill at all. Returning a resolved literal works in every consumer, the
+ * inline-`style` ones included.
  */
 const FALLBACK_PALETTE: ProviderColorPair[] = [
   { light: "#2563EB", dark: "#60A5FA" },
@@ -44,6 +57,22 @@ const FALLBACK_PALETTE: ProviderColorPair[] = [
   { light: "#BE185D", dark: "#F472B6" },
   { light: "#4D7C0F", dark: "#A3E635" },
 ];
+
+/**
+ * Reads one series colour, 1-based to match the token names.
+ *
+ * Read on every call rather than cached: the value has to be correct the first
+ * time a chart renders after a plugin theme swaps the stylesheet, and this
+ * module has no React context to hang an invalidation on. A caller that wants
+ * the surrounding component to re-render on that swap adds
+ * `usePluginThemeRevision()` to its own memo dependencies; the read itself is
+ * one `getComputedStyle` lookup on the root element and runs a handful of times
+ * per chart, not per data point.
+ */
+export function chartSeriesColor(index: number, theme: ThemeId = "dark"): string {
+  const pair = FALLBACK_PALETTE[index % FALLBACK_PALETTE.length]!;
+  return readThemeColor(`--color-chart-${(index % FALLBACK_PALETTE.length) + 1}`, theme === "light" ? pair.light : pair.dark);
+}
 
 function hashIndex(value: string, modulo: number): number {
   let hash = 0;
@@ -60,6 +89,10 @@ function normalizeProvider(provider: string): string {
 /** Returns the theme-appropriate brand color for a provider. */
 export function providerColor(provider: string, theme: ThemeId = "dark"): string {
   const key = normalizeProvider(provider);
-  const pair = PROVIDER_COLORS[key] ?? FALLBACK_PALETTE[hashIndex(key, FALLBACK_PALETTE.length)]!;
-  return theme === "light" ? pair.light : pair.dark;
+  // `PROVIDER_COLORS` stays hardcoded on purpose: those are brand identities —
+  // Claude's rust, Copilot's green — not theme colours, and a theme that
+  // repainted them would be misrepresenting the vendor, not restyling the app.
+  const brand = PROVIDER_COLORS[key];
+  if (brand) return theme === "light" ? brand.light : brand.dark;
+  return chartSeriesColor(hashIndex(key, FALLBACK_PALETTE.length), theme);
 }

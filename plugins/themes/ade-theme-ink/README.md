@@ -1,8 +1,5 @@
 ## Ink
 
-Deep blue-black with a steel accent. Lower saturation than the default palette
-and no violet, for people who spend the whole day in one window and want the
-interface to stop asking for attention.
+Ink is the quiet one. A blue-black canvas, steel chrome and a single cool accent, with syntax and rail hues desaturated so nothing on screen competes with the code. Built for the sessions that run past midnight.
 
-Ships both sets: the dark one is the point, and the light one keeps the same
-steel accent at a contrast that works on white.
+Sets all 86 spec tokens in both light and dark. Preview it from the Marketplace without installing, then use it when you are ready.

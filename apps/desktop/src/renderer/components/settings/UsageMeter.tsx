@@ -1,4 +1,8 @@
+import { useMemo } from "react";
 import { cn } from "../ui/cn";
+import { usePluginThemeRevision } from "../../lib/usePluginThemeRevision";
+import { chartSeriesColor } from "../usage/providerColors";
+import { useAppStore } from "../../state/appStore";
 
 export function UsageMeter({
   label,
@@ -17,10 +21,22 @@ export function UsageMeter({
   toneColor?: string;
   className?: string;
 }) {
+  const theme = useAppStore((s) => s.theme);
+  const pluginThemeRevision = usePluginThemeRevision();
   const clamped = Math.max(0, Math.min(100, percent));
   const breakdownEntries = modelBreakdown ? Object.entries(modelBreakdown) : [];
   const hasBreakdown = breakdownEntries.length > 0;
-  const modelPalette = MODEL_COLORS.filter((color) => color.toLowerCase() !== toneColor.toLowerCase());
+  // Resolved to literals, not `var()` strings: the dedupe below compares this
+  // palette against `toneColor` (a resolved provider colour), and two different
+  // `var()` names never compare equal even when they paint the same pixel.
+  const modelColors = useMemo(
+    () => MODEL_SERIES_INDEXES.map((index) => chartSeriesColor(index, theme)),
+    // The revision is a cache-buster, not a value the callback reads; dropping
+    // it leaves the legend on the previous plugin theme's series palette.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme, pluginThemeRevision],
+  );
+  const modelPalette = modelColors.filter((color) => color.toLowerCase() !== toneColor.toLowerCase());
   const modelColor = (index: number) => {
     if (index === 0) return toneColor;
     return modelPalette[(index - 1) % modelPalette.length] ?? toneColor;
@@ -118,4 +134,14 @@ export function UsageMeter({
   );
 }
 
-const MODEL_COLORS = ["#A78BFA", "#38BDF8", "#F59E0B", "#22C55E", "#F472B6", "#EAB308"];
+/**
+ * The per-model segments of the meter are a data series, so they now ride the
+ * app's series palette (`--color-chart-1..6`) instead of the six ad-hoc hexes
+ * this file used to carry. Those hexes were dark-theme values with no light
+ * counterpart, which is exactly the bug: on the light theme the legend swatches
+ * were tuned for a surface they never sat on, and no theme could touch them.
+ *
+ * Indexes, not colours — `chartSeriesColor` maps 0..5 onto `--color-chart-1..6`
+ * and resolves each against the live document.
+ */
+const MODEL_SERIES_INDEXES = [0, 1, 2, 3, 4, 5];

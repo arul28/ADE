@@ -41,7 +41,80 @@ const SUPPORTED_LANGUAGES = [
   "markdown", "diff", "c", "cpp", "ruby", "php", "swift", "kotlin",
 ];
 
-const THEME = "github-dark-dimmed";
+const THEME = "ade-syntax-tokens";
+
+/**
+ * ADE's own shiki theme, written entirely in custom properties.
+ *
+ * The previous theme was the literal string `"github-dark-dimmed"`, which meant
+ * two things were true at once: code blocks were dark even in the light theme,
+ * and no plugin theme could reach them at all — shiki bakes the resolved hex
+ * into each span's inline `style`, and a baked hex is not a token.
+ *
+ * A `var(--…)` foreground survives that bake: shiki writes the string it is
+ * given straight into `style="color:…"`, and an inline declaration is exactly
+ * where a custom property DOES substitute. This is the same mechanism shiki's
+ * own `createCssVariablesTheme` uses; a hand-written theme is used instead only
+ * so the scope→token mapping is visible here rather than hidden behind a
+ * generated `--shiki-*` namespace that plugin themes would also have to know.
+ *
+ * The consequence worth knowing: emitted HTML is now theme-independent. A theme
+ * swap recolours code already on screen with no re-highlight, because the
+ * colours were never in the HTML to begin with.
+ */
+const SYNTAX_THEME = {
+  name: THEME,
+  // Only picks shiki's default foreground/background bucket; both are overridden
+  // below, so this says nothing about which ADE theme is active.
+  type: "dark" as const,
+  colors: {
+    "editor.foreground": "var(--chat-code-fg)",
+    "editor.background": "transparent",
+  },
+  settings: [
+    // Default: unscoped text inherits the code block's own foreground, so an
+    // unmapped token is never invisible.
+    { settings: { foreground: "var(--chat-code-fg)", background: "transparent" } },
+    {
+      scope: ["keyword", "keyword.control", "storage", "storage.type", "storage.modifier"],
+      settings: { foreground: "var(--color-syntax-keyword)" },
+    },
+    {
+      scope: [
+        "string",
+        "string.quoted",
+        "string.template",
+        "punctuation.definition.string",
+        "constant.character.escape",
+      ],
+      settings: { foreground: "var(--color-syntax-string)" },
+    },
+    {
+      scope: ["constant.numeric", "constant.language", "constant.other"],
+      settings: { foreground: "var(--color-syntax-number)" },
+    },
+    {
+      scope: ["comment", "punctuation.definition.comment"],
+      settings: { foreground: "var(--color-syntax-comment)" },
+    },
+    {
+      scope: ["entity.name.function", "support.function", "meta.function-call"],
+      settings: { foreground: "var(--color-syntax-function)" },
+    },
+    {
+      scope: ["entity.name.type", "support.type", "entity.name.class", "support.class"],
+      settings: { foreground: "var(--color-syntax-type)" },
+    },
+    {
+      scope: ["variable", "support.variable", "entity.name.tag"],
+      settings: { foreground: "var(--color-syntax-variable)" },
+    },
+    {
+      scope: ["keyword.operator", "punctuation"],
+      settings: { foreground: "var(--color-syntax-operator)" },
+    },
+  ],
+};
 
 type ShikiHighlighter = {
   codeToHtml(code: string, options: { lang: string; theme: string }): string;
@@ -53,7 +126,7 @@ function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then((shiki) =>
       shiki.createHighlighter({
-        themes: [THEME],
+        themes: [SYNTAX_THEME],
         langs: SUPPORTED_LANGUAGES,
         engine: shiki.createJavaScriptRegexEngine(),
       }),
@@ -67,7 +140,13 @@ function getHighlighter(): Promise<ShikiHighlighter> {
 
 /* ── Highlight function ── */
 
-async function highlightCode(code: string, language: string): Promise<string> {
+/** Exported so tests can assert the emitted markup without rendering React. */
+export async function highlightCode(code: string, language: string): Promise<string> {
+  // The active theme is deliberately NOT part of the key. The emitted HTML
+  // carries `var(--color-syntax-*)` references rather than resolved colours, so
+  // one cached string is correct under every theme — including a plugin theme
+  // installed after the entry was cached. Adding the theme here would multiply
+  // the cache by the number of themes and buy nothing.
   const cacheKey = `${language}::${code}`;
   const cached = highlightCache.get(cacheKey);
   if (cached !== undefined) return cached;
@@ -97,25 +176,43 @@ async function highlightCode(code: string, language: string): Promise<string> {
 
 /* ── Diff preview (inline, for language-diff blocks) ── */
 
+/**
+ * The colour a single diff line carries.
+ *
+ * Split out of the renderer because it is the only assertable part: these are
+ * `var()`/`color-mix()` strings, and jsdom's CSSOM silently drops both from an
+ * inline `style` attribute, so a rendered DOM node cannot prove which token a
+ * line uses. Nothing here resolves a colour — the diff block was already fully
+ * tokenised and stays that way.
+ */
+export function diffLineStyle(line: string): CSSProperties {
+  if (line.startsWith("+")) {
+    return {
+      color: "var(--color-diff-add)",
+      background: "color-mix(in srgb, var(--color-diff-add) 8%, transparent)",
+    };
+  }
+  if (line.startsWith("-")) {
+    return {
+      color: "var(--color-diff-del)",
+      background: "color-mix(in srgb, var(--color-diff-del) 8%, transparent)",
+    };
+  }
+  if (line.startsWith("@@")) {
+    // Left on the accent rather than moved to `--color-diff-hunk`: that would be
+    // a visible recolouring of every hunk header, which is a design change, not
+    // the token extraction this pass is doing.
+    return { color: "color-mix(in srgb, var(--color-accent) 70%, transparent)" };
+  }
+  return { color: "color-mix(in srgb, var(--chat-code-fg) 70%, transparent)" };
+}
+
 function DiffCodeBlock({ code }: { code: string }) {
   const lines = code.split(/\r?\n/);
   return (
     <div className="overflow-x-auto whitespace-pre font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
       {lines.map((line, index) => {
-        let style: CSSProperties = { color: "color-mix(in srgb, var(--chat-code-fg) 70%, transparent)" };
-        if (line.startsWith("+")) {
-          style = {
-            color: "var(--color-diff-add)",
-            background: "color-mix(in srgb, var(--color-diff-add) 8%, transparent)",
-          };
-        } else if (line.startsWith("-")) {
-          style = {
-            color: "var(--color-diff-del)",
-            background: "color-mix(in srgb, var(--color-diff-del) 8%, transparent)",
-          };
-        } else if (line.startsWith("@@")) {
-          style = { color: "color-mix(in srgb, var(--color-accent) 70%, transparent)" };
-        }
+        const style = diffLineStyle(line);
         return (
           <div key={`${index}:${line}`} className="px-1 -mx-1" style={style}>
             {line}

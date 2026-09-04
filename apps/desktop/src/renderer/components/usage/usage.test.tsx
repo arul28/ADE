@@ -18,7 +18,12 @@ import {
   WorkActivityModule,
   readActivityPersisted,
 } from "./ActivityModule";
-import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
+import {
+  computeHeatmapLayout,
+  fillMissingDays,
+  heatmapRampColor,
+  weekAlignment,
+} from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import { useUsageSnapshot } from "./useUsageSnapshot";
@@ -2010,5 +2015,29 @@ describe("activity heatmap intensity", () => {
     expect(trimLeadingInactiveDays(empty)).toEqual(empty);
     expect(trimLeadingInactiveDays(active)).toBe(active);
     expect(trimLeadingInactiveDays(github).map((point) => point.date)).toEqual(["2026-01-02"]);
+  });
+});
+
+describe("heatmapRampColor", () => {
+  afterEach(() => {
+    for (const level of [1, 2, 3, 4]) {
+      document.documentElement.style.removeProperty(`--color-heat-${level}`);
+    }
+  });
+
+  it("falls back to the shipped ramp when the tokens are undeclared", () => {
+    expect(heatmapRampColor(1, "dark")).toBe("#3A4E63");
+    expect(heatmapRampColor(2, "dark")).toBe("#2F7A80");
+    expect(heatmapRampColor(3, "dark")).toBe("#DE6039");
+    expect(heatmapRampColor(4, "dark")).toBe("#FF9A3D");
+    expect(heatmapRampColor(1, "light")).toBe("#BCCEDA");
+    expect(heatmapRampColor(4, "light")).toBe("#B23A20");
+  });
+
+  it("returns the token value once a theme declares it", () => {
+    document.documentElement.style.setProperty("--color-heat-3", "#00FF00");
+    expect(heatmapRampColor(3, "dark")).toBe("#00FF00");
+    // A theme that overrides one step leaves the others on their defaults.
+    expect(heatmapRampColor(2, "dark")).toBe("#2F7A80");
   });
 });

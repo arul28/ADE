@@ -279,6 +279,52 @@ describe("mergeMarketplaceCatalogue", () => {
     expect(describePluginAdds(merged.listings[0]!)).not.toHaveLength(0);
   });
 
+  /**
+   * The Marketplace's theme preview reads `themeTokens`, and only the BUNDLED
+   * listing has any: `listingFromRegistryEntry` hardcodes `themeTokens: null`
+   * because a directory row is a listing, not a package. Publishing Ink at the
+   * version already inside the app therefore replaced the one listing that
+   * could paint a preview with one that could not, and Preview theme went
+   * blank for a theme that ships in the binary.
+   */
+  it("lends the bundled theme tokens to a published theme at the same version", () => {
+    const ink = MARKETPLACE_LOCAL_INDEX.find((entry) => entry.pluginId === "ade-theme-ink");
+    expect(ink?.themeTokens?.dark).toBeTruthy();
+
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [{ ...ink!, origin: "bundled" }],
+      // What the directory publishes: same id, same version, no tokens.
+      live: [listing({
+        pluginId: "ade-theme-ink",
+        displayName: "Ink",
+        version: ink!.version,
+        isTheme: true,
+        manifest: null,
+        themeTokens: null,
+        description: "Published copy.",
+      })],
+      installed: [],
+    });
+
+    const entry = merged.listings[0];
+    expect(entry?.origin).toBe("directory");
+    expect(entry?.description).toBe("Published copy.");
+    expect(entry?.themeTokens).toEqual(ink!.themeTokens);
+    expect(entry?.manifest).toBe(ink!.manifest);
+  });
+
+  it("falls back to the bundled manifest's own tokens when the listing has none", () => {
+    const ink = MARKETPLACE_LOCAL_INDEX.find((entry) => entry.pluginId === "ade-theme-ink");
+
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [{ ...ink!, themeTokens: null, origin: "bundled" }],
+      live: [listing({ pluginId: "ade-theme-ink", version: ink!.version, isTheme: true, themeTokens: null })],
+      installed: [],
+    });
+
+    expect(merged.listings[0]?.themeTokens).toEqual(ink!.manifest?.theme?.tokens);
+  });
+
   it("treats an unparsable directory version as lower than a real one", () => {
     const merged = mergeMarketplaceCatalogue({
       bundled: [listing({ version: "1.1.0", source: "graph", origin: "bundled" })],

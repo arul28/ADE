@@ -1,14 +1,5 @@
 ## High contrast
 
-Black on white and white on black, with edges you can actually see: borders and
-separators are raised well above ADE's default whisper, and muted text stops
-being muted. For bad light, glare, and eyes at the end of a long day.
+An accessibility theme, not a mood. Pure black or pure white canvas, borders that are actually visible, and status hues chosen for separation rather than harmony. Every text pair clears WCAG AA by a wide margin. Reach for it in bad light, on a projector, or at the end of a long day.
 
-The accents are chosen for separation rather than for taste — amber on black,
-strong blue on white — and the status colours are pushed to match, so a warning
-still reads as a warning at a glance.
-
-Both sets ship, so switching between light and dark keeps the theme.
-
-Note: coverage is as good as ADE's own design tokens. Surfaces that still carry
-hard-coded colours are unchanged by any theme, this one included.
+Sets all 86 spec tokens in both light and dark. Preview it from the Marketplace without installing, then use it when you are ready.

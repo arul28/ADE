@@ -16,6 +16,7 @@ import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { readThemeColor, usePluginThemeRevision } from "../../lib/usePluginThemeRevision";
 import type { TerminalToolType } from "../../../shared/types";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import {
@@ -258,22 +259,67 @@ function terminalRuntimeKey(args: {
 }
 let parkedRoot: HTMLDivElement | null = null;
 
-const terminalThemes: Record<"light" | "dark", XtermTheme> = {
+/**
+ * What the terminal painted before any of it was a token, and what it still
+ * paints when a token is unset. Every value here is the literal this file
+ * shipped, so the default theme is pixel-identical.
+ */
+const TERMINAL_THEME_FALLBACKS: Record<"light" | "dark", {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+}> = {
   light: {
     background: "#F2F0ED",
     foreground: "#1C1917",
     cursor: "#C22323",
     cursorAccent: "#FDFBF7",
-    selectionBackground: "rgba(194, 35, 35, 0.16)"
+    selectionBackground: "rgba(194, 35, 35, 0.16)",
   },
   dark: {
     background: "#0c0e16",
     foreground: "#EDEDED",
     cursor: "#F59E0B",
     cursorAccent: "#0c0e16",
-    selectionBackground: "rgba(245, 158, 11, 0.26)"
-  }
+    selectionBackground: "rgba(245, 158, 11, 0.26)",
+  },
 };
+
+/**
+ * Builds the xterm palette for the current document.
+ *
+ * xterm takes literal colour strings, not CSS — it paints into a canvas — so
+ * this is the one place that has to resolve custom properties by hand. It reads
+ * live from `document.documentElement`, which is why callers must rebuild it on
+ * both an app-theme change and a plugin-theme change (`usePluginThemeRevision`).
+ *
+ * Only the selection pair is tokenised. The rule is that a literal becomes a
+ * token reference only when the token's default in `index.css` already equals
+ * that literal, so tokenising cannot move a pixel — and the terminal's
+ * background/foreground/cursor literals match no token: the terminal canvas is
+ * deliberately darker than `--color-bg` and its cursor is not `--color-warning`
+ * in any meaningful sense, it merely happens to share that hex. Wiring those to
+ * tokens would be a redesign, not an extraction.
+ */
+export function buildTerminalTheme(mode: "light" | "dark"): XtermTheme {
+  const fallback = TERMINAL_THEME_FALLBACKS[mode];
+  // `transparent` is the documented sentinel for "do not force a selection
+  // foreground". xterm has no way to express that other than the property being
+  // absent, so an unset (or explicitly transparent) token omits the key.
+  const selectionForeground = readThemeColor("--color-selection-fg", "transparent");
+  return {
+    background: fallback.background,
+    foreground: fallback.foreground,
+    cursor: fallback.cursor,
+    cursorAccent: fallback.cursorAccent,
+    selectionBackground: readThemeColor("--color-selection-bg", fallback.selectionBackground),
+    ...(selectionForeground && selectionForeground !== "transparent"
+      ? { selectionForeground }
+      : null),
+  };
+}
 
 function isDarkTheme(theme: ThemeId): boolean {
   return theme === "dark";
@@ -3335,6 +3381,7 @@ export function TerminalView({
   toolType?: TerminalToolType | null;
 }) {
   const appTheme = useAppStore((s) => s.theme);
+  const pluginThemeRevision = usePluginThemeRevision();
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
@@ -3379,7 +3426,16 @@ export function TerminalView({
   const runtimeRef = useRef<CachedRuntime | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
-  const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
+  // Rebuilt on a plugin-theme swap as well as an app-theme switch: the new
+  // object identity is what drives the `applyRuntimeVisualOptions` effect below
+  // to re-push the palette and clear the texture atlas.
+  const termTheme = useMemo(
+    () => buildTerminalTheme(isDarkTheme(appTheme) ? "dark" : "light"),
+    // The revision is a cache-buster, not a value the callback reads; dropping
+    // it strands the terminal on the previous plugin theme.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [appTheme, pluginThemeRevision],
+  );
   const resolvedPreferences = useMemo<TerminalRenderPreferences>(() => ({
     fontFamily: terminalPreferences?.fontFamily ?? DEFAULT_TERMINAL_PREFERENCES.fontFamily,
     fontSize: terminalPreferences?.fontSize ?? DEFAULT_TERMINAL_PREFERENCES.fontSize,

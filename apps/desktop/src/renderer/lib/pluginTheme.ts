@@ -61,8 +61,16 @@ export type PluginThemeDefinition = {
   tokens: PluginThemeTokens;
 };
 
-/** Per-theme ceiling. A palette is dozens of tokens; hundreds is not a palette. */
-export const PLUGIN_THEME_MAX_TOKENS = 120;
+/**
+ * Per-theme ceiling.
+ *
+ * ADE's vocabulary is roughly 160 palette tokens and an official theme sets
+ * 114 of them (see `OFFICIAL_THEME_TOKEN_GROUPS`), so a cap has to sit above
+ * the whole vocabulary or it silently truncates a complete theme. It is still a
+ * cap: the allowlist decides what a token may be, and this decides how many
+ * a single plugin may hand the stylesheet.
+ */
+export const PLUGIN_THEME_MAX_TOKENS = 160;
 
 /** Longest accepted value. Comfortably fits a multi-stop gradient. */
 export const PLUGIN_THEME_MAX_VALUE_CHARS = 240;
@@ -90,13 +98,24 @@ export type SanitizedPluginTheme = {
 };
 
 /**
- * Theme roles ADE can safely derive from the small set of foundational colours
- * every useful palette already supplies. Explicit plugin values win over these
- * defaults, so a theme can still art-direct any individual surface.
+ * Theme roles ADE derives from the small set of foundational colours every
+ * useful palette already supplies.
  *
- * This is what makes a theme feel like a whole product skin instead of an
- * accent swap: chat glass, code, PR cards, project tabs, controls, work panes,
- * gradients and status treatments all follow the palette automatically.
+ * Two rules decide what belongs here, and both were learned the hard way.
+ *
+ * 1. **Derive only what the theme did not set.** {@link expandPluginThemeTokens}
+ *    merges these UNDER the plugin's own tokens, so an explicit value always
+ *    wins and a theme can art-direct any individual surface. A derived value is
+ *    a floor, never an override.
+ * 2. **Derive chrome from the theme's SURFACES, not from its accent.** Ninety
+ *    roles used to be `color-mix(… var(--color-accent) …)`, so a theme that set
+ *    thirty tokens came out as one hue on every hover, tab, control and pane —
+ *    the reason the official set read as twelve tints of one layout. Below, the
+ *    accent appears only where the accent IS the role: the active rail, the
+ *    focus ring, the active separator, the accent gradients. Hovers, open
+ *    states, panes and tabs follow `--color-fg` and the surface ladder, so an
+ *    unset chrome token tracks the theme's backgrounds and a monochrome theme
+ *    stays monochrome.
  */
 const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--color-bg-panel": "var(--color-surface)",
@@ -109,12 +128,12 @@ const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--gradient-accent-soft": "linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 22%, transparent), color-mix(in srgb, var(--color-accent-bright) 10%, transparent))",
   "--gradient-surface": "linear-gradient(180deg, var(--color-surface-raised), var(--color-bg))",
   "--gradient-panel": "linear-gradient(180deg, var(--color-card), var(--color-surface))",
-  "--gradient-popup-border": "linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 24%, var(--color-border)), var(--color-border))",
+  "--gradient-popup-border": "linear-gradient(180deg, color-mix(in srgb, var(--color-border) 60%, var(--color-fg)), var(--color-border))",
   "--pane-bg": "color-mix(in srgb, var(--color-card) 94%, transparent)",
   "--pane-border": "color-mix(in srgb, var(--color-border) 78%, transparent)",
   "--pr-surface": "var(--color-bg)",
   "--pr-thread-card": "var(--color-card)",
-  "--pr-panel-card": "color-mix(in srgb, var(--color-accent) 7%, var(--color-card))",
+  "--pr-panel-card": "var(--color-surface-raised)",
   "--chat-fg": "var(--color-fg)",
   "--chat-accent": "var(--color-accent)",
   "--chat-accent-soft": "color-mix(in srgb, var(--color-accent) 14%, transparent)",
@@ -133,7 +152,7 @@ const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--chat-glass-border": "color-mix(in srgb, var(--color-border) 72%, transparent)",
   "--chat-glass-highlight": "color-mix(in srgb, var(--color-fg) 10%, transparent)",
   "--chat-glass-lowlight": "color-mix(in srgb, var(--color-bg) 34%, transparent)",
-  "--chat-glass-sheen": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--chat-glass-sheen": "color-mix(in srgb, var(--color-fg) 6%, transparent)",
   "--chat-block-bg": "color-mix(in srgb, var(--color-surface-recessed) 76%, transparent)",
   "--chat-block-border": "color-mix(in srgb, var(--color-border) 72%, transparent)",
   "--chat-inline-code-bg": "color-mix(in srgb, var(--color-surface-recessed) 82%, transparent)",
@@ -150,22 +169,23 @@ const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--shell-border": "var(--color-border)",
   "--shell-project-tab-bg": "transparent",
   "--shell-project-tab-fg": "var(--color-muted-fg)",
-  "--shell-project-tab-hover-bg": "color-mix(in srgb, var(--color-accent) 9%, transparent)",
+  "--shell-project-tab-hover-bg": "color-mix(in srgb, var(--color-fg) 7%, transparent)",
   "--shell-project-tab-hover-fg": "var(--color-fg)",
-  "--shell-project-tab-hover-border": "color-mix(in srgb, var(--color-accent) 26%, var(--color-border))",
-  "--shell-project-tab-active-bg": "color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-raised))",
-  "--shell-project-tab-active-fg": "color-mix(in srgb, var(--color-accent) 28%, var(--color-fg))",
-  "--shell-project-tab-active-border": "color-mix(in srgb, var(--color-accent) 46%, transparent)",
-  "--shell-project-tab-open-bg": "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+  "--shell-project-tab-hover-border": "color-mix(in srgb, var(--color-fg) 14%, var(--color-border))",
+  "--shell-project-tab-active-bg": "var(--color-surface-raised)",
+  "--shell-project-tab-active-fg": "var(--color-fg)",
+  "--shell-project-tab-active-border": "var(--color-accent)",
+  "--shell-project-tab-open-bg": "color-mix(in srgb, var(--color-fg) 10%, transparent)",
   "--shell-project-tab-open-fg": "var(--color-fg)",
-  "--shell-project-tab-open-border": "color-mix(in srgb, var(--color-accent) 40%, var(--color-border))",
-  "--shell-project-tab-focus-bg": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--shell-project-tab-open-border": "color-mix(in srgb, var(--color-fg) 18%, var(--color-border))",
+  "--shell-project-tab-focus-bg": "color-mix(in srgb, var(--color-fg) 8%, transparent)",
   "--shell-project-tab-focus-fg": "var(--color-fg)",
-  "--shell-project-tab-focus-border": "color-mix(in srgb, var(--color-accent) 34%, var(--color-border))",
+  "--shell-project-tab-focus-border": "color-mix(in srgb, var(--color-fg) 16%, var(--color-border))",
+  // A focus ring IS the accent — that is the one thing it says.
   "--shell-project-tab-focus-ring": "color-mix(in srgb, var(--color-accent) 24%, transparent)",
   "--shell-sidebar-item-fg": "var(--color-muted-fg)",
   "--shell-sidebar-item-hover-fg": "var(--color-fg)",
-  "--shell-sidebar-item-hover-bg": "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+  "--shell-sidebar-item-hover-bg": "color-mix(in srgb, var(--color-fg) 8%, transparent)",
   "--shell-sidebar-item-active-fg": "var(--color-accent-bright)",
   "--shell-sidebar-item-active-bg": "color-mix(in srgb, var(--color-accent) 18%, transparent)",
   "--shell-sidebar-item-active-rail": "var(--color-accent)",
@@ -173,12 +193,12 @@ const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--shell-control-bg": "var(--color-surface-recessed)",
   "--shell-control-fg": "var(--color-muted-fg)",
   "--shell-control-border": "var(--color-border)",
-  "--shell-control-hover-bg": "color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-recessed))",
+  "--shell-control-hover-bg": "color-mix(in srgb, var(--color-fg) 8%, var(--color-surface-recessed))",
   "--shell-control-hover-fg": "var(--color-fg)",
-  "--shell-control-hover-border": "color-mix(in srgb, var(--color-accent) 30%, var(--color-border))",
+  "--shell-control-hover-border": "color-mix(in srgb, var(--color-fg) 16%, var(--color-border))",
   "--shell-control-open-bg": "color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-recessed))",
   "--shell-control-open-fg": "var(--color-fg)",
-  "--shell-control-open-border": "color-mix(in srgb, var(--color-accent) 44%, var(--color-border))",
+  "--shell-control-open-border": "var(--color-accent)",
   "--shell-control-focus-bg": "var(--shell-control-hover-bg)",
   "--shell-control-focus-fg": "var(--shell-control-hover-fg)",
   "--shell-control-focus-border": "color-mix(in srgb, var(--color-accent) 38%, var(--color-border))",
@@ -186,11 +206,17 @@ const DERIVED_THEME_TOKENS: Readonly<Record<string, string>> = Object.freeze({
   "--work-chrome-surface": "var(--color-surface)",
   "--work-pane-border": "color-mix(in srgb, var(--color-border) 74%, transparent)",
   "--work-pane-header-bg": "color-mix(in srgb, var(--color-card) 88%, transparent)",
-  "--work-popover-item-hover": "color-mix(in srgb, var(--color-accent) 9%, transparent)",
-  "--work-popover-item-active": "color-mix(in srgb, var(--color-accent) 15%, var(--color-card))",
+  "--work-popover-item-hover": "color-mix(in srgb, var(--color-fg) 8%, transparent)",
+  "--work-popover-item-active": "color-mix(in srgb, var(--color-fg) 14%, var(--color-card))",
   "--work-rail-plugin": "var(--color-muted-fg)",
 });
 
+/**
+ * A theme's own tokens, floored by {@link DERIVED_THEME_TOKENS}.
+ *
+ * The spread order is the contract: derived values go in first and the plugin's
+ * own tokens overwrite them, so ADE derives ONLY what the theme left unsaid.
+ */
 export function expandPluginThemeTokens(tokens: PluginThemeTokens): PluginThemeTokens {
   const expanded: PluginThemeTokens = {};
   for (const base of ["dark", "light"] as const) {

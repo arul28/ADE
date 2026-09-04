@@ -9,6 +9,7 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   useAppStore,
 } from "../../state/appStore";
+import { readThemeColor, usePluginThemeRevision } from "../../lib/usePluginThemeRevision";
 
 type TerminalCreateResult = {
   ptyId: string;
@@ -24,6 +25,58 @@ const POLL_ERROR_MAX_DELAY_MS = 2_000;
 
 function terminalResult<T>(response: PersonalChatCallResponse): T {
   return response.result as T;
+}
+
+/**
+ * What this panel's terminal painted before any of it was a token, and what it
+ * still paints when a token is unset.
+ *
+ * Only a dark set exists because the panel's chrome is deliberately dark-only —
+ * the header is `text-white/55` on `#0c0e16` and the section background is that
+ * same hex. A light `background`/`foreground` here would put a pale terminal
+ * inside a dark frame, so those two stay literal and in lockstep with the
+ * chrome; recolouring the whole panel for the light theme is a redesign, not a
+ * token extraction.
+ */
+const PERSONAL_TERMINAL_FALLBACKS = {
+  background: "#0c0e16",
+  foreground: "#ededed",
+  cursor: "#a78bfa",
+  cursorAccent: "#0c0e16",
+  selectionBackground: "rgba(167,139,250,0.22)",
+} as const;
+
+type PersonalTerminalTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
+
+/**
+ * Builds this panel's xterm palette from the live document.
+ *
+ * xterm paints into a canvas from literal colour strings, so custom properties
+ * have to be resolved by hand — which is also why the caller has to rebuild on
+ * an app-theme change AND on `usePluginThemeRevision()`: neither one re-runs a
+ * value that was read once and kept.
+ *
+ * The cursor rides `--color-accent` (whose dark default is exactly the literal
+ * this panel shipped) and the selection rides the app's selection tokens, so a
+ * plugin theme now reaches both.
+ */
+export function buildPersonalTerminalTheme(): PersonalTerminalTheme {
+  // `transparent` is the documented sentinel for "do not force a selection
+  // foreground"; xterm can only express that by the property being absent.
+  const selectionForeground = readThemeColor("--color-selection-fg", "transparent");
+  return {
+    background: PERSONAL_TERMINAL_FALLBACKS.background,
+    foreground: PERSONAL_TERMINAL_FALLBACKS.foreground,
+    cursor: readThemeColor("--color-accent", PERSONAL_TERMINAL_FALLBACKS.cursor),
+    cursorAccent: PERSONAL_TERMINAL_FALLBACKS.cursorAccent,
+    selectionBackground: readThemeColor(
+      "--color-selection-bg",
+      PERSONAL_TERMINAL_FALLBACKS.selectionBackground,
+    ),
+    ...(selectionForeground && selectionForeground !== "transparent"
+      ? { selectionForeground }
+      : null),
+  };
 }
 
 type PersonalChatsApi = Window["ade"]["personalChats"];
@@ -46,6 +99,8 @@ export function PersonalTerminalPanel({
   onClose: () => void;
 }) {
   const terminalPreferences = useAppStore((state) => state.terminalPreferences);
+  const appTheme = useAppStore((state) => state.theme);
+  const pluginThemeRevision = usePluginThemeRevision();
   const personalChatsApi = window.ade.personalChats;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -68,6 +123,10 @@ export function PersonalTerminalPanel({
     setError(null);
     lastDimsRef.current = null;
     const preferences = terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES;
+    // Built here rather than listed as an effect dependency: a theme swap must
+    // repaint the terminal, never tear down and respawn the shell behind it.
+    // The effect below re-pushes the palette onto the live instance instead.
+    const initialTheme = buildPersonalTerminalTheme();
     const terminal = new Terminal({
       allowProposedApi: true,
       convertEol: true,
@@ -76,13 +135,7 @@ export function PersonalTerminalPanel({
       fontSize: Math.round(preferences.fontSize),
       lineHeight: preferences.lineHeight,
       scrollback: preferences.scrollback,
-      theme: {
-        background: "#0c0e16",
-        foreground: "#ededed",
-        cursor: "#a78bfa",
-        cursorAccent: "#0c0e16",
-        selectionBackground: "rgba(167,139,250,0.22)",
-      },
+      theme: initialTheme,
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -229,6 +282,12 @@ export function PersonalTerminalPanel({
     terminal.options.scrollback = preferences.scrollback;
     scheduleFitRef.current?.();
   }, [terminalPreferences]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.theme = buildPersonalTerminalTheme();
+  }, [appTheme, pluginThemeRevision]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#0c0e16]" aria-label="Personal terminal">

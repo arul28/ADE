@@ -2759,19 +2759,82 @@ Theme plugins omit `entry` entirely and run no code. The engine injects a single
 rather than calling `setProperty` inline, which would shadow the cascade.
 Only design-token namespaces are settable: `--color-*`, `--shell-*`, `--chat-*`,
 `--work-*`, `--pane-*`, `--pr-*`, `--gradient-*`. Preview applies without
-persisting and Esc reverts. The theme engine derives coordinated chat glass,
-code, PR cards, project tabs, controls, work panes, gradients, and focus states
-from each palette's foundation; an explicitly supplied token still wins. The
-Marketplace uses theme-specific lifecycle language: **Preview theme** paints the
-current ADE window before installation, **Use theme** persists it in root prefs,
-and **Stop using** returns to ADE's own colours without uninstalling the theme.
-Uninstall remains a separate action and clears the selection when it removes the
-active theme.
+persisting and Esc reverts. The Marketplace uses theme-specific lifecycle
+language: **Preview theme** paints the current ADE window before installation,
+**Use theme** persists it in root prefs, and **Stop using** returns to ADE's own
+colours without uninstalling the theme. Uninstall remains a separate action and
+clears the selection when it removes the active theme.
 
-ADE bundles ten official themes: Paper, Ink, High contrast, Grove, Ocean, Ember,
-Iris, Sakura, Synthwave, and Phosphor. Each ships coordinated light and dark
-palettes and can be evaluated against the full current workspace from its
-Marketplace page.
+#### The official theme spec
+
+An official theme sets **86 required tokens in each of the two modes**, in ten
+groups. `OFFICIAL_THEME_TOKEN_GROUPS` in
+`apps/desktop/src/renderer/components/plugins/marketplaceThemeCatalog.ts` is the
+machine-readable copy of this table, and `officialThemes.test.ts` walks
+`plugins/themes/*` and fails per group, so a theme that forgets the work rail is
+a red suite rather than a grey rail.
+
+| Group | Count | What it paints |
+| --- | --- | --- |
+| `background` | 7 | The six-step surface ladder plus the popover plane |
+| `text` | 4 | Primary, on-card, secondary and muted text |
+| `accent` | 4 | The accent, its foreground, and its bright and deep variants |
+| `borders` | 4 | Border, separator, active separator, glow |
+| `shellChrome` | 24 | Header, sidebar, project tabs and header controls, with their hover, active and open states |
+| `status` | 12 | Success/warning/error/info, the two shell status hues, the attention pair, and the four pressure steps |
+| `workRail` | 6 | Terminal, git, files, iOS, app control, browser |
+| `code` | 13 | The three diff hues, the code plane, and the eight syntax roles |
+| `chart` | 10 | Six categorical series colours plus the four-step activity heat ramp |
+| `selection` | 2 | Selection background and foreground |
+
+The gate applies to the OFFICIAL set only. The manifest parser stays tolerant on
+purpose: a community theme that sets three tokens is a valid theme and always
+was, and the same test suite is what stops that tolerance from quietly applying
+to what ADE ships.
+
+Two further rules hold every official theme to the same bar. **Contrast** —
+`--color-fg` and `--color-secondary-fg` clear WCAG AA (4.5:1) on all six
+surfaces, `--color-muted-fg` clears 3:1, and both `--color-accent-fg` on the
+accent and the active sidebar label on the canvas clear 4.5:1. **Sanitisation** —
+every value passes the same check the paint path runs, so an official theme
+cannot ship a token that is silently dropped at runtime.
+
+#### Derivation
+
+A theme is a floor, not a full stylesheet: `expandPluginThemeTokens` fills the
+roles a theme left unsaid, and an explicitly supplied token always wins.
+
+What changed, and why it matters: derived chrome now follows the theme's
+**surface ladder**, not its accent. Roughly ninety roles used to be a
+`color-mix` of `--color-accent`, so a theme that stopped at a palette came out
+as one hue on every hover, tab, control and pane — which is why an earlier
+official set read as tints of one layout. The accent is now left for the roles
+that mean "accent": the active rail, focus rings, the active separator, the
+accent gradients and the chat accent family.
+
+#### The bundled set
+
+ADE bundles twelve official themes. Each sets the full spec in both modes and
+can be evaluated against the whole current workspace from its Marketplace page.
+
+| Theme | What is distinctive |
+| --- | --- |
+| Ink | Blue-black canvas, steel chrome, desaturated hues. The quiet one. |
+| Paper | Warm off-white stock and ink-brown text, for daylight. |
+| High contrast | The accessibility theme: pure black or white, visible borders, hues chosen for separation. |
+| Phosphor | Green-screen chrome over a full-colour syntax palette. |
+| Frost | A narrow band of arctic blue-grey; panels separate by edge, not brightness. |
+| Kiln | Warm brown-grey ground under fired orange and olive. |
+| Mocha | Lavender-tinted grey with pastel hues at one lightness. Pairs with Latte. |
+| Latte | Light-first pastel: cool paper, violet accent, hues tuned for a bright room. |
+| Spectre | Slate-violet under saturated pink, cyan and lime. The loud one. |
+| Midnight | Deep indigo, dim chrome, bright code, genuinely receding comments. |
+| Rose Ash | Ash-violet with dusty rose and gold; colour that still reads as neutral. |
+| Solar Dusk | One set of hues over two grounds — teal-black night, parchment day. |
+
+Several palettes are inspired by well-known editor themes. Colour values are not
+copyrightable and every value is ours, shifted for ADE's surfaces; the upstream
+names and marks are not used and no upstream file is copied.
 
 ### Discovery
 
@@ -2910,7 +2973,7 @@ therefore still draws vocabulary panels, and the table describes that.
 | `ade-app-control` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled Electron Control pane (`canvas` / `electron-control`); phone and terminal list a status row. CDP stays in core. |
 
 `plugins/` also holds two plugins that are not part of the extraction — `ade-voice`
-(1,659 lines) and `ade-log-viewer` (489) — plus three themes. They add capability
+(1,659 lines) and `ade-log-viewer` (489) — plus twelve themes. They add capability
 rather than replacing a compiled surface, so neither polarity applies to them.
 
 Every extracted product is a real `supersedes` plugin. A **gating shell** — a
@@ -2997,8 +3060,11 @@ oversight:
   plugin published one. So a plugin-declared URL gets no chip and no attribution
   there, while desktop, the web client and the composer's tokenizer all draw it.
 - **iOS themes are accent-only.**
-- **Theme coverage is token-backed surfaces (~52%).** Raw hex and Tailwind
-  colors elsewhere are unaffected; that cleanup is deferred.
+- **Theme coverage is token-backed surfaces.** Charts, the activity heat ramp,
+  code syntax, diff and terminal selection are now token-backed too
+  (`--color-chart-*`, `--color-heat-*`, `--color-syntax-*`, `--color-diff-*`,
+  `--color-selection-*`). Raw hex and Tailwind colors elsewhere are unaffected;
+  that cleanup is deferred.
 - **Presence fan-out nudges are desktop-originated.** The brain has no outbound
   machine-command client, so presence converges by pull-on-demand when only the
   brain is running.

@@ -103,6 +103,9 @@ describe("sanitizePluginThemeTokens", () => {
     expect(buildPluginThemeCss(tokens)).not.toContain("display: none");
   });
 
+  // The cap sits above ADE's whole palette vocabulary on purpose: an official
+  // theme sets 114 tokens, and a cap under that would truncate a complete
+  // theme rather than stop an abusive one.
   it("caps the number of tokens a single theme may set", () => {
     const dark: Record<string, string> = {};
     for (let index = 0; index < PLUGIN_THEME_MAX_TOKENS + 5; index += 1) {
@@ -110,6 +113,7 @@ describe("sanitizePluginThemeTokens", () => {
     }
     const { tokens, rejected } = sanitizePluginThemeTokens({ dark });
 
+    expect(PLUGIN_THEME_MAX_TOKENS).toBeGreaterThanOrEqual(114);
     expect(Object.keys(tokens.dark ?? {})).toHaveLength(PLUGIN_THEME_MAX_TOKENS);
     expect(rejected).toHaveLength(5);
   });
@@ -145,8 +149,62 @@ describe("expandPluginThemeTokens", () => {
 
     expect(expanded.dark?.["--chat-accent"]).toBe("var(--color-accent)");
     expect(expanded.dark?.["--shell-control-open-bg"]).toContain("var(--color-accent)");
-    expect(expanded.dark?.["--pr-panel-card"]).toContain("var(--color-card)");
+    expect(expanded.dark?.["--pr-panel-card"]).toContain("var(--color-surface-raised)");
     expect(expanded.dark?.["--chat-card-bg"]).toBe("#101828");
+  });
+
+  /**
+   * The rule the whole official set depends on. Derivation is a floor: a theme
+   * that names a chrome token keeps its own value, whatever the engine would
+   * have computed for it.
+   */
+  it("derives only the tokens the theme did not set", () => {
+    const authored = {
+      "--shell-sidebar-item-hover-bg": "#123456",
+      "--shell-control-open-bg": "#654321",
+      "--pane-border": "#abcdef",
+    };
+    const expanded = expandPluginThemeTokens({ dark: authored });
+
+    for (const [name, value] of Object.entries(authored)) {
+      expect(expanded.dark?.[name]).toBe(value);
+    }
+    // ...and still fills what was left unsaid.
+    expect(expanded.dark?.["--shell-project-tab-hover-bg"]).toBeTruthy();
+  });
+
+  /**
+   * Ninety roles used to be a `color-mix` of `--color-accent`, so any theme
+   * that stopped at a palette came out as one hue on every hover, tab, control
+   * and pane. Chrome now follows the surface ladder; the accent is left for the
+   * roles that mean "accent".
+   */
+  it("derives shell chrome from the surface ladder rather than the accent", () => {
+    const chrome = expandPluginThemeTokens({ dark: { "--color-accent": "#3B82F6" } }).dark ?? {};
+
+    const surfaceLed = [
+      "--shell-project-tab-hover-bg",
+      "--shell-project-tab-active-bg",
+      "--shell-project-tab-open-bg",
+      "--shell-project-tab-focus-bg",
+      "--shell-sidebar-item-hover-bg",
+      "--shell-control-hover-bg",
+      "--work-popover-item-hover",
+      "--work-popover-item-active",
+    ];
+    for (const token of surfaceLed) {
+      expect(chrome[token]).not.toContain("var(--color-accent)");
+    }
+
+    const accentLed = [
+      "--shell-sidebar-item-active-rail",
+      "--shell-project-tab-focus-ring",
+      "--shell-control-focus-ring",
+      "--shell-control-open-border",
+    ];
+    for (const token of accentLed) {
+      expect(chrome[token]).toContain("var(--color-accent");
+    }
   });
 });
 

@@ -412,8 +412,21 @@ function chooseCatalogueListing(
     };
   }
 
-  if (order === 0 && live.manifest === null && bundled.manifest !== null) {
-    return { ...live, manifest: bundled.manifest };
+  // Equal version, directory wins — but the directory publishes a LISTING, not
+  // a package. `listingFromRegistryEntry` has no manifest and no tokens to give
+  // (`themeTokens: null`), so once a theme is published the live row replaces
+  // the bundled one and the Marketplace preview goes blank for a theme that
+  // ships inside the app. Inherit both from the bundled copy at equal version:
+  // same id, same version, same bytes, so the bundled manifest IS this entry's
+  // manifest. The manifest's own `theme.tokens` is the last fallback, for a
+  // bundled listing that carries a manifest but no denormalised token set.
+  if (order === 0 && bundled.manifest !== null) {
+    const manifest = live.manifest ?? bundled.manifest;
+    return {
+      ...live,
+      manifest,
+      themeTokens: live.themeTokens ?? bundled.themeTokens ?? manifest.theme?.tokens ?? null,
+    };
   }
   return live;
 }

@@ -116,6 +116,58 @@
   --color-diff-add: #22c55e;
   --color-diff-del: #ef4444;
   --color-diff-hunk: #3b82f6;
+
+  /* Data-series palette.
+
+     Six categorical colours for charts, legends and segmented meters. They are
+     an ORDER, not a set: a chart with two series uses 1 and 2, so the first
+     few have to stay apart from each other before the rest do. Kept clear of
+     the status colours above so a series is never misread as a state, and of
+     `--color-accent` so a series never impersonates the app's own emphasis.
+     Read from JavaScript as well as CSS — see `usePluginThemeRevision.ts` for
+     why the JS readers need a repaint signal. */
+  --color-chart-1: #60A5FA;
+  --color-chart-2: #2DD4BF;
+  --color-chart-3: #E0A82E;
+  --color-chart-4: #A78BFA;
+  --color-chart-5: #F472B6;
+  --color-chart-6: #A3E635;
+
+  /* Selection (text and terminal).
+
+     `--color-selection-fg: transparent` is a documented SENTINEL, not a colour:
+     it means "do not force a selection foreground", and a consumer that reads
+     it omits the property entirely so selected text keeps whatever colour it
+     already had. A theme that genuinely wants to repaint selected glyphs sets
+     a real colour here instead. There is deliberately no global `::selection`
+     rule — these tokens describe the selection, they do not install one. */
+  --color-selection-bg: rgba(245, 158, 11, 0.26);
+  --color-selection-fg: transparent;
+
+  /* Syntax highlighting for code blocks.
+
+     The highlighter emits these as `var()` references rather than baked hexes,
+     so swapping a theme recolours code that is already on screen without
+     re-running the highlighter. Values track GitHub Dark Dimmed, which is what
+     ADE shipped before these were tokens. */
+  --color-syntax-keyword: #F47067;
+  --color-syntax-string: #96D0FF;
+  --color-syntax-number: #6CB6FF;
+  --color-syntax-comment: #768390;
+  --color-syntax-function: #DCBDFB;
+  --color-syntax-type: #F69D50;
+  --color-syntax-variable: #ADBAC7;
+  --color-syntax-operator: #F47067;
+
+  /* Activity heat ramp — the four non-empty intensity steps of the usage
+     heatmap. A sequential SCALE, not four independent hues: every step has to
+     out-contrast the one below it against the card it sits on, and the hue
+     turns cool → warm so the order survives greyscale and colour-vision
+     deficiency. A theme overriding one of these should move all four. */
+  --color-heat-1: #3A4E63;
+  --color-heat-2: #2F7A80;
+  --color-heat-3: #DE6039;
+  --color-heat-4: #FF9A3D;
   /* Muted "passed/green" for PR checks — desaturated so green reads as a quiet
      status, not a neon highlight. Resolves per-theme via var() at use time. */
   --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
@@ -348,6 +400,39 @@
   --color-diff-add: #16a34a;
   --color-diff-del: #dc2626;
   --color-diff-hunk: #2563eb;
+
+  /* Data-series palette — the dark block's note applies; these are the deeper
+     values, for a mark drawn on a pale card. */
+  --color-chart-1: #2563EB;
+  --color-chart-2: #0F766E;
+  --color-chart-3: #B45309;
+  --color-chart-4: #7C5CE0;
+  --color-chart-5: #BE185D;
+  --color-chart-6: #4D7C0F;
+
+  /* Selection — `--color-selection-fg: transparent` is the same sentinel the
+     dark block documents: "do not force a selection foreground". */
+  --color-selection-bg: rgba(194, 35, 35, 0.16);
+  --color-selection-fg: transparent;
+
+  /* Syntax highlighting — GitHub Light values, so code blocks stop being dark
+     in the light theme. See the dark block for why these are `var()`-emitted. */
+  --color-syntax-keyword: #CF222E;
+  --color-syntax-string: #0A3069;
+  --color-syntax-number: #0550AE;
+  --color-syntax-comment: #6E7781;
+  --color-syntax-function: #8250DF;
+  --color-syntax-type: #953800;
+  --color-syntax-variable: #24292F;
+  --color-syntax-operator: #CF222E;
+
+  /* Activity heat ramp — the light-theme scale. "Hot" has to mean luminous on
+     a dark card and dense on a white one, which is why the top step here is a
+     deep brick where the dark block's is a bright orange. */
+  --color-heat-1: #BCCEDA;
+  --color-heat-2: #79ABA5;
+  --color-heat-3: #C96C1E;
+  --color-heat-4: #B23A20;
   /* Plugin identity palette — the dark block's note applies; these are the
      deeper values, for a glyph drawn on a pale tile. */
   --plugin-identity-0: #5B5BD6;

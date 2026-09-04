@@ -170,6 +170,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import {
   TerminalView,
+  buildTerminalTheme,
   __resetTerminalRuntimesForTests,
   disposeTerminalRuntimesForProjectChange,
   getTerminalRuntimeSnapshot,
@@ -3694,5 +3695,47 @@ describe("stripFullScreenRedrawSequences", () => {
 
   it("returns the empty string unchanged", () => {
     expect(stripFullScreenRedrawSequences("")).toBe("");
+  });
+});
+
+describe("buildTerminalTheme", () => {
+  afterEach(() => {
+    document.documentElement.style.removeProperty("--color-selection-bg");
+    document.documentElement.style.removeProperty("--color-selection-fg");
+  });
+
+  it("reproduces the pre-token literals when no selection tokens are declared", () => {
+    expect(buildTerminalTheme("dark")).toEqual({
+      background: "#0c0e16",
+      foreground: "#EDEDED",
+      cursor: "#F59E0B",
+      cursorAccent: "#0c0e16",
+      selectionBackground: "rgba(245, 158, 11, 0.26)",
+    });
+    expect(buildTerminalTheme("light")).toEqual({
+      background: "#F2F0ED",
+      foreground: "#1C1917",
+      cursor: "#C22323",
+      cursorAccent: "#FDFBF7",
+      selectionBackground: "rgba(194, 35, 35, 0.16)",
+    });
+  });
+
+  it("omits selectionForeground entirely for the transparent sentinel", () => {
+    document.documentElement.style.setProperty("--color-selection-fg", "transparent");
+    const theme = buildTerminalTheme("dark") as Record<string, unknown>;
+    expect("selectionForeground" in theme).toBe(false);
+  });
+
+  it("takes the selection pair from the tokens when a theme declares them", () => {
+    document.documentElement.style.setProperty("--color-selection-bg", "rgba(0, 128, 255, 0.4)");
+    document.documentElement.style.setProperty("--color-selection-fg", "#101010");
+    expect(buildTerminalTheme("dark")).toMatchObject({
+      selectionBackground: "rgba(0, 128, 255, 0.4)",
+      selectionForeground: "#101010",
+      // Untokenised literals are untouched by a selection override.
+      background: "#0c0e16",
+      cursor: "#F59E0B",
+    });
   });
 });
