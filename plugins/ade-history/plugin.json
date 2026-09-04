@@ -1,6 +1,6 @@
 {
   "name": "ade-history",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "History",
   "description": "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   "icon": "clock-counter-clockwise",

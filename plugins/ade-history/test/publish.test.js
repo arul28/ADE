@@ -132,7 +132,7 @@ describe("the history publish seam", () => {
     assert.equal(paletteActivity.webviewSurfaceId, "activity");
     assert.equal(paletteActivity.actionId, "openActivity");
     assert.equal(pane.webviewSurfaceId, "commits");
-    assert.equal(MANIFEST.version, "2.0.0");
+    assert.equal(MANIFEST.version, "2.0.1");
     assert.equal(MANIFEST.collections["ui-state"].sync, false);
   });
 });

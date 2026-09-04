@@ -426,7 +426,6 @@ describe("installing ade-linear from the bundled directory", () => {
       // `dialog` is what tells them apart, and it is why the payload carries it.
       "dialog-section",
       "dialog-section",
-      "graph-node",
       "settings-section",
       "command-palette-action",
       // The transcript's issue context.

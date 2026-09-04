@@ -1,6 +1,6 @@
 {
   "name": "ade-graph",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "Graph",
   "description": "Lanes, commits and PR overlays on one canvas \u2014 the same Graph ADE already ships, as a plugin.",
   "icon": "graph",

@@ -59,7 +59,7 @@ describe("review panels", () => {
  */
 describe("the review manifest", () => {
   it("declares two webview surfaces, both built and both desktop-only", () => {
-    assert.equal(manifest.version, "2.0.0");
+    assert.equal(manifest.version, "2.0.1");
     assert.deepEqual([...surfaceById.keys()], ["runs", "launch"]);
     for (const surface of manifest.surfaces) {
       assert.equal(surface.kind, "webview");

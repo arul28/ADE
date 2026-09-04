@@ -1,6 +1,6 @@
 {
   "name": "ade-cursor-cloud",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "Cursor Cloud",
   "description": "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
   "icon": "brand:cursor",

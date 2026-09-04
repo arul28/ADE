@@ -87,7 +87,7 @@ function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
  */
 const GRAPH = manifest({
   name: "ade-graph",
-  version: "2.0.0",
+  version: "2.0.1",
   displayName: "Graph",
   description: "Lanes, commits and PR overlays on one canvas — the same Graph ADE already ships, as a plugin.",
   icon: "graph",
@@ -150,7 +150,7 @@ const GRAPH = manifest({
  */
 const REVIEW = manifest({
   name: "ade-review",
-  version: "2.0.0",
+  version: "2.0.1",
   displayName: "Review",
   description: "Run AI review passes over a lane, a commit range, uncommitted changes, or a pull request, and act on the findings.",
   icon: "git-pull-request",
@@ -281,7 +281,7 @@ const REVIEW = manifest({
  */
 const HISTORY = manifest({
   name: "ade-history",
-  version: "2.0.0",
+  version: "2.0.1",
   displayName: "History",
   description: "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   icon: "clock-counter-clockwise",
@@ -386,7 +386,7 @@ const HISTORY = manifest({
  */
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "2.1.0",
+  version: "2.1.1",
   displayName: "Linear",
   description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   icon: "brand:linear",
@@ -439,7 +439,7 @@ const LINEAR = manifest({
   surfaces: [
     { kind: "webview", id: "issues", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", order: 55, mobile: false },
     { kind: "webview", id: "settings", title: "Linear connection", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "settings", mobile: false },
-    { kind: "webview", id: "picker", title: "Attach a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 520, height: 560 }, mobile: false },
+    { kind: "webview", id: "picker", title: "Attach a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 940, height: 640 }, mobile: false },
     { kind: "webview", id: "dialog-picker", title: "Link a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", mobile: false },
     { kind: "webview", id: "badge-card", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", popover: { width: 300, height: 280 }, mobile: false },
     { kind: "webview", id: "issue-context", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", mobile: false, popover: { width: 360, height: 420 } },
@@ -463,7 +463,6 @@ const LINEAR = manifest({
     // guests inside ADE's own dialogs and answering them with `dialog.submit`.
     { socket: "dialog-section", surface: "lanes", id: "create-lane-issue", label: "Linear issue", icon: "brand:linear", panelId: "issues", dialog: "create-lane", webviewSurfaceId: "dialog-picker" },
     { socket: "dialog-section", surface: "prs", id: "create-pr-issue", label: "Linear issue", icon: "brand:linear", panelId: "issues", dialog: "create-pr", webviewSurfaceId: "dialog-picker" },
-    { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "brand:linear" },
     // `section` puts the card on Settings > Integrations rather than on
     // General, which is where an unnamed section lands.
     { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings", section: "integrations", webviewSurfaceId: "settings" },
@@ -958,7 +957,7 @@ const VOICE = manifest({
  */
 const CURSOR_CLOUD = manifest({
   name: "ade-cursor-cloud",
-  version: "2.0.0",
+  version: "2.0.1",
   displayName: "Cursor Cloud",
   description: "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
   icon: "brand:cursor",
