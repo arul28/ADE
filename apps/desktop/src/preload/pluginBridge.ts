@@ -427,12 +427,12 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
     /**
      * The plugin-page relay, as the renderer sees it.
      *
-     * Five members and no policy. Which verbs exist, who may ask, what a guest
+     * Six members and no policy. Which verbs exist, who may ask, what a guest
      * is allowed to do while its surface is off screen — all of that is decided
      * in main (`pluginWebviewBridgeServer.ts`), because a renderer that could
      * decide any of it would be a renderer a compromised page could argue with.
      * This is the wire and nothing else: two subscriptions main pushes on, and
-     * three answers the window sends back.
+     * four answers the window sends back.
      *
      * Every payload crosses as `unknown`. The renderer validates each one
      * against the shared types before it acts, for the same reason the guest's

@@ -9,7 +9,7 @@ import {
   type PluginManifest,
   type PluginProviderKeyId,
 } from "../../../shared/plugins/manifest";
-import { isRecord } from "../../../shared/plugins/parse";
+import { httpsUrl, isRecord } from "../../../shared/plugins/parse";
 import { pluginChatCapabilities } from "../../../shared/plugins/chatCapabilities";
 import {
   isPluginEntityKind,
@@ -77,6 +77,8 @@ import {
   type PluginSessionIssues,
   readPluginNotificationDeeplink,
   readPluginChatArtifactSourceUrl,
+  sanitizePluginChatHeader,
+  type PluginChatHeader,
   type PluginNotificationInput,
   type PluginNotificationResult,
   type PluginSchedule,
@@ -697,7 +699,12 @@ export function createPluginSdkServer(deps: {
     attachBranch: (
       pluginId: string,
       sessionId: string,
-      input: { branch: string; remote?: string },
+      input: { branch: string; remote?: string; prUrl?: string },
+    ) => Promise<void>;
+    setHeader: (
+      pluginId: string,
+      sessionId: string,
+      header: PluginChatHeader | null,
     ) => Promise<void>;
     hydrate: (
       pluginId: string,
@@ -1445,11 +1452,38 @@ export function createPluginSdkServer(deps: {
           const remote = raw.remote === undefined || raw.remote === null
             ? undefined
             : requireBranchName(raw.remote, "input.remote");
+          let prUrl: string | undefined;
+          if (raw.prUrl !== undefined && raw.prUrl !== null && raw.prUrl !== "") {
+            const href = httpsUrl(raw.prUrl);
+            if (!href) {
+              throw new PluginSdkError(
+                "invalid_args",
+                '"input.prUrl" must be an https URL.',
+              );
+            }
+            prUrl = href;
+          }
           chargeChatWrite(sessionId);
           await chat.attachBranch(pluginId, sessionId, {
             branch: requireBranchName(raw.branch, "input.branch"),
             ...(remote !== undefined ? { remote } : {}),
+            ...(prUrl !== undefined ? { prUrl } : {}),
           });
+          return null;
+        }
+
+        case "chat.setHeader": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = params.header;
+          if (raw === undefined) {
+            throw new PluginSdkError("invalid_args", '"header" is required.');
+          }
+          if (raw !== null && !isRecord(raw)) {
+            throw new PluginSdkError("invalid_args", '"header" must be an object or null.');
+          }
+          chargeChatWrite(sessionId);
+          await chat.setHeader(pluginId, sessionId, raw === null ? null : sanitizePluginChatHeader(raw));
           return null;
         }
 

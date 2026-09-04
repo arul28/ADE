@@ -84,7 +84,10 @@ beforeEach(() => {
   invoked.length = 0;
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 afterAll(() => {
   delete (window as unknown as { ade?: unknown }).ade;
@@ -184,5 +187,54 @@ describe("the split button on a toolbar action", () => {
       fireEvent.click(screen.getByText("Mop up"));
     });
     expect(invoked.map((entry) => entry.action)).toEqual(["mopUp"]);
+  });
+});
+
+describe("the window header cluster", () => {
+  it("shows every app-surface action instead of folding at two", async () => {
+    render(<PluginToolbarActions surface="app" layout="header" />);
+
+    await waitFor(() => expect(screen.getByLabelText("Reorder Drink")).toBeTruthy());
+    expect(screen.getByLabelText("Reorder Pour")).toBeTruthy();
+    expect(screen.getByLabelText("Reorder Spill")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "1 more plugin actions" })).toBeNull();
+    expect(screen.queryByLabelText("More plugin actions")).toBeNull();
+  });
+
+  it("puts hidden buttons and Reorder behind a chevron only when something is clipped", async () => {
+    const offset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+      configurable: true,
+      get() {
+        const node = this as HTMLElement;
+        if (node.hasAttribute("data-plugin-toolbar-measure")) return 40;
+        return offset?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        const node = this as HTMLElement;
+        if (node.getAttribute("data-plugin-toolbar-layout") === "header") return 70;
+        return client?.get?.call(this) ?? 0;
+      },
+    });
+
+    try {
+      render(<PluginToolbarActions surface="app" layout="header" />);
+      await waitFor(() => expect(screen.getByLabelText("More plugin actions")).toBeTruthy());
+      expect(screen.queryByRole("button", { name: "1 more plugin actions" })).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("More plugin actions"));
+      });
+      expect(screen.getByText("Reorder")).toBeTruthy();
+    } finally {
+      if (offset) Object.defineProperty(HTMLElement.prototype, "offsetWidth", offset);
+      else delete (HTMLElement.prototype as { offsetWidth?: unknown }).offsetWidth;
+      if (client) Object.defineProperty(HTMLElement.prototype, "clientWidth", client);
+      else delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+    }
   });
 });

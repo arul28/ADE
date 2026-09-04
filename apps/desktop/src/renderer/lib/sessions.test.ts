@@ -22,6 +22,8 @@ describe("cursorOwnsSessionName", () => {
     expect(cursorOwnsSessionName({ cursorCloudAgentId: "  " })).toBe(false);
     expect(cursorOwnsSessionName({ cursorCloudAgentId: null })).toBe(false);
     expect(cursorOwnsSessionName({ cursorCloudAgentId: undefined })).toBe(false);
+    expect(cursorOwnsSessionName({ runtimeRef: { pluginId: "p", runtimeId: "r", externalId: "e", ownsName: true } })).toBe(true);
+    expect(cursorOwnsSessionName({ runtimeRef: { pluginId: "p", runtimeId: "r", externalId: "e" } })).toBe(false);
   });
 });
 

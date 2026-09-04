@@ -29,6 +29,11 @@ import { submitPluginWebviewDialogAnswer } from "./pluginWebviewDialogStore";
 import { applyPluginActionNavigation } from "./pluginActionDispatch";
 import { closePluginWebviewGuest, getPluginWebviewGuest } from "./pluginWebviewGuestRegistry";
 import { openPluginWebviewConfirm } from "./pluginWebviewConfirmStore";
+import { openPluginWebviewPicker } from "./pluginWebviewPickerStore";
+import {
+  pluginWebviewPickerImmediateNull,
+  refusePluginWebviewPicker,
+} from "./pluginWebviewPickerPolicy";
 import {
   closePluginPrompt,
   getPluginPrompt,
@@ -462,6 +467,27 @@ export async function handlePluginWebviewUiRequest(
       if (!error) return okAnswer;
       recordPluginWebviewPageError(request.guestKey, error);
       return okAnswer;
+    }
+
+    case "ui.pickModel":
+    case "ui.pickLane":
+    case "ui.pickPermissionMode":
+    case "ui.pickReasoningEffort":
+    case "ui.pickProvider": {
+      // ADE's own picker, over the guest. Null is dismissal; a client that
+      // cannot ask refuses with a sentence instead — see picker policy.
+      const refusal = refusePluginWebviewPicker(request.verb, args);
+      if (refusal) return { ok: false, message: refusal };
+      if (pluginWebviewPickerImmediateNull(request.verb, args)) {
+        return { ok: true, value: null };
+      }
+      const value = await openPluginWebviewPicker({
+        pluginId,
+        guestKey: request.guestKey,
+        verb: request.verb,
+        args,
+      });
+      return { ok: true, value };
     }
 
     default: {

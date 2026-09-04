@@ -8,7 +8,7 @@ import {
   canonicalInputFromSummary,
   sessionNeedsYou,
 } from "../../lib/terminalAttention";
-import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
+import { cursorOwnsSessionName, isChatToolType, sessionRenameBlockedMessage } from "../../lib/sessions";
 import {
   snoozeConfirmationLabel,
   snoozeDeadlineIso,
@@ -26,12 +26,12 @@ const UNDO_TOAST_MS = 5_000;
 
 /** Rename either a chat or a terminal through its owning runtime binding. */
 export async function renameSession(
-  session: Pick<TerminalSessionSummary, "id" | "toolType" | "cursorCloudAgentId">,
+  session: Pick<TerminalSessionSummary, "id" | "toolType" | "cursorCloudAgentId" | "runtimeRef">,
   title: string,
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   if (cursorOwnsSessionName(session)) {
-    throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    throw new Error(sessionRenameBlockedMessage(session));
   }
   const input = { sessionId: session.id, title, manuallyNamed: true };
   if (isChatToolType(session.toolType)) {

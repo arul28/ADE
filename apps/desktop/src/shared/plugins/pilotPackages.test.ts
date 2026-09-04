@@ -128,7 +128,7 @@ describe("ade-graph", () => {
 
   it("supersedes the built-in Graph tab without naming it", () => {
     expect(manifest.official).toBe(true);
-    expect(manifest.surfaces[0]).toMatchObject({ kind: "tab", id: "graph", panelId: "graph" });
+    expect(manifest.surfaces[0]).toMatchObject({ kind: "webview", id: "graph", panelId: "graph" });
     // Not `toMatchObject` with `builtin: undefined` — that passes on a key that
     // is present and undefined. The field must be absent.
     expect(Object.hasOwn(manifest.surfaces[0]!, "builtin")).toBe(false);

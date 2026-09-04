@@ -1146,11 +1146,24 @@ enum AgentChatSpawnKind: Equatable, Codable {
 
 /// Which plugin owns a chat's turns. Mirrors `AgentChatRuntimeRef` in
 /// `apps/desktop/src/shared/types/chat.ts`.
+struct AgentChatRuntimeCapabilities: Codable, Equatable, Hashable {
+  var followUp: Bool = true
+  var interrupt: Bool = true
+  var hydrate: Bool = true
+  var artifacts: Bool = true
+}
+
 struct AgentChatRuntimeRef: Codable, Equatable, Hashable {
   var pluginId: String
   var runtimeId: String
   /// The plugin's own identifier for the conversation. Opaque to ADE.
   var externalId: String
+  /// Stamped from the plugin's manifest so a client that cannot read one still
+  /// knows whether Stop and follow-up exist. Older hosts omit it.
+  var capabilities: AgentChatRuntimeCapabilities? = nil
+  /// True when this runtime owns the session's display name, so ADE must not
+  /// offer a local rename. Absent means ADE may rename. Older hosts omit it.
+  var ownsName: Bool? = nil
 }
 
 /// What to call a plugin-owned chat, and what to draw beside it. Mirrors
@@ -1221,6 +1234,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// nothing — the field is the whole header, so an absent one means ADE's own
   /// title stands alone.
   var pluginHeader: PluginChatHeader? = nil
+  /// HTTPS URL a plugin attached as this chat's PR. Older hosts omit it.
+  var pluginPrUrl: String? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -1301,6 +1316,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
       && lhs.pluginHeader == rhs.pluginHeader
+      && lhs.pluginPrUrl == rhs.pluginPrUrl
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId
@@ -4542,6 +4558,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Present when this Work row is a Cursor Cloud chat. Cursor owns that
   /// agent's name, so ADE hides Rename.
   var cursorCloudAgentId: String? = nil
+  /// Set when a PLUGIN owns this Work row's turns. Older hosts omit it.
+  var runtimeRef: AgentChatRuntimeRef? = nil
   // Orchestration-mode fields (populated when the session is part of an orchestration run)
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
@@ -4592,6 +4610,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.chatSessionId == rhs.chatSessionId
       && lhs.pendingInputItemId == rhs.pendingInputItemId
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
+      && lhs.runtimeRef == rhs.runtimeRef
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationTag == rhs.orchestrationTag
@@ -4639,6 +4658,7 @@ extension TerminalSessionSummary {
     case chatSessionId
     case pendingInputItemId
     case cursorCloudAgentId
+    case runtimeRef
     case orchestrationRunId
     case orchestrationRole
     case orchestrationTag
@@ -4685,6 +4705,7 @@ extension TerminalSessionSummary {
     chatSessionId = try container.decodeIfPresent(String.self, forKey: .chatSessionId)
     pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
+    runtimeRef = try container.decodeIfPresent(AgentChatRuntimeRef.self, forKey: .runtimeRef)
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)

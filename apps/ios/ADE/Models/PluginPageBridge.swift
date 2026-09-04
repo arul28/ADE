@@ -123,6 +123,10 @@ enum PluginPageBridgeMethod: String, CaseIterable, Equatable {
     /// Third-party socket contributions a page may draw, and press.
     case socketsList = "sockets.list"
     case socketsInvoke = "sockets.invoke"
+    /// Host-engine placement. The phone has no inspector or simulator mirror
+    /// to paint, so both verbs refuse by name rather than decoding as unknown.
+    case hostEnginePlace = "hostEngine.place"
+    case hostEngineRelease = "hostEngine.release"
     /// The guest reporting its own uncaught error or content-policy violation.
     ///
     /// On desktop the page's script reports this on its own channel. The phone

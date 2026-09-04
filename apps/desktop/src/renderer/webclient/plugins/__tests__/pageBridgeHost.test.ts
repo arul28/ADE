@@ -42,7 +42,12 @@ function fakeGuest(): { window: Window; sent: Array<Record<string, unknown>> } {
   return { window, sent };
 }
 
-function build(overrides: Partial<PluginPageHostOptions> = {}) {
+function build(
+  overrides: Partial<Omit<PluginPageHostOptions, "ui" | "data">> & {
+    ui?: Partial<PluginPageHostOptions["ui"]>;
+    data?: Partial<PluginPageHostOptions["data"]>;
+  } = {},
+) {
   const guest = fakeGuest();
   const ui = {
     toast: vi.fn(() => ({ id: "toast-1" })),
@@ -62,6 +67,9 @@ function build(overrides: Partial<PluginPageHostOptions> = {}) {
     configGet: vi.fn(async () => ({})),
     configSet: vi.fn(async () => ({})),
   };
+  const { ui: uiOverride, data: dataOverride, ...rest } = overrides;
+  const mergedUi = { ...ui, ...uiOverride };
+  const mergedData = { ...data, ...dataOverride } as typeof data;
   const host = createPluginPageHost({
     guestWindow: () => guest.window,
     hostWindow: window,
@@ -70,11 +78,11 @@ function build(overrides: Partial<PluginPageHostOptions> = {}) {
     context: { subject: null, placement: "tab" },
     bundle: BUNDLE,
     theme: () => ({ scheme: "dark", tokens: { "--color-bg": "#000" } }),
-    ui,
-    data,
-    ...overrides,
+    ...rest,
+    ui: mergedUi,
+    data: mergedData,
   });
-  return { host, guest, ui, data };
+  return { host, guest, ui: mergedUi, data: mergedData };
 }
 
 /**
@@ -253,6 +261,31 @@ describe("invoke", () => {
     // asking a second question and building a wizard out of one hop.
     expect(applied[1]).toEqual({ result: { done: true }, answeringPrompt: true });
     expect(guest.sent[0]).toMatchObject({ ok: true, value: { done: true } });
+  });
+});
+
+describe("host pickers", () => {
+  it("refuses when this client has no picker, rather than answering null", async () => {
+    const { host, guest } = build();
+    hosts.push(host);
+    fromGuest(guest.window, { kind: "request", id: 20, method: "ui.pickModel", params: {} });
+    await settle();
+    expect(guest.sent[0]).toMatchObject({ id: 20, ok: false });
+    expect(String(guest.sent[0].message)).toMatch(/can’t open that picker/);
+  });
+
+  it("hands the verb to options.ui.pick when the client can ask", async () => {
+    const pick = vi.fn(async () => ({ laneId: "lane-1", name: "Main" }));
+    const { host, guest } = build({ ui: { pick } });
+    hosts.push(host);
+    fromGuest(guest.window, { kind: "request", id: 21, method: "ui.pickLane", params: { value: "lane-1" } });
+    await settle();
+    expect(pick).toHaveBeenCalledWith("ui.pickLane", { value: "lane-1" });
+    expect(guest.sent[0]).toMatchObject({
+      id: 21,
+      ok: true,
+      value: { laneId: "lane-1", name: "Main" },
+    });
   });
 });
 

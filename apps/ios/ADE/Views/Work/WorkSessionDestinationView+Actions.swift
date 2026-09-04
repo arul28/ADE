@@ -918,12 +918,24 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func presentSessionRename() {
-    if CursorCloudNaming.ownsName(composerChatSummary?.cursorCloudAgentId)
-      || CursorCloudNaming.ownsName(session?.cursorCloudAgentId)
-      || CursorCloudNaming.ownsName(initialSession?.cursorCloudAgentId)
+    if CursorCloudNaming.sessionNameIsLocked(
+      cursorCloudAgentId: composerChatSummary?.cursorCloudAgentId
+        ?? session?.cursorCloudAgentId
+        ?? initialSession?.cursorCloudAgentId,
+      runtimeRef: composerChatSummary?.runtimeRef
+        ?? session?.runtimeRef
+        ?? initialSession?.runtimeRef
+    )
     {
       ADEHaptics.error()
-      errorMessage = CursorCloudNaming.renameBlockedMessage
+      errorMessage = CursorCloudNaming.blockedMessage(
+        cursorCloudAgentId: composerChatSummary?.cursorCloudAgentId
+          ?? session?.cursorCloudAgentId
+          ?? initialSession?.cursorCloudAgentId,
+        runtimeRef: composerChatSummary?.runtimeRef
+          ?? session?.runtimeRef
+          ?? initialSession?.runtimeRef
+      )
       return
     }
     sessionActionRenameText = (chatSummary?.title ?? session?.title ?? initialSession?.title ?? "")
@@ -939,12 +951,24 @@ extension WorkSessionDestinationView {
       errorMessage = "Session title cannot be empty."
       return
     }
-    if CursorCloudNaming.ownsName(composerChatSummary?.cursorCloudAgentId)
-      || CursorCloudNaming.ownsName(session?.cursorCloudAgentId)
-      || CursorCloudNaming.ownsName(initialSession?.cursorCloudAgentId)
+    if CursorCloudNaming.sessionNameIsLocked(
+      cursorCloudAgentId: composerChatSummary?.cursorCloudAgentId
+        ?? session?.cursorCloudAgentId
+        ?? initialSession?.cursorCloudAgentId,
+      runtimeRef: composerChatSummary?.runtimeRef
+        ?? session?.runtimeRef
+        ?? initialSession?.runtimeRef
+    )
     {
       ADEHaptics.error()
-      errorMessage = CursorCloudNaming.renameBlockedMessage
+      errorMessage = CursorCloudNaming.blockedMessage(
+        cursorCloudAgentId: composerChatSummary?.cursorCloudAgentId
+          ?? session?.cursorCloudAgentId
+          ?? initialSession?.cursorCloudAgentId,
+        runtimeRef: composerChatSummary?.runtimeRef
+          ?? session?.runtimeRef
+          ?? initialSession?.runtimeRef
+      )
       return
     }
     do {

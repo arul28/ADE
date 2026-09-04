@@ -86,19 +86,22 @@ function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
  */
 const GRAPH = manifest({
   name: "ade-graph",
-  version: "1.1.0",
+  version: "2.0.0",
   displayName: "Graph",
   description: "Lanes, commits and PR overlays on one canvas — the same Graph ADE already ships, as a plugin.",
   icon: "graph",
   accent: "#6366F1",
   entry: "index.js",
-  surfaces: [{ kind: "tab", id: "graph", title: "Graph", icon: "graph", panelId: "graph", order: 50, mobile: true }],
+  surfaces: [
+    { kind: "webview", id: "graph", title: "Graph", icon: "graph", entryHtml: "dist/index.html", panelId: "graph", order: 50, mobile: false },
+    { kind: "webview", id: "lane", title: "Lane", icon: "git-branch", entryHtml: "dist/index.html", panelId: "lane", popover: { width: 720, height: 520 }, mobile: false },
+  ],
   panels: [
     { id: "graph", schemaFile: "panels/graph.json", title: "Graph", icon: "graph", refreshAction: "refreshGraph" },
     { id: "lane", schemaFile: "panels/lane.json", title: "Lane", icon: "git-branch", refreshAction: "openLane" },
   ],
   sockets: [
-    { socket: "command-palette-action", surface: "app", id: "palette-graph", label: "Graph", icon: "graph", actionId: "openGraph" },
+    { socket: "command-palette-action", surface: "app", id: "palette-graph", label: "Graph", icon: "graph", actionId: "openGraph", webviewSurfaceId: "graph" },
   ],
   collections: {
     lanes: { sync: true },
@@ -141,8 +144,8 @@ const GRAPH = manifest({
  *
  * At 2.0.0 the UI is the plugin's own HTML page: `runs` draws the run list, the
  * run detail and the learnings, and `launch` is the anchored popover the PR
- * toolbar button opens. Both keep a `panelId`, which is what every non-desktop
- * client renders in the page's place.
+ * toolbar button opens. Both keep a `panelId`, which is what the terminal and
+ * a client that cannot draw the page render in its place.
  */
 const REVIEW = manifest({
   name: "ade-review",
@@ -277,13 +280,16 @@ const REVIEW = manifest({
  */
 const HISTORY = manifest({
   name: "ade-history",
-  version: "1.1.0",
+  version: "2.0.0",
   displayName: "History",
   description: "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   icon: "clock-counter-clockwise",
   accent: "#E0932F",
   entry: "index.js",
-  surfaces: [{ kind: "tab", id: "commits", title: "History", icon: "clock-counter-clockwise", panelId: "commits", order: 55, mobile: true }],
+  surfaces: [
+    { kind: "webview", id: "commits", title: "History", icon: "clock-counter-clockwise", entryHtml: "dist/index.html", panelId: "commits", order: 55, mobile: false },
+    { kind: "webview", id: "activity", title: "Activity", icon: "list", entryHtml: "dist/index.html", panelId: "activity", mobile: false },
+  ],
   panels: [
     { id: "commits", schemaFile: "panels/commits.json", title: "History", icon: "clock-counter-clockwise", refreshAction: "refreshCommits" },
     { id: "commit", schemaFile: "panels/commit.json", title: "Commit", icon: "git-commit", refreshAction: "refreshCommit" },
@@ -291,15 +297,16 @@ const HISTORY = manifest({
     { id: "event", schemaFile: "panels/event.json", title: "Operation", icon: "clock-counter-clockwise", refreshAction: "openEvent" },
   ],
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "commits-pane", label: "History", icon: "clock-counter-clockwise", panelId: "commits" },
-    { socket: "command-palette-action", surface: "app", id: "palette-commits", label: "History commits", icon: "clock-counter-clockwise", actionId: "openCommits" },
-    { socket: "command-palette-action", surface: "app", id: "palette-activity", label: "History activity", icon: "list", actionId: "openActivity" },
+    { socket: "work-rail-pane", surface: "work", id: "commits-pane", label: "History", icon: "clock-counter-clockwise", panelId: "commits", webviewSurfaceId: "commits" },
+    { socket: "command-palette-action", surface: "app", id: "palette-commits", label: "History commits", icon: "clock-counter-clockwise", actionId: "openCommits", webviewSurfaceId: "commits" },
+    { socket: "command-palette-action", surface: "app", id: "palette-activity", label: "History activity", icon: "list", actionId: "openActivity", webviewSurfaceId: "activity" },
   ],
   collections: {
     commits: { sync: true },
     operations: { sync: true },
     files: { sync: true },
     lanes: { sync: true },
+    "ui-state": { sync: false },
   },
   tools: [
     {
@@ -791,7 +798,7 @@ const IOS_SIM = manifest({
   sockets: [
     // The rail label is capped at 24 characters by `sockets.ts`, and it sits
     // beside ADE's own one-word entries, so the short form stays.
-    { socket: "work-rail-pane", surface: "work", id: "sim-pane", label: "iOS Sim", icon: "device-mobile", panelId: "main", webviewSurfaceId: "sim" },
+    { socket: "work-rail-pane", surface: "work", id: "sim-pane", label: "iOS Sim Control", icon: "device-mobile", panelId: "main", webviewSurfaceId: "sim" },
     { socket: "command-palette-action", surface: "app", id: "palette-sim", label: "iOS Sim Control", icon: "device-mobile", actionId: "openSimulator", webviewSurfaceId: "sim" },
   ],
   collections: {
@@ -950,7 +957,7 @@ const VOICE = manifest({
  */
 const CURSOR_CLOUD = manifest({
   name: "ade-cursor-cloud",
-  version: "1.1.0",
+  version: "2.0.0",
   displayName: "Cursor Cloud",
   description: "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
   icon: "brand:cursor",
@@ -968,16 +975,39 @@ const CURSOR_CLOUD = manifest({
     displayName: "Cursor Cloud",
     icon: "brand:cursor",
     capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: true },
+    ownsName: true,
   }],
-  surfaces: [{
-    kind: "tab",
-    id: "fleet",
-    title: "Cursor Cloud",
-    panelId: "fleet",
-    icon: "brand:cursor",
-    order: 60,
-    mobile: true,
-  }],
+  surfaces: [
+    {
+      kind: "webview",
+      id: "fleet",
+      title: "Cursor Cloud",
+      icon: "brand:cursor",
+      entryHtml: "dist/index.html",
+      panelId: "fleet",
+      order: 60,
+      mobile: false,
+    },
+    {
+      kind: "webview",
+      id: "agent",
+      title: "Agent",
+      icon: "brand:cursor",
+      entryHtml: "dist/index.html",
+      panelId: "agent",
+      mobile: false,
+    },
+    {
+      kind: "webview",
+      id: "launch",
+      title: "Launch in Cursor Cloud",
+      icon: "brand:cursor",
+      entryHtml: "dist/index.html",
+      panelId: "launch",
+      popover: { width: 560, height: 620 },
+      mobile: false,
+    },
+  ],
   panels: [
     { id: "fleet", schemaFile: "panels/fleet.json", title: "Cursor Cloud", icon: "cloud", refreshAction: "refreshFleet", viewAction: "ackTabBadge" },
     { id: "agent", schemaFile: "panels/agent.json", title: "Agent", icon: "cloud", refreshAction: "refreshAgent" },
@@ -985,25 +1015,27 @@ const CURSOR_CLOUD = manifest({
   ],
   sockets: [
     {
-      socket: "composer-action",
+      socket: "machine-entry",
       surface: "work",
-      id: "send-to-cloud",
+      id: "cursor-cloud",
       label: "Cursor Cloud",
       icon: "cloud",
-      actionId: "openLaunch",
+      actionId: "launchFromComposer",
       ownsSend: true,
-      menu: [
-        { label: "Advanced launch…", actionId: "openLaunch", icon: "cloud" },
-      ],
+      advancedSurfaceId: "launch",
+      webviewSurfaceId: "launch",
+      runtimeId: "cloud-agent",
+      modelsAction: "listCloudModels",
     },
     {
       socket: "chat-header-action",
       surface: "work",
       id: "open-fleet",
-      label: "Cursor Cloud fleet",
+      label: "Cursor Cloud",
       icon: "cloud",
-      actionId: "openFleet",
+      actionId: "openAgentWebFromChat",
       menu: [
+        { label: "Open the Cursor Cloud fleet", actionId: "openFleet", icon: "cloud" },
         { label: "Pull this run into the lane", actionId: "pullIntoLaneFromChat", icon: "git-branch" },
         { label: "Stop this cloud run", actionId: "stopRunFromChat", icon: "cloud" },
       ],
@@ -1015,6 +1047,7 @@ const CURSOR_CLOUD = manifest({
       label: "Cursor Cloud",
       icon: "cloud",
       panelId: "fleet",
+      webviewSurfaceId: "fleet",
     },
     {
       socket: "command-palette-action",
@@ -1030,15 +1063,37 @@ const CURSOR_CLOUD = manifest({
       id: "tab-badge",
       label: "Unread finished agents",
     },
+    {
+      socket: "automation-trigger-tile",
+      surface: "automations",
+      id: "cloud-triggers",
+      label: "Cursor Cloud",
+      icon: "brand:cursor",
+      triggers: [
+        { id: "cloud_finished", label: "A Cursor Cloud agent finishes", description: "Fires when Cursor reports a run FINISHED." },
+        { id: "cloud_error", label: "A Cursor Cloud agent errors", description: "Fires when Cursor reports a run ERROR." },
+      ],
+      filters: [
+        { key: "laneId", label: "Lane", kind: "select", collection: "fleet", hint: "Only agents working on this lane's branch." },
+        { key: "repo", label: "Repository", kind: "text", placeholder: "owner/repo", hint: "Match the repository Cursor cloned." },
+        { key: "agentName", label: "Agent name contains", kind: "text", placeholder: "sync", hint: "Match the agent's name, which is its first prompt line." },
+      ],
+      webhook: {
+        statusAction: "webhookStatus",
+        registerAction: "copyWebhookUrl",
+      },
+    },
   ],
   // `laneSecrets` and `deliveries` stay local: one holds per-machine secrets
   // and the other webhook deliveries, and syncing either would replay a
-  // delivery through a second machine's plugin child.
+  // delivery through a second machine's plugin child. `ui-state` is the page's
+  // own filters and stays on this machine.
   collections: {
     fleet: { sync: true },
     sessions: { sync: true },
     deliveries: { sync: false },
     laneSecrets: { sync: false },
+    "ui-state": { sync: false },
   },
   settings: [
     { key: "autoOpenPr", kind: "toggle", label: "Open a PR when a run finishes", default: false },

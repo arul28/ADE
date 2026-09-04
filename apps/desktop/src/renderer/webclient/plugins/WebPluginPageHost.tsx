@@ -1,7 +1,6 @@
 import React from "react";
 
-import { COLORS, RADII, SANS_FONT, outlineButton } from "../../components/lanes/laneDesignTokens";
-import { PluginFallbackCard } from "../../components/plugins/VocabularyRenderer";
+import { COLORS, RADII, SANS_FONT } from "../../components/lanes/laneDesignTokens";
 import { applyPluginActionOpenSettings } from "../../components/plugins/pluginActionOpenSettings";
 import { applyPluginComposerEdit } from "../../components/plugins/sockets/composerTarget";
 import { closePluginWebviewOverlay } from "../../components/plugins/sockets/pluginWebviewOverlayStore";
@@ -16,17 +15,25 @@ import {
   openPluginPrompt,
   subscribePluginPrompt,
 } from "../../components/plugins/sockets/pluginPromptStore";
+import { pickPluginWebviewUi } from "../../components/plugins/sockets/pluginWebviewPickerStore";
+import {
+  clearPluginWebviewPageError,
+  recordPluginWebviewPageError,
+  usePluginWebviewPageError,
+} from "../../components/plugins/sockets/pluginWebviewPageErrorStore";
+import { PluginWebviewPageErrorCard } from "../../components/plugins/sockets/PluginWebviewPageErrorCard";
 import { dismissToast, showToast } from "../../components/app/toast/toastStore";
 import { ConfirmDialog, useConfirmDialog } from "../../components/shared/InlineDialogs";
 import { openAdeDeeplink, openExternalUrl } from "../../lib/openExternal";
 import {
   invokePluginAction,
+  openPluginLogs,
   readPluginCollection,
   readPluginConfig,
   readPluginPanel,
   writePluginConfig,
 } from "../../lib/pluginRuntimeBridge";
-import { rootAppStoreApi } from "../../state/appStore";
+import { rootAppStoreApi, useRootAppStore } from "../../state/appStore";
 import {
   buildPluginActionPromptAnswer,
   type PluginActionPrompt,
@@ -115,6 +122,11 @@ export function WebPluginPageHost({
   });
   const [reloadToken, setReloadToken] = React.useState(0);
   const [sectionHeight, setSectionHeight] = React.useState<number | null>(null);
+  const [guestNonce, setGuestNonce] = React.useState<string | null>(null);
+  const pageError = usePluginWebviewPageError(guestNonce);
+  const pluginName = useRootAppStore((state) =>
+    state.installedPlugins.find((entry) => entry.pluginId === pluginId)?.displayName ?? pluginId,
+  );
   const confirm = useConfirmDialog();
   // Held in a ref, and deliberately NOT an effect dependency. Rebuilding the
   // guest is expensive and destructive — it drops the page's unsubmitted work —
@@ -142,6 +154,7 @@ export function WebPluginPageHost({
     if (!active) return;
     let cancelled = false;
     let bootTimer: ReturnType<typeof setTimeout> | null = null;
+    let liveNonce: string | null = null;
     const frame = frameRef.current;
     if (!frame) return;
 
@@ -234,6 +247,10 @@ export function WebPluginPageHost({
           },
           resize: (height) => setSectionHeight(height),
           dialogSubmit: (answer) => submitPluginWebviewDialogAnswer(nonce, answer),
+          pick: (method, params) => pickPluginWebviewUi(method, params, { pluginId, guestKey: nonce }),
+          reportPageError: (error) => {
+            recordPluginWebviewPageError(nonce, error);
+          },
         },
         data: {
           invoke: (action, args) => invokePluginAction(pluginId, action, args),
@@ -266,6 +283,8 @@ export function WebPluginPageHost({
       // is built first: a fast page can submit as its first statement, and a
       // dialog told about the guest a commit later would refuse that answer.
       guestKeyRef.current?.(nonce);
+      liveNonce = nonce;
+      setGuestNonce(nonce);
       frame.setAttribute("src", documentUrl.toString());
 
       bootTimer = setTimeout(() => {
@@ -293,6 +312,8 @@ export function WebPluginPageHost({
       // Null before the guest goes, so a registration cannot outlive the guest
       // it was made for.
       guestKeyRef.current?.(null);
+      setGuestNonce(null);
+      clearPluginWebviewPageError(liveNonce);
       bridgeRef.current?.dispose();
       bridgeRef.current = null;
       // `about:blank` before the element goes: a frame removed with a live
@@ -316,9 +337,14 @@ export function WebPluginPageHost({
 
   if (!active) return null;
 
+  const errorMessage = state.status === "failed"
+    ? state.message
+    : pageError?.message ?? null;
+
   return (
     <div
       data-tour={`plugin:${pluginId}.webview`}
+      {...(guestNonce ? { "data-plugin-webview-guest": guestNonce } : {})}
       style={{
         position: "relative",
         display: "flex",
@@ -347,7 +373,7 @@ export function WebPluginPageHost({
         referrerPolicy="no-referrer"
         style={{ border: "0", display: "flex", flex: 1, width: "100%", height: "100%", background: "transparent" }}
       />
-      {state.status === "failed" ? (
+      {errorMessage ? (
         <div
           style={{
             position: "absolute",
@@ -358,17 +384,16 @@ export function WebPluginPageHost({
             background: COLORS.pageBg,
           }}
         >
-          <PluginFallbackCard
-            fallback={{ title: "This page didn’t open", text: state.message }}
-            action={
-              <button
-                type="button"
-                onClick={() => setReloadToken((token) => token + 1)}
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-              >
-                Try again
-              </button>
-            }
+          <PluginWebviewPageErrorCard
+            pluginName={pluginName}
+            message={errorMessage}
+            onReload={() => {
+              clearPluginWebviewPageError(guestNonce);
+              setReloadToken((token) => token + 1);
+            }}
+            onOpenLogs={() => {
+              void openPluginLogs(pluginId).catch(() => undefined);
+            }}
           />
         </div>
       ) : null}

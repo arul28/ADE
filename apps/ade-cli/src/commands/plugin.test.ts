@@ -476,6 +476,19 @@ describe("ade plugin dispatch", () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it("doctor fails closed when a page's entry HTML is missing from the install", async () => {
+    writePlugin("paged", manifestFixture("paged", {
+      surfaces: [{ kind: "webview", id: "main", title: "Paged", panelId: "main", entryHtml: "web/index.html" }],
+    }));
+    const result = await runPluginCommandAsync(["doctor", "paged", "--text"], {
+      invokeAction: async () => {
+        throw new Error("connect ENOENT");
+      },
+    });
+    expect(result.output).toContain("✗ Page bundle");
+    expect(result.exitCode).toBe(1);
+  });
+
   it("doctor answers with the app closed, saying which rungs went unchecked", async () => {
     writePlugin("tipsy", manifestFixture("tipsy"));
     const result = await runPluginCommandAsync(["doctor", "tipsy", "--text"], {

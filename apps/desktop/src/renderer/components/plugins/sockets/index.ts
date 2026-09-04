@@ -182,5 +182,13 @@ export {
 } from "./PluginAutomationTemplates";
 
 // --- wave 2: the header layout system ---
+export {
+  applyPluginToolbarOrder,
+  pluginToolbarOrderStorageKey,
+  sanitizeToolbarOrderUserId,
+} from "./pluginToolbarOrder";
 
 // --- wave 2: host pickers and the page error card ---
+export { PluginWebviewPickerHost } from "./PluginWebviewPickerHost";
+export { PluginWebviewPageErrorCard } from "./PluginWebviewPageErrorCard";
+export { pickPluginWebviewUi } from "./pluginWebviewPickerStore";

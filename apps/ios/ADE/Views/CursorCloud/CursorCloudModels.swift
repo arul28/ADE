@@ -6,8 +6,28 @@ enum CursorCloudNaming {
   static let renameBlockedMessage =
     "Cursor Cloud agent names are managed by Cursor. Rename this agent on cursor.com."
 
+  static let pluginRenameBlockedMessage =
+    "This chat's name is managed by the plugin that owns it."
+
   static func ownsName(_ agentId: String?) -> Bool {
     !(agentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
+  /// True when ADE must not rename this chat: Cursor owns the name, or the
+  /// plugin runtime declared `ownsName`. Mirrors `sessionNameIsLocked`.
+  static func sessionNameIsLocked(
+    cursorCloudAgentId: String?,
+    runtimeRef: AgentChatRuntimeRef? = nil
+  ) -> Bool {
+    ownsName(cursorCloudAgentId) || runtimeRef?.ownsName == true
+  }
+
+  static func blockedMessage(
+    cursorCloudAgentId: String?,
+    runtimeRef: AgentChatRuntimeRef? = nil
+  ) -> String {
+    if ownsName(cursorCloudAgentId) { return renameBlockedMessage }
+    return pluginRenameBlockedMessage
   }
 }
 

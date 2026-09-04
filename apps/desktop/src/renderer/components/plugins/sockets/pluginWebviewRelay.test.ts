@@ -23,6 +23,15 @@ import {
   resetPluginWebviewConfirm,
 } from "./pluginWebviewConfirmStore";
 import { getPluginPrompt, submitPluginPrompt, closePluginPrompt } from "./pluginPromptStore";
+import {
+  getPluginWebviewPicker,
+  resetPluginWebviewPicker,
+  settlePluginWebviewPicker,
+} from "./pluginWebviewPickerStore";
+import {
+  getPluginWebviewPageError,
+  resetPluginWebviewPageErrors,
+} from "./pluginWebviewPageErrorStore";
 
 /**
  * The relay's contract in one sentence: every request is answered exactly once.
@@ -56,6 +65,8 @@ beforeEach(() => {
   resetPluginWebviewGuests();
   resetPluginComposerTargets();
   resetPluginWebviewConfirm();
+  resetPluginWebviewPicker();
+  resetPluginWebviewPageErrors();
   for (const toast of getToasts()) dismissToast(toast.id);
   closePluginPrompt();
   rootAppStoreApi.setState({
@@ -316,5 +327,47 @@ describe("installPluginWebviewRelay", () => {
     deliver(request("surface.close"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(responses).toEqual([{ requestId: "req-1", ok: false, message: "boom" }]);
+  });
+});
+
+describe("host pickers", () => {
+  it("opens ADE's picker and answers the choice", async () => {
+    const pending = handlePluginWebviewUiRequest(request("ui.pickLane", { value: "lane-1" }));
+    await Promise.resolve();
+    expect(getPluginWebviewPicker()).toMatchObject({ verb: "ui.pickLane", pluginId: "acme" });
+    settlePluginWebviewPicker({ laneId: "lane-1", name: "Main" });
+    await expect(pending).resolves.toEqual({
+      ok: true,
+      value: { laneId: "lane-1", name: "Main" },
+    });
+  });
+
+  it("answers null when the reader dismisses rather than hanging", async () => {
+    const pending = handlePluginWebviewUiRequest(request("ui.pickModel"));
+    await Promise.resolve();
+    settlePluginWebviewPicker(null);
+    await expect(pending).resolves.toEqual({ ok: true, value: null });
+  });
+
+  it("refuses a permission pick with no provider rather than answering null", async () => {
+    const answer = await handlePluginWebviewUiRequest(request("ui.pickPermissionMode", {}));
+    expect(answer).toEqual({
+      ok: false,
+      message: "ADE doesn’t have a permission control for that provider.",
+    });
+    expect(getPluginWebviewPicker()).toBeNull();
+  });
+});
+
+describe("page.error", () => {
+  it("records the report for the error card", async () => {
+    const answer = await handlePluginWebviewUiRequest(request("page.error", {
+      error: { kind: "error", message: "Render threw." },
+    }));
+    expect(answer).toEqual({ ok: true });
+    expect(getPluginWebviewPageError("guest-7")).toEqual({
+      kind: "error",
+      message: "Render threw.",
+    });
   });
 });

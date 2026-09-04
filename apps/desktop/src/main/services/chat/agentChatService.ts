@@ -442,6 +442,7 @@ import {
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
   isAgentChatRuntimeRef,
+  readAgentChatRuntimeRef,
   isPluginOwnedChatSession,
   PLUGIN_CHAT_PROVIDER,
   type AcpChatProvider,
@@ -449,7 +450,7 @@ import {
   type AgentChatAcpPermissionMode,
   type AgentChatResourceLink,
 } from "../../../shared/types/chat";
-import type { AgentChatRuntimeLabel, AgentChatRuntimeRef } from "../../../shared/types/chat";
+import type { AgentChatPluginHeader, AgentChatRuntimeLabel, AgentChatRuntimeRef } from "../../../shared/types/chat";
 import { AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX } from "../../../shared/types/chat";
 import {
   createPluginChatPresenceRegistry,
@@ -470,6 +471,7 @@ import {
   PLUGIN_CHAT_WRITE_BURST_WINDOW_MS,
   PluginSdkError,
   readPluginChatArtifactSourceUrl,
+  sanitizePluginChatHeader,
   type PluginChatArtifact,
   type PluginChatAssistantChunk,
   type PluginChatPart,
@@ -479,6 +481,7 @@ import {
   type PluginChatTranscriptEntry,
   type PluginChatUserAppend,
 } from "../../../shared/plugins/sdk";
+import { httpsUrl } from "../../../shared/plugins/parse";
 import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../../shared/plugins/builtinSurfaceRegistry";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
@@ -701,7 +704,11 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
-import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
+import {
+  cursorOwnsSessionName,
+  sessionNameIsLocked,
+  sessionRenameBlockedMessage,
+} from "../../../shared/cursorCloudNaming";
 import { isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
@@ -1465,6 +1472,8 @@ type PersistedChatState = {
    * said "Cursor Cloud" should not decay into "plugin".
    */
   runtimeLabel?: AgentChatRuntimeLabel;
+  pluginHeader?: AgentChatPluginHeader;
+  pluginPrUrl?: string;
   recentConversationEntries?: PersistedRecentConversationEntry[];
   continuitySummary?: string | null;
   continuitySummaryUpdatedAt?: string | null;
@@ -12554,7 +12563,7 @@ export function createAgentChatService(args: {
     rawTitle: string,
     manuallyNamed: boolean,
   ): string | null => {
-    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return null;
+    if (sessionNameIsLocked(managed.session)) return null;
     const title = rawTitle.trim();
     if (!title) return null;
 
@@ -12699,6 +12708,7 @@ export function createAgentChatService(args: {
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) {
       return adoptCursorCloudSessionTitle(managed, rawTitle, source);
     }
+    if (managed.session.runtimeRef?.ownsName === true) return null;
     if (managed.deleted) return null;
     if (sessionIsManuallyNamed(managed)) return null;
     const title = normalizeRuntimeSessionTitle(managed, rawTitle);
@@ -12768,7 +12778,7 @@ export function createAgentChatService(args: {
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
     if (managed.deleted) return;
-    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
+    if (sessionNameIsLocked(managed.session)) return;
     const config = resolveChatConfig();
     if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
@@ -12886,8 +12896,8 @@ export function createAgentChatService(args: {
     // every other failure here rather than throwing at the call site.
     const managed = ensureManagedSession(args.sessionId);
     const requestedFields = args.fields ?? ["title", "laneName", "statusLine"];
-    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && requestedFields.includes("title")) {
-      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    if (sessionNameIsLocked(managed.session) && requestedFields.includes("title")) {
+      throw new Error(sessionRenameBlockedMessage(managed.session));
     }
     sessionMetadataRegenerator ??= createSessionMetadataRegenerator<ManagedChatSession>({
       ensureManagedSession,
@@ -14421,6 +14431,18 @@ export function createAgentChatService(args: {
       ...(managed.session.runtimeLabel
         ? { runtimeLabel: managed.session.runtimeLabel }
         : prevPersisted?.runtimeLabel ? { runtimeLabel: prevPersisted.runtimeLabel } : {}),
+      ...((): { pluginHeader?: AgentChatPluginHeader } => {
+        const header = managed.session.pluginHeader !== undefined
+          ? managed.session.pluginHeader
+          : prevPersisted?.pluginHeader;
+        return header ? { pluginHeader: header } : {};
+      })(),
+      ...((): { pluginPrUrl?: string } => {
+        const url = managed.session.pluginPrUrl !== undefined
+          ? managed.session.pluginPrUrl
+          : prevPersisted?.pluginPrUrl;
+        return url ? { pluginPrUrl: url } : {};
+      })(),
       ...(managed.session.cursorRuntime
         ? { cursorRuntime: managed.session.cursorRuntime }
         : prevPersisted?.cursorRuntime ? { cursorRuntime: prevPersisted.cursorRuntime } : {}),
@@ -14782,7 +14804,7 @@ export function createAgentChatService(args: {
       // plugin a later turn is handed to, and a hand-edited or truncated
       // metadata file must degrade to "no owner" rather than to an owner id
       // nobody checked.
-      const runtimeRef = isAgentChatRuntimeRef(record.runtimeRef) ? record.runtimeRef : undefined;
+      const runtimeRef = readAgentChatRuntimeRef(record.runtimeRef);
       const runtimeLabel = ((): AgentChatRuntimeLabel | undefined => {
         const raw = record.runtimeLabel;
         if (typeof raw !== "object" || raw === null) return undefined;
@@ -14919,6 +14941,14 @@ export function createAgentChatService(args: {
         ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
         ...(runtimeRef ? { runtimeRef } : {}),
         ...(runtimeLabel ? { runtimeLabel } : {}),
+        ...(((): { pluginHeader?: AgentChatPluginHeader } => {
+          const header = sanitizePluginChatHeader(record.pluginHeader);
+          return header ? { pluginHeader: header } : {};
+        })()),
+        ...(((): { pluginPrUrl?: string } => {
+          const url = httpsUrl(record.pluginPrUrl);
+          return url ? { pluginPrUrl: url } : {};
+        })()),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
@@ -19667,6 +19697,8 @@ export function createAgentChatService(args: {
         ...(persisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: persisted.cursorPromotedTurnId } : {}),
         ...(persisted?.runtimeRef ? { runtimeRef: persisted.runtimeRef } : {}),
         ...(persisted?.runtimeLabel ? { runtimeLabel: persisted.runtimeLabel } : {}),
+        ...(persisted?.pluginHeader ? { pluginHeader: persisted.pluginHeader } : {}),
+        ...(persisted?.pluginPrUrl ? { pluginPrUrl: persisted.pluginPrUrl } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         ...(persisted?.surface ? { surface: persisted.surface } : {}),
@@ -41533,6 +41565,26 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Stamp capabilities and the rename lock from the live manifest onto a ref.
+   *
+   * Falls back to whatever the session already carried when the plugin is gone,
+   * so an uninstalled runtime does not lose the composer gates or the lock.
+   */
+  const stampPluginRuntimeRef = (
+    ref: AgentChatRuntimeRef,
+  ): AgentChatRuntimeRef => {
+    const described = describePluginChatRuntime(ref);
+    if (!described) return ref;
+    return {
+      pluginId: ref.pluginId,
+      runtimeId: ref.runtimeId,
+      externalId: ref.externalId,
+      capabilities: described.capabilities,
+      ...(described.ownsName ? { ownsName: true } : {}),
+    };
+  };
+
+  /**
    * What a plugin-owned turn looks like while it is open.
    *
    * A plugin turn is ASYNCHRONOUS in a way no built-in runtime's is: dispatch
@@ -42027,7 +42079,7 @@ export function createAgentChatService(args: {
         `externalId is longer than ${AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX} characters.`,
       );
     }
-    const ref: AgentChatRuntimeRef = { pluginId, runtimeId, externalId };
+    const ref = stampPluginRuntimeRef({ pluginId, runtimeId, externalId });
     const label = resolvePluginRuntimeLabel(ref);
 
     // Idempotent on {runtimeId, externalId}: a webhook that fires twice, or one
@@ -42264,14 +42316,26 @@ export function createAgentChatService(args: {
       // keeps the event well-formed and groups it with nothing, which is what
       // "this happened outside a turn" should look like.
       const turn = pluginOwnedTurns.get(sessionId);
+      if (input.prUrl) managed.session.pluginPrUrl = input.prUrl;
       emitChatEvent(managed, {
         type: "cloud_status",
         turnId: turn && !turn.closed ? turn.turnId : `plugin-branch-${randomUUID()}`,
         runId: managed.session.runtimeRef?.externalId ?? sessionId,
         status: "finished",
         gitBranch: branch,
+        ...(input.prUrl ? { prUrl: input.prUrl } : {}),
       });
       persistChatState(managed);
+    },
+    async setHeader(sessionId, header) {
+      const managed = requirePluginManagedSession(sessionId);
+      chargePluginChatWrite(sessionId);
+      managed.session.pluginHeader = header;
+      persistChatState(managed);
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        pluginHeader: header,
+      });
     },
     async hydrate(sessionId, transcript, options) {
       const managed = requirePluginManagedSession(sessionId);
@@ -42416,7 +42480,7 @@ export function createAgentChatService(args: {
       externalId,
     };
     if (!isAgentChatRuntimeRef(ref)) return null;
-    managed.session.runtimeRef = ref;
+    managed.session.runtimeRef = stampPluginRuntimeRef(ref);
     managed.session.provider = PLUGIN_CHAT_PROVIDER;
     lockCursorOwnedPluginChatName(managed.session, ref.pluginId, externalId);
     const label = resolvePluginRuntimeLabel(ref);
@@ -42427,7 +42491,7 @@ export function createAgentChatService(args: {
       pluginId: ref.pluginId,
       runtimeId: ref.runtimeId,
     });
-    return ref;
+    return managed.session.runtimeRef ?? ref;
   };
 
   const cancelCursorCloudRun = async (args: {
@@ -47524,7 +47588,11 @@ export function createAgentChatService(args: {
         ? { cursorPromotedTurnId: liveSession?.cursorPromotedTurnId ?? persisted?.cursorPromotedTurnId }
         : {}),
       ...(liveSession?.runtimeRef || persisted?.runtimeRef
-        ? { runtimeRef: (liveSession?.runtimeRef ?? persisted?.runtimeRef)! }
+        ? {
+            runtimeRef: stampPluginRuntimeRef(
+              (liveSession?.runtimeRef ?? persisted?.runtimeRef)!,
+            ),
+          }
         : {}),
       // Refreshed from the live manifest when the plugin is still installed, so
       // a renamed runtime relabels its old conversations; falls back to the
@@ -47534,6 +47602,18 @@ export function createAgentChatService(args: {
         const resolved = ref ? resolvePluginRuntimeLabel(ref) : null;
         const label = resolved ?? liveSession?.runtimeLabel ?? persisted?.runtimeLabel;
         return label ? { runtimeLabel: label } : {};
+      })(),
+      ...((): { pluginHeader?: AgentChatPluginHeader } => {
+        const header = liveSession?.pluginHeader !== undefined
+          ? liveSession.pluginHeader
+          : persisted?.pluginHeader;
+        return header ? { pluginHeader: header } : {};
+      })(),
+      ...((): { pluginPrUrl?: string } => {
+        const url = liveSession?.pluginPrUrl !== undefined
+          ? liveSession.pluginPrUrl
+          : persisted?.pluginPrUrl;
+        return url ? { pluginPrUrl: url } : {};
       })(),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
@@ -50248,8 +50328,8 @@ export function createAgentChatService(args: {
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
-    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
-      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    if (sessionNameIsLocked(managed.session) && (title !== undefined || manuallyNamed !== undefined)) {
+      throw new Error(sessionRenameBlockedMessage(managed.session));
     }
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);

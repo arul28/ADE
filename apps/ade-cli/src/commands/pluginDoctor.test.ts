@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildPluginDoctorReport,
   formatPluginDoctorReport,
+  pluginDoctorExitCode,
   type PluginDoctorLayerKey,
   type PluginDoctorSnapshot,
 } from "./pluginDoctor";
@@ -549,7 +550,7 @@ describe("webview surfaces on the ladder", () => {
     }));
     expect(withTab.renders).toContain("composer-action");
     expect(withTab.renders).toContain("1 custom-UI tab");
-    expect(withTab.renders).toContain("its page on desktop, its panel on web, iPhone and terminal");
+    expect(withTab.renders).toContain("its page on desktop, web and iPhone; its panel in the terminal");
   });
 
   it("still answers for a plugin whose only presence is a tab", () => {
@@ -976,10 +977,26 @@ describe("the page bundle rung", () => {
   });
 
   it("passes a page whose assets all sit beside it, and says how big the bundle is", () => {
-    const found = layer(withBundle(PLAIN_PAGE, { "web/app.js": "x".repeat(2048) }), "pageBundle");
+    const found = layer(withBundle(PLAIN_PAGE, {
+      "web/app.js": "x".repeat(2048),
+      "web/app.css": "body{}",
+    }), "pageBundle");
     expect(found.state).toBe("ok");
     expect(found.detail).toContain("dashboard → web/index.html");
     expect(found.detail).toContain("KiB");
+  });
+
+  it("FAILS when a relative script or stylesheet the page names was never copied", () => {
+    const found = layer(withBundle(PLAIN_PAGE, { "web/app.js": "ok" }), "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("app.css");
+    expect(found.detail).toContain("missing from the install");
+  });
+
+  it("FAILS an empty entry HTML — there is nothing for a guest to load", () => {
+    const found = layer(withBundle("   \n"), "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("empty");
   });
 
   it("FAILS when the file entryHtml names was never copied into the install", () => {
@@ -1042,7 +1059,11 @@ describe("the page bundle rung", () => {
    */
   it("WARNS without failing when the bundle is over the guidance", () => {
     const found = layer(
-      withBundle(PLAIN_PAGE, { "web/vendor.js": Buffer.alloc(2 * 1024 * 1024 + 1, 0x61) }),
+      withBundle(PLAIN_PAGE, {
+        "web/app.js": "ok",
+        "web/app.css": "ok",
+        "web/vendor.js": Buffer.alloc(2 * 1024 * 1024 + 1, 0x61),
+      }),
       "pageBundle",
     );
     expect(found.state).toBe("ok");
@@ -1051,7 +1072,7 @@ describe("the page bundle rung", () => {
   });
 
   it("FAILS when the running app has refused loads on this page", () => {
-    const snapshot = withBundle(PLAIN_PAGE);
+    const snapshot = withBundle(PLAIN_PAGE, { "web/app.js": "ok", "web/app.css": "ok" });
     snapshot.live!.detail = detail({
       surfaces: [dashboard],
       logs: [
@@ -1089,6 +1110,8 @@ describe("the page bundle rung", () => {
     });
     fs.mkdirSync(path.join(root, "web"), { recursive: true });
     fs.writeFileSync(path.join(root, "web", "index.html"), PLAIN_PAGE);
+    fs.writeFileSync(path.join(root, "web", "app.js"), "ok");
+    fs.writeFileSync(path.join(root, "web", "app.css"), "ok");
     const found = layer(snapshot, "pageBundle");
     expect(found.state).toBe("ok");
     expect(found.detail).toContain("dashboard → web/index.html");
@@ -1099,5 +1122,46 @@ describe("the page bundle rung", () => {
     const keys = buildPluginDoctorReport(healthy(), NOW).layers.map((entry) => entry.key);
     expect(keys.indexOf("pageBundle")).toBe(keys.indexOf("customPage") + 1);
     expect(keys.indexOf("lastRun")).toBe(keys.indexOf("pageBundle") + 1);
+  });
+});
+
+describe("pluginDoctorExitCode", () => {
+  it("fails closed when the page bundle or the install is broken", () => {
+    const missingPage = healthy({
+      manifest: manifest({
+        surfaces: [{
+          kind: "webview",
+          id: "dashboard",
+          title: "Dashboard",
+          panelId: "main",
+          entryHtml: "web/index.html",
+        }],
+      }),
+      installedRoot: path.join(os.tmpdir(), "ade-doctor-missing-page-never-created"),
+    });
+    expect(layer(missingPage, "pageBundle").state).toBe("no");
+    expect(pluginDoctorExitCode(buildPluginDoctorReport(missingPage, NOW))).toBe(1);
+
+    const switchedOff = healthy({ record: record({ enabled: false }) });
+    expect(layer(switchedOff, "installed").state).toBe("no");
+    expect(pluginDoctorExitCode(buildPluginDoctorReport(switchedOff, NOW))).toBe(1);
+  });
+
+  it("does not fail the process for informational ✗ or for ADE being closed", () => {
+    const unused = healthy({
+      live: {
+        detail: detail({ lastInvokes: [] }),
+        presence: [],
+        contributions: [],
+        usage: null,
+      },
+    });
+    expect(layer(unused, "lastRun").state).toBe("no");
+    expect(layer(unused, "synced").state).toBe("no");
+    expect(pluginDoctorExitCode(buildPluginDoctorReport(unused, NOW))).toBe(0);
+
+    const closed = healthy({ live: null });
+    expect(layer(closed, "running").state).toBe("unknown");
+    expect(pluginDoctorExitCode(buildPluginDoctorReport(closed, NOW))).toBe(0);
   });
 });

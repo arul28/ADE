@@ -42,6 +42,7 @@ import {
   type PluginChatArtifact,
   type PluginChatAssistantChunk,
   type PluginChatAttachment,
+  type PluginChatHeader,
   type PluginChatHydrateOptions,
   type PluginChatHydrateResult,
   type PluginChatSessionCreateInput,
@@ -100,6 +101,8 @@ export type PluginChatRuntimeDescriptor = {
   /** The owning plugin's display name. */
   pluginDisplayName: string;
   capabilities: PluginManifestChatRuntimeCapabilities;
+  /** True when ADE must not rename sessions this runtime owns. */
+  ownsName?: boolean;
 };
 
 /**
@@ -190,7 +193,8 @@ export type PluginChatRuntimeWriter = {
   appendUser(sessionId: string, input: PluginChatUserAppend): Promise<void>;
   emitStatus(sessionId: string, status: PluginChatStatus): Promise<void>;
   setArtifacts(sessionId: string, artifacts: PluginChatArtifact[]): Promise<void>;
-  attachBranch(sessionId: string, input: { branch: string; remote?: string }): Promise<void>;
+  attachBranch(sessionId: string, input: { branch: string; remote?: string; prUrl?: string }): Promise<void>;
+  setHeader(sessionId: string, header: PluginChatHeader | null): Promise<void>;
   hydrate(
     sessionId: string,
     transcript: PluginChatTranscriptEntry[],

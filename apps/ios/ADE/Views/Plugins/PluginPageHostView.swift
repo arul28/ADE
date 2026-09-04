@@ -223,15 +223,17 @@ struct PluginPageHostView: UIViewRepresentable {
           // report would itself be an unhandled rejection, and the listener
           // below would report that, and so on.
           var reporting = false;
-          function report(message, source) {
+          function report(message, kind, uri) {
             if (reporting) { return; }
             reporting = true;
             try {
+              var params = { kind: kind || "error", message: String(message || "") };
+              if (uri) { params.source = String(uri); }
               var sent = window.webkit.messageHandlers.\(messageHandlerName).postMessage({
                 id: "e" + (seq += 1),
                 bridgeVersion: VERSION,
                 method: "page.error",
-                params: { message: String(message || ""), source: source }
+                params: params
               });
               // Swallowed rather than left to float: an unhandled rejection
               // here would be caught by the listener above, which would report
@@ -241,10 +243,10 @@ struct PluginPageHostView: UIViewRepresentable {
             reporting = false;
           }
           window.addEventListener("error", function (event) {
-            report((event && (event.message || event.error)) || "", "script");
+            report((event && (event.message || event.error)) || "", "error", event && event.filename);
           });
           window.addEventListener("unhandledrejection", function (event) {
-            report((event && event.reason && (event.reason.message || event.reason)) || "", "script");
+            report((event && event.reason && (event.reason.message || event.reason)) || "", "error");
           });
           // The guest's own view of a CSP refusal. The host cannot see one —
           // WebKit blocks the load inside the content process and the
@@ -255,7 +257,8 @@ struct PluginPageHostView: UIViewRepresentable {
               "This page tried to load " +
                 ((event && event.blockedURI) || "something") +
                 ", which a plugin page is not allowed to load.",
-              "contentPolicy"
+              "csp",
+              event && event.blockedURI
             );
           });
           window.adePlugin = Object.freeze({
@@ -295,20 +298,24 @@ struct PluginPageHostView: UIViewRepresentable {
               // The five host pickers. Each resolves to the choice, to null
               // when the reader dismissed it, or REJECTS when this client
               // cannot ask — a page must not read a rejection as a dismissal.
-              pickModel: function () { return call("ui.pickModel", {}); },
-              pickLane: function () { return call("ui.pickLane", {}); },
+              pickModel: function (request) { return call("ui.pickModel", request || {}); },
+              pickLane: function (request) { return call("ui.pickLane", request || {}); },
               pickPermissionMode: function (options) { return call("ui.pickPermissionMode", options || {}); },
               pickReasoningEffort: function (options) { return call("ui.pickReasoningEffort", options || {}); },
-              pickProvider: function () { return call("ui.pickProvider", {}); },
+              pickProvider: function (request) { return call("ui.pickProvider", request || {}); },
               // Present so a page hears the phone's refusal by name rather than
               // an "unknown method" it would treat as a version skew.
-              openPathInEditor: function (path) { return call("ui.openPathInEditor", { path: path }); }
+              openPathInEditor: function (request) { return call("ui.openPathInEditor", request || {}); }
             }),
             sockets: Object.freeze({
               list: function (socket) { return call("sockets.list", { socket: socket }); },
               invoke: function (socketId, args) {
                 return call("sockets.invoke", { socketId: socketId, args: args || {} });
               }
+            }),
+            hostEngine: Object.freeze({
+              place: function (request) { return call("hostEngine.place", request || {}); },
+              release: function () { return call("hostEngine.release", {}); }
             }),
             dialog: Object.freeze({
               submit: function (answer) { return call("dialog.submit", answer || {}); }

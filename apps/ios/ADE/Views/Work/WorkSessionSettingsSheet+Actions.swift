@@ -45,9 +45,12 @@ extension WorkSessionSettingsSheet {
 
   @MainActor
   func submit() async {
-    let cursorOwnsName = CursorCloudNaming.ownsName(summary.cursorCloudAgentId)
+    let nameLocked = CursorCloudNaming.sessionNameIsLocked(
+      cursorCloudAgentId: summary.cursorCloudAgentId,
+      runtimeRef: summary.runtimeRef
+    )
     let trimmedTitle = titleText.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !cursorOwnsName {
+    if !nameLocked {
       guard !trimmedTitle.isEmpty else {
         ADEHaptics.error()
         errorMessage = "Chat title cannot be empty."
@@ -55,7 +58,7 @@ extension WorkSessionSettingsSheet {
       }
     }
 
-    let titleChanged = !cursorOwnsName && trimmedTitle != resolvedInitialTitle
+    let titleChanged = !nameLocked && trimmedTitle != resolvedInitialTitle
     let modelChanged = !workModelIdsEquivalent(selectedModelId, resolvedInitialModelId)
     let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning

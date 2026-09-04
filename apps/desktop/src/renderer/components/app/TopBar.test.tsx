@@ -493,6 +493,31 @@ describe("TopBar", () => {
     expect(onNavigate).not.toHaveBeenCalledWith("/activity");
   });
 
+  it("keeps plugin toolbar actions in the flexible region, left of the pinned cluster", () => {
+    render(<TopBar />);
+
+    const flexible = document.querySelector("[data-plugin-header-flexible]");
+    const pinned = document.querySelector("[data-plugin-header-pinned]");
+    expect(flexible).toBeTruthy();
+    expect(pinned).toBeTruthy();
+    expect(
+      Boolean(flexible && pinned && (flexible.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    ).toBe(true);
+
+    const feedback = screen.getByRole("button", { name: "Report bug or suggest feature" });
+    const zoomIn = screen.getByRole("button", { name: "Zoom in" });
+    const connections = getConnectionsControl();
+    const bell = screen.getByTestId("header-activity-trigger");
+    expect(pinned?.contains(feedback)).toBe(true);
+    expect(pinned?.contains(zoomIn)).toBe(true);
+    expect(pinned?.contains(connections)).toBe(true);
+    expect(pinned?.contains(bell)).toBe(true);
+    expect(flexible?.contains(feedback)).toBe(false);
+    expect(feedback.compareDocumentPosition(zoomIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(zoomIn.compareDocumentPosition(connections) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(connections.compareDocumentPosition(bell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows connections before a project is open without immediate polling", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 

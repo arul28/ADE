@@ -19,6 +19,10 @@ import {
   applyPluginWebviewReload,
   resetPluginWebviewReloads,
 } from "./sockets/pluginWebviewReloadStore";
+import {
+  recordPluginWebviewPageError,
+  resetPluginWebviewPageErrors,
+} from "./sockets/pluginWebviewPageErrorStore";
 
 /**
  * The three rules a page host has to keep, and none of them are visual.
@@ -40,6 +44,7 @@ vi.mock("../../lib/pluginRuntimeBridge", () => ({
     setSurfaceState: (state: unknown) => setSurfaceState(state),
     onReload: () => () => undefined,
   }),
+  openPluginLogs: async () => undefined,
 }));
 
 const { client } = vi.hoisted(() => ({ client: { web: false, webPages: true } }));
@@ -75,6 +80,7 @@ function readyGuest(guest: HTMLElement, webContentsId: number): void {
 beforeEach(() => {
   resetPluginWebviewGuests();
   resetPluginWebviewReloads();
+  resetPluginWebviewPageErrors();
   setSurfaceState.mockClear();
   client.web = false;
   client.webPages = true;
@@ -318,5 +324,38 @@ describe("the hosted web client", () => {
     expect(supportsPluginWebviews()).toBe(false);
     client.web = false;
     expect(supportsPluginWebviews()).toBe(true);
+  });
+});
+
+describe("the page error card", () => {
+  it("draws plugin name, error, Reload and Open logs when the guest fails to load", () => {
+    const view = render(
+      <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+    );
+    const guest = guests(view.container)[0]!;
+    act(() => {
+      const event = new Event("did-fail-load") as Event & { isMainFrame?: boolean; errorDescription?: string };
+      event.isMainFrame = true;
+      event.errorDescription = "ERR_FILE_NOT_FOUND";
+      guest.dispatchEvent(event);
+    });
+    const card = view.container.querySelector("[data-plugin-webview-page-error]");
+    expect(card?.textContent).toContain("acme");
+    expect(card?.textContent).toContain("The page didn’t load.");
+    expect(card?.textContent).toContain("Reload");
+    expect(card?.textContent).toContain("Open logs");
+  });
+
+  it("draws the same card when the page reports its own throw", () => {
+    const view = render(
+      <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+    );
+    readyGuest(guests(view.container)[0]!, 9);
+    act(() => {
+      recordPluginWebviewPageError("guest-9", { kind: "error", message: "Render threw." });
+    });
+    const card = view.container.querySelector("[data-plugin-webview-page-error]");
+    expect(card?.textContent).toContain("Render threw.");
+    expect(card?.textContent).toContain("Reload");
   });
 });

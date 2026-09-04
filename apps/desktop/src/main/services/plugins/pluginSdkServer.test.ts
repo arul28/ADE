@@ -878,6 +878,7 @@ describe("createPluginSdkServer chat", () => {
         emitStatus: record("emitStatus"),
         setArtifacts: record("setArtifacts"),
         attachBranch: record("attachBranch"),
+        setHeader: record("setHeader"),
         hydrate: record("hydrate"),
       },
       ...overrides,
@@ -991,11 +992,18 @@ describe("createPluginSdkServer chat", () => {
     await handle("chat.appendUser", { sessionId: "session-1", input: { text: "hello" } });
     await handle("chat.emitStatus", { sessionId: "session-1", status: { state: "idle" } });
     await handle("chat.hydrate", { sessionId: "session-1", transcript: [{ role: "user", text: "a" }] });
+    await handle("chat.setHeader", { sessionId: "session-1", header: { label: "queued" } });
+    await handle("chat.attachBranch", {
+      sessionId: "session-1",
+      input: { branch: "feat", prUrl: "https://github.com/ade/ade/pull/1" },
+    });
     expect(calls.map((call) => call.verb)).toEqual([
       "appendAssistant",
       "appendUser",
       "emitStatus",
       "hydrate",
+      "setHeader",
+      "attachBranch",
     ]);
     // Ownership is decided against this value, and it is never one the plugin
     // supplied.
@@ -1007,6 +1015,61 @@ describe("createPluginSdkServer chat", () => {
     expect(await codeOf(() => handle("chat.appendAssistant", { chunk: { text: "hi" } })))
       .toBe("invalid_args");
     expect(calls).toHaveLength(0);
+  });
+
+  it("sanitizes chat.setHeader and treats an empty header as a clear", async () => {
+    const { handle, calls } = chatServer();
+    await handle("chat.setHeader", {
+      sessionId: "session-1",
+      header: {
+        label: "Cloudy",
+        chips: [
+          { label: "queued" },
+          { label: "3 files", tone: "success" },
+          { label: "x".repeat(40) },
+        ],
+      },
+    });
+    expect(calls[0]?.args[2]).toEqual({
+      label: "Cloudy",
+      chips: [
+        { label: "queued", tone: "neutral" },
+        { label: "3 files", tone: "success" },
+      ],
+    });
+
+    await handle("chat.setHeader", { sessionId: "session-1", header: { chips: [{ label: "" }] } });
+    expect(calls[1]?.args[2]).toBeNull();
+
+    await handle("chat.setHeader", { sessionId: "session-1", header: null });
+    expect(calls[2]?.args[2]).toBeNull();
+  });
+
+  it("refuses a missing or malformed chat.setHeader", async () => {
+    const { handle, calls } = chatServer();
+    expect(await codeOf(() => handle("chat.setHeader", { sessionId: "session-1" })))
+      .toBe("invalid_args");
+    expect(await codeOf(() => handle("chat.setHeader", { sessionId: "session-1", header: "queued" })))
+      .toBe("invalid_args");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("carries attachBranch.prUrl when it is https, and refuses anything else", async () => {
+    const { handle, calls } = chatServer();
+    await handle("chat.attachBranch", {
+      sessionId: "session-1",
+      input: { branch: "feat/wave-2", prUrl: "https://github.com/ade/ade/pull/12" },
+    });
+    expect(calls[0]?.args[2]).toMatchObject({
+      branch: "feat/wave-2",
+      prUrl: "https://github.com/ade/ade/pull/12",
+    });
+
+    expect(await codeOf(() => handle("chat.attachBranch", {
+      sessionId: "session-1",
+      input: { branch: "feat/wave-2", prUrl: "http://github.com/ade/ade/pull/12" },
+    }))).toBe("invalid_args");
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -1031,6 +1094,7 @@ describe("createPluginSdkServer chat.hydrate paging", () => {
         emitStatus: async () => undefined,
         setArtifacts: async () => undefined,
         attachBranch: async () => undefined,
+        setHeader: async () => undefined,
         hydrate: async (
           _pluginId: string,
           _sessionId: string,

@@ -494,6 +494,9 @@ final class PluginPageBridge {
         )
         case .socketsList: return socketsList(request)
         case .socketsInvoke: return try await socketsInvoke(request, pluginId: pluginId)
+        case .hostEnginePlace, .hostEngineRelease: throw PluginPageBridgeError.notSupportedHere(
+            "This phone can\u{2019}t place a host engine over a plugin page \u{2014} those engines run on the paired computer."
+        )
         case .pageError: return reportPageError(request)
         }
     }
@@ -557,10 +560,10 @@ final class PluginPageBridge {
     /// another plugin's action by guessing its socket id.
     private func socketsList(_ request: PluginPageBridgeRequest) -> Any? {
         let socket = request.params["socket"]?.stringValue ?? ""
-        guard !socket.isEmpty else { return ["items": []] }
+        guard !socket.isEmpty else { return [] }
         let items = dataSource.pluginPageSocketItems(socket: socket)
         for item in items { visibleSockets[item.socketId] = item }
-        return ["items": items.map(\.jsonValue)]
+        return items.map(\.jsonValue)
     }
 
     /// Press one of those sockets.
@@ -612,8 +615,21 @@ final class PluginPageBridge {
     /// The guest saying its own script threw, or that its content policy
     /// stopped something. Answers nothing, by contract.
     private func reportPageError(_ request: PluginPageBridgeRequest) -> Any? {
-        let raw = request.params["source"]?.stringValue ?? ""
-        let source = PluginPageErrorReport.Source(rawValue: raw) ?? .script
+        let kind = request.params["kind"]?.stringValue ?? ""
+        let rawSource = request.params["source"]?.stringValue ?? ""
+        // Desktop reports `kind: "error" | "csp"` plus an optional URI in
+        // `source`. The phone's first cut used `source` as the kind. Accept
+        // both so a page written against either host draws the same card.
+        let source: PluginPageErrorReport.Source
+        if kind == "csp" || rawSource == "contentPolicy" || rawSource == "csp" {
+            source = .contentPolicy
+        } else if rawSource == "navigation" {
+            source = .navigation
+        } else if rawSource == "terminated" {
+            source = .terminated
+        } else {
+            source = .script
+        }
         host?.pluginPageReportError(
             PluginPageErrorReport.fromPage(
                 message: request.params["message"]?.stringValue,

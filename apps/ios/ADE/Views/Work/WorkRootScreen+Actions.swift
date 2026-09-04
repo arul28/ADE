@@ -551,11 +551,15 @@ extension WorkRootScreen {
       errorMessage = "Session title cannot be empty."
       return
     }
-    if CursorCloudNaming.ownsName(
-      chatSummaries[renameTarget.id]?.cursorCloudAgentId ?? renameTarget.cursorCloudAgentId
+    if CursorCloudNaming.sessionNameIsLocked(
+      cursorCloudAgentId: chatSummaries[renameTarget.id]?.cursorCloudAgentId ?? renameTarget.cursorCloudAgentId,
+      runtimeRef: chatSummaries[renameTarget.id]?.runtimeRef ?? renameTarget.runtimeRef
     ) {
       ADEHaptics.error()
-      errorMessage = CursorCloudNaming.renameBlockedMessage
+      errorMessage = CursorCloudNaming.blockedMessage(
+        cursorCloudAgentId: chatSummaries[renameTarget.id]?.cursorCloudAgentId ?? renameTarget.cursorCloudAgentId,
+        runtimeRef: chatSummaries[renameTarget.id]?.runtimeRef ?? renameTarget.runtimeRef
+      )
       return
     }
     do {

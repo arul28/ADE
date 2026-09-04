@@ -6,9 +6,15 @@
  * in `updateSession`, `regenerateSessionMetadata`, and the user-facing
  * `sessions.updateMeta` / `work.updateSessionMeta` paths. One user-visible
  * sentence, so the layer that catches the refusal cannot change what it says.
+ *
+ * Plugin runtimes may declare the same lock with `chatRuntimes[].ownsName`.
+ * That path uses a different sentence because the owner is not Cursor.
  */
 export const CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE =
   "Cursor Cloud agent names are managed by Cursor. Rename this agent on cursor.com.";
+
+export const PLUGIN_RUNTIME_RENAME_BLOCKED_MESSAGE =
+  "This chat's name is managed by the plugin that owns it.";
 
 /**
  * True when Cursor owns this chat's name, so ADE must not rename it.
@@ -24,12 +30,33 @@ export function cursorOwnsSessionName(
   return Boolean(cursorCloudAgentId?.trim());
 }
 
-type ChatSummaryWithCloudId = {
+export type SessionNameLockFields = {
   cursorCloudAgentId?: string | null;
+  runtimeRef?: { ownsName?: boolean } | null;
 };
 
 /**
- * Refuse a user-facing title / manuallyNamed write when Cursor owns the name.
+ * True when ADE must not rename this chat: Cursor owns the name, or the
+ * plugin runtime declared `ownsName`.
+ */
+export function sessionNameIsLocked(session: SessionNameLockFields): boolean {
+  return cursorOwnsSessionName(session.cursorCloudAgentId)
+    || session.runtimeRef?.ownsName === true;
+}
+
+/** The sentence to show when {@link sessionNameIsLocked} is true. */
+export function sessionRenameBlockedMessage(session: SessionNameLockFields): string {
+  if (cursorOwnsSessionName(session.cursorCloudAgentId)) {
+    return CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE;
+  }
+  return PLUGIN_RUNTIME_RENAME_BLOCKED_MESSAGE;
+}
+
+type ChatSummaryWithNameLock = SessionNameLockFields;
+
+/**
+ * Refuse a user-facing title / manuallyNamed write when Cursor or a plugin
+ * runtime owns the name.
  *
  * `sessionService.updateMeta` is also the internal writer Cursor's own name
  * lands through, so the guard lives on the user-facing commands (IPC, sync,
@@ -38,7 +65,7 @@ type ChatSummaryWithCloudId = {
  */
 export async function assertCursorCloudRenameAllowed(
   getSessionSummary:
-    | ((sessionId: string) => Promise<ChatSummaryWithCloudId | null>)
+    | ((sessionId: string) => Promise<ChatSummaryWithNameLock | null>)
     | null
     | undefined,
   args: { sessionId?: string; title?: unknown; manuallyNamed?: unknown },
@@ -47,7 +74,6 @@ export async function assertCursorCloudRenameAllowed(
   const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
   if (!sessionId || !getSessionSummary) return;
   const chat = await getSessionSummary(sessionId);
-  if (cursorOwnsSessionName(chat?.cursorCloudAgentId)) {
-    throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
-  }
+  if (!chat || !sessionNameIsLocked(chat)) return;
+  throw new Error(sessionRenameBlockedMessage(chat));
 }

@@ -100,6 +100,7 @@ function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
   const reloads: { pluginId: string; version: string; revision: number }[] = [];
   const openExternalUrl = vi.fn(async () => {});
   const openPathInEditor = vi.fn(async () => {});
+  const pageErrors: Array<{ pluginId: string; error: unknown }> = [];
 
   const server = createPluginWebviewBridgeServer({
     domainFor: () => domain as unknown as PluginWebviewDomain,
@@ -108,6 +109,9 @@ function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
     openDeeplink: async () => {},
     openExternalUrl,
     openPathInEditor,
+    recordPageError: ({ guest, error }) => {
+      pageErrors.push({ pluginId: guest.pluginId, error });
+    },
     sendUiRequest: ({ request }) => {
       requests.push(request);
       return true;
@@ -174,6 +178,8 @@ function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
     clipboard,
     reloads,
     openExternalUrl,
+    openPathInEditor,
+    pageErrors,
   };
 }
 
@@ -684,6 +690,180 @@ describe("collections.list paging", () => {
     // The first read could not have contained a full page past the cursor, so
     // the window had to widen rather than answer short.
     expect(h.domain.getCollection.mock.calls.length).toBeGreaterThan(1);
+  });
+});
+
+describe("wave 2 verbs answered in main", () => {
+  it("forwards picker arguments and answers null when the reader dismissed", async () => {
+    const h = harness();
+    const dismissed = h.server.handle(SENDER, request("ui.pickModel", {
+      value: "gpt",
+      availableModelIds: ["gpt", "claude-opus-5"],
+    }));
+    expect((await h.waitForRequest(0)).args).toEqual({
+      value: "gpt",
+      availableModelIds: ["gpt", "claude-opus-5"],
+    });
+    await h.answer(0, null);
+    await expect(dismissed).resolves.toBeNull();
+
+    const chosen = h.server.handle(SENDER, request("ui.pickLane", { value: "lane-1" }));
+    await h.answer(1, { laneId: "lane-1", name: "Wave 2" });
+    await expect(chosen).resolves.toEqual({ laneId: "lane-1", name: "Wave 2" });
+  });
+
+  it("refuses pickPermissionMode without a provider and pickReasoningEffort without a model", async () => {
+    const h = harness();
+    await expect(h.server.handle(SENDER, request("ui.pickPermissionMode", {})))
+      .rejects.toMatchObject({ code: "invalid_args" });
+    await expect(h.server.handle(SENDER, request("ui.pickReasoningEffort", {})))
+      .rejects.toMatchObject({ code: "invalid_args" });
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("opens a checkout path through the same editor opener every ADE surface uses", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("ui.openPathInEditor", {
+      rootPath: "/repo",
+      relativePath: "src/main.ts",
+      target: "default",
+    }));
+    expect(h.openPathInEditor).toHaveBeenCalledWith({
+      guest: expect.objectContaining({ pluginId: "demo-plugin" }),
+      rootPath: "/repo",
+      relativePath: "src/main.ts",
+      target: "default",
+    });
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("relays sockets.list as an array and sockets.invoke by socketId", async () => {
+    const h = harness();
+    const listed = h.server.handle(SENDER, request("sockets.list", { socket: "toolbar-action" }));
+    await h.answer(0, [
+      {
+        socketId: "graph.rebuild",
+        pluginId: "ade-graph",
+        socket: "toolbar-action",
+        label: "Rebuild",
+      },
+      { socketId: "drop-me" },
+    ]);
+    await expect(listed).resolves.toEqual([
+      {
+        socketId: "graph.rebuild",
+        pluginId: "ade-graph",
+        socket: "toolbar-action",
+        label: "Rebuild",
+      },
+    ]);
+
+    const pressed = h.server.handle(SENDER, request("sockets.invoke", {
+      socketId: "graph.rebuild",
+      args: { from: "page" },
+    }));
+    await h.answer(1, { ok: true });
+    await expect(pressed).resolves.toEqual({ ok: true });
+    expect(h.requests[1]?.args).toEqual({ socketId: "graph.rebuild", args: { from: "page" } });
+  });
+
+  it("refuses hostEngine.place for a plugin that does not own the engine, and relays when it does", async () => {
+    const h = harness();
+    await expect(h.server.handle(SENDER, request("hostEngine.place", {
+      engineId: "electron-control",
+      rect: { x: 0, y: 0, width: 100, height: 80 },
+    }))).rejects.toMatchObject({ code: "not_permitted" });
+    expect(h.requests).toHaveLength(0);
+
+    const OWNER_ID = 88;
+    const ownerSender = {
+      webContentsId: OWNER_ID,
+      frameUrl: "ade-plugin://ade-app-control/page/index.html",
+    };
+    registerPluginWebviewGuest({
+      webContentsId: OWNER_ID,
+      pluginId: "ade-app-control",
+      hostWindowId: 5,
+      context: { subject: null, surfaceId: "control", placement: "tab" },
+      send: () => {},
+    });
+    const placed = h.server.handle(ownerSender, request("hostEngine.place", {
+      engineId: "electron-control",
+      rect: { x: 8, y: 16, width: 320, height: 240 },
+    }));
+    await h.answer(0, undefined);
+    await expect(placed).resolves.toBeNull();
+    expect(h.requests[0]).toMatchObject({
+      pluginId: "ade-app-control",
+      verb: "hostEngine.place",
+      args: { engineId: "electron-control", rect: { x: 8, y: 16, width: 320, height: 240 } },
+    });
+  });
+
+  it("logs and relays page.error, and drops a report with no sentence", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("page.error", {
+      kind: "csp",
+      message: "script-src blocked https://cdn.example.com/react.js",
+      source: "https://cdn.example.com/react.js",
+    }));
+    await h.answer(0, undefined);
+    await expect(pending).resolves.toBeNull();
+    expect(h.pageErrors).toEqual([
+      {
+        pluginId: "demo-plugin",
+        error: {
+          kind: "csp",
+          message: "script-src blocked https://cdn.example.com/react.js",
+          source: "https://cdn.example.com/react.js",
+        },
+      },
+    ]);
+    expect(h.requests[0]).toMatchObject({
+      verb: "page.error",
+      args: {
+        error: {
+          kind: "csp",
+          message: "script-src blocked https://cdn.example.com/react.js",
+          source: "https://cdn.example.com/react.js",
+        },
+      },
+    });
+
+    await expect(h.server.handle(SENDER, request("page.error", { kind: "error" })))
+      .resolves.toBeNull();
+    expect(h.pageErrors).toHaveLength(1);
+  });
+});
+
+describe("window-published host kinds", () => {
+  it("delivers operation, conflict and review to subscribers of those kinds", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", {
+      kinds: ["operation", "conflict", "review", "lane"],
+    }));
+
+    h.server.publishHostChange(5, { kind: "conflict", ids: ["lane-1", "lane-1"] });
+    h.server.publishHostChange(5, { kind: "review", ids: ["run-9"] });
+    h.server.publishHostChange(5, { kind: "operation", ids: ["op-1"] });
+    expect(h.sent).toHaveLength(0);
+    h.fireTimers();
+
+    expect(h.sent).toEqual([
+      { event: "host", payload: { kind: "conflict", ids: ["lane-1"], overflow: false } },
+      { event: "host", payload: { kind: "review", ids: ["run-9"], overflow: false } },
+      { event: "host", payload: { kind: "operation", ids: ["op-1"], overflow: false } },
+    ]);
+  });
+
+  it("drops a kind the entity bus or the chat publisher already owns", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane", "chat", "conflict"] }));
+    h.server.publishHostChange(5, { kind: "lane", ids: ["l1"] });
+    h.server.publishHostChange(5, { kind: "chat", ids: ["s1"] });
+    h.server.publishHostChange(5, { kind: "session", ids: ["s1"] });
+    h.fireTimers();
+    expect(h.sent).toHaveLength(0);
   });
 });
 

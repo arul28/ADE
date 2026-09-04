@@ -4,9 +4,15 @@ import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, Termi
 import { chatSessionAgentLabel, PLUGIN_CHAT_PROVIDER } from "../../shared/types/chat";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
-import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
+import {
+  sessionNameIsLocked,
+  sessionRenameBlockedMessage as sharedSessionRenameBlockedMessage,
+} from "../../shared/cursorCloudNaming";
 
-export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
+export {
+  CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE,
+  PLUGIN_RUNTIME_RENAME_BLOCKED_MESSAGE,
+} from "../../shared/cursorCloudNaming";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
@@ -22,15 +28,22 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
 }
 
 /**
- * True when Cursor owns this chat's name, so ADE must not rename it.
+ * True when ADE must not rename this chat: Cursor owns the name, or the
+ * plugin runtime declared `ownsName`.
  *
- * Wrapper over the shared id predicate so renderer menus keep passing a
+ * Wrapper over the shared predicate so renderer menus keep passing a
  * session object. A whitespace-only id is not a cloud agent.
  */
 export function cursorOwnsSessionName(
-  session: Pick<TerminalSessionSummary, "cursorCloudAgentId">,
+  session: Pick<TerminalSessionSummary, "cursorCloudAgentId" | "runtimeRef">,
 ): boolean {
-  return cursorOwnsCloudAgentId(session.cursorCloudAgentId);
+  return sessionNameIsLocked(session);
+}
+
+export function sessionRenameBlockedMessage(
+  session: Pick<TerminalSessionSummary, "cursorCloudAgentId" | "runtimeRef">,
+): string {
+  return sharedSessionRenameBlockedMessage(session);
 }
 
 /**

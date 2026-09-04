@@ -323,7 +323,7 @@ describe("chat chrome for a plugin-owned runtime", () => {
       isActive: true,
       turnActive: true,
       sessionProvider: "plugin",
-      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "one-shot", externalId: "run-1" },
+      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "one-shot" },
     })} />);
 
     // Absent, not disabled: there is no sentence that makes a Stop this runtime
@@ -338,7 +338,7 @@ describe("chat chrome for a plugin-owned runtime", () => {
       isActive: true,
       turnActive: true,
       sessionProvider: "plugin",
-      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "agent", externalId: "run-1" },
+      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "agent" },
     })} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop active turn" })).toBeTruthy());
@@ -351,7 +351,7 @@ describe("chat chrome for a plugin-owned runtime", () => {
       isActive: true,
       turnActive: true,
       sessionProvider: "plugin",
-      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "renamed", externalId: "run-1" },
+      chatRuntimeRef: { pluginId: "cloudy", runtimeId: "renamed" },
     })} />);
 
     // A manifest out of reach must never silently remove a chat's Stop.

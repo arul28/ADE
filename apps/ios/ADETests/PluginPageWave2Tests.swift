@@ -33,6 +33,12 @@ final class PluginPageWave2Tests: XCTestCase {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    private func serializedList(_ value: Any?) throws -> [[String: Any]] {
+        let object = try XCTUnwrap(value as? [Any])
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+    }
+
     // MARK: - The five picker answers
 
     func testPickModelCarriesTheIdAndTheFastModeFlag() throws {
@@ -251,7 +257,7 @@ final class PluginPageWave2Tests: XCTestCase {
         XCTAssertEqual(payload["label"] as? String, "Rebuild")
     }
 
-    func testSocketsListAnswersAnItemsArray() async throws {
+    func testSocketsListAnswersAnArray() async throws {
         let source = FakeWave2DataSource()
         source.socketItems = [PluginPageSocketItem(contribution: try XCTUnwrap(toolbarContribution()))]
         let bridge = PluginPageBridge(dataSource: source, host: RecordingWave2Host())
@@ -259,7 +265,7 @@ final class PluginPageWave2Tests: XCTestCase {
             request(.socketsList, ["socket": "toolbar-action"]),
             pluginId: "linear"
         )
-        let items = try XCTUnwrap(try serialized(answer)["items"] as? [[String: Any]])
+        let items = try serializedList(answer)
         XCTAssertEqual(items.count, 1)
         XCTAssertEqual(items[0]["pluginId"] as? String, "graph")
         XCTAssertEqual(items[0]["socket"] as? String, "toolbar-action")
@@ -399,6 +405,107 @@ final class PluginPageWave2Tests: XCTestCase {
         )
         XCTAssertEqual(host.errors.first?.message, "boom")
         XCTAssertEqual(host.errors.first?.source, .contentPolicy)
+    }
+
+    func testPageErrorKindCspMapsToContentPolicyEvenWhenSourceIsAUri() async throws {
+        let host = RecordingWave2Host()
+        let bridge = PluginPageBridge(dataSource: FakeWave2DataSource(), host: host)
+        _ = try await bridge.handle(
+            request(.pageError, [
+                "kind": "csp",
+                "message": "script-src blocked https://cdn.example.com/react.js",
+                "source": "https://cdn.example.com/react.js",
+            ]),
+            pluginId: "linear"
+        )
+        XCTAssertEqual(host.errors.first?.source, .contentPolicy)
+        XCTAssertTrue(host.errors.first?.message.contains("cdn.example.com") == true)
+    }
+
+    func testHostEnginePlaceAndReleaseRefuseOnThisPhone() async {
+        let bridge = PluginPageBridge(dataSource: FakeWave2DataSource(), host: RecordingWave2Host())
+        for method in [PluginPageBridgeMethod.hostEnginePlace, .hostEngineRelease] {
+            do {
+                _ = try await bridge.handle(request(method), pluginId: "ade-app-control")
+                XCTFail("\(method.rawValue) has no engine on the phone and must refuse.")
+            } catch let error as PluginPageBridgeError {
+                XCTAssertEqual(error.code, "not_supported")
+                XCTAssertTrue(error.message.contains("engine"), "The refusal must say why: \(error.message)")
+            } catch {
+                XCTFail("Unexpected error \(error)")
+            }
+        }
+    }
+
+    func testTheGuestScriptForwardsPickerArgsAndHostEngine() {
+        let script = PluginPageHostView.bridgeScript(
+            pluginId: "linear",
+            context: PluginPageContext()
+        )
+        XCTAssertTrue(script.contains("pickModel: function (request)"))
+        XCTAssertTrue(script.contains("pickLane: function (request)"))
+        XCTAssertTrue(script.contains("pickProvider: function (request)"))
+        XCTAssertTrue(script.contains("openPathInEditor: function (request)"))
+        XCTAssertTrue(script.contains("hostEngine.place"))
+        XCTAssertTrue(script.contains("hostEngine.release"))
+        XCTAssertFalse(script.contains("{ path: path }"))
+        XCTAssertTrue(script.contains("kind: kind || \"error\""))
+    }
+
+    func testRuntimeRefDecodesCapabilitiesAndOwnsName() throws {
+        let json = """
+        {
+          "sessionId": "s1", "laneId": "l1", "provider": "plugin", "model": "cloud",
+          "status": "idle", "startedAt": "2026-09-03T00:00:00Z",
+          "lastActivityAt": "2026-09-03T00:00:00Z",
+          "runtimeRef": {
+            "pluginId": "ade-cursor-cloud",
+            "runtimeId": "cloud",
+            "externalId": "bc-1",
+            "ownsName": true,
+            "capabilities": { "followUp": true, "interrupt": false, "hydrate": true, "artifacts": true }
+          },
+          "pluginPrUrl": "https://github.com/org/repo/pull/12"
+        }
+        """
+        let decoded = try JSONDecoder().decode(AgentChatSessionSummary.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.runtimeRef?.pluginId, "ade-cursor-cloud")
+        XCTAssertEqual(decoded.runtimeRef?.ownsName, true)
+        XCTAssertEqual(decoded.runtimeRef?.capabilities?.interrupt, false)
+        XCTAssertEqual(decoded.pluginPrUrl, "https://github.com/org/repo/pull/12")
+        XCTAssertTrue(
+            CursorCloudNaming.sessionNameIsLocked(
+                cursorCloudAgentId: decoded.cursorCloudAgentId,
+                runtimeRef: decoded.runtimeRef
+            )
+        )
+        XCTAssertEqual(
+            CursorCloudNaming.blockedMessage(
+                cursorCloudAgentId: decoded.cursorCloudAgentId,
+                runtimeRef: decoded.runtimeRef
+            ),
+            CursorCloudNaming.pluginRenameBlockedMessage
+        )
+    }
+
+    func testAnOlderRuntimeRefWithoutCapabilitiesStillDecodes() throws {
+        let json = """
+        {
+          "sessionId": "s1", "laneId": "l1", "provider": "plugin", "model": "cloud",
+          "status": "idle", "startedAt": "2026-09-03T00:00:00Z",
+          "lastActivityAt": "2026-09-03T00:00:00Z",
+          "runtimeRef": { "pluginId": "ade-linear", "runtimeId": "issue", "externalId": "ADE-148" }
+        }
+        """
+        let decoded = try JSONDecoder().decode(AgentChatSessionSummary.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.runtimeRef?.capabilities)
+        XCTAssertNil(decoded.runtimeRef?.ownsName)
+        XCTAssertFalse(
+            CursorCloudNaming.sessionNameIsLocked(
+                cursorCloudAgentId: decoded.cursorCloudAgentId,
+                runtimeRef: decoded.runtimeRef
+            )
+        )
     }
 
     func testAnEmptyPageErrorBecomesTheHostsOwnSentence() {

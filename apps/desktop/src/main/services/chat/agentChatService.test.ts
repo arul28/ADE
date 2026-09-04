@@ -49743,6 +49743,7 @@ describe("claude output style listing", () => {
 describe("agentChatService plugin-owned conversations", () => {
   const RUNTIME_REF = { pluginId: "ade-cursor-cloud", runtimeId: "cloud", externalId: "bc-42" };
   const FULL_CAPABILITIES = { followUp: true, interrupt: true, hydrate: true, artifacts: true };
+  const STAMPED_REF = { ...RUNTIME_REF, capabilities: FULL_CAPABILITIES };
 
   type FakePluginRuntime = {
     turns: { sessionId: string; turnId: string; message: string; followUp: boolean }[];
@@ -49753,6 +49754,7 @@ describe("agentChatService plugin-owned conversations", () => {
 
   function installFakePluginRuntime(options: {
     capabilities?: typeof FULL_CAPABILITIES;
+    ownsName?: boolean;
     onTurn?: (turn: { sessionId: string; turnId: string }) => void | Promise<void>;
     turnRejects?: string;
   } = {}): FakePluginRuntime {
@@ -49829,7 +49831,7 @@ describe("agentChatService plugin-owned conversations", () => {
       const { bound, session } = await bindOwnedSession(service);
       expect(bound.created).toBe(true);
       expect(session?.provider).toBe("plugin");
-      expect(session?.runtimeRef).toEqual(RUNTIME_REF);
+      expect(session?.runtimeRef).toEqual(STAMPED_REF);
       expect(session?.cursorCloudAgentId).toBe(RUNTIME_REF.externalId);
       // The runtime's own name, resolved from the manifest by the host. Every
       // client needs it and none of them can read a manifest.
@@ -50090,7 +50092,7 @@ describe("agentChatService plugin-owned conversations", () => {
         sessionId: bound.sessionId,
       });
       expect(result.sessionId).toBe(bound.sessionId);
-      expect(result.session.runtimeRef).toEqual(RUNTIME_REF);
+      expect(result.session.runtimeRef).toEqual(STAMPED_REF);
     } finally {
       if (previousKey === undefined) delete process.env.CURSOR_API_KEY;
       else process.env.CURSOR_API_KEY = previousKey;
@@ -50265,7 +50267,7 @@ describe("agentChatService plugin-owned conversations", () => {
       expect(() => requirePluginChatWriteTarget("ade-impostor", bound.sessionId))
         .toThrowError(/does not own chat session/i);
       expect(requirePluginChatWriteTarget(RUNTIME_REF.pluginId, bound.sessionId).ref)
-        .toEqual(RUNTIME_REF);
+        .toEqual(STAMPED_REF);
     } finally {
       runtime.detach();
       service.forceDisposeAll();
@@ -50463,7 +50465,7 @@ describe("agentChatService plugin-owned conversations", () => {
         runtimeId: RUNTIME_REF.runtimeId,
         externalId: "bc-legacy",
       });
-      expect(adopted).toEqual({ ...RUNTIME_REF, externalId: "bc-legacy" });
+      expect(adopted).toEqual({ ...STAMPED_REF, externalId: "bc-legacy" });
       const after = await service.getSessionSummary(cursorSession.id);
       expect(after?.provider).toBe("plugin");
       expect(after?.runtimeRef?.externalId).toBe("bc-legacy");

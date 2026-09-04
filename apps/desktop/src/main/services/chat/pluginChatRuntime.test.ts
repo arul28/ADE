@@ -32,6 +32,7 @@ function makeWriter(
     emitStatus: vi.fn(async () => undefined),
     setArtifacts: vi.fn(async () => undefined),
     attachBranch: vi.fn(async () => undefined),
+    setHeader: vi.fn(async () => undefined),
     hydrate: vi.fn(async () => ({ accepted: 0, skipped: 0, sweepTotal: 0 })),
   };
 }

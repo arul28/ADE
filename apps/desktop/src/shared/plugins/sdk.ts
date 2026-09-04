@@ -31,7 +31,7 @@
 
 import { PLUGIN_URL_MAX_CHARS, bounded, httpsUrl, isRecord, oneOf } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
-import { VOCAB_LIMITS } from "./vocabularyNodes";
+import { VOCAB_LIMITS, normalizeVocabTone, type VocabTone } from "./vocabularyNodes";
 import type {
   PluginAuthCallbackKind,
   PluginManifest,
@@ -1106,6 +1106,55 @@ export type PluginChatArtifact = {
   sourceUrl?: string;
 };
 
+/**
+ * The most chips a plugin may put beside the chat title.
+ *
+ * The title rail is 32px tall and already carries a lane chip, a cache badge
+ * and a snooze pill. Four is what fits before the title itself starts
+ * truncating, and a plugin that wants to say more has a panel to say it in.
+ */
+export const PLUGIN_CHAT_HEADER_CHIP_MAX = 4;
+
+/** A chip is a WORD, not a sentence. The rail has no room for prose. */
+export const PLUGIN_CHAT_HEADER_LABEL_MAX = 24;
+
+export type PluginChatHeaderChip = {
+  label: string;
+  tone: VocabTone;
+};
+
+export type PluginChatHeader = {
+  chips: PluginChatHeaderChip[];
+  /** An optional word for the runtime itself, shown before the chips. */
+  label?: string | null;
+};
+
+/**
+ * A session's plugin header, validated for storage.
+ *
+ * Over-cap is trimmed. An over-long label is dropped rather than truncated,
+ * because a chip cut mid-word says something the plugin did not write. A
+ * header with no surviving chip and no label is `null` — a clear.
+ */
+export function sanitizePluginChatHeader(value: unknown): PluginChatHeader | null {
+  if (!isRecord(value)) return null;
+  const label = bounded(value.label, PLUGIN_CHAT_HEADER_LABEL_MAX);
+  const raw = Array.isArray(value.chips) ? value.chips : [];
+  const chips: PluginChatHeaderChip[] = [];
+  for (const entry of raw) {
+    if (chips.length >= PLUGIN_CHAT_HEADER_CHIP_MAX) break;
+    if (!isRecord(entry)) continue;
+    const chipLabel = bounded(entry.label, PLUGIN_CHAT_HEADER_LABEL_MAX);
+    if (!chipLabel) continue;
+    chips.push({
+      label: chipLabel,
+      tone: entry.tone === undefined ? "neutral" : normalizeVocabTone(entry.tone),
+    });
+  }
+  if (chips.length === 0 && !label) return null;
+  return { chips, ...(label ? { label } : { label: null }) };
+}
+
 /** HTTPS download URL a `setArtifacts` call may ask the host to fetch. */
 export function readPluginChatArtifactSourceUrl(value: unknown): string | undefined {
   const href = httpsUrl(value, PLUGIN_CHAT_ARTIFACT_SOURCE_URL_MAX_CHARS);
@@ -1846,9 +1895,17 @@ export type AdePluginSdk = {
      *
      * The host fetches it into the lane worktree and records it on the session,
      * so the ordinary branch and PR affordances light up for a conversation
-     * that happened somewhere else entirely.
+     * that happened somewhere else entirely. `prUrl` is optional and must be
+     * `https:`; a bad URL is refused rather than stored.
      */
-    attachBranch(sessionId: string, input: { branch: string; remote?: string }): Promise<void>;
+    attachBranch(sessionId: string, input: { branch: string; remote?: string; prUrl?: string }): Promise<void>;
+    /**
+     * Put chips beside the chat title, or clear them.
+     *
+     * `null` or an empty header takes the chips off so ADE's own title stands
+     * alone. Over-cap is trimmed; see {@link PLUGIN_CHAT_HEADER_CHIP_MAX}.
+     */
+    setHeader(sessionId: string, header: PluginChatHeader | null): Promise<void>;
     /**
      * Backfill a conversation that started outside ADE.
      *
@@ -3512,6 +3569,7 @@ export type PluginSdkMethod =
   | "chat.emitStatus"
   | "chat.setArtifacts"
   | "chat.attachBranch"
+  | "chat.setHeader"
   | "chat.hydrate"
   | "lanes.list"
   | "lanes.get"

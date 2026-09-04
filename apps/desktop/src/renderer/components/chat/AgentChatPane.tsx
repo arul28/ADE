@@ -13217,13 +13217,10 @@ export function AgentChatPane({
   /**
    * The header a plugin runtime published for this chat.
    *
-   * Read off the session as `unknown` and validated by the renderer, so this
-   * compiles and behaves correctly whether or not the field is on the summary
-   * type yet: an absent field, a null one, and a malformed one are all "no
-   * chips". See `parsePluginChatHeader` for the ceilings.
+   * See `parsePluginChatHeader` for the ceilings.
    */
   const pluginChatHeader = useMemo(
-    () => parsePluginChatHeader((selectedSession as { pluginHeader?: unknown } | null | undefined)?.pluginHeader),
+    () => parsePluginChatHeader(selectedSession?.pluginHeader),
     [selectedSession],
   );
   /**

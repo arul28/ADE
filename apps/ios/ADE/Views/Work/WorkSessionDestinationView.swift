@@ -1238,8 +1238,9 @@ struct WorkSessionDestinationView: View {
       pluginActionsEnabled: syncService.canInvokePluginActions,
       canAttachIssue: pluginGate.drawsBuiltin(.linear)
         && syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
-      showsRename: !CursorCloudNaming.ownsName(
-        composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
+      showsRename: !CursorCloudNaming.sessionNameIsLocked(
+        cursorCloudAgentId: composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId,
+        runtimeRef: composerChatSummary?.runtimeRef ?? session.runtimeRef
       )
 
     )

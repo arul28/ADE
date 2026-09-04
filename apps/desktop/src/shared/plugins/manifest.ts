@@ -774,6 +774,15 @@ export type PluginManifestChatRuntime = {
   icon?: string;
   /** See {@link PluginManifestChatRuntimeCapabilities}. */
   capabilities: PluginManifestChatRuntimeCapabilities;
+  /**
+   * True when this runtime owns the session's display name, so ADE must not
+   * offer a local rename. Absent or false means ADE may rename.
+   *
+   * Not a capability flag: those four booleans are required, and adding a
+   * fifth would drop every existing runtime that does not name it. This is
+   * optional and defaults to unlocked.
+   */
+  ownsName?: boolean;
 };
 
 /** A keyboard shortcut invoking one of this plugin's actions. */
@@ -1671,12 +1680,16 @@ function parseChatRuntimes(raw: unknown, ctx: ParseContext): PluginManifestChatR
     if (!displayName) return ctx.drop(`${label}.displayName is required`);
     const capabilities = parseChatRuntimeCapabilities(entry.capabilities, label, ctx);
     if (!capabilities) return null;
+    if (entry.ownsName !== undefined && typeof entry.ownsName !== "boolean") {
+      return ctx.drop(`${label}.ownsName must be true or false`);
+    }
     const icon = trimmedString(entry.icon);
     return {
       id,
       displayName,
       ...(icon ? { icon } : {}),
       capabilities,
+      ...(entry.ownsName === true ? { ownsName: true } : {}),
     } satisfies PluginManifestChatRuntime;
   });
   return limitDeclarations(entries, "chatRuntimes", PLUGIN_CHAT_RUNTIMES_PER_PLUGIN, (entry) => entry.id, ctx);

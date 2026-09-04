@@ -51,6 +51,7 @@ import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "../../../desktop/src/shared/plugins
 import {
   buildPluginDoctorReport,
   formatPluginDoctorReport,
+  pluginDoctorExitCode,
   type PluginDoctorLive,
 } from "./pluginDoctor";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
@@ -970,9 +971,13 @@ async function runPluginDoctor(
     sourcePresent: record?.source.kind === "local"
       ? fs.existsSync(path.resolve(record.source.path))
       : null,
+    // The copy ADE loads, not the author's source folder. A page rung that
+    // measured the source would pass over a bundle that never got copied.
+    installedRoot: path.join(pluginsRoot, pluginId),
   });
-  if (format === "text") return { output: formatPluginDoctorReport(report), exitCode: 0 };
-  return jsonOutput(report);
+  const exitCode = pluginDoctorExitCode(report);
+  if (format === "text") return { output: formatPluginDoctorReport(report), exitCode };
+  return { output: `${JSON.stringify(report, null, 2)}\n`, exitCode };
 }
 
 // ---------------------------------------------------------------------------

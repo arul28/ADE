@@ -706,6 +706,13 @@ export const PLUGIN_CHAT_PROVIDER = "plugin";
  * id, a thread id, a ticket. ADE stores it, indexes it, and never interprets
  * it.
  */
+export type AgentChatRuntimeCapabilities = {
+  followUp: boolean;
+  interrupt: boolean;
+  hydrate: boolean;
+  artifacts: boolean;
+};
+
 export type AgentChatRuntimeRef = {
   /** The plugin that owns this session's turns. */
   pluginId: string;
@@ -713,6 +720,16 @@ export type AgentChatRuntimeRef = {
   runtimeId: string;
   /** The plugin's own identifier for the conversation. Opaque to ADE. */
   externalId: string;
+  /**
+   * The runtime's declared capabilities, stamped from the manifest so a client
+   * that cannot read one still knows whether Stop and follow-up exist.
+   */
+  capabilities?: AgentChatRuntimeCapabilities;
+  /**
+   * True when this runtime owns the session's display name, so ADE must not
+   * offer a local rename. Absent means ADE may rename.
+   */
+  ownsName?: boolean;
 };
 
 /** Longest `externalId` the host stores. A pointer, never a payload. */
@@ -746,6 +763,46 @@ export function isAgentChatRuntimeRef(value: unknown): value is AgentChatRuntime
     && record.externalId.length > 0
     && record.externalId.length <= AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX;
 }
+
+function readAgentChatRuntimeCapabilities(value: unknown): AgentChatRuntimeCapabilities | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    followUp: record.followUp !== false,
+    interrupt: record.interrupt !== false,
+    hydrate: record.hydrate !== false,
+    artifacts: record.artifacts !== false,
+  };
+}
+
+/**
+ * The three identity strings plus any stamped capabilities / rename lock.
+ *
+ * Extra fields are additive: a session written before they existed still
+ * parses, and a client that does not read them still routes the turn.
+ */
+export function readAgentChatRuntimeRef(value: unknown): AgentChatRuntimeRef | undefined {
+  if (!isAgentChatRuntimeRef(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const capabilities = readAgentChatRuntimeCapabilities(record.capabilities);
+  return {
+    pluginId: value.pluginId,
+    runtimeId: value.runtimeId,
+    externalId: value.externalId,
+    ...(capabilities ? { capabilities } : {}),
+    ...(record.ownsName === true ? { ownsName: true } : {}),
+  };
+}
+
+/**
+ * Header chips a plugin wrote with `chat.setHeader`.
+ *
+ * Stored as the plugin sent them (bounded). Clients re-parse before drawing.
+ */
+export type AgentChatPluginHeader = {
+  label?: string | null;
+  chips: Array<{ label: string; tone?: string }>;
+};
 
 /**
  * True when this session's turns belong to a plugin.
@@ -1702,6 +1759,8 @@ export type AgentChatEvent =
       acpPermissionMode?: AgentChatAcpPermissionMode;
       acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
       spawnKind?: AgentChatSpawnKind;
+      pluginHeader?: AgentChatPluginHeader | null;
+      pluginPrUrl?: string | null;
       subagentTakeoverPromptShownAt?: string | null;
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
@@ -2153,6 +2212,20 @@ export type AgentChatSession = {
   runtimeRef?: AgentChatRuntimeRef;
   /** How the owning plugin's runtime is named and drawn. See {@link AgentChatRuntimeLabel}. */
   runtimeLabel?: AgentChatRuntimeLabel;
+  /**
+   * Header chips a plugin wrote with `chat.setHeader`.
+   *
+   * `null` is a clear: the plugin took its chips off and ADE's own title
+   * stands alone. Absent means this session has never carried one.
+   */
+  pluginHeader?: AgentChatPluginHeader | null;
+  /**
+   * A PR URL the plugin attached via `chat.attachBranch`.
+   *
+   * Validated as `https:` only. Survives reload so the PR chip does not
+   * depend on the `cloud_status` event still being in the live stream.
+   */
+  pluginPrUrl?: string | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -2247,6 +2320,13 @@ export type AgentChatSessionSummary = {
    * host resolved rather than rendering as an unnamed provider.
    */
   runtimeLabel?: AgentChatRuntimeLabel;
+  /**
+   * Header chips a plugin wrote with `chat.setHeader`. Mirrored onto the
+   * summary so a client can draw them without opening the chat.
+   */
+  pluginHeader?: AgentChatPluginHeader | null;
+  /** A PR URL the plugin attached via `chat.attachBranch`. */
+  pluginPrUrl?: string | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;

@@ -1611,6 +1611,10 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
           await writer.attachBranch(sessionId, input);
         },
+        setHeader: async (chatPluginId, sessionId, header) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.setHeader(sessionId, header);
+        },
         hydrate: async (chatPluginId, sessionId, transcript, options) => {
           const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
           return await writer.hydrate(sessionId, transcript, options);
@@ -3118,6 +3122,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         ...(runtime.icon ? { icon: runtime.icon } : {}),
         pluginDisplayName: installed.manifest?.displayName ?? ref.pluginId,
         capabilities: runtime.capabilities,
+        ...(runtime.ownsName ? { ownsName: true } : {}),
       };
     },
   });

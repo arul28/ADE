@@ -1,7 +1,6 @@
 import React from "react";
 
-import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { PluginFallbackCard } from "./VocabularyRenderer";
+import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { supportsWebPluginPages } from "../../webclient/plugins/pageServiceWorkerClient";
 import { HostEngineOverlay } from "./hostEngine/HostEngineOverlay";
@@ -10,9 +9,11 @@ import {
   clearPluginWebviewPageError,
   usePluginWebviewPageError,
 } from "./sockets/pluginWebviewPageErrorStore";
+import { PluginWebviewPageErrorCard } from "./sockets/PluginWebviewPageErrorCard";
 import { registerPluginWebviewGuest } from "./sockets/pluginWebviewGuestRegistry";
 import { usePluginWebviewReloadKey } from "./sockets/pluginWebviewReloadStore";
-import { pluginWebviewRelayBridge } from "../../lib/pluginRuntimeBridge";
+import { openPluginLogs, pluginWebviewRelayBridge } from "../../lib/pluginRuntimeBridge";
+import { useRootAppStore } from "../../state/appStore";
 import {
   PLUGIN_WEBVIEW_PROTOCOL,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
@@ -191,6 +192,9 @@ export function PluginWebviewHost({
   // What this page last said about its own failure, or null. See
   // `pluginWebviewPageErrorStore.ts` for why it arrives here through a store.
   const pageError = usePluginWebviewPageError(liveGuestKey);
+  const pluginName = useRootAppStore((state) =>
+    state.installedPlugins.find((entry) => entry.pluginId === pluginId)?.displayName ?? pluginId,
+  );
   // Bumped by the Reload button. A fresh guest rather than `reload()`: a page
   // that failed to load has no document to reload, and re-creating it is also
   // what recovers a guest whose process died.
@@ -388,6 +392,9 @@ export function PluginWebviewHost({
       setHostEngineBounds(liveGuestKey, { width: box.width, height: box.height });
     };
     report();
+    if (typeof ResizeObserver === "undefined") {
+      return () => setHostEngineBounds(liveGuestKey, null);
+    }
     const observer = new ResizeObserver(report);
     observer.observe(frame);
     return () => {
@@ -424,18 +431,9 @@ export function PluginWebviewHost({
   // The host's own wins: `did-fail-load` means there is no document at all,
   // and a page that both failed to load and reported an error is describing
   // the same event twice.
-  const card = state.status === "failed"
-    ? { title: "This page didn’t open", text: state.message }
-    : pageError
-      ? {
-          title: "This page didn’t open",
-          // The plugin's own sentence, and for a CSP violation it is the one
-          // that names the fix. `source` is left off the card: a blocked URI is
-          // already inside the sentence, and a second line of it would be the
-          // console output this card exists to replace.
-          text: pageError.message,
-        }
-      : null;
+  const errorMessage = state.status === "failed"
+    ? state.message
+    : pageError?.message ?? null;
 
   return (
     <div
@@ -443,13 +441,14 @@ export function PluginWebviewHost({
       data-tour={`plugin:${pluginId}.webview`}
       data-plugin-webview={pluginId}
       data-plugin-webview-placement={placement}
+      {...(liveGuestKey ? { "data-plugin-webview-guest": liveGuestKey } : {})}
       style={{ position: "relative", display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}
     >
       <div ref={hostRef} style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }} />
       {/* Above the guest, below the failure card: an engine painted over a
           broken page would sit on top of the sentence explaining it. */}
       <HostEngineOverlay guestKey={liveGuestKey} />
-      {card ? (
+      {errorMessage ? (
         <div
           style={{
             position: "absolute",
@@ -461,23 +460,19 @@ export function PluginWebviewHost({
             background: COLORS.pageBg,
           }}
         >
-          <PluginFallbackCard
-            fallback={card}
-            action={
-              <button
-                type="button"
-                onClick={() => {
-                  // The report goes with the guest it described. Without this
-                  // the card would come straight back over a page that has
-                  // reloaded cleanly, and Try again would look broken.
-                  clearPluginWebviewPageError(liveGuestKey);
-                  setReloadToken((token) => token + 1);
-                }}
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-              >
-                Try again
-              </button>
-            }
+          <PluginWebviewPageErrorCard
+            pluginName={pluginName}
+            message={errorMessage}
+            onReload={() => {
+              // The report goes with the guest it described. Without this
+              // the card would come straight back over a page that has
+              // reloaded cleanly, and Reload would look broken.
+              clearPluginWebviewPageError(liveGuestKey);
+              setReloadToken((token) => token + 1);
+            }}
+            onOpenLogs={() => {
+              void openPluginLogs(pluginId).catch(() => undefined);
+            }}
           />
         </div>
       ) : null}

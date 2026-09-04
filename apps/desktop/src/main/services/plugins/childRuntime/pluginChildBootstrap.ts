@@ -347,6 +347,9 @@ export function runPluginChild(): void {
       attachBranch: async (sessionId, input) => {
         await callHost("chat.attachBranch", { sessionId, input });
       },
+      setHeader: async (sessionId, header) => {
+        await callHost("chat.setHeader", { sessionId, header });
+      },
       // Returns the host's page result so a plugin can stop paging once ADE
       // says it already had that far back. See `PluginChatHydrateResult`.
       hydrate: async (sessionId, transcript, options) => (

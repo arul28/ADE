@@ -50,6 +50,7 @@ import { PluginPromptHost } from "../plugins/sockets/PluginPromptHost";
 import { PluginPanelPopoverHost } from "../plugins/sockets/PluginPanelPopoverHost";
 import { PluginWebviewPopoverHost } from "../plugins/sockets/PluginWebviewPopoverHost";
 import { PluginWebviewConfirmHost } from "../plugins/sockets/PluginWebviewConfirmHost";
+import { PluginWebviewPickerHost } from "../plugins/sockets/PluginWebviewPickerHost";
 import { PluginWebviewRelayHost } from "../plugins/sockets/PluginWebviewRelayHost";
 import {
   dispatchPluginKeybindingEvent,
@@ -1724,12 +1725,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <PluginWebviewOverlayHost />
       <PluginPromptHost />
       <PluginPanelPopoverHost />
-      {/* The page tier's three window-level hosts. The popover draws an anchored
+      {/* The page tier's window-level hosts. The popover draws an anchored
           plugin page, the confirm draws the one dialog a page cannot draw for
-          itself, and the relay is the window's end of the bridge — it renders
-          nothing and owns the theme publish and the hot-reload subscription. */}
+          itself, the picker opens ADE's own controls over the guest, and the
+          relay is the window's end of the bridge — it renders nothing and owns
+          the theme publish and the hot-reload subscription. */}
       <PluginWebviewPopoverHost />
       <PluginWebviewConfirmHost />
+      <PluginWebviewPickerHost />
       <PluginWebviewRelayHost />
     </div>
   );

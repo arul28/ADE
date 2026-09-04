@@ -480,10 +480,10 @@ function HeaderStatusMenu({
           "transition-[background-color,color,border-color,box-shadow] duration-150",
         )}
         data-variant="ghost"
-        aria-label="Connections and usage"
+        aria-label="More"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Connections and usage"
+        title="More"
         onClick={() => (open ? close() : openMenu())}
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
@@ -2183,51 +2183,11 @@ export function TopBar({
 
   const renderHeaderStatusControls = useCallback(
     (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
-      const menuLayout = options?.menuLayout === true;
-      const wrapActivate = (handler: () => void) => () => {
-        handler();
-        options?.onActivate?.();
-      };
-
-      // On the hosted client the machine IS the connection: the chip names it,
-      // and its popover is where machines are managed now that the Hub is gone.
-      const connectionsChip = webMode ? (
-        <React.Suspense fallback={null}>
-          <WebConnectionsChip />
-        </React.Suspense>
-      ) : (
-        <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
-          label="Connections"
-          connected={anyConnectionActive}
-          title="Machines, mobile, and web clients"
-          ariaExpanded={connectionsOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => openConnections("machines"))
-              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
-          }
-          icon={(
-            <Plugs
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
-        />
-      );
-
-      if (menuLayout) {
+      if (options?.menuLayout === true) {
         return (
           <div className="flex flex-col gap-0.5">
             <CursorCloudQuickViewButton />
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <HeaderUsageControl
-              variant="menu-row"
-              onMenuActivate={options?.onActivate}
-              deferInitialRead={Boolean(remoteBinding)}
-            />
-            {connectionsChip}
           </div>
         );
       }
@@ -2236,19 +2196,32 @@ export function TopBar({
         <>
           <CursorCloudQuickViewButton />
           <LinearQuickViewButton />
-          {connectionsChip}
-          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>
       );
     },
-    [
-      anyConnectionActive,
-      closeConnections,
-      connectionsOpen,
-      openConnections,
-      remoteBinding,
-      webMode,
-    ],
+    [],
+  );
+
+  const headerConnectionsChip = webMode ? (
+    <React.Suspense fallback={null}>
+      <WebConnectionsChip />
+    </React.Suspense>
+  ) : (
+    <ShellConnectionChip
+      layout="chip"
+      label="Connections"
+      connected={anyConnectionActive}
+      title="Machines, mobile, and web clients"
+      ariaExpanded={connectionsOpen}
+      onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
+      icon={(
+        <Plugs
+          size={12}
+          weight="regular"
+          className="shrink-0 opacity-85"
+        />
+      )}
+    />
   );
 
   const transitionTargetName = projectTransition?.rootPath
@@ -2298,6 +2271,11 @@ export function TopBar({
       {/* Divider */}
       <div className="ade-shell-header-divider h-3 w-px shrink-0" />
 
+      {/* Project tabs first — they win space — then plugin toolbar actions. */}
+      <div
+        className="flex min-w-0 flex-1 items-center gap-1"
+        data-plugin-header-flexible
+      >
       {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
@@ -2764,6 +2742,20 @@ export function TopBar({
         </button>
         ) : null}
       </div>
+          <PluginToolbarActions
+            surface="app"
+            // The header is a DRAG region, and a child that does not opt out of
+            // it is not clickable: pressing the plugin button moved the window
+            // instead of invoking the action. Every other control in this bar
+            // carries the same opt-out — see the utility cluster below.
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            // And it wears the header's own chrome rather than the generic
+            // socket pill, so it is the same height and radius as the shell
+            // buttons it sits between instead of a taller, double-edged box.
+            chrome="shell"
+            layout="header"
+          />
+      </div>
 
       {showPublishPill ? (
         <SmartTooltip
@@ -2818,19 +2810,11 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: activity · status · updates · utility cluster.
-          The group must be able to shrink: the header reserves room for the
-          native window controls (macOS traffic lights at the start, Windows
-          caption buttons at the end) with padding, and a shrink-0 group would
-          simply overflow that padding at narrow widths and slide back under
-          them. The status/update strip therefore clips first so the utility
-          cluster — feedback, help, zoom — always stays inside the reservation. */}
+      {/* Trailing controls. The shrinkable strip clips first so the pinned
+          right cluster — feedback, help, zoom, then usage, connections, bell —
+          stays inside the native window-control reservation. */}
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          {/* Account-wide Activity — the one place every machine's work surfaces,
-              reachable from every tab and project without a nav detour. */}
-          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
-
           {/* App-global audio capture — visible from any tab while a plugin records. */}
           <GlobalAudioCaptureIndicator />
 
@@ -2850,34 +2834,15 @@ export function TopBar({
           </HeaderStatusMenu>
 
           {!webMode ? <AutoUpdateControl /> : null}
-
-          {/* The first mount the `app` surface has ever had. A plugin could
-              already declare a toolbar action on it — the surface exists, the
-              parser accepts it, the phone even draws it — and on desktop it
-              drew nowhere, which is the shape of gap this round exists to
-              close. It sits after the product's own status strip and before
-              the utility cluster, so the window's fixed controls (feedback,
-              help, zoom) stay where muscle memory left them.
-
-              Context is `{kind: "surface", surface: "app"}`: this cluster
-              belongs to the window, not to whatever tab is open under it. */}
-          <PluginToolbarActions
-            surface="app"
-            // The header is a DRAG region, and a child that does not opt out of
-            // it is not clickable: pressing the plugin button moved the window
-            // instead of invoking the action. Every other control in this bar
-            // carries the same opt-out — see the utility cluster below.
-            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            // And it wears the header's own chrome rather than the generic
-            // socket pill, so it is the same height and radius as the shell
-            // buttons it sits between instead of a taller, double-edged box.
-            chrome="shell"
-          />
         </div>
 
         <div
-          className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
+          className="flex shrink-0 items-center gap-2"
+          data-plugin-header-pinned
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+        <div
+          className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
         >
           <SmartTooltip
             content={{
@@ -2951,6 +2916,10 @@ export function TopBar({
               </button>
             </SmartTooltip>
           </div>
+        </div>
+          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
+          {headerConnectionsChip}
+          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
         </div>
       </div>
 

@@ -316,10 +316,10 @@ function railSurfaces(manifest: PluginManifest | null): PluginManifest["surfaces
  * the exact reading that sent an author debugging a tab the doctor never
  * mentioned (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §6).
  *
- * A `tab` draws on every client. A `webview` draws its own page on desktop and
- * its panel everywhere else, which is the cross-surface fallback and not a
- * fault — said here in one clause so the reader meets it before they meet it as
- * a surprise on their phone.
+ * A `tab` draws on every client. A `webview` draws its own page on desktop,
+ * hosted web and iPhone (from a cached bundle), and its panel in the terminal
+ * and on a phone that has no cached page. Said here in one clause so the
+ * author meets the fallback before they meet it as a surprise in `ade code`.
  */
 function describeRailRendering(manifest: PluginManifest | null): string {
   const rails = railSurfaces(manifest);
@@ -329,7 +329,7 @@ function describeRailRendering(manifest: PluginManifest | null): string {
   const clauses: string[] = [];
   if (tabs > 0) clauses.push(`${plural(tabs, "sidebar tab")} on every client`);
   if (webviews > 0) {
-    clauses.push(`${plural(webviews, "custom-UI tab")}: its page on desktop, its panel on web, iPhone and terminal`);
+    clauses.push(`${plural(webviews, "custom-UI tab")}: its page on desktop, web and iPhone; its panel in the terminal`);
   }
   return clauses.join(" · ");
 }
@@ -459,10 +459,11 @@ function customPageLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
     return { key: "customPage", label, state: "na", detail: "this plugin draws no page of its own" };
   }
   // Said on the passing line as well as the failing one: "my page shows the
-  // panel on my phone" is a correct observation about a working plugin, and a
-  // doctor that only mentions it when something is broken leaves the author to
-  // discover the fallback by being surprised at it.
-  const fallbackNote = "the phone, the web client and `ade code` draw its panel instead, by design";
+  // panel in the terminal" is a correct observation about a working plugin, and
+  // a doctor that only mentions it when something is broken leaves the author
+  // to discover the fallback by being surprised at it. Desktop, hosted web and
+  // a phone with a cached page draw the page itself.
+  const fallbackNote = "`ade code` and a phone with no cached page draw its panel instead, by design";
   if (!snapshot.live) {
     return {
       key: "customPage",
@@ -622,6 +623,7 @@ function collectBlockedPageAssets(html: string): string[] {
     const name = tag[1]!.toLowerCase();
     const attributes = tag[2] ?? "";
     const rel = PAGE_ASSET_REL.exec(attributes);
+    PAGE_ASSET_REL.lastIndex = 0;
     const relValue = (rel?.[1] ?? rel?.[2] ?? rel?.[3] ?? "").toLowerCase();
     const isIconLink = name === "link" && relValue.split(/\s+/).includes("icon");
     for (const attribute of attributes.matchAll(PAGE_ASSET_ATTR)) {
@@ -633,6 +635,53 @@ function collectBlockedPageAssets(html: string): string[] {
     }
   }
   return blocked;
+}
+
+/**
+ * Relative scripts and stylesheets the HTML names that are not on disk.
+ *
+ * This is the "entry loads" half of the page rung: an `index.html` that points
+ * at `./assets/index-abc.js` still mounts a blank guest when that file was
+ * never copied. Images are not required — a missing favicon is ugly, a missing
+ * script is a page that does not run. Addresses the content policy will refuse
+ * are skipped here; {@link collectBlockedPageAssets} already names those.
+ *
+ * Paths are resolved with `path`, not string prefix tests, so `\` on Windows
+ * and a `..` that climbs out of the install are the same answers they are on
+ * POSIX.
+ */
+function collectMissingPageAssets(html: string, entryFile: string, root: string): string[] {
+  const missing: string[] = [];
+  const entryDir = path.dirname(entryFile);
+  for (const tag of html.matchAll(PAGE_ASSET_TAG)) {
+    const name = tag[1]!.toLowerCase();
+    if (name !== "script" && name !== "link") continue;
+    const attributes = tag[2] ?? "";
+    const rel = PAGE_ASSET_REL.exec(attributes);
+    PAGE_ASSET_REL.lastIndex = 0;
+    const relValue = (rel?.[1] ?? rel?.[2] ?? rel?.[3] ?? "").toLowerCase();
+    const isStylesheet = name === "link" && relValue.split(/\s+/).includes("stylesheet");
+    if (name === "link" && !isStylesheet) continue;
+    for (const attribute of attributes.matchAll(PAGE_ASSET_ATTR)) {
+      const value = (attribute[1] ?? attribute[2] ?? attribute[3] ?? "").trim();
+      if (!value) continue;
+      if (isBlockedPageAsset(value, name, false)) continue;
+      const relative = (value.split(/[?#]/, 1)[0] ?? "").replace(/\\/g, "/").trim();
+      if (!relative) continue;
+      const segments = relative.split("/").filter((part) => part.length > 0 && part !== ".");
+      const target = path.resolve(entryDir, ...segments);
+      const present = (() => {
+        if (!isInsideRoot(root, target)) return false;
+        try {
+          return fs.statSync(target).isFile();
+        } catch {
+          return false;
+        }
+      })();
+      if (!present && !missing.includes(value)) missing.push(value);
+    }
+  }
+  return missing;
 }
 
 /** Where the installed copy sits, which is not where the install record points. */
@@ -688,6 +737,11 @@ function pageBundleLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
       faults.push(`"${surface.id}" names ${surface.entryHtml} and ${problem} at ${entry}`);
       continue;
     }
+    if (text.trim() === "") {
+      faults.push(`"${surface.id}" names ${surface.entryHtml} but the file is empty`
+        + " — there is nothing for a guest to load");
+      continue;
+    }
     const blocked = collectBlockedPageAssets(text);
     if (blocked.length > 0) {
       const named = blocked.slice(0, 3).map((value) => `"${value}"`).join(", ");
@@ -695,6 +749,14 @@ function pageBundleLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
       faults.push(`"${surface.id}" loads ${named}${rest} from outside its own folder`
         + `, and the page's content policy (${PAGE_SELF_DIRECTIVES}) blocks every one of them`
         + " — copy them into the plugin and point at them with a relative path");
+    }
+    const missing = collectMissingPageAssets(text, entry, root);
+    if (missing.length > 0) {
+      const named = missing.slice(0, 3).map((value) => `"${value}"`).join(", ");
+      const rest = missing.length > 3 ? ` and ${plural(missing.length - 3, "other file")}` : "";
+      faults.push(`"${surface.id}" names ${named}${rest} beside the page, and`
+        + ` ${missing.length === 1 ? "that file is" : "those files are"} missing from the install`
+        + " — copy them next to the HTML so the guest has something to load");
     }
     const bytes = measureBundleBytes(path.dirname(entry));
     pages.push(`${surface.id} → ${surface.entryHtml}, ${describeBundleSize(bytes)}`);
@@ -1353,6 +1415,29 @@ const STATE_GLYPH: Record<PluginDoctorState, string> = {
   na: "–",
   unknown: "–",
 };
+
+/**
+ * Rungs whose ✗ is a verified problem with the installed copy, not a usage
+ * hint. A missing dist, a CSP-blocked entry, or a plugin.json that will not
+ * load must fail the process so a CI gate cannot green-wash them. `unknown`
+ * (ADE closed) is not in this set: the disk half of the page rung already
+ * answered what it could. "Never run" and "no rows stored" stay on the report
+ * without failing the command — those are things the author has not done yet,
+ * not things the install got wrong.
+ */
+const PLUGIN_DOCTOR_FAIL_CLOSED_KEYS: ReadonlySet<PluginDoctorLayerKey> = new Set([
+  "source",
+  "installed",
+  "customPage",
+  "pageBundle",
+]);
+
+/** `1` when a fail-closed rung is `no`. `unknown` and informational ✗ stay `0`. */
+export function pluginDoctorExitCode(report: PluginDoctorReport): number {
+  return report.layers.some(
+    (layer) => layer.state === "no" && PLUGIN_DOCTOR_FAIL_CLOSED_KEYS.has(layer.key),
+  ) ? 1 : 0;
+}
 
 /** The human answer: one line per layer, then the per-client sentence. */
 export function formatPluginDoctorReport(report: PluginDoctorReport): string {

@@ -927,6 +927,33 @@ describe("parsePluginManifest chatRuntimes", () => {
     }));
     expect(repeated.manifest?.chatRuntimes?.map((runtime) => runtime.displayName)).toEqual(["First"]);
   });
+
+  it("keeps optional ownsName and drops a runtime that misspells it", () => {
+    const caps = { followUp: true, interrupt: true, hydrate: true, artifacts: true };
+    const locked = parsePluginManifest(validManifest({
+      chatRuntimes: [{ id: "cloud", displayName: "Cloud", capabilities: caps, ownsName: true }],
+    }));
+    expect(locked.manifest?.chatRuntimes).toEqual([{
+      id: "cloud",
+      displayName: "Cloud",
+      capabilities: caps,
+      ownsName: true,
+    }]);
+
+    const unlocked = parsePluginManifest(validManifest({
+      chatRuntimes: [{ id: "cloud", displayName: "Cloud", capabilities: caps, ownsName: false }],
+    }));
+    expect(unlocked.manifest?.chatRuntimes?.[0]).toEqual({
+      id: "cloud",
+      displayName: "Cloud",
+      capabilities: caps,
+    });
+
+    const misspelled = parsePluginManifest(validManifest({
+      chatRuntimes: [{ id: "cloud", displayName: "Cloud", capabilities: caps, ownsName: "yes" }],
+    }));
+    expect(misspelled.manifest?.chatRuntimes ?? []).toEqual([]);
+  });
 });
 
 describe("parsePluginManifest reserves the ade: namespace", () => {

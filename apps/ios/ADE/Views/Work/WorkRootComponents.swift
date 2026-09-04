@@ -899,8 +899,10 @@ struct WorkSessionListRow: View {
     } label: {
       Label("Select", systemImage: "checkmark.circle")
     }
-    if !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId) {
+    if !CursorCloudNaming.sessionNameIsLocked(
+      cursorCloudAgentId: session.cursorCloudAgentId ?? chatSummary?.cursorCloudAgentId,
+      runtimeRef: session.runtimeRef ?? chatSummary?.runtimeRef
+    ) {
       Button {
         onRename(session)
       } label: {

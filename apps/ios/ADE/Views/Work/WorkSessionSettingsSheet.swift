@@ -109,12 +109,18 @@ struct WorkSessionSettingsSheet: View {
           }
 
           GlassSection(title: "Title") {
-            if CursorCloudNaming.ownsName(summary.cursorCloudAgentId) {
+            if CursorCloudNaming.sessionNameIsLocked(
+              cursorCloudAgentId: summary.cursorCloudAgentId,
+              runtimeRef: summary.runtimeRef
+            ) {
               VStack(alignment: .leading, spacing: 6) {
                 Text(summary.title ?? defaultWorkChatTitle(provider: summary.provider))
                   .font(.subheadline.weight(.semibold))
                   .foregroundStyle(ADEColor.textPrimary)
-                Text(CursorCloudNaming.renameBlockedMessage)
+                Text(CursorCloudNaming.blockedMessage(
+                  cursorCloudAgentId: summary.cursorCloudAgentId,
+                  runtimeRef: summary.runtimeRef
+                ))
                   .font(.caption)
                   .foregroundStyle(ADEColor.textSecondary)
               }

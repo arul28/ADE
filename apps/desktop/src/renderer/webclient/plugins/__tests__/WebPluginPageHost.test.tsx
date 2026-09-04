@@ -78,6 +78,7 @@ vi.mock("../../../components/plugins/sockets/pluginWebviewOverlayStore", () => (
 vi.mock("../../../components/plugins/pluginActionOpenSettings", () => ({ applyPluginActionOpenSettings: () => true }));
 vi.mock("../../../lib/pluginRuntimeBridge", () => ({
   invokePluginAction: async () => null,
+  openPluginLogs: async () => undefined,
   readPluginCollection: async () => [],
   readPluginConfig: async () => ({}),
   readPluginPanel: async () => null,
@@ -85,6 +86,8 @@ vi.mock("../../../lib/pluginRuntimeBridge", () => ({
 }));
 vi.mock("../../../state/appStore", () => ({
   rootAppStoreApi: { getState: () => ({ installedPlugins: [] }) },
+  useRootAppStore: (selector: (state: { installedPlugins: unknown[] }) => unknown) =>
+    selector({ installedPlugins: [] }),
 }));
 
 import { WebPluginPageHost, askPrompt, closeSurfaceFor } from "../WebPluginPageHost";
@@ -187,8 +190,14 @@ describe("WebPluginPageHost", () => {
     ensure = async () => {
       throw new Error("no worker");
     };
-    const { findByText } = render(<WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active />);
-    expect(await findByText("This page didn’t open")).toBeTruthy();
+    const { findByRole, findByText } = render(
+      <WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active />,
+    );
+    expect(await findByRole("alert")).toBeTruthy();
+    expect(await findByText("The page didn’t load.")).toBeTruthy();
+    expect(await findByText("ade-linear")).toBeTruthy();
+    expect(await findByText("Reload")).toBeTruthy();
+    expect(await findByText("Open logs")).toBeTruthy();
   });
 
   it("binds the plugin id and the placement at creation, never off a message", async () => {
@@ -204,10 +213,15 @@ describe("WebPluginPageHost", () => {
       />,
     );
     await settle();
-    const options = created.mock.calls[0][0] as { pluginId: string; context: { placement: string; subject: unknown } };
+    const options = created.mock.calls[0][0] as {
+      pluginId: string;
+      context: { placement: string; subject: unknown };
+      ui: { pick?: unknown };
+    };
     expect(options.pluginId).toBe("ade-linear");
     expect(options.context.placement).toBe("popover");
     expect(options.context.subject).toMatchObject({ kind: "session", id: "chat-1" });
+    expect(typeof options.ui.pick).toBe("function");
   });
 });
 

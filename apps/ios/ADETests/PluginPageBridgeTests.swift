@@ -63,10 +63,12 @@ final class PluginPageBridgeTests: XCTestCase {
             ])
             XCTAssertEqual(request.method, method)
         }
-        // 20 + `dialog.submit` + `ui.resize`. The count is here so a verb added
-        // to the closed list is a deliberate edit of the permission model
-        // rather than something that arrives with a feature.
-        XCTAssertEqual(PluginPageBridgeMethod.allCases.count, 22)
+        // 20 v1/v2 verbs + dialog.submit + ui.resize + five pickers +
+        // openPathInEditor + sockets.list/invoke + hostEngine.place/release +
+        // page.error. The count is here so a verb added to the closed list is a
+        // deliberate edit of the permission model rather than something that
+        // arrives with a feature.
+        XCTAssertEqual(PluginPageBridgeMethod.allCases.count, 33)
     }
 
     func testAnUnknownMethodIsRefusedByName() {

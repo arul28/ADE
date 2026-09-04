@@ -2576,6 +2576,12 @@ declare global {
            * party that sees a turn start or die.
            */
           publishChatTurn: (turn: PluginWebviewChatTurn) => void;
+          /**
+           * One `operation` / `conflict` / `review` move for guests of THIS
+           * window that follow those host kinds. Main refuses any other kind
+           * so a family with its own producer cannot fire twice.
+           */
+          publishHostChange: (change: { kind: string; ids: string[] }) => void;
           setSurfaceState: (state: PluginWebviewSurfaceState) => void;
           onReload: (cb: (event: unknown) => void) => () => void;
         };

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE,
+  PLUGIN_RUNTIME_RENAME_BLOCKED_MESSAGE,
   assertCursorCloudRenameAllowed,
   cursorOwnsSessionName,
+  sessionNameIsLocked,
 } from "./cursorCloudNaming";
 
 describe("cursorOwnsSessionName", () => {
@@ -11,6 +13,14 @@ describe("cursorOwnsSessionName", () => {
     expect(cursorOwnsSessionName("  ")).toBe(false);
     expect(cursorOwnsSessionName(null)).toBe(false);
     expect(cursorOwnsSessionName(undefined)).toBe(false);
+  });
+});
+
+describe("sessionNameIsLocked", () => {
+  it("locks a plugin runtime that declared ownsName, even without a Cursor id", () => {
+    expect(sessionNameIsLocked({ runtimeRef: { ownsName: true } })).toBe(true);
+    expect(sessionNameIsLocked({ runtimeRef: { ownsName: false } })).toBe(false);
+    expect(sessionNameIsLocked({ cursorCloudAgentId: "bc-1" })).toBe(true);
   });
 });
 
@@ -30,6 +40,16 @@ describe("assertCursorCloudRenameAllowed", () => {
       sessionId: "session-1",
     })).resolves.toBeUndefined();
     expect(getSessionSummary).not.toHaveBeenCalled();
+  });
+
+  it("refuses a title write when a plugin runtime owns the name", async () => {
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      runtimeRef: { ownsName: true },
+    });
+    await expect(assertCursorCloudRenameAllowed(getSessionSummary, {
+      sessionId: "session-1",
+      title: "ADE-owned title",
+    })).rejects.toThrow(PLUGIN_RUNTIME_RENAME_BLOCKED_MESSAGE);
   });
 
   it("ignores a whitespace-only cloud agent id", async () => {
