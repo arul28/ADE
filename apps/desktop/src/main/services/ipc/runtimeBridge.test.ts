@@ -2188,6 +2188,7 @@ describe("registerIpc usage bridge", () => {
     const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const dormantTracker = {
       getUsageSnapshot: vi.fn(() => dormantSnapshot),
+      getAdeUsageStats: vi.fn(async () => ({ generatedAt: "dormant", scope: "project" })),
       setAccountRollupFetcher: vi.fn(),
     };
     const pool = {
@@ -2291,6 +2292,38 @@ describe("registerIpc usage bridge", () => {
       ipcHandlers.get(IPC.usageGetSnapshot)?.(eventForSender()),
     ).resolves.toBe(dormantSnapshot);
     expect(dormantTracker.getUsageSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not borrow another project's stats for an unbound project-scoped read", async () => {
+    const { pool, dormantTracker } = registerUsageIpc({ openRoots: ["/repo-one"] });
+
+    await expect(
+      ipcHandlers.get(IPC.usageGetAdeStats)?.(eventForSender(), { preset: "all", scope: "project" }),
+    ).resolves.toEqual({ generatedAt: "dormant", scope: "project" });
+    expect(pool.callActionForRoot).not.toHaveBeenCalled();
+    expect(dormantTracker.getAdeUsageStats).toHaveBeenCalledWith({ preset: "all", scope: "project" });
+  });
+
+  it("reads machine-scoped stats from the brain for an unbound window", async () => {
+    const { pool, dormantTracker } = registerUsageIpc({
+      openRoots: ["/repo-one"],
+      callActionForRoot: vi.fn(async (_root: string, request: { domain: string; action: string }) => ({
+        domain: request.domain,
+        action: request.action,
+        result: { generatedAt: "brain", scope: "machine" },
+        statusHints: {},
+      })),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.usageGetAdeStats)?.(eventForSender(), { preset: "all", scope: "machine" }),
+    ).resolves.toEqual({ generatedAt: "brain", scope: "machine" });
+    expect(pool.callActionForRoot).toHaveBeenCalledWith("/repo-one", {
+      domain: "usage",
+      action: "getAdeUsageStats",
+      args: { preset: "all", scope: "machine" },
+    });
+    expect(dormantTracker.getAdeUsageStats).not.toHaveBeenCalled();
   });
 });
 

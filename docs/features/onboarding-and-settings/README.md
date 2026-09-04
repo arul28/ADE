@@ -843,7 +843,8 @@ Renderer — settings:
   5 min; CLIs not detected on the machine are hidden from the header,
   while installed-but-unauthenticated providers stay visible in the
   panel as "Not signed in". The header and panel subscribe to usage `onUpdate`,
-  reject an older snapshot within the same project binding, and clear then
+  order snapshots by `revision.producerId`/`seq` (accepting a different
+  producer outright), and clear then
   reload both quota and provider-connection state when the binding changes.
   This keeps the compact percentages and the open panel on the same live
   machine-brain snapshot even across fast project or machine switches.
@@ -865,9 +866,11 @@ Renderer — settings:
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/usage/usageSnapshotOrdering.ts` —
-  shared ordering guard for the compact header and full quota panel. It accepts
-  the first snapshot for a binding and newer/equal poll timestamps, while each
-  component explicitly resets the guard when the project binding changes.
+  shared ordering guard for the compact header and full quota panel. It orders
+  by `revision.seq` within one `producerId` and always accepts a snapshot from
+  a different producer, so unrelated wall clocks cannot latch the meters.
+  Unstamped on-disk cache snapshots stay on the legacy `lastPolledAt` path.
+  Each component resets the guard when the project binding changes.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
   — Settings > Usage. One scrolling page, deliberately not split by where a
   number comes from: dividing live limits from history means "am I spending a
@@ -910,7 +913,9 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/usage/useUsageSnapshot.ts` — the single
   subscription to the host's live usage snapshot (`getSnapshot` / `onUpdate` /
   `onProjectBindingChanged`, the binding-generation guard, and
-  `shouldApplyUsageSnapshot` ordering), owned by the popover and passed down.
+  `shouldApplyUsageSnapshot` revision ordering), owned by the popover and passed
+  down. Preload publishes its own rebinds, so this hook sees a binding change
+  even when main does not push one.
   The popover and the quota band each used to keep a private copy with its own
   guard and then hand it back up through a callback — two readers and two guards
   over one number, which is the arrangement where a late response is discarded
@@ -927,6 +932,12 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/usage/UsagePaceBar.tsx` and
   `UsageSegmented.tsx` — the quota pace bar and the segmented control used by
   both usage surfaces.
+- `apps/desktop/src/main/services/usage/sharedUsageTracking.ts` — one usage
+  tracker per ADE home. Every project scope in the brain attaches to it
+  (`attachSharedUsageTrackingScope`); the last detach disposes the poller.
+- `apps/desktop/src/main/services/usage/bootedUsageScope.ts` — picks any
+  already-booted local project root so unbound usage IPC and the main-process
+  usage-event relay borrow the same brain scope.
 - `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
   live quota snapshot plus the retrospective `getAdeUsageStats(args)`
   projection. `args.scope` selects `account` (every machine on the ADE account,
@@ -944,10 +955,12 @@ Renderer — settings:
   local activity are reported as separate labeled groups (never max-merged).
   Live quota polling is adaptive and coalesced, retains unexpired last-good
   provider windows with source/freshness metadata, and stays independent from
-  the expensive provider-ledger and GitHub history scans. Runtime-backed
-  projects use the machine brain as the single quota owner; the desktop does
-  not create a second project-context tracker that could race the runtime event
-  stream.
+  the expensive provider-ledger and GitHub history scans. Each published
+  snapshot carries `revision`. Runtime-backed projects use the machine brain as
+  the single quota owner; production desktop does not create a second
+  project-context tracker that could race the runtime event stream. Unbound
+  windows proxy usage IPC to a booted brain scope and receive the brain's
+  snapshots via main's `ade.usage.event` relay.
   It returns cached provider/GitHub results and current DB aggregates without
   awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
   and coalesces stale provider/GitHub revalidation in the background

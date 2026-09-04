@@ -297,8 +297,10 @@ import {
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
+  isUsageSnapshot,
   type AccountRollupFetcher,
 } from "./services/usage/usageTrackingService";
+import { bootedUsageScopeRoot } from "./services/usage/bootedUsageScope";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
   markMachineStateMigrationComplete,
@@ -4434,12 +4436,18 @@ app.whenReady().then(async () => {
       logger,
       db,
       pollIntervalMs: 120_000,
-      // Broadcast, not `emitProjectEvent`: provider quota is a machine fact, and
-      // the windows that read this channel are the ones with no project binding
-      // at all. Bound windows take their snapshots off the runtime event pump
-      // and drop this channel, so there is no double delivery.
+      // In-process (tests): unbound windows have no runtime pump, so this
+      // tracker is the producer and must broadcast. Production project open
+      // never reaches this constructor — it uses `initRuntimeBackedProjectContext`
+      // with `usageTrackingService: null`. The remaining production caller is
+      // mobile-sync context init, which must not start a second poller or
+      // broadcast into the same channel the brain bridge already feeds.
       onUpdate: (snapshot) => {
-        broadcast(IPC.usageEvent, snapshot);
+        if (shouldUseInProcessProjectRuntime()) {
+          broadcast(IPC.usageEvent, snapshot);
+          return;
+        }
+        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       projectRoot,
       dependencies: {
@@ -4598,17 +4606,19 @@ app.whenReady().then(async () => {
         })
       : null;
 
-    scheduleBackgroundProjectTask(
-      "usage.start",
-      () => usageTrackingService.start(),
-      (error) => {
-        logger.warn("usage.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      1_000,
-      "ADE_ENABLE_USAGE_TRACKING",
-    );
+    if (shouldUseInProcessProjectRuntime()) {
+      scheduleBackgroundProjectTask(
+        "usage.start",
+        () => usageTrackingService.start(),
+        (error) => {
+          logger.warn("usage.start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        1_000,
+        "ADE_ENABLE_USAGE_TRACKING",
+      );
+    }
 
     const budgetCapService = createBudgetCapService({
       db,
@@ -5451,7 +5461,10 @@ app.whenReady().then(async () => {
   let machineAccountRollupFetcher: AccountRollupFetcher | null = null;
   let machineAccountRollupRefreshInFlight: Promise<void> | null = null;
   let machineAccountRollupRefreshedAtMs = 0;
-  /** Same floor the tracker applies to its own fan-out. */
+  /**
+   * Floor on the desktop fan-out. Usage events fire far more often than the
+   * tracker's own getAdeUsageStats-driven refresh (30 s), so this is 60 s.
+   */
   const MACHINE_ACCOUNT_ROLLUP_MIN_INTERVAL_MS = 60_000;
   const MACHINE_ACCOUNT_ROLLUP_TIMEOUT_MS = 4_000;
   /** Re-arm delay after the brain's event stream ends or refuses to open. */
@@ -5497,7 +5510,7 @@ app.whenReady().then(async () => {
 
   const syncMachineUsageEventBridge = (): void => {
     if (shouldUseInProcessProjectRuntime()) return;
-    const desired = projectContexts.keys().next().value ?? null;
+    const desired = bootedUsageScopeRoot([...projectContexts.values()]);
     if (desired === machineUsageEventRoot) return;
     machineUsageEventCleanup?.();
     machineUsageEventCleanup = null;
@@ -5512,7 +5525,7 @@ app.whenReady().then(async () => {
           if (machineUsageEventRoot !== root) return;
           if (event.payload?.type !== "usage") return;
           const snapshot = event.payload.snapshot;
-          if (!snapshot || typeof snapshot !== "object") return;
+          if (!isUsageSnapshot(snapshot)) return;
           broadcast(IPC.usageEvent, snapshot);
           pushAccountRollupsToBrain(root);
         },

@@ -110,7 +110,8 @@ import {
 } from "../chat/promptStashService";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
-import type { AccountRollupFetcher } from "../usage/usageTrackingService";
+import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
+import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
   parseProductAnalyticsCapture,
   type ProductAnalyticsStatus,
@@ -6350,29 +6351,21 @@ export function registerIpc({
    * `attachSharedUsageTrackingScope`) and exposes it through the per-project
    * `usage` action domain. A window with no local project binding — Welcome,
    * Hub/Account, a remote-machine tab — has no runtime route of its own, so it
-   * borrows any booted scope: every scope answers from the same machine
-   * tracker, so the choice only decides which project a *project-scoped* stats
-   * question is about, and these windows never ask a project-scoped one.
+   * borrows any booted scope for *machine* facts (quota, machine/account stats).
+   *
+   * Project-scoped stats are not a machine fact: borrowing would show another
+   * window's repository as "This project". Those reads stay on the dormant
+   * tracker, which has no project root and therefore an empty project slice.
    *
    * Null when no project is open. The in-process dormant tracker is the
    * fallback producer for exactly that case, which is also when it is running.
    */
-  const bootedUsageScopeRoot = (): string | null => {
-    for (const ctx of getResourceUsageContexts?.() ?? []) {
-      // `db` is the local-runtime discriminator: the dormant context has none.
-      if (!ctx.db) continue;
-      const root = ctx.project?.rootPath?.trim();
-      if (root) return root;
-    }
-    return null;
-  };
-
-  const callMachineUsageAction = async <T>(
-    action: string,
+  const callBootedUsageAction = async (
+    action: "getAdeUsageStats" | "getUsageSnapshot" | "forceRefresh" | "refreshHistory" | "noteQuotaDemand",
     args: Record<string, unknown> = {},
-  ): Promise<{ handled: true; result: T } | { handled: false }> => {
+  ): Promise<{ handled: true; result: unknown } | { handled: false }> => {
     if (!localRuntimeConnectionPool) return { handled: false };
-    const rootPath = bootedUsageScopeRoot();
+    const rootPath = bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []);
     if (!rootPath) return { handled: false };
     try {
       const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
@@ -6380,7 +6373,7 @@ export function registerIpc({
         action,
         args,
       });
-      return { handled: true, result: response.result as T };
+      return { handled: true, result: response.result };
     } catch (error) {
       // The brain is the source of truth while it is reachable; when it is not,
       // an unbound window falling back to its own cached tracker is strictly
@@ -6391,6 +6384,22 @@ export function registerIpc({
       });
       return { handled: false };
     }
+  };
+
+  const callMachineUsageSnapshot = async (
+    action: "getUsageSnapshot" | "forceRefresh" | "refreshHistory" | "noteQuotaDemand",
+  ): Promise<{ handled: true; result: UsageSnapshot } | { handled: false }> => {
+    const machine = await callBootedUsageAction(action);
+    if (!machine.handled || !isUsageSnapshot(machine.result)) return { handled: false };
+    return { handled: true, result: machine.result };
+  };
+
+  const callMachineUsageStats = async (
+    args: Record<string, unknown>,
+  ): Promise<{ handled: true; result: AdeUsageStats } | { handled: false }> => {
+    const machine = await callBootedUsageAction("getAdeUsageStats", args);
+    if (!machine.handled || !isRecord(machine.result)) return { handled: false };
+    return { handled: true, result: machine.result as AdeUsageStats };
   };
 
   ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
@@ -6414,32 +6423,34 @@ export function registerIpc({
     // on each read keeps the current instance wired without a lifecycle hook.
     // Idempotent, and the service renders from its durable rollups regardless,
     // so a fetcher that never gets installed costs freshness and nothing else.
-    const machine = await callMachineUsageAction<AdeUsageStats>("getAdeUsageStats", arg ?? {});
-    if (machine.handled) return machine.result;
+    if (arg?.scope !== "project") {
+      const machine = await callMachineUsageStats(arg ?? {});
+      if (machine.handled) return machine.result;
+    }
     if (accountRollupFetcher) ctx.usageTrackingService?.setAccountRollupFetcher(accountRollupFetcher);
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });
 
   ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
-    const machine = await callMachineUsageAction<UsageSnapshot>("getUsageSnapshot");
+    const machine = await callMachineUsageSnapshot("getUsageSnapshot");
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.getUsageSnapshot() ?? null;
   });
 
   ipcMain.handle(IPC.usageRefresh, async (): Promise<UsageSnapshot | null> => {
-    const machine = await callMachineUsageAction<UsageSnapshot>("forceRefresh");
+    const machine = await callMachineUsageSnapshot("forceRefresh");
     if (machine.handled) return machine.result;
     return (await getCtx().usageTrackingService?.forceRefresh()) ?? null;
   });
 
   ipcMain.handle(IPC.usageRefreshHistory, async (): Promise<UsageSnapshot | null> => {
-    const machine = await callMachineUsageAction<UsageSnapshot>("refreshHistory");
+    const machine = await callMachineUsageSnapshot("refreshHistory");
     if (machine.handled) return machine.result;
     return (await getCtx().usageTrackingService?.refreshHistory()) ?? null;
   });
 
   ipcMain.handle(IPC.usageNoteDemand, async (): Promise<UsageSnapshot | null> => {
-    const machine = await callMachineUsageAction<UsageSnapshot>("noteQuotaDemand");
+    const machine = await callMachineUsageSnapshot("noteQuotaDemand");
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });

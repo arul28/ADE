@@ -21,6 +21,7 @@ import type {
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
   AdeUsageRollup,
+  AdeUsageRollupRow,
   AdeUsageScope,
   AdeUsageStats,
   AdeUsageTranscriptSource,
@@ -90,7 +91,7 @@ import {
   sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
-import { isPathInside, pathComparisonKey } from "../shared/pathCompare";
+import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
   buildRollupRows,
   mergeAccountUsageStats,
@@ -190,7 +191,7 @@ function isCostSnapshotArray(value: unknown): value is CostSnapshot[] {
   return Array.isArray(value) && value.every((entry) => isRecord(entry) && typeof entry.provider === "string");
 }
 
-function isUsageSnapshot(value: unknown): value is UsageSnapshot {
+export function isUsageSnapshot(value: unknown): value is UsageSnapshot {
   return isRecord(value)
     && Array.isArray(value.windows)
     && (value.spendControlReached === undefined || typeof value.spendControlReached === "boolean")
@@ -1173,6 +1174,17 @@ function canonicalProjectRoot(projectRoot: string): string {
   const worktreeMarker = "/.ade/worktrees/";
   const markerIndex = normalized.indexOf(worktreeMarker);
   return markerIndex >= 0 ? path.resolve(normalized.slice(0, markerIndex)) : resolved;
+}
+
+/**
+ * Map key for per-project cost snapshots. `pathKey` folds Windows/macOS case
+ * so `C:\\repo` and `c:\\repo` are one cache slot; a bare `===` left a stale
+ * extra key behind when one spelling detached.
+ */
+function scopeRootKey(root: string | null | undefined): string {
+  const trimmed = root?.trim();
+  if (!trimmed) return "";
+  return pathKey(path.resolve(trimmed));
 }
 
 /**
@@ -2295,13 +2307,35 @@ export type AccountRollupFetcher = (options: { timeoutMs: number; signal: AbortS
 export type AccountRollupFetchResult = Awaited<ReturnType<AccountRollupFetcher>>;
 
 /** Shape guard for a rollup fan-out result that arrived over RPC. */
+function isAdeUsageRollupRow(value: unknown): value is AdeUsageRollupRow {
+  return isRecord(value)
+    && typeof value.date === "string"
+    && typeof value.provider === "string"
+    && typeof value.model === "string"
+    && typeof value.inputTokens === "number"
+    && typeof value.outputTokens === "number"
+    && typeof value.cachedTokens === "number"
+    && typeof value.totalTokens === "number"
+    && typeof value.costUsd === "number"
+    && typeof value.calls === "number";
+}
+
+function isAdeUsageTranscriptSource(value: unknown): value is AdeUsageTranscriptSource {
+  return isRecord(value)
+    && (value.sourceId === null || typeof value.sourceId === "string")
+    && Array.isArray(value.roots)
+    && value.roots.every((root) => typeof root === "string");
+}
+
 export function isAccountRollupFetchResult(value: unknown): value is AccountRollupFetchResult {
   if (!isRecord(value)) return false;
   if (!Array.isArray(value.rollups) || !Array.isArray(value.failures)) return false;
   return value.rollups.every((rollup) => isRecord(rollup)
       && typeof rollup.machineKey === "string"
       && typeof rollup.capturedAt === "string"
-      && Array.isArray(rollup.rows))
+      && isAdeUsageTranscriptSource(rollup.source)
+      && Array.isArray(rollup.rows)
+      && rollup.rows.every(isAdeUsageRollupRow))
     && value.failures.every((failure) => isRecord(failure)
       && typeof failure.machineKey === "string"
       && typeof failure.message === "string");
@@ -2546,10 +2580,23 @@ export function createUsageTrackingService({
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
   const scanCursorCostLogs = async (): Promise<TokenEntry[]> => {
     const scanned = await (dependencies?.scanCursorLogs ?? scanCursorLogs)();
-    const billed = db ? listCursorBilledUsage(db) : [];
-    if (!billed.length) return scanned;
+    // Constructor `db` is only the in-process default scope. The brain builds
+    // the tracker with no database and attaches each project's db afterward,
+    // so billed Cursor rows live on those scopes — not on the closed-over
+    // constructor handle.
+    const billedById = new Map<string, TokenEntry>();
+    for (const scope of allScopes()) {
+      if (!scope.db) continue;
+      for (const entry of listCursorBilledUsage(scope.db)) {
+        billedById.set(entry.messageId, entry);
+      }
+    }
+    if (billedById.size === 0) return scanned;
     const seen = new Set(scanned.map((entry) => entry.messageId));
-    return [...scanned, ...billed.filter((entry) => !seen.has(entry.messageId))];
+    return [
+      ...scanned,
+      ...[...billedById.values()].filter((entry) => !seen.has(entry.messageId)),
+    ];
   };
   const scanCursorAgentCostLogs = dependencies?.scanCursorAgentLogs ?? scanCursorAgentLogs;
   const scanOpenClawCostLogs = dependencies?.scanOpenClawLogs ?? scanOpenClawLogs;
@@ -2613,14 +2660,23 @@ export function createUsageTrackingService({
     db: db ?? null,
     logger,
     captureAnalytics: dependencies?.captureAnalytics,
+    onUpdate,
   });
   const attachedScopes = new Map<string, AttachedScope>();
   const allScopes = (): AttachedScope[] => [defaultScope, ...attachedScopes.values()];
-  const scopeProjectRoots = (): string[] => [...new Set(
-    allScopes()
-      .map((scope) => scope.projectRoot)
-      .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
-  )];
+  const scopeProjectRoots = (): string[] => {
+    const seen = new Set<string>();
+    const roots: string[] = [];
+    for (const scope of allScopes()) {
+      const root = scope.projectRoot?.trim();
+      if (!root) continue;
+      const key = scopeRootKey(root);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roots.push(root);
+    }
+    return roots;
+  };
 
   // ── Account scope ──────────────────────────────────────────────
   /**
@@ -2796,16 +2852,20 @@ export function createUsageTrackingService({
     // straight back — the CRR delete/insert churn, arriving over the wire.
     const oldestDay = rollupOldestDay(startedAtMs);
     for (const rollup of result.rollups) {
-      // Unknown identity cannot match anything, and nothing was published
-      // under this machine's name either, so there is no self-row to skip.
-      if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
-      const bounded = oldestDay
-        ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
-        : rollup;
-      // Fetched from that machine, not scanned here: this side cannot know
-      // which of the peer's providers failed, so it must not delete one
-      // that simply did not appear. See `publish`'s `ownerAuthoritative`.
-      if (accountRollupStore.publish(bounded, { ownerAuthoritative: false })) published += 1;
+      try {
+        // Unknown identity cannot match anything, and nothing was published
+        // under this machine's name either, so there is no self-row to skip.
+        if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+        const bounded = oldestDay
+          ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
+          : rollup;
+        // Fetched from that machine, not scanned here: this side cannot know
+        // which of the peer's providers failed, so it must not delete one
+        // that simply did not appear. See `publish`'s `ownerAuthoritative`.
+        if (accountRollupStore.publish(bounded, { ownerAuthoritative: false })) published += 1;
+      } catch (error) {
+        logger.warn("usage.account.apply_rollup_failed", { error: getErrorMessage(error) });
+      }
     }
     // Replace wholesale rather than merge: a machine missing from this
     // round's failures either answered or was not asked, and in both cases
@@ -2958,14 +3018,10 @@ export function createUsageTrackingService({
 
   function emitUpdate(snapshot: UsageSnapshot): void {
     if (disposed) return;
-    try {
-      onUpdate?.(snapshot);
-    } catch {
-      // Never crash on callback error
-    }
-    // Every attached project scope sees the same object, so two windows on two
-    // projects of one machine can never be handed different quota.
-    for (const scope of attachedScopes.values()) {
+    // Constructor `onUpdate` lives on `defaultScope`. Attached project scopes
+    // add their own. One loop, so a host cannot observe a snapshot the others
+    // did not receive.
+    for (const scope of allScopes()) {
       try {
         scope.onUpdate?.(snapshot);
       } catch {
@@ -2999,8 +3055,8 @@ export function createUsageTrackingService({
       && costCacheTimestamp > 0
       && now - costCacheTimestamp < COST_CACHE_TTL_MS
       && projectCostsReady
-      && cachedProjectCostsByRoot.has(projectRoot ?? "")
-      && scopeProjectRoots().every((root) => cachedProjectCostsByRoot.has(root))) {
+      && cachedProjectCostsByRoot.has(scopeRootKey(projectRoot))
+      && scopeProjectRoots().every((root) => cachedProjectCostsByRoot.has(scopeRootKey(root)))) {
       return cachedCostResult();
     }
 
@@ -3153,21 +3209,23 @@ export function createUsageTrackingService({
       return [...kept, ...carried];
     };
     const nextCosts = carryForward(cachedCosts, scanResult.costs);
-    const scannedProjectCostsByRoot = new Map<string, CostSnapshot[]>(
-      Object.entries(scanResult.projectCostsByRoot ?? {}),
-    );
+    const scannedProjectCostsByRoot = new Map<string, CostSnapshot[]>();
+    for (const [root, snapshots] of Object.entries(scanResult.projectCostsByRoot ?? {})) {
+      const key = scopeRootKey(root);
+      if (!scannedProjectCostsByRoot.has(key)) scannedProjectCostsByRoot.set(key, snapshots);
+    }
     // The constructor's own root is keyed by "" when there is none, so a host
     // with no project at all still records that its project history was read
     // (and is empty) rather than rescanning on every read.
-    const primaryRootKey = projectRoot ?? "";
+    const primaryRootKey = scopeRootKey(projectRoot);
     if (!scannedProjectCostsByRoot.has(primaryRootKey)) {
       scannedProjectCostsByRoot.set(primaryRootKey, scanResult.projectCosts);
     }
     const nextProjectCostsByRoot = new Map<string, CostSnapshot[]>();
-    for (const [root, scanned] of scannedProjectCostsByRoot) {
-      const previous = cachedProjectCostsByRoot.get(root);
+    for (const [key, scanned] of scannedProjectCostsByRoot) {
+      const previous = cachedProjectCostsByRoot.get(key);
       nextProjectCostsByRoot.set(
-        root,
+        key,
         projectCostsReady && previous ? carryForward(previous, scanned) : [...scanned],
       );
     }
@@ -3640,13 +3698,13 @@ export function createUsageTrackingService({
     const cacheKey = githubStatsCacheKey(range, exactRange, forScope);
     const githubCached = githubStatsCache.get(cacheKey)?.stats ?? null;
     const machineSnapshot = lastSnapshot;
-    const scopeProjectCosts = cachedProjectCostsByRoot.get(forScope.projectRoot ?? "") ?? [];
+    const scopeProjectCosts = cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? [];
     const snapshot = scope === "project"
       ? { ...machineSnapshot, costs: scopeProjectCosts }
       : machineSnapshot;
     const providerHistoryMissing = costCacheTimestamp === 0;
     const projectHistoryMissing = scope === "project"
-      && !cachedProjectCostsByRoot.has(forScope.projectRoot ?? "");
+      && !cachedProjectCostsByRoot.has(scopeRootKey(forScope.projectRoot));
     const providerHistoryIncomplete = providerHistoryMissing || projectHistoryMissing;
     const providerHistoryStale = providerHistoryIncomplete
       || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS;
@@ -3757,7 +3815,7 @@ export function createUsageTrackingService({
     // GitHub activity is read from one repository, so the cache is keyed by the
     // scope's project root as well: two projects on one brain must not serve
     // each other's commit counts.
-    const scopeKey = forScope.projectRoot ?? "";
+    const scopeKey = scopeRootKey(forScope.projectRoot);
     // Preset ranges move by milliseconds on every request. Keying on `until`
     // made the old cache miss forever, so every Stats render launched `gh`.
     // Calendar-day buckets preserve exact-range semantics while making normal
@@ -3853,9 +3911,10 @@ export function createUsageTrackingService({
         detached = true;
         scopeStop();
         if (attachedScopes.get(scope.key) === scope) attachedScopes.delete(scope.key);
-        if (scope.projectRoot
-          && !allScopes().some((other) => other.projectRoot === scope.projectRoot)) {
-          cachedProjectCostsByRoot.delete(scope.projectRoot);
+        const rootKey = scopeRootKey(scope.projectRoot);
+        if (rootKey
+          && !allScopes().some((other) => scopeRootKey(other.projectRoot) === rootKey)) {
+          cachedProjectCostsByRoot.delete(rootKey);
         }
       },
     };
@@ -3946,60 +4005,8 @@ export const _testing = {
   pollCodexViaCliRpc,
 };
 
-// ── Process-level sharing ────────────────────────────────────────
-/**
- * Provider quota is a machine fact, not a project fact.
- *
- * One process used to build one tracker per open project scope: two projects
- * meant two 120 s poll timers on different phases, two demand leases and two
- * `lastSnapshot`s, so two windows on one computer showed two different meters
- * and one of them was always behind. The shared instance is created once per
- * ADE home and every project scope attaches to it.
- *
- * Mirrors `getSharedProductAnalyticsService`, with a scope count instead of a
- * bare get: the poller belongs to the process, so it must outlive any single
- * project and shut down when the last one detaches.
- */
-const sharedUsageTrackingServices = new Map<
-  string,
-  { service: UsageTrackingService; scopeCount: number }
->();
-
-export function attachSharedUsageTrackingScope(
-  key: string,
-  make: () => UsageTrackingService,
-  scope: UsageTrackingProjectScopeInput,
-): UsageTrackingProjectScope {
-  let entry = sharedUsageTrackingServices.get(key);
-  if (!entry) {
-    entry = { service: make(), scopeCount: 0 };
-    sharedUsageTrackingServices.set(key, entry);
-  }
-  const shared = entry;
-  shared.scopeCount += 1;
-  const attached = shared.service.attachProjectScope(scope);
-  let released = false;
-  return {
-    ...attached,
-    dispose: (): void => {
-      if (released) return;
-      released = true;
-      attached.dispose();
-      shared.scopeCount -= 1;
-      if (shared.scopeCount > 0) return;
-      if (sharedUsageTrackingServices.get(key) === shared) {
-        sharedUsageTrackingServices.delete(key);
-      }
-      shared.service.dispose();
-    },
-  };
-}
-
-export function peekSharedUsageTrackingService(key: string): UsageTrackingService | undefined {
-  return sharedUsageTrackingServices.get(key)?.service;
-}
-
-export function clearSharedUsageTrackingServicesForTesting(): void {
-  for (const entry of sharedUsageTrackingServices.values()) entry.service.dispose();
-  sharedUsageTrackingServices.clear();
-}
+export {
+  attachSharedUsageTrackingScope,
+  clearSharedUsageTrackingServicesForTesting,
+  peekSharedUsageTrackingService,
+} from "./sharedUsageTracking";

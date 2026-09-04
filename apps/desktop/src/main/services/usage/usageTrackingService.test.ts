@@ -40,6 +40,7 @@ vi.mock("../ai/codexExecutable", () => ({
 import {
   attachSharedUsageTrackingScope,
   createUsageTrackingService,
+  isAccountRollupFetchResult,
   _testing,
 } from "./usageTrackingService";
 import type { UsageSnapshot } from "../../../shared/types/usage";
@@ -64,6 +65,7 @@ import {
 import { providerScanners } from "./usageLedgerWorker";
 import type { TokenEntry } from "./ledgers/localUsageLedgers";
 import type { CostSnapshot } from "../../../shared/types";
+import { CURSOR_BILLED_USAGE_KV_REF } from "./cursorBilledUsageStore";
 
 const {
   aggregateCosts,
@@ -2076,6 +2078,78 @@ describe("createUsageTrackingService", () => {
       .toBe(secondUpdates[0]!.revision!.producerId);
 
     second.dispose();
+  });
+
+  it("reads Cursor billed rows from attached project databases, not the constructor db", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const billed = [{
+      messageId: "billed-attached",
+      model: "cursor-auto",
+      inputTokens: 40,
+      outputTokens: 10,
+      timestamp: now,
+    }];
+    const attachedDb = {
+      getJson: vi.fn((key: string) => (key === CURSOR_BILLED_USAGE_KV_REF ? billed : null)),
+    };
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: createFastDependencies(),
+    });
+    const scope = service.attachProjectScope({
+      key: "project-a",
+      projectRoot: "/repo-a",
+      db: attachedDb as unknown as AdeDb,
+      logger,
+    });
+
+    await service.refreshHistory();
+    const machine = await service.getAdeUsageStats({ preset: "all", scope: "machine" });
+    expect(machine.providers.find((provider) => provider.provider === "cursor")).toMatchObject({
+      totalTokens: 50,
+    });
+    expect(attachedDb.getJson).toHaveBeenCalledWith(CURSOR_BILLED_USAGE_KV_REF);
+
+    scope.dispose();
+    service.dispose();
+  });
+
+  it("rejects account rollups that omit source or carry untyped rows", () => {
+    const logger = createLogger();
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: createFastDependencies(),
+    });
+
+    expect(isAccountRollupFetchResult({
+      rollups: [{
+        machineKey: "other",
+        capturedAt: "2026-09-04T00:00:00.000Z",
+        rows: [null],
+      }],
+      failures: [],
+    })).toBe(false);
+    expect(isAccountRollupFetchResult({
+      rollups: [{
+        machineKey: "other",
+        capturedAt: "2026-09-04T00:00:00.000Z",
+        rows: [],
+      }],
+      failures: [],
+    })).toBe(false);
+
+    expect(() => service.applyAccountRollups({
+      rollups: [{
+        machineKey: "other",
+        capturedAt: "2026-09-04T00:00:00.000Z",
+        rows: [null],
+      }],
+      failures: [],
+    } as never)).not.toThrow();
+    expect(logger.warn).toHaveBeenCalledWith("usage.account.apply_rollups_rejected");
+
+    service.dispose();
   });
 
   // Two *separate* trackers still keep separate timers: sharing is opt-in

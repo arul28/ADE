@@ -37,9 +37,12 @@ projected per project root.
 
 A window with no local project — Welcome, the Hub, an Account page, a
 remote-machine tab — reads through the brain as well, borrowing a project scope
-the brain has already booted, and receives the brain's snapshots as they land.
-It falls back to its own in-process tracker only when no brain scope is
-running, which is also the only time that tracker polls.
+the brain has already booted (`bootedUsageScopeRoot`). Desktop usage IPC
+proxies those reads to that scope, and `main.ts` relays the brain's usage
+events onto `ade.usage.event` so the window stays live without a runtime
+binding of its own. Bound windows ignore that channel and keep the runtime
+event stream. The in-process tracker is the fallback producer only when no
+brain scope is running, which is also the only time that tracker polls.
 
 ## ADE versus CodexBar
 
