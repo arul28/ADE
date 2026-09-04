@@ -454,6 +454,20 @@ export type ReviewScopeVisualProps = {
   branchRefLabel: string;
   baseCommitLabel: string | null;
   headCommitLabel: string | null;
+  /**
+   * The four `pr` facts, all optional and all from the host's own PR subject
+   * (`PluginPrContext`: `number`, `title`, `branch`) plus the lane's base ref.
+   *
+   * Optional because the runs browser draws this diagram for a FINISHED run and
+   * has no subject to read — there, the head falls back to the run's lane
+   * branch and the base to the run's own compare target, which is what the
+   * engine recorded. Nothing here is invented: a fact the page does not have is
+   * absent, and the `pr` arm falls back rather than printing a guess.
+   */
+  prNumber?: number | null;
+  prTitle?: string | null;
+  prHeadRefLabel?: string | null;
+  prBaseRefLabel?: string | null;
 };
 
 export function buildRunScopeCopy(

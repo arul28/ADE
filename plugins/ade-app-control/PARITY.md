@@ -63,10 +63,14 @@ The page does neither, for two reasons that are not preference:
 
 So the live view stays a HOST engine — `electron-control`, the one the `canvas`
 node already mounts — and the page reserves a rect for it and reports it with
-`hostEngine.place({ engineId, rect })`. The input verbs the image used to carry
-became explicit controls beside the rect: a viewport coordinate, Click, Scroll
-with its amount, Inspect and Attach. The coordinate space the child is sent is
-the same one the compiled pane sent — `viewport` — so nothing changed on the
+`hostEngine.place({ engineId, rect })`.
+
+The input verbs the image used to carry went with it. Where the host can paint,
+a click on the picture is a click and a wheel is a scroll, because the engine is
+host code holding the pointer. Where it cannot, the page draws them as explicit
+controls beside the empty rect: a viewport coordinate, Click, Scroll with its
+amount, Inspect and Attach. The coordinate space the child is sent is the same
+one the compiled pane sent — `viewport` — either way, so nothing changed on the
 host side, only where the numbers come from.
 
 ## Host calls
@@ -125,7 +129,9 @@ rejection it can retry.
 - **The blockers card.** The disabled reason, a failed status read, and the
   waiting-for-CDP warning, in one place.
 - **The message banner**, both tones, its `alert`/`status` roles and its dismiss.
-- **The mode toggle**, Control and Inspect, disabled without a session.
+- **The mode toggle**, Control and Inspect, disabled without a session — drawn
+  by the engine over the picture where the host can paint, and by the page where
+  it cannot. One toggle either way, owned by whoever owns the click.
 - **The Snapshot press** and the page title/URL chip.
 - **The selection details.** `elementLabel`, `elementSubLabel`, the selector, the
   pixel frame, the `testId`, and the "Attached" acknowledgement with its 4-second
@@ -136,38 +142,12 @@ rejection it can retry.
 
 ## Gaps
 
-**G1 — the click pulse, the hover outline and the element overlays are gone.**
-All three drew over the screenshot: a ping at the click point, a rectangle under
-the cursor, a persistent outline on the selected element. The page does not own
-those pixels any more — the host paints that box — so nothing it drew there would
-be visible. The affordance they gave is replaced rather than dropped: the click
-answers a banner naming the coordinate, and the inspect list marks the selected
-element. Closing this properly means the host engine drawing its own overlays
-from a rect the page hands it, which is a platform change, not a page one.
-
-**G2 — hover-to-inspect is gone; inspect is an explicit press.** The compiled
-pane debounced `inspectPoint` on `mousemove` over the image at 60 ms. There is no
-mousemove to debounce: the pointer is over the host's native view. The page has
-an Inspect button on a coordinate instead. This is the biggest felt difference
-in Inspect mode and it is the one to look for first.
-
-**G3 — clicking is a coordinate, not a click on the picture.** Same cause. The
-reader types an x and a y (or reads one off the inspect list's frames) and
-presses Click. Closing this means the host engine forwarding pointer events from
-its own view back to the page, or driving the session itself — again a platform
-change.
-
-**G4 — wheel-to-scroll is gone.** The compiled pane attached a non-passive
-`wheel` listener to the image, coalesced the deltas onto an animation frame and
-sent one `scroll` per frame. The page has a scroll amount field and a Scroll
-press. The child's argument shape is unchanged, so the same coalescing can move
-into the host engine when the wheel events do.
-
-**G5 — the blank-screenshot detector is gone.** `imageLooksBlank` drew the
-screenshot onto a 48×48 canvas and measured mean brightness and variance to catch
-"the renderer attached but the window is closed". It needs the pixels. The three
-places its message appeared are gone with it; the host engine is the only half
-that can still tell, and it should carry the check.
+**G1 — G5 are closed.** They were all one gap wearing five hats: the page had no
+pixels and no pointer, so the click pulse, the hover outline, the element
+overlays, hover-to-inspect, click-on-the-picture, wheel-to-scroll and the
+blank-frame detector had nowhere to live. All seven are back, in the host, in
+`apps/desktop/src/renderer/components/plugins/hostEngine/AppControlEngineView.tsx`
+— see the section below.
 
 **G6 — the "Help wire CDP" draft button is gone.** It called `onInsertDraft`, a
 prop the chat passed down, to put a two-line request into the composer. The
@@ -182,18 +162,51 @@ terminal session", so this is genuinely blocked until one exists. The session's
 terminal id is still reported in the status detail line, which is how a reader
 finds it today.
 
-**G8 — the screenshot crop is the child's now.** The compiled pane cropped the
+**G8 — the screenshot crop is the engine's now.** The compiled pane cropped the
 element out of the screenshot on a canvas, base64'd it through
-`agentChat.saveTempAttachment` and called two chat props. The page has neither
-the screenshot nor the props, so `pageAttachContext` hands the child the element
-and the child does the crop and the attach on the side that already holds the
-frame. Carried in behaviour, moved in ownership — and worth checking that the
-attached crop still arrives in the chat.
+`agentChat.saveTempAttachment` and called two chat props. The engine does the
+crop and the attach, on the side that holds the frame, when a reader clicks an
+element in Inspect mode. `pageAttachContext` remains the page's path for a typed
+coordinate on a host with no engine. Worth checking that the attached crop still
+arrives in the chat.
 
-**G9 — `hostEngine` and `ui.openPathInEditor` are platform contracts that do not
-exist yet.** Both are declared optional on the bridge, called only through guards,
-and scripted on the fake so their argument shapes are checked. A host without
-`hostEngine` draws a sentence where the picture goes and every other verb keeps
-working; a host without `openPathInEditor` draws the inspect list's `file:line`
-as an inert row. Until the platform half lands, the page runs correctly and shows
-no live view, which is exactly what the degradation is for.
+**G9 — `ui.openPathInEditor` is still optional.** Declared optional on the
+bridge and called through a guard; a host without it draws the inspect list's
+`file:line` as an inert row.
+
+## What the engine actually is
+
+`hostEngine` is no longer stubbed. The Work rail registers `electron-control`
+for a page to place, and what it registers is the important part.
+
+It used to register the whole compiled `ChatAppControlPanel`. A page that
+reserved a rect therefore got a complete second panel painted over it — a second
+launch row, a second status pill, a second window picker — and a native view
+that swallowed every click the page's own chrome was waiting for. Two panels,
+one of them unreachable.
+
+The engine is now the picture and nothing else: the live `<img>`, the frame pump
+that writes onto it at thirty frames a second without a React render per frame,
+and the input that lands on it — click, wheel-to-scroll with its per-frame
+coalescing, hover-to-inspect on the compiled 60 ms debounce, the click pulse,
+the hover and selection outlines, the coordinate marker, and `imageLooksBlank`.
+
+**Mode moved with the click.** Control and Inspect select which host verb a
+click on the picture becomes, so the toggle belongs to whoever owns the click.
+The engine draws it over the picture, where the compiled pane drew it. The page
+draws its own toggle only when the host cannot paint, because then the page IS
+the only place a click can be expressed.
+
+**The typed coordinate row is the no-engine half.** Where the host paints, the
+`Point` x/y fields with Click, Scroll, Inspect and Attach are not drawn: offering
+a typed coordinate beside a live, clickable app would be a worse copy of what is
+already under the reader's pointer. Where it cannot paint, that row is the only
+way to drive the app, which is why the page still holds every one of those verbs
+and every one still answers. `plugins/ade-app-control/page/test/seam.test.tsx`
+walks both halves.
+
+Two helpers are a **copy**, not a move — `ChatAppControlPanel.tsx` is still
+mounted in the chat drawer and still owns the originals, so `cropFrameDataUrl`
+with its `clampFrame`, and `imageLooksBlank`, now exist twice. The two copies
+must move together until the compiled panel is retired, and the engine view says
+so above that block.

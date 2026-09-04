@@ -181,6 +181,20 @@ function createPageActions(deps) {
     }
   }
 
+  /**
+   * The capabilities read, cached as a PROMISE rather than as a value.
+   *
+   * The launch form asks once per mount and both halves of the answer — the id
+   * list and the fast-tier flags — come from the same call, so two mounts that
+   * arrive together share one read instead of racing two.
+   *
+   * Held against the SDK binding that answered it, not against the process: a
+   * second `activate` is a new host, and a catalogue read from the previous one
+   * is not this one's answer.
+   */
+  let chatModelsPromise = null;
+  let chatModelsSdk = null;
+
   const pageActions = {
     /* ── Reads ──────────────────────────────────────────────────────────── */
 
@@ -263,6 +277,59 @@ function createPageActions(deps) {
         limit: count(args?.limit, MAX_SUPPRESSIONS, MAX_SUPPRESSIONS),
       });
       return rows(listed, "suppressions");
+    },
+
+    /**
+     * The models a launch may use, with each model's own fast-tier fact.
+     *
+     * `sdk.chat.capabilities()` and nothing else — the same read ADE's own
+     * launch form is built from. Two fields of it matter to this page and both
+     * are per MODEL rather than per provider: the id list narrows ADE's picker
+     * to what a review can actually run (`ui.pickModel({availableModelIds})`,
+     * which is what the compiled control derived from
+     * `window.ade.ai.getStatus()`), and `fastMode` says whether the chosen
+     * model has a `fast` service tier at all. A model without one REFUSES
+     * `fastMode: true`, so a form that drew the toggle over it would be
+     * offering a switch that fails the launch.
+     *
+     * DEGRADES to `[]`, and the empty answer is the honest one: the page then
+     * passes no `availableModelIds` and the reader gets ADE's whole catalogue,
+     * which is exactly the behaviour of a host too old to answer at all. The
+     * cache is per process because the registry cannot change without a new
+     * build; it is dropped on failure so a later open tries again.
+     */
+    async pageChatModels() {
+      if (!ready()) return [];
+      if (chatModelsSdk !== deps.sdk) {
+        chatModelsSdk = deps.sdk;
+        chatModelsPromise = null;
+      }
+      if (chatModelsPromise) return chatModelsPromise;
+      const capabilities = deps.sdk?.chat?.capabilities;
+      if (typeof capabilities !== "function") return [];
+      chatModelsPromise = (async () => {
+        let answer;
+        try {
+          answer = await deps.sdk.chat.capabilities();
+        } catch (error) {
+          deps.sdk?.log?.("debug", `Could not read the chat capabilities: ${error?.message ?? error}`);
+          chatModelsPromise = null;
+          return [];
+        }
+        const models = Array.isArray(answer?.models) ? answer.models : [];
+        const rows = [];
+        for (const model of models) {
+          const id = text(model?.id);
+          if (!id) continue;
+          // Deprecated models are KEPT. The list narrows ADE's own picker, and
+          // a model ADE is retiring still launches — dropping it here would
+          // hide the reader's current selection from the picker that is
+          // supposed to show it.
+          rows.push({ id, label: text(model.label) ?? id, fastMode: model.fastMode === true });
+        }
+        return rows;
+      })();
+      return chatModelsPromise;
     },
 
     /**

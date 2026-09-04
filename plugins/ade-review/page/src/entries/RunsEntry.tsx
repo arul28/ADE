@@ -1,10 +1,11 @@
 /**
- * The `runs` surface — the rail tab and the Work-rail pane.
+ * The `runs` surface — the rail tab, and the command palette's "Review runs".
  *
  * One entry for both, because they are one page: the manifest's `runs` surface
- * is the rail tab, and the `work-rail-pane` socket names the same
- * `webviewSurfaceId`, so a reader who opens Review from the rail and a reader
- * who opens it beside their chat see the same runs and the same detail.
+ * is what the rail item and the palette action both name, so a reader who opens
+ * Review either way sees the same runs and the same detail. There is no
+ * Work-rail pane here and there never was one in the compiled product — see
+ * PARITY.md's Placements table.
  */
 
 import React from "react";

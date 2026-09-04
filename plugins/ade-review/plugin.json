@@ -1,6 +1,6 @@
 {
   "name": "ade-review",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "displayName": "Review",
   "description": "Run AI review passes over a lane, a commit range, uncommitted changes, or a pull request, and act on the findings.",
   "icon": "git-pull-request",
@@ -59,15 +59,6 @@
     }
   ],
   "sockets": [
-    {
-      "socket": "work-rail-pane",
-      "surface": "work",
-      "id": "runs-pane",
-      "label": "Review",
-      "icon": "git-pull-request",
-      "panelId": "runs",
-      "webviewSurfaceId": "runs"
-    },
     {
       "socket": "toolbar-action",
       "surface": "prs",

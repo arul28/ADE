@@ -161,34 +161,17 @@ describe("the page and the plugin agree on every verb", () => {
       expect(host.lastCall("invoke:pageAttachTarget")!.args).toEqual({ targetId: "target-b" });
     });
 
-    // ── Click ───────────────────────────────────────────────────────────────
-    fireEvent.change(screen.getByLabelText("Viewport x"), { target: { value: "120" } });
-    fireEvent.change(screen.getByLabelText("Viewport y"), { target: { value: "64" } });
-    fireEvent.click(screen.getByLabelText("Click the app"));
-
-    await waitFor(() => {
-      expect(host.callsTo("invoke:pageClick").length).toBe(1);
-    });
-    expect(host.lastCall("invoke:pageClick")!.args).toEqual({
-      x: 120,
-      y: 64,
-      coordinateSpace: "viewport",
-    });
-
-    // ── Scroll ──────────────────────────────────────────────────────────────
-    fireEvent.change(screen.getByLabelText("Scroll amount"), { target: { value: "-240" } });
-    fireEvent.click(screen.getByLabelText("Scroll the app"));
-
-    await waitFor(() => {
-      expect(host.callsTo("invoke:pageScroll").length).toBe(1);
-    });
-    expect(host.lastCall("invoke:pageScroll")!.args).toEqual({
-      x: 120,
-      y: 64,
-      deltaX: 0,
-      deltaY: -240,
-      coordinateSpace: "viewport",
-    });
+    // ── The typed coordinate is NOT drawn where the host can paint ──────────
+    // A click on the engine's picture is a click, a wheel is a scroll and a
+    // hover inspects, so an x/y field and a Click button beside a live app
+    // would be a worse copy of what is already under the reader's pointer.
+    // Their no-engine walk is the degradation test below.
+    expect(screen.queryByLabelText("Viewport x")).toBeNull();
+    expect(screen.queryByLabelText("Click the app")).toBeNull();
+    expect(screen.queryByLabelText("Scroll the app")).toBeNull();
+    // Mode goes with them: it selects which verb a click becomes, and the
+    // engine owns the click.
+    expect(screen.queryByRole("button", { name: "Inspect" })).toBeNull();
 
     // ── Type ────────────────────────────────────────────────────────────────
     fireEvent.change(screen.getByLabelText("Text to type into the focused app element"), {
@@ -207,22 +190,10 @@ describe("the page and the plugin agree on every verb", () => {
     });
     expect(host.lastCall("invoke:pageSnapshot")!.args).toEqual({ projectRoot: `/repo-${root}` });
 
-    // ── Inspect a point, and read the list ──────────────────────────────────
-    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
-    const inspect = await screen.findByLabelText("Inspect point");
-    fireEvent.click(inspect);
-
-    await waitFor(() => {
-      expect(host.callsTo("invoke:pageInspectPoint").length).toBe(1);
-    });
-    expect(host.lastCall("invoke:pageInspectPoint")!.args).toEqual({
-      projectRoot: `/repo-${root}`,
-      x: 120,
-      y: 64,
-      coordinateSpace: "viewport",
-      includeScreenshot: false,
-    });
-
+    // ── Read the list the snapshot filled ───────────────────────────────────
+    // The list is the page's, and it is fed by the snapshot the type step just
+    // refreshed — not by a coordinate the reader typed. Pointing at an element
+    // is the engine's gesture now.
     const list = await screen.findByTestId("inspect-list");
     await waitFor(() => {
       expect(within(list).getByText("Save")).toBeTruthy();
@@ -290,9 +261,43 @@ describe("the page and the plugin agree on every verb", () => {
 
     // And every input verb still reaches the child, which is the whole claim:
     // a host with no picture is still a working Electron Control.
+    fireEvent.change(screen.getByLabelText("Viewport x"), { target: { value: "120" } });
+    fireEvent.change(screen.getByLabelText("Viewport y"), { target: { value: "64" } });
     fireEvent.click(screen.getByLabelText("Click the app"));
     await waitFor(() => {
       expect(host.callsTo("invoke:pageClick").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageClick")!.args).toEqual({
+      x: 120,
+      y: 64,
+      coordinateSpace: "viewport",
+    });
+
+    fireEvent.change(screen.getByLabelText("Scroll amount"), { target: { value: "-240" } });
+    fireEvent.click(screen.getByLabelText("Scroll the app"));
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageScroll").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageScroll")!.args).toEqual({
+      x: 120,
+      y: 64,
+      deltaX: 0,
+      deltaY: -240,
+      coordinateSpace: "viewport",
+    });
+
+    // Mode is the page's again here, because the click is.
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    fireEvent.click(await screen.findByLabelText("Inspect point"));
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageInspectPoint").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageInspectPoint")!.args).toEqual({
+      projectRoot: `/repo-${root}`,
+      x: 120,
+      y: 64,
+      coordinateSpace: "viewport",
+      includeScreenshot: false,
     });
   });
 
@@ -311,7 +316,9 @@ describe("the page and the plugin agree on every verb", () => {
   });
 
   it("shows a refusal as a banner rather than throwing", async () => {
-    connected();
+    // No engine: the banner is raised by the page's own Click, which is the
+    // only place a click exists on a host that cannot paint the picture.
+    connected({ engine: false });
     host.setAction("pageClick", () => ({ ok: false, message: "The renderer is not accepting input." }));
 
     render(<ControlEntry context={paneContext()} />);
@@ -327,7 +334,7 @@ describe("the page and the plugin agree on every verb", () => {
   });
 
   it("attaches a selected element to the chat through one call", async () => {
-    connected({ elements: [fakeElement()] });
+    connected({ engine: false, elements: [fakeElement()] });
     render(<ControlEntry context={paneContext()} />);
     await waitFor(() => {
       expect(host.callsTo("invoke:pageStatus").length).toBeGreaterThan(0);
@@ -352,7 +359,7 @@ describe("the page and the plugin agree on every verb", () => {
   });
 
   it("draws the source line inert when the host cannot open an editor", async () => {
-    connected({ withoutEditor: true });
+    connected({ engine: false, withoutEditor: true });
     render(<ControlEntry context={paneContext()} />);
     await waitFor(() => {
       expect(host.callsTo("invoke:pageStatus").length).toBeGreaterThan(0);

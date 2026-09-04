@@ -159,8 +159,39 @@ them would orphan a deeplink, a stored row or a dispatch.
    `iosSimulator.openSystemSettings` and `revealSimulator`, neither of which is
    on the `ios_simulator` action domain's allow-list — so the page shows the
    host's own blocker sentence from `pageStartStream`'s `message` and no button.
-6. **The engine contract is stubbed.** `hostEngine.place` / `hostEngine.release`
-   and `ui.openPathInEditor` are declared optional and guarded. Until the host
-   half lands, a real ADE draws the "cannot paint the live simulator screen"
-   line and Open Xcode does not appear. Everything else on the page works
-   against the real child today.
+6. **`ui.openPathInEditor` is still optional.** It is declared optional and
+   guarded, so a host without it draws Open Xcode as an inert row. The engine
+   half of this gap is closed — see below.
+
+## The engine half, closed
+
+`hostEngine.place` / `hostEngine.release` are wired end to end now, and the rail
+registers `simulator` for a page to place. What it registers is the important
+part.
+
+It used to register the whole compiled `ChatIosSimulatorPanel`, which meant a
+page that reserved a rect got a complete second panel painted over it — its own
+device picker, its own launch form, its own toolbar — and a native view that
+took every click the page's chrome was waiting for. Two panels, one of them
+unreachable.
+
+The engine is now
+`apps/desktop/src/renderer/components/plugins/hostEngine/IosSimulatorEngineView.tsx`:
+the `<video>` mirror, the window-capture lifecycle behind it (parking retain and
+release, the supersession token, the device-screen luminance heuristic) and the
+input that lands on the picture — tap under eight pixels of travel, drag beyond
+it, Enter and single characters through `typeText`. Nothing else. Every piece of
+chrome is the page's, drawn around the rect, exactly as this document describes.
+
+That view is a **copy** of the live-view half of the compiled panel, not a move:
+`ChatIosSimulatorPanel.tsx` is still mounted in the chat drawer and still owns
+the originals, so six module-private helpers now exist twice
+(`pickSimulatorWindowSource`, `buildDesktopCaptureConstraints`,
+`measureObjectContain`, `pointerToMediaPoint`, `heuristicWindowScreenRect` and
+its luminance scan). The two copies must move together until the compiled panel
+is retired, and the engine view says so at the top of that block.
+
+Left out of the engine on purpose, because they are chrome the page draws: the
+launch stepper, Preview Lab, inspect mode and its element overlays, the snapshot
+image branch, the zoom control, the toolbar, the tool chips, the ownership card,
+the blocker overlay and the context-attachment flow.

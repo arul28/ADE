@@ -819,30 +819,41 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
             {busy === "snapshot" ? <SpinnerGap size={11} className="animate-spin" /> : <ArrowClockwise size={11} />}
             Snapshot
           </button>
-          <div
-            className={cn(
-              "inline-flex items-center rounded-md border border-white/[0.08] bg-black/25 p-0.5",
-              !hasActiveSession ? "opacity-45" : null,
-            )}
-            aria-label="Electron Control mode"
-          >
-            {(["control", "inspect"] as const).map((nextMode) => (
-              <button
-                key={nextMode}
-                type="button"
-                disabled={!hasActiveSession || controlsDisabled}
-                onClick={() => patchForm({ mode: nextMode })}
-                className={cn(
-                  "h-6 rounded-[3px] px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
-                  form.mode === nextMode
-                    ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90 shadow-sm"
-                    : "text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
-                )}
-              >
-                {nextMode === "control" ? "Control" : "Inspect"}
-              </button>
-            ))}
-          </div>
+          {/*
+            Mode belongs to whoever owns the click, and once the host paints the
+            engine that is the host: the engine draws its own Control/Inspect
+            toggle over the picture, and a second one here would be a state the
+            page could set and the engine could not read — the two would
+            disagree on the very next click. Without an engine the page IS the
+            only place a click can be expressed, so the toggle comes back to
+            drive the coordinate row below.
+          */}
+          {engineAvailable ? null : (
+            <div
+              className={cn(
+                "inline-flex items-center rounded-md border border-white/[0.08] bg-black/25 p-0.5",
+                !hasActiveSession ? "opacity-45" : null,
+              )}
+              aria-label="Electron Control mode"
+            >
+              {(["control", "inspect"] as const).map((nextMode) => (
+                <button
+                  key={nextMode}
+                  type="button"
+                  disabled={!hasActiveSession || controlsDisabled}
+                  onClick={() => patchForm({ mode: nextMode })}
+                  className={cn(
+                    "h-6 rounded-[3px] px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
+                    form.mode === nextMode
+                      ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90 shadow-sm"
+                      : "text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+                  )}
+                >
+                  {nextMode === "control" ? "Control" : "Inspect"}
+                </button>
+              ))}
+            </div>
+          )}
           {snapshot?.url ? (
             <div
               className="ml-auto max-w-[50%] truncate rounded-md border border-white/[0.08] bg-black/25 px-2 py-1 text-[10px] text-muted-fg/65"
@@ -874,7 +885,18 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
         </div>
       </div>
 
-      {/* Drive controls: the coordinate the compiled pane read off a click. */}
+      {/*
+        Drive controls: the coordinate the compiled pane read off a click.
+
+        These are the NO-ENGINE half of the page, not a permanent second way in.
+        Where the host paints the engine, a click on the picture is a click, a
+        wheel is a scroll and a hover inspects — so drawing a typed x/y and a
+        Click button beside a live, clickable app would be offering the reader a
+        worse copy of what is already under their pointer. Where it cannot, this
+        row is the only way to drive the app at all, and it is why the page still
+        holds every one of these verbs.
+      */}
+      {engineAvailable ? null : (
       <div className="flex shrink-0 flex-wrap items-center gap-1 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-1">
         <span className="shrink-0 text-[9px] uppercase tracking-wide text-muted-fg/50">Point</span>
         <input
@@ -960,6 +982,7 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
           </>
         )}
       </div>
+      )}
 
       {/* The inspect list */}
       <div

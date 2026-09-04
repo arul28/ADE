@@ -19,7 +19,6 @@ and the page draws the kit's copy.
 | Compiled placement | Page surface | Placement | Panel behind it | State |
 |---|---|---|---|---|
 | Review rail tab | `runs` | `tab` | `runs` | Carried |
-| Work-rail Review pane | `runs` | `pane` | `runs` | Carried (same surface) |
 | Launch review dialog | drawn inside `runs` | modal | `launch` | Carried |
 | PR detail "ADE review" button | `launch` | `popover` | `launch` | Carried |
 | PR row menu "ADE review…" | — | — | `launch` | Panel only, by design (G6) |
@@ -27,6 +26,12 @@ and the page draws the kit's copy.
 | Command palette "Launch a review" | `launch` | `popover` | `launch` | Carried |
 | Learnings | drawn inside `runs` | pane swap | `learnings` | Carried |
 | Run detail (findings, feedback) | drawn inside `runs` | pane | `run` | Carried |
+
+Review is a rail tab plus the palette and PR entries above, and it has **no
+Work-rail pane** — the compiled Review had none, and the manifest declares none.
+An earlier draft of this package shipped a `work-rail-pane` socket (`runs-pane`)
+that invented a placement the product never had; it is gone, and
+`test/panels.test.js` asserts it stays gone.
 
 Every `webviewSurfaceId` a socket names resolves to a declared surface, and the
 manifest parses with no errors and no warnings — checked against
@@ -96,6 +101,34 @@ two commits disables both), the working-tree explanation, the model and reasonin
 controls, the read-only sentence, and the PR mode's locked lane, GitHub-posting
 paragraph and `auto_publish`.
 
+Three of the compiled control's own behaviours are here rather than approximated,
+and all three come from ONE read — `chat.capabilities()`, through the child's
+`pageChatModels`:
+
+- **the model allow-list.** `ReviewLaunchModelControls.tsx` derived
+  `availableModelIds` from `window.ade.ai.getStatus()` and narrowed `ModelPicker`
+  to it. A guest cannot reach that bridge, so the ids come from ADE's own
+  capabilities answer instead. A host that answers nothing passes no list and
+  gets the whole catalogue, which is the behaviour that was there before.
+- **the fast-mode toggle.** The compiled control passed `fastModeActive` and
+  `onFastModeToggle` into `ModelPicker`. ADE's picker still sets the tier with
+  the model in one gesture, and the toggle beside the trigger is how a reader
+  turns it back OFF without reopening the picker. It is drawn ONLY over a model
+  whose own capability row says it has a fast tier — a model without one refuses
+  `fastMode: true`, so a toggle there would be a switch that fails the launch,
+  and a tier left on from a previous model is cleared when the reader moves to
+  one that has none.
+- **the scope diagram's `pr` arm.** A PR is a head ref against a base ref, and
+  the diagram draws exactly that, captioned "Merges into" — with the PR's own
+  head ref and title when the host's subject carries them, and the lane's branch
+  and `PR #<n>` when it does not. It used to fall through to the lane-diff
+  shape, which named the lane's branch against the reader's LOCAL base.
+
+Every control in the form, both pickers and the fast toggle included, is
+disabled while a launch is in flight, and the dialog around it carries the same
+`busy` into `LaneDialogShell` — so Escape, the backdrop and the X cannot dismiss
+a reader into a run that has started with nothing on screen to say so.
+
 ## Live progress
 
 The compiled page listened on `window.ade.review.onEvent`. The page subscribes
@@ -119,7 +152,8 @@ remove. Review remains the first Review UI iOS and the TUI have ever had.
 
 **G1 — the model control is a trigger, not ADE's `ModelPicker`.** The page draws
 a button showing the current model and asks the host to open the real picker
-(`ui.pickModel({ value })`, so the list opens on the current row), because the
+(`ui.pickModel({ value, availableModelIds })`, so the list opens on the current
+row and offers only the models a review can run), because the
 compiled `ModelPicker` carries recents, per-provider grouping, brand icons, a
 search and a fast-mode toggle that a page-local combobox could only approximate
 and would then drift from. The same holds for the lane (`ui.pickLane({ value })`)
@@ -182,7 +216,19 @@ either: `listRuns` takes both and the tab always passed `{limit: 120}`. Carried
 as-is rather than invented, and `pageRuns` forwards both arguments so the filter
 is one control away when it is asked for.
 
-**G8 — no `ui.toast` anywhere.** Every failure in the compiled page was an inline
-banner, and every one still is: the run-level error strip, the feedback error
-above the findings, and the launch form's own error line. A toast would be a
-second, quieter place for the same sentences.
+**G8 — a toast only for a call that never reached the host.** Every failure the
+compiled page could have is still an inline banner — the run-level error strip,
+the feedback error above the findings, the launch form's own error line — because
+every one of those is the review ENGINE refusing, and the engine's refusals
+answer `{ok, message}` beside the control that asked. A toast would be a second,
+quieter place for the same sentence.
+
+The exception is the failure the compiled page could NOT have: a page and a
+child are two programs, so rerun, cancel and feedback can fail before they ever
+reach the engine — a dead bridge, a child that exited, an invoke that timed out.
+That rejection used to fall out of the promise with nothing on screen, and a
+rerun that never left the page looked exactly like one that started. Those three
+now raise `ui.toast` carrying the host's own message, alongside the inline
+strip, because two of the three are pressed from a banner or a finding card that
+is nowhere near it — and the feedback modal stays open rather than closing over
+a note that was never recorded.

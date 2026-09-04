@@ -1,6 +1,6 @@
 {
   "name": "ade-ios-sim",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "iOS Sim Control",
   "description": "iOS Sim Control — pick a simulator, build and launch your app on it, then tap, type and inspect the running screen without leaving ADE.",
   "icon": "device-mobile",
@@ -15,6 +15,7 @@
       "icon": "device-mobile",
       "entryHtml": "dist/index.html",
       "panelId": "main",
+      "railTab": false,
       "mobile": false
     }
   ],

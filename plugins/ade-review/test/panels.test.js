@@ -59,7 +59,7 @@ describe("review panels", () => {
  */
 describe("the review manifest", () => {
   it("declares two webview surfaces, both built and both desktop-only", () => {
-    assert.equal(manifest.version, "2.0.1");
+    assert.equal(manifest.version, "2.0.2");
     assert.deepEqual([...surfaceById.keys()], ["runs", "launch"]);
     for (const surface of manifest.surfaces) {
       assert.equal(surface.kind, "webview");
@@ -83,9 +83,20 @@ describe("the review manifest", () => {
     assert.deepEqual(surfaceById.get("launch").popover, { width: 560, height: 640 });
   });
 
-  it("points the rail pane, the PR button and both palette entries at a page", () => {
-    assert.equal(socketById.get("runs-pane").panelId, "runs");
-    assert.equal(socketById.get("runs-pane").webviewSurfaceId, "runs");
+  it("declares no Work-rail pane, because the compiled Review had none", () => {
+    // The compiled product put Review on the rail and in the palette and on a
+    // PR — never in the Work rail. A `work-rail-pane` socket here would be a
+    // placement the page invented, and a reader would find a Review pane in
+    // Work that ADE itself never drew.
+    assert.equal(socketById.has("runs-pane"), false);
+    assert.ok(manifest.sockets.every((socket) => socket.socket !== "work-rail-pane"));
+    assert.deepEqual(
+      manifest.sockets.map((socket) => socket.id),
+      ["request-review", "request-review-row", "palette-runs", "palette-launch"],
+    );
+  });
+
+  it("points the PR button and both palette entries at a page", () => {
     assert.equal(socketById.get("request-review").actionId, "openLaunchFromPr");
     assert.equal(socketById.get("request-review").webviewSurfaceId, "launch");
     assert.equal(socketById.get("palette-runs").webviewSurfaceId, "runs");

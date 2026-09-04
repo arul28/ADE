@@ -69,12 +69,40 @@ export function ReviewLaunchScopeVisual({
   branchRefLabel,
   baseCommitLabel,
   headCommitLabel,
+  prNumber,
+  prTitle,
+  prHeadRefLabel,
+  prBaseRefLabel,
 }: ReviewScopeVisualProps) {
   let leftNode = { label: branchRefLabel, caption: laneName, emphasized: true };
   let rightNode = { label: baseRefLabel, caption: "Base ref", emphasized: false };
   const connectorLabel = "vs.";
 
-  if (targetMode === "lane_diff" && compareKind === "lane") {
+  if (targetMode === "pr") {
+    /**
+     * A PR is a head ref against a BASE ref, and it was the one mode with no
+     * arm here: it fell through to the lane-diff shape, which drew the lane's
+     * branch against the lane's local compare target and captioned the right
+     * node "Base ref". Both halves were wrong for a PR — the review compares
+     * the pull request's two ends, not the reader's local checkout — and the
+     * captions said nothing about a pull request at all.
+     *
+     * Every value is a fallback chain rather than a required field, because the
+     * launch form has the host's PR subject and the runs browser has only a
+     * finished run. See `ReviewScopeVisualProps`.
+     */
+    const prLabel = typeof prNumber === "number" ? `PR #${prNumber}` : null;
+    leftNode = {
+      label: prHeadRefLabel?.trim() || prLabel || branchRefLabel,
+      caption: prTitle?.trim() || prLabel || "Pull request head",
+      emphasized: true,
+    };
+    rightNode = {
+      label: prBaseRefLabel?.trim() || baseRefLabel,
+      caption: "Merges into",
+      emphasized: false,
+    };
+  } else if (targetMode === "lane_diff" && compareKind === "lane") {
     leftNode = { label: branchRefLabel, caption: laneName, emphasized: true };
     rightNode = {
       label: compareLaneName ?? "Comparison lane",

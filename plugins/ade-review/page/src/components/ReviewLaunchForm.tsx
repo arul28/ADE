@@ -72,10 +72,21 @@ import {
 const DEFAULT_MODEL_ID = "openai/gpt-5.6-sol";
 const DEFAULT_REASONING_EFFORT = "low";
 
+/**
+ * The pull request the host opened this form at.
+ *
+ * Every field is one the host's own `pr` subject carries (`PluginPrContext`:
+ * `id`, `laneId`, `number`, `title`, `branch`) — nothing here is derived and
+ * nothing is invented. `branch` is the PR's HEAD ref, which is what the scope
+ * diagram draws against the base; both it and `title` are null on a host that
+ * sent a thinner subject, and the diagram falls back rather than guessing.
+ */
 export type ReviewLaunchPrContext = {
   prId: string;
   laneId: string | null;
   number: number | null;
+  title: string | null;
+  branch: string | null;
 };
 
 export type ReviewLaunchFormProps = {
@@ -88,6 +99,17 @@ export type ReviewLaunchFormProps = {
   onStarted: (runId: string) => void;
   /** Drawn only when given — the modal has a Cancel, the popover does not. */
   onCancel?: () => void;
+  /**
+   * Told whenever a launch starts or ends.
+   *
+   * The form disables its own controls while a launch is in flight, but the
+   * chrome AROUND it is not the form's to disable: a dialog can still be closed
+   * with Escape, with the backdrop or with its own X, and a reader who did that
+   * mid-launch would be left with a run they cannot see and no sign it started.
+   * `LaneDialogShell` already gates its close path on a `busy` prop; this is how
+   * the shell learns what to put in it.
+   */
+  onBusyChange?: (busy: boolean) => void;
 };
 
 function CommitSelectField({
@@ -97,6 +119,7 @@ function CommitSelectField({
   options,
   selectedCommit,
   disabled,
+  tooFewCommits,
   onChange,
 }: {
   label: string;
@@ -105,6 +128,8 @@ function CommitSelectField({
   options: ReviewLaunchCommit[];
   selectedCommit: ReviewLaunchCommit | null;
   disabled: boolean;
+  /** Why the field is empty, as opposed to why it is disabled. */
+  tooFewCommits: boolean;
   onChange: (sha: string) => void;
 }) {
   return (
@@ -121,7 +146,7 @@ function CommitSelectField({
             REVIEW_INPUT_FOCUS,
           )}
         >
-          <option value="">{disabled ? "Not enough commits" : `Choose ${label.toLowerCase()}...`}</option>
+          <option value="">{tooFewCommits ? "Not enough commits" : `Choose ${label.toLowerCase()}...`}</option>
           {options.map((commit) => (
             <option key={commit.sha} value={commit.sha}>
               {describeLaunchCommit(commit)}
@@ -153,6 +178,7 @@ export function ReviewLaunchForm({
   pr = null,
   onStarted,
   onCancel,
+  onBusyChange,
 }: ReviewLaunchFormProps) {
   const pickers = React.useMemo(() => hostPickers(), []);
   const lanes = React.useMemo<PageReviewLaunchLane[]>(
@@ -319,6 +345,18 @@ export function ReviewLaunchForm({
     [commitOrder, laneCommits],
   );
 
+  /**
+   * Stable, because the controls reconcile against it in an effect.
+   *
+   * `ReviewLaunchModelControls` clears a fast launch when the chosen model has
+   * no fast tier, and that runs in an effect whose deps include this callback.
+   * An inline arrow would be a new function every render and the effect would
+   * re-run on every keystroke in the form.
+   */
+  const handleFastModeChange = React.useCallback((value: boolean) => {
+    setDraft((prev) => (prev.fastMode === value ? prev : { ...prev, fastMode: value }));
+  }, []);
+
   const handlePickLane = React.useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
     const choice = await pickLane({
       ...(draft.laneId ? { value: draft.laneId } : {}),
@@ -409,6 +447,13 @@ export function ReviewLaunchForm({
 
   const busy = launching || loading;
 
+  // Only the LAUNCH closes the chrome around the form. A slow context read
+  // greys the fields but must not trap the reader in a dialog they opened by
+  // mistake.
+  React.useEffect(() => {
+    onBusyChange?.(launching);
+  }, [launching, onBusyChange]);
+
   return (
     <div className="grid gap-3" data-review-pane="launch">
       {error ? (
@@ -490,8 +535,9 @@ export function ReviewLaunchForm({
                   key={mode}
                   type="button"
                   data-review-target-mode={mode}
+                  disabled={busy}
                   className={cn(
-                    "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
+                    "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                     active ? REVIEW_TOGGLE_ACTIVE : "text-[#94A3B8] hover:text-[#F5FAFF]",
                   )}
                   onClick={() => update("targetMode", mode)}
@@ -516,8 +562,9 @@ export function ReviewLaunchForm({
                     key={kind}
                     type="button"
                     data-review-compare-kind={kind}
+                    disabled={busy}
                     className={cn(
-                      "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
+                      "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active ? REVIEW_TOGGLE_ACTIVE : "text-[#94A3B8] hover:text-[#F5FAFF]",
                     )}
                     onClick={() => update("compareKind", kind)}
@@ -534,9 +581,10 @@ export function ReviewLaunchForm({
               <div className="relative">
                 <select
                   aria-label="Compare lane"
-                  className={cn(REVIEW_INPUT, REVIEW_INPUT_FOCUS)}
+                  className={cn(REVIEW_INPUT, REVIEW_INPUT_FOCUS, "disabled:cursor-not-allowed disabled:opacity-60")}
                   value={draft.compareLaneId}
                   onChange={(event) => update("compareLaneId", event.target.value)}
+                  disabled={busy}
                 >
                   <option value="">Choose lane...</option>
                   {lanes
@@ -565,6 +613,14 @@ export function ReviewLaunchForm({
         branchRefLabel={selectedLaneBranchLabel}
         baseCommitLabel={selectedBaseCommit?.shortSha ?? null}
         headCommitLabel={selectedHeadCommit?.shortSha ?? null}
+        prNumber={pr?.number ?? null}
+        prTitle={pr?.title ?? null}
+        // The PR's own head ref when the host sent one, and the lane's branch
+        // otherwise — that lane IS the PR's checkout. The base is the lane's
+        // base ref rather than the "local <base>" label the other modes use: a
+        // PR is merged into the remote branch, not into the reader's copy.
+        prHeadRefLabel={branchDisplayName(pr?.branch) ?? selectedLaneBranchLabel}
+        prBaseRefLabel={selectedLaneBaseLabel}
       />
 
       {draft.targetMode === "commit_range" ? (
@@ -580,7 +636,11 @@ export function ReviewLaunchForm({
               value={draft.baseCommit}
               options={baseCommitOptions}
               selectedCommit={selectedBaseCommit}
-              disabled={laneCommits.length < 2}
+              disabled={busy || laneCommits.length < 2}
+              // "Not enough commits" is the empty-option's sentence and it is a
+              // lie while a launch is in flight, so the two reasons are kept
+              // apart rather than folded into `disabled`.
+              tooFewCommits={laneCommits.length < 2}
               onChange={(sha) => handleCommitSelection("base", sha)}
             />
             <CommitSelectField
@@ -589,7 +649,8 @@ export function ReviewLaunchForm({
               value={draft.headCommit}
               options={headCommitOptions}
               selectedCommit={selectedHeadCommit}
-              disabled={laneCommits.length < 2}
+              disabled={busy || laneCommits.length < 2}
+              tooFewCommits={laneCommits.length < 2}
               onChange={(sha) => handleCommitSelection("head", sha)}
             />
           </div>
@@ -625,6 +686,7 @@ export function ReviewLaunchForm({
         <ReviewLaunchModelControls
           modelId={draft.modelId}
           reasoningEffort={draft.reasoningEffort}
+          fastMode={draft.fastMode}
           onModelChange={(modelId, extras) =>
             setDraft((prev) => ({
               ...prev,
@@ -633,6 +695,7 @@ export function ReviewLaunchForm({
               ...(typeof extras?.fastMode === "boolean" ? { fastMode: extras.fastMode } : {}),
             }))}
           onReasoningEffortChange={(value) => update("reasoningEffort", value)}
+          onFastModeChange={handleFastModeChange}
           disabled={busy}
         />
         <p className="text-[13px] text-[#C5D2E6]">

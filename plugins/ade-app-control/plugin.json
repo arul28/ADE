@@ -1,6 +1,6 @@
 {
   "name": "ade-app-control",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "Electron Control",
   "description": "Drive and inspect Electron apps — the same Electron Control ADE already ships, as a plugin.",
   "icon": "desktop",
@@ -24,6 +24,7 @@
       "icon": "desktop",
       "entryHtml": "dist/index.html",
       "panelId": "main",
+      "railTab": false,
       "mobile": false
     }
   ],

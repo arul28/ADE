@@ -219,6 +219,8 @@ export type FakeBridgeOptions = {
   withoutEditor?: boolean;
   /** Drop the three host pickers. */
   withoutPickers?: boolean;
+  /** Answer no chat capabilities, as a host that cannot read the registry does. */
+  withoutChatModels?: boolean;
   /** Refuse `host.subscribe({kinds: ["review"]})`, as an older host does. */
   refuseReviewKind?: boolean;
   /** Drop `host` entirely. */
@@ -251,6 +253,18 @@ export function installFakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
     pageRuns: () => runs.map((run) => ({ ...run })),
     pageRunDetail: (args) => runs.find((run) => run.id === args.runId) ?? null,
     pageLaunchContext: () => LAUNCH_CONTEXT,
+    // `chat.capabilities().models`, as the child narrows it. Two rows and
+    // deliberately not the same answer: the model the form opens on has NO fast
+    // tier and the one the picker returns HAS one, so the walk can see the
+    // toggle appear rather than proving it is always drawn. `withoutChatModels`
+    // answers the empty list a host with no capabilities gives.
+    pageChatModels: () =>
+      options.withoutChatModels
+        ? []
+        : [
+          { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", fastMode: false },
+          { id: "anthropic/claude-opus-5", label: "Claude Opus 5", fastMode: true },
+        ],
     pageSuppressions: () => suppressions.map((row) => ({ ...row })),
     pageQualityReport: () => QUALITY_REPORT,
     // The scripted child's launch: a run in `queued`, exactly as the engine

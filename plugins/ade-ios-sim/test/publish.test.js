@@ -45,7 +45,7 @@ describe("the simulator publish seam", () => {
 
 describe("the manifest the page tier needs", () => {
   it("declares one webview surface, and no phone placement on it", () => {
-    assert.equal(manifest.version, "2.0.0");
+    assert.equal(manifest.version, "2.0.1");
     assert.equal(manifest.displayName, "iOS Sim Control");
     assert.equal(manifest.surfaces.length, 1);
     const [surface] = manifest.surfaces;
@@ -54,6 +54,10 @@ describe("the manifest the page tier needs", () => {
     assert.equal(surface.title, "iOS Sim Control");
     assert.equal(surface.entryHtml, "dist/index.html");
     assert.equal(surface.panelId, "main");
+    // The page is reached through this plugin's own `work-rail-pane` socket,
+    // exactly where the compiled simulator pane lived before it was a plugin.
+    // Without this the webview also claims a tab in the main sidebar.
+    assert.equal(surface.railTab, false);
     assert.equal(surface.mobile, false);
   });
 

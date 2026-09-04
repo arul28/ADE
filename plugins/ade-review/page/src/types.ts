@@ -407,3 +407,19 @@ export type ReviewLaunchDraft = {
   fastMode: boolean;
   publishBehavior: ReviewPublishBehavior;
 };
+
+/**
+ * One model the launch may use, as `chat.capabilities()` reports it.
+ *
+ * The two fields the form actually needs, and no more: `id` narrows ADE's own
+ * picker to what this page can launch (`ui.pickModel({availableModelIds})`),
+ * and `fastMode` says whether THIS model has a `fast` service tier — a model
+ * whose answer is false refuses `fastMode: true` rather than ignoring it, so
+ * the form must not draw the toggle over it. `label` rides along because the
+ * child already has it and a trigger that can print a display name should.
+ */
+export type PageChatModel = {
+  id: string;
+  label: string;
+  fastMode: boolean;
+};

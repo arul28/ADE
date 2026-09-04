@@ -1,6 +1,6 @@
 {
   "pluginId": "ade-app-control",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "revision": 0,
   "entry": "index.html",
   "files": [
@@ -10,9 +10,9 @@
       "sha256": "f37b9540cb4281cdfa49cbb9f1d717f7924061dd6397a1488469ad57878b36da"
     },
     {
-      "path": "assets/index-DVwrCXwn.js",
-      "bytes": 239921,
-      "sha256": "68658dd463861d5aa667ddcb365319f55db4498ac0318ad64d7903265d0f4411"
+      "path": "assets/index-Cp_ATsR7.js",
+      "bytes": 239935,
+      "sha256": "efc8a3a10faf9477206043314f7f3acf40e019c37276cfa6a249b4cb12424719"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 377,
-      "sha256": "583b8bbeb44c20c747c9455c0960533ca35978193c167fdbe094bb3113dc19c4"
+      "sha256": "115a279a3aecd29db38105c86557235927e6434fe4a4644078427519611b6e9d"
     }
   ]
 }

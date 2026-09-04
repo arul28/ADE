@@ -11,6 +11,7 @@
  * | `window.ade.review.listLaunchContext`           | `invoke("pageLaunchContext")`     | `review.listLaunchContext` + `sdk.lanes.list` |
  * | `window.ade.review.listSuppressions`            | `invoke("pageSuppressions")`      | `review.listSuppressions` |
  * | `window.ade.review.qualityReport`               | `invoke("pageQualityReport")`     | `review.qualityReport`  |
+ * | `window.ade.ai.getStatus` (the picker's model list) | `invoke("pageChatModels")`     | `sdk.chat.capabilities` |
  * | `window.ade.review.startRun`                    | `invoke("pageStartRun")`          | `review.startRun`       |
  * | `window.ade.review.rerun`                       | `invoke("pageRerun")`             | `review.rerun`          |
  * | `window.ade.review.cancelRun`                   | `invoke("pageCancelRun")`         | `review.cancelRun`      |
@@ -58,6 +59,7 @@
 
 import { requireBridge } from "../bridge";
 import type {
+  PageChatModel,
   PageReviewLaunchContext,
   ReviewFeedbackKind,
   ReviewDismissReason,
@@ -106,6 +108,26 @@ export const getRunDetail = (runId: string): Promise<ReviewRunDetail | null> =>
  * the child joins `sdk.lanes.list()` onto the review engine's own answer.
  */
 export const getLaunchContext = (): Promise<PageReviewLaunchContext> => call("pageLaunchContext");
+
+/**
+ * The models a launch may use, each with its own fast-tier fact.
+ *
+ * DEGRADES to `[]`. The child reads `sdk.chat.capabilities()`, which is where
+ * ADE's own launch form gets the same two facts; an empty answer means the page
+ * narrows nothing (the picker offers ADE's whole catalogue) and draws no
+ * fast-mode toggle, which is what a host too old to answer gives anyway. The
+ * `catch` is here rather than only in the child because a bridge that is gone
+ * rejects before the child is ever reached, and a launch form that failed to
+ * mount over a model list would be worse than one with an unnarrowed picker.
+ */
+export const getChatModels = async (): Promise<PageChatModel[]> => {
+  try {
+    const models = await call<PageChatModel[]>("pageChatModels");
+    return Array.isArray(models) ? models : [];
+  } catch {
+    return [];
+  }
+};
 
 export const getSuppressions = (limit = 100): Promise<ReviewSuppression[]> =>
   call("pageSuppressions", { limit });

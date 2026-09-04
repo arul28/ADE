@@ -29,6 +29,7 @@ const PAGE_ACTION_IDS = [
   "pageRuns",
   "pageRunDetail",
   "pageLaunchContext",
+  "pageChatModels",
   "pageSuppressions",
   "pageQualityReport",
   "pageStartRun",
@@ -242,6 +243,53 @@ describe("the reads", () => {
     const list = await plugin.actions.pageSuppressions({ limit: 9_000 });
     assert.equal(list[0].id, "sup-1");
     assert.deepEqual(calls.at(-1), { limit: 100 });
+  });
+
+  it("pageChatModels answers the id and the fast tier, and caches the read", async () => {
+    let reads = 0;
+    await activateWith({}, {
+      chat: {
+        async capabilities() {
+          reads += 1;
+          return {
+            providers: [{ provider: "claude", permissionField: "claudePermissionMode" }],
+            models: [
+              { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", fastMode: false, deprecated: false },
+              { id: "anthropic/claude-opus-5", label: "Claude Opus 5", fastMode: true, deprecated: true },
+              { id: "   ", label: "No id at all", fastMode: true },
+            ],
+          };
+        },
+      },
+    });
+    const models = await plugin.actions.pageChatModels();
+    // The two fields the form needs, and the deprecated row is KEPT: the list
+    // narrows ADE's own picker, and hiding a model that still launches would
+    // hide the reader's current selection from it. A row with no id is not a
+    // model and is dropped.
+    assert.deepEqual(models, [
+      { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", fastMode: false },
+      { id: "anthropic/claude-opus-5", label: "Claude Opus 5", fastMode: true },
+    ]);
+    await plugin.actions.pageChatModels();
+    assert.equal(reads, 1, "the registry cannot change while the process lives");
+  });
+
+  it("pageChatModels degrades to an empty list rather than failing the form", async () => {
+    // Two hosts that answer nothing: one too old to have the verb at all, one
+    // whose read threw. Both mean "narrow nothing", which is the picker's
+    // behaviour before the allow-list existed.
+    await activateWith({});
+    assert.deepEqual(await plugin.actions.pageChatModels(), []);
+    await plugin.deactivate().catch(() => {});
+    await activateWith({}, {
+      chat: {
+        async capabilities() {
+          throw new Error("no registry on this host");
+        },
+      },
+    });
+    assert.deepEqual(await plugin.actions.pageChatModels(), []);
   });
 
   it("pageQualityReport degrades to null, which the panel draws as an em-dash", async () => {

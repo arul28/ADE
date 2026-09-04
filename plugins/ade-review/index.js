@@ -11,8 +11,8 @@
 // `run` panels this file publishes, which is the only Review UI those clients
 // have ever had.
 //
-//   * the run list is a `webview` surface plus a `work-rail-pane`, both drawing
-//     the page, with the `runs` panel behind them for every other client;
+//   * the run list is a `webview` surface — the rail tab — drawing the page,
+//     with the `runs` panel behind it for every other client;
 //   * launch is a second `webview` surface (an anchored popover) plus the
 //     `launch` panel, and both call `review.startRun` with the same
 //     target/config the compiled dialog sent;

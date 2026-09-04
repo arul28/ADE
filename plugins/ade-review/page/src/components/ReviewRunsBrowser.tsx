@@ -50,7 +50,7 @@ import {
 } from "../host/actions";
 import { useReviewLive } from "../host/liveRuns";
 import { useHostRefresh } from "../host/refresh";
-import { openLink, openPathInEditor, writeClipboard } from "../host/ui";
+import { openLink, openPathInEditor, toast, writeClipboard } from "../host/ui";
 import {
   SIDEBAR_DEFAULT_PX,
   SIDEBAR_MAX_PX,
@@ -126,6 +126,8 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
   const [feedbackError, setFeedbackError] = React.useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(() => runIdFromContext(context));
   const [launchModalOpen, setLaunchModalOpen] = React.useState(false);
+  /** True from the press on Start until the launch answers. See the shell below. */
+  const [launchInFlight, setLaunchInFlight] = React.useState(false);
   const [showLearnings, setShowLearnings] = React.useState(false);
   const [learningsToken, setLearningsToken] = React.useState(0);
   const [severityFilter, setSeverityFilter] = React.useState<SeverityFilter>("all");
@@ -333,6 +335,29 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
     [refreshRuns],
   );
 
+  /**
+   * A call that never reached the host, said out loud.
+   *
+   * Every mutation here answers `{ok, message}` for anything the review ENGINE
+   * refused — see `host/actions.ts` — so a rejection means something else: the
+   * bridge is gone, the child died, the invoke timed out. That failure used to
+   * fall out of the promise with nothing on screen, so a rerun that never
+   * reached the host was indistinguishable from one that started.
+   *
+   * The toast carries the host's OWN message rather than a sentence of ours,
+   * because that message is the only description of what actually broke; the
+   * fallback is used only when the rejection carries no message at all. It goes
+   * in a toast rather than only in the page's error strip because these three
+   * verbs are pressed from a banner, a detail header and a finding card, and
+   * two of those are nowhere near the strip. A host with no `ui.toast` drops it
+   * — hence the inline error too.
+   */
+  const reportTransportFailure = React.useCallback(async (err: unknown, fallback: string) => {
+    const message = err instanceof Error && err.message.trim() ? err.message : fallback;
+    setError(message);
+    await toast({ level: "error", message });
+  }, []);
+
   const handleRerun = React.useCallback(
     async (run: NormalizedRun | null) => {
       if (!run) return;
@@ -346,11 +371,17 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
         }
         await refreshRuns();
         setSelectedRunId(result.runId);
+      } catch (err) {
+        // NOT a refusal — a refusal answers `{ok: false, message}` above. This
+        // is the call itself failing, and until now it fell out of the promise
+        // silently: the button stopped saying "Rerunning" and nothing else
+        // changed, which looks exactly like a rerun that started.
+        void reportTransportFailure(err, "Could not reach the review engine to rerun that run.");
       } finally {
         setRerunning(false);
       }
     },
-    [refreshRuns],
+    [refreshRuns, reportTransportFailure],
   );
 
   const handleCancelRun = React.useCallback(
@@ -362,11 +393,16 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
         if (!result?.ok) setError(result?.message ?? "Could not cancel that run.");
         await refreshRuns();
         if (selectedRunId === run.id) await loadDetail(run.id, { clearError: false });
+      } catch (err) {
+        // A cancel that never arrived leaves the run running, and the banner
+        // it was pressed from goes on saying so. Without this the reader is
+        // told nothing and believes they stopped it.
+        void reportTransportFailure(err, "Could not reach the review engine to cancel that run.");
       } finally {
         setCancelInFlight(false);
       }
     },
-    [loadDetail, refreshRuns, selectedRunId],
+    [loadDetail, refreshRuns, reportTransportFailure, selectedRunId],
   );
 
   const refreshReviewTab = React.useCallback(async () => {
@@ -385,14 +421,28 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
   const handleFindingAction = React.useCallback(
     async (req: FindingActionRequest) => {
       setFeedbackError(null);
-      const result = await recordFeedback({
-        findingId: req.finding.id,
-        kind: req.kind,
-        reason: req.reason ?? null,
-        note: req.note ?? null,
-        snoozeDurationMs: req.snoozeDurationMs ?? null,
-        suppression: req.suppression ?? null,
-      });
+      let result;
+      try {
+        result = await recordFeedback({
+          findingId: req.finding.id,
+          kind: req.kind,
+          reason: req.reason ?? null,
+          note: req.note ?? null,
+          snoozeDurationMs: req.snoozeDurationMs ?? null,
+          suppression: req.suppression ?? null,
+        });
+      } catch (err) {
+        // Toasted here, where the host's message is, and RETHROWN so the card
+        // keeps the modal the reader typed their note into. A swallowed
+        // rejection would close that modal on a feedback that was never
+        // recorded — see `ReviewFindingCard`, which catches this.
+        const message = err instanceof Error && err.message.trim()
+          ? err.message
+          : "Could not reach the review engine to record that feedback.";
+        setFeedbackError(message);
+        await toast({ level: "error", message });
+        throw err;
+      }
       if (!result?.ok) {
         setFeedbackError(result?.message ?? "Could not record that feedback.");
         return;
@@ -1263,12 +1313,17 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
         description="Choose a lane and review target, then start a read-only inspection run."
         icon={Sparkle}
         widthClassName="w-[min(760px,calc(100vw-1rem))]"
+        // The shell's own gate on Escape, the backdrop and its X. Without it a
+        // reader could dismiss the dialog into a half-started run — the launch
+        // is already on the wire and nothing on screen would say so.
+        busy={launchInFlight}
       >
         <ReviewLaunchForm
           launchContext={launchContext}
           initialLaneId={laneIdFromContext(context)}
           onStarted={(runId) => void handleStarted(runId)}
           onCancel={() => setLaunchModalOpen(false)}
+          onBusyChange={setLaunchInFlight}
         />
       </LaneDialogShell>
 

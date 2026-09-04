@@ -539,7 +539,14 @@ export function ReviewFindingCard({
   });
 
   const handleAcknowledge = async () => {
-    await onRequestAction({ finding, kind: "acknowledge" });
+    try {
+      await onRequestAction({ finding, kind: "acknowledge" });
+    } catch {
+      // The parent has already toasted the host's own message and put it above
+      // the findings. Caught here so a transport failure does not surface as an
+      // unhandled rejection out of a click handler; there is no optimistic
+      // state on this button to reverse.
+    }
   };
 
   const handleCopyFinding = async () => {
@@ -559,20 +566,28 @@ export function ReviewFindingCard({
     snoozeDurationMs: number | null;
     suppressionScope?: ReviewSuppressionScope;
   }) => {
-    await onRequestAction({
-      finding,
-      kind: args.kind,
-      reason: args.reason,
-      note: args.note || null,
-      snoozeDurationMs: args.snoozeDurationMs,
-      suppression:
-        args.kind === "suppress" && args.suppressionScope
-          ? {
-            scope: args.suppressionScope,
-            pathPattern: args.suppressionScope === "path" ? finding.filePath ?? null : null,
-          }
-          : null,
-    });
+    try {
+      await onRequestAction({
+        finding,
+        kind: args.kind,
+        reason: args.reason,
+        note: args.note || null,
+        snoozeDurationMs: args.snoozeDurationMs,
+        suppression:
+          args.kind === "suppress" && args.suppressionScope
+            ? {
+              scope: args.suppressionScope,
+              pathPattern: args.suppressionScope === "path" ? finding.filePath ?? null : null,
+            }
+            : null,
+      });
+    } catch {
+      // Closing the modal is this card's one optimistic act, and a feedback
+      // that never reached the host must not take the reader's typed note with
+      // it. The parent toasted what broke; the modal stays open so the same
+      // press can be made again.
+      return;
+    }
     setModalKind(null);
   };
 

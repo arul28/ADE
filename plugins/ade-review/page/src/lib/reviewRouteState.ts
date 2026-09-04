@@ -87,7 +87,13 @@ export function laneIdFromContext(context: PluginWebviewContext): string | null 
  */
 export function prFromContext(
   context: PluginWebviewContext,
-): { prId: string; laneId: string | null; number: number | null } | null {
+): {
+  prId: string;
+  laneId: string | null;
+  number: number | null;
+  title: string | null;
+  branch: string | null;
+} | null {
   const subject = context.subject ?? null;
   if (!subject || subject.kind !== "pr") return null;
   const prId = text(subject.id) ?? text(subject.prId);
@@ -95,5 +101,9 @@ export function prFromContext(
   const number = typeof subject.number === "number" && Number.isFinite(subject.number)
     ? subject.number
     : null;
-  return { prId, laneId: text(subject.laneId), number };
+  // `title` and `branch` are the subject's own fields — `branch` is the PR's
+  // head ref — and they are read for the scope diagram, which draws the head
+  // against the base. Null on a host that sends a thinner subject; the diagram
+  // falls back to the lane's branch rather than printing an empty node.
+  return { prId, laneId: text(subject.laneId), number, title: text(subject.title), branch: text(subject.branch) };
 }

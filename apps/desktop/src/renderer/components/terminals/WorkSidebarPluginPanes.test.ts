@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   allowWorkRailPluginPane,
   buildWorkSidebarTabItems,
+  hostEngineForPluginPane,
   isAvailableWorkSidebarTab,
   remapWorkRailTabAfterPolarity,
   shouldWaitForWorkRailPluginPane,
+  workRailItemForPluginPane,
+  workRailSlotForPluginPane,
 } from "./WorkSidebar";
 import { DEFAULT_PLUGIN_ICON } from "../plugins/pluginIcons";
 import { pluginPanelSlotId } from "../plugins/sockets/panelSlotId";
@@ -322,5 +325,62 @@ describe("the cold-launch flip", () => {
       builtinSurfaceVisible: (id) => id !== "ios",
       pluginsResolved: false,
     })).toBe(simPane.id);
+  });
+});
+
+/**
+ * The seat and the body are two questions.
+ *
+ * Conflating them is what kept both plugin pages off the screen: the rail
+ * matched the plugin id, decided the pane WAS the compiled engine, and drew
+ * ADE's old panel — so `ade-app-control` and `ade-ios-sim` shipped a whole page
+ * each that no reader could reach. The seat still has to be the plugin-id
+ * match, though, or a plugin gaining a page would move its button.
+ */
+describe("which pane draws a page and which draws the compiled panel", () => {
+  function pane(pluginId: string, entryHtml?: string): PluginPanelSlot {
+    return {
+      id: pluginPanelSlotId(pluginId, "main"),
+      key: `${pluginId}:main`,
+      pluginId,
+      panelId: "main",
+      label: pluginId,
+      icon: DEFAULT_PLUGIN_ICON,
+      displayName: pluginId,
+      ...(entryHtml ? { entryHtml } : {}),
+    };
+  }
+
+  it("mounts the page when the pane resolved one", () => {
+    expect(hostEngineForPluginPane(pane("ade-app-control", "dist/index.html"))).toBeNull();
+    expect(hostEngineForPluginPane(pane("ade-ios-sim", "dist/index.html"))).toBeNull();
+  });
+
+  it("falls back to the compiled panel when the pane has no page", () => {
+    // A client that cannot host a guest resolves no `entryHtml`, and the
+    // webview surface's own declared fallback is the panel.
+    expect(hostEngineForPluginPane(pane("ade-app-control"))).toBe("app-control");
+    expect(hostEngineForPluginPane(pane("ade-ios-sim"))).toBe("ios");
+  });
+
+  it("keeps the seat, the label and the icon whichever way the pane draws", () => {
+    const withPage = pane("ade-app-control", "dist/index.html");
+    expect(workRailSlotForPluginPane(withPage)).toBe("app-control");
+    expect(workRailItemForPluginPane(withPage).label).toBe("Electron Control");
+
+    const items = buildWorkSidebarTabItems([withPage], {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: (id) => id !== "app-control",
+      pluginPaneIds: new Set([withPage.id]),
+    });
+    expect(items[4]?.id).toBe(withPage.id);
+    expect(items[4]?.label).toBe("Electron Control");
+  });
+
+  it("never claims an engine for a plugin that owns none", () => {
+    expect(hostEngineForPluginPane(pane("ade-log-viewer", "dist/index.html"))).toBeNull();
+    expect(hostEngineForPluginPane(pane("ade-log-viewer"))).toBeNull();
+    expect(hostEngineForPluginPane(null)).toBeNull();
   });
 });

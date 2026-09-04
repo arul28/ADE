@@ -38,6 +38,8 @@ import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
+import { AppControlEngineView } from "../plugins/hostEngine/AppControlEngineView";
+import { IosSimulatorEngineView } from "../plugins/hostEngine/IosSimulatorEngineView";
 import { registerHostEngineRenderer } from "../plugins/hostEngine/hostEngineStore";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
@@ -154,14 +156,45 @@ export function isAvailableWorkSidebarTab(
 const APP_CONTROL_PLUGIN_ID = "ade-app-control";
 const IOS_SIM_PLUGIN_ID = "ade-ios-sim";
 
-/** Which compiled Work pane a contributed slot should mount, if any. */
-export function hostEngineForPluginPane(
+/**
+ * Which compiled rail SLOT a contributed pane belongs in — its seat, its label
+ * and its icon.
+ *
+ * A plugin-id match and nothing else, because the seat is a product fact: the
+ * pane Electron Control's owner contributes IS Electron Control, and it belongs
+ * where the compiled tab sat whether it draws a page or a panel. Deriving the
+ * seat from what the pane draws would move the button when a plugin gained a
+ * page, which is not a thing a reader should have to notice.
+ */
+export function workRailSlotForPluginPane(
   pane: Pick<PluginPanelSlot, "pluginId"> | null,
 ): "app-control" | "ios" | null {
   if (!pane) return null;
   if (pane.pluginId === APP_CONTROL_PLUGIN_ID) return "app-control";
   if (pane.pluginId === IOS_SIM_PLUGIN_ID) return "ios";
   return null;
+}
+
+/**
+ * Which compiled Work pane a contributed slot should MOUNT, if any.
+ *
+ * The seat and the body are two questions, and conflating them is what kept
+ * Electron Control's and iOS Sim's pages off the screen: the rail matched the
+ * plugin id, found a compiled engine, and drew the compiled panel — so a plugin
+ * that shipped a whole page got ADE's old panel instead, every time.
+ *
+ * A pane that resolved an `entryHtml` has its own page and draws it. The engine
+ * it needs is not this pane's body; it is a rect inside that page, which the
+ * page asks for with `hostEngine.place` and {@link HostEngineOverlay} paints.
+ * Only a pane with no page falls back to the compiled panel, which is the
+ * webview surface's own declared cross-client fallback.
+ */
+export function hostEngineForPluginPane(
+  pane: Pick<PluginPanelSlot, "pluginId" | "entryHtml"> | null,
+): "app-control" | "ios" | null {
+  if (!pane) return null;
+  if (pane.entryHtml) return null;
+  return workRailSlotForPluginPane(pane);
 }
 
 /**
@@ -213,12 +246,12 @@ export function remapWorkRailTabAfterPolarity(
   const resolved = options.pluginsResolved ?? true;
   if (tab === "ios" || tab === "app-control") {
     if (options.builtinSurfaceVisible(tab)) return tab;
-    const pane = options.pluginPanes.find((entry) => hostEngineForPluginPane(entry) === tab);
+    const pane = options.pluginPanes.find((entry) => workRailSlotForPluginPane(entry) === tab);
     return pane ? pane.id as WorkSidebarTab : tab;
   }
   const parsed = typeof tab === "string" ? parsePluginPanelSlotId(tab) : null;
   if (!parsed) return tab;
-  const compiled = hostEngineForPluginPane(parsed);
+  const compiled = workRailSlotForPluginPane(parsed);
   if (!compiled) return tab;
   if (options.pluginPanes.some((entry) => entry.id === tab)) return tab;
   // "We do not know yet" is not "the plugin is gone". Waiting costs the reader
@@ -262,7 +295,7 @@ export function shouldWaitForWorkRailPluginPane(
 export function workRailItemForPluginPane(
   pane: PluginPanelSlot,
 ): GlowMenuItem<WorkSidebarTab> {
-  const host = hostEngineForPluginPane(pane);
+  const host = workRailSlotForPluginPane(pane);
   const native = host ? WORK_SIDEBAR_TABS.find((item) => item.id === host) : undefined;
   return {
     id: pane.id as WorkSidebarTab,
@@ -305,7 +338,7 @@ export function buildWorkSidebarTabItems(
     }
     const host = item.id === "ios" || item.id === "app-control" ? item.id : null;
     if (!host) continue;
-    const pane = pluginPanes.find((entry) => hostEngineForPluginPane(entry) === host);
+    const pane = pluginPanes.find((entry) => workRailSlotForPluginPane(entry) === host);
     if (!pane) continue;
     items.push(workRailItemForPluginPane(pane));
     seated.add(pane.id);
@@ -316,7 +349,7 @@ export function buildWorkSidebarTabItems(
     // The compiled tab wins the slot while both are visible: it is the one the
     // rail's own persisted ids name, and `remapWorkRailTabAfterPolarity` moves
     // the reader onto the plugin pane the moment the gate catches up.
-    const host = hostEngineForPluginPane(pane);
+    const host = workRailSlotForPluginPane(pane);
     if (host && drawnHosts.has(host)) continue;
     items.push(workRailItemForPluginPane(pane));
   }
@@ -811,18 +844,21 @@ export function WorkSidebar({
    * Offer Control and Simulator to a plugin PAGE that wants to draw around
    * them.
    *
-   * The rail already swaps a contributed pane for the compiled engine when the
-   * owning plugin ships no page of its own (`hostEngineForPluginPane`). A page
-   * is the other half: it draws its own toolbar and its own settings, leaves a
-   * hole, and asks the host to paint the engine into it. Both halves reach the
-   * SAME component with the same inputs, so a plugin does not get a different
-   * inspector depending on which way it drew.
+   * ## What is registered, and why it is not the panel
    *
-   * Registered from here because this is where those inputs live: the lane, the
-   * runtime pin, the project root and the session the panel writes context
-   * into. A store holding them would be a second copy of this component's
-   * state, and a page placing an engine against a stale lane is the bug that
-   * copy would produce.
+   * An engine is the PICTURE and nothing else — the screencast and the pointer
+   * events that land on it. Registering the whole compiled panel here, which is
+   * what this did before, meant the host painted a complete second panel over
+   * the guest: two launch rows, two status pills, two window pickers, and a
+   * native view that swallowed every click the page's own chrome was waiting
+   * for. The page draws the chrome; the host draws only what the page cannot.
+   *
+   * ## Why from here
+   *
+   * This is where the engines' inputs live: the lane, the runtime pin, the
+   * project root and the session a captured element is attached to. A store
+   * holding them would be a second copy of this component's state, and a page
+   * placing an engine against a stale lane is the bug that copy would produce.
    *
    * Nothing is registered while the rail is hidden, so a placement made against
    * a rail nobody is looking at is refused with a sentence rather than painted
@@ -832,7 +868,7 @@ export function WorkSidebar({
     if (!active) return undefined;
     const stops = [
       registerHostEngineRenderer("electron-control", () => (
-        <ChatAppControlPanel
+        <AppControlEngineView
           key={`host-engine-appcontrol:${runtimePin?.key ?? "bound"}`}
           sessionId={panelSessionId}
           laneId={laneId}
@@ -841,21 +877,16 @@ export function WorkSidebar({
           controlDisabledReason={null}
           onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
           onAddContext={canInsertContext ? addAppControlContext : undefined}
-          onInsertDraft={canInsertContext ? insertDraft : undefined}
         />
       )),
       registerHostEngineRenderer("simulator", () => (
-        <ChatIosSimulatorPanel
+        <IosSimulatorEngineView
           key={`host-engine-ios:${runtimePin?.key ?? "bound"}`}
           sessionId={panelSessionId}
           laneId={laneId}
           runtimePin={runtimePin}
           projectRoot={laneRoot}
           controlDisabledReason={null}
-          ignoreChatOwnership
-          onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
-          onAddContext={canInsertContext ? addIosContext : undefined}
-          onInsertDraft={canInsertContext ? insertDraft : undefined}
         />
       )),
     ];
@@ -866,9 +897,7 @@ export function WorkSidebar({
     active,
     addAppControlContext,
     addAttachment,
-    addIosContext,
     canInsertContext,
-    insertDraft,
     laneId,
     laneRoot,
     panelSessionId,

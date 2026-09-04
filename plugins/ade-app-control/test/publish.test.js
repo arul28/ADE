@@ -43,8 +43,8 @@ describe("the electron control publish seam", () => {
 });
 
 describe("the manifest the page tier needs", () => {
-  it("declares one webview surface, and no phone placement on it", () => {
-    assert.equal(manifest.version, "2.0.0");
+  it("declares one webview surface, with no rail tab and no phone placement", () => {
+    assert.equal(manifest.version, "2.0.1");
     assert.equal(manifest.surfaces.length, 1);
     const [surface] = manifest.surfaces;
     assert.deepEqual(surface, {
@@ -54,10 +54,14 @@ describe("the manifest the page tier needs", () => {
       icon: "desktop",
       entryHtml: "dist/index.html",
       panelId: "main",
-      // `parseSurfaces` forbids `true` on a webview and warns when one asks —
-      // and a warning is a gate failure for an official package. Saying `false`
-      // out loud is also the honest answer: no phone is the computer the
-      // Electron app is running on.
+      // The page is reached through this plugin's own `work-rail-pane` socket,
+      // exactly where the compiled Electron Control pane lived before it was a
+      // plugin. Without this, `PLUGIN_RAIL_TAB_SURFACE_KINDS` counts the
+      // webview as a rail kind and the plugin also claims a tab in the main
+      // sidebar — a second entry point nobody asked for.
+      railTab: false,
+      // A webview may opt into the phone now, and this one does not: no phone
+      // is the computer the Electron app being driven is running on.
       mobile: false,
     });
   });
