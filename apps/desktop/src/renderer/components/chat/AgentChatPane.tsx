@@ -12362,6 +12362,19 @@ export function AgentChatPane({
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
   ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+  /**
+   * The header a plugin runtime published for this chat.
+   *
+   * See `parsePluginChatHeader` for the ceilings.
+   *
+   * Read here, above the lane-less early return, because a hook that runs only
+   * on the branch that has a lane changes the hook order the first time a chat
+   * gains or loses one.
+   */
+  const pluginChatHeader = useMemo(
+    () => parsePluginChatHeader(selectedSession?.pluginHeader),
+    [selectedSession],
+  );
 
   if (!laneId) {
     return (
@@ -13213,15 +13226,6 @@ export function AgentChatPane({
             </button>
           ) : null}
     </>
-  );
-  /**
-   * The header a plugin runtime published for this chat.
-   *
-   * See `parsePluginChatHeader` for the ceilings.
-   */
-  const pluginChatHeader = useMemo(
-    () => parsePluginChatHeader(selectedSession?.pluginHeader),
-    [selectedSession],
   );
   /**
    * The open PR on this chat's lane branch, when the git toolbar is not drawing

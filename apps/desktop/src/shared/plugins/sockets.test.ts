@@ -1062,13 +1062,23 @@ describe("declaring the new kinds in a plugin.json", () => {
     expect(result.warnings.join(" ")).toContain("work-rail-pane");
   });
 
-  // `command` and `dialog` mean nothing to any other kind, so the manifest
-  // parser learns them one kind at a time. This is the list it reads.
+  // `command`, `submenu`, `dialog`, `triggers` and `template` mean nothing to
+  // any other kind, so the manifest parser learns them one kind at a time. This
+  // is the list it reads.
   it("names the kinds that need a manifest field beyond the core four", () => {
     const extra = PLUGIN_SOCKET_KINDS.filter((kind) => PLUGIN_SOCKET_REQUIREMENTS[kind].manifestExtra?.length);
-    expect(extra).toEqual(["slash-command", "dialog-section"]);
+    expect(extra).toEqual([
+      "slash-command",
+      "chat-menu-item",
+      "dialog-section",
+      "automation-trigger-tile",
+      "automation-template",
+    ]);
     expect(PLUGIN_SOCKET_REQUIREMENTS["slash-command"].manifestExtra).toEqual(["command"]);
+    expect(PLUGIN_SOCKET_REQUIREMENTS["chat-menu-item"].manifestExtra).toEqual(["submenu"]);
     expect(PLUGIN_SOCKET_REQUIREMENTS["dialog-section"].manifestExtra).toEqual(["dialog"]);
+    expect(PLUGIN_SOCKET_REQUIREMENTS["automation-trigger-tile"].manifestExtra).toEqual(["triggers"]);
+    expect(PLUGIN_SOCKET_REQUIREMENTS["automation-template"].manifestExtra).toEqual(["template"]);
   });
 });
 

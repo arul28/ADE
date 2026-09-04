@@ -689,6 +689,44 @@ function pluginIdsPresentInProjectDb(db: AdeDb): string[] {
 }
 
 /**
+ * This user's recently launched model ids, newest first, for the
+ * `defaultModel` half of `chat.capabilities`.
+ *
+ * Read straight off `model_picker_recents` in the project database rather than
+ * through the CLI's `modelPickerStore`, which main may not import — but the
+ * TABLE is the same one, in the same per-project cr-sqlite database, so the
+ * plugin host and ADE's own composer seed a launch form from one row set that
+ * converges across desktop, terminal and phone. The query is `getRecents`'s
+ * own: newest first, ties broken by id so the order is stable, capped at the
+ * ten the store keeps.
+ *
+ * Never throws. No project is attached on a projectless window, and an older
+ * database has no such table; both mean "this user has no history I can see",
+ * which the caller resolves to the registry default. A launch form that opened
+ * on a fixed model would be no worse than what a page had before this existed,
+ * and a form that failed to open at all would be.
+ */
+function readModelRecents(project: AttachedProject | null): string[] {
+  if (!project) return [];
+  try {
+    const rows = project.binding.db.all<{ model_id: string }>(
+      "select model_id from model_picker_recents order by used_at desc, model_id asc limit 10",
+    );
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of rows) {
+      const id = typeof row.model_id === "string" ? row.model_id.trim() : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Bring one submitted value to the type its setting declares.
  *
  * A `number` setting that stores the string "8080" reads back as a string in
@@ -877,6 +915,11 @@ function toSummary(
       // Passed through, not interpreted: the extraction pilot gates a builtin
       // tab on this, and a summary that drops it makes the gate impossible.
       ...(surface.builtin ? { builtin: surface.builtin } : {}),
+      // The rail opt-out. Carried for the reason `entryHtml` is: every client's
+      // rail rule reads this LIST, not the manifest on disk, so a mapper that
+      // drops the field puts the sidebar tab back on the two plugins that asked
+      // not to have one, with no error anywhere.
+      ...(surface.railTab === false ? { railTab: false } : {}),
     })),
     // Present only when the manifest declares tokens: the renderer's theme
     // engine treats a non-null `theme` as "this plugin can be applied as one".
@@ -1153,7 +1196,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     try {
       forgetStoredConfig(
         installs.root,
-        new Set(installs.list().map((plugin) => plugin.pluginId)),
+        new Set(installs.list().map((plugin) => plugin.record.pluginId)),
       );
     } catch (error) {
       logger.warn("plugin.config_cleanup_failed", {
@@ -1625,6 +1668,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       readConfig: () => configFor(pluginId, manifest),
       writeConfig: (values) => writeConfigFor(pluginId, manifest, values),
       readProviderKey,
+      modelRecents: async () => readModelRecents(resolveProject(pluginId)),
       // The plugin id and the manifest are closed over here and NOT taken from
       // the call, which is what makes these safe to hand a child: there is no
       // argument by which a plugin could begin a flow, or claim a credential,

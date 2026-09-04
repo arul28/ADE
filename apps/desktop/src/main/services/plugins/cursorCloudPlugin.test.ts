@@ -364,6 +364,9 @@ describe("what the manifest promises the platform", () => {
       "fleet",
       "laneSecrets",
       "sessions",
+      // The page's own view state — chosen filter, chosen sort. Declared with
+      // `sync: false` so one reader's choice never travels to another machine.
+      "ui-state",
     ]);
   });
 
@@ -416,13 +419,25 @@ describe("installing it the way a user does", () => {
     expect(installed.record.source.kind).toBe("builtin");
     expect(installed.record.enabled).toBe(true);
 
-    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual(["fleet"]);
+    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual([
+      "fleet",
+      // One agent's own page, drawn where the compiled Cursor Cloud detail used
+      // to be. Its own surface rather than a mode of `fleet`: the fleet lists
+      // and this one follows a single run.
+      "agent",
+      // The launch popover, drawn inside the machine picker.
+      "launch",
+    ]);
+    expect(installed.manifest?.surfaces.every((surface) => Boolean(surface.panelId))).toBe(true);
     expect(installed.manifest?.sockets.map((socket) => socket.socket)).toEqual([
-      "composer-action",
-      "chat-header-action",
-      "work-rail-pane",
+      // The launch row in the machine picker. `machine-entry` replaced the
+      // composer button: launching a cloud agent is choosing where work runs,
+      // and that question is asked once, in the picker.
+      "machine-entry",
       "command-palette-action",
       "row-badge",
+      // The Automations grid tile carrying the cloud run triggers.
+      "automation-trigger-tile",
     ]);
     // Nothing here gates a compiled-in tab: the whole point of the extraction
     // is that a community author could have written this package.

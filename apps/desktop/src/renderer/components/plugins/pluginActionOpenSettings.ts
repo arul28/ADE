@@ -66,7 +66,7 @@ function scrollToSectionWhenDrawn(domId: string): void {
   if (look()) return;
   const observer = typeof MutationObserver === "function"
     ? new MutationObserver(() => {
-      if (look() || Date.now() >= deadline) observer.disconnect();
+      if (look() || Date.now() >= deadline) observer?.disconnect();
     })
     : null;
   observer?.observe(document.documentElement, { childList: true, subtree: true });

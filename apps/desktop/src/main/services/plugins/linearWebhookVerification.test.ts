@@ -306,13 +306,22 @@ describe("ade-linear webhook channel declaration", () => {
     expect(secretRef).toBe("LINEAR_WEBHOOK_SECRET");
 
     const source = pluginSource();
-    const setNames = [...source.matchAll(/secrets\.set\(\s*"([^"]+)"/g)].map((match) => match[1]!);
+    // The writer names the secret through a module constant rather than a
+    // literal, so the text read has to resolve one hop. Anything further —
+    // a computed name, a name assembled at runtime — stays unresolved and
+    // fails this test, which is the answer we want: a secret name a reader
+    // cannot find by reading is a name that can drift unseen.
+    const constants = new Map(
+      [...source.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]+)"/g)]
+        .map((match) => [match[1]!, match[2]!] as const),
+    );
+    const setArgs = [...source.matchAll(/secrets\.set\(\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))/g)];
+    const setNames = setArgs.map((match) => match[1] ?? constants.get(match[2]!) ?? match[2]!);
     const webhookSetNames = setNames.filter((name) => name.includes("WEBHOOK"));
 
     // Exactly one writer, and it writes the declared name. A second writer
     // under another name would be the same silent breakage wearing a disguise.
     expect(webhookSetNames).toEqual([secretRef]);
-    expect(source).toContain(`secrets.set("${secretRef}"`);
   });
 
   // The relay drops every header outside `PLUGIN_WEBHOOK_STORED_HEADERS` before

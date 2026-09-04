@@ -160,7 +160,13 @@ describe("WebPluginPageHost", () => {
     expect(container.querySelector("iframe")?.hasAttribute("sandbox")).toBe(false);
   });
 
-  it("destroys the guest when the surface is hidden, and builds a fresh one on return", async () => {
+  // A tab is a place the reader leaves and comes back to inside one session.
+  // Destroying its guest on every hide made each plugin tab flash a reload and
+  // made a Linear sign-in waiting in Settings forget that the token had landed,
+  // so tabs, panes and settings sections keep their guest while hidden. Only an
+  // unmount ends one — see "disposes the guest on unmount" below. This mirrors
+  // the desktop host's own "destroy when hidden" suite exactly.
+  it("keeps a hidden tab guest alive rather than reloading it on return", async () => {
     const { rerender, container } = render(
       <WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active />,
     );
@@ -170,13 +176,55 @@ describe("WebPluginPageHost", () => {
 
     rerender(<WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active={false} />);
     await settle();
-    expect(disposed).toHaveBeenCalledTimes(1);
-    expect(container.querySelector("iframe")).toBeNull();
+    expect(disposed).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe")).not.toBeNull();
 
     rerender(<WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active />);
     await settle();
+    // The same guest, not a second one. A rebuild here would drop whatever the
+    // page had not submitted yet.
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("iframe")).not.toBeNull();
+  });
+
+  // An anchored placement is not a surface the reader returns to, so it still
+  // dies on hide and builds fresh on the next open.
+  it("destroys an anchored guest when the surface is hidden, and builds a fresh one on return", async () => {
+    const popover = { subject: null, placement: "popover" as const };
+    const { rerender, container } = render(
+      <WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active context={popover} />,
+    );
+    await settle();
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(disposed).not.toHaveBeenCalled();
+
+    rerender(
+      <WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active={false} context={popover} />,
+    );
+    await settle();
+    expect(disposed).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("iframe")).toBeNull();
+
+    rerender(
+      <WebPluginPageHost pluginId="ade-linear" entryHtml="index.html" active context={popover} />,
+    );
+    await settle();
     expect(created).toHaveBeenCalledTimes(2);
     expect(container.querySelector("iframe")).not.toBeNull();
+  });
+
+  it("creates nothing until an anchored surface is first shown", async () => {
+    const { container } = render(
+      <WebPluginPageHost
+        pluginId="ade-linear"
+        entryHtml="index.html"
+        active={false}
+        context={{ subject: null, placement: "popover" }}
+      />,
+    );
+    await settle();
+    expect(created).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe")).toBeNull();
   });
 
   it("disposes the guest on unmount", async () => {

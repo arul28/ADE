@@ -57,6 +57,13 @@ vi.mock("../../state/appStore", () => ({
       pluginsLoadFailure: store.pluginsLoadFailure,
       projectBinding: store.projectBinding,
       pluginThemeId: null,
+      // The page remembers its view and filters across visits, and reads the
+      // field on every render, so an absent `pluginViewState` throws before
+      // anything draws. Left empty on purpose: this file asserts the loading
+      // gate, not the remembered filters, and the page falls back to its own
+      // default when nothing was stored.
+      pluginViewState: {},
+      setMarketplaceQuery: () => undefined,
       refreshInstalledPlugins: async () => {
         store.refreshes += 1;
         return store.pluginsLoaded;
@@ -130,6 +137,16 @@ const rowAction = (): HTMLElement => {
   if (!node) throw new Error("no action control on the row");
   return node;
 };
+
+/**
+ * The row's overflow menu, scoped to this plugin's own row.
+ *
+ * Every listed row draws a "More actions" control, so the accessible name alone
+ * matches once per row. The tour id names the one row this file asserts on.
+ */
+const rowMenu = (): HTMLElement | null => document.querySelector<HTMLElement>(
+  `[data-tour="plugin:marketplace.row-menu-${BUNDLED.pluginId}"]`,
+);
 
 /** The install dialog's confirm button, by its own tour id. */
 const installConfirm = (): HTMLElement => {
@@ -205,7 +222,9 @@ describe("the Marketplace on a project bound to another machine", () => {
     expect(calls).toContain("readPluginPresence");
     // Installed there, so the row reports it rather than offering an install.
     expect(rowAction().textContent).toBe("Installed");
-    expect(screen.getByRole("button", { name: "More actions" })).toBeTruthy();
+    const menu = rowMenu();
+    expect(menu).toBeTruthy();
+    expect(menu?.getAttribute("aria-label")).toBe("More actions");
     // Nothing to say about a machine that answered.
     expect(screen.queryByText(/Can’t reach/)).toBeNull();
   });
