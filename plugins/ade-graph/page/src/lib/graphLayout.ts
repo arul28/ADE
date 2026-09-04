@@ -75,7 +75,7 @@ export function createSessionState(): GraphSessionState {
   };
 }
 
-export function createGraphPreferences(lastViewMode: GraphViewMode = "stack"): GraphPersistedState {
+export function createGraphPreferences(lastViewMode: GraphViewMode = "all"): GraphPersistedState {
   return { lastViewMode };
 }
 

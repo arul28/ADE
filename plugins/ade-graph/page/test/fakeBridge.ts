@@ -222,7 +222,7 @@ export function installFakeBridge(options: {
     pageConflictOverlaps: () => assessment.overlaps,
     pageRiskMatrix: () => assessment.matrix,
     pageOperations: () => operations,
-    pageGraphState: () => ({ lastViewMode: "stack" }),
+    pageGraphState: () => ({ lastViewMode: "all" }),
     pagePrDetail: (args) => {
       const pr = prs.find((entry) => entry.id === args.prId) ?? null;
       return {

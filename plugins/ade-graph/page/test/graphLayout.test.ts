@@ -52,13 +52,13 @@ describe("normalizeGraphPreferences", () => {
     });
   });
 
-  it("falls back to the stacked DAG for malformed stored data", () => {
+  it("falls back to Overview for malformed stored data", () => {
     expect(normalizeGraphPreferences({ lastViewMode: "sideways", presets: "nope" })).toEqual({
-      preferences: { lastViewMode: "stack" },
+      preferences: { lastViewMode: "all" },
       migrated: true,
     });
     expect(normalizeGraphPreferences(null)).toEqual({
-      preferences: { lastViewMode: "stack" },
+      preferences: { lastViewMode: "all" },
       migrated: false,
     });
   });

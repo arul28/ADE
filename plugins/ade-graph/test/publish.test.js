@@ -80,6 +80,6 @@ describe("the graph publish seam", () => {
     const palette = MANIFEST.sockets.find((socket) => socket.id === "palette-graph");
     assert.equal(palette.webviewSurfaceId, "graph");
     assert.equal(palette.actionId, "openGraph");
-    assert.equal(MANIFEST.version, "2.0.1");
+    assert.equal(MANIFEST.version, "2.0.2");
   });
 });

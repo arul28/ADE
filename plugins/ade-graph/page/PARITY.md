@@ -39,12 +39,43 @@ answers `{navigate:{panelId:"graph"}}` alone.
 
 ## The canvas (`WorkspaceGraphPage`)
 
-The canvas is one stacked DAG: search, Filters overlay, Reset view, drag to
-reposition (reparent is menu-only), the context menu, the appearance editor, the
-conflict panel, the batch dock, the create-child and create-PR prompts, the
-merge-simulation card, the minimap, PR overlays on lane cards, and contributed
-`graph-node` sockets. View-mode tabs, the overlap web, the pair matrix, the
-environments overlay, and drag-to-reparent were removed on purpose.
+Every surface the compiled canvas draws, and what this page does with it. A row
+is **Carried** only when the page draws the same control over the same data.
+
+| Compiled surface | State |
+|---|---|
+| Four view modes (Overview, Dependencies, Conflict Risk, Activity) + helper line | Carried |
+| Auto layout per view mode (`graphLayout.ts`) | Carried |
+| `topology:` spokes from the primary lane, in Overview and Dependencies | Carried |
+| `stack:` edges from `parentLaneId` | Carried |
+| `risk:` overlap web, in Conflict Risk and behind Overview's toggle | Carried |
+| "Show overlap web" toggle, Overview only | Carried |
+| `integration:` and `proposal:` edges, with virtual proposal nodes | Carried |
+| PR overlay on an edge and on a lane card | Carried |
+| Search box, match count, focus-the-results | Carried |
+| Filters overlay (status, type, tags, hide primary / attached / archived, root lane) | Carried |
+| Reset view, zoom in / out / fit, minimap | Carried |
+| Drag to reposition, positions saved per view mode | Carried |
+| Drag to reparent: drop target, tone-coded drop preview, dashed drag trail | Carried |
+| Drop onto the primary lane opens the create-PR prompt | Carried |
+| Reparent / integrate / PR dialog, with rebase preview and undo | Carried |
+| Context menu, and Shift+Enter / arrow-key lane walking | Carried |
+| Appearance editor (colour, icon, tags) with a live draft on the node | Carried |
+| Conflict panel, and the pair matrix panel (`shared/RiskMatrix.tsx`) | Carried |
+| Environments overlay on the node, and the Environments legend | Carried |
+| Status Key and Custom Lane Colors legends | Carried |
+| Batch dock and its per-lane step ledger | Carried |
+| Create-child and create-PR prompts, merge-simulation card | Carried |
+| Node tooltip and edge tooltip | Carried |
+| Contributed `graph-node` sockets, with the overflow note | Carried |
+| Collapse / expand a subtree, and the collapsed-child count | Carried |
+| PR inspector | Compact card, not `PrDetailPane` — **G2** |
+| Rebase progress console | Operation ledger, not a pty stream — **G3** |
+| Live agent roster on a lane card | Issue chips and a chat count instead — **G4** |
+| Integration-tab and lane-manage navigations | Omitted, no deeplink parses them — **G5** |
+| Toast on a failed read | Error banner only — **G6** |
+| Contributed nodes refreshing live | Next open — **G7** |
+| Phone canvas | Panel fallback plus `LanePhoneList` — **G1** |
 
 Changed on purpose:
 
@@ -83,11 +114,14 @@ page streamed `window.ade.pty.onData` / `.onExit` for a rebase console. A guest
 has no pty. Progress is `pageOperations` plus the `operation` host event, which
 is why that kind exists on this page.
 
-**G4 — the inspector lists issue chips and a chat count, not live agent names.**
+**G4 — no live agent roster; issue chips and a chat count instead.**
 `LaneAgentList` was fed by `useLaneAgents`, which subscribes to the renderer's
-session store. A guest has none. The selected-lane inspector shows attached
-Linear issues from `issueLinks` / `primaryIssue` and an ongoing-chat count from
-the operation ledger. Per-agent names are a later read.
+session store. A guest has none. The lane card keeps the pulsing dot that says
+sessions are running here and drops the per-agent names, and the selected-lane
+inspector draws the issues the lane is attached to — `issueLinks`, falling back
+to `primaryIssue` — beside a count of the ongoing chats the operation ledger
+knows about. `LinearIssueBadge` is gone the same way: the identifier is
+provider-neutral. Per-agent names are a later read.
 
 **G5 — two compiled navigations have no deeplink.** `/prs?tab=integration&proposalId=…`
 and `/lanes?…&action=manage` are not URLs `shared/deeplinks.ts` parses. Both

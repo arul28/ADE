@@ -1,18 +1,18 @@
 {
   "pluginId": "ade-graph",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "revision": 0,
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-DKrrr24d.css",
-      "bytes": 89983,
-      "sha256": "28cd2fc0ba7e6fa00d50883f55aad6011452a4c862e6a23fdfd538c488b21256"
+      "path": "assets/index-BjSmeYiM.css",
+      "bytes": 91115,
+      "sha256": "3ee7859c328f841f22ce9dc8b074f595b7ac2cbc14729d42e6b7f5bbf0baf575"
     },
     {
-      "path": "assets/index-DuWVg0YL.js",
-      "bytes": 629762,
-      "sha256": "10a5b23403b4888bfbcdeb0820cdb6f3f5af2a025547997604317ea38faa0380"
+      "path": "assets/index-yZGurMHA.js",
+      "bytes": 647830,
+      "sha256": "a88f0b5fdbd206496ac2f29f205c19cc0a2ee0b663d73c0de4affc2181488605"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 366,
-      "sha256": "335563ce9a927f9ff3ccec3185408b3656d212430564e1c3e17058b74b519936"
+      "sha256": "0c89fb1ac99c33e97bb8b2ce0c006788e2f9dfe051c2aee1218bceea32152421"
     }
   ]
 }
