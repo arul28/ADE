@@ -548,6 +548,10 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     try {
       const repos = await listRepos();
       for (const repo of repos) {
+        // `dispose` runs while this poll is still awaiting GitHub, and the
+        // owning runtime closes its database right after. Re-read the flag on
+        // every repo so no cursor write lands against a closed store.
+        if (stopped) return;
         try {
           const cursor = readCursor(repo) ?? undefined;
           const maxIssues = await pollIssues(repo, cursor);

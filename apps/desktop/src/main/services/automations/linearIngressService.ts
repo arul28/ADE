@@ -214,9 +214,41 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   const pollIntervalMs = Math.max(1_000, deps.pollIntervalMs ?? DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS);
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;
+  // Latched by `stop` and never cleared. The runtime that owns this service
+  // closes its database immediately after stopping it, and a poll already in
+  // flight outlives that close: every `db` write below runs from a detached
+  // promise, so a write against a closed store becomes an unhandled rejection
+  // that ends the process. The CLI's headless runtime makes this load-bearing.
+  // It opens a runtime per command and tears it down while `start`'s first poll
+  // is still awaiting the relay.
+  let stopped = false;
+
+  /**
+   * Run a state write that a stopped runtime must not turn into a failure.
+   *
+   * After `stop` the store is closed or closing, so the write is skipped. A
+   * write that still throws is logged at debug and swallowed: nothing awaits
+   * these calls, and the poll they belong to has no one left to report to.
+   */
+  const writeGuarded = (event: string, write: () => void): void => {
+    if (stopped) return;
+    try {
+      write();
+    } catch (error: unknown) {
+      deps.logger.debug(event, { error: errorMessage(error) });
+    }
+  };
 
   const setLastError = (message: string | null): void => {
-    deps.db.setJson(LINEAR_RELAY_LAST_ERROR_REF, message);
+    writeGuarded("automations.linear_relay_last_error_write_skipped", () => {
+      deps.db.setJson(LINEAR_RELAY_LAST_ERROR_REF, message);
+    });
+  };
+
+  const setRelayCursor = (cursor: string | null): void => {
+    writeGuarded("automations.linear_relay_cursor_write_skipped", () => {
+      deps.cursorStore.set({ source: "linear-relay", cursor });
+    });
   };
 
   const getStatus = (): LinearIngressStatus => {
@@ -381,6 +413,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
 
   /** Returns false when the delivery was already persisted (replay). */
   const persistRecord = (record: LinearIngressEventRecord): boolean => {
+    if (stopped) return false;
     const existing = deps.db.get<{ id: string }>(
       `select id from linear_ingress_events
         where project_id = ? and delivery_id = ?
@@ -412,6 +445,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   };
 
   const poll = async (): Promise<void> => {
+    if (stopped) return;
     if (!deps.hasEnabledLinearRules()) return;
     let status = getStatus();
     if (
@@ -427,6 +461,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       } catch {
         return; // setup recorded the error; surface via status
       }
+      if (stopped) return;
     }
     if (status.state === "error" && status.webhookId && status.organizationId) {
       // A configured relay should recover from transient poll errors. Clear the
@@ -438,6 +473,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     if (status.state !== "ready" || !status.organizationId) return;
     const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";
     const accountAccessToken = await readAccountAccessToken();
+    if (stopped) return;
     if (!authorization && !accountAccessToken) {
       throw new Error("Connect Linear before configuring webhook ingestion.");
     }
@@ -459,13 +495,14 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         signal: AbortSignal.timeout(30_000),
       });
       const rawPayload = await response.json().catch(() => null) as unknown;
+      if (stopped) return;
       if (!response.ok) {
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
         throw new Error(detail ?? `Linear relay poll failed (HTTP ${response.status}).`);
       }
       const payload = parseRelayEventsResponse(rawPayload);
       if (payload.cursorExpired) {
-        deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
+        setRelayCursor(payload.nextCursor);
         setLastError(null);
         deps.logger.info("automations.linear_relay_cursor_reset", { cursor: payload.nextCursor });
         return;
@@ -483,14 +520,22 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         // automations: dispatch only deliveries persisted for the first time.
         if (!persistRecord(record)) continue;
         await deps.dispatch(record);
+        // The dispatch is awaited, so a stop can land inside it. Returning here
+        // leaves the cursor where it was, and the delivery replays on the next
+        // runtime rather than being acknowledged against a closing store.
+        if (stopped) return;
         if (!newestEventAt || Date.parse(record.createdAt) > Date.parse(newestEventAt)) {
           newestEventAt = record.createdAt;
         }
       }
       if (payload.nextCursor) {
-        deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
+        setRelayCursor(payload.nextCursor);
       }
-      if (newestEventAt) deps.db.setJson(LINEAR_RELAY_LAST_EVENT_AT_REF, newestEventAt);
+      if (newestEventAt) {
+        writeGuarded("automations.linear_relay_last_event_write_skipped", () => {
+          deps.db.setJson(LINEAR_RELAY_LAST_EVENT_AT_REF, newestEventAt);
+        });
+      }
       setLastError(null);
       if (payload.events.length < LINEAR_RELAY_PAGE_LIMIT || !payload.nextCursor) return;
     }
@@ -500,9 +545,16 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     if (pollInFlight) return pollInFlight;
     pollInFlight = poll()
       .catch((error: unknown) => {
-        const message = errorMessage(error);
-        setLastError(message);
-        deps.logger.warn("automations.linear_relay_poll_failed", { error: message });
+        // A throw from inside this handler rejects a promise nothing awaits:
+        // both `start` and the interval call `pollNow` detached. Reporting the
+        // failure must never be able to become a second, fatal failure.
+        try {
+          const message = errorMessage(error);
+          setLastError(message);
+          deps.logger.warn("automations.linear_relay_poll_failed", { error: message });
+        } catch {
+          // Status persistence and logging are both best effort at this point.
+        }
       })
       .finally(() => {
         pollInFlight = null;
@@ -511,13 +563,17 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   };
 
   const start = (): void => {
-    if (pollTimer) return;
+    if (pollTimer || stopped) return;
     void pollNow();
     pollTimer = setInterval(() => void pollNow(), pollIntervalMs);
     pollTimer.unref?.();
   };
 
   const stop = (): void => {
+    // Latched before the timer is cleared so a poll that resumes between the
+    // two observes the stop, and never restarted: the owning runtime is going
+    // away, and a later `start` would poll against a closed database.
+    stopped = true;
     if (!pollTimer) return;
     clearInterval(pollTimer);
     pollTimer = null;

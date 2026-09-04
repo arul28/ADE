@@ -4,6 +4,7 @@ import type { Logger } from "../logging/logger";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { createLinearIngressService, type LinearIngressServiceDeps } from "./linearIngressService";
 import {
+  LINEAR_RELAY_LAST_ERROR_REF,
   LINEAR_RELAY_LAST_EVENT_AT_REF,
   LINEAR_RELAY_ORGANIZATION_ID_REF,
   LINEAR_RELAY_SECRET_REF,
@@ -14,22 +15,43 @@ import {
 class FakeDb {
   readonly kv = new Map<string, unknown>();
   readonly ingressRows: unknown[][] = [];
+  /**
+   * Statements attempted after `close`, which must stay at zero once the
+   * service is stopped. The real store throws "database is not open" here, and
+   * a throw from a detached poll ends the process instead of failing a call.
+   */
+  accessesAfterClose = 0;
+  private open = true;
+
+  close(): void {
+    this.open = false;
+  }
+
+  private assertOpen(): void {
+    if (this.open) return;
+    this.accessesAfterClose += 1;
+    throw new Error("database is not open");
+  }
 
   getJson<T>(key: string): T | null {
+    this.assertOpen();
     return this.kv.has(key) ? this.kv.get(key) as T : null;
   }
 
   setJson(key: string, value: unknown): void {
+    this.assertOpen();
     this.kv.set(key, value);
   }
 
   get<T extends Record<string, unknown>>(_sql: string, params: unknown[] = []): T | null {
+    this.assertOpen();
     const deliveryId = params[1];
     const row = this.ingressRows.find((entry) => entry[3] === deliveryId);
     return row ? ({ id: row[0] } as unknown as T) : null;
   }
 
   run(sql: string, params: unknown[] = []): void {
+    this.assertOpen();
     if (sql.includes("insert into linear_ingress_events")) this.ingressRows.push(params);
   }
 }
@@ -153,11 +175,105 @@ function relayEvent(args: {
   };
 }
 
+/** A gate that lets a test hold a poll open across `stop` and the store close. */
+function createFetchGate() {
+  let reached!: () => void;
+  const entered = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  return {
+    entered,
+    release: () => release(),
+    onFetch: async () => {
+      reached();
+      await held;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("linearIngressService", () => {
+  it("skips every write and never rejects when the store closes mid-poll", async () => {
+    // The runtime stops this service and then closes the database, but a poll
+    // already awaiting the relay outlives both. Its error handler writes the
+    // status back, and that write has no owner to fail: an unguarded throw here
+    // reaches the process as an unhandled rejection.
+    const gate = createFetchGate();
+    const fetchImpl = vi.fn(async () => {
+      await gate.onFetch();
+      throw new Error("relay unreachable");
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    const polling = harness.service.pollNow();
+    await gate.entered;
+    harness.service.stop();
+    harness.db.close();
+    gate.release();
+
+    await expect(polling).resolves.toBeUndefined();
+    expect(harness.db.accessesAfterClose).toBe(0);
+    expect(harness.db.kv.has(LINEAR_RELAY_LAST_ERROR_REF)).toBe(false);
+  });
+
+  it("does not persist, dispatch, or acknowledge a page that arrives after stop", async () => {
+    const gate = createFetchGate();
+    const fetchImpl = vi.fn(async () => {
+      await gate.onFetch();
+      return new Response(JSON.stringify({
+        events: [relayEvent({
+          sequence: 1,
+          deliveryId: "delivery-late",
+          payload: { type: "Issue", action: "update", data: { id: "issue-1", identifier: "ADE-1", title: "late" } },
+        })],
+        nextCursor: "seq:1",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    const polling = harness.service.pollNow();
+    await gate.entered;
+    harness.service.stop();
+    harness.db.close();
+    gate.release();
+
+    await expect(polling).resolves.toBeUndefined();
+    expect(harness.db.accessesAfterClose).toBe(0);
+    expect(harness.db.ingressRows).toHaveLength(0);
+    expect(harness.dispatched).toHaveLength(0);
+    expect(harness.cursorBySource.get("linear-relay")).toBeUndefined();
+  });
+
+  it("does not poll again after stop, even if start is called", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    harness.service.stop();
+    harness.service.start();
+    await harness.service.pollNow();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still records a poll failure while the service is running", async () => {
+    // The guard above must not cost the ordinary error path its status write.
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("relay unreachable");
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    await harness.service.pollNow();
+
+    expect(harness.db.kv.get(LINEAR_RELAY_LAST_ERROR_REF)).toBe("relay unreachable");
+  });
+
   it("creates a webhook, registers the organization, and persists only the secret reference in KV", async () => {
     let registeredSecret = "";
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

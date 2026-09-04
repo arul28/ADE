@@ -548,3 +548,90 @@ describe("pluginWebhookIngressService failure handling", () => {
     expect(status?.lastError).toContain("relay unreachable");
   });
 });
+
+describe("pluginWebhookIngressService shutdown", () => {
+  it("skips every write and never rejects when the store closes mid-poll", async () => {
+    // The runtime stops this service and then closes the database, but a poll
+    // already awaiting the relay outlives both. Its writes run from a detached
+    // promise, so an unguarded statement against a closed store reaches the
+    // process as an unhandled rejection instead of failing a call.
+    const db = createDb();
+    let closed = false;
+    let accessesAfterClose = 0;
+    const guarded = <A extends unknown[], R>(fn: (...args: A) => R) => (...args: A): R => {
+      if (!closed) return fn(...args);
+      accessesAfterClose += 1;
+      throw new Error("database is not open");
+    };
+    const trackedDb = {
+      getJson: guarded(db.getJson),
+      setJson: guarded(db.setJson),
+      run: guarded(db.run),
+      get: guarded(db.get),
+      all: guarded(db.all),
+    } as unknown as PluginWebhookIngressDb;
+
+    let reachedEvents!: () => void;
+    const enteredEvents = new Promise<void>((resolve) => { reachedEvents = resolve; });
+    let releaseEvents!: () => void;
+    const heldEvents = new Promise<void>((resolve) => { releaseEvents = resolve; });
+    const fetchImpl = (async (input: URL | RequestInfo) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/register")) return jsonResponse({ ok: true, secretId: "secret-1" });
+      reachedEvents();
+      await heldEvents;
+      return jsonResponse({
+        events: [relayEvent({ seq: 1, eventId: "delivery-late" })],
+        nextCursor: "seq:1",
+        cursorExpired: false,
+      });
+    }) as unknown as typeof fetch;
+
+    const service = createPluginWebhookIngressService({
+      db: trackedDb,
+      projectId: "project-1",
+      logger: createLogger(),
+      listPlugins: () => [{ pluginId: "ade-cursor-cloud", channels: DEFAULT_CHANNELS }],
+      secrets: {
+        get: async () => "plugin-webhook-secret-value",
+        set: async () => {},
+      },
+      deliver: () => true,
+      fetchImpl,
+    });
+
+    const polling = service.pollNow();
+    await enteredEvents;
+    service.stop();
+    closed = true;
+    db.close();
+    releaseEvents();
+
+    await expect(polling).resolves.toBeUndefined();
+    expect(accessesAfterClose).toBe(0);
+  });
+
+  it("does not poll again after stop, even if start is called", async () => {
+    const db = createDb();
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true })) as unknown as typeof fetch;
+    const service = createPluginWebhookIngressService({
+      db,
+      projectId: "project-1",
+      logger: createLogger(),
+      listPlugins: () => [{ pluginId: "ade-cursor-cloud", channels: DEFAULT_CHANNELS }],
+      secrets: {
+        get: async () => "plugin-webhook-secret-value",
+        set: async () => {},
+      },
+      deliver: () => true,
+      fetchImpl,
+    });
+
+    service.stop();
+    service.start();
+    await service.pollNow();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    db.close();
+  });
+});

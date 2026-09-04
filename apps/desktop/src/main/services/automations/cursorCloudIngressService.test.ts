@@ -8,6 +8,7 @@ import {
 } from "./cursorCloudIngressService";
 import {
   CURSOR_CLOUD_RELAY_CONFIGURED_REF,
+  CURSOR_CLOUD_RELAY_LAST_ERROR_REF,
   CURSOR_CLOUD_RELAY_SECRET_REF,
   CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY,
 } from "./cursorCloudRelayConfig";
@@ -15,24 +16,61 @@ import {
 class FakeDb {
   readonly kv = new Map<string, unknown>();
   readonly ingressRows: unknown[][] = [];
+  /**
+   * Statements attempted after `close`, which must stay at zero once the
+   * service is stopped. The real store throws "database is not open" here, and
+   * a throw from a detached poll ends the process instead of failing a call.
+   */
+  accessesAfterClose = 0;
+  private open = true;
+
+  close(): void {
+    this.open = false;
+  }
+
+  private assertOpen(): void {
+    if (this.open) return;
+    this.accessesAfterClose += 1;
+    throw new Error("database is not open");
+  }
 
   getJson<T>(key: string): T | null {
+    this.assertOpen();
     return this.kv.has(key) ? this.kv.get(key) as T : null;
   }
 
   setJson(key: string, value: unknown): void {
+    this.assertOpen();
     this.kv.set(key, value);
   }
 
   get<T extends Record<string, unknown>>(_sql: string, params: unknown[] = []): T | null {
+    this.assertOpen();
     const deliveryId = params[1];
     const row = this.ingressRows.find((entry) => entry[3] === deliveryId);
     return row ? ({ id: row[0] } as unknown as T) : null;
   }
 
   run(sql: string, params: unknown[] = []): void {
+    this.assertOpen();
     if (sql.includes("insert into cursor_cloud_ingress_events")) this.ingressRows.push(params);
   }
+}
+
+/** A gate that lets a test hold a poll open across `stop` and the store close. */
+function createFetchGate() {
+  let reached!: () => void;
+  const entered = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  return {
+    entered,
+    release: () => release(),
+    onFetch: async () => {
+      reached();
+      await held;
+    },
+  };
 }
 
 class FakeCredentialStore {
@@ -219,6 +257,88 @@ describe("cursorCloudIngressService", () => {
     await harness.service.pollNow();
 
     expect(harness.dispatched).toHaveLength(1);
+  });
+  it("skips every write and never rejects when the store closes mid-poll", async () => {
+    // The reported crash: the headless CLI runtime opens this service per
+    // command, `start` polls immediately, and the command finishes while that
+    // poll is still awaiting the relay. `stop` then runs and the database
+    // closes, so the poll's own error handler wrote to a closed store and the
+    // resulting rejection had no owner -- `ade plugin doctor` exited 1 and
+    // printed nothing.
+    const gate = createFetchGate();
+    const fetchImpl = vi.fn(async () => {
+      await gate.onFetch();
+      throw new Error("relay unreachable");
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    const polling = harness.service.pollNow();
+    await gate.entered;
+    harness.service.stop();
+    harness.db.close();
+    gate.release();
+
+    await expect(polling).resolves.toBeUndefined();
+    expect(harness.db.accessesAfterClose).toBe(0);
+    expect(harness.db.kv.has(CURSOR_CLOUD_RELAY_LAST_ERROR_REF)).toBe(false);
+  });
+
+  it("does not persist, dispatch, or acknowledge a page that arrives after stop", async () => {
+    const gate = createFetchGate();
+    const fetchImpl = vi.fn(async () => {
+      await gate.onFetch();
+      return new Response(JSON.stringify({
+        events: [relayEvent({
+          sequence: 1,
+          deliveryId: "delivery-late",
+          payload: { id: "bc-agent-late", status: "FINISHED", timestamp: "2026-08-13T12:00:00.000Z" },
+        })],
+        nextCursor: "seq:1",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    const polling = harness.service.pollNow();
+    await gate.entered;
+    harness.service.stop();
+    harness.db.close();
+    gate.release();
+
+    await expect(polling).resolves.toBeUndefined();
+    expect(harness.db.accessesAfterClose).toBe(0);
+    expect(harness.db.ingressRows).toHaveLength(0);
+    expect(harness.dispatched).toHaveLength(0);
+    // The cursor stays put, so the delivery replays on the next runtime rather
+    // than being acknowledged against a store that is going away.
+    expect(harness.cursorBySource.get("cursor-relay")).toBeUndefined();
+  });
+
+  it("does not poll again after stop, even if start is called", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    harness.service.stop();
+    harness.service.start();
+    await harness.service.pollNow();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still records a poll failure while the service is running", async () => {
+    // The guard above must not cost the ordinary error path its status write.
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("relay unreachable");
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl });
+    configureReady(harness);
+
+    await harness.service.pollNow();
+
+    expect(harness.db.kv.get(CURSOR_CLOUD_RELAY_LAST_ERROR_REF)).toBe("relay unreachable");
+    expect(harness.service.getStatus().lastError).toBe("relay unreachable");
   });
 });
 

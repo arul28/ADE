@@ -446,16 +446,44 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     (event, metadata) => args.logger.info(event, metadata),
   );
 
+  /**
+   * Run a status write that must not be able to fail its caller.
+   *
+   * `stop` runs before the owning runtime closes its database, but a relay poll
+   * already in flight outlives both, and its status writes run from a detached
+   * promise. A throw there ("database is not open") reaches the process as an
+   * unhandled rejection instead of failing a call, which is fatal to a
+   * short-lived CLI run. The poll generation already stops a superseded poll
+   * from writing at all; this is the backstop for the writes that get through.
+   *
+   * The stopped flag is deliberately NOT consulted: unlike the relay ingress
+   * services, this one supports a `stop` followed by a `start`, so a skip keyed
+   * on it would silently drop the first status of the next lifecycle.
+   */
+  const writeSafely = (event: string, write: () => void): void => {
+    try {
+      write();
+    } catch (error) {
+      args.logger.debug(event, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
     if (typeof patch.healthy === "boolean") githubRelayHealthy = patch.healthy;
-    args.automationService?.updateIngressStatus({
-      githubRelay: patch,
+    writeSafely("automations.github_relay_status_write_skipped", () => {
+      args.automationService?.updateIngressStatus({
+        githubRelay: patch,
+      });
     });
   };
 
   const updateLocalWebhookStatus = (patch: Partial<AutomationIngressStatus["localWebhook"]>) => {
-    args.automationService?.updateIngressStatus({
-      localWebhook: patch,
+    writeSafely("automations.local_webhook_status_write_skipped", () => {
+      args.automationService?.updateIngressStatus({
+        localWebhook: patch,
+      });
     });
   };
 
@@ -706,7 +734,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     if (pollTimer) clearInterval(pollTimer);
     pollTimerIntervalMs = intervalMs;
     pollTimer = setInterval(() => {
-      void pollGithubRelayOnce();
+      void pollGithubRelayOnce().catch(() => {});
     }, intervalMs);
     pollTimer.unref?.();
   };
@@ -732,7 +760,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     const delayMs = Math.max(0, relayPollCooldownUntilMs - Date.now());
     relayPollRetryTimer = setTimeout(() => {
       relayPollRetryTimer = null;
-      void pollGithubRelayOnce();
+      void pollGithubRelayOnce().catch(() => {});
     }, delayMs);
     relayPollRetryTimer.unref?.();
   };
@@ -796,7 +824,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectTimer = null;
       // A poll re-resolves config, repository, and fresh auth before opening the
       // next socket. Opening the socket then triggers a second catch-up drain.
-      void pollGithubRelayOnce();
+      void pollGithubRelayOnce().catch(() => {});
     }, delayMs);
     subscriptionReconnectTimer.unref?.();
   };
@@ -849,7 +877,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectAttempt = 0;
       setSubscriptionConnected(true);
       // The durable cursor may have advanced while the socket was unavailable.
-      void pollGithubRelayOnce();
+      void pollGithubRelayOnce().catch(() => {});
     });
     socket.on("message", (raw: RawData) => {
       if (subscriptionSocket !== socket) return;
@@ -857,7 +885,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         const frame = JSON.parse(rawDataToText(raw)) as unknown;
         if (isRecord(frame) && frame.t === "github_delivery") {
           noteRelayActivity();
-          void pollGithubRelayOnce();
+          void pollGithubRelayOnce().catch(() => {});
         }
       } catch {
         // Wake-up frames are hints only; malformed/unknown frames are ignored.

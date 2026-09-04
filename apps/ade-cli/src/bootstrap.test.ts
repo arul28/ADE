@@ -196,6 +196,36 @@ describe("createAdeRuntime startup teardown", () => {
     expect([...startedWithoutRelease.keys()].filter((service) => !started.has(service))).toEqual([]);
   });
 
+  it("stops every relay poller before the database closes", () => {
+    // Each poller writes its status back through `db` from a detached promise,
+    // so it has to be stopped while the store is still open. The stack drains
+    // in reverse, so a release registered AFTER the database close pops BEFORE
+    // it -- which is the order these need. A poller released before the close
+    // would run against a closed store, and the resulting rejection has no
+    // owner: that is how a headless CLI command exited 1 with no output.
+    const dbClose = runtimeFn.indexOf("db.close();");
+    expect(dbClose).toBeGreaterThan(-1);
+
+    const releases = teardownPushSlices(runtimeFn);
+    for (const poller of [
+      "linearIngressService?.stop()",
+      "cursorCloudIngressService.stop()",
+      "automationIngressService?.dispose()",
+      "pluginWebhookIngressService.stop()",
+    ]) {
+      const at = runtimeFn.indexOf(poller);
+      expect(at, `${poller} is no longer in createAdeRuntime`).toBeGreaterThan(-1);
+      expect(
+        releases.some((release) => release.includes(poller)),
+        `${poller} must be registered with teardown.push`,
+      ).toBe(true);
+      expect(
+        at,
+        `${poller} must be registered after the database close, so it drains before it`,
+      ).toBeGreaterThan(dbClose);
+    }
+  });
+
   it("wires the chat-end simulator release through bindIosSimulatorReleaseOnChatEnd", () => {
     expect(runtimeFn).toContain("bindIosSimulatorReleaseOnChatEnd({");
   });

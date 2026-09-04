@@ -295,10 +295,35 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
   const owner = Symbol("plugin-webhook-ingress");
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let pollInFlight: Promise<void> | null = null;
+  // Latched by `stop` and never cleared. The runtime that owns this service
+  // closes its database immediately after stopping it, and a poll already in
+  // flight outlives that close: every `db` write below runs from a detached
+  // promise, so a write against a closed store becomes an unhandled rejection
+  // that ends the process. The CLI's headless runtime makes this load-bearing.
+  // It opens a runtime per command and tears it down while `start`'s first poll
+  // is still awaiting the relay.
   let disposed = false;
 
+  /**
+   * Run a state write that a stopped runtime must not turn into a failure.
+   *
+   * After `stop` the store is closed or closing, so the write is skipped. A
+   * write that still throws is logged at debug and swallowed: nothing awaits
+   * these calls, and the poll they belong to has no one left to report to.
+   */
+  const writeGuarded = (event: string, write: () => void): void => {
+    if (disposed) return;
+    try {
+      write();
+    } catch (error: unknown) {
+      deps.logger.debug(event, { error: errorMessage(error) });
+    }
+  };
+
   const setLastError = (pluginId: string, message: string | null): void => {
-    deps.db.setJson(pluginLastErrorRef(pluginId), message);
+    writeGuarded("plugin.webhook_last_error_write_skipped", () => {
+      deps.db.setJson(pluginLastErrorRef(pluginId), message);
+    });
   };
 
   const readAccountAccessToken = async (): Promise<string | null> => {
@@ -564,12 +589,15 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
   };
 
   const pollPlugin = async (plugin: PluginWebhookIngressPlugin): Promise<void> => {
+    if (disposed) return;
     const relayBaseUrl = resolvePluginRelayBaseUrl(deps.db);
     const secret = await ensureSecret(plugin.pluginId);
+    if (disposed) return;
     if (!deps.db.getJson<unknown>(pluginRegisteredRef(plugin.pluginId))) {
       await registerSecret(plugin.pluginId, relayBaseUrl, secret);
     }
     const accountAccessToken = await readAccountAccessToken();
+    if (disposed) return;
 
     for (let page = 0; page < RELAY_MAX_PAGES_PER_POLL; page += 1) {
       const stored = deps.db.getJson<unknown>(pluginCursorRef(plugin.pluginId));
@@ -585,6 +613,7 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
         signal: AbortSignal.timeout(RELAY_REQUEST_TIMEOUT_MS),
       });
       const rawPayload = await response.json().catch(() => null) as unknown;
+      if (disposed) return;
       if (!response.ok) {
         // A registration that the relay has forgotten — the D1 row aged out, the
         // user unlinked the account — reads as a 401. Re-register on the next
@@ -626,8 +655,12 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
     }
 
     await deliverPending(plugin);
+    // The delivery loop awaits plugin handlers, so a stop can land inside it.
+    if (disposed) return;
     prune(plugin.pluginId);
-    deps.db.setJson(pluginLastPolledRef(plugin.pluginId), new Date().toISOString());
+    writeGuarded("plugin.webhook_last_polled_write_skipped", () => {
+      deps.db.setJson(pluginLastPolledRef(plugin.pluginId), new Date().toISOString());
+    });
     setLastError(plugin.pluginId, null);
   };
 
@@ -639,13 +672,21 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
     // detaches, and a drain that claimed at construction would leave the plugin
     // undrained until the app restarted.
     for (const plugin of plugins) {
+      if (disposed) return;
       if (!claimPluginIngress(plugin.pluginId, owner)) continue;
       try {
         await pollPlugin(plugin);
       } catch (error: unknown) {
-        const message = errorMessage(error);
-        setLastError(plugin.pluginId, message);
-        deps.logger.warn("plugin.webhook_poll_failed", { pluginId: plugin.pluginId, error: message });
+        // Reporting one plugin's failure must not become a failure of its own:
+        // this handler runs inside a detached poll, and a throw here escapes as
+        // an unhandled rejection.
+        try {
+          const message = errorMessage(error);
+          setLastError(plugin.pluginId, message);
+          deps.logger.warn("plugin.webhook_poll_failed", { pluginId: plugin.pluginId, error: message });
+        } catch {
+          // Status persistence and logging are both best effort at this point.
+        }
       }
     }
   };
@@ -654,7 +695,13 @@ export function createPluginWebhookIngressService(deps: PluginWebhookIngressServ
     if (pollInFlight) return pollInFlight;
     pollInFlight = poll()
       .catch((error: unknown) => {
-        deps.logger.warn("plugin.webhook_drain_failed", { error: errorMessage(error) });
+        // A throw from inside this handler rejects a promise nothing awaits:
+        // both `start` and the interval call `pollNow` detached.
+        try {
+          deps.logger.warn("plugin.webhook_drain_failed", { error: errorMessage(error) });
+        } catch {
+          // Logging is best effort once the owning runtime is going away.
+        }
       })
       .finally(() => {
         pollInFlight = null;
