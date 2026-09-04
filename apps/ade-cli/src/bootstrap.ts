@@ -117,7 +117,11 @@ import {
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
-import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
+import {
+  attachSharedUsageTrackingScope,
+  createUsageTrackingService,
+  type UsageTrackingHost,
+} from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import {
   createProductAnalyticsService,
@@ -342,7 +346,7 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
-  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  usageTrackingService?: UsageTrackingHost | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   usageProductAnalyticsExporter?: UsageProductAnalyticsExporter | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
@@ -1962,47 +1966,59 @@ export async function createAdeRuntime(args: {
 
     let lastDailyAnalyticsDay: string | null = null;
     let dailyAnalyticsInFlight: Promise<void> | null = null;
-    let usageTrackingService: ReturnType<typeof createUsageTrackingService>;
-    usageTrackingService = createUsageTrackingService({
-      logger,
-      db,
-      pollIntervalMs: 120_000,
-      onUpdate: (snapshot) => {
-        pushEvent("runtime", { type: "usage", snapshot });
-        if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
-        const target = completedDailyUsageAnalyticsTarget();
-        if (!target || lastDailyAnalyticsDay === target.day) return;
-        const current = Promise.resolve()
-          .then(async () => {
-            // Report the last completed local day. Capturing the in-progress
-            // "today" bucket on the first poll systematically missed providers,
-            // models, and actions used later in the day.
-            const stats = await usageTrackingService.getAdeUsageStats({
-              preset: "today",
-              until: target.occurredAt,
-              scope: "project",
+    let usageTrackingService: ReturnType<typeof attachSharedUsageTrackingScope>;
+    // Provider quota belongs to the machine, so this daemon polls it once and
+    // every project scope attaches to that one poller. Per-project inputs (the
+    // database ADE's own stats and account rollups live in, the repository
+    // GitHub activity is read from) ride on the scope, so project-scoped
+    // answers stay per project while the quota meter cannot drift between
+    // windows.
+    usageTrackingService = attachSharedUsageTrackingScope(
+      resolveMachineAdeLayout().adeDir,
+      () => createUsageTrackingService({ logger, pollIntervalMs: 120_000 }),
+      {
+        key: `${projectId}:${projectRoot}`,
+        db,
+        projectRoot,
+        logger,
+        onUpdate: (snapshot) => {
+          pushEvent("runtime", { type: "usage", snapshot });
+          if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
+          const target = completedDailyUsageAnalyticsTarget();
+          if (!target || lastDailyAnalyticsDay === target.day) return;
+          const current = Promise.resolve()
+            .then(async () => {
+              // Report the last completed local day. Capturing the in-progress
+              // "today" bucket on the first poll systematically missed providers,
+              // models, and actions used later in the day.
+              const stats = await usageTrackingService.getAdeUsageStats({
+                preset: "today",
+                until: target.occurredAt,
+                scope: "project",
+              });
+              captureDailyUsageAnalytics({
+                analytics: productAnalyticsService,
+                stats,
+                projectId,
+                reportDay: target.day,
+                occurredAt: target.occurredAt,
+              });
+              lastDailyAnalyticsDay = target.day;
+            })
+            .catch((error) => {
+              logger.debug("product_analytics.daily_summary_failed", {
+                errorKind: error instanceof Error ? error.name : "unknown",
+              });
+            })
+            .finally(() => {
+              if (dailyAnalyticsInFlight === current) dailyAnalyticsInFlight = null;
             });
-            captureDailyUsageAnalytics({
-              analytics: productAnalyticsService,
-              stats,
-              projectId,
-              reportDay: target.day,
-              occurredAt: target.occurredAt,
-            });
-            lastDailyAnalyticsDay = target.day;
-          })
-          .catch((error) => {
-            logger.debug("product_analytics.daily_summary_failed", {
-              errorKind: error instanceof Error ? error.name : "unknown",
-            });
-          })
-          .finally(() => {
-            if (dailyAnalyticsInFlight === current) dailyAnalyticsInFlight = null;
-          });
-        dailyAnalyticsInFlight = current;
+          dailyAnalyticsInFlight = current;
+        },
       },
-      projectRoot,
-    });
+    );
+    // Detaches this project. The shared poller keeps running for the scopes
+    // that are still open and shuts down only with the last one.
     teardown.push(() => usageTrackingService.dispose());
     const storageInsightsService = createStorageInsightsService({
       projectRoot,

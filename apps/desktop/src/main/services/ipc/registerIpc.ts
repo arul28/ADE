@@ -1665,6 +1665,7 @@ export function registerIpc({
   getCurrentAccountOwnerId,
   accountAttentionClient,
   attemptedProjectRoots,
+  onAccountRollupFetcherReady,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1695,6 +1696,15 @@ export function registerIpc({
    * *attempted* root has to count as known.
    */
   attemptedProjectRoots?: AttemptedProjectRoots;
+  /**
+   * Hands the account rollup fan-out to main once the account directory and the
+   * remote connection pool exist.
+   *
+   * The peer transport lives here; the usage tracker that stores what it returns
+   * lives in the brain. Main owns the one place that sees both, so it drives the
+   * push (see `syncMachineUsageEventBridge`).
+   */
+  onAccountRollupFetcherReady?: (fetcher: AccountRollupFetcher) => void;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
@@ -6333,6 +6343,56 @@ export function registerIpc({
    */
   let accountRollupFetcher: AccountRollupFetcher | null = null;
 
+  /**
+   * A project scope the brain has already booted, for machine-level usage reads.
+   *
+   * The brain polls provider quota once per machine (see
+   * `attachSharedUsageTrackingScope`) and exposes it through the per-project
+   * `usage` action domain. A window with no local project binding — Welcome,
+   * Hub/Account, a remote-machine tab — has no runtime route of its own, so it
+   * borrows any booted scope: every scope answers from the same machine
+   * tracker, so the choice only decides which project a *project-scoped* stats
+   * question is about, and these windows never ask a project-scoped one.
+   *
+   * Null when no project is open. The in-process dormant tracker is the
+   * fallback producer for exactly that case, which is also when it is running.
+   */
+  const bootedUsageScopeRoot = (): string | null => {
+    for (const ctx of getResourceUsageContexts?.() ?? []) {
+      // `db` is the local-runtime discriminator: the dormant context has none.
+      if (!ctx.db) continue;
+      const root = ctx.project?.rootPath?.trim();
+      if (root) return root;
+    }
+    return null;
+  };
+
+  const callMachineUsageAction = async <T>(
+    action: string,
+    args: Record<string, unknown> = {},
+  ): Promise<{ handled: true; result: T } | { handled: false }> => {
+    if (!localRuntimeConnectionPool) return { handled: false };
+    const rootPath = bootedUsageScopeRoot();
+    if (!rootPath) return { handled: false };
+    try {
+      const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+        domain: "usage",
+        action,
+        args,
+      });
+      return { handled: true, result: response.result as T };
+    } catch (error) {
+      // The brain is the source of truth while it is reachable; when it is not,
+      // an unbound window falling back to its own cached tracker is strictly
+      // better than an error toast on the Welcome screen.
+      getCtx().logger.debug("usage.machine_action_failed", {
+        action,
+        error: getErrorMessage(error),
+      });
+      return { handled: false };
+    }
+  };
+
   ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
     const ctx = getCtx();
     if (arg != null && !isRecord(arg)) throw new Error("usage stats expects an object payload.");
@@ -6354,28 +6414,34 @@ export function registerIpc({
     // on each read keeps the current instance wired without a lifecycle hook.
     // Idempotent, and the service renders from its durable rollups regardless,
     // so a fetcher that never gets installed costs freshness and nothing else.
+    const machine = await callMachineUsageAction<AdeUsageStats>("getAdeUsageStats", arg ?? {});
+    if (machine.handled) return machine.result;
     if (accountRollupFetcher) ctx.usageTrackingService?.setAccountRollupFetcher(accountRollupFetcher);
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });
 
   ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
-    const ctx = getCtx();
-    return ctx.usageTrackingService?.getUsageSnapshot() ?? null;
+    const machine = await callMachineUsageAction<UsageSnapshot>("getUsageSnapshot");
+    if (machine.handled) return machine.result;
+    return getCtx().usageTrackingService?.getUsageSnapshot() ?? null;
   });
 
   ipcMain.handle(IPC.usageRefresh, async (): Promise<UsageSnapshot | null> => {
-    const ctx = getCtx();
-    return (await ctx.usageTrackingService?.forceRefresh()) ?? null;
+    const machine = await callMachineUsageAction<UsageSnapshot>("forceRefresh");
+    if (machine.handled) return machine.result;
+    return (await getCtx().usageTrackingService?.forceRefresh()) ?? null;
   });
 
   ipcMain.handle(IPC.usageRefreshHistory, async (): Promise<UsageSnapshot | null> => {
-    const ctx = getCtx();
-    return (await ctx.usageTrackingService?.refreshHistory()) ?? null;
+    const machine = await callMachineUsageAction<UsageSnapshot>("refreshHistory");
+    if (machine.handled) return machine.result;
+    return (await getCtx().usageTrackingService?.refreshHistory()) ?? null;
   });
 
   ipcMain.handle(IPC.usageNoteDemand, async (): Promise<UsageSnapshot | null> => {
-    const ctx = getCtx();
-    return ctx.usageTrackingService?.noteQuotaDemand() ?? null;
+    const machine = await callMachineUsageAction<UsageSnapshot>("noteQuotaDemand");
+    if (machine.handled) return machine.result;
+    return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
 
   ipcMain.handle(
@@ -10073,6 +10139,7 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  onAccountRollupFetcherReady?.(accountRollupFetcher);
 
   accountBridge.onPairMachineProgress((progress) => {
     for (const win of BrowserWindow.getAllWindows()) {

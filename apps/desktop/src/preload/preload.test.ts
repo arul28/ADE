@@ -5216,6 +5216,74 @@ describe("preload OAuth bridge", () => {
     }
 	  });
 
+  /**
+   * Every rebind performed in here — the lazy session read, a project switch, a
+   * remote open, a disconnect — used to mutate the module's binding silently.
+   * That binding decides which usage feed this window accepts and which runtime
+   * answers its reads, so a renderer that was never told kept rendering the
+   * previous runtime's answer until main happened to push a binding of its own,
+   * which it does not do for the bindings established in here. It is published
+   * once per logical rebind: main's push for the binding we already adopted is
+   * not a second one.
+   */
+  it("publishes an in-preload rebind once and does not repeat it for main's push", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const bindingChanged = vi.fn();
+    const unsubscribeBinding = bridge.app.onProjectBindingChanged(bindingChanged);
+
+    // The lazy in-preload path: nothing in main pushed anything, the window
+    // simply read its own session.
+    await bridge.app.getWindowSession();
+    expect(bindingChanged).toHaveBeenCalledTimes(1);
+    expect(bindingChanged).toHaveBeenCalledWith(binding);
+
+    // Main publishes the same binding for the same rebind: already adopted.
+    const bindingListener = on.mock.calls.find(
+      ([channel]) => channel === IPC.appProjectBindingChanged,
+    )?.[1];
+    expect(typeof bindingListener).toBe("function");
+    bindingListener({}, { ...binding });
+    expect(bindingChanged).toHaveBeenCalledTimes(1);
+
+    // A binding that really is different still gets through, exactly once.
+    bindingListener({}, null);
+    expect(bindingChanged).toHaveBeenCalledTimes(2);
+    expect(bindingChanged).toHaveBeenLastCalledWith(null);
+
+    unsubscribeBinding();
+  });
+
   it("does not notify project binding listeners for same-binding event polling gaps", async () => {
     vi.useFakeTimers();
     try {
@@ -5269,12 +5337,20 @@ describe("preload OAuth bridge", () => {
 
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(bindingChanged).not.toHaveBeenCalled();
+      // The lazy session read discovers the binding this window was opened on,
+      // and that IS a change from "unbound" — it is published exactly once.
+      // What must not produce a second notification is the polling gap below:
+      // the binding never moved, only the event cursor did.
+      expect(bindingChanged).toHaveBeenCalledTimes(1);
+      expect(bindingChanged).toHaveBeenCalledWith(binding);
       expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, {
         id: "target-1",
         projectId: "project-1",
         request: { cursor: 0, limit: 100, replay: false },
       });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(bindingChanged).toHaveBeenCalledTimes(1);
 
       unsubscribeEvents();
       unsubscribeBinding();

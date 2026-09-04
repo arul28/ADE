@@ -222,7 +222,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
-  usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
+  // `applyAccountRollups` writes another machine's history into a
+  // CRR-replicated table. The desktop app pushes it over the local socket
+  // after its own account fan-out; no agent has any reason to call it.
+  usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"],
   analytics: ["setEnabled", "flush"],
   storage: ["cleanup", "runMaintenanceNow"],
   search: ["rebuildIndex"],
@@ -822,6 +825,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
+    "applyAccountRollups",
     "forceRefresh",
     "getAdeUsageStats",
     "getUsageSnapshot",

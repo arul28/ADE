@@ -303,7 +303,7 @@ import type { createOrchestrationService } from "../../../../desktop/src/main/se
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
-import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
@@ -339,7 +339,7 @@ type SyncRemoteCommandServiceArgs = {
    * production callers (bootstrap, syncHostService) always pass it.
    */
   db?: AdeDb;
-  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  usageTrackingService?: UsageTrackingHost | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;

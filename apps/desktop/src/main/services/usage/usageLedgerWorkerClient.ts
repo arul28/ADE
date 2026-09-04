@@ -51,6 +51,13 @@ export type UsageLedgerProviderChunk = {
   provider: string;
   costs: CostSnapshot[];
   projectCosts: CostSnapshot[];
+  /**
+   * Project-scoped snapshots keyed by project root, for every root the caller
+   * asked about. One brain hosts several project scopes and polls the ledgers
+   * once for all of them, so the single `projectCosts` above (the primary
+   * root) is not enough to answer a second scope's project-scoped question.
+   */
+  projectCostsByRoot?: Record<string, CostSnapshot[]>;
   /** Seven daily buckets. Only Claude and Codex report these. */
   daily7d?: number[];
   entryCount: number;
@@ -63,6 +70,8 @@ export type UsageLedgerProviderChunk = {
 export type UsageLedgerScanResult = {
   costs: CostSnapshot[];
   projectCosts: CostSnapshot[];
+  /** Per-project-root snapshots for every root the caller asked about. */
+  projectCostsByRoot: Record<string, CostSnapshot[]>;
   daily7d: Partial<Record<UsageProvider, number[]>>;
   entryCounts: Record<string, number>;
   providerErrors: Record<string, string>;
@@ -87,6 +96,13 @@ const MAX_PROVIDER_NAME_LENGTH = 128;
 
 type WorkerOptions = {
   signal?: AbortSignal;
+  /**
+   * Extra project roots to attribute this scan to, beyond `projectRoot`. The
+   * ledgers are walked once and projected per root, which is what lets one
+   * brain answer project-scoped usage for every project it hosts without
+   * re-reading gigabytes of transcripts per scope.
+   */
+  additionalProjectRoots?: readonly (string | null | undefined)[];
   workerPath?: string;
   spawnWorker?: typeof spawn;
   /** Test seam for the Node SEA runtime, whose executable embeds the worker. */
@@ -126,6 +142,17 @@ function isCostSnapshot(value: unknown): value is CostSnapshot {
 
 function isUsageProvider(value: string): value is UsageProvider {
   return value === "claude" || value === "codex" || value === "cursor";
+}
+
+function parseProjectCostsByRoot(value: unknown): Record<string, CostSnapshot[]> {
+  if (!isRecord(value)) return {};
+  const parsed: Record<string, CostSnapshot[]> = {};
+  for (const [root, snapshots] of Object.entries(value)) {
+    if (!root) continue;
+    if (!Array.isArray(snapshots) || !snapshots.every(isCostSnapshot)) continue;
+    parsed[root] = snapshots;
+  }
+  return parsed;
 }
 
 function invalidWorkerResult(): never {
@@ -188,6 +215,7 @@ export function parseUsageLedgerWorkerResult(raw: string): UsageLedgerScanResult
   return {
     costs: parsed.costs,
     projectCosts: parsed.projectCosts,
+    projectCostsByRoot: parseProjectCostsByRoot(parsed.projectCostsByRoot),
     daily7d,
     entryCounts,
     providerErrors,
@@ -238,6 +266,7 @@ function createLedgerStreamReader() {
       provider: parsed.provider,
       costs: parsed.costs,
       projectCosts: parsed.projectCosts,
+      projectCostsByRoot: parseProjectCostsByRoot(parsed.projectCostsByRoot),
       ...(daily7d ? { daily7d } : {}),
       entryCount: typeof parsed.entryCount === "number" && Number.isFinite(parsed.entryCount)
         ? Math.max(0, parsed.entryCount)
@@ -270,6 +299,7 @@ function createLedgerStreamReader() {
       const result: UsageLedgerScanResult = {
         costs: [],
         projectCosts: [],
+        projectCostsByRoot: {},
         daily7d: {},
         entryCounts: {},
         providerErrors: {},
@@ -278,6 +308,9 @@ function createLedgerStreamReader() {
       for (const chunk of chunks.values()) {
         result.costs.push(...chunk.costs);
         result.projectCosts.push(...chunk.projectCosts);
+        for (const [root, snapshots] of Object.entries(chunk.projectCostsByRoot ?? {})) {
+          (result.projectCostsByRoot[root] ??= []).push(...snapshots);
+        }
         result.entryCounts[chunk.provider] = chunk.entryCount;
         if (chunk.daily7d && isUsageProvider(chunk.provider)) {
           result.daily7d[chunk.provider] = chunk.daily7d;
@@ -304,6 +337,10 @@ export function scanUsageLedgersInWorker(
   projectRoot: string | null | undefined,
   options: WorkerOptions = {},
 ): Promise<UsageLedgerScanResult> {
+  const projectRoots = [...new Set(
+    [projectRoot, ...(options.additionalProjectRoots ?? [])]
+      .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
+  )];
   const embeddedRuntime = options.embeddedRuntime ?? isEmbeddedAdeRuntime();
   const workerPath = options.workerPath ?? (embeddedRuntime ? null : resolveUsageLedgerWorkerPath());
   if (workerPath && !fs.existsSync(workerPath)) {
@@ -415,7 +452,7 @@ export function scanUsageLedgersInWorker(
     child.stdin.on("error", (error: NodeJS.ErrnoException) => {
       if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") fail(error);
     });
-    child.stdin.end(JSON.stringify({ projectRoot: projectRoot ?? null }));
+    child.stdin.end(JSON.stringify({ projectRoot: projectRoot ?? null, projectRoots }));
   });
 }
 

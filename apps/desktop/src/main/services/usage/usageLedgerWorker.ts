@@ -45,7 +45,7 @@ export const providerScanners: ProviderScanner[] = [
   { provider: "gemini", scan: scanGeminiLogs },
 ];
 
-async function readInput(): Promise<{ projectRoot: string | null }> {
+async function readInput(): Promise<{ projectRoot: string | null; projectRoots: string[] }> {
   let raw = "";
   for await (const chunk of process.stdin) {
     raw += chunk.toString();
@@ -57,7 +57,11 @@ async function readInput(): Promise<{ projectRoot: string | null }> {
   if (!isRecord(parsed) || (parsed.projectRoot !== null && typeof parsed.projectRoot !== "string")) {
     throw new Error("Usage ledger worker input is invalid");
   }
-  return { projectRoot: parsed.projectRoot };
+  const projectRoots = Array.isArray(parsed.projectRoots)
+    ? [...new Set(parsed.projectRoots.filter((root): root is string =>
+      typeof root === "string" && root.trim().length > 0))]
+    : parsed.projectRoot ? [parsed.projectRoot] : [];
+  return { projectRoot: parsed.projectRoot, projectRoots };
 }
 
 function emit(line: unknown): void {
@@ -65,7 +69,7 @@ function emit(line: unknown): void {
 }
 
 async function main(): Promise<void> {
-  const { projectRoot } = await readInput();
+  const { projectRoot, projectRoots } = await readInput();
   await refreshDynamicTokenPricing().catch(() => 0);
   // The roster first, then one line per provider as it finishes. Buffering all
   // nine and writing a single object at the end meant a timeout — or any
@@ -97,6 +101,7 @@ async function main(): Promise<void> {
         provider: scanner.provider,
         costs: [],
         projectCosts: [],
+        projectCostsByRoot: {},
         entryCount: 0,
         error: getErrorMessage(error),
       } satisfies UsageLedgerProviderChunk);
@@ -115,6 +120,12 @@ async function main(): Promise<void> {
       provider: scanner.provider,
       costs: buildCostSnapshots(providerEntries, "machine", projectRoot),
       projectCosts: buildCostSnapshots(providerEntries, "project", projectRoot),
+      // The ledgers are walked once for the whole brain; the per-root
+      // projection is a filter over entries already in hand.
+      projectCostsByRoot: Object.fromEntries(projectRoots.map((root) => [
+        root,
+        buildCostSnapshots(providerEntries, "project", root),
+      ])),
       ...(daily7d ? { daily7d } : {}),
       entryCount: entries.length,
       ...(incomplete ? { incomplete: true } : {}),

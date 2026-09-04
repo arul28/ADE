@@ -232,6 +232,31 @@ function makeHeaderUsageSnapshot(): UsageSnapshot {
   };
 }
 
+/**
+ * A header snapshot as the host now stamps them: one percent across every
+ * window so a rendered chip identifies which snapshot is on screen, plus the
+ * producer/seq pair that decides ordering.
+ */
+function makeStampedHeaderSnapshot({
+  percent,
+  producerId,
+  seq,
+  lastPolledAt,
+}: {
+  percent: number;
+  producerId: string;
+  seq: number;
+  lastPolledAt: string;
+}): UsageSnapshot {
+  const base = makeHeaderUsageSnapshot();
+  return {
+    ...base,
+    windows: base.windows.map((window) => ({ ...window, percentUsed: percent })),
+    lastPolledAt,
+    revision: { producerId, seq },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -1044,6 +1069,132 @@ describe("usage components", () => {
       });
       expect(screen.getByRole("button", { name: /Codex wk 42%, 5h 42%/ })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Codex wk 91%, 5h 91%/ })).toBeNull();
+    });
+
+    /**
+     * The two-window bug, reproduced inside one render tree.
+     *
+     * A stale response that happens to carry a *future* wall clock used to
+     * latch whichever instance received it: ordering was a `lastPolledAt`
+     * comparison, so every genuinely newer push afterwards looked older and was
+     * dropped. The two mounts then disagreed forever — which is exactly what
+     * two windows on one machine were doing. Ordering is by producer/seq now,
+     * so the stale response is refused on arrival and both mounts stay on the
+     * snapshot the host actually last produced.
+     */
+    it("keeps two header mounts on one snapshot when a stale future-stamped refresh lands", async () => {
+      const updateListeners = new Set<(snapshot: UsageSnapshot) => void>();
+      vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {
+        updateListeners.add(cb);
+        return () => {
+          updateListeners.delete(cb);
+        };
+      });
+      const push = (snapshot: UsageSnapshot) => {
+        for (const listener of [...updateListeners]) listener(snapshot);
+      };
+
+      const nowMs = Date.now();
+      const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
+      const cached = makeStampedHeaderSnapshot({
+        percent: 19,
+        producerId: "brain",
+        seq: 1,
+        lastPolledAt: iso(-4 * 3_600_000),
+      });
+      const pushed = makeStampedHeaderSnapshot({
+        percent: 33,
+        producerId: "brain",
+        seq: 2,
+        lastPolledAt: iso(-3 * 3_600_000),
+      });
+      // Older by seq, newer by clock: the shape that used to win.
+      const staleRefresh = makeStampedHeaderSnapshot({
+        percent: 77,
+        producerId: "brain",
+        seq: 1,
+        lastPolledAt: iso(60_000),
+      });
+      const latest = makeStampedHeaderSnapshot({
+        percent: 51,
+        producerId: "brain",
+        seq: 3,
+        lastPolledAt: iso(-2 * 3_600_000),
+      });
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(cached);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(null);
+      vi.mocked(window.ade.usage.refresh).mockResolvedValue(staleRefresh);
+
+      render(
+        <>
+          <HeaderUsageControl />
+          <HeaderUsageControl />
+        </>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getAllByRole("button", { name: /Codex wk 19%, 5h 19%/ })).toHaveLength(2);
+      });
+
+      // Both popovers open, so both render the "updated … ago" line.
+      for (const trigger of screen.getAllByRole("button", { name: /Codex wk/ })) {
+        fireEvent.click(trigger);
+      }
+
+      await act(async () => {
+        push(pushed);
+      });
+      expect(screen.getAllByRole("button", { name: /Codex wk 33%, 5h 33%/ })).toHaveLength(2);
+
+      // Only the first mount asks for a refresh; only it sees the stale answer.
+      fireEvent.click(screen.getAllByTitle("Refresh usage")[0]);
+      await waitFor(() => expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole("button", { name: /Codex wk 77%/ })).toBeNull();
+
+      await act(async () => {
+        push(latest);
+      });
+
+      expect(screen.getAllByRole("button", { name: /Codex wk 51%, 5h 51%/ })).toHaveLength(2);
+      const ages = screen.getAllByText(/^updated /);
+      expect(ages).toHaveLength(2);
+      expect(ages[0].textContent).toBe(ages[1].textContent);
+    });
+
+    /**
+     * A background window is throttled and its push subscription can be swept,
+     * so waking has to re-read rather than wait for a push that may never come.
+     * One wake is one read: `visibilitychange` and `focus` arrive together.
+     */
+    it("re-reads the cached snapshot exactly once when the window becomes visible", async () => {
+      const nowMs = Date.now();
+      const cached = makeStampedHeaderSnapshot({
+        percent: 19,
+        producerId: "brain",
+        seq: 1,
+        lastPolledAt: new Date(nowMs - 3_600_000).toISOString(),
+      });
+      const missed = makeStampedHeaderSnapshot({
+        percent: 44,
+        producerId: "brain",
+        seq: 2,
+        lastPolledAt: new Date(nowMs - 60_000).toISOString(),
+      });
+      vi.mocked(window.ade.usage.getSnapshot)
+        .mockResolvedValueOnce(cached)
+        .mockResolvedValue(missed);
+
+      render(<HeaderUsageControl />);
+      expect(await screen.findByRole("button", { name: /Codex wk 19%, 5h 19%/ })).toBeTruthy();
+      expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("focus"));
+      });
+
+      expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(await screen.findByRole("button", { name: /Codex wk 44%, 5h 44%/ })).toBeTruthy();
     });
 
     it("does not poll usage while the drawer stays closed", async () => {

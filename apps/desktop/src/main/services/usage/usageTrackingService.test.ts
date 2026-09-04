@@ -37,7 +37,12 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
 }));
 
-import { createUsageTrackingService, _testing } from "./usageTrackingService";
+import {
+  attachSharedUsageTrackingScope,
+  createUsageTrackingService,
+  _testing,
+} from "./usageTrackingService";
+import type { UsageSnapshot } from "../../../shared/types/usage";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
 import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
 // Cross-layer on purpose: the daily split is only useful if the renderer's
@@ -1960,6 +1965,121 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("stamps every snapshot with a strictly increasing revision from one producer", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    const service = createUsageTrackingService({
+      logger,
+      onUpdate,
+      dependencies: createFastDependencies(),
+    });
+
+    const initial = service.getUsageSnapshot();
+    expect(initial.revision?.producerId).toEqual(expect.any(String));
+    expect(initial.revision?.seq).toBe(1);
+
+    const first = await service.poll();
+    const second = await service.poll();
+    expect(first.revision?.producerId).toBe(initial.revision?.producerId);
+    expect(second.revision?.producerId).toBe(initial.revision?.producerId);
+    expect(first.revision!.seq).toBeGreaterThan(initial.revision!.seq);
+    expect(second.revision!.seq).toBeGreaterThan(first.revision!.seq);
+
+    // Returned is a subset of emitted: the caller holds an object every other
+    // consumer of this instance was handed too.
+    expect(onUpdate.mock.calls.map(([snapshot]) => snapshot.revision.seq)).toEqual([
+      first.revision!.seq,
+      second.revision!.seq,
+    ]);
+    expect(service.getUsageSnapshot().revision).toEqual(second.revision);
+
+    // A second instance is a different producer, so its sequence is never
+    // comparable with this one's.
+    const other = createUsageTrackingService({ logger, dependencies: createFastDependencies() });
+    expect(other.getUsageSnapshot().revision?.producerId)
+      .not.toBe(initial.revision?.producerId);
+
+    other.dispose();
+    service.dispose();
+  });
+
+  it("publishes the snapshot a failed poll returns instead of handing it to one caller", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    const service = createUsageTrackingService({
+      logger,
+      onUpdate,
+      dependencies: {
+        ...createFastDependencies(),
+        // A provider adapter that breaks the result contract is what reaches
+        // poll()'s unexpected-error path; a poll that merely rejects is caught
+        // per provider.
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [] as never[],
+          errors: null as unknown as string[],
+        })),
+      },
+    });
+
+    const returned = await service.forceRefresh();
+    expect(returned.errors.some((error) => error.startsWith("unexpected:"))).toBe(true);
+
+    const emitted = onUpdate.mock.calls.at(-1)?.[0];
+    expect(emitted).toBeDefined();
+    expect(returned.revision).toEqual(emitted.revision);
+    expect(returned.lastPolledAt).toBe(emitted.lastPolledAt);
+    // The other read paths hand back exactly what was published, never a
+    // privately fresher copy.
+    expect(service.getUsageSnapshot().revision).toEqual(returned.revision);
+    expect(service.noteQuotaDemand().revision).toEqual(returned.revision);
+
+    service.dispose();
+  });
+
+  it("shares one machine tracker across every attached project scope", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const key = `shared-usage-${Math.random()}`;
+    const firstUpdates: UsageSnapshot[] = [];
+    const secondUpdates: UsageSnapshot[] = [];
+    const make = vi.fn(() => createUsageTrackingService({ logger, dependencies }));
+
+    const first = attachSharedUsageTrackingScope(key, make, {
+      key: "project-a",
+      projectRoot: "/repo-a",
+      onUpdate: (snapshot) => firstUpdates.push(snapshot),
+    });
+    const second = attachSharedUsageTrackingScope(key, make, {
+      key: "project-b",
+      projectRoot: "/repo-b",
+      onUpdate: (snapshot) => secondUpdates.push(snapshot),
+    });
+
+    expect(make).toHaveBeenCalledTimes(1);
+
+    await first.poll();
+    expect(firstUpdates).toHaveLength(1);
+    expect(secondUpdates).toHaveLength(1);
+    expect(secondUpdates[0]).toBe(firstUpdates[0]);
+    expect(first.getUsageSnapshot().revision).toEqual(second.getUsageSnapshot().revision);
+    expect(first.getUsageSnapshot().lastPolledAt).toBe(second.getUsageSnapshot().lastPolledAt);
+
+    // Closing one project detaches that scope; the machine's poller and the
+    // other project's feed are untouched.
+    first.dispose();
+    await second.poll();
+    expect(firstUpdates).toHaveLength(1);
+    expect(secondUpdates).toHaveLength(2);
+    expect(secondUpdates[1]!.revision!.seq)
+      .toBeGreaterThan(secondUpdates[0]!.revision!.seq);
+    expect(secondUpdates[1]!.revision!.producerId)
+      .toBe(secondUpdates[0]!.revision!.producerId);
+
+    second.dispose();
+  });
+
+  // Two *separate* trackers still keep separate timers: sharing is opt-in
+  // through `attachSharedUsageTrackingScope`, which is what the brain uses.
   it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
@@ -2700,8 +2820,10 @@ describe("createUsageTrackingService", () => {
       since: expectedSince,
       until: expectedUntil,
     });
-    expect(collectDatabaseStats).toHaveBeenCalledWith(stats.range);
-    expect(scanGitHubStats).toHaveBeenCalledWith(stats.range);
+    // Second argument is the calling project scope's database / project root:
+    // one machine-level tracker answers stats for every project on the brain.
+    expect(collectDatabaseStats).toHaveBeenCalledWith(stats.range, null);
+    expect(scanGitHubStats).toHaveBeenCalledWith(stats.range, null);
     expect(stats.providers.find((provider) => provider.provider === "codex")?.totalTokens).toBe(300);
 
     service.dispose();
@@ -2784,10 +2906,13 @@ describe("createUsageTrackingService", () => {
       until: earlierDay.toISOString(),
     });
 
-    expect(scanGitHubStats).toHaveBeenCalledWith(expect.objectContaining({
-      since: new Date(2026, 4, 30, 0, 0, 0, 0).toISOString(),
-      until: new Date(2026, 4, 30, 23, 59, 59, 999).toISOString(),
-    }));
+    expect(scanGitHubStats).toHaveBeenCalledWith(
+      expect.objectContaining({
+        since: new Date(2026, 4, 30, 0, 0, 0, 0).toISOString(),
+        until: new Date(2026, 4, 30, 23, 59, 59, 999).toISOString(),
+      }),
+      null,
+    );
 
     service.dispose();
   });

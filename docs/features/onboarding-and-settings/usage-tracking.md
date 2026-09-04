@@ -13,6 +13,34 @@ on 2026-07-10. The relevant upstream references are
 [`providers.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/providers.md), and
 [`refresh-loop.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/refresh-loop.md).
 
+## One poller per machine
+
+Provider quota is a machine fact, not a project fact. The ADE brain polls it
+once per machine and every project scope in that process attaches to the same
+poller: one poll timer, one demand lease, one snapshot. Two ADE windows on one
+computer — on two projects, or one on a project and one on Welcome or the Hub —
+read the same numbers, and a refresh from any of them benefits all of them.
+
+Every snapshot carries a producer revision: `revision.producerId` names the
+service instance that built it and `revision.seq` counts the snapshots that
+instance has handed out. Consumers order by `seq` within one `producerId` and
+always accept a snapshot from a different producer, which is what stops two
+unrelated wall clocks from being compared. A snapshot returned to a caller was
+always also emitted to every subscriber, so no window ever holds a value the
+others could not receive.
+
+Project-scoped answers stay per project. Each scope brings its own project
+database and repository root, so ADE's own token/cost stats, GitHub activity,
+and the `project` scope of the Usage page are still about the project that
+asked — the transcript ledgers are simply walked once for the whole machine and
+projected per project root.
+
+A window with no local project — Welcome, the Hub, an Account page, a
+remote-machine tab — reads through the brain as well, borrowing a project scope
+the brain has already booted, and receives the brain's snapshots as they land.
+It falls back to its own in-process tracker only when no brain scope is
+running, which is also the only time that tracker polls.
+
 ## ADE versus CodexBar
 
 | Concern | ADE before ADE-117 | CodexBar reference | ADE after ADE-117 |

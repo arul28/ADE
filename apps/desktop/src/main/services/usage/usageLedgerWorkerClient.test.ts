@@ -89,7 +89,7 @@ describe("usage ledger worker client", () => {
     child.emit("close", 0, null);
 
     await expect(promise).resolves.toMatchObject({ entryCounts: { codex: 1 } });
-    expect(JSON.parse(input)).toEqual({ projectRoot: "/repo" });
+    expect(JSON.parse(input)).toEqual({ projectRoot: "/repo", projectRoots: ["/repo"] });
     expect(spawnWorker).toHaveBeenCalledWith(
       process.execPath,
       [__filename],

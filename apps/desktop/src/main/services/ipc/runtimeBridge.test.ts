@@ -1066,7 +1066,9 @@ describe("registerRuntimeBridge", () => {
         expect(subscriptions).toHaveLength(2);
 
         // The active pump keeps polling; the pinned PTY pump goes away silently.
-        for (let tick = 0; tick < 12; tick += 1) {
+        // Past the 180s idle bound, which is set by a background window's
+        // once-a-minute throttled pump rather than by a foreground one.
+        for (let tick = 0; tick < 20; tick += 1) {
           await vi.advanceTimersByTimeAsync(10_000);
           await poll(activePumpRequest);
         }
@@ -1157,7 +1159,7 @@ describe("registerRuntimeBridge", () => {
 
       // Only the pinned PTY pump's subscription went; the active pump keeps its
       // own, and the released one stops reaching the renderer immediately —
-      // without waiting out the 60s idle expiry.
+      // without waiting out the idle expiry.
       expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
       expect(subscriptions[0].cleanup).not.toHaveBeenCalled();
       subscriptions[1].emit(ptyEvent(8), "epoch-1");
@@ -2146,6 +2148,149 @@ describe("registerRuntimeBridge", () => {
       limit: 500,
     });
     expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Provider quota is polled once per machine, by the brain. A window with no
+ * local project binding — Welcome, Hub/Account, a remote-machine tab — has no
+ * runtime action route of its own, so its usage reads borrow a booted project
+ * scope instead of falling back to a private in-process tracker that is not
+ * even running. Reading two different trackers is what made two windows on one
+ * machine show two different meters.
+ */
+describe("registerIpc usage bridge", () => {
+  beforeEach(() => {
+    ipcHandlers.clear();
+    browserWindowFromWebContents.mockReset();
+  });
+
+  const brainSnapshot = {
+    windows: [],
+    pacing: { status: "on-track" },
+    costs: [],
+    adeCosts: [],
+    extraUsage: [],
+    lastPolledAt: "2026-09-04T00:00:00.000Z",
+    errors: [],
+    revision: { producerId: "brain-1", seq: 12 },
+  } as any;
+
+  function registerUsageIpc({
+    openRoots,
+    dormantSnapshot,
+    callActionForRoot,
+  }: {
+    openRoots: string[];
+    dormantSnapshot?: unknown;
+    callActionForRoot?: ReturnType<typeof vi.fn>;
+  }) {
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const dormantTracker = {
+      getUsageSnapshot: vi.fn(() => dormantSnapshot),
+      setAccountRollupFetcher: vi.fn(),
+    };
+    const pool = {
+      callActionForRoot:
+        callActionForRoot
+        ?? vi.fn(async (_root: string, request: { domain: string; action: string }) => ({
+          domain: request.domain,
+          action: request.action,
+          result: brainSnapshot,
+          statusHints: {},
+        })),
+    };
+    registerIpc({
+      getCtx: () => ({ logger, usageTrackingService: dormantTracker }) as any,
+      // Mirrors main.ts: open project contexts carry a database, the dormant
+      // one does not.
+      getResourceUsageContexts: () =>
+        [
+          ...openRoots.map((rootPath) => ({
+            db: {},
+            project: { rootPath, displayName: "Repo", baseRef: "main" },
+          })),
+          { db: null, project: { rootPath: "", displayName: "", baseRef: "main" } },
+        ] as any,
+      getSyncService: () => null,
+      localRuntimeConnectionPool: pool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+    return { pool, dormantTracker };
+  }
+
+  it("reads the brain's shared tracker for a window with no project binding", async () => {
+    const { pool, dormantTracker } = registerUsageIpc({
+      openRoots: ["/repo-one", "/repo-two"],
+      dormantSnapshot: { lastPolledAt: "stale", revision: { producerId: "dormant", seq: 1 } },
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.usageGetSnapshot)?.(eventForSender()),
+    ).resolves.toBe(brainSnapshot);
+    expect(pool.callActionForRoot).toHaveBeenCalledWith("/repo-one", {
+      domain: "usage",
+      action: "getUsageSnapshot",
+      args: {},
+    });
+    expect(dormantTracker.getUsageSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("hands a bound-window read and an unbound-window read the same revision", async () => {
+    const callActionForRoot = vi.fn(async (_root: string, request: { domain: string; action: string }) => ({
+      domain: request.domain,
+      action: request.action,
+      result: brainSnapshot,
+      statusHints: {},
+    }));
+    registerUsageIpc({ openRoots: ["/repo"], callActionForRoot });
+    // The bound window's route: the renderer calls the project runtime action
+    // directly rather than the local IPC fallback.
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callActionForRoot } as any,
+      getWindowSession: () => ({ windowId: 7, project: null, binding: localBinding("/repo") }),
+    });
+
+    const unbound = (await ipcHandlers.get(IPC.usageGetSnapshot)?.(eventForSender())) as any;
+    const bound = (await ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+      eventForSender(sender(101)),
+      { request: { domain: "usage", action: "getUsageSnapshot", args: {} } },
+    )) as any;
+
+    expect(unbound.revision).toEqual(bound.result.revision);
+    expect(unbound.lastPolledAt).toBe(bound.result.lastPolledAt);
+  });
+
+  it("falls back to the in-process tracker when the brain has no booted scope", async () => {
+    const dormantSnapshot = { lastPolledAt: "cached", revision: { producerId: "dormant", seq: 3 } };
+    const { pool, dormantTracker } = registerUsageIpc({ openRoots: [], dormantSnapshot });
+
+    await expect(
+      ipcHandlers.get(IPC.usageGetSnapshot)?.(eventForSender()),
+    ).resolves.toBe(dormantSnapshot);
+    expect(pool.callActionForRoot).not.toHaveBeenCalled();
+    expect(dormantTracker.getUsageSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the in-process tracker when the brain rejects the read", async () => {
+    const dormantSnapshot = { lastPolledAt: "cached", revision: { producerId: "dormant", seq: 4 } };
+    const { dormantTracker } = registerUsageIpc({
+      openRoots: ["/repo"],
+      dormantSnapshot,
+      callActionForRoot: vi.fn(async () => {
+        throw new Error("connection closed");
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.usageGetSnapshot)?.(eventForSender()),
+    ).resolves.toBe(dormantSnapshot);
+    expect(dormantTracker.getUsageSnapshot).toHaveBeenCalledTimes(1);
   });
 });
 
