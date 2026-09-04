@@ -1103,6 +1103,7 @@ describe("Cursor SDK pool paths", () => {
       modelSdkId: "grok-4.6",
       apiKey: "cursor-test-key",
       sessionId: "oneshot:session_title",
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
       laneRoot: workspacePath,
       // Fixed, both of them: the warm worker is shared across features and
       // keeps the policy and the name it was created with.

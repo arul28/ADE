@@ -93,6 +93,8 @@ export type CursorSdkHookRequest = {
 export type CursorSdkWorkerInit = {
   sessionId: string;
   laneRoot: string;
+  /** Project root that owns `.ade/attachments`. Used by the lane path guard. */
+  projectRoot: string;
   userHomeDir: string;
   stateRoot: string;
   socketPath: string;

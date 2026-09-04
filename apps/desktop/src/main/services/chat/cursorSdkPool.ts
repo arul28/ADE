@@ -908,6 +908,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   const initPayload: CursorSdkWorkerInit = {
     sessionId: args.sessionId,
     laneRoot: args.workspacePath,
+    projectRoot: args.projectRoot,
     userHomeDir: paths.userHomeDir,
     stateRoot: paths.stateRoot,
     socketPath: paths.socketPath,

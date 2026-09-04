@@ -727,6 +727,16 @@ surfaces.
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
 sandbox mode, hard guards, orchestration-lead flag, and a `fullAuto` marker.
+Hard guards refuse paths outside the lane. Read-only exceptions are this
+lane's Cursor `terminals`, `agent-transcripts`, and `assets` directories
+under `~/.cursor/projects/<slug>/`, plus the project's `.ade/attachments`
+when worker init supplies that project root (Cursor inlines image bytes
+then tells the model to Read the assets copy; oversized attachments are
+also a path under `.ade/attachments`). The attachments grant fails closed
+without that explicit root and does not infer it from the lane layout.
+After realpath the directory basename must be `attachments`. Writes,
+shell, other projects' Cursor dirs, `.ade/secrets`, and a junction onto
+`.ade` or `.ade/secrets` stay denied.
 `buildCursorSdkLocalRunOptions` then reduces that policy to the SDK's local run
 options, where the sandbox is a three-state `CursorSdkSandboxDirective`
 (`enable` / `disable` / `inherit`) rather than a boolean — see
