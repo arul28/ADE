@@ -24932,11 +24932,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toolGroups.count, 1)
     XCTAssertEqual(toolGroups.first?.members.count, 2)
     XCTAssertTrue(standaloneToolCards.isEmpty)
-    guard case .tool(let latest)? = toolGroups.first?.latest else {
+    guard case .tool(let latest)? = toolGroups.first?.members.last else {
       return XCTFail("Expected the latest visible group member to be the newest tool call.")
     }
     XCTAssertEqual(latest.id, "tool-2")
     XCTAssertEqual(latest.status, .running)
+  }
+
+  func testWorkChatSessionContextFallsBackToClaudeProviderFromToolType() {
+    let context = WorkChatSessionRenderContext(
+      makeTerminalSessionSummary(toolType: "claude-chat")
+    )
+
+    XCTAssertEqual(context.providerFallback, "claude")
   }
 
   func testBuildWorkTimelineCollapsesAlternatingReasoningAndToolBursts() {

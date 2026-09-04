@@ -584,6 +584,7 @@ struct WorkChatSummaryRenderContext: Equatable {
 struct WorkChatSessionRenderContext: Equatable {
   let id: String
   let laneId: String
+  let providerFallback: String?
   let chatIdleSinceAt: String?
   let endedAt: String?
   let lastOutputPreview: String?
@@ -596,6 +597,7 @@ struct WorkChatSessionRenderContext: Equatable {
   init(_ session: TerminalSessionSummary) {
     self.id = session.id
     self.laneId = session.laneId
+    self.providerFallback = workChatProviderFamilyFromToolType(session.toolType)
     self.chatIdleSinceAt = session.chatIdleSinceAt
     self.endedAt = session.endedAt
     self.lastOutputPreview = session.lastOutputPreview
@@ -1152,9 +1154,10 @@ struct WorkChatSessionView: View {
     if rebuildToolActivityIndex {
       turnToolActivity = workTurnToolActivityIndex(from: timeline)
     }
+    let summaryProvider = chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines)
     let presentedTimeline = workPresentedTimelineEntries(
       timeline,
-      provider: chatSummaryContext.provider
+      provider: summaryProvider.isEmpty ? session.providerFallback : summaryProvider
     )
     var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(

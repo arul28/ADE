@@ -981,7 +981,6 @@ struct WorkToolGroupModel: Identifiable, Equatable {
   let id: String
   let members: [WorkToolGroupMember]
 
-  var latest: WorkToolGroupMember? { members.last }
   var count: Int { members.count }
 }
 

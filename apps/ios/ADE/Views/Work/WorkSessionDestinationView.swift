@@ -626,7 +626,7 @@ func workChatHasOlderTranscriptHistory(
   return allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0
 }
 
-private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
+func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   guard !raw.isEmpty else { return nil }
   if raw == "cursor" || raw.hasPrefix("cursor") { return "cursor" }
