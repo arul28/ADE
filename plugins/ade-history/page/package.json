@@ -14,10 +14,15 @@
   "dependencies": {
     "@ade-dev/ui": "file:../../../packages/ui",
     "@phosphor-icons/react": "^2.1.10",
+    "@radix-ui/react-context-menu": "^2.2.16",
+    "@radix-ui/react-popover": "^1.1.15",
+    "@tanstack/react-virtual": "^3.13.21",
     "clsx": "^2.1.1",
+    "motion": "^12.34.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^3.4.0"
+    "tailwind-merge": "^3.4.0",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",

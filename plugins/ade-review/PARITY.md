@@ -119,14 +119,16 @@ remove. Review remains the first Review UI iOS and the TUI have ever had.
 
 **G1 — the model control is a trigger, not ADE's `ModelPicker`.** The page draws
 a button showing the current model and asks the host to open the real picker
-(`ui.pickModel`), because the compiled `ModelPicker` carries recents,
-per-provider grouping, brand icons, a search and a fast-mode toggle that a
-page-local combobox could only approximate and would then drift from. The same
-holds for the lane (`ui.pickLane`) and the reasoning ladder
-(`ui.pickReasoningEffort`, asked with the chosen model, because the rungs are per
-model). *A host without the pickers falls back to plain text fields and a native
-lane select — usable, and visibly less.* The fast-mode toggle is the page's own,
-because it is a launch field rather than a picker.
+(`ui.pickModel({ value })`, so the list opens on the current row), because the
+compiled `ModelPicker` carries recents, per-provider grouping, brand icons, a
+search and a fast-mode toggle that a page-local combobox could only approximate
+and would then drift from. The same holds for the lane (`ui.pickLane({ value })`)
+and the reasoning ladder (`ui.pickReasoningEffort({ model, value })`, asked with
+the chosen model, because the rungs are per model). The model answer carries
+`fastMode` because ADE's picker sets both in one gesture; the Fast button on the
+form stays so a reader can toggle without re-opening the picker. *A host without
+the pickers falls back to plain text fields and a native lane select — usable,
+and visibly less.*
 
 **G2 — the reviewer transcript opens through a deeplink.** Carried. The compiled
 button called `selectLane`, then `focusSession`, then routed to `/work`; the page
@@ -150,14 +152,17 @@ silence. `runIdFromContext` reads it back from the subject for any subject kind,
 because a deeplink context arrives without one.
 
 **G4 — a finding whose lane has no worktree opens against the project root.**
-`ui.openPathInEditor` needs a `rootPath`, and the compiled page took the lane's
-`worktreePath` from the app store. The child joins `sdk.lanes.list()` onto the
-launch context so each lane carries its `path`, which covers every local lane.
-When the host reports none — a remote binding, or a lane whose worktree has not
-been created — the page falls back to `context.project.root`, which is the
-checkout the reader is looking at. A host with no `ui.openPathInEditor` at all
-leaves the button drawn and the press a no-op, which is exactly what the compiled
-card did when `window.ade.app.openPathInEditor` was absent.
+`ui.openPathInEditor` needs a `rootPath` and a `relativePath`, and the compiled
+page took the lane's `worktreePath` from the app store. The child joins
+`sdk.lanes.list()` onto the launch context so each lane carries its `path`,
+which covers every local lane. When the host reports none — a remote binding, or
+a lane whose worktree has not been created — the page falls back to
+`context.project.root`, which is the checkout the reader is looking at. The
+press is `{ rootPath, relativePath, target: "default" }`, which is the plugin
+bridge's shape (`target` is the editor id, not the file). A host with no
+`ui.openPathInEditor` at all leaves the button drawn and the press a no-op,
+which is exactly what the compiled card did when `window.ade.app.openPathInEditor`
+was absent.
 
 **G5 — the "Context used for this review" cards have no debug payload.** The
 compiled card had a `Debug payload` disclosure printing `contentText` and the raw

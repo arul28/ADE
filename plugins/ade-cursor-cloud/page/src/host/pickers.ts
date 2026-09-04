@@ -8,6 +8,16 @@
  * has no way to know any of that, and a second list that disagreed with the
  * first would be worse than no list at all.
  *
+ * Request and answer shapes are ADE's (`webviewBridge.ts`):
+ *
+ * - `pickModel({ value, availableModelIds })` → `{ modelId, fastMode }`
+ * - `pickLane({ value })` → `{ laneId, name }`
+ * - `pickReasoningEffort({ model, value })` → `{ modelId, effort }`
+ *
+ * `availableModelIds` is how Cursor Cloud's catalog narrows ADE's picker: the
+ * cloud list is not Cursor's local one, and without it the form would offer
+ * models Enter then refuses.
+ *
  * Every picker is OPTIONAL on the bridge. A v1 host answers none of them, a
  * hosted web client may answer some, and the phone may answer others. So each
  * function here asks the host first and falls back to the caller's own inline
@@ -21,7 +31,7 @@
  * host with pickers never reads them.
  */
 
-import { bridge, type PluginWebviewPickResult } from "../bridge";
+import { bridge } from "../bridge";
 
 /**
  * What one picker attempt answered.
@@ -32,57 +42,109 @@ import { bridge, type PluginWebviewPickResult } from "../bridge";
  * - `dismissed` — the reader closed the picker WITHOUT choosing. A real answer:
  *   the form must keep the value it had, not clear it.
  * - `inline` — the host has no such picker. The caller draws its own list.
+ *
+ * `fastMode` rides only on a model choice: ADE's picker sets the model and the
+ * fast tier in one gesture, and dropping that flag would silently run standard.
  */
 export type PickOutcome =
-  | { kind: "picked"; id: string; label: string | null }
+  | { kind: "picked"; id: string; label: string | null; fastMode?: boolean }
   | { kind: "dismissed" }
   | { kind: "inline" };
 
 const INLINE: PickOutcome = { kind: "inline" };
 
-async function attempt(
-  open: (() => Promise<PluginWebviewPickResult>) | undefined,
-): Promise<PickOutcome> {
-  if (typeof open !== "function") return INLINE;
-  let result: PluginWebviewPickResult;
+async function attempt<T>(
+  open: (() => Promise<T | null>) | undefined,
+): Promise<T | null | "inline"> {
+  if (typeof open !== "function") return "inline";
   try {
-    result = await open();
+    return (await open()) ?? null;
   } catch {
     // The host has the verb but refused this one call — a placement that may
     // not open a popover, most often. The inline list is still correct.
-    return INLINE;
+    return "inline";
   }
-  if (!result || typeof result.id !== "string" || result.id.length === 0) {
-    return { kind: "dismissed" };
-  }
-  return { kind: "picked", id: result.id, label: result.label ?? null };
 }
 
-/** ADE's lane picker, scoped to the lanes the child says can take this launch. */
-export function pickLane(laneIds: string[]): Promise<PickOutcome> {
+/** ADE's lane picker. `value` is the lane already on the form, so it opens there. */
+export async function pickLane(value?: string | null): Promise<PickOutcome> {
   const ui = bridge()?.ui;
-  return attempt(ui?.pickLane ? () => ui.pickLane!({ laneIds }) : undefined);
+  const result = await attempt(
+    ui?.pickLane
+      ? () => ui.pickLane!({ ...(value ? { value } : {}) })
+      : undefined,
+  );
+  if (result === "inline") return INLINE;
+  if (!result || typeof result.laneId !== "string" || result.laneId.length === 0) {
+    return { kind: "dismissed" };
+  }
+  return {
+    kind: "picked",
+    id: result.laneId,
+    label: typeof result.name === "string" && result.name.length > 0 ? result.name : null,
+  };
 }
 
 /**
- * ADE's model picker, scoped to Cursor's own catalog.
+ * ADE's model picker, scoped to Cursor Cloud's catalog.
  *
- * `modelIds` is passed even though the host could infer them from the provider:
- * Cursor's cloud catalog is not the same list as Cursor's local one, and the
- * child is the half that knows which models this account's cloud can run.
+ * `availableModelIds` is required even though the host could infer Cursor from
+ * the provider: Cursor's cloud catalog is not the same list as Cursor's local
+ * one, and the child is the half that knows which models this account's cloud
+ * can run. Omit it and ADE offers every model, including ones Enter then
+ * refuses with "Choose a Cursor Cloud model first".
  */
-export function pickModel(modelIds: string[]): Promise<PickOutcome> {
+export async function pickModel(args: {
+  value?: string | null;
+  availableModelIds: string[];
+}): Promise<PickOutcome> {
   const ui = bridge()?.ui;
-  return attempt(ui?.pickModel ? () => ui.pickModel!({ provider: "cursor", modelIds }) : undefined);
-}
-
-export function pickReasoningEffort(model: string | null): Promise<PickOutcome> {
-  const ui = bridge()?.ui;
-  return attempt(
-    ui?.pickReasoningEffort
-      ? () => ui.pickReasoningEffort!({ provider: "cursor", model: model ?? undefined })
+  const result = await attempt(
+    ui?.pickModel
+      ? () => ui.pickModel!({
+        ...(args.value ? { value: args.value } : {}),
+        availableModelIds: args.availableModelIds,
+      })
       : undefined,
   );
+  if (result === "inline") return INLINE;
+  if (!result || typeof result.modelId !== "string" || result.modelId.length === 0) {
+    return { kind: "dismissed" };
+  }
+  return {
+    kind: "picked",
+    id: result.modelId,
+    label: null,
+    fastMode: result.fastMode === true,
+  };
+}
+
+/**
+ * The model's own reasoning rungs.
+ *
+ * `model` is required by the host — the ladder is per model, and a call
+ * without one is refused rather than drawing an empty control. No model on
+ * the form yet means the inline list, which is empty until one is picked.
+ */
+export async function pickReasoningEffort(
+  model: string | null,
+  selected?: string | null,
+): Promise<PickOutcome> {
+  if (!model) return INLINE;
+  const ui = bridge()?.ui;
+  const result = await attempt(
+    ui?.pickReasoningEffort
+      ? () => ui.pickReasoningEffort!({
+        model,
+        ...(selected ? { value: selected } : {}),
+      })
+      : undefined,
+  );
+  if (result === "inline") return INLINE;
+  if (!result) return { kind: "dismissed" };
+  // `effort: null` is a real choice ("no reasoning"), not a dismissal.
+  const effort = typeof result.effort === "string" ? result.effort : "";
+  return { kind: "picked", id: effort, label: null };
 }
 
 /**
@@ -95,16 +157,30 @@ export function pickReasoningEffort(model: string | null): Promise<PickOutcome> 
  * anyway so that this file is the complete answer to "which host picker does
  * the page use for X", and so a later field does not reach for the global.
  */
-export function pickProvider(): Promise<PickOutcome> {
+export async function pickProvider(): Promise<PickOutcome> {
   const ui = bridge()?.ui;
-  return attempt(ui?.pickProvider ? () => ui.pickProvider!() : undefined);
+  const result = await attempt(
+    ui?.pickProvider ? () => ui.pickProvider!({}) : undefined,
+  );
+  if (result === "inline") return INLINE;
+  if (!result || typeof result.provider !== "string" || result.provider.length === 0) {
+    return { kind: "dismissed" };
+  }
+  return { kind: "picked", id: result.provider, label: null };
 }
 
-export function pickPermissionMode(provider: string): Promise<PickOutcome> {
+export async function pickPermissionMode(provider: string): Promise<PickOutcome> {
   const ui = bridge()?.ui;
-  return attempt(
-    ui?.pickPermissionMode ? () => ui.pickPermissionMode!({ provider }) : undefined,
+  const result = await attempt(
+    ui?.pickPermissionMode
+      ? () => ui.pickPermissionMode!({ provider })
+      : undefined,
   );
+  if (result === "inline") return INLINE;
+  if (!result || typeof result.value !== "string" || result.value.length === 0) {
+    return { kind: "dismissed" };
+  }
+  return { kind: "picked", id: result.value, label: null };
 }
 
 /**

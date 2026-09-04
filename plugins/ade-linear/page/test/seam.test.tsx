@@ -431,6 +431,72 @@ describe("the page and the plugin agree on every verb", () => {
     expect(host.callsTo("clipboard.write").length).toBe(0);
   });
 
+  it("opens ADE's own pickers for model, lane, permission, reasoning and provider", async () => {
+    // The launch form is chips over host verbs, not selects this page keeps in
+    // step. Fast mode stays a toggle because it is a boolean and not a list.
+    connected({
+      lanes: [{
+        id: "lane-1",
+        name: "ADE-1",
+        branch: "ade/ade-1",
+        laneType: "worktree",
+        path: "/tmp/ade-1",
+        linearIssueId: null,
+        linearIssueKey: null,
+        linearIssueLinks: [],
+      }],
+    });
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Provider" }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("ui.pickProvider").length).toBe(1);
+    });
+
+    await chooseModel();
+    expect(host.callsTo("ui.pickModel").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reasoning effort" }));
+    });
+    await waitFor(() => {
+      expect(host.lastCall("ui.pickReasoningEffort")!.args).toMatchObject({
+        provider: "claude",
+        model: "claude-opus-5",
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Permissions" }));
+    });
+    await waitFor(() => {
+      expect(host.lastCall("ui.pickPermissionMode")!.args).toMatchObject({ provider: "claude" });
+    });
+
+    expect(screen.getByRole("switch", { name: "Fast" })).toBeTruthy();
+    expect(screen.queryByRole("combobox")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Existing lane" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Lane" }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("ui.pickLane").length).toBe(1);
+    });
+  });
+
   it("gives the chat menu's Linear row every verb the chat header used to have", async () => {
     // The chat-header button and its dropdown are gone. What replaced them is a
     // row in the chat's three-dot menu under Issue context, opening this page
@@ -588,6 +654,24 @@ describe("the page and the plugin agree on every verb", () => {
     // height onto the document, and no longer posts a frame to the parent.
     expect(document.documentElement.style.height).toBe("");
     expect(document.body.style.height).toBe("");
+  });
+
+  it("points Settings at Automations and does not register the webhook there", async () => {
+    // Register, the URL and the signing secret live on the Automations tile.
+    // This card keeps the pointer, and the clipboard toggle lives on the launch
+    // form — a switch two screens from the prompt it copies is a switch nobody
+    // finds.
+    connected();
+    render(<SettingsEntry context={tabContext({ surfaceId: "settings", placement: "settings-section" })} />);
+    expect(await screen.findByText(/Linear automations live in Automations/i, {}, { timeout: 3_000 })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Register/i })).toBeNull();
+    expect(screen.queryByRole("switch", { name: /Copy the launch prompt to the clipboard/i })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Open Automations/i }));
+    });
+    await waitFor(() => {
+      expect(host.lastCall("openDeeplink")!.args).toEqual({ url: "ade://automations" });
+    });
   });
 
   it("invokes no action the plugin does not answer", async () => {

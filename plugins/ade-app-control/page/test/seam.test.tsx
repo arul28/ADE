@@ -229,6 +229,19 @@ describe("the page and the plugin agree on every verb", () => {
     });
     expect(within(list).getByText("#save")).toBeTruthy();
     expect(within(list).getByText(/testId=save-button/)).toBeTruthy();
+
+    // The selected element's source is a press, and the plugin verb takes a
+    // relative path plus an editor id — not `file:line` stuffed into `target`.
+    const source = await screen.findByTitle("Open this element's source in ADE");
+    fireEvent.click(source);
+    await waitFor(() => {
+      expect(host.callsTo("ui.openPathInEditor").length).toBe(1);
+    });
+    expect(host.lastCall("ui.openPathInEditor")!.args).toEqual({
+      rootPath: `/repo-${root}`,
+      relativePath: "src/App.tsx",
+      target: "default",
+    });
   });
 
   it("releases the host engine on unmount", async () => {
@@ -336,6 +349,21 @@ describe("the page and the plugin agree on every verb", () => {
     // Twice on purpose: the banner says what happened, and the chip beside the
     // Attach button stays as the acknowledgement the compiled pane also kept.
     expect(await screen.findAllByText(/Inserted Save context/)).toHaveLength(2);
+  });
+
+  it("draws the source line inert when the host cannot open an editor", async () => {
+    connected({ withoutEditor: true });
+    render(<ControlEntry context={paneContext()} />);
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageStatus").length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    fireEvent.click(await screen.findByLabelText("Inspect point"));
+    await waitFor(() => {
+      expect(screen.getByTestId("source-inert").textContent).toContain("src/App.tsx");
+    });
+    expect(screen.queryByTitle("Open this element's source in ADE")).toBeNull();
+    expect(host.callsTo("ui.openPathInEditor")).toHaveLength(0);
   });
 
   it("routes an unknown surface id to the control pane rather than an error page", async () => {

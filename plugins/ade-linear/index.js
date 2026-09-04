@@ -14,9 +14,9 @@
 //     compiled Linear connection is not a second-class install;
 //   * the webhook is a declared `webhookIngress` channel at ADE's relay, and
 //     the events arrive as `webhook.received` with an ack;
-//   * the lane and agent flows are `lane.create`, `chat.createSession` and
-//     `ade.lanes.linkIssue`, which is the seam that makes a tracker plugin a
-//     first-class one rather than a viewer;
+//   * the lane and agent flows are `lane.create`, `chat.launchHeadless` /
+//     `chat.launchCli`, and `ade.lanes.linkIssue`, which is the seam that makes
+//     a tracker plugin a first-class one rather than a viewer;
 //   * the nine agent tools, the five automation triggers, the four steps, the
 //     search provider and the CLI word are all manifest registrations.
 //
@@ -538,10 +538,10 @@ async function viewFor(panelId, context) {
         configured: false,
       })),
       githubRepo: githubRepoSlug,
-      // `status` is the WEBHOOK row and `secretStored` drives a separate
-      // Verification row beside it, so this must not be about the secret —
-      // two adjacent rows saying the same thing in different words is worse
-      // than one saying it well.
+      // `status` is the WEBHOOK fact the Automations pointer prints, and
+      // `secretStored` is what makes a registration real. This must not be
+      // about the secret alone — two adjacent rows saying the same thing in
+      // different words is worse than one saying it well.
       //
       // It DOES have to be about whether events can arrive at all. Linear only
       // delivers data-change webhooks to an authorization carrying `admin`.
@@ -553,11 +553,10 @@ async function viewFor(panelId, context) {
       // Nor may it say "ready" while the plugin holds no SECRET. The manifest
       // declares `verify`, and the host fails closed on a channel whose secret
       // it cannot find — so with nothing stored, every delivery Linear sends is
-      // dropped before this plugin sees it. "Endpoint ready" there was the
-      // most misleading sentence on the screen: the endpoint exists, the
-      // deliveries arrive, and none of them count. Registration is what makes
-      // both true at once now, which is why the row reports that and not the
-      // endpoint.
+      // dropped before this plugin sees it. Registration is what makes both
+      // true at once now, which is why the row reports that and not the
+      // endpoint. The Automations tile is what presses Register; Settings only
+      // points there and prints this status.
       //
       // Whether deliveries are actually ARRIVING is the host's delivery ledger.
       // `webhooks.status` is that row, scoped to this plugin.
@@ -578,8 +577,8 @@ async function viewFor(panelId, context) {
           secretStored,
           // Whether ADE created the hook AND still holds its secret. Two
           // separate facts on purpose: a stored secret with no registration is
-          // a secret for a hook that no longer exists, and the panel's button
-          // has to offer Register rather than claiming a working endpoint.
+          // a secret for a hook that no longer exists, and the Automations
+          // tile has to offer Register rather than claiming a working endpoint.
           registered: registration?.registered === true,
           webhooksPossible,
         }

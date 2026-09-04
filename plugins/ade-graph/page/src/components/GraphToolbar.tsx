@@ -46,7 +46,7 @@ export function GraphToolbar({
   rootLaneOptions: LaneSummary[];
   availableTags: string[];
   overflowNote: string;
-  filtersPanelRef: React.RefObject<HTMLDivElement | null>;
+  filtersPanelRef: React.RefObject<HTMLDivElement>;
   showFiltersPanel: boolean;
   onToggleFiltersPanel: () => void;
 }): React.ReactElement {

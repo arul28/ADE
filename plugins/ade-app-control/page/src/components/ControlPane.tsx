@@ -49,7 +49,7 @@ import { cn } from "@ade-dev/ui";
 import type { PluginWebviewContext } from "../bridge";
 import * as actions from "../host/actions";
 import { ENGINE_ID, NO_ENGINE_MESSAGE, hasHostEngine, placeEngineOn } from "../host/engine";
-import { onHostChanged, openPathInEditor } from "../host/ui";
+import { canOpenPathInEditor, onHostChanged, openPathInEditor } from "../host/ui";
 import { DEFAULT_UI_STATE, loadUiState, saveUiState } from "../host/uiState";
 import type {
   AppControlElement,
@@ -175,6 +175,7 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const engineAvailable = useMemo(() => hasHostEngine(), []);
+  const editorAvailable = useMemo(() => canOpenPathInEditor(), []);
   const attachEngine = useEnginePlacement();
 
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
@@ -582,9 +583,9 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
   );
 
   const openSource = useCallback(
-    (file: string, line: number | null) => {
+    (file: string) => {
       if (!projectRoot) return;
-      void openPathInEditor({ rootPath: projectRoot, target: line ? `${file}:${line}` : file });
+      void openPathInEditor({ rootPath: projectRoot, relativePath: file, target: "default" });
     },
     [projectRoot],
   );
@@ -1009,24 +1010,30 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
 
       {/* The source line of whatever is selected, and the type-text field */}
       {selectedElement && typeof selectedElement.metadata?.sourceFile === "string" && projectRoot ? (
-        <button
-          type="button"
-          onClick={() =>
-            openSource(
-              selectedElement.metadata.sourceFile as string,
-              typeof selectedElement.metadata.sourceLine === "number"
-                ? (selectedElement.metadata.sourceLine as number)
-                : null,
-            )
-          }
-          className="shrink-0 truncate rounded border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-left font-mono text-[10px] text-sky-100/65 hover:text-sky-100/90"
-          title="Open this element's source in ADE"
-        >
-          {String(selectedElement.metadata.sourceFile)}
-          {typeof selectedElement.metadata.sourceLine === "number"
-            ? `:${selectedElement.metadata.sourceLine}`
-            : ""}
-        </button>
+        editorAvailable ? (
+          <button
+            type="button"
+            onClick={() => openSource(selectedElement.metadata.sourceFile as string)}
+            className="shrink-0 truncate rounded border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-left font-mono text-[10px] text-sky-100/65 hover:text-sky-100/90"
+            title="Open this element's source in ADE"
+          >
+            {String(selectedElement.metadata.sourceFile)}
+            {typeof selectedElement.metadata.sourceLine === "number"
+              ? `:${selectedElement.metadata.sourceLine}`
+              : ""}
+          </button>
+        ) : (
+          <div
+            className="shrink-0 truncate rounded border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-left font-mono text-[10px] text-muted-fg/55"
+            title="This ADE cannot open the file in an editor."
+            data-testid="source-inert"
+          >
+            {String(selectedElement.metadata.sourceFile)}
+            {typeof selectedElement.metadata.sourceLine === "number"
+              ? `:${selectedElement.metadata.sourceLine}`
+              : ""}
+          </div>
+        )
       ) : null}
 
       <div className="flex min-w-0 shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-black/20 pl-1.5 focus-within:border-sky-300/30">

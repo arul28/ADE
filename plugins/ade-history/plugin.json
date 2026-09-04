@@ -1,6 +1,6 @@
 {
   "name": "ade-history",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "displayName": "History",
   "description": "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   "icon": "clock-counter-clockwise",
@@ -9,13 +9,23 @@
   "entry": "index.js",
   "surfaces": [
     {
-      "kind": "tab",
+      "kind": "webview",
       "id": "commits",
       "title": "History",
       "icon": "clock-counter-clockwise",
+      "entryHtml": "dist/index.html",
       "panelId": "commits",
       "order": 55,
-      "mobile": true
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "activity",
+      "title": "Activity",
+      "icon": "list",
+      "entryHtml": "dist/index.html",
+      "panelId": "activity",
+      "mobile": false
     }
   ],
   "panels": [
@@ -55,7 +65,8 @@
       "id": "commits-pane",
       "label": "History",
       "icon": "clock-counter-clockwise",
-      "panelId": "commits"
+      "panelId": "commits",
+      "webviewSurfaceId": "commits"
     },
     {
       "socket": "command-palette-action",
@@ -63,7 +74,8 @@
       "id": "palette-commits",
       "label": "History commits",
       "icon": "clock-counter-clockwise",
-      "actionId": "openCommits"
+      "actionId": "openCommits",
+      "webviewSurfaceId": "commits"
     },
     {
       "socket": "command-palette-action",
@@ -71,14 +83,16 @@
       "id": "palette-activity",
       "label": "History activity",
       "icon": "list",
-      "actionId": "openActivity"
+      "actionId": "openActivity",
+      "webviewSurfaceId": "activity"
     }
   ],
   "collections": {
     "commits": { "sync": true },
     "operations": { "sync": true },
     "files": { "sync": true },
-    "lanes": { "sync": true }
+    "lanes": { "sync": true },
+    "ui-state": { "sync": false }
   },
   "tools": [
     {

@@ -131,6 +131,12 @@ that claims a verb and then cannot open it flips that one control to the select
 for the rest of the form's life, rather than leaving the reader pressing a chip
 that does nothing.
 
+The request and answer shapes are ADE's (`ui.pickModel({ value,
+availableModelIds })` → `{ modelId, fastMode }`; `ui.pickLane({ value })` →
+`{ laneId, name }`; `ui.pickReasoningEffort({ model, value })` → `{ modelId,
+effort }`). A page that flattened those to `{ id, label }` would drop the fast
+tier off a model choice and treat a successful pick as a dismissal.
+
 ## Secrets
 
 Names only. A secret VALUE never reaches this page, never appears in a request
@@ -149,10 +155,15 @@ seam test walks the product against it — an id the page invokes that the fake
 does not script throws by name. It is owned by neither half. A change to the
 page and a change to `pageActions.js` both have to keep it passing.
 
-The twelve ids this page invokes:
+The fourteen ids the child answers:
 
 ```
 pageFleet   pageAgent        pageLaunchContext  pageLaunch
 pageOpenInAde  pageStopRun   pageFollowUp       pagePullIntoLane
 pageArchiveAgent  pageUnarchiveAgent  pageDeleteAgent  pageAckBadge
+pageConnection  pageCopyWebhookUrl
 ```
+
+The page invokes the first twelve. `pageConnection` and `pageCopyWebhookUrl` are
+handlers a host can ask; the fleet's key state rides on `pageFleet` instead of
+a second round trip, and the webhook URL is the Automations tile's.

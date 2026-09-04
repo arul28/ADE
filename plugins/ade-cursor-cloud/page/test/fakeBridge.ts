@@ -18,6 +18,7 @@ import type {
   PluginWebviewConfirm,
   PluginWebviewContext,
   PluginWebviewHostEvent,
+  PluginWebviewModelChoice,
   PluginWebviewThemeSnapshot,
   PluginWebviewToast,
 } from "../src/bridge";
@@ -183,6 +184,13 @@ export function installFakeBridge(options: {
   /** Start with no Cursor API key. */
   connected?: boolean;
   launch?: Partial<CloudLaunchContext>;
+  /**
+   * Whether ADE's five pickers are on this host. A v1 host answers none, and
+   * the launch form then draws real `<select>`s from `CloudLaunchContext`.
+   */
+  hostPickers?: boolean;
+  /** What `ui.pickModel` answers. Defaults to the first offered id, standard. */
+  modelPick?: PluginWebviewModelChoice;
 } = {}): FakeBridge {
   const entries = options.entries ?? [fakeEntry()];
   const connected = options.connected !== false;
@@ -420,30 +428,35 @@ export function installFakeBridge(options: {
       resize(size: { height: number }) {
         record("ui.resize", size as unknown as Record<string, unknown>);
       },
-      // The five host pickers. Each answers the FIRST row it was offered, so a
-      // walk that opens one gets a deterministic choice and the page's own
-      // inline fallback stays untested here — its own case installs a bridge
-      // with `ui` cut down instead.
-      async pickModel(request) {
-        record("ui.pickModel", (request ?? {}) as Record<string, unknown>);
-        return { id: request?.modelIds?.[0] ?? "composer-2", label: "Composer 2" };
-      },
-      async pickLane(request) {
-        record("ui.pickLane", (request ?? {}) as Record<string, unknown>);
-        return { id: request?.laneIds?.[0] ?? "lane-1", label: "sync-fix" };
-      },
-      async pickPermissionMode(request) {
-        record("ui.pickPermissionMode", request as unknown as Record<string, unknown>);
-        return { id: "default", label: "Manual" };
-      },
-      async pickReasoningEffort(request) {
-        record("ui.pickReasoningEffort", request as unknown as Record<string, unknown>);
-        return { id: "high", label: "High" };
-      },
-      async pickProvider() {
-        record("ui.pickProvider", {});
-        return { id: "cursor", label: "Cursor" };
-      },
+      // The five host pickers. Answers match `webviewBridge.ts`, so a page
+      // that still reads `{ id, label }` fails here rather than at a desk.
+      // Omitted entirely when `hostPickers: false` — that is the v1 path, and
+      // the form must then draw its own selects rather than dead chips.
+      ...(options.hostPickers === false ? {} : {
+        async pickModel(request) {
+          record("ui.pickModel", (request ?? {}) as Record<string, unknown>);
+          return options.modelPick ?? {
+            modelId: request?.availableModelIds?.[0] ?? request?.value ?? "composer-2",
+            fastMode: false,
+          };
+        },
+        async pickLane(request) {
+          record("ui.pickLane", (request ?? {}) as Record<string, unknown>);
+          return { laneId: request?.value ?? "lane-1", name: "sync-fix" };
+        },
+        async pickPermissionMode(request) {
+          record("ui.pickPermissionMode", request as unknown as Record<string, unknown>);
+          return { provider: request.provider, field: "mode", value: "default" };
+        },
+        async pickReasoningEffort(request) {
+          record("ui.pickReasoningEffort", request as unknown as Record<string, unknown>);
+          return { modelId: request.model, effort: request.value ?? "high" };
+        },
+        async pickProvider(request) {
+          record("ui.pickProvider", (request ?? {}) as Record<string, unknown>);
+          return { provider: request?.value ?? "cursor" };
+        },
+      }),
     },
     clipboard: {
       async read() {

@@ -1,7 +1,8 @@
 // Labels and collection keys for ade-app-control.
 //
-// Rows arrive in render shape. Phone and terminal list them; desktop mounts
-// ADE's compiled Electron Control pane through `canvas` / `electron-control`.
+// Rows arrive in render shape. Phone and terminal list them. Desktop and web
+// draw the plugin's own page, which reserves a rect for the host's
+// `electron-control` engine.
 
 "use strict";
 
@@ -33,7 +34,7 @@ function statusRow(status) {
     ? "Electron Control drives an app on the computer this project is attached to."
     : live
       ? (readString(session?.title) ?? readString(session?.url) ?? "An Electron renderer is attached.")
-      : "Launch or attach to an Electron app from the desktop pane.";
+      : "Launch or attach to an Electron app from Electron Control.";
   return {
     title,
     subtitle,

@@ -29,6 +29,8 @@ export default defineConfig({
       "@phosphor-icons/react",
       "clsx",
       "tailwind-merge",
+      "zustand",
+      "motion",
     ],
   },
   test: {

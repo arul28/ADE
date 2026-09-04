@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 describe("the electron control publish seam", () => {
-  it("writes a status row from app_control.getStatus and names the host canvas", async () => {
+  it("writes a status row from app_control.getStatus and binds the fallback panel to it", async () => {
     const sdk = createSdk({
       actions: {
         invoke: async (domain, action) => {
@@ -33,8 +33,9 @@ describe("the electron control publish seam", () => {
     });
     await plugin.activate(sdk);
     const panel = sdk.panelsMap.get("main");
-    const canvas = panel.body.find((node) => node.component === "canvas");
-    assert.equal(canvas.engine, "electron-control");
+    const list = panel.body.find((node) => node.component === "list");
+    assert.equal(list.bind.collection, "status");
+    assert.ok(!panel.body.some((node) => node.component === "canvas"));
     const stored = await sdk.collections.list("status");
     assert.equal(stored.length, 1);
     assert.equal(stored[0].value.live, "yes");

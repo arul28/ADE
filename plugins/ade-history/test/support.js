@@ -40,12 +40,31 @@ function createSdk(overrides = {}) {
     getCommit: async () => null,
     getCommitMessage: async () => "",
     listCommitFiles: async () => [],
-    getOriginRemote: async () => ({ remoteUrl: null }),
+    isCommitInLaneHistory: async () => false,
+    getOriginRemote: async () => ({ remoteUrl: null, branch: null }),
+    getOpenPrForBranch: async () => ({ prUrl: null, prNumber: null }),
+    getConflictState: async () => null,
+    stashList: async () => [],
     cherryPickCommit: async (args) => args,
     revertCommit: async (args) => args,
     resetToCommit: async (args) => args,
     checkoutBranch: async (args) => args,
     createTag: async (args) => args,
+    fetch: async (args) => args,
+    pull: async (args) => args,
+    push: async (args) => args,
+    undoLastHeadChange: async (args) => args,
+    redoLastHeadChange: async (args) => args,
+    sync: async (args) => args,
+    stashPush: async (args) => args,
+    stashApply: async (args) => args,
+    stashPop: async (args) => args,
+    stashDrop: async (args) => args,
+    stashClear: async (args) => args,
+    rebaseContinue: async (args) => args,
+    rebaseAbort: async (args) => args,
+    mergeContinue: async (args) => args,
+    mergeAbort: async (args) => args,
     ...(overrides.git ?? {}),
   };
   const operation = {
@@ -56,11 +75,26 @@ function createSdk(overrides = {}) {
   const lanes = {
     list: async () => [],
     create: async (args) => ({ id: "lane-new", name: args.name }),
+    rename: async (args) => args,
+    archive: async (args) => args,
+    delete: async (args) => args,
     ...(overrides.lanes ?? {}),
   };
   const chat = {
     listSessions: async () => [],
     ...(overrides.chat ?? {}),
+  };
+  const cto = {
+    getState: async () => null,
+    ...(overrides.cto ?? {}),
+  };
+  const diff = {
+    getFilePatch: async () => null,
+    ...(overrides.diff ?? {}),
+  };
+  const history = {
+    exportOperations: async () => ({ cancelled: true }),
+    ...(overrides.history ?? {}),
   };
   const sdk = {
     log() {},
@@ -72,7 +106,7 @@ function createSdk(overrides = {}) {
     collections,
     actions: {
       async invoke(domain, action, args) {
-        const table = { git, operation, lanes, chat }[domain];
+        const table = { git, operation, lanes, lane: lanes, chat, cto, diff, history }[domain];
         if (!table) throw new Error(`unexpected domain ${domain}`);
         if (typeof table[action] !== "function") throw new Error(`unexpected ${domain} action ${action}`);
         return table[action](args);

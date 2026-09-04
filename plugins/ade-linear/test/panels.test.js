@@ -524,18 +524,30 @@ describe("the settings panel", () => {
     assert.ok(disconnect.onPress.confirm.includes("whole machine"));
   });
 
-  it("shows the webhook URL as something to compare, not only to copy", () => {
-    // A copy button that fails on a surface with no clipboard would leave a
-    // reader with no way to get the string at all.
+  it("points at Automations rather than registering the webhook here", () => {
+    // Register, the URL and the signing secret all live on the Automations
+    // trigger tile. This card keeps one line and the one fact a reader needs
+    // before they walk over — whether anything is registered yet.
     const panel = panels.buildSettingsPanel({
       connection: CONNECTION,
-      ingress: { status: "Connected", url: "https://relay.ade.dev/hook/abc" },
+      ingress: { status: "Not registered", registered: false },
     });
-    const code = nodesOf(panel, "text").filter((node) => node.variant === "code");
-    assert.equal(code[0].text, "https://relay.ade.dev/hook/abc");
-    assert.ok(
-      nodesOf(panel, "button").some((node) => node.onPress.action === contract.ACTIONS.copyWebhookUrl),
+    const pressed = nodesOf(panel, "button").map((node) => node.onPress.action);
+    assert.ok(!pressed.includes(contract.ACTIONS.registerWebhook), "Register is back on settings");
+    assert.ok(!pressed.includes(contract.ACTIONS.unregisterWebhook), "Unregister is back on settings");
+    assert.ok(!pressed.includes(contract.ACTIONS.copyWebhookUrl), "Copy webhook URL is back on settings");
+    assert.equal(
+      nodesOf(panel, "form").some((node) => node.fields?.some((field) => field.id === "secret")),
+      false,
+      "the paste-the-secret form is back",
     );
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("Linear automations live in Automations"), captions);
+    assert.ok(captions.includes("Not registered"), captions);
+    const open = nodesOf(panel, "button").find((node) => node.label === "Open Automations");
+    assert.ok(open, "no Open Automations button");
+    assert.equal(open.onPress.action, contract.ACTIONS.openExternal);
+    assert.equal(open.onPress.args.url, "ade://automations");
   });
 
   it("builds autolinks from literal rows, never from a collection it cannot write", () => {
@@ -831,29 +843,28 @@ describe("the ids the two halves share", () => {
     assert.notEqual(button.onPress.action, contract.ACTIONS.openInLinear);
   });
 
-  it("registers the webhook in one press rather than asking for a pasted secret", () => {
+  it("does not register the webhook from Settings — that press lives on the Automations tile", () => {
     // A channel that declares `verify` and cannot find its secret FAILS CLOSED
-    // and drops every delivery. The paste box that used to fill it is gone:
-    // `registerWebhook` generates the secret, creates the hook through the
-    // Linear API and stores it in the same act, which is the only order in
-    // which the secret is knowable — Linear shows it once, at creation.
+    // and drops every delivery. Register generates the secret, creates the hook
+    // through the Linear API and stores it in the same act, and the tile is
+    // what presses it. Settings only points there, so a second Register here
+    // would be a second place to keep in step.
     const panel = panels.buildSettingsPanel({
       connection: CONNECTION,
       ingress: { status: "Not registered", url: "https://relay.ade.dev/hook/abc", secretStored: false },
     });
-    const register = nodesOf(panel, "button")
-      .find((node) => node.onPress.action === contract.ACTIONS.registerWebhook);
-    assert.ok(register, "no register button");
-    // And no secret field anywhere, because a page that still asked for one
-    // would be asking for a value the reader no longer has.
+    assert.equal(
+      nodesOf(panel, "button").some((node) => node.onPress.action === contract.ACTIONS.registerWebhook),
+      false,
+      "Register is back on settings",
+    );
     assert.equal(
       nodesOf(panel, "form").some((node) => node.fields?.some((field) => field.id === "secret")),
       false,
       "the paste-the-secret form is back",
     );
-    // The unverified state says what is actually at risk rather than "not configured".
     const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
-    assert.ok(captions.includes("drops every delivery"), captions);
+    assert.ok(captions.includes("Linear automations live in Automations"), captions);
   });
 });
 
@@ -992,8 +1003,9 @@ describe("which Linear app the connection is made with", () => {
   it("warns an API-key reader, who has no OAuth grant at all", () => {
     // The one connection left that Linear cannot deliver to. A personal key
     // carries no OAuth scope, so `webhooksPossible` is false with
-    // `clientSource` null — and that reader would otherwise paste a signing
-    // secret for a webhook that can never fire, with nothing saying so.
+    // `clientSource` null — and that reader would otherwise hunt for Register
+    // on a webhook that can never fire. The pointer carries the status the
+    // Automations tile would show; Settings no longer has a Register of its own.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
       ingress: {
@@ -1003,11 +1015,14 @@ describe("which Linear app the connection is made with", () => {
         webhooksPossible: false,
       },
     });
-    assert.ok(warnings(panel).includes("a personal API key carries none"), warnings(panel));
-    // The Webhook row carries the headline; the caption must not restate it in
-    // different words, which is the duplicate the data half removed from its
-    // own status string.
-    assert.ok(!warnings(panel).includes("Linear will not deliver events to this connection"));
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("Linear will not deliver to this connection"), captions);
+    assert.equal(
+      nodesOf(panel, "button").some((node) => node.onPress.action === contract.ACTIONS.registerWebhook),
+      false,
+      "Register is back on settings",
+    );
+    assert.equal(warnings(panel), "");
   });
 
   it("says NOTHING to a reader on their own registered Linear app", () => {
@@ -1040,8 +1055,9 @@ describe("which Linear app the connection is made with", () => {
   });
 
   it("says so before the reader spends ten minutes in Linear's settings", () => {
-    // The warning has to come BEFORE the URL and the secret field, because
-    // after them it is a post-mortem rather than a warning.
+    // The pointer's status line is the API-key refusal, and there is no
+    // Register beside it that would send the reader to Linear to paste a URL
+    // that can never fire.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
       ingress: {
@@ -1051,15 +1067,12 @@ describe("which Linear app the connection is made with", () => {
         webhooksPossible: false,
       },
     });
-    const body = everyNode(panel.body);
-    const warnAt = body.findIndex(
-      (node) => typeof node.text === "string" && node.text.includes("a personal API key carries none"),
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("Linear will not deliver to this connection"), captions);
+    assert.equal(
+      nodesOf(panel, "button").some((node) => node.onPress.action === contract.ACTIONS.registerWebhook),
+      false,
     );
-    const registerAt = body.findIndex(
-      (node) => node.onPress?.action === contract.ACTIONS.registerWebhook,
-    );
-    assert.ok(warnAt !== -1 && registerAt !== -1);
-    assert.ok(warnAt < registerAt, "the warning comes after the button it is about");
   });
 
   it("says nothing before sign-in, whichever app this build signs in as", () => {
@@ -1075,10 +1088,10 @@ describe("which Linear app the connection is made with", () => {
     }
   });
 
-  it("keeps the missing-secret warning, which is a real one", () => {
-    // Removing the scope warnings must not take the secret warning with them:
-    // with nothing stored, every delivery Linear sends is dropped before the
-    // plugin sees it.
+  it("carries the webhook status on the Automations pointer, not a ledger table", () => {
+    // Unacked deliveries and drain errors belong on the Automations tile. This
+    // card only says whether anything is registered yet, and when the last
+    // event arrived — the one fact a reader needs before they walk over.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, organizationName: "Acme" },
       ingress: {
@@ -1086,33 +1099,31 @@ describe("which Linear app the connection is made with", () => {
         tone: "warning",
         url: "https://relay.ade.dev/hook/abc",
         secretStored: false,
+        registered: false,
         webhooksPossible: true,
       },
     });
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("Waiting for the signing secret"), captions);
     const rows = everyNode(panel.body).flatMap((node) => node.rows ?? []);
-    const webhook = rows.find((row) => row.key === "Webhook");
-    assert.ok(webhook, "no Webhook row on the settings panel");
-    assert.equal(webhook.tone, "warning");
-    assert.match(JSON.stringify(webhook.value), /Waiting for the signing secret/);
+    assert.equal(rows.some((row) => row.key === "Webhook"), false, "the Webhook ledger row is back");
   });
 
-  it("prints the drain's last event, unacked count and error from the ledger", () => {
+  it("names a registered webhook's last event on the pointer", () => {
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, organizationName: "Acme" },
       ingress: {
-        status: "Endpoint ready",
-        url: "https://relay.ade.dev/hook/abc",
-        secretStored: true,
-        webhooksPossible: true,
+        status: "Registered",
+        registered: true,
         lastEvent: "2026-09-01 12:00 UTC",
         pendingDeliveries: 2,
         drainError: "relay timed out",
       },
     });
-    const rows = everyNode(panel.body).flatMap((node) => node.rows ?? []);
-    assert.match(JSON.stringify(rows.find((row) => row.key === "Last event")?.value), /2026-09-01 12:00 UTC/);
-    assert.match(JSON.stringify(rows.find((row) => row.key === "Waiting")?.value), /2 unacked/);
-    assert.match(JSON.stringify(rows.find((row) => row.key === "Drain")?.value), /relay timed out/);
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("Registered · last event 2026-09-01 12:00 UTC"), captions);
+    assert.ok(!captions.includes("2 unacked"), captions);
+    assert.ok(!captions.includes("relay timed out"), captions);
   });
 });
 

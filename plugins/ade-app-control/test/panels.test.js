@@ -6,22 +6,14 @@ const { describe, it } = require("node:test");
 const { buildMainPanel } = require("../panels");
 
 describe("electron control panels", () => {
-  it("draws the electron-control canvas bound to the status collection", () => {
+  it("binds the status row every client can list, and says where to drive it", () => {
     const panel = buildMainPanel({ status: { supported: true } });
-    const canvas = panel.body.find((node) => node.component === "canvas");
-    assert.equal(canvas.engine, "electron-control");
-    assert.equal(canvas.bind.collection, "status");
-  });
-
-  it("says on the phone why there is nothing to drive there", () => {
-    // The panel is the FALLBACK now — every client that can host a page draws
-    // `page/` instead. What is left has to be honest about why: a phone is not
-    // the computer the Electron app is running on, and a blank canvas would
-    // read as a stream that failed rather than a surface that does not apply.
-    const panel = buildMainPanel({ status: { supported: true } });
+    const list = panel.body.find((node) => node.component === "list");
+    assert.equal(list.bind.collection, "status");
     const note = panel.body.find((node) => node.component === "text");
     assert.ok(note, "the fallback panel has no line for the phone");
     assert.match(note.text, /desktop/i);
+    assert.ok(!panel.body.some((node) => node.component === "canvas"));
   });
 
   it("keeps the error state a retry rather than a dead end", () => {

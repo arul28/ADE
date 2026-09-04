@@ -1,7 +1,7 @@
 /**
  * The reader's chosen device, target and mode, in the plugin's own collections.
  *
- * The compiled pane kept these in React state that died with the drawer, and
+ * The compiled pane kept these in React state that died with the pane, and
  * its zoom in `localStorage`. A guest's partition is NON-PERSISTENT — it dies
  * with the placement, and every placement is destroyed when it hides — so
  * `localStorage` in a page is a value that is always empty by the time anybody

@@ -132,7 +132,11 @@ export type AdePluginBridge = {
      * project the path is relative to, because a plugin page knows a repo-
      * relative path and never an absolute one.
      */
-    openPathInEditor?(target: { rootPath: string; target: string }): Promise<void>;
+    openPathInEditor?(request: {
+      rootPath: string;
+      relativePath?: string;
+      target: string;
+    }): Promise<void>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
   theme?: { get(): Promise<PluginWebviewThemeSnapshot> };

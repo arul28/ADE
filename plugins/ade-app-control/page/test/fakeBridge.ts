@@ -141,6 +141,8 @@ export function installFakeBridge(options: {
   connected?: boolean;
   /** Whether this host can paint a builtin engine. Default true. */
   engine?: boolean;
+  /** Drop `ui.openPathInEditor`, as a host that predates this wave does. */
+  withoutEditor?: boolean;
   /** What the child reports as blocking this machine. */
   disabledReason?: string | null;
 } = {}): FakeBridge {
@@ -306,9 +308,17 @@ export function installFakeBridge(options: {
       resize(size: { height: number }) {
         record("ui.resize", size as unknown as Record<string, unknown>);
       },
-      async openPathInEditor(target: { rootPath: string; target: string }) {
-        record("ui.openPathInEditor", target as unknown as Record<string, unknown>);
-      },
+      ...(options.withoutEditor
+        ? {}
+        : {
+          async openPathInEditor(request: {
+            rootPath: string;
+            relativePath?: string;
+            target: string;
+          }) {
+            record("ui.openPathInEditor", request as unknown as Record<string, unknown>);
+          },
+        }),
     },
     clipboard: {
       async read() {

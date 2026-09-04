@@ -1258,6 +1258,32 @@ exports.actions = {
     return launchedFrom(true, { message: result.message });
   },
 
+  /**
+   * The models THIS machine can run, for the composer's picker.
+   *
+   * Selecting the Cursor Cloud row is a mode: the next thing the reader does
+   * is pick a model, and that picker has to already be Cursor Cloud's catalog
+   * or Enter fails with "Choose a Cursor Cloud model first". The compiled
+   * cloud mode did the same swap. `ok: false` (or a throw) leaves ADE's list
+   * alone rather than emptying it.
+   */
+  async listCloudModels() {
+    if (!api) {
+      return { ok: false, message: "Cursor Cloud is still starting up on this machine." };
+    }
+    try {
+      const listed = await api.listModels();
+      const catalog = readCatalog(listed?.items);
+      const modelIds = catalog.map((row) => row.id).filter((id) => typeof id === "string" && id);
+      if (modelIds.length === 0) {
+        return { ok: false, message: "Cursor's model catalog did not load." };
+      }
+      return { modelIds };
+    } catch (error) {
+      return { ok: false, message: error?.message ?? "Cursor's model catalog did not load." };
+    }
+  },
+
   /* ── Automation steps and agent tools ──────────────────────────────── */
 
   /** Open ADE's Cursor provider settings page (desktop/web) or name it (phone, TUI). */

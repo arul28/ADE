@@ -29,8 +29,7 @@ import { CaretDown, Lock, Play } from "@phosphor-icons/react";
 import { Button, Chip, cn } from "@ade-dev/ui";
 
 import { startRun as startRunAction } from "../host/actions";
-import { pickLane } from "../host/ui";
-import { hostPickers } from "../host/ui";
+import { hostPickers, pickLane } from "../host/ui";
 import {
   buildTargetConfig,
   describeLaunchCommit,
@@ -321,10 +320,10 @@ export function ReviewLaunchForm({
   );
 
   const handlePickLane = React.useCallback(async () => {
-    const choice = await pickLane();
+    const choice = await pickLane(draft.laneId ? { value: draft.laneId } : undefined);
     if (!choice?.laneId) return;
     setDraft((prev) => ({ ...prev, laneId: choice.laneId, compareLaneId: "" }));
-  }, []);
+  }, [draft.laneId]);
 
   const handleLaunch = React.useCallback(async () => {
     const message = launchValidationMessage(draft, commitOrder);
@@ -622,11 +621,15 @@ export function ReviewLaunchForm({
         <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Model and reasoning</span>
         <ReviewLaunchModelControls
           modelId={draft.modelId}
-          provider={draft.provider}
           reasoningEffort={draft.reasoningEffort}
           fastMode={draft.fastMode}
-          onModelChange={(modelId, provider) =>
-            setDraft((prev) => ({ ...prev, modelId, provider: provider ?? prev.provider }))}
+          onModelChange={(modelId, extras) =>
+            setDraft((prev) => ({
+              ...prev,
+              modelId,
+              provider: extras?.provider ?? prev.provider,
+              ...(typeof extras?.fastMode === "boolean" ? { fastMode: extras.fastMode } : {}),
+            }))}
           onReasoningEffortChange={(value) => update("reasoningEffort", value)}
           onFastModeChange={(value) => update("fastMode", value)}
           disabled={busy}

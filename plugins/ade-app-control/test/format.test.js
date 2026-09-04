@@ -20,6 +20,7 @@ describe("electron control row shaping", () => {
     const row = statusRow({ supported: true, activeSession: null });
     assert.equal(row.live, "no");
     assert.equal(row.badge.text, "IDLE");
+    assert.match(row.subtitle, /Electron Control/);
   });
 
   it("does not claim support for a status that never said so", () => {

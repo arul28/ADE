@@ -14,6 +14,10 @@
 
 const { COLLECTION_STATUS, DEEPLINK_CONTROL } = require("./format");
 
+/** The one line every non-desktop client gets. */
+const NEEDS_DESKTOP =
+  "Driving an Electron app needs the desktop it is running on. On a phone this row is the status only.";
+
 function fallback(title, text, deeplink) {
   return { title, text, deeplink };
 }
@@ -39,24 +43,23 @@ function buildMainPanel(input = {}) {
     title: "Electron Control",
     fallback: fallback(
       "Electron Control",
-      "Open ADE on the attached computer to drive and inspect an Electron app.",
+      NEEDS_DESKTOP,
       DEEPLINK_CONTROL,
     ),
     body: [
       {
-        component: "canvas",
-        engine: "electron-control",
+        component: "list",
         bind: {
           collection: COLLECTION_STATUS,
           limit: 8,
         },
-        emptyText: "Open ADE on the attached computer to drive an Electron app.",
+        emptyText: NEEDS_DESKTOP,
       },
       {
         component: "text",
         variant: "caption",
         tone: "muted",
-        text: "Driving an Electron app needs the desktop it is running on. On a phone this row is the status only.",
+        text: NEEDS_DESKTOP,
       },
     ],
   };
@@ -67,4 +70,4 @@ function build(panelId, input = {}) {
   return null;
 }
 
-module.exports = { build, buildMainPanel };
+module.exports = { NEEDS_DESKTOP, build, buildMainPanel };

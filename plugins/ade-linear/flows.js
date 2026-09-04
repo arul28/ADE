@@ -1,7 +1,7 @@
 // The four acts that turn an issue into work, and one that closes it.
 //
 // Everything here reaches ADE rather than Linear: a lane is `lane.create`, an
-// agent is `chat.createSession` or `chat.launchCli`, and the link between the
+// agent is `chat.launchHeadless` or `chat.launchCli`, and the link between the
 // issue and the lane is `ade.lanes.linkIssue`. Linear is touched only at the
 // end, when the merged pull request moves the issue to Done.
 //
@@ -33,7 +33,7 @@ const { issueBranchName, issueLaneName, issueRefFromRow } = require("./issueForm
  *
  * The unified `permissionMode` is FIRST because it is the one field every
  * launch accepts and the one a caller that could not name a provider falls back
- * to. The four native fields follow: `chat.createSession` and `chat.launchCli`
+ * to. The four native fields follow: `chat.launchHeadless` and `chat.launchCli`
  * read whichever is present, so exactly one is ever sent.
  *
  * Named here rather than derived, because this list is a fact about the LAUNCH

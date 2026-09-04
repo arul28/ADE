@@ -8,18 +8,19 @@
  *
  *  1. **Host calls.** `window.ade.cto.*` and `window.ade.github.*` became the
  *     page actions in `../host/actions`, which the plugin's own child answers.
- *  2. **Persistence.** The three preference keys the plugin declares in
- *     `plugin.json` are read and written through the bridge's `config` verbs.
+ *  2. **Persistence.** The setting keys the plugin declares in `plugin.json`
+ *     are read and written through the bridge's `config` verbs. The settings
+ *     card writes `defaultTeamKey`; the launch form writes
+ *     `launchPromptClipboard`.
  *  3. **Imports.** `../lanes/laneDesignTokens` and `../ui/Button` became
  *     `@ade-dev/ui`; `../../../shared/types` became `../types`.
  *
  * Two blocks are additions rather than ports, because the compiled section has
- * no equivalent: the PREFERENCES form (the plugin's own `settings` keys, one of
- * which — the launch-prompt clipboard toggle — used to be an ADE preference) and
- * the AUTOMATIONS/webhook strip (the plugin's `webhookIngress`). Both are drawn
- * in the compiled section's visual vocabulary — its card, its label, its type
- * scale — and both say exactly what `panels/settings.js` already says, word for
- * word, because that panel is the behavioural spec for what the plugin can do.
+ * no equivalent: the default-team control (the plugin's own `defaultTeamKey`
+ * setting) and the Automations pointer (one line, plus whether a webhook is
+ * registered). The launch-prompt clipboard toggle lives on the launch form, and
+ * Register lives on the Automations tile. Both sentences here match
+ * `panels/settings.js` word for word.
  *
  * ## The OAuth flow, and what is gone
  *
@@ -51,7 +52,7 @@ import {
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, SettingsToggle, formatTimestamp } from "@ade-dev/ui";
+import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, formatTimestamp } from "@ade-dev/ui";
 import { Button } from "@ade-dev/ui";
 
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../types";

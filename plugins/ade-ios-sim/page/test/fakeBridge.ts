@@ -419,8 +419,12 @@ export function installFakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
       ...(options.withoutEditor
         ? {}
         : {
-          async openPathInEditor(target: { rootPath: string; target: string }) {
-            record("ui.openPathInEditor", target as unknown as Record<string, unknown>);
+          async openPathInEditor(request: {
+            rootPath: string;
+            relativePath?: string;
+            target: string;
+          }) {
+            record("ui.openPathInEditor", request as unknown as Record<string, unknown>);
           },
         }),
     },

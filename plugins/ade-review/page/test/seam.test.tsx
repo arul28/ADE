@@ -123,6 +123,7 @@ describe("the page and the plugin agree on every verb", () => {
     await waitFor(() => {
       expect(host.callsTo("ui.pickLane").length).toBe(1);
     });
+    expect(host.lastCall("ui.pickLane")!.args).toEqual({ value: "lane-1" });
 
     await act(async () => {
       fireEvent.click(within(form).getByLabelText("Model"));
@@ -130,6 +131,7 @@ describe("the page and the plugin agree on every verb", () => {
     await waitFor(() => {
       expect(host.callsTo("ui.pickModel").length).toBe(1);
     });
+    expect(host.lastCall("ui.pickModel")!.args).toEqual({ value: "openai/gpt-5.6-sol" });
 
     await act(async () => {
       fireEvent.click(within(form).getByLabelText("Reasoning effort"));
@@ -138,10 +140,11 @@ describe("the page and the plugin agree on every verb", () => {
       expect(host.callsTo("ui.pickReasoningEffort").length).toBe(1);
     });
     // The ladder is per MODEL, so the picker is asked with the model the reader
-    // just chose — not with the one the form opened on.
+    // just chose — not with the one the form opened on — and with the current
+    // rung so ADE's list opens on it.
     expect(host.lastCall("ui.pickReasoningEffort")!.args).toEqual({
-      provider: "claude",
       model: "anthropic/claude-opus-5",
+      value: "low",
     });
 
     // ── Start a run ─────────────────────────────────────────────────────────
@@ -161,7 +164,7 @@ describe("the page and the plugin agree on every verb", () => {
       dirtyOnly: false,
       modelId: "anthropic/claude-opus-5",
       reasoningEffort: "high",
-      fastMode: false,
+      fastMode: true,
       publishBehavior: "local_only",
     });
 
@@ -386,7 +389,8 @@ describe("the page and the plugin agree on every verb", () => {
     // compiled page read the same value out of the app store.
     expect(host.lastCall("ui.openPathInEditor")!.args).toEqual({
       rootPath: "/repo/.ade/worktrees/fix-login",
-      target: "src/auth.ts",
+      relativePath: "src/auth.ts",
+      target: "default",
     });
 
     // Without it: the same card, the same button, and a press that does nothing
@@ -487,5 +491,45 @@ describe("the page and the plugin agree on every verb", () => {
     expect(`${url.protocol}//${url.host}${url.pathname}`).toBe("ade://plugin/ade-review/runs");
     expect(JSON.parse(url.searchParams.get("ctx")!)).toEqual({ runId: host.runs[0]!.id });
     expect(host.callsTo("surface.close").length).toBe(1);
+  });
+
+  it("falls back to plain fields when the host has no pickers", async () => {
+    // G1: a host without the pickers still launches. The triggers become a
+    // native lane select and two text fields, which is worse than ADE's own
+    // pickers and far better than a form the reader cannot fill.
+    reinstall({ withoutPickers: true });
+    render(<RunsEntry context={tabContext()} />);
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLaunchContext").length).toBeGreaterThan(0);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Launch new review"));
+    });
+    const form = await waitFor(() => {
+      const node = document.querySelector('[data-review-pane="launch"]');
+      if (!node) throw new Error("The launch form has not opened yet.");
+      return node as HTMLElement;
+    });
+    expect(within(form).getByLabelText("Lane to review").tagName).toBe("SELECT");
+    expect(within(form).getByLabelText("Model").tagName).toBe("INPUT");
+    expect(within(form).getByLabelText("Reasoning effort").tagName).toBe("INPUT");
+    expect(host.callsTo("ui.pickLane")).toHaveLength(0);
+    expect(host.callsTo("ui.pickModel")).toHaveLength(0);
+    expect(host.callsTo("ui.pickReasoningEffort")).toHaveLength(0);
+
+    await waitFor(() => {
+      expect((within(form).getByLabelText("Lane to review") as HTMLSelectElement).value).toBe("lane-1");
+    });
+
+    await act(async () => {
+      fireEvent.click(within(form).getByText("Start review"));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageStartRun").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageStartRun")!.args.target).toEqual({
+      mode: "lane_diff",
+      laneId: "lane-1",
+    });
   });
 });

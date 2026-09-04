@@ -191,12 +191,18 @@ export async function openLink(url: string): Promise<void> {
  */
 export async function openPathInEditor(args: {
   rootPath: string;
-  target: string;
+  relativePath?: string;
+  target?: string;
 }): Promise<boolean> {
   const api = bridge();
   if (!api?.ui?.openPathInEditor) return false;
+  const relativePath = args.relativePath?.trim();
   try {
-    await api.ui.openPathInEditor(args);
+    await api.ui.openPathInEditor({
+      rootPath: args.rootPath,
+      ...(relativePath ? { relativePath } : {}),
+      target: args.target?.trim() || "default",
+    });
     return true;
   } catch {
     return false;
@@ -208,37 +214,40 @@ export async function openPathInEditor(args: {
  *
  * `null` covers both "the reader dismissed it" and "this host has no picker",
  * and the caller treats them the same: leave the field as it was. The launch
- * form asks `hasHostPicker` separately when it needs to draw a fallback control
+ * form asks `hostPickers` separately when it needs to draw a fallback control
  * rather than a trigger.
  */
-export async function pickModel(): Promise<PluginWebviewModelChoice | null> {
+export async function pickModel(request?: {
+  value?: string;
+  availableModelIds?: string[];
+}): Promise<PluginWebviewModelChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickModel) return null;
   try {
-    return (await api.ui.pickModel()) ?? null;
+    return (await api.ui.pickModel(request)) ?? null;
   } catch {
     return null;
   }
 }
 
-export async function pickLane(): Promise<PluginWebviewLaneChoice | null> {
+export async function pickLane(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickLane) return null;
   try {
-    return (await api.ui.pickLane()) ?? null;
+    return (await api.ui.pickLane(request)) ?? null;
   } catch {
     return null;
   }
 }
 
-export async function pickReasoningEffort(args: {
-  provider?: string | null;
-  model?: string | null;
+export async function pickReasoningEffort(request: {
+  model: string;
+  value?: string | null;
 }): Promise<PluginWebviewReasoningChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickReasoningEffort) return null;
   try {
-    return (await api.ui.pickReasoningEffort(args)) ?? null;
+    return (await api.ui.pickReasoningEffort(request)) ?? null;
   } catch {
     return null;
   }

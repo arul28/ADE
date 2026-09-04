@@ -32,7 +32,7 @@
       "socket": "work-rail-pane",
       "surface": "work",
       "id": "sim-pane",
-      "label": "iOS Sim",
+      "label": "iOS Sim Control",
       "icon": "device-mobile",
       "panelId": "main",
       "webviewSurfaceId": "sim"

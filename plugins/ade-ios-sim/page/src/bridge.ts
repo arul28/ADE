@@ -130,7 +130,11 @@ export type AdePluginBridge = {
      * Xcode" in the compiled Preview Lab is the host's own open, not the
      * page's: a guest cannot spawn an editor and must not be able to.
      */
-    openPathInEditor?(target: { rootPath: string; target: string }): Promise<void>;
+    openPathInEditor?(request: {
+      rootPath: string;
+      relativePath?: string;
+      target: string;
+    }): Promise<void>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
   theme?: { get(): Promise<PluginWebviewThemeSnapshot> };

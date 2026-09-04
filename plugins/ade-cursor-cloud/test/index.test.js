@@ -39,6 +39,7 @@ function manifestActionIds() {
   }
   for (const socket of manifest.sockets ?? []) {
     add(socket.actionId);
+    add(socket.modelsAction);
     for (const entry of socket.menu ?? []) add(entry.actionId);
     add(socket.webhook?.statusAction);
     add(socket.webhook?.registerAction);
@@ -85,14 +86,27 @@ describe("the manifest's action ids", () => {
     // The Advanced affordance and the action's own non-send answer must point
     // at the same page, or the two doorways open different forms.
     assert.equal(row.advancedSurfaceId, "launch");
+    // Selecting the row is a mode: the composer's model picker has to already
+    // be Cursor Cloud's catalog, and the chats it launches belong to the one
+    // declared runtime.
+    assert.equal(row.modelsAction, "listCloudModels");
+    assert.equal(row.runtimeId, "cloud-agent");
   });
 
   it("declares every surface an action can ask to open", () => {
-    const surfaces = new Set((manifest.surfaces ?? []).filter((s) => s.kind === "webview").map((s) => s.id));
-    assert.deepEqual([...surfaces].sort(), ["agent", "fleet", "launch"]);
+    const surfaces = (manifest.surfaces ?? []).filter((s) => s.kind === "webview");
+    const ids = new Set(surfaces.map((s) => s.id));
+    assert.deepEqual([...ids].sort(), ["agent", "fleet", "launch"]);
+    for (const surface of surfaces) {
+      // `parseSurfaces` forbids `mobile: true` on a webview — it is a warning,
+      // and official packages must ship zero warnings. The iOS page host still
+      // draws these pages from the bundled cache; this flag is not the phone
+      // gate the name suggests.
+      assert.equal(surface.mobile, false, `${surface.id} must ship mobile: false`);
+    }
     for (const socket of manifest.sockets ?? []) {
       if (!socket.webviewSurfaceId) continue;
-      assert.ok(surfaces.has(socket.webviewSurfaceId), `${socket.id} points at an undeclared surface`);
+      assert.ok(ids.has(socket.webviewSurfaceId), `${socket.id} points at an undeclared surface`);
     }
   });
 
@@ -106,8 +120,26 @@ describe("the manifest's action ids", () => {
       hydrate: true,
       artifacts: true,
     });
-    // Cursor owns the name of a Cursor agent.
-    assert.equal(runtime.renameLock, true);
+    // Cursor owns the name of a Cursor agent. The parser field is `ownsName`;
+    // `renameLock` is ignored and would ship chats ADE could silently rename.
+    assert.equal(runtime.ownsName, true);
+    assert.equal(runtime.renameLock, undefined);
+  });
+
+  it("publishes the sockets the spec named and no extras", () => {
+    // Composer/chat menus are Linear's. This plugin's composer doorway is the
+    // machine-entry row; the chat header is the 1.x button, kept as today.
+    assert.deepEqual(
+      (manifest.sockets ?? []).map((socket) => socket.socket),
+      [
+        "machine-entry",
+        "chat-header-action",
+        "work-rail-pane",
+        "command-palette-action",
+        "row-badge",
+        "automation-trigger-tile",
+      ],
+    );
   });
 
   it("keeps every CLI word the 1.x plugin published", () => {
@@ -412,6 +444,24 @@ describe("pressing Enter on the Cursor Cloud machine row", () => {
     assert.equal(result.ok, undefined);
     assert.equal(result.message, "Launched on Cursor Cloud. Open it from the fleet to follow along.");
     assert.deepEqual(result.composer, { replaceText: "" });
+  });
+
+  it("narrows the composer's model picker to Cursor Cloud's catalog", async () => {
+    // Selecting the row is a mode. The next press is the model chip, and it
+    // has to already be this catalog or Enter fails with "Choose a Cursor
+    // Cloud model first" — which is the compiled cloud mode's own swap.
+    const { host } = await activated();
+    const result = await withFetch(host, () => plugin.actions.listCloudModels({}));
+    await plugin.deactivate();
+    assert.deepEqual(result.modelIds, ["composer-2"]);
+  });
+
+  it("leaves ADE's model list alone when Cursor will not answer a catalog", async () => {
+    const { host } = await activated({ noKey: true });
+    const result = await withFetch(host, () => plugin.actions.listCloudModels({}));
+    await plugin.deactivate();
+    assert.equal(result.ok, false);
+    assert.equal(result.modelIds, undefined);
   });
 });
 

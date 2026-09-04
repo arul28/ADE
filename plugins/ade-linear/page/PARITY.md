@@ -227,12 +227,9 @@ argument that provider's `permissionField` names — `claudePermissionMode`,
 `acceptEdits` as `permissionMode` would be refused, which is why the field is
 copied from the capability rather than kept as a table here.
 
-Remaining, and small: the control is ONE shape for every provider (a select
-wearing the compiled trigger chrome) rather than a popover menu for Claude and
-Codex and a select for the other three, and the per-option detail sentences are
-`title` text rather than menu subtitles. The compiled `ModelPicker`'s recents,
-grouping and per-provider icons did not move either — the model control is a
-select over the same list.
+The control is the host's picker for every provider, so Claude, Codex and the
+other three share one chip that opens ADE's own popover. Recents, grouping and
+per-provider icons come with `ui.pickModel()` because it *is* `ModelPicker`.
 
 **G5 — the lane picker is a native `<select>`.** CLOSED by deletion. It was a
 select, then the kit's `LaneCombobox` over a lane list this page fetched, and it
@@ -269,11 +266,11 @@ variant, duration, strength and radius, and the launch modal draws it.
 
 **G9 — three connected-card rows the compiled design has no slot for.** Carried.
 `pageConnection` answers `expiresIn`/`expired` (from the same `expiry` the
-settings panel prints) and already carried `checkedAt` and `message`;
-`pageAutolinks` answers `lastEvent`, `pendingDeliveries` and `drainError` from
-the host's delivery ledger. The connected card draws the first three in the
-bordered row the workspace row established, and the webhook block draws the
-other three beside its Verification row.
+settings panel prints) and already carried `checkedAt` and `message`. The
+connected card draws those three in the bordered row the workspace row
+established. `lastEvent`, `pendingDeliveries` and `drainError` belong to the
+Automations tile; Settings only repeats whether a webhook is registered, and
+the last event when one is.
 
 **G10 — `PageLane.path` is always null.** Carried. `PluginLaneSummary` carries
 `path`, and the launch modal's conflict tooltip names it. Null means the host

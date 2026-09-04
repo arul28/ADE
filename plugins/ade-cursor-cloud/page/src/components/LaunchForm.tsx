@@ -338,7 +338,7 @@ export function LaunchForm({
           available={hasPicker("pickLane")}
           disabled={busy}
           onPick={async () => {
-            const outcome = await pickLane((context?.lanes ?? []).map((lane) => lane.id));
+            const outcome = await pickLane(laneId);
             if (outcome.kind === "picked") {
               setLaneLabel(outcome.label);
               // A lane switch re-reads the lane-derived fields, exactly as the
@@ -359,13 +359,18 @@ export function LaunchForm({
           valueLabel={modelLabel ?? selectedModel?.label ?? null}
           placeholder="Cursor's default"
           options={models.map((model) => ({ value: model.id, label: model.label }))}
-          available={hasPicker("pickModel")}
+          available={hasPicker("pickModel") && models.length > 0}
           disabled={busy}
           onPick={async () => {
-            const outcome = await pickModel(models.map((model) => model.id));
+            const outcome = await pickModel({
+              value: modelId,
+              availableModelIds: models.map((model) => model.id),
+            });
             if (outcome.kind === "picked") {
               setModelId(outcome.id);
               setModelLabel(outcome.label ?? models.find((m) => m.id === outcome.id)?.label ?? null);
+              // ADE's picker sets the model and the fast tier in one gesture.
+              if (typeof outcome.fastMode === "boolean") setFastMode(outcome.fastMode);
               // The rungs belong to the model, so a model change drops a rung
               // the new model may not have.
               setReasoningEffort(null);
@@ -392,13 +397,19 @@ export function LaunchForm({
             }
             placeholder="Default"
             options={reasoningOptions.map((option) => ({ value: option.value, label: option.label }))}
-            available={hasPicker("pickReasoningEffort")}
+            available={hasPicker("pickReasoningEffort") && Boolean(modelId)}
             disabled={busy}
             onPick={async () => {
-              const outcome = await pickReasoningEffort(modelId);
+              const outcome = await pickReasoningEffort(modelId, reasoningEffort);
               if (outcome.kind === "picked") {
-                setReasoningEffort(outcome.id);
-                setReasoningLabel(outcome.label);
+                // Empty id is "no reasoning" — a real choice the host encodes
+                // as `effort: null`, not a dismissal.
+                setReasoningEffort(outcome.id || null);
+                setReasoningLabel(
+                  outcome.label
+                    ?? reasoningOptions.find((option) => option.value === outcome.id)?.label
+                    ?? null,
+                );
               }
               return outcome;
             }}

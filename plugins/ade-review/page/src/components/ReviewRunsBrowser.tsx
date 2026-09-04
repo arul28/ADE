@@ -456,7 +456,11 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
       if (!resolved?.rootPath) return;
       // Guarded, and silent when the host has no editor verb — the compiled
       // card's own behaviour with `window.ade.app.openPathInEditor?.(…)`.
-      void openPathInEditor({ rootPath: resolved.rootPath, target: resolved.target });
+      void openPathInEditor({
+        rootPath: resolved.rootPath,
+        relativePath: resolved.target,
+        target: "default",
+      });
     },
     [resolveFindingTarget],
   );

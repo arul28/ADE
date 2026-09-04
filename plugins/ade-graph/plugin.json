@@ -16,7 +16,7 @@
       "entryHtml": "dist/index.html",
       "panelId": "graph",
       "order": 50,
-      "mobile": true
+      "mobile": false
     },
     {
       "kind": "webview",
@@ -55,7 +55,8 @@
       "id": "palette-graph",
       "label": "Graph",
       "icon": "graph",
-      "actionId": "openGraph"
+      "actionId": "openGraph",
+      "webviewSurfaceId": "graph"
     }
   ],
   "collections": {

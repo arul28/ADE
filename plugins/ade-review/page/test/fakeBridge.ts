@@ -346,17 +346,17 @@ export function installFakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
     };
   }
   if (!options.withoutPickers) {
-    ui.pickModel = async () => {
-      record("ui.pickModel", {});
-      return { modelId: "anthropic/claude-opus-5", provider: "claude" };
+    ui.pickModel = async (request) => {
+      record("ui.pickModel", (request ?? {}) as unknown as Record<string, unknown>);
+      return { modelId: "anthropic/claude-opus-5", fastMode: true };
     };
-    ui.pickLane = async () => {
-      record("ui.pickLane", {});
+    ui.pickLane = async (request) => {
+      record("ui.pickLane", (request ?? {}) as unknown as Record<string, unknown>);
       return { laneId: "lane-1", name: "fix-login" };
     };
-    ui.pickReasoningEffort = async (args) => {
-      record("ui.pickReasoningEffort", args as unknown as Record<string, unknown>);
-      return { effort: "high" };
+    ui.pickReasoningEffort = async (request) => {
+      record("ui.pickReasoningEffort", request as unknown as Record<string, unknown>);
+      return { modelId: request.model, effort: "high" };
     };
   }
 

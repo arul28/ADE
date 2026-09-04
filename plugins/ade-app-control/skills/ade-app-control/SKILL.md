@@ -7,7 +7,7 @@ description: Use this skill when you need to run or drive a local Electron or Ch
 
 ## Use socket mode
 
-Electron Control is a live desktop drawer service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):
+Electron Control is a live desktop service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):
 
 ```bash
 ade help app-control
@@ -63,12 +63,12 @@ ade --socket app-control launch --command "npm run dev" --text
 
 ### Survive Electron restarts
 
-`npm run dev` watches `apps/desktop/src/main/**` and restarts Electron whenever the main bundle rebuilds. After a restart, the Electron Control drawer UI in the parent ADE window can show stale `Waiting for CDP on 127.0.0.1:<port>` even though the new renderer is already exposed on the same port. From the CLI you can confirm and re-bind:
+`npm run dev` watches `apps/desktop/src/main/**` and restarts Electron whenever the main bundle rebuilds. After a restart, the Electron Control UI in the parent ADE window can show stale `Waiting for CDP on 127.0.0.1:<port>` even though the new renderer is already exposed on the same port. From the CLI you can confirm and re-bind:
 
 ```bash
 ade --socket app-control targets --text          # find the new page target id
 ade --socket app-control attach-target --target <id> --text
-ade --socket app-control snapshot --text         # forces the drawer to repaint
+ade --socket app-control snapshot --text         # forces Electron Control to repaint
 ```
 
-If `targets` shows a `/devtools/page/<id>` entry with the dev URL (`http://localhost:5173/...`), CDP is healthy — the drawer banner is just lagging until the next snapshot.
+If `targets` shows a `/devtools/page/<id>` entry with the dev URL (`http://localhost:5173/...`), CDP is healthy — the Electron Control banner is just lagging until the next snapshot.

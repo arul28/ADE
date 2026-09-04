@@ -9,10 +9,10 @@
  * per-provider grouping, brand icons, a fast-mode toggle and a search, and a
  * page-local select would be a worse copy of all five that then drifted.
  *
- * So the page asks the HOST to open the real ones — `ui.pickModel`,
- * `ui.pickReasoningEffort` — and draws only the trigger: the same chrome the
- * compiled trigger wore, showing the current value. The reader presses it, ADE's
- * own picker opens over the guest, and the choice comes back.
+ * So the page asks the HOST to open the real ones — `ui.pickModel({ value })`,
+ * `ui.pickReasoningEffort({ model, value })` — and draws only the trigger: the
+ * same chrome the compiled trigger wore, showing the current value. The reader
+ * presses it, ADE's own picker opens over the guest, and the choice comes back.
  *
  * A host with no picker still gets a usable form. The trigger becomes a plain
  * text field with the same label, because a model id typed by hand is worse than
@@ -26,12 +26,16 @@ import { cn } from "@ade-dev/ui";
 import { hostPickers, pickModel, pickReasoningEffort } from "../host/ui";
 import { REVIEW_INPUT, REVIEW_INPUT_FOCUS } from "./ReviewShell";
 
+export type ReviewLaunchModelChoice = {
+  provider?: string | null;
+  fastMode?: boolean;
+};
+
 export type ReviewLaunchModelControlsProps = {
   modelId: string;
-  provider: string | null;
   reasoningEffort: string;
   fastMode?: boolean;
-  onModelChange: (modelId: string, provider: string | null) => void;
+  onModelChange: (modelId: string, extras?: ReviewLaunchModelChoice) => void;
   onReasoningEffortChange: (value: string) => void;
   onFastModeChange?: (value: boolean) => void;
   disabled?: boolean;
@@ -71,7 +75,6 @@ function PickerTrigger({
 
 export function ReviewLaunchModelControls({
   modelId,
-  provider,
   reasoningEffort,
   fastMode = false,
   onModelChange,
@@ -85,18 +88,27 @@ export function ReviewLaunchModelControls({
   const pickers = React.useMemo(() => hostPickers(), []);
 
   const handlePickModel = React.useCallback(async () => {
-    const choice = await pickModel();
+    const choice = await pickModel(modelId ? { value: modelId } : undefined);
     // Null is both "dismissed" and "this host has no picker", and both mean
     // leave the field exactly as the reader left it.
     if (!choice?.modelId) return;
-    onModelChange(choice.modelId, choice.provider ?? null);
-  }, [onModelChange]);
+    onModelChange(choice.modelId, {
+      provider: choice.provider ?? null,
+      fastMode: choice.fastMode,
+    });
+  }, [modelId, onModelChange]);
 
   const handlePickEffort = React.useCallback(async () => {
-    const choice = await pickReasoningEffort({ provider, model: modelId });
-    if (!choice?.effort) return;
-    onReasoningEffortChange(choice.effort);
-  }, [modelId, onReasoningEffortChange, provider]);
+    if (!modelId) return;
+    const choice = await pickReasoningEffort({
+      model: modelId,
+      value: reasoningEffort || null,
+    });
+    // Null is a dismissal. `effort: null` is a real choice — "no reasoning" —
+    // and must not be folded into "leave it".
+    if (!choice) return;
+    onReasoningEffortChange(choice.effort ?? "");
+  }, [modelId, onReasoningEffortChange, reasoningEffort]);
 
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
@@ -114,7 +126,7 @@ export function ReviewLaunchModelControls({
           <input
             aria-label="Model"
             value={modelId}
-            onChange={(event) => onModelChange(event.target.value, provider)}
+            onChange={(event) => onModelChange(event.target.value)}
             disabled={disabled}
             placeholder="openai/gpt-5.6-sol"
             className={cn(REVIEW_INPUT, "pr-3", REVIEW_INPUT_FOCUS)}

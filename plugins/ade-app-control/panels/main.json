@@ -3,7 +3,7 @@
   "title": "Electron Control",
   "fallback": {
     "title": "Electron Control",
-    "text": "Open ADE on the attached computer to drive and inspect an Electron app.",
+    "text": "Driving an Electron app needs the desktop it is running on. On a phone this row is the status only.",
     "deeplink": "ade://plugin/ade-app-control/main"
   },
   "body": [

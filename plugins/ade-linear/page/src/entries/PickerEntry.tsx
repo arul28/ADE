@@ -1,11 +1,11 @@
 /**
  * The composer picker.
  *
- * The `composer-picker` placement, opened by the manifest's composer-action
- * socket and by the chat-header-action socket. Both press the same surface, so
- * there is one entry: the compiled `LinearIssueSelectModal` in its `attach`
- * mode, which is `LinearIssueBrowser` in `singleSelect` — the same component the
- * app opened from the composer's Linear button.
+ * The `composer-picker` placement, opened by the manifest's
+ * `composer-menu-item` socket. There is one entry: the compiled
+ * `LinearIssueSelectModal` in its `attach` mode, which is `LinearIssueBrowser`
+ * in `singleSelect` — the same component the app opened from the composer's
+ * Linear button, now a row in the composer's three-dot menu.
  *
  * Attach then close IS the picker's whole contract. Nothing else finishes it:
  * the host's composer socket is waiting on the attach, and the surface stays up

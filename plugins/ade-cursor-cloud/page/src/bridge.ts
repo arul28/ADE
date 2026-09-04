@@ -81,13 +81,25 @@ export type PluginWebviewConfirm = {
 };
 
 /**
- * What a host picker answers.
+ * What the five host pickers answer.
  *
- * One shape for all five, because all five are the same question: the app
- * opened one of its OWN pickers over the guest and the reader chose a row.
- * `null` is a dismissal, which is a real answer and never an error.
+ * These shapes are ADE's, copied from `shared/plugins/webviewBridge.ts`. A
+ * page that flattened them to `{ id, label }` would drop `fastMode` off a
+ * model choice and then look for `id` on an answer that only has `modelId` —
+ * which is a successful pick the form would treat as a dismissal.
  */
-export type PluginWebviewPickResult = { id: string; label?: string } | null;
+export type PluginWebviewModelChoice = { modelId: string; fastMode: boolean };
+export type PluginWebviewLaneChoice = { laneId: string; name: string };
+export type PluginWebviewPermissionModeChoice = {
+  provider: string;
+  field: string;
+  value: string;
+};
+export type PluginWebviewReasoningEffortChoice = {
+  modelId: string;
+  effort: string | null;
+};
+export type PluginWebviewProviderChoice = { provider: string };
 
 export type AdePluginBridge = {
   readonly version: number;
@@ -142,18 +154,21 @@ export type AdePluginBridge = {
     /**
      * ADE's own pickers, opened as a popover over the guest.
      *
-     * The launch form uses these rather than drawing its own selects, so the
-     * model list a reader sees inside this page is the model list they see
-     * everywhere else in ADE — including the fast-mode and reasoning tiers a
-     * plugin has no way to know about. Every one is optional: a host that
-     * answers none leaves the page on its own inline lists, which is why the
-     * fallbacks in `host/pickers.ts` are not dead code.
+     * Argument and answer shapes match `webviewBridge.ts`. Every verb is
+     * optional: a host that answers none leaves the page on its own inline
+     * lists, which is why the fallbacks in `host/pickers.ts` are not dead code.
      */
-    pickModel?(request?: { provider?: string; modelIds?: string[] }): Promise<PluginWebviewPickResult>;
-    pickLane?(request?: { laneIds?: string[] }): Promise<PluginWebviewPickResult>;
-    pickPermissionMode?(request: { provider: string }): Promise<PluginWebviewPickResult>;
-    pickReasoningEffort?(request: { provider: string; model?: string }): Promise<PluginWebviewPickResult>;
-    pickProvider?(): Promise<PluginWebviewPickResult>;
+    pickModel?(
+      request?: { value?: string; availableModelIds?: string[] },
+    ): Promise<PluginWebviewModelChoice | null>;
+    pickLane?(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
+    pickPermissionMode?(
+      request: { provider: string; value?: string },
+    ): Promise<PluginWebviewPermissionModeChoice | null>;
+    pickReasoningEffort?(
+      request: { model: string; value?: string | null },
+    ): Promise<PluginWebviewReasoningEffortChoice | null>;
+    pickProvider?(request?: { value?: string }): Promise<PluginWebviewProviderChoice | null>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
   theme?: { get(): Promise<PluginWebviewThemeSnapshot> };

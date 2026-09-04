@@ -280,6 +280,28 @@ describe("the launch form", () => {
 
     fireEvent.click(await screen.findByLabelText("Model"));
     await waitFor(() => expect(fake.callsTo("ui.pickModel")).toHaveLength(1));
+    // Scoped to Cursor Cloud's catalog, not ADE's whole list — otherwise the
+    // form would offer models Enter then refuses.
+    expect(fake.lastCall("ui.pickModel")?.args).toEqual({
+      value: "composer-2",
+      availableModelIds: ["composer-2", "sonnet-4.5"],
+    });
+  });
+
+  it("uses ADE's own lane picker when the host answers one", async () => {
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    fireEvent.click(await screen.findByLabelText("Lane"));
+    await waitFor(() => expect(fake.callsTo("ui.pickLane")).toHaveLength(1));
+    expect(fake.lastCall("ui.pickLane")?.args).toEqual({ value: "lane-1" });
+  });
+
+  it("uses ADE's own reasoning picker for the chosen model", async () => {
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    fireEvent.click(await screen.findByLabelText("Reasoning effort"));
+    await waitFor(() => expect(fake.callsTo("ui.pickReasoningEffort")).toHaveLength(1));
+    expect(fake.lastCall("ui.pickReasoningEffort")?.args).toEqual({ model: "composer-2" });
   });
 
   it("launches with names, never with secret values", async () => {
@@ -291,10 +313,37 @@ describe("the launch form", () => {
     await waitFor(() => expect(fake.callsTo("invoke:pageLaunch")).toHaveLength(1));
     const args = fake.lastCall("invoke:pageLaunch")!.args;
     expect(args.prompt).toBe("Fix the flaky sync test");
+    expect(args.model).toBe("composer-2");
+    expect(args.fastMode).toBe(false);
     expect(args.secretNames).toEqual(["DATABASE_URL"]);
     // A page that could read a secret value would be a page that could
     // exfiltrate one. Every value stays in the child.
     expect(JSON.stringify(args)).not.toContain("=");
+  });
+
+  it("keeps the fast tier ADE's picker set", async () => {
+    // ADE's model picker sets the model AND the fast flag in one gesture. A
+    // page that kept only the id would silently run standard.
+    install({ modelPick: { modelId: "composer-2", fastMode: true } });
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    fireEvent.click(await screen.findByLabelText("Model"));
+    await waitFor(() => expect(fake.callsTo("ui.pickModel")).toHaveLength(1));
+    fireEvent.click(await screen.findByText("Launch"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pageLaunch")).toHaveLength(1));
+    expect(fake.lastCall("invoke:pageLaunch")!.args.fastMode).toBe(true);
+  });
+
+  it("draws its own selects when the host has no pickers", async () => {
+    install({ hostPickers: false });
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    // The fallback is the v1 path, not dead code. A chip that looked live and
+    // opened nothing would be worse than a real list the reader can use.
+    expect((await screen.findByLabelText("Model")).tagName).toBe("SELECT");
+    expect(screen.getByLabelText("Lane").tagName).toBe("SELECT");
+    expect(fake.callsTo("ui.pickModel")).toHaveLength(0);
   });
 
   it("closes the popover on a launch the child accepted", async () => {

@@ -267,7 +267,7 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
   const nodeHoverTimerRef = React.useRef<number | null>(null);
   const lastFitViewKeyRef = React.useRef("");
   const handledFocusLaneRef = React.useRef<string | null>(null);
-  const filtersPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const filtersPanelRef = React.useRef<HTMLDivElement>(null);
   const singleActionsRef = React.useRef<HTMLDivElement | null>(null);
   const batchActionsRef = React.useRef<HTMLDivElement | null>(null);
 

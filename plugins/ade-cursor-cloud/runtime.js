@@ -319,7 +319,7 @@ function createChatRuntime(deps) {
    * revoked key must not turn every poll into a retry.
    *
    * This is the ONLY thing that names a session after `openAgent`, which is what
-   * `renameLock: true` in the manifest means: Cursor owns the name of a Cursor
+   * `ownsName: true` in the manifest means: Cursor owns the name of a Cursor
    * agent, and neither ADE's auto-titler nor this plugin overwrites it.
    */
   async function readRemoteName(sessionId, agentId, known) {

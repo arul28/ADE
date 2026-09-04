@@ -283,6 +283,15 @@ describe("the page and the plugin agree on every verb", () => {
       });
     });
 
+    fireEvent.click(await screen.findByText("Open Xcode"));
+    await waitFor(() => {
+      expect(host.lastCall("ui.openPathInEditor")?.args).toEqual({
+        rootPath: "/repo",
+        relativePath: "Ade.xcodeproj",
+        target: "default",
+      });
+    });
+
     /* ── Back to the simulator, so the unmount release is a real one ──── */
 
     // Deliberate: leaving Preview mode already released, and `release` is

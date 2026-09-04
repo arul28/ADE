@@ -333,145 +333,44 @@ function autolinksBlock(input = {}) {
 }
 
 /**
- * The webhook ingress strip.
+ * Where Linear automations live, and whether anything is registered yet.
  *
- * This is the one area of the whole Linear integration the platform serves
- * better as a plugin than as compiled code: `webhookIngress` gives the plugin a
- * relay URL, a delivery event and an ack, so the status a reader wants is three
- * pre-formatted facts, the URL to paste into Linear, and a button that copies
- * it. The built-in's equivalent lives in Automations and cannot be reached from
- * the Linear settings section at all.
+ * The endpoint, its signing secret and its Register button moved to the
+ * Automations trigger tile. Two screens reporting one webhook in two
+ * vocabularies is the drift this removes. The page's settings card draws the
+ * same two sentences and the same Open Automations press, so a client that
+ * still hosts this panel rather than the page cannot disagree about where to
+ * go.
  */
-function ingressBlock(input = {}) {
+const AUTOMATIONS_DEEPLINK = "ade://automations";
+
+function automationsPointer(input = {}) {
   const ingress = input.ingress;
-  if (!ingress) return [];
+  const registered = ingress?.registered === true;
+  const detail = ingress == null
+    ? "Register the webhook there so an issue that changes wakes ADE."
+    : registered
+      ? `Registered${ingress.lastEvent ? ` · last event ${ingress.lastEvent}` : ""}.`
+      : (ingress.status ?? "Not registered");
 
-  // Whether Linear can deliver to this connection AT ALL, which is a different
-  // question from whether the endpoint exists or the secret is stored.
-  //
-  // Read from `webhooksPossible` and from nothing else. Both OAuth clients now
-  // ask for `admin`, so which app signed in no longer decides this; what
-  // decides it is whether there is an OAuth grant at all, and the connection an
-  // API key made has none. A `clientSource === "custom"` fallback used to stand
-  // here and would now warn the one reader who no longer needs warning, so it
-  // is gone rather than corrected: `undefined` means a data half that cannot
-  // answer, and a warning drawn on a guess is worse than the silence.
-  const starved = input.ingress?.webhooksPossible === false;
-
-  const rows = [{ key: "Webhook", value: value(ingress.status ?? "Not set up"), tone: ingress.tone ?? "neutral" }];
-  if (ingress.lastEvent) rows.push({ key: "Last event", value: value(ingress.lastEvent) });
-  if (Number(ingress.pendingDeliveries) > 0) {
-    rows.push({
-      key: "Waiting",
-      value: value(`${ingress.pendingDeliveries} unacked`),
-      tone: "warning",
-    });
-  }
-  if (ingress.drainError) {
-    rows.push({ key: "Drain", value: value(ingress.drainError), tone: "danger" });
-  }
-
-  const block = [
-    { component: "divider", label: "Automations" },
-    { component: "keyValue", rows },
-  ];
-
-  if (starved) {
-    // The Webhook row above already carries the headline, so this says only
-    // what a status line cannot: WHICH connection cannot receive, and what to
-    // do instead. Repeating the headline in different words is the duplicate
-    // the data half just removed from its own status string.
-    block.push({
-      component: "text",
-      variant: "caption",
-      tone: "warning",
-      text: prose(
-        "This connection has no webhook grant — a personal API key carries none. Registering the webhook below will not change that. Sign in with Linear to receive events.",
-      ),
-    });
-  }
-
-  if (ingress.url) {
-    block.push({
-      component: "text",
-      variant: "caption",
-      text: "Where Linear posts an issue that changed. ADE registers this endpoint for you.",
-    });
-    // `code`, because this is the one value on the screen a reader compares
-    // character by character before reading it out to somebody.
-    block.push({ component: "text", variant: "code", text: value(ingress.url) });
-    block.push({
-      component: "button",
-      label: "Copy the webhook URL",
-      kind: "quiet",
-      icon: "link",
-      onPress: { action: ACTIONS.copyWebhookUrl },
-    });
-  }
-
-  block.push(...registrationBlock(ingress));
-
-  return block;
-}
-
-/**
- * One button where four manual steps used to be.
- *
- * The paste box is gone. A reader used to open Linear's settings, create a
- * webhook against the URL above, copy the signing secret Linear shows exactly
- * once, and paste it back here — and a missed copy meant a webhook that
- * delivered bodies ADE dropped, which looks healthy in Linear's own log and
- * silent in ADE.
- *
- * Register does all four: `registerWebhook` generates the secret, creates the
- * hook through the Linear API on the authorization the reader already granted,
- * and stores the secret in the same act. See `webhookSetup.js` for why the
- * secret cannot be read back, and why a hook whose secret this plugin does not
- * hold is rotated rather than adopted.
- *
- * The Verification row stays, because it is still the fact that decides whether
- * anything arrives: the manifest declares `verify`, and the host fails closed
- * on a channel whose secret it cannot find.
- */
-function registrationBlock(ingress = {}) {
-  const stored = ingress.secretStored === true;
-  const registered = ingress.registered === true && stored;
   return [
     {
-      component: "keyValue",
-      rows: [
-        {
-          key: "Verification",
-          value: stored ? "Signed deliveries only" : "Deliveries dropped until the webhook is registered",
-          tone: stored ? "success" : "warning",
-        },
-      ],
+      component: "text",
+      variant: "caption",
+      text: "Linear automations live in Automations → Linear.",
     },
     {
       component: "text",
       variant: "caption",
-      text: prose(
-        registered
-          ? "ADE created this webhook in Linear and holds its signing secret. Register again to replace it."
-          : "Registering creates the webhook in Linear and stores its signing secret here. Until then ADE drops every delivery, so no issue events reach your automations.",
-      ),
+      text: prose(detail),
     },
     {
       component: "button",
-      label: registered ? "Re-register the webhook" : "Register the webhook",
-      kind: registered ? "quiet" : "primary",
+      label: "Open Automations",
+      kind: "quiet",
       icon: "link",
-      onPress: { action: ACTIONS.registerWebhook },
+      onPress: { action: ACTIONS.openExternal, args: { url: AUTOMATIONS_DEEPLINK } },
     },
-    ...(registered
-      ? [{
-        component: "button",
-        label: "Stop receiving Linear events",
-        kind: "quiet",
-        icon: "trash",
-        onPress: { action: ACTIONS.unregisterWebhook },
-      }]
-      : []),
   ];
 }
 
@@ -524,19 +423,19 @@ function buildSettingsPanel(input = {}) {
   body.push({ component: "divider", label: "Preferences" });
   body.push(preferencesForm(input));
   body.push(...autolinksBlock(input));
-  body.push(...ingressBlock(input));
+  body.push(...automationsPointer(input));
 
   return { v: 1, title: "Linear", fallback: settingsFallback(), body };
 }
 
 module.exports = {
+  AUTOMATIONS_DEEPLINK,
   LINEAR_API_SETTINGS_URL,
   SETTING_DEFAULT_TEAM,
+  automationsPointer,
   autolinksBlock,
   buildSettingsPanel,
   connectedCard,
   disconnectCard,
-  ingressBlock,
   preferencesForm,
-  registrationBlock,
 };

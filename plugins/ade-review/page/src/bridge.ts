@@ -81,10 +81,17 @@ export type PluginWebviewConfirm = {
   destructive?: boolean;
 };
 
-/** What `ui.pickModel` answers. `null` is a reader who dismissed the picker. */
-export type PluginWebviewModelChoice = { modelId: string; provider?: string };
-export type PluginWebviewLaneChoice = { laneId: string; name?: string };
-export type PluginWebviewReasoningChoice = { effort: string };
+/**
+ * What `ui.pickModel` answers. `null` is a reader who dismissed the picker.
+ *
+ * `fastMode` travels with the id because ADE's own picker sets both in one
+ * gesture. `provider` is optional extra some hosts still send; the launch does
+ * not require it.
+ */
+export type PluginWebviewModelChoice = { modelId: string; fastMode?: boolean; provider?: string };
+export type PluginWebviewLaneChoice = { laneId: string; name: string };
+/** `effort` is null when the reader chose "no reasoning". */
+export type PluginWebviewReasoningChoice = { modelId?: string; effort: string | null };
 
 export type AdePluginBridge = {
   readonly version: number;
@@ -139,7 +146,11 @@ export type AdePluginBridge = {
      * the button does nothing, which is what the compiled card did when the
      * app bridge had no such verb. See `host/ui.ts:openPathInEditor`.
      */
-    openPathInEditor?(target: { rootPath: string; target: string }): Promise<void>;
+    openPathInEditor?(request: {
+      rootPath: string;
+      relativePath?: string;
+      target: string;
+    }): Promise<void>;
     /**
      * ADE's own model picker, opened as a popover over the guest.
      *
@@ -148,20 +159,26 @@ export type AdePluginBridge = {
      * fast-mode toggle that a page-local select could only approximate — so the
      * page asks the host to open the real one and takes the answer. Optional,
      * because it is new in this wave; the form falls back to a plain field.
+     *
+     * `value` preselects the current row. `availableModelIds` is unused here —
+     * a review can launch on ADE's whole catalogue.
      */
-    pickModel?(): Promise<PluginWebviewModelChoice | null>;
-    /** ADE's own lane picker. Same reasoning as `pickModel`. */
-    pickLane?(): Promise<PluginWebviewLaneChoice | null>;
+    pickModel?(request?: {
+      value?: string;
+      availableModelIds?: string[];
+    }): Promise<PluginWebviewModelChoice | null>;
+    /** ADE's own lane picker. `value` is the current lane id. */
+    pickLane?(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
     /**
      * ADE's own reasoning-effort picker, for one model.
      *
-     * Takes the provider and model because the ladder is per MODEL: a model
-     * with no reasoning tiers draws no picker at all, and only the host knows
-     * which rungs this one has.
+     * `model` is required because the ladder is per MODEL: a model with no
+     * reasoning tiers resolves null rather than drawing an empty control.
+     * `value` preselects the current rung; null means nothing preselected.
      */
-    pickReasoningEffort?(args: {
-      provider?: string | null;
-      model?: string | null;
+    pickReasoningEffort?(request: {
+      model: string;
+      value?: string | null;
     }): Promise<PluginWebviewReasoningChoice | null>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };

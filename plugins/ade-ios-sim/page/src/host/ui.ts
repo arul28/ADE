@@ -123,19 +123,44 @@ export function reportHeight(height: number): number | null {
  * around an optional member exactly like `ui.toast`. `false` when the host has
  * no editor verb, which is what Preview Lab's "Open Xcode" row reads to decide
  * whether to draw the control at all.
+ *
+ * `relativePath` is the file inside `rootPath`. `target` is the editor id
+ * (`"default"` for the system handler), not the path.
  */
-export async function openPathInEditor(target: {
+export async function openPathInEditor(request: {
   rootPath: string;
-  target: string;
+  relativePath?: string;
+  target?: string;
 }): Promise<boolean> {
   const api = bridge();
   if (!api?.ui?.openPathInEditor) return false;
+  const relativePath = request.relativePath?.trim();
   try {
-    await api.ui.openPathInEditor(target);
+    await api.ui.openPathInEditor({
+      rootPath: request.rootPath,
+      ...(relativePath ? { relativePath } : {}),
+      target: request.target?.trim() || "default",
+    });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Turn an absolute or already-relative path into a path inside `rootPath`.
+ *
+ * Preview Lab's Open Xcode answers a host path that may be absolute. The plugin
+ * verb wants the bit inside the project root, and a page that stuffed the
+ * absolute path into `target` would be naming an editor id ADE does not have.
+ */
+export function relativePathFromRoot(rootPath: string, filePath: string): string {
+  const root = rootPath.replace(/\/+$/, "");
+  const file = filePath.trim();
+  if (!file) return "";
+  if (file === root) return "";
+  if (file.startsWith(`${root}/`)) return file.slice(root.length + 1);
+  return file.replace(/^\/+/, "");
 }
 
 /** Whether this host can open a path at all, for a control that should not draw otherwise. */

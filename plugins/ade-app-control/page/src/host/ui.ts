@@ -73,16 +73,30 @@ export async function writeClipboard(text: string): Promise<boolean> {
  * matched to a source file draws its `file:line` as a press, and a host that
  * cannot open it draws the same line as plain text.
  */
-export async function openPathInEditor(target: { rootPath: string; target: string }): Promise<boolean> {
+export async function openPathInEditor(request: {
+  rootPath: string;
+  relativePath?: string;
+  target?: string;
+}): Promise<boolean> {
   const api = bridge();
   if (!api?.ui?.openPathInEditor) return false;
+  const relativePath = request.relativePath?.trim();
   try {
-    await api.ui.openPathInEditor(target);
+    await api.ui.openPathInEditor({
+      rootPath: request.rootPath,
+      ...(relativePath ? { relativePath } : {}),
+      target: request.target?.trim() || "default",
+    });
     return true;
   } catch {
     // A path this host could not open. It says so itself.
     return false;
   }
+}
+
+/** Whether this host can open a path at all, for a row that should not look live otherwise. */
+export function canOpenPathInEditor(): boolean {
+  return typeof bridge()?.ui?.openPathInEditor === "function";
 }
 
 /**

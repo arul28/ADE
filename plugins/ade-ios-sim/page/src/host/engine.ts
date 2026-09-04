@@ -53,7 +53,7 @@ export function rectsMatch(a: HostEngineRect | null, b: HostEngineRect | null): 
 
 /** Whether this host can paint an engine at all. */
 export function hasHostEngine(): boolean {
-  return Boolean(bridge()?.hostEngine);
+  return typeof bridge()?.hostEngine?.place === "function";
 }
 
 /**

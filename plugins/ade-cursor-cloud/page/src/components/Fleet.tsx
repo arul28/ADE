@@ -359,7 +359,6 @@ export function Fleet({
   const errorSentence = error ?? page?.error ?? "";
 
   const rowProps = (entry: CloudFleetEntry) => ({
-    key: entry.agent.agentId,
     entry,
     expanded: selectedAgentId === entry.agent.agentId,
     selected: selectedAgentId === entry.agent.agentId,
@@ -510,7 +509,7 @@ export function Fleet({
                 <section>
                   <SectionHeader label={`Active runs (${groups.active.length})`} accent />
                   <div className="mt-1.5 space-y-1.5">
-                    {groups.active.map((entry) => <FleetRow {...rowProps(entry)} />)}
+                    {groups.active.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
                   </div>
                 </section>
               ) : null}
@@ -519,7 +518,7 @@ export function Fleet({
                 <section key={group.laneId}>
                   <SectionHeader label={group.laneName} count={group.entries.length} />
                   <div className="mt-1.5 space-y-1.5">
-                    {group.entries.map((entry) => <FleetRow {...rowProps(entry)} />)}
+                    {group.entries.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
                   </div>
                 </section>
               ))}
@@ -538,7 +537,7 @@ export function Fleet({
                           {group.label}
                         </div>
                         <div className="space-y-1.5">
-                          {group.entries.map((entry) => <FleetRow {...rowProps(entry)} />)}
+                          {group.entries.map((entry) => <FleetRow key={entry.agent.agentId} {...rowProps(entry)} />)}
                         </div>
                       </div>
                     ))}

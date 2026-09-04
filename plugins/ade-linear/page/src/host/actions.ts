@@ -107,7 +107,7 @@ export const getChatModels = (): Promise<PageChatModel[]> => call("pageModels");
  * Codex in another, Cursor names modes, Droid an autonomy ladder — and each of
  * those maps onto the single `permissionMode` string a launch carries. The
  * child holds the table, because it is the half that knows what
- * `chat.createSession` accepts.
+ * `chat.launchHeadless` accepts.
  */
 export const getCapabilities = (): Promise<PageCapabilities> => call("pageCapabilities");
 

@@ -1,11 +1,12 @@
 // ade-history — ADE's History product as a plugin, built out of public parts.
 //
 // The compiled History tab is a desktop page over `git.*` and `operation.*`.
-// This package is the same product as vocabulary panels every client draws:
+// This package is the same product twice:
 //
-//   * commits are a `tab` surface with a host-rendered `git-dag` canvas;
-//   * a commit detail panel carries the git verbs the compiled context menu had;
-//   * activity is the persisted operation log, filterable by lane and status.
+//   * desktop draws the page (`dist/index.html`) — commit DAG + operations
+//     timeline, React inside the guest;
+//   * phone, TUI and any host that cannot draw a page keep the vocabulary
+//     panels (`commits` / `commit` / `activity` / `event`).
 //
 // The host brain stays. This child only shapes rows and invokes verbs ADE
 // already answers. `official: true` marks the bundled package; it buys no
@@ -35,6 +36,7 @@ const {
   validateBranchName,
 } = require("./format");
 const { build } = require("./panels");
+const { createPageActions } = require("./pageActions");
 
 const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
@@ -85,7 +87,7 @@ async function invokeOperation(action, args = {}) {
 }
 
 async function invokeLanes(action, args = {}) {
-  return sdk.actions.invoke("lanes", action, args);
+  return sdk.actions.invoke("lane", action, args);
 }
 
 async function publishSchema(panelId, schema, attempt = 1) {
@@ -370,7 +372,31 @@ exports.deactivate = async () => {
   sdk = null;
 };
 
+/**
+ * The handlers the plugin's own HTML PAGE invokes over the webview bridge.
+ *
+ * Built at LOAD, with `deps` reading this module's live `sdk` binding through a
+ * getter: it is null until `activate` runs, and a table that captured it by
+ * value would capture the null. A page is a webview the reader can open the
+ * instant the tab is drawn, which is well before `activate`'s first commit
+ * read has settled — a page that got "no such action" there would draw its
+ * empty state and stay there.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+});
+
+/**
+ * The action table the host dispatches into.
+ *
+ * The two halves are DISJOINT — no id is defined by both — so the merge order
+ * decides nothing. Every panel action the manifest names still resolves,
+ * because the vocabulary panels are the fallback for every client that cannot
+ * draw the page.
+ */
 exports.actions = {
+  ...pageActions,
+
   async refreshCommits() {
     const result = await refreshCommits();
     if (result.error) return { message: result.error, ok: false };
@@ -618,6 +644,7 @@ exports.actions = {
 };
 
 exports.__internals = {
+  pageActions,
   viewFor,
   publish,
   refreshCommits,

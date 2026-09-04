@@ -25,7 +25,7 @@
       "entryHtml": "dist/index.html",
       "panelId": "fleet",
       "order": 60,
-      "mobile": true
+      "mobile": false
     },
     {
       "kind": "webview",
@@ -34,7 +34,7 @@
       "icon": "brand:cursor",
       "entryHtml": "dist/index.html",
       "panelId": "agent",
-      "mobile": true
+      "mobile": false
     },
     {
       "kind": "webview",
@@ -44,7 +44,7 @@
       "entryHtml": "dist/index.html",
       "panelId": "launch",
       "popover": { "width": 560, "height": 620 },
-      "mobile": true
+      "mobile": false
     }
   ],
   "panels": [
@@ -62,7 +62,9 @@
       "actionId": "launchFromComposer",
       "ownsSend": true,
       "advancedSurfaceId": "launch",
-      "webviewSurfaceId": "launch"
+      "webviewSurfaceId": "launch",
+      "runtimeId": "cloud-agent",
+      "modelsAction": "listCloudModels"
     },
     {
       "socket": "chat-header-action",
@@ -136,8 +138,8 @@
       "id": "cloud-agent",
       "displayName": "Cursor Cloud",
       "icon": "brand:cursor",
-      "renameLock": true,
-      "capabilities": { "followUp": true, "interrupt": true, "hydrate": true, "artifacts": true }
+      "capabilities": { "followUp": true, "interrupt": true, "hydrate": true, "artifacts": true },
+      "ownsName": true
     }
   ],
   "automationTriggers": [

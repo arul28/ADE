@@ -434,7 +434,11 @@ export function SimEntry({ context }: { context: PluginWebviewContext }): React.
       return;
     }
     if (result.path && projectRoot) {
-      await ui.openPathInEditor({ rootPath: projectRoot, target: result.path });
+      await ui.openPathInEditor({
+        rootPath: projectRoot,
+        relativePath: ui.relativePathFromRoot(projectRoot, result.path),
+        target: "default",
+      });
     }
   }, [projectRoot]);
 

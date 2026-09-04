@@ -23,9 +23,8 @@ page needed (`formatAge`, the reveal/settings verbs).
 Both sockets name `webviewSurfaceId: "sim"`, which resolves to the one declared
 surface, and the manifest parses with **no errors and no warnings** — checked
 against `shared/plugins/manifest.ts` and `shared/plugins/sockets.ts` as shipped.
-The `work-rail-pane` label is `"iOS Sim"` because `sockets.ts` caps that kind's
-label at 24 characters and the rail sits beside ADE's own single-word entries;
-the palette entry, capped at 40, is the full `"iOS Sim Control"`.
+The rail label is `"iOS Sim Control"` (16 characters, under the 24-character
+`work-rail-pane` cap); the palette entry, capped at 40, is the same name.
 
 ## The one structural change: the stream stayed in the host
 
