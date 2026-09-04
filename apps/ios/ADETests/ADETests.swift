@@ -24947,6 +24947,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(context.providerFallback, "claude")
   }
 
+  func testWorkChatSummaryTimelineKeyIncludesProviderFallback() {
+    let context = WorkChatSummaryRenderContext(nil)
+
+    let claudeKey = WorkChatSummaryTimelineKey(context, providerFallback: "claude")
+    let codexKey = WorkChatSummaryTimelineKey(context, providerFallback: "codex")
+
+    XCTAssertNotEqual(claudeKey, codexKey)
+  }
+
   func testBuildWorkTimelineCollapsesAlternatingReasoningAndToolBursts() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(

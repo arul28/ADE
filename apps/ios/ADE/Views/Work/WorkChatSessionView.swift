@@ -606,13 +606,15 @@ struct WorkChatSessionRenderContext: Equatable {
   }
 }
 
-private struct WorkChatSummaryTimelineKey: Equatable {
+struct WorkChatSummaryTimelineKey: Equatable {
   let provider: String
+  let providerFallback: String?
   let model: String
   let modelId: String?
 
-  init(_ context: WorkChatSummaryRenderContext) {
+  init(_ context: WorkChatSummaryRenderContext, providerFallback: String? = nil) {
     self.provider = context.provider
+    self.providerFallback = providerFallback
     self.model = context.model
     self.modelId = context.modelId
   }
@@ -831,7 +833,10 @@ struct WorkChatSessionView: View {
   }
 
   private var chatSummaryTimelineKey: WorkChatSummaryTimelineKey {
-    WorkChatSummaryTimelineKey(chatSummaryContext)
+    WorkChatSummaryTimelineKey(
+      chatSummaryContext,
+      providerFallback: session.providerFallback
+    )
   }
 
   private var selectedSubagentSnapshot: WorkSubagentSnapshot? {
