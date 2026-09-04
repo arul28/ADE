@@ -519,8 +519,9 @@ export function buildSessionIntelligenceModelCandidates(args: {
   sessionModelId?: string | null;
   sessionModel?: string | null;
 }): string[] {
+  const hasProvider = typeof args.provider === "string" && args.provider.trim().length > 0;
   const utilityProvider = adeBackgroundUtilityProvider(args.provider)
-    ?? adeBackgroundUtilityProviderFromToolType(args.toolType);
+    ?? (hasProvider ? null : adeBackgroundUtilityProviderFromToolType(args.toolType));
   const cheapModelId = utilityProvider ? backgroundUtilityModelId(utilityProvider) : null;
   const preferred = [cheapModelId, args.sessionModelId, args.sessionModel];
   return buildNamingModelCandidates({

@@ -13638,15 +13638,15 @@ describe("createAgentChatService", () => {
           && event.event.status === "spawn_completion_delivery_failed"
         )).toBe(true);
       }, { timeout: 2_500 });
-      expect(logger.warn).toHaveBeenCalledTimes(3);
-      expect(logger.warn).toHaveBeenLastCalledWith(
-        "agent_chat.spawn_completion_delivery_failed",
-        expect.objectContaining({
-          childSessionId: child.id,
-          parentSessionId: parent.id,
-          attempt: 3,
-        }),
+      const deliveryWarnings = logger.warn.mock.calls.filter(
+        ([message]) => message === "agent_chat.spawn_completion_delivery_failed",
       );
+      expect(deliveryWarnings).toHaveLength(3);
+      expect(deliveryWarnings[2]?.[1]).toEqual(expect.objectContaining({
+        childSessionId: child.id,
+        parentSessionId: parent.id,
+        attempt: 3,
+      }));
     });
 
     it("rejects the legacy silent spawn type for new child chats", async () => {
@@ -16024,6 +16024,8 @@ describe("createAgentChatService", () => {
 
       const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        // These tests prove native Claude titles win during the wait window.
+        nativeTitleWaitMs: 250,
         projectConfigService: {
           get: vi.fn(() => ({
             effective: {
@@ -16069,9 +16071,8 @@ describe("createAgentChatService", () => {
         info: { summary: prompt, firstPrompt: prompt },
         firstPrompt: prompt,
       });
-      // Give the fire-and-forget adopt a beat, then confirm the title stayed default.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(sessionService.get(session.id)?.title).toBe("Claude Chat");
+      // Echoed SDK summaries are skipped; ADE names the chat after the wait.
+      await waitForSessionTitle(sessionService, session.id, "Fix Update Modal Flow");
     });
 
     it("does not adopt when the session is manually named", async () => {
@@ -17944,10 +17945,15 @@ describe("createAgentChatService", () => {
           event.event.type === "done",
       );
 
-      // Give auto-title a chance to fire (it's a void promise)
+      // Give auto-title / idle status-line a chance to fire (void promises)
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(sessionService.get(session.id)?.title).toBe("My Title");
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      for (const [args] of aiIntegrationService.summarizeTerminal.mock.calls) {
+        expect(args.prompt).toContain("Write a short statusLine");
+        expect(args.systemPrompt).toContain("Copy these current values unchanged: chatTitle, laneName");
+      }
     });
 
     it("does not clobber a manual rename that lands while auto-titling is in flight", async () => {

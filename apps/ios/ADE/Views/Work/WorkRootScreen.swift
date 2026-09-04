@@ -107,6 +107,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   /// so without this the row stays parked in the Snoozed tail until some
   /// unrelated change happens to rebuild the presentation.
   let snoozeEpoch: Int
+  let pinnedLaneIdsStorage: String
 }
 
 struct WorkRootScreen: View {
@@ -473,6 +474,7 @@ struct WorkRootScreen: View {
       next.insert(lane.id)
     }
     pinnedLaneIdsStorage = next.sorted().joined(separator: ",")
+    scheduleSessionPresentationRebuild()
   }
 
   /// Machines that own work in this project and are no longer reachable. The
@@ -510,7 +512,8 @@ struct WorkRootScreen: View {
       activeProjectId: syncService.activeProjectId,
       loadedProjectionProjectId: loadedProjectionProjectId,
       pendingLaneDeletionIds: syncService.pendingLaneDeletionIds,
-      snoozeEpoch: snoozeEpoch
+      snoozeEpoch: snoozeEpoch,
+      pinnedLaneIdsStorage: pinnedLaneIdsStorage
     )
   }
 

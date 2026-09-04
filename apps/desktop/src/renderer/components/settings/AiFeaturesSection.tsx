@@ -48,14 +48,20 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 export function AiFeaturesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [configLoadFailed, setConfigLoadFailed] = useState(false);
   const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
   const [scheduledWork, setScheduledWork] = useState<AgentChatScheduledWorkItem[]>([]);
   const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
-      const [snapshot, scheduledWorkResult] = await Promise.all([
-        window.ade.projectConfig.get(),
+      const [snapshotResult, scheduledWorkResult] = await Promise.all([
+        window.ade.projectConfig.get()
+          .then((snapshot) => ({ snapshot, error: null as string | null }))
+          .catch((error) => ({
+            snapshot: null,
+            error: error instanceof Error ? error.message : String(error),
+          })),
         window.ade.agentChat.listScheduledWork()
           .then((items) => ({ items, error: null as string | null }))
           .catch((error) => ({
@@ -65,8 +71,13 @@ export function AiFeaturesSection() {
       ]);
       setScheduledWork(scheduledWorkResult.items);
       setScheduledWorkError(scheduledWorkResult.error);
+      if (!snapshotResult.snapshot) {
+        setConfigLoadFailed(true);
+        return;
+      }
+      setConfigLoadFailed(false);
 
-      const effectiveAiRaw = snapshot.effective?.ai;
+      const effectiveAiRaw = snapshotResult.snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setScheduledWorkPaused(effectiveAi?.chat?.scheduledWorkPaused === true);
     } finally {
@@ -113,6 +124,14 @@ export function AiFeaturesSection() {
     return (
       <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12, padding: 20 }}>
         Loading AI features...
+      </div>
+    );
+  }
+
+  if (configLoadFailed) {
+    return (
+      <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12, padding: 20 }}>
+        Couldn't load AI features. The scheduled-work pause stays unavailable until configuration loads.
       </div>
     );
   }

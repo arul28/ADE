@@ -122,6 +122,23 @@ describe("buildSessionIntelligenceModelCandidates", () => {
     })).toEqual([ANTHROPIC_MODELS[0]?.id]);
   });
 
+  it("does not consult toolType when an explicit non-ADE provider is set", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      provider: "opencode",
+      toolType: "claude-chat",
+      sessionModelId: ANTHROPIC_MODELS[0]?.id,
+    })).toEqual([ANTHROPIC_MODELS[0]?.id]);
+  });
+
+  it("uses toolType only when provider is absent", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      toolType: "claude-chat",
+      sessionModelId: OPENAI_MODELS[0]?.id,
+    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]?.id]);
+  });
+
   it("injects Composer 2.5 for Cursor even when the auth snapshot has no Cursor inventory", () => {
     expect(buildSessionIntelligenceModelCandidates({
       availableModels: [],

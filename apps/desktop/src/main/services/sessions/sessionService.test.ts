@@ -369,8 +369,14 @@ describe("sessionService resume metadata", () => {
     });
 
     expect(service.get("session-delete")?.id).toBe("session-delete");
+    service.setStatusNote("session-delete", "working on delete");
+    expect(service.getStatusNoteUpdatedAt("session-delete")).toBeTruthy();
+    expect(service.getStatusNoteUpdatedAt(" session-delete ")).toBe(
+      service.getStatusNoteUpdatedAt("session-delete"),
+    );
     expect(service.deleteSession("session-delete")).toBe(true);
     expect(service.get("session-delete")).toBeNull();
+    expect(service.getStatusNoteUpdatedAt("session-delete")).toBeNull();
     expect(service.deleteSession("session-delete")).toBe(false);
 
     activeDisposers.push(async () => db.close());

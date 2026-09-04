@@ -1707,6 +1707,7 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI provider is available. Install and authenticate Claude Code and/or Codex CLI.");
     }
 
+    // Titles and commit messages always run. Settings no longer gates them.
     if (args.taskType !== "session_title" && args.taskType !== "commit_message" && !getFeatureFlag(args.feature)) {
       logger.warn("ai.task.skipped_feature_disabled", {
         requestId,

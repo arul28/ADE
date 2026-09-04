@@ -355,6 +355,11 @@ import {
   EARLY_CLI_AI_TITLE_DELAY_MS,
   selectPiStorageSessionCandidate,
 } from "./ptyService";
+import {
+  BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
+  BACKGROUND_UTILITY_CODEX_MODEL_ID,
+  BACKGROUND_UTILITY_CURSOR_MODEL_ID,
+} from "../../../shared/backgroundUtilityModel";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 
@@ -2933,7 +2938,7 @@ describe("ptyService", () => {
           expect.objectContaining({
             prompt: expect.stringContaining("print cwd"),
             taskType: "session_title",
-            model: "openai/gpt-5.4",
+            model: BACKGROUND_UTILITY_CODEX_MODEL_ID,
           }),
         );
       } finally {
@@ -6103,12 +6108,12 @@ describe("ptyService", () => {
     });
 
     it.each([
-      ["claude", "Claude Code"],
-      ["codex", "Codex session"],
-      ["cursor-cli", "Cursor Agent CLI"],
-      ["droid", "Factory Droid CLI"],
-      ["opencode", "OpenCode CLI"],
-    ] as const)("generates %s titles from the first submitted PTY write using the bound cwd", async (toolType, title) => {
+      ["claude", "Claude Code", BACKGROUND_UTILITY_CLAUDE_MODEL_ID],
+      ["codex", "Codex session", BACKGROUND_UTILITY_CODEX_MODEL_ID],
+      ["cursor-cli", "Cursor Agent CLI", BACKGROUND_UTILITY_CURSOR_MODEL_ID],
+      ["droid", "Factory Droid CLI", "openai/gpt-5.4"],
+      ["opencode", "OpenCode CLI", "openai/gpt-5.4"],
+    ] as const)("generates %s titles from the first submitted PTY write using the bound cwd", async (toolType, title, expectedModel) => {
       vi.useFakeTimers();
       try {
         mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
@@ -6157,7 +6162,7 @@ describe("ptyService", () => {
             cwd: "/tmp/test-worktree/subdir",
             prompt: expect.stringContaining("Fix the flaky login tests"),
             timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
-            model: "openai/gpt-5.4",
+            model: expectedModel,
           }),
         );
       } finally {
@@ -6269,7 +6274,7 @@ describe("ptyService", () => {
       expect(sessionService.get(createdSessionId)?.goal).toBe("/this is a test");
     });
 
-    it("adopts Claude Code runtime ai-title from local session storage", async () => {
+    it("does not overlay Claude Code JSONL ai-title onto an ADE-named CLI session", async () => {
       vi.useFakeTimers();
       try {
         const claudeSessionId = "123e4567-e89b-12d3-a456-426614174000";
@@ -6306,12 +6311,11 @@ describe("ptyService", () => {
 
         await vi.advanceTimersByTimeAsync(1_000);
 
-        expect(sessionService.get(createdSessionId)?.title).toBe("Test session setup");
-        expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect(sessionService.get(createdSessionId)?.title).toBe("This is a test");
+        expect(sessionService.updateMeta).not.toHaveBeenCalledWith(
           expect.objectContaining({
             sessionId: createdSessionId,
             title: "Test session setup",
-            manuallyNamed: false,
           }),
         );
       } finally {
@@ -6421,7 +6425,7 @@ describe("ptyService", () => {
           expect.objectContaining({
             prompt: expect.stringContaining("Fix the flaky login tests"),
             taskType: "session_title",
-            model: "anthropic/claude-sonnet-5",
+            model: BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
           }),
         );
         expect(sessionService.get(createdSessionId)?.title).toBe("ADE generated title");
@@ -7122,15 +7126,10 @@ describe("ptyService", () => {
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
-    it("walks from the titles/summaries setting to the launch model when the setting fails", async () => {
+    it("uses the launch model for a generic terminal even when Settings still names a helper", async () => {
       const aiIntegrationService = {
         getMode: vi.fn(() => "subscription"),
-        summarizeTerminal: vi.fn(async ({ model }: { model?: string }) => {
-          if (model === "anthropic/claude-haiku-4-5") {
-            throw new Error("quota exceeded");
-          }
-          return { text: "Used launch model" };
-        }),
+        summarizeTerminal: vi.fn(async () => ({ text: "Used launch model" })),
       };
       const { service, mockPty } = createHarness({
         aiIntegrationService,
@@ -7166,14 +7165,7 @@ describe("ptyService", () => {
           expect.objectContaining({ model: "openai/gpt-5.4" }),
         );
       });
-      expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({ model: "anthropic/claude-haiku-4-5" }),
-      );
-      expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ model: "openai/gpt-5.4" }),
-      );
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("persists the runtime launch model onto existing session resume metadata", async () => {
@@ -8890,7 +8882,7 @@ describe("ptyService", () => {
       }
     });
 
-    it("captures Claude runtime titles for sessions that already have a resume target", async () => {
+    it("does not capture Claude JSONL titles for sessions that already have a resume target", async () => {
       vi.useFakeTimers();
       try {
         const claudeSessionId = "5647da1e-10de-4089-bce2-00b9c2552bfc";
@@ -8927,10 +8919,9 @@ describe("ptyService", () => {
         await service.ensureResumeTargets(["session-claude-existing"]);
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sessionService.updateMeta).not.toHaveBeenCalledWith(expect.objectContaining({
           sessionId: "session-claude-existing",
           title: "Patched exit works",
-          manuallyNamed: false,
         }));
       } finally {
         vi.useRealTimers();

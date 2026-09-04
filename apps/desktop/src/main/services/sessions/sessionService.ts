@@ -2125,7 +2125,7 @@ export function createSessionService({
     },
 
     getStatusNoteUpdatedAt(sessionId: string): string | null {
-      return statusNoteUpdatedAtById.get(sessionId) ?? null;
+      return statusNoteUpdatedAtById.get(sessionId.trim()) ?? null;
     },
 
     /**
@@ -2216,6 +2216,7 @@ export function createSessionService({
       );
       if (!existing) return false;
       db.run("delete from terminal_sessions where id = ?", [trimmed]);
+      statusNoteUpdatedAtById.delete(trimmed);
       // Reap the lifecycle token with its row. ADE has been bitten before by a
       // local table with no reaper, and every other session-keyed side table is
       // already cascaded here.

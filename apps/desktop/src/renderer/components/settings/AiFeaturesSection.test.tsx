@@ -130,4 +130,18 @@ describe("AiFeaturesSection", () => {
     expect(await screen.findByText(/Scheduled work is unavailable: scheduler offline/)).toBeTruthy();
     expect(screen.queryByText("No active durable jobs.")).toBeNull();
   });
+
+  it("does not enable the pause toggle when project configuration fails to load", async () => {
+    installAdeMocks();
+    (window as any).ade.projectConfig.get.mockRejectedValueOnce(new Error("config unavailable"));
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Couldn't load AI features/)).toBeTruthy();
+    expect(screen.queryByText("Pause all scheduled work")).toBeNull();
+  });
 });
