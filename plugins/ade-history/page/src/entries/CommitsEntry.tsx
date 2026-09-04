@@ -1,11 +1,10 @@
 /**
- * The `commits` surface — the rail tab, the Work-rail pane, and the palette
- * "History commits" row.
+ * The `commits` surface — History's one route.
  *
- * One entry for all three, because they are one page: the manifest's `commits`
- * surface is the rail tab, and both the pane socket and the palette socket
- * name the same `webviewSurfaceId`, so a reader who opens History from the
- * rail and a reader who opens it beside their chat see the same DAG.
+ * One entry, because there is one page: the rail tab draws it, and the palette
+ * row navigates to that same tab rather than opening a copy of it in an
+ * overlay. The Commits / Activity toggle inside the toolbar is how a reader
+ * reaches the operation timeline, exactly as it was before the page tier.
  */
 
 import React from "react";

@@ -1,18 +1,18 @@
 {
   "pluginId": "ade-history",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "revision": 0,
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-Cgujlng4.js",
-      "bytes": 757213,
-      "sha256": "c37151e3e2559a8697942d6932c44734502c0f3b2dbb1edf5c1a6ea9c1824e77"
+      "path": "assets/index-CMoTfPNf.css",
+      "bytes": 70769,
+      "sha256": "00310c6a02fa4a1cf9de0e08eef3ef22f35127faef9ded07e303d7029146b31d"
     },
     {
-      "path": "assets/index-DB_S-sIu.css",
-      "bytes": 70732,
-      "sha256": "67324501b65679e95c434ffb5dd0104308bdf9046287d6bd836d8e627c701f7a"
+      "path": "assets/index-tfXu7ZI0.js",
+      "bytes": 759984,
+      "sha256": "e765fc439b4c6d79b60376979a8714ab20e90d8954708f33be614df1beabb860"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 368,
-      "sha256": "206246e482c6bfe2c442b125f5e40b7614f4f1ee04bf99276d69c6a8c6d21db8"
+      "sha256": "b0d2397a1bdec502f7d2f3f802fccd198fafbe2187c4982a0276648009c03bee"
     }
   ]
 }

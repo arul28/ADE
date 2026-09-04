@@ -1,6 +1,6 @@
 {
   "name": "ade-history",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "displayName": "History",
   "description": "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   "icon": "clock-counter-clockwise",
@@ -16,15 +16,6 @@
       "entryHtml": "dist/index.html",
       "panelId": "commits",
       "order": 55,
-      "mobile": false
-    },
-    {
-      "kind": "webview",
-      "id": "activity",
-      "title": "Activity",
-      "icon": "list",
-      "entryHtml": "dist/index.html",
-      "panelId": "activity",
       "mobile": false
     }
   ],
@@ -60,31 +51,12 @@
   ],
   "sockets": [
     {
-      "socket": "work-rail-pane",
-      "surface": "work",
-      "id": "commits-pane",
-      "label": "History",
-      "icon": "clock-counter-clockwise",
-      "panelId": "commits",
-      "webviewSurfaceId": "commits"
-    },
-    {
       "socket": "command-palette-action",
       "surface": "app",
       "id": "palette-commits",
-      "label": "History commits",
+      "label": "Go to History",
       "icon": "clock-counter-clockwise",
-      "actionId": "openCommits",
-      "webviewSurfaceId": "commits"
-    },
-    {
-      "socket": "command-palette-action",
-      "surface": "app",
-      "id": "palette-activity",
-      "label": "History activity",
-      "icon": "list",
-      "actionId": "openActivity",
-      "webviewSurfaceId": "activity"
+      "actionId": "openCommits"
     }
   ],
   "collections": {

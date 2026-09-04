@@ -96,43 +96,67 @@ describe("the history publish seam", () => {
     assert.equal(graph.branches[0].name, "HEAD");
   });
 
-  it("never answers openWebview from a socket that already declares its surface", async () => {
+  it("never answers openWebview from a socket action", async () => {
     const sdk = createSdk({
       lanes: { list: async () => [] },
     });
     await plugin.activate(sdk);
-    const declaring = new Set(
-      MANIFEST.sockets
-        .filter((socket) => socket.webviewSurfaceId && socket.actionId)
-        .map((socket) => socket.actionId),
+    const named = new Set(
+      MANIFEST.sockets.filter((socket) => socket.actionId).map((socket) => socket.actionId),
     );
-    assert.ok(declaring.size >= 1, "no page-declaring socket names an action");
-    for (const actionId of declaring) {
+    assert.ok(named.size >= 1, "no socket names an action");
+    for (const actionId of named) {
       const result = await plugin.actions[actionId]({});
       assert.equal(
         result?.openWebview,
         undefined,
-        `${actionId} answers openWebview beside a socket that declares its surface`,
+        `${actionId} answers openWebview instead of navigating to the rail tab`,
+      );
+      assert.equal(
+        result?.navigate?.panelId,
+        "commits",
+        `${actionId} must navigate to the History tab, not open a second surface`,
       );
     }
   });
 
-  it("keeps webviews off the phone and names History surfaces on palette and pane sockets", () => {
-    for (const surface of MANIFEST.surfaces) {
-      if (surface.kind === "webview") {
-        assert.equal(surface.mobile, false, `${surface.id} must not set mobile: true`);
-        assert.equal(surface.entryHtml, "dist/index.html");
-      }
-    }
-    const paletteCommits = MANIFEST.sockets.find((socket) => socket.id === "palette-commits");
-    const paletteActivity = MANIFEST.sockets.find((socket) => socket.id === "palette-activity");
-    const pane = MANIFEST.sockets.find((socket) => socket.id === "commits-pane");
-    assert.equal(paletteCommits.webviewSurfaceId, "commits");
-    assert.equal(paletteCommits.actionId, "openCommits");
-    assert.equal(paletteActivity.webviewSurfaceId, "activity");
-    assert.equal(paletteActivity.actionId, "openActivity");
-    assert.equal(pane.webviewSurfaceId, "commits");
-    assert.equal(MANIFEST.version, "2.0.1");
+  /**
+   * The compiled structure, asserted where it is declared.
+   *
+   * The page tier grew a second `activity` webview and a Work-rail pane the
+   * compiled product never had, so History was reachable at three addresses
+   * that each kept their own state. One tab, one palette row, and the panels
+   * iOS and the terminal draw.
+   */
+  it("declares one webview surface, one palette row, and no work-rail pane", () => {
+    const webviews = MANIFEST.surfaces.filter((surface) => surface.kind === "webview");
+    assert.equal(webviews.length, 1);
+    assert.equal(webviews[0].id, "commits");
+    assert.equal(webviews[0].order, 55);
+    assert.equal(webviews[0].mobile, false);
+    assert.equal(webviews[0].entryHtml, "dist/index.html");
+
+    assert.deepEqual(
+      MANIFEST.sockets.map((socket) => socket.socket),
+      ["command-palette-action"],
+    );
+    const palette = MANIFEST.sockets[0];
+    assert.equal(palette.id, "palette-commits");
+    assert.equal(palette.label, "Go to History");
+    assert.equal(palette.actionId, "openCommits");
+    // A palette row that declares a surface opens it as an overlay instead of
+    // invoking. History is a tab, so the row must declare none.
+    assert.equal(palette.webviewSurfaceId, undefined);
+
+    assert.equal(MANIFEST.version, "2.0.2");
     assert.equal(MANIFEST.collections["ui-state"].sync, false);
+  });
+
+  /** iOS and the terminal draw panels, and every one of them is still here. */
+  it("keeps the four vocabulary panels the phone and the terminal draw", () => {
+    assert.deepEqual(
+      MANIFEST.panels.map((panel) => panel.id),
+      ["commits", "commit", "activity", "event"],
+    );
   });
 });

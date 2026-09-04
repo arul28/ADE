@@ -22,15 +22,35 @@ export type HistoryFocus = {
   eventId: string | null;
 };
 
+/**
+ * Did the host actually ASK for something, or is it merely describing the
+ * placement it drew?
+ *
+ * `surfaceId` is on every envelope, always, because it is how a guest knows
+ * which of a manifest's surfaces it is drawing. Reading it as an instruction
+ * made the stored surface unreachable: every open said "commits", so a reader
+ * who left History on Activity came back to the commit graph, forever. A
+ * pointer or a subject is the host saying "open AT this" — without one there is
+ * no request, only a placement, and the reader's own last choice wins.
+ */
+function hostNamedATarget(context: PluginWebviewContext): boolean {
+  const pointer = context.pointer;
+  if (pointer && typeof pointer === "object" && Object.keys(pointer).length > 0) return true;
+  return context.subject != null;
+}
+
+function asSurface(value: string | null): HistoryUiState["surface"] | null {
+  return value === "activity" || value === "commits" ? value : null;
+}
+
 export function historyFocusFromContext(context: PluginWebviewContext): HistoryFocus {
   const pointer: Record<string, unknown> = context.pointer ?? {};
   const subject: Record<string, unknown> = context.subject ?? {};
+  // A pointer that names a surface is unambiguous and always wins. `surfaceId`
+  // is trusted only alongside a pointer or a subject; see `hostNamedATarget`.
   const surfaceFromHost =
-    context.surfaceId === "activity" || context.surfaceId === "commits"
-      ? context.surfaceId
-      : text(pointer.surface) === "activity" || text(pointer.surface) === "commits"
-        ? (text(pointer.surface) as HistoryUiState["surface"])
-        : null;
+    asSurface(text(pointer.surface))
+    ?? (hostNamedATarget(context) ? asSurface(context.surfaceId ?? null) : null);
   const laneId =
     text(pointer.laneId)
     ?? (subject.kind === "lane" ? text(subject.id) : null)

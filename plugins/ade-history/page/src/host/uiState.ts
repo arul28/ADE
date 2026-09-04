@@ -12,9 +12,25 @@
  * machine's scroll position arrive on another.
  */
 
-import { bridge } from "../bridge";
+import { bridge, type PluginWebviewPlacement } from "../bridge";
 
 const COLLECTION = "ui-state";
+
+/**
+ * Which placement's memory this is.
+ *
+ * Three placements can draw History at once — the rail tab, a pane beside a
+ * chat, an overlay from the palette — and they were all reading and writing one
+ * row keyed by the project root. Opening the pane snapped the tab to the pane's
+ * commit, and the last one to move a divider resized the others. A placement is
+ * a separate window onto the same history and remembers its own place, so the
+ * placement is part of the key.
+ *
+ * An envelope with no placement (an older host, or the page opened outside a
+ * guest) reads and writes the `tab` row, which is what the sole placement such
+ * a host can draw actually is.
+ */
+export const DEFAULT_PLACEMENT: PluginWebviewPlacement = "tab";
 
 export const DETAIL_MIN_PX = 280;
 export const DETAIL_MAX_PX = 720;
@@ -36,9 +52,13 @@ const DEFAULT_STATE: HistoryUiState = {
   detailPx: DETAIL_DEFAULT_PX,
 };
 
-function keyFor(projectRoot: string | null | undefined): string {
+function keyFor(
+  projectRoot: string | null | undefined,
+  placement: PluginWebviewPlacement | null | undefined,
+): string {
   const root = (projectRoot ?? "").trim() || "__project__";
-  return `history:${encodeURIComponent(root)}`;
+  const where = (placement ?? DEFAULT_PLACEMENT).trim() || DEFAULT_PLACEMENT;
+  return `history:${encodeURIComponent(root)}:${encodeURIComponent(where)}`;
 }
 
 async function read(key: string): Promise<unknown> {
@@ -83,13 +103,23 @@ function asState(value: unknown): HistoryUiState {
 
 export async function loadHistoryUiState(
   projectRoot: string | null | undefined,
+  placement?: PluginWebviewPlacement | null,
 ): Promise<HistoryUiState> {
-  return asState(await read(keyFor(projectRoot)));
+  return asState(await read(keyFor(projectRoot, placement)));
 }
 
 export async function saveHistoryUiState(
   projectRoot: string | null | undefined,
+  placement: PluginWebviewPlacement | null | undefined,
   state: HistoryUiState,
 ): Promise<void> {
-  await write(keyFor(projectRoot), state);
+  await write(keyFor(projectRoot, placement), state);
+}
+
+/** The row one placement reads and writes. Exported for the seam test. */
+export function historyUiStateKey(
+  projectRoot: string | null | undefined,
+  placement?: PluginWebviewPlacement | null,
+): string {
+  return keyFor(projectRoot, placement);
 }
