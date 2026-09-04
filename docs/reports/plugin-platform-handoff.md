@@ -299,3 +299,63 @@ surface (desktop, web, iOS, TUI, CLI). Windows is part of done. Do not invent
 platform semantics. Plugins are plain files; pages ship source + committed
 `dist/`. Never edit the project-root checkout. Never push a red tree to
 `plugin-platform`.
+
+## 2026-09-04 round 3 (the third walk ledger) — fixed, pushed, built
+
+Tip `0566b88c8` on `plugin-platform` (plus the headless-CLI fix that follows
+it). Gates on that tip: desktop and CLI typecheck clean, lint 0 errors, 8
+desktop shards (3300 tests), webclient entry graph 415 KB, 8 plugin node
+suites, 7 page suites, 7 page builds with no dist drift, 335 iOS plugin tests.
+MacBook: ad-hoc Alpha installed and running at that tip; the iOS Debug app is
+built and tested on the simulator.
+
+What changed, by area:
+- Host: tab re-entry crash (detached `executeJavaScript`) fixed; Report issue
+  goes to the ADE report flow everywhere; `chat.capabilities()` answers
+  `defaultModel`; the picker host keeps the provider; webview surfaces may
+  declare `mobile: true` (bridge v3, `context` event, `railTab: false`
+  opt-out); a tab page hands the guest the selected lane; the relay honours
+  `{openWebview}` from a page invoke; Work-rail panes with an entry page mount
+  the page; the two host engines paint only the picture.
+- Linear 2.1.2: chrome-less picker and popover, Attach from the popover opens
+  the picker in place, chips always open a picker and seed from the host
+  default model, filters emit keys, `lane.created` fires, merge template on
+  `lane.merged`, Open in Linear resolves through the automation resolver.
+- Cursor Cloud 2.0.3: three sockets only (machine-entry, row-badge,
+  automation-trigger-tile), three-state fast tier, durable follow-up keys,
+  model titles, archived rows behind a reveal, pages on the phone.
+- Graph 2.0.2 (edges, drag guard, four view modes restored), History 2.0.2,
+  Review 2.0.2 (no Work-rail pane; fast mode, models, busy, PR scope, toasts),
+  Electron Control and iOS Sim Control 2.0.1 (pages mount).
+- Themes: 114-token packs, twelve official themes. Grove and Sakura are
+  deleted; Ocean, Ember, Iris and Synthwave are replaced by Frost, Kiln, Mocha
+  and Spectre under NEW ids. An installed old id stays installed with no
+  registry row (the owner's Alpha has `ade-theme-sakura` 1.0.0 installed).
+- Marketplace: Plugins and Themes views, kind-derived filters, sort.
+
+Open items found while verifying on the Alpha:
+1. The webhook relay worker in production is the `main` build. The
+   `/plugin/:id/register` route and the `plugin_webhook_secrets` D1 migration
+   exist only on this branch, so the Linear one-click webhook answers HTTP 404
+   and Cursor Cloud never registers. Deploying is
+   `cd apps/webhook-relay && npm run deploy` (runs the remote D1 migration then
+   `wrangler deploy`). Owner decision: deploy from this branch before the
+   webhook part of the walk.
+2. `ade plugin doctor <id>` from a directory that is not a project fell into
+   headless mode, booted an embedded runtime, and crashed on the Cursor Cloud
+   relay poller after the database closed, printing nothing. Fixed after
+   `0566b88c8` (see the commit that follows). From inside a project it reports
+   correctly.
+3. The Alpha still has the OLD plugin versions installed (linear 2.1.0, the
+   others 2.0.0). That is the owner's Marketplace update path; nothing was
+   pre-updated.
+4. Linear Disconnect does not confirm (`ui.confirm` is not called). Product
+   call, unchanged.
+5. The walk itself: no GUI walk was possible from the main Mac (the MacBook
+   has no screen-recording grant for SSH, and Chrome automation is not
+   connected). CLI-level checks passed: doctor for linear, graph and cursor
+   cloud from a project root; all pages resolve and their bundles measure.
+
+Rule learned this round: never message the old `w2-*` agents; a stray message
+revives them and they overwrite current files (it happened twice with
+`w2-cursor-cloud`).
