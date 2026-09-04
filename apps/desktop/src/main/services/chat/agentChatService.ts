@@ -216,6 +216,11 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  backgroundUtilityReasoningEffort,
+  NATIVE_TITLE_POLL_MS,
+  NATIVE_TITLE_WAIT_MS,
+} from "../../../shared/backgroundUtilityModel";
+import {
   exceedsProviderInlineLimit,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
@@ -8344,6 +8349,11 @@ export function createAgentChatService(args: {
   ) | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
+  /**
+   * How long ADE waits for a native provider title before naming the chat
+   * itself. Tests pass 0 so auto-title assertions do not sleep 8s.
+   */
+  nativeTitleWaitMs?: number;
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   /** Resolves credentials owned by this runtime only; never supplied by a handoff capsule. */
@@ -8457,6 +8467,7 @@ export function createAgentChatService(args: {
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
   } = args;
+  const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -8878,13 +8889,8 @@ export function createAgentChatService(args: {
     jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
   }) => {
-    const config = resolveChatConfig();
     const reasoningEffort = args.reasoningEffort
-      ?? (args.taskType === "session_title"
-        ? config.titleReasoningEffort
-        : args.taskType === "session_summary"
-          ? config.summaryReasoningEffort
-          : null);
+      ?? backgroundUtilityReasoningEffort(args.modelId);
     return await aiIntegrationService.summarizeTerminal({
       cwd: args.cwd,
       model: args.modelId,
@@ -11853,7 +11859,7 @@ export function createAgentChatService(args: {
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
       availableModels,
-      settingModelId: resolveChatConfig().summaryModelId,
+      provider: managed.session.provider,
       sessionModelId: managed.session.modelId,
       sessionModel: managed.session.model,
     });
@@ -12285,7 +12291,7 @@ export function createAgentChatService(args: {
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
       availableModels,
-      settingModelId: resolveChatConfig().summaryModelId,
+      provider: args.managed.session.provider,
       sessionModelId: args.managed.session.modelId,
       sessionModel: args.managed.session.model,
     });
@@ -12627,25 +12633,35 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     if (managed.deleted) return;
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
-    const config = resolveChatConfig();
-    if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
     if (managed.runtimeTitleAdopted) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
-    if (args.stage === "final") {
-      if (!config.titleRefreshOnComplete) return;
-      if (managed.autoTitleStage === "final") return;
-    }
+    if (args.stage === "final" && managed.autoTitleStage === "final") return;
 
     const seed = sanitizeAutoTitle(args.latestUserText ?? managed.autoTitleSeed ?? "", 180);
     if (!seed) return;
+
+    if (args.stage === "initial" && nativeTitleWaitMs > 0) {
+      const deadline = Date.now() + nativeTitleWaitMs;
+      while (Date.now() < deadline) {
+        if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
+        const liveTitle = sessionService.get(managed.session.id)?.title ?? null;
+        if (hasCustomChatSessionTitle(liveTitle, managed.session.provider)) return;
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, Math.min(NATIVE_TITLE_POLL_MS, Math.max(0, deadline - Date.now())));
+        });
+      }
+    }
+    if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
+    const titleAfterWait = sessionService.get(managed.session.id)?.title ?? null;
+    if (hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
 
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
       availableModels,
-      settingModelId: config.titleModelId,
+      provider: managed.session.provider,
       sessionModelId: managed.session.modelId,
       sessionModel: managed.session.model,
     });
@@ -12763,10 +12779,9 @@ export function createAgentChatService(args: {
       resolveModelCandidates: async (managed: ManagedChatSession) => {
         const auth = await detectAuth();
         const availableModels = await getAvailableRegistryModels(auth);
-        const config = resolveChatConfig();
         return buildSessionIntelligenceModelCandidates({
           availableModels,
-          settingModelId: config.titleModelId,
+          provider: managed.session.provider,
           sessionModelId: managed.session.modelId,
           sessionModel: managed.session.model,
         });
@@ -13548,16 +13563,14 @@ export function createAgentChatService(args: {
 
     try {
       if (prompt.length) {
-        const config = resolveChatConfig();
-        if (config.titleGenerationEnabled !== false) {
-          const auth = await detectAuth();
-          const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-          const candidateModelIds = buildSessionIntelligenceModelCandidates({
-            availableModels,
-            settingModelId: config.titleModelId,
-            sessionModelId: chatModelId,
-            sessionModel: requestedModelId,
-          });
+        const auth = await detectAuth();
+        const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+        const candidateModelIds = buildSessionIntelligenceModelCandidates({
+          availableModels,
+          provider: args.provider,
+          sessionModelId: chatModelId,
+          sessionModel: requestedModelId,
+        });
 
           // Naming runs in the background, but it still must not walk the whole
           // registry when everything is down.
@@ -13596,7 +13609,6 @@ export function createAgentChatService(args: {
             identity = attempt.result;
             source = "ai";
           }
-        }
       }
     } catch (error) {
       logger.warn("agent_chat.suggest_lane_name_unavailable", {
@@ -13645,13 +13657,11 @@ export function createAgentChatService(args: {
     const fallback = () => uniquePromptFallbackLaneName(fallbackLaneNameFromPrompt(prompt), explicitFallback);
     if (!prompt.length) return fallback();
     try {
-      const config = resolveChatConfig();
-      if (config.titleGenerationEnabled === false) return fallback();
       const auth = await detectAuth();
       const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
       const candidateModelIds = buildSessionIntelligenceModelCandidates({
         availableModels,
-        settingModelId: config.titleModelId,
+        provider: args.provider,
         sessionModelId: requestedModelId,
       });
       const { result: suggested } = await runNamingAcrossProviders<string>(candidateModelIds, {
@@ -15196,8 +15206,33 @@ export function createAgentChatService(args: {
     }
   };
 
+  const maybeRefreshIdleStatusLine = (
+    managed: ManagedChatSession,
+    turnStartedAt: string | null | undefined,
+  ): void => {
+    if (!turnStartedAt) return;
+    if (managed.deleted) return;
+    const noteUpdatedAt = sessionService.getStatusNoteUpdatedAt?.(managed.session.id);
+    if (noteUpdatedAt) {
+      const noteMs = Date.parse(noteUpdatedAt);
+      const turnMs = Date.parse(turnStartedAt);
+      if (Number.isFinite(noteMs) && Number.isFinite(turnMs) && noteMs >= turnMs) return;
+    }
+    void regenerateSessionMetadata({
+      sessionId: managed.session.id,
+      fields: ["statusLine"],
+    }).catch((error) => {
+      logger.warn("agent_chat.idle_status_line_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   const markSessionIdleWithFreshCache = (managed: ManagedChatSession): void => {
+    const turnStartedAt = managed.session.currentTurnStartedAt;
     setSessionIdle(managed, { idleSinceAt: nowIso() });
+    maybeRefreshIdleStatusLine(managed, turnStartedAt);
   };
 
   const recoverDetachedChatAfterRestart = (
@@ -19166,70 +19201,11 @@ export function createAgentChatService(args: {
     deterministicSummary: string | null
   ): Promise<void> => {
     if (managed.deleted) return;
-    const config = resolveChatConfig();
-    if (!config.summaryEnabled) return;
-    if (managed.summaryInFlight) return;
-
-    // Set the deterministic summary first (always available immediately)
     const session = sessionService.get(managed.session.id);
     if (!session) return;
-
     const deterministicText = deterministicSummary?.trim() || managed.preview?.trim() || null;
     if (deterministicText && !session.summary) {
       sessionService.setSummary(managed.session.id, deterministicText);
-    }
-
-    // Fire-and-forget AI summary enhancement
-    const auth = await detectAuth();
-    const availableModels = await getAvailableRegistryModels(auth);
-    const candidateModelIds = buildSessionIntelligenceModelCandidates({
-      availableModels,
-      settingModelId: config.summaryModelId,
-      sessionModelId: managed.session.modelId,
-      sessionModel: managed.session.model,
-    });
-    if (!candidateModelIds.length) return;
-
-    const baseSummary = session.summary ?? deterministicText ?? "";
-    const userRequest = managed.autoTitleSeed?.trim() ?? "";
-    const prompt = [
-      "You are ADE's session summary assistant.",
-      "Rewrite this chat session into a concise 1-3 sentence summary describing what was accomplished and any outcome.",
-      "Do not invent actions or outcomes not mentioned. Return only the summary text.",
-      "",
-      `Session title: ${session.title}`,
-      session.goal ? `Goal: ${session.goal}` : null,
-      userRequest ? `User request: ${userRequest}` : null,
-      baseSummary ? `Current summary: ${baseSummary}` : null,
-      session.lastOutputPreview ? `Latest output: ${session.lastOutputPreview}` : null,
-    ].filter(Boolean).join("\n");
-
-    managed.summaryInFlight = true;
-    try {
-      const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-        run: async (descriptor) => {
-          const response = await runSessionIntelligencePrompt({
-            cwd: managed.laneWorktreePath,
-            modelId: descriptor.id,
-            prompt,
-            taskType: "session_summary",
-          });
-          const text = response.text.trim();
-          return text.length ? text : null;
-        },
-        onFailure: (failure) => {
-          logger.warn("agent_chat.session_summary_failed", {
-            sessionId: managed.session.id,
-            modelId: failure.descriptor.id,
-            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
-          });
-        },
-      });
-      if (result) {
-        sessionService.setSummary(managed.session.id, result);
-      }
-    } finally {
-      managed.summaryInFlight = false;
     }
   };
 

@@ -46,7 +46,6 @@ Core renderer files (`apps/desktop/src/renderer/components/graph/`):
 | `graphNodes/LaneNode.tsx` | Lane node rendering (badges, status, PR overlay) plus the inline per-lane agent dashboard (`LaneAgentList`) when `GraphNodeData.agents` is populated |
 | `graphNodes/ProposalNode.tsx` | Integration proposal node rendering |
 | `graphEdges/RiskEdge.tsx` | Edge renderer with risk-level coloring and animations |
-| `graphDialogs/ConflictPanel.tsx` | Inline conflict resolution panel for edge clicks |
 | `shared/RiskMatrix.tsx` | Project-wide pairwise risk grid with animations |
 | `shared/RiskTooltip.tsx` | Hover detail for a matrix cell |
 
@@ -62,7 +61,7 @@ Lane topology (parent-child stack relationships)
 + Conflict-risk overlays (edges colored by pairwise risk)
 + PR overlays (per-lane badges, edge coloring)
 + Sync and activity signals (dots/chips)
-+ Merge simulation entry points (edge clicks open ConflictPanel)
++ Merge simulation entry points (edge clicks run `simulateMerge`)
 + Integration proposal nodes (with "Fed By" source chips)
 ```
 
@@ -257,8 +256,9 @@ so the extra spoke would just add clutter.
   keyed by view mode.
 - **Node click** — select lane; context-dependent side panel
   updates.
-- **Edge click** — open `ConflictPanel` with merge simulation +
-  overlapping file list + AI proposal apply flow.
+- **Edge click** — run merge simulation (`simulateMerge`) and show
+  the clean/conflict outcome plus overlapping files. Graph PR create
+  prefills the title from the lane name; the body is optional markdown.
 - **Right-click / context menu** — reparent, archive, delete,
   create child, view diff, open terminal.
 - **Collapse/expand** — `collapsedLaneIds[]` hides descendants; the
@@ -274,7 +274,7 @@ so the extra spoke would just add clutter.
 - `<MiniMap />` — standard React Flow minimap.
 - `<Background variant={BackgroundVariant.Dots} />` for the dot grid.
 - Custom `<Panel />` regions for filters, zoom controls, and the
-  active `ConflictPanel` / `PrDetailPane` overlays.
+  `PrDetailPane` overlay.
 
 ## Refresh cadence
 
@@ -323,32 +323,11 @@ Activity scoring prioritizes:
 `activityBucket` (on each node): `"min" | "low" | "medium" | "high"`.
 Drives node size and shadow intensity in `LaneNode`.
 
-## Conflict panel
+## Merge simulation
 
-`graphDialogs/ConflictPanel.tsx` is the inline resolution UI:
-
-- Header with lane A ↔ lane B names.
-- Merge simulation outcome (clean / conflict / count).
-- Overlapping files list (from `overlapFilesByPair` map).
-- "Apply to" lane selector (target branch chooser).
-- AI proposal flow: prepare → request → apply with mode selector
-  (`unstaged | staged | commit`) + optional commit message.
-
-Data wiring:
-
-```ts
-props: {
-  conflictPanel: ConflictPanelState;
-  setConflictPanel: React.Dispatch<…>;
-  laneById: Map<string, LaneSummary>;
-  overlapFilesByPair: Map<string, string[]>;
-  refreshRiskBatch: () => Promise<void>;
-  refreshLanes: () => Promise<void>;
-}
-```
-
-The panel issues IPC calls directly to `ade.conflicts.simulateMerge`,
-`.prepareProposal`, `.requestProposal`, `.applyProposal`.
+Edge clicks and Risk Matrix pair selection run `ade.conflicts.simulateMerge`
+and show the clean/conflict outcome plus overlapping files. There is no
+AI proposal flyout on Graph.
 
 ## Risk matrix
 

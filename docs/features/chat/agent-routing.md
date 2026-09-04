@@ -905,25 +905,28 @@ on the Claude Agent SDK:
 
 ## Auto-title generation
 
-Sessions auto-title through two stages when
-`ai.sessionIntelligence.titles.enabled` is true and the runtime is not `guest`:
+ADE names chats and auto-created lanes from the ADE provider that owns
+the session, not from a Settings picker and not from the model's
+registry family:
 
-- **Initial** -- generated early in the conversation from the first
-  user message, providing an immediate label while the session is still
-  brief.
-- **Final** -- generated once enough transcript has accumulated,
-  producing a more accurate title.
+- Claude → Haiku 4.5, then this session's model, then a deterministic slug
+- Codex → GPT-5.6 Luna (`low`), then this session's model, then a slug
+- Cursor → Composer 2.5, then this session's model, then a slug
+- OpenCode, Droid, Pi, ACP, local → this session's model, then a slug
 
-`ai.sessionIntelligence.titles.refreshOnComplete` (default true) triggers a final
-refresh after a turn completes.
+OpenCode wrapping Anthropic does not spawn `claude -p` Haiku. Cursor
+Cloud names stay on Cursor; ADE never overlays them. ADE chats wait
+about 8s for a native provider title, then ADE-name if the title is
+still the default. CLI sessions are always ADE-named. `ade chat
+generate-names` regenerates title, lane name, and status line.
 
-Both stages walk the shared naming chain built by `buildSessionIntelligenceModelCandidates`
-in `sessionNaming.ts` — the configured `titleModelId` when set, then this
-chat's model — and run it through `runNamingAcrossProviders`. There is no
-hardcoded Haiku or "first available" namer. A provider-level failure
-condemns every remaining model behind that provider. An empty candidate
-list is a no-op walk and still uses the deterministic title; naming does
-not throw or skip just because no model is configured.
+Both stages walk `buildSessionIntelligenceModelCandidates` in
+`sessionNaming.ts`. A provider-level failure condemns every remaining
+model behind that provider. An empty candidate list uses the
+deterministic title.
+
+`ai.sessionIntelligence.titles.enabled` is not a gate. Naming always
+runs (except Cursor Cloud titles and `manuallyNamed`).
 
 Six words is the guideline the prompt gives the model, not a rejection rule: a
 seven-word title is clamped to the first six rather than discarded, and an
@@ -939,21 +942,21 @@ suppresses further auto-title generation. The manual-rename check runs *before*
 the title write, not after, because adopting a title has side effects (session
 meta, runtime push) that a rename landing mid-request must stop.
 
-The same chain — Settings title/summary model, then this session's model,
-then deterministic — covers chat titles, end-of-session summaries, explicit
-session-metadata regeneration, automatic lane names, handoff briefs, and
-identity-continuity summaries. CLI titles and terminal summaries are
-separate: they try the title/summary setting, then the stored launch model,
-and skip the AI call when both are missing. See
+The same chain — cheap helper for the ADE provider, then this session's
+model, then deterministic — covers chat titles, idle status lines,
+explicit session-metadata regeneration, automatic lane names, handoff
+briefs, and identity-continuity summaries. CLI sessions are always
+ADE-named from the cheap helper plus the stored launch model. See
 [AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles).
 
 ## One-shot utility tasks
 
-Commit messages, PR drafts/summaries, and conflict proposals pick a
-model once: the caller argument, else the feature picker in Settings,
-else skip or throw a Settings prompt. Review start requires an explicit
-run `modelId` (not a Settings feature picker). There is no hardcoded
-Haiku / Sonnet / "first available" namer.
+Commit messages come from the last turned ADE chat on that lane
+(same cheap-helper rule). An empty suggestion does not commit. Graph
+and iOS PR create is a title (from the lane name) plus optional
+markdown; ADE does not draft or summarize the PR. Graph edge clicks
+run merge simulation only — there is no AI conflict-proposal flyout.
+Review start requires an explicit run `modelId`.
 
 - Commit messages and conflict proposals throw `Choose a … model in Settings`.
 - PR drafts and PR AI summaries use the deterministic template when the

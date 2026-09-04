@@ -548,7 +548,7 @@ a boolean.
   `aiResolutionStart`
 - `listProposals`, `getMergeContext`, `getMergeContexts`,
   `listWithConflicts`, `listSnapshots`
-- `createFromLane`, `draftDescription`, `land`,
+- `createFromLane`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
 - `simulateIntegration`, `commitIntegration`,
   `listIntegrationWorkflows`, `updateIntegrationProposal`,

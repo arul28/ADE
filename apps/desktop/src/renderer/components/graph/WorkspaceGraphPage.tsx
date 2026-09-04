@@ -78,7 +78,6 @@ import type {
   BatchProgress,
   GraphTextPromptState,
   PrDialogState,
-  ConflictPanelState,
   IntegrationDialogState,
   RebasePublishOutcome
 } from "./graphTypes";
@@ -116,7 +115,6 @@ import {
 } from "./graphLayout";
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
-import { ConflictPanel as GraphConflictPanel } from "./graphDialogs/ConflictPanel";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
@@ -398,7 +396,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [mergeDisappearingAtByLaneId, setMergeDisappearingAtByLaneId] = React.useState<Record<string, number>>({});
   const [prDialog, setPrDialog] = React.useState<PrDialogState | null>(null);
   const [graphPrActionBusy, setGraphPrActionBusy] = React.useState<string | null>(null);
-  const [conflictPanel, setConflictPanel] = React.useState<ConflictPanelState | null>(null);
   const [showRiskMatrix, setShowRiskMatrix] = React.useState(false);
   const [integrationDialog, setIntegrationDialog] = React.useState<IntegrationDialogState | null>(null);
   const [integrationProposals, setIntegrationProposals] = React.useState<IntegrationProposal[]>([]);
@@ -1930,10 +1927,9 @@ function GraphInner({ active = true }: { active?: boolean }) {
         laneId,
         baseLaneId,
         baseBranch,
-        title: existing?.title ?? "",
+        title: existing?.title ?? lane.name ?? "",
         body: "",
         draft: existing?.state === "draft",
-        loadingDraft: !existing,
         creating: false,
         existingPr: existing,
         loadingDetails: Boolean(existing),
@@ -1946,18 +1942,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
         error: null
       });
 
-      if (!existing) {
-        void window.ade.prs
-          .draftDescription({ laneId })
-          .then((draft) => {
-            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev));
-          })
-          .catch((error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDraft: false, error: message } : prev));
-          });
-        return;
-      }
+      if (!existing) return;
 
       void Promise.all([
         window.ade.prs.getStatus(existing.id),
@@ -2028,50 +2013,34 @@ function GraphInner({ active = true }: { active?: boolean }) {
     [refreshGraphPrSurface]
   );
 
-  const openConflictPanelForEdge = React.useCallback(
-    (laneAId: string, laneBId: string) => {
-      const laneA = laneById.get(laneAId);
-      const laneB = laneById.get(laneBId);
-      const applyLaneId = laneA && laneB && laneA.stackDepth !== laneB.stackDepth
-        ? (laneA.stackDepth > laneB.stackDepth ? laneAId : laneBId)
-        : laneAId;
-
-      setConflictPanel({
-        laneAId,
-        laneBId,
-        loading: true,
-        result: null,
-        error: null,
-        applyLaneId,
-        preview: null,
-        preparing: false,
-        proposal: null,
-        proposing: false,
-        applyMode: "unstaged",
-        commitMessage: "",
-        applying: false
+  const simulateEdgeMerge = React.useCallback((laneAId: string, laneBId: string) => {
+    setReparentDialog(null);
+    setContextMenu(null);
+    setEdgeSimulation({
+      laneAId,
+      laneBId,
+      loading: true,
+      result: null,
+      error: null
+    });
+    void window.ade.conflicts
+      .simulateMerge({ laneAId, laneBId })
+      .then((result) => {
+        setEdgeSimulation((prev) =>
+          prev && prev.laneAId === laneAId && prev.laneBId === laneBId
+            ? { ...prev, loading: false, result }
+            : prev
+        );
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setEdgeSimulation((prev) =>
+          prev && prev.laneAId === laneAId && prev.laneBId === laneBId
+            ? { ...prev, loading: false, error: message }
+            : prev
+        );
       });
-
-      void window.ade.conflicts
-        .simulateMerge({ laneAId, laneBId })
-        .then((result) => {
-          setConflictPanel((prev) =>
-            prev && prev.laneAId === laneAId && prev.laneBId === laneBId
-              ? { ...prev, loading: false, result }
-              : prev
-          );
-        })
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          setConflictPanel((prev) =>
-            prev && prev.laneAId === laneAId && prev.laneBId === laneBId
-              ? { ...prev, loading: false, error: message }
-              : prev
-          );
-        });
-    },
-    [laneById]
-  );
+  }, []);
 
   const openExistingPrDetail = React.useCallback(
     (pr: GraphPrOverlay) => {
@@ -3250,41 +3219,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
               return;
             }
 
-            if (prefix === "risk") {
+            if (prefix === "risk" || prefix === "stack" || prefix === "topology") {
               setEdgeSimulation(null);
-              setReparentDialog(null);
-              setContextMenu(null);
-              openConflictPanelForEdge(laneAId, laneBId);
+              simulateEdgeMerge(laneAId, laneBId);
               return;
-            }
-
-            if (prefix === "stack" || prefix === "topology") {
-              setReparentDialog(null);
-              setContextMenu(null);
-              setEdgeSimulation({
-                laneAId,
-                laneBId,
-                loading: true,
-                result: null,
-                error: null
-              });
-              void window.ade.conflicts
-                .simulateMerge({ laneAId, laneBId })
-                .then((result) => {
-                  setEdgeSimulation((prev) =>
-                    prev && prev.laneAId === laneAId && prev.laneBId === laneBId
-                      ? { ...prev, loading: false, result }
-                      : prev
-                  );
-                })
-                .catch((error) => {
-                  const message = error instanceof Error ? error.message : String(error);
-                  setEdgeSimulation((prev) =>
-                    prev && prev.laneAId === laneAId && prev.laneBId === laneBId
-                      ? { ...prev, loading: false, error: message }
-                      : prev
-                  );
-                });
             }
           }}
           onEdgeMouseEnter={(_event, edge) => { if (!nodeDragActiveRef.current) setHoveredEdgeId(edge.id); }}
@@ -3944,13 +3882,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
             {!prDialog.existingPr ? (
               <div className="space-y-3">
-                {prDialog.loadingDraft ? (
-                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs text-muted-fg">
-                    <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
-                    Drafting description from pack…
-                  </div>
-                ) : null}
-
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                   <input
                     className="h-9 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 text-sm md:col-span-2"
@@ -3981,30 +3912,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
                   </Button>
                   <Button
                     size="sm"
-                    variant="outline"
-                    disabled={prDialog.creating || prDialog.loadingDraft}
-                    onClick={() => {
-                      const laneId = prDialog.laneId;
-                      setPrDialog((prev) => (prev ? { ...prev, loadingDraft: true, error: null } : prev));
-                      window.ade.prs
-                        .draftDescription({ laneId })
-                        .then((draft) => {
-                          setPrDialog((prev) =>
-                            prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev
-                          );
-                        })
-                        .catch((error) => {
-                          const message = error instanceof Error ? error.message : String(error);
-                          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDraft: false, error: message } : prev));
-                        });
-                    }}
-                  >
-                    Refresh Draft
-                  </Button>
-                  <Button
-                    size="sm"
                     variant="primary"
-                    disabled={prDialog.creating || !prDialog.title.trim() || !prDialog.body.trim()}
+                    disabled={prDialog.creating || !prDialog.title.trim()}
                     onClick={() => {
                       const laneId = prDialog.laneId;
                       setPrDialog((prev) => (prev ? { ...prev, creating: true, error: null } : prev));
@@ -4518,21 +4427,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
         </div>
       ) : null}
 
-      {conflictPanel ? (
-        <GraphConflictPanel
-          conflictPanel={conflictPanel}
-          setConflictPanel={setConflictPanel}
-          laneById={laneById}
-          overlapFilesByPair={overlapFilesByPair}
-          refreshRiskBatch={refreshRiskBatch}
-          refreshLanes={refreshLanes}
-        />
-      ) : null}
-
       {showRiskMatrix ? (
         <div
           className="absolute bottom-3 left-3 z-[88] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-3 shadow-float"
-          style={{ right: conflictPanel ? 450 : 12 }}
+          style={{ right: 12 }}
         >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
@@ -4556,14 +4454,14 @@ function GraphInner({ active = true }: { active?: boolean }) {
               entries={batch?.matrix ?? []}
               overlaps={batch?.overlaps ?? []}
               selectedPair={
-                conflictPanel
-                  ? { laneAId: conflictPanel.laneAId, laneBId: conflictPanel.laneBId }
+                edgeSimulation
+                  ? { laneAId: edgeSimulation.laneAId, laneBId: edgeSimulation.laneBId }
                   : null
               }
               loading={loadingRisk}
               progress={batchProgress ? { completedPairs: batchProgress.completedPairs, totalPairs: batchProgress.totalPairs } : null}
               onSelectPair={(pair) => {
-                openConflictPanelForEdge(pair.laneAId, pair.laneBId);
+                simulateEdgeMerge(pair.laneAId, pair.laneBId);
               }}
             />
           </div>

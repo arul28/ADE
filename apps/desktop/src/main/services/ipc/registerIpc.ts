@@ -7287,6 +7287,9 @@ export function registerIpc({
       ...(typeof record.chatModelId === "string" && record.chatModelId.trim().length
         ? { chatModelId: record.chatModelId.trim() }
         : {}),
+      ...(typeof record.provider === "string" && record.provider.trim().length
+        ? { provider: record.provider.trim() }
+        : {}),
       ...(typeof record.fallbackName === "string" && record.fallbackName.trim().length
         ? { fallbackName: record.fallbackName.trim() }
         : {}),

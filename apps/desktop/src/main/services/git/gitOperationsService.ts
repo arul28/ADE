@@ -41,8 +41,12 @@ import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import type { createProjectConfigService } from "../config/projectConfigService";
-import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import {
+  adeBackgroundUtilityProviderFromToolType,
+  backgroundUtilityModelId,
+  backgroundUtilityReasoningEffort,
+} from "../../../shared/backgroundUtilityModel";
 import { isRecord, safeJsonParse } from "../shared/utils";
 
 type LaneInfo = {
@@ -201,16 +205,23 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
 export function createGitOperationsService({
   laneService,
   operationService,
-  projectConfigService,
   aiIntegrationService,
+  sessionService,
   logger,
   onHeadChanged,
   onWorktreeChanged
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
-  projectConfigService: ReturnType<typeof createProjectConfigService>;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
+  sessionService?: {
+    list(args?: { laneId?: string; limit?: number | null }): Array<{
+      toolType?: string | null;
+      lastActivityAt?: string | null;
+      lastOutputPreview?: string | null;
+      resumeMetadata?: { launch?: { model?: string | null } | null } | null;
+    }>;
+  };
   logger: Logger;
   onHeadChanged?: (args: {
     laneId: string;
@@ -338,22 +349,37 @@ export function createGitOperationsService({
     return current.ref;
   }
 
-  async function assertCommitMessageGenerationEnabled(): Promise<string> {
-    if (!aiIntegrationService.getFeatureFlag("commit_messages")) {
-      throw new Error("AI commit messages are off. Enable Commit Messages in Settings or type a commit message manually.");
+  function pickLastTurnedLaneSession(laneId: string): {
+    toolType?: string | null;
+    lastActivityAt?: string | null;
+    lastOutputPreview?: string | null;
+    resumeMetadata?: { launch?: { model?: string | null } | null } | null;
+  } | null {
+    const rows = sessionService?.list({ laneId, limit: 80 }) ?? [];
+    let best: (typeof rows)[number] | null = null;
+    let bestMs = Number.NEGATIVE_INFINITY;
+    for (const row of rows) {
+      const hasOutput = Boolean(row.lastActivityAt || String(row.lastOutputPreview ?? "").trim());
+      if (!hasOutput) continue;
+      const activityMs = row.lastActivityAt ? Date.parse(row.lastActivityAt) : 0;
+      const rank = Number.isFinite(activityMs) ? activityMs : 0;
+      if (!best || rank > bestMs) {
+        best = row;
+        bestMs = rank;
+      }
     }
+    return best;
+  }
 
-    const model = readConfiguredFeatureModel(projectConfigService.get().effective.ai, "commit_messages");
-    if (!model) {
-      throw new Error(missingFeatureModelMessage("commit_messages"));
-    }
-
-    const aiStatus = await aiIntegrationService.getStatus().catch(() => null);
-    if (aiStatus?.availableModelIds?.length && !aiStatus.availableModelIds.includes(model)) {
-      throw new Error(`The configured Commit Messages model '${model}' is not currently available. Update Settings or type a commit message manually.`);
-    }
-
-    return model;
+  async function resolveCommitMessageModel(laneId: string): Promise<string | null> {
+    const session = pickLastTurnedLaneSession(laneId);
+    if (!session) return null;
+    const provider = adeBackgroundUtilityProviderFromToolType(session.toolType);
+    const cheap = provider ? backgroundUtilityModelId(provider) : null;
+    const sessionModel = typeof session.resumeMetadata?.launch?.model === "string"
+      ? session.resumeMetadata.launch.model.trim()
+      : "";
+    return cheap || sessionModel || null;
   }
 
   async function loadCommitMessagePromptContext(lane: LaneInfo): Promise<CommitMessagePromptContext> {
@@ -414,7 +440,7 @@ export function createGitOperationsService({
   function toCommitMessageGenerationError(error: unknown): Error {
     const message = error instanceof Error ? error.message : String(error);
     if (/No AI provider is available/i.test(message)) {
-      return new Error("No AI provider is available for Commit Messages. Configure the model/provider in Settings or type a commit message manually.");
+      return new Error("No AI provider is available to suggest a commit message. Type one, then commit.");
     }
     return error instanceof Error ? error : new Error(message);
   }
@@ -771,20 +797,25 @@ export function createGitOperationsService({
     },
 
     async generateCommitMessage(args: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> {
-      const model = await assertCommitMessageGenerationEnabled();
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
+      const model = await resolveCommitMessageModel(args.laneId);
+      if (!model) {
+        return { message: "", model: null };
+      }
       const promptContext = await loadCommitMessagePromptContext(lane);
       if (!promptContext.hasStagedChanges && !args.amend) {
         throw new Error("Stage changes before generating a commit message.");
       }
       const prompt = buildCommitMessagePrompt(lane, args, promptContext);
+      const reasoningEffort = backgroundUtilityReasoningEffort(model);
 
       try {
         const result = await aiIntegrationService.generateCommitMessage({
           cwd: lane.worktreePath,
           prompt,
-          model
+          model,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
         });
         const normalized = normalizeCommitMessage(result.text);
         return {

@@ -4081,6 +4081,7 @@ describe("ADE CLI", () => {
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
       expect(help.text).toContain("ade chat ask");
+      expect(help.text).toContain("ade chat generate-names");
       expect(help.text).toContain("ade chat demote");
       expect(help.text).toContain("ade chat promote");
       // Settling is user-/PR-merge-driven only; the help must say so rather
@@ -4116,6 +4117,40 @@ describe("ADE CLI", () => {
       });
     },
   );
+
+  it("passes --session through for chat generate-names and defaults to all fields", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "generate-names",
+      "--session",
+      "session-x",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "regenerateSessionMetadata",
+        args: { sessionId: "session-x" },
+      },
+    });
+  });
+
+  it("forwards generate-names field flags", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "generate-names",
+      "--title",
+      "--status",
+      "--session",
+      "session-x",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "regenerateSessionMetadata",
+        args: { sessionId: "session-x", fields: ["title", "statusLine"] },
+      },
+    });
+  });
 
   describe("session lifecycle commands", () => {
     const NOW = Date.parse("2026-07-26T12:00:00.000Z");

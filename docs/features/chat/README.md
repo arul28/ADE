@@ -1237,9 +1237,9 @@ session primitives:
    unique `<base>-<model-family>` style name and persists progress under
    `agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`.
    When AI titles are enabled, `startBackgroundParallelLaneNaming` then
-   makes a single background `ade.agentChat.suggestLaneName` call (which
-   runs the shared session-intelligence title prompt against the
-   requested, configured, and fallback title models) and renames every
+   makes a single background `ade.agentChat.suggestLaneName` call (cheap
+   helper by ADE provider, then this session's model, then deterministic)
+   and renames every
    child to `<aiBase>-<model-family>` in place; one child's rename failure
    does not abort the rest, and the children are flagged in
    `laneNamingStore` so their lane labels are masked while the pass runs.
@@ -2489,10 +2489,11 @@ config service):
 
 - `ai.mode` -- `subscription` vs `guest`; gates auto-title, tool
   availability, and provider selection.
-- `ai.sessionIntelligence.titles.*` -- AI title generation. The
-  configured `titleModelId` when set, then this chat's model, then
-  deterministic. An empty candidate list still names the chat. Legacy
-  `ai.chat.autoTitleReasoningEffort` is migrated into this tree.
+- `ai.sessionIntelligence.titles.*` -- parsed for compatibility; naming
+  is not gated by `enabled` and does not use a Settings model picker.
+  Cheap helper by ADE provider, then this session's model, then
+  deterministic. Legacy `ai.chat.autoTitleReasoningEffort` is migrated
+  into this tree.
 - `ai.permissions.*` -- per-provider permission defaults
   (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
   permission).

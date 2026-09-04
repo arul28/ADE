@@ -1,13 +1,10 @@
 import type {
-  ConflictProposal,
-  ConflictProposalPreview,
   ConflictStatus,
   GitUpstreamSyncStatus,
   AutoRebaseLaneStatus,
   GraphViewMode,
   LaneSummary,
   MergeMethod,
-  MergeSimulationResult,
   PrCheck,
   PrComment,
   PrReview,
@@ -123,7 +120,6 @@ export type PrDialogState = {
   title: string;
   body: string;
   draft: boolean;
-  loadingDraft: boolean;
   creating: boolean;
   existingPr: PrWithConflicts | null;
   loadingDetails: boolean;
@@ -134,22 +130,6 @@ export type PrDialogState = {
   mergeMethod: MergeMethod;
   merging: boolean;
   error: string | null;
-};
-
-export type ConflictPanelState = {
-  laneAId: string;
-  laneBId: string;
-  loading: boolean;
-  result: MergeSimulationResult | null;
-  error: string | null;
-  applyLaneId: string;
-  preview: ConflictProposalPreview | null;
-  preparing: boolean;
-  proposal: ConflictProposal | null;
-  proposing: boolean;
-  applyMode: "unstaged" | "staged" | "commit";
-  commitMessage: string;
-  applying: boolean;
 };
 
 export type IntegrationDialogState = {

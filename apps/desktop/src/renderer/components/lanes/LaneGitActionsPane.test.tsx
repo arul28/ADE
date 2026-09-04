@@ -214,16 +214,6 @@ describe("LaneGitActionsPane rescue action", () => {
         onAutoRebaseEvent: vi.fn(() => () => undefined),
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
-      projectConfig: {
-        get: vi.fn(async () => ({
-          effective: {
-            ai: {
-              features: { commit_messages: true },
-              featureModelOverrides: { commit_messages: "openai/gpt-5.4-mini" },
-            },
-          },
-        })),
-      },
     } as any;
   });
 
@@ -934,5 +924,23 @@ describe("LaneGitActionsPane rescue action", () => {
 
     const commitInput = screen.getByPlaceholderText(/commit message/i) as HTMLInputElement;
     expect(commitInput.value).toBe("");
+  });
+
+  it("does not commit when generated message is empty", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [{ path: "src/file.ts", kind: "modified" }],
+      unstaged: [],
+    };
+    (window.ade.git.generateCommitMessage as any).mockResolvedValueOnce({ message: "", model: null });
+
+    renderPane();
+    await user.click(await screen.findByRole("button", { name: "COMMIT" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
+    });
+    expect(window.ade.git.commit).not.toHaveBeenCalled();
+    expect(screen.getByText(/No turned chat on this lane to suggest a commit message/)).toBeTruthy();
   });
 });

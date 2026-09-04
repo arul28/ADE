@@ -251,8 +251,8 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
     mode: local.mode,
     name: init.agentName ?? undefined,
-    ...(local.tools ? { tools: local.tools as AgentOptions["tools"] } : {}),
-    ...(local.disallowedTools ? { disallowedTools: local.disallowedTools as AgentOptions["disallowedTools"] } : {}),
+    ...(local.tools !== undefined ? { tools: local.tools as AgentOptions["tools"] } : {}),
+    ...(local.disallowedTools !== undefined ? { disallowedTools: local.disallowedTools as AgentOptions["disallowedTools"] } : {}),
     local: {
       cwd: init.laneRoot,
       settingSources: cursorSdkSettingSources(init.policy),

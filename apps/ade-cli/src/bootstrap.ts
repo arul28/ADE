@@ -1152,8 +1152,8 @@ export async function createAdeRuntime(args: {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      projectConfigService,
       aiIntegrationService,
+      sessionService,
       logger
     });
 

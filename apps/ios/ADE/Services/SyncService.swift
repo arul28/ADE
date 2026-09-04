@@ -13907,6 +13907,16 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func regenerateChatSessionMetadata(sessionId: String, fields: [String]? = nil) async throws {
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.regenerateSessionMetadata", sessionId: sessionId),
+      payload: AgentChatRegenerateSessionMetadataRequest(sessionId: sessionId, fields: fields),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
@@ -14016,10 +14026,6 @@ final class SyncService: ObservableObject {
       "prId": prId,
       "reviewers": reviewers,
     ])
-  }
-
-  func draftPullRequestDescription(laneId: String) async throws -> PullRequestDraftSuggestion {
-    try await sendDecodableCommand(action: "prs.draftDescription", args: ["laneId": laneId], as: PullRequestDraftSuggestion.self)
   }
 
   func rerunPullRequestChecks(prId: String, checkRunIds: [Int]? = nil) async throws {

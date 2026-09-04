@@ -17,11 +17,22 @@ import {
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 describe("Cursor SDK policy", () => {
-  it("runs every one-shot under the read-only ask policy", () => {
-    // A one-shot is a tool-less text task, so its policy is fixed rather than
-    // derived from a caller's permission mode.
-    expect(CURSOR_SDK_ONESHOT_POLICY).toEqual(resolveCursorSdkPolicy({ cursorModeId: "ask" }));
-    expect(CURSOR_SDK_ONESHOT_POLICY.fullAuto).toBe(false);
+  it("runs every one-shot with an empty tool allowlist so the SDK does not advertise tools", () => {
+    expect(CURSOR_SDK_ONESHOT_POLICY).toMatchObject({
+      chatMode: "ask",
+      approvalPolicy: "read-only",
+      sandbox: "off",
+      fullAuto: false,
+      autoReview: false,
+      tools: [],
+    });
+    expect(buildCursorSdkLocalRunOptions(CURSOR_SDK_ONESHOT_POLICY).tools).toEqual([]);
+    expect(cursorSdkLocalAgentMode(CURSOR_SDK_ONESHOT_POLICY)).toBe("plan");
+  });
+
+  it("passes an empty tools allowlist through instead of dropping it", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "ask" });
+    expect(buildCursorSdkLocalRunOptions({ ...policy, tools: [] }).tools).toEqual([]);
   });
 
   it("maps Cursor modes to ADE permission policies", () => {

@@ -1636,18 +1636,12 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.listConflictProposals = tool({
-    description: "List AI-generated conflict resolution proposals for a lane.",
+    description: "List stored conflict resolution proposals for a lane.",
     inputSchema: z.object({ laneId: z.string().min(1) }),
     execute: ({ laneId }) => conflictGuard(async () => {
       const proposals = await deps.conflictService!.listProposals({ laneId });
       return { count: proposals.length, proposals };
     }),
-  });
-
-  tools.requestConflictProposal = tool({
-    description: "Request an AI-generated resolution for a specific conflict.",
-    inputSchema: z.object({ laneId: z.string().min(1), filePath: z.string().optional() }),
-    execute: ({ laneId, filePath }) => conflictGuard(() => deps.conflictService!.requestProposal({ laneId, filePath: filePath?.trim() || undefined })),
   });
 
   tools.applyConflictProposal = tool({

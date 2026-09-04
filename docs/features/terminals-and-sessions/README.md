@@ -49,8 +49,8 @@ and in tests.
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture with a 16 MiB physical retention ceiling and lifetime
   logical byte offsets, runtime
-  state, AI auto-titles (Settings title model, then stored launch
-  model; skip AI if both are missing), tool-type routing, continuation-target backfill,
+  state, AI auto-titles (cheap helper by ADE provider, then stored launch
+  model, then the deterministic title already on the row), tool-type routing, continuation-target backfill,
   session-id based write/resize entry points used by mobile sync
   terminal control, `readTranscriptTail({ sessionId, ... })` which
   merges the on-disk transcript tail with the live PTY output tail so

@@ -161,7 +161,8 @@ Several derived maps are memoized:
   empty-lanes case by returning `primary: null` with empty maps
   so derivation can short-circuit safely.
 - `overlapFilesByPair` — `Map<pairKey, string[]>` from
-  `batch.overlaps`; used by `ConflictPanel`.
+  `batch.overlaps`; used by drag-to-integrate overlap lists and
+  merge-simulation overlays.
 - `integrationSourcesByLaneId` — built via
   `buildIntegrationSourcesByLaneId(lanes)` from
   `renderer/lib/integrationLanes.ts`; used to annotate integration
@@ -250,7 +251,7 @@ rewrites on next save.
 | Reparent a lane | `refreshLanes`, `scheduleRefreshActivity(_, {includeOperations:false})` |
 | Create/delete lane | `refreshLanes`, re-run auto-layout for fresh node |
 | Apply AI proposal | `refreshRiskBatch`, `refreshLanes` |
-| Run merge simulation | No refresh (inline panel state only) |
+| Run merge simulation | No refresh (inline overlay state only) |
 | Change view mode | Recompute auto-layout if positions missing; resets `showOverviewRiskEdges` to `false` |
 | Toggle "Show overlap web" (Overview only) | No IPC; local boolean drives risk-edge render gate |
 | Change filters | No refresh; local dimmed/highlight recalculation |
@@ -282,8 +283,8 @@ Intentional omissions:
 - **Do not assume `batch.overlaps` covers every pair.** In
   prefilter mode (over 15 lanes), only likely-conflict pairs are
   in the map. `overlapFilesByPair` falls back to an empty list
-  for missing pairs and the `ConflictPanel` handles the empty
-  case gracefully.
+  for missing pairs; edge-click merge simulation still runs
+  `simulateMerge` and paints the overlay.
 - **PR refresh is intentionally delayed 4 s.** Earlier than that
   and PR data blocks topology paint on slow projects. Later than
   that and the user perceives "PR overlays never load." Keep

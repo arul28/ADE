@@ -3167,13 +3167,14 @@ export type AgentChatSuggestLaneNameArgs = {
   laneId: string;
   /** User prompt for the chat launch (used to derive a short lane name prefix). */
   prompt: string;
-  /** Registry model ID used to run the naming call (e.g. first selected model). */
+  /** Optional ADE provider that owns the launching chat (`claude`/`codex`/`cursor`). */
+  provider?: string;
+  /** Registry model ID used as the session-model fallback after the cheap helper. */
   modelId: string;
   /**
-   * Registry model ID the chat itself was launched with. Distinct from `modelId`,
-   * which is the configured naming model when one is set — the naming fallback
-   * chain needs the launched model even then, so it can escape a naming provider
-   * that is broken at the provider level.
+   * Registry model ID the chat itself was launched with. Distinct from `modelId`
+   * when the naming call and the chat model differ. The cheap helper runs first;
+   * these are the fallbacks if that helper answers unusably.
    */
   chatModelId?: string;
   /** Optional fallback used when model-backed naming is disabled or unavailable. */

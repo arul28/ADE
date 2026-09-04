@@ -4007,8 +4007,8 @@ app.whenReady().then(async () => {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      projectConfigService,
       aiIntegrationService,
+      sessionService,
       logger,
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });

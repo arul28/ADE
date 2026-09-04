@@ -5,9 +5,14 @@
  *
  * Those callers used to carry their own hand-copied chain and retry loop, which
  * had already drifted apart. They live here so "the same chain" is a fact
- * rather than a comment: the user's title setting, then this session's model,
- * then a deterministic name. No hardcoded Haiku/mini namer.
+ * rather than a comment: the cheap ADE-provider helper, then this session's
+ * model, then a deterministic name. Settings pickers are not part of the chain.
  */
+import {
+  adeBackgroundUtilityProvider,
+  adeBackgroundUtilityProviderFromToolType,
+  backgroundUtilityModelId,
+} from "../../../shared/backgroundUtilityModel";
 import {
   deriveDeterministicLaneTitleFromPrompt,
   GENERIC_LANE_FALLBACK_TITLE,
@@ -502,17 +507,23 @@ export function buildNamingModelCandidates(args: {
 }
 
 /**
- * Session intelligence picks a model in this order only: the user's setting,
- * then this session's model. There is no hardcoded Haiku/mini/"first available"
- * namer. Callers fall through to a deterministic title/summary when both miss.
+ * Session intelligence picks a model in this order only: the cheap helper for
+ * this ADE provider (`claude`/`codex`/`cursor`), then this session's model.
+ * OpenCode, Droid, Pi, and ACP skip the cheap helper and use the session model.
+ * Callers fall through to a deterministic title when both miss.
  */
 export function buildSessionIntelligenceModelCandidates(args: {
   availableModels: ModelDescriptor[];
-  settingModelId?: string | null;
+  provider?: string | null;
+  toolType?: string | null;
   sessionModelId?: string | null;
   sessionModel?: string | null;
 }): string[] {
-  const preferred = [args.settingModelId, args.sessionModelId, args.sessionModel];
+  const hasProvider = typeof args.provider === "string" && args.provider.trim().length > 0;
+  const utilityProvider = adeBackgroundUtilityProvider(args.provider)
+    ?? (hasProvider ? null : adeBackgroundUtilityProviderFromToolType(args.toolType));
+  const cheapModelId = utilityProvider ? backgroundUtilityModelId(utilityProvider) : null;
+  const preferred = [cheapModelId, args.sessionModelId, args.sessionModel];
   return buildNamingModelCandidates({
     availableModels: withSessionModelDescriptors(args.availableModels, preferred),
     preferred,

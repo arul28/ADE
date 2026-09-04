@@ -406,17 +406,13 @@ export function PrDetailPane({
   unmappedAffordance = null,
 }: PrDetailPaneProps) {
   const {
-    dismissedAiSummaries,
     timelineFiltersByPrId,
-    detailAiSummary,
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
     detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
     writeViewerLogin,
     setTimelineFilters,
-    setAiSummaryDismissed,
-    regeneratePrAiSummary,
     isGithubPollStoodDown,
     noteGithubReadFailure,
     noteGithubReadSuccess,
@@ -565,18 +561,6 @@ export function PrDetailPane({
     () => (ctxDetailPrId === pr.id ? detailDeployments : []),
     [ctxDetailPrId, detailDeployments, pr.id],
   );
-  const aiSummaryDismissedForPr = Boolean(dismissedAiSummaries?.[pr.id]);
-  const handleDismissAiSummary = React.useCallback(() => {
-    setAiSummaryDismissed?.(pr.id, true);
-  }, [pr.id, setAiSummaryDismissed]);
-  const handleRegenerateAiSummary = React.useCallback(() => {
-    void regeneratePrAiSummary?.(pr.id);
-  }, [pr.id, regeneratePrAiSummary]);
-  const timelineAiSummary = React.useMemo(
-    () => (detailAiSummary?.prId === pr.id ? detailAiSummary : null),
-    [detailAiSummary, pr.id],
-  );
-
   // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
   // Only attach listeners when the flag is on AND the overview tab is active.
   React.useEffect(() => {
@@ -1425,10 +1409,6 @@ export function PrDetailPane({
             writeViewerLogin={writeViewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}
-            aiSummary={timelineAiSummary}
-            aiSummaryDismissed={aiSummaryDismissedForPr}
-            onDismissAiSummary={handleDismissAiSummary}
-            onRegenerateAiSummary={handleRegenerateAiSummary}
             commentDraft={commentDraft}
             setCommentDraft={setCommentDraft}
             actionBusy={actionBusy}

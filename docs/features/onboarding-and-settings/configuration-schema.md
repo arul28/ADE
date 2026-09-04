@@ -292,21 +292,20 @@ type AiConfig = {
 };
 ```
 
-`featureModelOverrides` / `featureReasoningOverrides` are the per-feature
-model pickers in Settings → Agents & Models → Background helpers
-(commit messages, PR descriptions, terminal summaries, conflict
-proposals). An empty picker **skips AI** for that one-shot — ADE does
-not fall through to Haiku, Sonnet, or the first available model.
-Commit messages and conflict proposals refuse with a Settings prompt;
-PR drafts and PR AI summaries use the deterministic template instead.
-Review start is not a feature picker: the run requires an explicit
-`modelId`, and empty throws `Choose a review model before starting a review.`
-Session intelligence (chat titles, summaries, metadata, lane names,
-handoff, continuity) uses the title/summary setting, then this session's
-model, then deterministic. An empty candidate list still uses
-deterministic naming — it does not throw or skip. CLI titles and
-terminal summaries try the setting, then the stored launch model, and
-skip the AI call when both are missing. Live chat compaction stays on
+`featureModelOverrides` / `featureReasoningOverrides` remain in the
+schema for older configs, but Settings no longer offers per-helper
+model pickers. Background naming, idle status lines, and commit
+suggestions pick a cheap model from the ADE provider that owns the
+session (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5), then that session's
+model, then a deterministic slug. OpenCode, Droid, Pi, and ACP skip the
+cheap helper and use the session model. Manual Graph PR create is
+title plus optional markdown — ADE does not draft the description.
+Review start still requires an explicit `modelId`.
+Live chat compaction stays on
+the chat's own provider. Session intelligence
+(`sessionIntelligence.titles.enabled`) is not a gate: naming always
+runs. Legacy `ai.chat.autoTitleModelId` values still parse into
+`sessionIntelligence.titles.*` by `coerceAiConfig`. They are
 the chat's own provider.
 
 ### Disabled providers

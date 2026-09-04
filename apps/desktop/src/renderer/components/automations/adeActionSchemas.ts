@@ -765,18 +765,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "pr",
-    action: "draftDescription",
-    label: "Draft PR description with AI",
-    description: "Use an AI model to draft a title + body for a PR from the lane's commits.",
-    params: [
-      LANE_ID_PARAM,
-      { name: "model", type: "string" },
-      { name: "reasoningEffort", type: "string" },
-      { name: "baseBranch", type: "string" },
-    ],
-  },
-  {
-    domain: "pr",
     action: "setLabels",
     label: "Set PR labels",
     description: "Replace the PR's labels with the given list.",

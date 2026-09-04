@@ -429,6 +429,7 @@ export function createSessionService({
   // revision guarantees.
   const settleLifecycle = createSettleLifecycleWriter(db);
   const writeSettleLifecycle = settleLifecycle.write;
+  const statusNoteUpdatedAtById = new Map<string, string>();
 
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
@@ -2119,7 +2120,12 @@ export function createSessionService({
           "update terminal_sessions set status_note = ? where id = ?",
           [normalizeSessionStatusNote(note), id],
         );
+        statusNoteUpdatedAtById.set(id, new Date().toISOString());
       });
+    },
+
+    getStatusNoteUpdatedAt(sessionId: string): string | null {
+      return statusNoteUpdatedAtById.get(sessionId.trim()) ?? null;
     },
 
     /**
@@ -2210,6 +2216,7 @@ export function createSessionService({
       );
       if (!existing) return false;
       db.run("delete from terminal_sessions where id = ?", [trimmed]);
+      statusNoteUpdatedAtById.delete(trimmed);
       // Reap the lifecycle token with its row. ADE has been bitten before by a
       // local table with no reaper, and every other session-keyed side table is
       // already cascaded here.

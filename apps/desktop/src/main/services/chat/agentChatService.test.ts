@@ -1541,6 +1541,7 @@ function createMockSessionService() {
       if (row) row.statusNote = note;
       return Boolean(row);
     }),
+    getStatusNoteUpdatedAt: vi.fn(() => null),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
@@ -1784,6 +1785,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     aiIntegrationService: aiIntegrationService as any,
     logger: logger as any,
     appVersion: "0.0.1-test",
+    nativeTitleWaitMs: 0,
     getDirtyFileTextForPath: () => undefined,
     ...overrides,
   });
@@ -13636,15 +13638,15 @@ describe("createAgentChatService", () => {
           && event.event.status === "spawn_completion_delivery_failed"
         )).toBe(true);
       }, { timeout: 2_500 });
-      expect(logger.warn).toHaveBeenCalledTimes(3);
-      expect(logger.warn).toHaveBeenLastCalledWith(
-        "agent_chat.spawn_completion_delivery_failed",
-        expect.objectContaining({
-          childSessionId: child.id,
-          parentSessionId: parent.id,
-          attempt: 3,
-        }),
+      const deliveryWarnings = logger.warn.mock.calls.filter(
+        ([message]) => message === "agent_chat.spawn_completion_delivery_failed",
       );
+      expect(deliveryWarnings).toHaveLength(3);
+      expect(deliveryWarnings[2]?.[1]).toEqual(expect.objectContaining({
+        childSessionId: child.id,
+        parentSessionId: parent.id,
+        attempt: 3,
+      }));
     });
 
     it("rejects the legacy silent spawn type for new child chats", async () => {
@@ -16022,6 +16024,8 @@ describe("createAgentChatService", () => {
 
       const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        // These tests prove native Claude titles win during the wait window.
+        nativeTitleWaitMs: 250,
         projectConfigService: {
           get: vi.fn(() => ({
             effective: {
@@ -16067,9 +16071,8 @@ describe("createAgentChatService", () => {
         info: { summary: prompt, firstPrompt: prompt },
         firstPrompt: prompt,
       });
-      // Give the fire-and-forget adopt a beat, then confirm the title stayed default.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(sessionService.get(session.id)?.title).toBe("Claude Chat");
+      // Echoed SDK summaries are skipped; ADE names the chat after the wait.
+      await waitForSessionTitle(sessionService, session.id, "Fix Update Modal Flow");
     });
 
     it("does not adopt when the session is manually named", async () => {
@@ -17942,10 +17945,17 @@ describe("createAgentChatService", () => {
           event.event.type === "done",
       );
 
-      // Give auto-title a chance to fire (it's a void promise)
+      // Give auto-title / idle status-line a chance to fire (void promises)
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(sessionService.get(session.id)?.title).toBe("My Title");
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Write a short statusLine"),
+          systemPrompt: expect.stringContaining("Copy these current values unchanged: chatTitle, laneName"),
+        }),
+      );
     });
 
     it("does not clobber a manual rename that lands while auto-titling is in flight", async () => {
@@ -47149,21 +47159,27 @@ describe("suggestLaneNameFromPrompt", () => {
     );
   });
 
-  it("uses the deterministic prompt fallback when title generation is disabled", async () => {
+  it("still names with AI when title generation is disabled in Settings", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
 
     const { service, aiIntegrationService } = createSuggestService({ titleGenerationEnabled: false });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: "Login Bug Fix",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix the authentication login failure in the dashboard",
       modelId: "anthropic/claude-haiku-4-5",
+      provider: "claude",
       laneId: "lane-1",
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("fix-authentication-login-failure-dashboard");
-    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    expect(result).toBe("login-bug-fix");
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
   });
 
   it("preserves the generated suffix when the prompt fallback is generic", async () => {
@@ -47198,7 +47214,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result).toBe("login-bug-fix");
   });
 
-  it("prefers the configured title model over the requested composer model", async () => {
+  it("prefers the cheap helper for the ADE provider over the requested session model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47212,13 +47228,14 @@ describe("suggestLaneNameFromPrompt", () => {
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix auto create lane routing and naming",
       modelId: "openai/gpt-5.5",
+      provider: "codex",
       laneId: "lane-1",
       fallbackName: "chat-20260514-010203",
     });
 
     expect(result).toBe("auto-create-lane-fix");
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
       taskType: "session_title",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
@@ -47480,7 +47497,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the launched chat model when the title setting answers unusably", async () => {
+  it("uses the launched chat model when the cheap helper answers unusably", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47496,6 +47513,7 @@ describe("suggestLaneNameFromPrompt", () => {
     const result = await service.generateAutoLaneIdentity({
       prompt: "The Claude auth login button hangs after OAuth redirects.",
       modelId: "openai/gpt-5.4",
+      provider: "codex",
       laneId: "lane-1",
       temporaryBranch: "ade/1a2b3c4d",
     });
@@ -47506,7 +47524,7 @@ describe("suggestLaneNameFromPrompt", () => {
       source: "ai",
     });
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4",
@@ -47514,7 +47532,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(2);
   });
 
-  it("uses the configured naming model before the launched model", async () => {
+  it("uses the cheap helper before the launched model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47526,12 +47544,13 @@ describe("suggestLaneNameFromPrompt", () => {
     await service.generateAutoLaneIdentity({
       prompt: "Rename automatic lanes",
       modelId: "openai/gpt-5.4",
+      provider: "codex",
       laneId: "lane-1",
       temporaryBranch: "ade/1a2b3c4d",
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
     }));
   });
 

@@ -796,6 +796,28 @@ extension WorkRootScreen {
     pushNewChatRoute(preferredLaneId: lane.id)
   }
 
+  func openLaneInWeb(_ lane: LaneSummary) {
+    let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
+    let link = LaneDeeplinkHelpers.laneLink(
+      laneId: lane.id,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest),
+      form: .https
+    )
+    guard let url = workWebClientURL(for: link) else { return }
+    UIApplication.shared.open(url)
+  }
+
+  func generateSessionNames(_ session: TerminalSessionSummary, fields: [String]) {
+    Task {
+      do {
+        try await syncService.regenerateChatSessionMetadata(sessionId: session.id, fields: fields)
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
   func copyLaneLink(_ lane: LaneSummary) {
     let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
     UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(

@@ -98,6 +98,11 @@ import {
   isTrackedAgentCliToolType,
   PTY_SEND_PRE_DELIVERY_ERROR_CODE,
 } from "../../../shared/types";
+import {
+  adeBackgroundUtilityProviderFromToolType,
+  backgroundUtilityModelId,
+  backgroundUtilityReasoningEffort,
+} from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
@@ -2499,21 +2504,14 @@ export function createPtyService({
     applyLivePtyResize(entry, cols, rows);
   };
 
-  const isTitleGenerationEnabled = (): boolean => {
-    const si = getSessionIntelligence();
-    return si?.titles?.enabled ?? true;
-  };
+  const isTitleGenerationEnabled = (): boolean => true;
 
-  const resolveTitleModelId = (): string | undefined => {
-    const si = getSessionIntelligence();
-    const raw = si?.titles?.modelId;
-    return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
-  };
-
-  const resolveTitleReasoningEffort = (): string | null => {
-    const si = getSessionIntelligence();
-    const raw = si?.titles?.reasoningEffort;
-    return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
+  const resolveCliTitleModelIds = (
+    session: { toolType?: string | null; resumeMetadata?: TerminalResumeMetadata | null } | null | undefined,
+  ): string[] => {
+    const provider = adeBackgroundUtilityProviderFromToolType(session?.toolType);
+    const cheap = provider ? backgroundUtilityModelId(provider) : undefined;
+    return uniqueCliModelIds(cheap, resolveSessionLaunchModelId(session));
   };
 
   const resolveSessionLaunchModelId = (
@@ -2566,8 +2564,7 @@ export function createPtyService({
     }
     const laneName = session.laneName?.trim() || "Current lane";
     const outputSlice = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n").trim().slice(-4000);
-    const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
-    const titleReasoningEffort = resolveTitleReasoningEffort();
+    const titleModelIds = resolveCliTitleModelIds(session);
     if (!titleModelIds.length) return;
     const prompt = [
       "Write a concise title for this CLI coding session.",
@@ -2582,13 +2579,14 @@ export function createPtyService({
     ].join("\n");
     const capturedAi = aiIntegrationService;
     const title = await tryCliAiModels(titleModelIds, async (modelId) => {
+      const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
       const result = await capturedAi.summarizeTerminal({
         cwd: entry.boundCwd || entry.laneWorktreePath,
         prompt,
         taskType: "session_title",
         timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
         model: modelId,
-        ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
       if (entry.disposed) return null;
       return sanitizeGeneratedCliTitle(result.text);
@@ -2830,64 +2828,11 @@ export function createPtyService({
 
         sessionService.setSummary(sessionId, summary);
 
-        const si = getSessionIntelligence();
         const hasAi = Boolean(aiIntegrationService && aiIntegrationService.getMode() !== "guest");
 
-        // AI-enhanced summary (only when summaries are enabled and AI is available)
-        if (si?.summaries?.enabled !== false && hasAi) {
-          try {
-            const prompt = [
-              "You are ADE's terminal summary assistant.",
-              "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
-              "Do not invent commands or outcomes.",
-              "",
-              "Deterministic summary:",
-              summary,
-              "",
-              "Terminal transcript tail:",
-              transcript.slice(-18_000)
-            ].join("\n");
-
-            const summarySetting = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
-              ? si.summaries.modelId.trim()
-              : undefined;
-            const summaryModelIds = uniqueCliModelIds(summarySetting, resolveSessionLaunchModelId(session));
-            const summaryReasoningEffort = typeof si?.summaries?.reasoningEffort === "string" && si.summaries.reasoningEffort.trim().length
-              ? si.summaries.reasoningEffort.trim()
-              : undefined;
-
-            const aiSummary = await tryCliAiModels(summaryModelIds, async (modelId) => {
-              const result = await aiIntegrationService!.summarizeTerminal({
-                cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-                prompt,
-                model: modelId,
-                ...(summaryReasoningEffort ? { reasoningEffort: summaryReasoningEffort } : {}),
-              });
-              const text = result.text.trim();
-              return text.length ? text : null;
-            }, (modelId, err) => {
-              logger.warn("pty.ai_summary_failed", {
-                sessionId,
-                modelId,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            });
-            if (aiSummary) {
-              sessionService.setSummary(sessionId, aiSummary);
-            }
-          } catch (err) {
-            logger.warn("pty.ai_summary_failed", {
-              sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
-
-        // Refresh title on complete — runs independently of AI summaries toggle
+        // Refresh title on complete. CLI sessions are always ADE-named.
         if (hasAi) {
-          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete ?? true;
-          if (refreshOnComplete && isTitleGenerationEnabled()) {
-            try {
+          try {
               if (isSessionManuallyNamed(sessionService, sessionId)) {
                 logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
               } else {
@@ -2904,16 +2849,16 @@ export function createPtyService({
                   transcript.slice(-2000),
                 ].filter(Boolean).join("\n");
 
-                const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
-                const titleReasoningEffort = resolveTitleReasoningEffort();
+                const titleModelIds = resolveCliTitleModelIds(session);
                 const finalTitle = await tryCliAiModels(titleModelIds, async (modelId) => {
+                  const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
                   const titleResult = await aiIntegrationService!.summarizeTerminal({
                     cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                     prompt: titlePrompt,
                     taskType: "session_title",
                     timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
                     model: modelId,
-                    ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
+                    ...(reasoningEffort ? { reasoningEffort } : {}),
                   });
                   return sanitizeGeneratedCliTitle(titleResult.text);
                 }, (modelId, err) => {
@@ -2937,7 +2882,6 @@ export function createPtyService({
                 error: err instanceof Error ? err.message : String(err),
               });
             }
-          }
         }
       })
       .catch(() => {
@@ -3929,46 +3873,12 @@ export function createPtyService({
 
   const scheduleClaudeRuntimeTitleCaptureBestEffort = (
     sessionId: string,
-    claudeSessionId: string | null | undefined,
-    cwd: string,
+    _claudeSessionId: string | null | undefined,
+    _cwd: string,
   ): void => {
-    const cleanClaudeSessionId = sanitizeResumeTargetId(claudeSessionId ?? null);
-    if (!cleanClaudeSessionId) return;
-    const key = `${sessionId}:${cleanClaudeSessionId}`;
-    if (claudeTitleCaptureKeys.has(key)) return;
-    claudeTitleCaptureKeys.add(key);
-
-    const filePath = claudeSessionFilePathForCwd(cwd, cleanClaudeSessionId);
-    const timers = new Set<ReturnType<typeof setTimeout>>();
-    const cleanup = (): void => {
-      claudeTitleCaptureKeys.delete(key);
-      for (const timer of timers) clearTimeout(timer);
-      timers.clear();
-    };
-    const tryTitle = (source: string): boolean => {
-      const title = readClaudeRuntimeTitle(filePath, cleanClaudeSessionId);
-      return adoptClaudeRuntimeTitle(sessionId, title, source);
-    };
-
-    if (tryTitle("claude-storage-initial")) {
-      cleanup();
-      return;
-    }
-
-    for (let i = 0; i < CLAUDE_TITLE_POLL_DELAYS_MS.length; i += 1) {
-      const timer = setTimeout(() => {
-        timers.delete(timer);
-        try {
-          if (tryTitle(`claude-storage-poll-${i}`)) cleanup();
-        } catch (err) {
-          logger.warn("pty.claude_runtime_title_capture_failed", { sessionId, attempt: i, err: String(err) });
-        } finally {
-          if (i === CLAUDE_TITLE_POLL_DELAYS_MS.length - 1) cleanup();
-        }
-      }, CLAUDE_TITLE_POLL_DELAYS_MS[i]);
-      timer.unref?.();
-      timers.add(timer);
-    }
+    // CLI sessions are always ADE-named. Native JSONL titles used to win and
+    // leave rows on generic Claude Chat / first-prompt echoes.
+    void sessionId;
   };
 
   const adoptCodexRuntimeThreadName = (
@@ -3996,21 +3906,10 @@ export function createPtyService({
 
   const scheduleCodexRuntimeTitleCaptureBestEffort = (
     sessionId: string,
-    codexSessionId: string,
-    filePath: string,
+    _codexSessionId: string,
+    _filePath: string,
   ): void => {
-    const tryTitle = (source: string): boolean => {
-      const title = readCodexRuntimeThreadName(filePath, codexSessionId);
-      return adoptCodexRuntimeThreadName(sessionId, title, source);
-    };
-
-    if (tryTitle("codex-storage-initial")) return;
-    for (let i = 0; i < CODEX_TITLE_POLL_DELAYS_MS.length; i += 1) {
-      const timer = setTimeout(() => {
-        tryTitle(`codex-storage-poll-${i}`);
-      }, CODEX_TITLE_POLL_DELAYS_MS[i]);
-      timer.unref?.();
-    }
+    void sessionId;
   };
 
   const listOtherAdoptedCodexTargetIds = (sessionId: string): Set<string> => {
@@ -6993,17 +6892,17 @@ export function createPtyService({
             strippedOutput.slice(0, 800)
           ].join("\n");
 
-          const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
-          const titleReasoningEffort = resolveTitleReasoningEffort();
+          const titleModelIds = resolveCliTitleModelIds(session);
           if (!titleModelIds.length) return;
           void tryCliAiModels(titleModelIds, async (modelId) => {
+            const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
             const result = await capturedAi.summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
               taskType: "session_title",
               timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
               model: modelId,
-              ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
+              ...(reasoningEffort ? { reasoningEffort } : {}),
             });
             return sanitizeGeneratedCliTitle(result.text);
           }, (modelId, err) => {

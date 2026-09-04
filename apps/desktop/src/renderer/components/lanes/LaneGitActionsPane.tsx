@@ -2,14 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
-  selectActiveProjectRoot,
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
-import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
 import { showToast } from "../app/toast/toastStore";
@@ -54,11 +52,6 @@ type NextActionHint = {
   action: GitRecommendedAction | "rebase_push" | "resolve_conflicts";
   label: string;
   detail: string;
-};
-
-type CommitMessageAiState = {
-  enabled: boolean;
-  modelId: string | null;
 };
 
 type ResponsiveMode = "narrow" | "medium" | "wide";
@@ -377,20 +370,11 @@ function getCommitButtonLabel(args: {
   return args.amendCommit ? "AMEND COMMIT" : "COMMIT";
 }
 
-function getCommitHelperText(args: {
-  commitMessage: string;
-  commitMessageAi: CommitMessageAiState;
-}): string {
-  if (args.commitMessage.trim().length > 0) {
+function getCommitHelperText(commitMessage: string): string {
+  if (commitMessage.trim().length > 0) {
     return `Press ${modifierKeyLabel}+Enter to commit with the typed message.`;
   }
-  if (args.commitMessageAi.enabled && args.commitMessageAi.modelId) {
-    return `Blank messages will be auto-generated with ${args.commitMessageAi.modelId}.`;
-  }
-  if (args.commitMessageAi.enabled) {
-    return "Commit Messages is enabled, but no model is selected in Settings.";
-  }
-  return "Type a commit message, or enable Commit Messages in Settings to auto-generate one when blank.";
+  return "Type a commit message, or leave blank to generate one from the last turned chat on this lane.";
 }
 
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
@@ -685,7 +669,6 @@ export function LaneGitActionsPane({
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const projectRoot = useAppStore(selectActiveProjectRoot);
   const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
   const pin = runtimePin ?? null;
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
@@ -721,7 +704,6 @@ export function LaneGitActionsPane({
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
   const [commitMessage, setCommitMessage] = useState("");
-  const [commitMessageAi, setCommitMessageAi] = useState<CommitMessageAiState>({ enabled: false, modelId: null });
   const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
@@ -943,29 +925,6 @@ export function LaneGitActionsPane({
     }
   }, [isViewingLane, laneId, pin, projectStateKey]);
 
-  const refreshCommitMessageAiState = useCallback(async () => {
-    try {
-      const snapshot = await getProjectConfigCached({ projectRoot });
-      const effectiveAi = snapshot.effective?.ai;
-      const features = effectiveAi && typeof effectiveAi === "object" && "features" in effectiveAi
-        ? (effectiveAi.features as Record<string, unknown> | undefined)
-        : undefined;
-      const featureModelOverrides = effectiveAi && typeof effectiveAi === "object" && "featureModelOverrides" in effectiveAi
-        ? (effectiveAi.featureModelOverrides as Record<string, unknown> | undefined)
-        : undefined;
-      const enabled = features?.commit_messages === true;
-      const modelIdRaw = typeof featureModelOverrides?.commit_messages === "string"
-        ? featureModelOverrides.commit_messages.trim()
-        : "";
-      setCommitMessageAi({
-        enabled,
-        modelId: modelIdRaw.length ? modelIdRaw : null,
-      });
-    } catch {
-      setCommitMessageAi({ enabled: false, modelId: null });
-    }
-  }, [projectRoot]);
-
   useEffect(() => {
     autoRebaseStatusSnapshotRef.current = autoRebaseStatusSnapshot;
     if (autoRebaseStatusSnapshot !== undefined) {
@@ -1097,10 +1056,22 @@ export function LaneGitActionsPane({
     });
     try {
       const generated = await window.ade.git.generateCommitMessage({ laneId: actionLaneId, amend: amendCommit }, pin);
-      if (isViewingLane(actionLaneId)) {
-        setCommitMessage(generated.message);
+      const generatedMessage = generated.message.trim();
+      if (!generatedMessage) {
+        if (isViewingLane(actionLaneId)) {
+          setCommitMessage("");
+        }
+        patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
+          busyAction: null,
+          notice: null,
+          error: "No turned chat on this lane to suggest a commit message. Type one, then commit.",
+        });
+        return;
       }
-      await window.ade.git.commit({ laneId: actionLaneId, message: generated.message, amend: amendCommit }, pin);
+      if (isViewingLane(actionLaneId)) {
+        setCommitMessage(generatedMessage);
+      }
+      await window.ade.git.commit({ laneId: actionLaneId, message: generatedMessage, amend: amendCommit }, pin);
       await completeCommitRefresh(actionLaneId);
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
@@ -1137,7 +1108,6 @@ export function LaneGitActionsPane({
     setForcePushSuggested(cached?.forcePushSuggested ?? false);
     setCollapsedChangeFolders(new Set());
     setAmendCommit(false);
-    setCommitMessageAi({ enabled: false, modelId: null });
     setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? cached?.autoRebaseStatus ?? null);
     setConflictState(cached?.conflictState ?? null);
     setStuckRebase(cached?.stuckRebase ?? null);
@@ -1148,8 +1118,7 @@ export function LaneGitActionsPane({
         error: err instanceof Error ? err.message : String(err),
       });
     });
-    void refreshCommitMessageAiState();
-  }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, projectStateKey, refreshCommitMessageAiState]);
+  }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, projectStateKey]);
 
   useEffect(() => {
     if (!active || !laneId) return;
@@ -1646,7 +1615,7 @@ export function LaneGitActionsPane({
   const headerDotColor = getLaneHeaderDotColor(lane);
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
   const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
-  const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
+  const commitHelperText = getCommitHelperText(commitMessage);
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
   const syncButtonTitle = useMemo(() => {
     if (!laneId) return "Sync is unavailable until you select a child lane.";
