@@ -1810,9 +1810,18 @@ and the list IS the permission model — a page cannot widen it:
 | The surface it lives in | `surface.close` |
 | The dialog it was drawn in | `dialog.submit` |
 | The composer | `composer.attach`, `composer.insert` |
-| ADE's own UI | `ui.toast`, `ui.dismissToast`, `ui.prompt`, `ui.confirm` |
+| ADE's own UI | `ui.toast`, `ui.dismissToast`, `ui.prompt`, `ui.confirm`, `ui.pickModel`, `ui.pickLane`, `ui.pickPermissionMode`, `ui.pickReasoningEffort`, `ui.pickProvider`, `ui.openPathInEditor` |
+| Other plugins | `sockets.list`, `sockets.invoke` |
+| Host engines | `hostEngine.place`, `hostEngine.release` |
+| The page itself | `page.error` |
 | The machine around it | `clipboard.read`, `clipboard.write` |
 | Theme and live data | `theme.get`, `host.subscribe`, `host.unsubscribe` |
+
+The five `ui.pick*` verbs open ADE's own pickers over the page — the same
+model list, lane combobox, permission modes, reasoning ladder and provider
+rail the rest of the app uses — and return the choice. Dismissing the picker
+returns null. A missing provider or model is refused before the picker mounts.
+Mirrored on hosted web and iOS.
 
 `collections.list` returns at most 500 rows, and every collection named must be
 declared in the manifest. Absent on purpose, and not stubbed: `secrets` (a page
@@ -1838,7 +1847,10 @@ own validation turned it down, or no dialog is listening on that guest any more.
 Three events reach a page, on one channel with the name in the frame:
 `changed` (the plugin's own collections moved), `theme` (the host republished
 its scheme and its `--ade-*` tokens), and `host` (a lane, a session, a pull
-request or a chat turn moved). A `host` frame carries identity and nothing else
+request or a chat turn moved). A fourth, `refresh`, is phone-only: pull to
+refresh on a plugin page sends it, and the page answers with how many of its
+own handlers ran. `PLUGIN_WEBVIEW_EVENTS` is the three that every guest
+allowlists; iOS adds `refresh` in the WKWebView boot script. A `host` frame carries identity and nothing else
 — the kind, the ids, and an `overflow` flag when more moved than
 `PLUGIN_WEBVIEW_HOST_IDS_MAX` (200) — and the host coalesces for
 `PLUGIN_WEBVIEW_HOST_COALESCE_MS` (120 ms) first, because a rebase moves a dozen
@@ -2173,16 +2185,26 @@ scripts, because the CSP refuses them.
 
 ### Sockets
 
-Eighteen kinds across eight surfaces (`PLUGIN_SOCKET_KINDS` and
-`PLUGIN_SURFACE_IDS` in `sockets.ts:41-93`), in five groups:
+Twenty-three kinds across eight surfaces (`PLUGIN_SOCKET_KINDS` and
+`PLUGIN_SURFACE_IDS` in `sockets.ts:41-93`), in six groups:
 
 | group | kinds |
 |---|---|
 | Rows, lists and detail panes | `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer` |
-| Chat and the agent | `composer-action`, `chat-header-action`, `chat-card`, `slash-command` |
+| Chat and the agent | `composer-action`, `chat-header-action`, `chat-card`, `slash-command`, `composer-menu-item`, `chat-menu-item`, `machine-entry` |
 | Ambient placement | `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry` |
 | The canvas | `graph-node` |
 | Dialogs | `dialog-section` |
+| Automations | `automation-trigger-tile`, `automation-template` |
+
+`composer-menu-item` is a row in the composer's three-dot menu — a verb used
+once a session, not a permanent slot on the accessory row. `chat-menu-item`
+joins a named submenu the host already owns (`issue-context` today).
+`machine-entry` is a row in the composer's machine picker; selecting it is what
+makes Enter launch through the plugin (`ownsSend` semantics), and Advanced
+opens the named page from the row. The two Automations kinds answer different
+questions: the tile is "what starts this rule", the template is "here is a
+whole rule already written".
 
 A `settings-section` payload may name the Settings page it belongs on through `section` (a tab id such as `integrations`, or a card anchor); anything unrecognised lands on General. The section header draws the plugin's manifest icon, brand glyph included.
 
@@ -2212,7 +2234,7 @@ the socket path the same way, so a toolbar button, a row menu item and a
 composer action behave there as they do on the desktop.
 
 The taxonomy is closed and small so an author learns it once and every client can
-implement it exhaustively at compile time; a nineteenth kind is a platform change
+implement it exhaustively at compile time; a twenty-fourth kind is a platform change
 with a parity cost on four clients. Which client draws which kind is a table
 (`PLUGIN_SOCKET_CLIENT_SUPPORT`, `sockets.ts:276-339`), and the rule it encodes is that
 **absent on a client is honest and readable, half-drawn is neither**.
@@ -2351,7 +2373,12 @@ of it is not clickable: pressing the plugin button moved the window instead of
 invoking the action. The cluster carries the same `no-drag` opt-out every other
 control in that bar carries, and draws with the header's compact chrome, so it
 is the height and radius of the shell buttons it sits between rather than a
-taller, double-edged box.
+taller, double-edged box. Project tabs sit first in the flexible region and
+win space; plugin `toolbar-action` buttons on `app` follow them, drag-reorder
+(handle on hover), and persist per user. Overflow is a chevron at the region's
+end, shown only when something is hidden, with the hidden buttons and a
+Reorder entry. The pinned right cluster is feedback, help, zoom, then usage,
+connections, bell.
 
 **A failed manifest read at cold launch is never latched.** Every STATIC socket
 — the top-bar button, the row menu entry, the palette command — is declared in a
@@ -2807,9 +2834,9 @@ therefore still draws vocabulary panels, and the table describes that.
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
 | `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. The rail tab carries an unread-finished badge (`row-badge` on `app`, cleared by `viewAction`). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
-| `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled workspace Graph (`canvas` / `workspace`); phone and TUI list the same bound lane rows. The React Flow engine stays in core. Phone and TUI get vocabulary panels; compiled Graph was desktop-only. |
-| `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
-| `ade-history` | `supersedes` | real plugin | A real plugin. Commit DAG (`canvas` / `git-dag`), activity list, commit git verbs, agent tools and `ade history activity`. The git and operation engines stay in core. Phone and TUI get vocabulary panels; compiled History was desktop-only. |
+| `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop, web, and iOS draw the plugin's Graph page (React Flow inside the guest). Phone and TUI keep the vocabulary panels (`graph` list, `lane` detail); wave 2 does not ship a phone Graph page. The host workspace engine stays in core until the compiled tab is deleted after the walk. |
+| `ade-review` | `supersedes` | real plugin | A real plugin. Desktop draws the Review page (runs, launch, findings, learnings, PR toolbar). Phone and TUI keep the vocabulary panels; compiled Review was desktop-only. The engine stays in core. |
+| `ade-history` | `supersedes` | real plugin | A real plugin. Desktop draws the History page (commit DAG and activity timeline inside the guest). Phone and TUI keep the vocabulary panels; wave 2 does not ship a phone History page. The git and operation engines stay in core. |
 | `ade-ios-sim` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled Simulator pane (`canvas` / `simulator`); phone and terminal list a status row. simctl/idb stay in core. Compiled Simulator was Mac-only. |
 | `ade-app-control` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled Electron Control pane (`canvas` / `electron-control`); phone and terminal list a status row. CDP stays in core. |
 
@@ -2840,10 +2867,15 @@ code is the step AFTER that, never before it.
 Stated plainly because each one is a deliberate scope decision, not an
 oversight:
 
-- **A `webview` surface is desktop-only.** iOS, the web client, and the TUI
-  render the surface's declared panel instead. That is the trade the tier
-  exists to make, not a gap to close: a page buys unlimited UI by giving up
-  three of the four clients.
+- **A `webview` surface is the page on desktop, hosted web, and iOS.** The
+  phone draws it in a WKWebView from a content-addressed cache (official
+  plugins ship a pre-seeded copy inside the app). `parseSurfaces` still forces
+  `mobile: false` on the kind, so the phone never *lists* a webview as a tab of
+  its own — it opens the page through a socket or a bundled host. The TUI has
+  no guest and draws the surface's `panelId` panel instead, using the frozen
+  terminal profile (`list`, `group`, `text`, `badge`, `button`, `emptyState`).
+  A phone with no cached page, and a client older than the page host, do the
+  same.
 - **A page cannot write collections unless the plugin host is in-process.**
   `collections.put` reaches the host service's own writer, and nothing assigns a
   plugin host in the Electron main process — the host is a machine-scoped
@@ -2853,14 +2885,17 @@ oversight:
   needs to persist calls its own action and lets the child write. Routing the
   write instead would mean a write action on the closed `plugin` domain, which
   every client can call for every plugin.
-- **iOS draws 11 of the 18 socket kinds.** `slash-command`,
+- **iOS draws 11 of the 23 socket kinds.** `slash-command`,
   `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`,
-  `dialog-section` and `graph-node` decode as `.unsupported` and draw nothing,
-  because the phone has no host for any of them. A later iOS build adds a
-  rendering arm with no wire change. `graph-node` is the one whose absence is a
-  fact about a whole TAB: the phone ships no Graph canvas, so the kind cannot be
-  grown without first growing the tab.
-- **The TUI draws 3 of the 18 socket kinds** — `row-badge`, `row-menu-item` and
+  `dialog-section`, `graph-node`, `composer-menu-item`, `chat-menu-item`,
+  `machine-entry`, `automation-trigger-tile` and `automation-template` decode
+  as `.unsupported` and draw nothing, because the phone has no host for any of
+  them. A later iOS build adds a rendering arm with no wire change.
+  `graph-node` is the one whose absence is a fact about a whole TAB: the phone
+  ships no Graph canvas, so the kind cannot be grown without first growing the
+  tab. Wave 2's five new kinds follow the same rule: they ship on desktop and
+  web first.
+- **The TUI draws 3 of the 23 socket kinds** — `row-badge`, `row-menu-item` and
   `toolbar-action` — and only on the `lanes` and `work` surfaces, which are the
   surfaces it lists rows for.
 - **iOS renders 17 of the 18 v1 components.** `chart` shows a named marker: a

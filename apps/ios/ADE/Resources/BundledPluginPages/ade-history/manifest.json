@@ -1,18 +1,18 @@
 {
-  "pluginId": "ade-linear",
-  "version": "2.1.0",
+  "pluginId": "ade-history",
+  "version": "2.0.0",
   "revision": 0,
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-Bh457Euh.css",
-      "bytes": 77286,
-      "sha256": "0691188c35bd6d43ff4877f3ae0dfbf6e45964d59b4d589d221713fd014b1956"
+      "path": "assets/index-BxsZhrgQ.js",
+      "bytes": 756427,
+      "sha256": "3c796758cd099bd20a220e7c7393de1fefad4aab15426695177cfaaffddc0aaf"
     },
     {
-      "path": "assets/index-ClBZGGz_.js",
-      "bytes": 650301,
-      "sha256": "e52b25afe02e7655ef95da405c36bf0fed2de412a57aabcf8eecac4cd7bb6337"
+      "path": "assets/index-DSAOSERd.css",
+      "bytes": 70452,
+      "sha256": "c1b03028fc0abb3c5625b8f5cca0e41db1796c4f1420331e85bbaaea7c6e7e9a"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.html",
-      "bytes": 367,
-      "sha256": "02e5e8cc3f6a52ac39b2e78fc6d26beed985a0ad014a139e43f25df5ede4352b"
+      "bytes": 368,
+      "sha256": "11c21578c5be252ded5f6189393b0b56842fa607d63c12d4b5375f88bd17809a"
     }
   ]
 }

@@ -1,18 +1,18 @@
 {
-  "pluginId": "ade-linear",
-  "version": "2.1.0",
+  "pluginId": "ade-app-control",
+  "version": "2.0.0",
   "revision": 0,
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-Bh457Euh.css",
-      "bytes": 77286,
-      "sha256": "0691188c35bd6d43ff4877f3ae0dfbf6e45964d59b4d589d221713fd014b1956"
+      "path": "assets/index-BTnDdrb3.js",
+      "bytes": 239711,
+      "sha256": "629bf8049125a93ac35a86016fdc2499ed8ba9641b5e32c17072acb9db4dbc62"
     },
     {
-      "path": "assets/index-ClBZGGz_.js",
-      "bytes": 650301,
-      "sha256": "e52b25afe02e7655ef95da405c36bf0fed2de412a57aabcf8eecac4cd7bb6337"
+      "path": "assets/index-BiDYWHMZ.css",
+      "bytes": 65997,
+      "sha256": "f37b9540cb4281cdfa49cbb9f1d717f7924061dd6397a1488469ad57878b36da"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.html",
-      "bytes": 367,
-      "sha256": "02e5e8cc3f6a52ac39b2e78fc6d26beed985a0ad014a139e43f25df5ede4352b"
+      "bytes": 377,
+      "sha256": "bd1500c5fa47eaadff8f4f4707f166826c1eac5eb2b80b580af5816f81633a72"
     }
   ]
 }
