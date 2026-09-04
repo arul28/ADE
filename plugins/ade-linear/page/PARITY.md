@@ -66,13 +66,24 @@ plugin installed after Linear wanted the same one.
 - **The composer's Linear bar button.** Now a `composer-menu-item`,
   "Attach a Linear issue", opening the same picker page it always opened.
 
-  The picker page draws `LinearIssueBrowser` INLINE, with no header and no
-  backdrop of its own, exactly as `DialogPickerEntry` draws its band: a picker
-  or a popover placement is a frame the host has already drawn and already
-  titled, and a page that paints a second header over it and a black sheet
-  across the window is drawing chrome that is not its to draw. One pointer
-  decides what finishing means — `laneId` links to that lane, its absence
-  attaches a chip to the composer.
+  The picker page draws no header and no backdrop of its own there. A picker or
+  a popover placement is a frame the host has already drawn and already titled,
+  and a page that paints a second header over it and a black sheet across the
+  window is drawing chrome that is not its to draw — worse, the centred dialog
+  is measured against the GUEST viewport, so a 360×420 popover asked for
+  `min(1760px, 100vw - 28px)` by `min(940px, 100dvh - 28px)`.
+
+  It is a `chrome` prop on `LinearPaneModal` rather than a deletion, because the
+  answer is per PLACEMENT and not per entry: `host/placement.ts:drawsOwnChrome`
+  says no for `composer-picker` and `popover` and yes for everything else, so
+  the `overlay` fallback — a page floating over the app with nothing around it —
+  and the transcript's own details pane both keep the header they need.
+  Chromeless, the pane also stops portalling: a `fixed` portal contributes zero
+  height to the document, and a host that measures the guest to size its
+  placement would read nothing.
+
+  One pointer decides what finishing means — `laneId` links to that lane, its
+  absence attaches a chip to the composer.
 
 `LinearQuickViewPanel.tsx` went with the quick view. The launch flow it held is
 not the popover's and never was — the compiled Work-rail pane and the compiled
@@ -172,9 +183,13 @@ Two consequences worth naming:
   `chat.capabilities()` answers that seed as `defaultModel`, computed on the
   host from the same recents, and `pageCapabilities` carries it through. The
   chips print the host's own labels for it, looked up in the two lists the
-  pickers draw from rather than derived from an id. A host that answers no seed
-  leaves the form unset with its placeholders showing — "Model", and "Default"
-  on the two chips where the provider's own starting point is a real choice.
+  pickers draw from rather than derived from an id.
+
+  A host too old to answer `defaultModel` falls back to the compiled modal's own
+  ladder over the catalogue — the first Claude row, then the first OpenCode
+  one — so the form is never opened on nothing. Only an empty catalogue leaves
+  it unset, and there the placeholders show: "Model", and "Default" on the two
+  chips where the provider's own starting point is a real choice.
 - **No chip is ever dead.** The reasoning chip was gated on a model and the
   permission chip on a provider, so on a host with no seed both opened disabled
   with nothing saying which gesture would make them live. A press with no model

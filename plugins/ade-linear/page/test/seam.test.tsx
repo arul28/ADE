@@ -597,6 +597,33 @@ describe("the page and the plugin agree on every verb", () => {
     expect(launch.hasAttribute("disabled")).toBe(false);
   });
 
+  it("opens on the first available model when the host answers no seed", async () => {
+    // A host still on the older `chat.capabilities()` answers no `defaultModel`
+    // at all. The compiled modal seeded `useModelRecents()[0]` and fell back to
+    // the Claude default, then the OpenCode one; the same ladder over the
+    // catalogue stands in, so the form is never opened on nothing.
+    connected();
+    host.setAction("pageCapabilities", () => ({ providers: [] }));
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+    const model = await screen.findByRole("button", { name: "Model" }, { timeout: 3_000 });
+    await waitFor(() => {
+      expect(model.textContent).toContain("Opus 5");
+    });
+    // The provider's own starting point is still a real choice, so those two
+    // chips keep their "Default" placeholder rather than printing a value the
+    // reader never picked.
+    expect(screen.getByRole("button", { name: "Permissions" }).textContent).toContain("Default");
+    expect(screen.getByRole("button", { name: /Launch 1 lane/i }).hasAttribute("disabled")).toBe(false);
+  });
+
   it("never draws a dead chip: a press with no model opens the model picker first", async () => {
     // The permission chip was gated on `Boolean(provider)` and the reasoning
     // chip on `Boolean(modelId)`, and on a host that answers no seed the form
@@ -604,7 +631,10 @@ describe("the page and the plugin agree on every verb", () => {
     // to make them live. Now the press asks for the model and then for the
     // control it was for.
     connected();
+    // No seed AND no catalogue: the one state where the form genuinely opens
+    // with nothing chosen, which is the state the chips used to be dead in.
     host.setAction("pageCapabilities", () => ({ providers: [], defaultModel: null }));
+    host.setAction("pageModels", () => []);
     render(<BrowserEntry context={tabContext()} />);
     const row = await issueRow("ADE-1");
     await act(async () => {
@@ -620,9 +650,9 @@ describe("the page and the plugin agree on every verb", () => {
     expect(screen.getByRole("button", { name: "Reasoning effort" }).hasAttribute("disabled")).toBe(false);
 
     // The host's model picker answers a model with NO provider on it, which is
-    // the case `resolveLaunchProviderAndModel` exists for: the catalogue names
-    // the group, and an unknown model falls back to OpenCode rather than to an
-    // empty string the host would refuse the popover for.
+    // the case `resolveLaunchProviderAndModel` exists for. With no catalogue
+    // either it falls back to OpenCode — never to the empty string, which the
+    // host refuses the popover for in a sentence the reader then has to decode.
     host.setPicker("model", { id: "claude-opus-5", label: "Opus 5", provider: null });
     await act(async () => {
       fireEvent.click(permissions);
@@ -631,8 +661,9 @@ describe("the page and the plugin agree on every verb", () => {
       expect(host.callsTo("ui.pickModel").length).toBe(1);
     });
     await waitFor(() => {
-      expect(host.lastCall("ui.pickPermissionMode")!.args).toMatchObject({ provider: "claude" });
+      expect(host.lastCall("ui.pickPermissionMode")!.args).toMatchObject({ provider: "opencode" });
     });
+    expect(host.lastCall("ui.pickPermissionMode")!.args.provider).not.toBe("");
   });
 
   it("gives the chat menu's Linear row every verb the chat header used to have", async () => {
@@ -847,6 +878,78 @@ describe("the page and the plugin agree on every verb", () => {
     // height onto the document, and no longer posts a frame to the parent.
     expect(document.documentElement.style.height).toBe("");
     expect(document.body.style.height).toBe("");
+  });
+
+  it("connects with an API key, names a default team, and disconnects", async () => {
+    // The three settings writes the walk never reached. Each is a credential or
+    // a stored preference crossing the seam, and each answers a shape the card
+    // reads back — so a rename on either side is a card that stops reflecting
+    // what the reader just did.
+    render(<SettingsEntry context={tabContext({ surfaceId: "settings", placement: "settings-section" })} />);
+
+    const key = await screen.findByLabelText("Linear API key", {}, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.change(key, { target: { value: "lin_api_secret" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageSaveApiKey").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageSaveApiKey")!.args).toEqual({ token: "lin_api_secret" });
+
+    // The card redraws from the connection the child answered, not from the
+    // form's own optimism.
+    const disconnect = await screen.findByRole("button", { name: /Disconnect/i }, { timeout: 3_000 });
+
+    // The default team is the plugin's OWN setting, written through
+    // `config.set` rather than through an action. The control is a text field
+    // when the plugin knows no teams yet, and that one commits on BLUR — a
+    // write per keystroke would be one `config.set` per letter of "ENG".
+    const team = await screen.findByLabelText(/Default team key/i, {}, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.change(team, { target: { value: "ENG" } });
+    });
+    await act(async () => {
+      fireEvent.blur(team);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("config.set").length).toBeGreaterThan(0);
+    });
+    expect(host.lastCall("config.set")!.args).toMatchObject({ key: "defaultTeamKey", value: "ENG" });
+
+    await act(async () => {
+      fireEvent.click(disconnect);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageDisconnect").length).toBe(1);
+    });
+    // And the card redraws from the connection the CHILD answered. The page
+    // holds no credential of its own to clear, so "disconnected" has to arrive
+    // over the seam or the reader is looking at a stale card.
+    expect(await screen.findByLabelText("Linear API key", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("assigns an issue to the reader from the detail pane", async () => {
+    // One of the four controls the plugin's own vocabulary panel has and the
+    // compiled browser did not, so nothing else proves its argument shape —
+    // and `assigneeId: null` is a real value here, which is why the write
+    // cannot be inferred from a truthiness check on either side.
+    connected();
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const assign = await screen.findByRole("button", { name: /Assign to me/i }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(assign);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageAssignIssue").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageAssignIssue")!.args).toMatchObject({ issueId: "issue-1" });
   });
 
   it("points Settings at Automations and does not register the webhook there", async () => {
