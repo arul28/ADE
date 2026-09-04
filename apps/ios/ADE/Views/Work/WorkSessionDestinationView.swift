@@ -626,21 +626,6 @@ func workChatHasOlderTranscriptHistory(
   return allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0
 }
 
-private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
-  let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-  guard !raw.isEmpty else { return nil }
-  if raw == "cursor" || raw.hasPrefix("cursor") { return "cursor" }
-  if raw.hasPrefix("claude") { return "claude" }
-  if raw.hasPrefix("codex") { return "codex" }
-  if raw.hasPrefix("opencode") { return "opencode" }
-  if raw.hasPrefix("droid") || raw.hasPrefix("factory") { return "droid" }
-  if raw.hasPrefix("qwen") { return "qwen" }
-  if raw.hasPrefix("kimi") { return "kimi" }
-  if raw.hasPrefix("grok") { return "grok" }
-  if raw.hasPrefix("copilot") { return "copilot" }
-  return raw
-}
-
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows

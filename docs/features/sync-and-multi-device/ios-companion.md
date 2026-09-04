@@ -401,9 +401,11 @@ apps/ios/
 │   │   │                            #   (provider session browse/details,
 │   │   │                            #   lane picker, Continue/Copy policy),
 │   │   │                            # WorkLanePickerDropdown,
-│   │   │                            # WorkChatRichCardViews (de-glassed
-│   │   │                            #   tool-call / work-log / command /
-│   │   │                            #   file-change transcript cards, inline
+│   │   │                            # WorkChatRichCardViews (de-glassed,
+│   │   │                            #   centered compact tool-call /
+│   │   │                            #   file-change summary rows that expand
+│   │   │                            #   to inline details, plus work-log /
+│   │   │                            #   command transcript cards, inline
 │   │   │                            #   subagent spawn/result/background-chip
 │   │   │                            #   timeline rows, plus the unified Chat
 │   │   │                            #   rich `ade_card` rows (duration,
@@ -636,7 +638,11 @@ The Work model/activity parity path is concentrated in these files:
   structured web-search `results`, threaded onto the tool card's `Sources` chips
   and deduped against the action URLs), plus the Work context meter's
   provider-neutral measured/compacting/recalculating/unknown reduction across
-  live and persisted history. `WorkTimelineHelpers.swift` also owns
+  live and persisted history. `WorkTimelineHelpers.swift` also owns the
+  provider-aware `workPresentedTimelineEntries` filter: compact tool/file
+  groups stay visible, activity/task-update ribbons stay out of the mobile
+  thread, and Claude prompt suggestions stay out of the visible Claude
+  transcript while remaining in the raw timeline. It also owns
   `workPendingInputResolutions`, the first-receipt-wins `itemId` → resolution
   word map that gives question / plan / approval cards their inline outcome.
   `WorkErrorAndMessageHelpers.swift` owns the pending-input gate derivation —
@@ -3228,17 +3234,18 @@ the stats and shows update guidance.
   provider-specific cards, `WorkToolCallsPanelView` clusters and
   `WorkChangedFilesPanelView` rows in chronological order;
   `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
-  decides what reaches the visible timeline. It used to drop every normalized
-  `toolGroup` row, which meant a turn whose only work was a `Read` and an
-  approved shell command left no trace in the transcript at all. That rule was
-  written when a cluster had no compact form; a finished cluster is now a single
-  44pt row in the same one-liner grammar the changed-files panel uses, so it
-  stays. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still
-  open the whole turn's activity in `WorkTurnActivitySheet`, where tapping a
-  member reveals its result or output. The live row uses `ViewThatFits` so
-  narrow phones retain the activity verb and monospaced elapsed time without
-  squeezing tool details into the same line. The association is data-driven and
-  never invents file changes for providers that did not emit them.
+  decides what reaches the visible timeline. Read-only tool clusters and file
+  changes stay visible as centered, compact `Tool calls N` / `Files changed N`
+  rows; tapping either row still opens the full member or file list, and tapping
+  a member still reveals its result, output, or diff. Mobile-only activity and
+  task-update ribbons are omitted from the thread, while scheduled-work state
+  remains available in Chat Info. Claude-only prompt-suggestion ribbons are
+  also omitted from the visible Claude transcript while their underlying events
+  remain available to the raw timeline.
+  The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still open
+  the whole turn's activity in `WorkTurnActivitySheet`. The association is
+  data-driven and never invents file changes for providers that did not emit
+  them.
 - **A swept pending-input gate is marked, not deleted, and the host decides.**
   The phone mirrors desktop's split (see the "Pending input derivation" entry in
   [Chat](../chat/README.md#fragile-and-tricky-wiring)) because it had the same

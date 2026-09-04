@@ -584,6 +584,7 @@ struct WorkChatSummaryRenderContext: Equatable {
 struct WorkChatSessionRenderContext: Equatable {
   let id: String
   let laneId: String
+  let providerFallback: String?
   let chatIdleSinceAt: String?
   let endedAt: String?
   let lastOutputPreview: String?
@@ -596,6 +597,7 @@ struct WorkChatSessionRenderContext: Equatable {
   init(_ session: TerminalSessionSummary) {
     self.id = session.id
     self.laneId = session.laneId
+    self.providerFallback = workChatProviderFamilyFromToolType(session.toolType)
     self.chatIdleSinceAt = session.chatIdleSinceAt
     self.endedAt = session.endedAt
     self.lastOutputPreview = session.lastOutputPreview
@@ -604,13 +606,15 @@ struct WorkChatSessionRenderContext: Equatable {
   }
 }
 
-private struct WorkChatSummaryTimelineKey: Equatable {
+struct WorkChatSummaryTimelineKey: Equatable {
   let provider: String
+  let providerFallback: String?
   let model: String
   let modelId: String?
 
-  init(_ context: WorkChatSummaryRenderContext) {
+  init(_ context: WorkChatSummaryRenderContext, providerFallback: String? = nil) {
     self.provider = context.provider
+    self.providerFallback = providerFallback
     self.model = context.model
     self.modelId = context.modelId
   }
@@ -829,7 +833,10 @@ struct WorkChatSessionView: View {
   }
 
   private var chatSummaryTimelineKey: WorkChatSummaryTimelineKey {
-    WorkChatSummaryTimelineKey(chatSummaryContext)
+    WorkChatSummaryTimelineKey(
+      chatSummaryContext,
+      providerFallback: session.providerFallback
+    )
   }
 
   private var selectedSubagentSnapshot: WorkSubagentSnapshot? {
@@ -1152,7 +1159,11 @@ struct WorkChatSessionView: View {
     if rebuildToolActivityIndex {
       turnToolActivity = workTurnToolActivityIndex(from: timeline)
     }
-    let presentedTimeline = workPresentedTimelineEntries(timeline)
+    let summaryProvider = chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines)
+    let presentedTimeline = workPresentedTimelineEntries(
+      timeline,
+      provider: summaryProvider.isEmpty ? session.providerFallback : summaryProvider
+    )
     var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,
@@ -1444,7 +1455,7 @@ struct WorkChatSessionView: View {
       .font(.footnote.weight(.semibold))
     }
 
-    if timeline.isEmpty {
+    if timelinePresentation.timelineCount == 0 {
       transcriptEmptyStateSection
     } else {
       let streamingMessageId = streamingAssistantMessageId
@@ -2021,15 +2032,16 @@ struct WorkChatSessionView: View {
   /// Timeline/scroll change handlers, split from `body` for type-checker budget.
   private func timelineScrollHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
     content
-        .onChange(of: timeline.count) { oldCount, newCount in
+        .onChange(of: timelinePresentation.timelineCount) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
-          lastTimelineTailId = timeline.last?.id
+          let nextTailId = timelinePresentation.timelineLastId
+          lastTimelineTailId = nextTailId
           let delta = newCount - oldCount
           guard delta > 0 else { return }
           // Older-page prepends grow the timeline above the viewport — the
           // newest entry stays put. Don't autoscroll to the bottom or flag
           // the prepended entries as "new messages below".
-          if let previousTailId, previousTailId == timeline.last?.id {
+          if let previousTailId, previousTailId == nextTailId {
             return
           }
           if isNearBottom {
@@ -2045,7 +2057,7 @@ struct WorkChatSessionView: View {
             }
           }
         }
-        .onChange(of: timeline.last?.id) { oldTailId, newTailId in
+        .onChange(of: timelinePresentation.timelineLastId) { oldTailId, newTailId in
           guard oldTailId != newTailId else { return }
           lastTimelineTailId = newTailId
           guard oldTailId != nil, newTailId != nil, isNearBottom else { return }

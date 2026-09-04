@@ -1829,20 +1829,28 @@ private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -
 
 /// The rows the transcript actually draws, from the rows the timeline holds.
 ///
-/// This is the seam where a presentation-only rule belongs — and for a while it
-/// held one that swallowed whole turns: every normalized `.toolGroup` row was
-/// dropped here, so a turn whose only work was one `Read` and one approved shell
-/// command rendered no trace of either. The turn-end marker's 8pt chevron was
-/// the sole way back to them.
+/// This is the seam where presentation-only rules belong. Tool and file-change
+/// clusters stay visible as compact rows, while low-signal activity summaries
+/// are omitted from the phone transcript without changing the raw timeline.
 ///
-/// That filter dated from when a cluster had no compact form and N stacked tool
-/// cards ate the phone viewport. A finished cluster is now a single 44pt row in
-/// the same one-liner grammar `WorkChangedFilesPanelView` already uses right
-/// beside it, so there is nothing left to protect the viewport from — and
-/// hiding tool calls while showing file changes made the transcript disagree
-/// with itself about what a cluster is.
-func workPresentedTimelineEntries(_ timeline: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
-  timeline
+/// Desktop and Chat Info still retain the underlying activity events, so this
+/// remains a mobile transcript presentation choice rather than a sync change.
+func workPresentedTimelineEntries(
+  _ timeline: [WorkTimelineEntry],
+  provider: String? = nil
+) -> [WorkTimelineEntry] {
+  let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
+  return timeline.filter { entry in
+    guard case .eventCard(let card) = entry.payload else { return true }
+    switch card.kind {
+    case "activity", "activityBundle", "todo":
+      return false
+    case "promptSuggestion":
+      return !hidesPromptSuggestions
+    default:
+      return true
+    }
+  }
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
