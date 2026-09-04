@@ -17950,10 +17950,12 @@ describe("createAgentChatService", () => {
 
       expect(sessionService.get(session.id)?.title).toBe("My Title");
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
-      for (const [args] of aiIntegrationService.summarizeTerminal.mock.calls) {
-        expect(args.prompt).toContain("Write a short statusLine");
-        expect(args.systemPrompt).toContain("Copy these current values unchanged: chatTitle, laneName");
-      }
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Write a short statusLine"),
+          systemPrompt: expect.stringContaining("Copy these current values unchanged: chatTitle, laneName"),
+        }),
+      );
     });
 
     it("does not clobber a manual rename that lands while auto-titling is in flight", async () => {
