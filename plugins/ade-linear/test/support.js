@@ -157,6 +157,17 @@ function createSdk(overrides = {}) {
         calls.push(["chat.capabilities"]);
         if (overrides.capabilitiesThrows) throw overrides.capabilitiesThrows;
         return overrides.capabilities ?? {
+          // What ADE's own launch form OPENS on, from the same recents the
+          // composer reads. A page cannot derive it — it is per-user state, not
+          // a fact about the registry — so a fake that omitted it would let a
+          // form that seeds nothing pass.
+          defaultModel: {
+            provider: "claude",
+            modelId: "anthropic/opus-5",
+            effort: "low",
+            permissionMode: "default",
+            fastMode: false,
+          },
           providers: [
             {
               provider: "claude",

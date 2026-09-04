@@ -19,6 +19,7 @@ import {
 import { LaneDialogShell } from "@ade-dev/ui/dialog";
 
 import { bridge } from "../bridge";
+import { getCapabilities, getChatModels } from "../host/actions";
 import {
   hasPicker,
   pickLane,
@@ -30,7 +31,9 @@ import {
 import { linearIssueBranchName } from "../lib/linearIssueBranch";
 import {
   defaultKickoffPrompt,
+  findChatModel,
   findIssueConflicts,
+  resolveLaunchProviderAndModel,
   type BatchLaunchIssueConfig,
   type BatchLaunchSessionType,
 } from "../lib/linearBatchLaunch";
@@ -38,7 +41,13 @@ import {
   readLaunchPromptClipboardSetting,
   writeLaunchPromptClipboardSetting,
 } from "./launchPromptClipboard";
-import type { LaneLinearIssue, PageLane } from "../types";
+import type {
+  LaneLinearIssue,
+  PageChatModel,
+  PageDefaultModel,
+  PageLane,
+  PageProviderCapability,
+} from "../types";
 
 type PerIssueState = BatchLaunchIssueConfig & SessionLaunchModelConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -126,13 +135,21 @@ function makeInitialConfig(kickoffPrompt: string): PerIssueState {
 }
 
 /**
- * Nothing chosen yet.
+ * Nothing chosen YET — the state the form holds for the beat before the host
+ * answers what its own launch form opens on.
  *
- * The form used to seed a MODEL — the first Claude row in the host catalog,
- * else the first OpenCode one — because it drew the list itself and a select
- * with no value is a select showing a blank row. The host's picker has its own
- * default and its own recents, so seeding one here would be this plugin
- * choosing for a reader ADE is about to ask.
+ * This used to be where the form stayed. The reasoning was that the host's
+ * picker owns the default, so seeding one here would be the plugin choosing for
+ * a reader ADE is about to ask — and it was wrong in the one way that matters:
+ * ADE's own composer opens on the model the reader launched LAST, and a Launch
+ * button disabled until they open a picker and pick that same model again is
+ * three gestures where the app asks for none. `chat.capabilities()` answers
+ * that seed (`defaultModel`), computed on the host from the same recents the
+ * composer reads, and {@link seedFromDefaultModel} turns it into this shape.
+ *
+ * A host that answers no seed leaves the form here, which is what the
+ * placeholders are for: "Model" unset, and "Default" on the two chips where
+ * "whatever the provider starts on" is a real choice.
  */
 const EMPTY_MODEL_CONFIG = {
   modelId: "",
@@ -216,6 +233,154 @@ function patchFromLaunchModelConfig(
   patch: Partial<SessionLaunchModelConfig>,
 ): PerIssueState {
   return { ...state, ...patch };
+}
+
+/** What `pickModel` answers, as this form reads it. */
+type ModelChipChoice = {
+  id: string;
+  label: string;
+  /** `null` is a real answer: the host named no group for this model. */
+  provider?: string | null;
+  fastMode?: boolean;
+  defaultPermissionMode?: string | null;
+  defaultPermissionLabel?: string | null;
+  defaultReasoningEffort?: string | null;
+  defaultReasoningEffortLabel?: string | null;
+};
+
+/**
+ * The provider a config launches on, resolved rather than required.
+ *
+ * The reader's own answer wins: `ui.pickModel()` names the provider its model
+ * belongs to, and a provider read off the host's own picker cannot be wrong.
+ * When the picker named none — an older host, a model the catalogue answered
+ * without a group — the catalogue derivation is the fallback, which is
+ * `resolveLaunchProviderAndModel` and is the same one the launch itself uses.
+ *
+ * Empty only when there is no model at all, which is the one case the callers
+ * below fix by opening the model picker first.
+ */
+function resolveProvider(
+  config: Pick<SessionLaunchModelConfig, "modelId" | "provider">,
+  models: readonly PageChatModel[],
+): string {
+  const chosen = config.provider?.trim();
+  if (chosen) return chosen;
+  const modelId = config.modelId.trim();
+  if (!modelId) return "";
+  return resolveLaunchProviderAndModel(modelId, models).provider;
+}
+
+/**
+ * One model choice, as a patch.
+ *
+ * Shared by the Model chip and by the two chips that open the model picker
+ * first, so a model chosen on the way to the permission popover lands exactly
+ * as one chosen on the chip itself — same provider, same reasoning rung, same
+ * fast flag.
+ *
+ * The permission is kept when the provider did not change, and taken from the
+ * model's own default when it did: a Claude mode carried onto a Codex launch is
+ * a value Codex refuses.
+ */
+function patchFromModelChoice(
+  chosen: ModelChipChoice,
+  config: SessionLaunchModelConfig,
+  models: readonly PageChatModel[],
+): Partial<SessionLaunchModelConfig> {
+  const nextProvider = chosen.provider?.trim()
+    || resolveLaunchProviderAndModel(chosen.id, models).provider;
+  const sameProvider = nextProvider === config.provider;
+  return {
+    modelId: chosen.id,
+    modelLabel: chosen.label,
+    provider: nextProvider,
+    providerLabel: nextProvider,
+    fastMode: chosen.fastMode === true,
+    reasoningEffort: chosen.defaultReasoningEffort ?? null,
+    reasoningEffortLabel: chosen.defaultReasoningEffortLabel ?? null,
+    permissionMode: sameProvider ? config.permissionMode : chosen.defaultPermissionMode ?? null,
+    permissionModeLabel: sameProvider
+      ? config.permissionModeLabel
+      : chosen.defaultPermissionLabel ?? null,
+  };
+}
+
+/**
+ * The model to open on when the host names none.
+ *
+ * The compiled modal seeded every row from `useModelRecents()[0]` and fell back
+ * to the Claude default, then the OpenCode one. `defaultModel` is the host's
+ * own answer to the same question and is always the better one — it reads the
+ * recents this page cannot see. This is what stands in until a host answers it:
+ * the same Claude-then-OpenCode ladder, over the catalogue the page already
+ * has, so a launch form is never opened on nothing.
+ *
+ * Null only when the catalogue itself is empty, which is a host with no chat
+ * runtime rather than a reader with no history.
+ */
+function firstAvailableModel(models: readonly PageChatModel[]): PageDefaultModel | null {
+  const preferred = models.find((model) => model.provider === "claude")
+    ?? models.find((model) => model.provider === "opencode")
+    ?? models[0];
+  if (!preferred) return null;
+  return {
+    modelId: preferred.id,
+    provider: preferred.provider || null,
+    // The model's OWN default rung, never a guess: an empty ladder means the
+    // model has no reasoning control, and seeding one would send a rung the
+    // provider ignores.
+    effort: preferred.defaultReasoningEffort ?? null,
+    // Left to the provider. The permission vocabularies are the provider's and
+    // the form has the capability list beside this, but "whatever the provider
+    // starts on" is exactly what the untouched chip already means.
+    permissionMode: null,
+    // Fast is a per-launch opt-in in ADE's own composer, so a seed never sets
+    // it — and never on a model with no fast tier, which REFUSES it.
+    fastMode: false,
+  };
+}
+
+/**
+ * The seed, as the form holds it.
+ *
+ * The host answers ids; the chips print labels, and a label is never derived
+ * from an id — it is looked up in the same two lists the pickers draw from, so
+ * a model ADE renamed reads as ADE renamed it. A lookup that misses falls back
+ * to the id rather than to a blank chip: the reader can still see WHAT is
+ * selected, which is the whole job of a chip.
+ */
+function seedFromDefaultModel(
+  seed: PageDefaultModel | null,
+  models: readonly PageChatModel[],
+  providers: readonly PageProviderCapability[],
+): Partial<SessionLaunchModelConfig> | null {
+  const modelId = seed?.modelId?.trim();
+  if (!seed || !modelId) return null;
+  const model = findChatModel(modelId, models);
+  const provider = seed.provider?.trim() || model?.provider?.trim()
+    || resolveLaunchProviderAndModel(modelId, models).provider;
+  const capability = providers.find((row) => row.provider === provider) ?? null;
+  const effort = seed.effort?.trim() || null;
+  const permissionMode = seed.permissionMode?.trim() || null;
+  return {
+    modelId,
+    modelLabel: model?.label ?? modelId,
+    provider,
+    providerLabel: provider,
+    reasoningEffort: effort,
+    reasoningEffortLabel: effort
+      ? model?.reasoningEfforts.find((rung) => rung.effort === effort)?.label ?? effort
+      : null,
+    permissionMode,
+    permissionModeLabel: permissionMode
+      ? capability?.permissionModes.find((mode) => mode.value === permissionMode)?.label
+        ?? permissionMode
+      : null,
+    // Never on a model with no fast tier: such a model REFUSES `fastMode: true`
+    // rather than ignoring it, and a seed is not a reader's choice to defend.
+    fastMode: seed.fastMode === true && model?.fastMode !== false,
+  };
 }
 
 function SessionTypeToggle({
@@ -323,16 +488,45 @@ function PickerChip({
  */
 function SessionLaunchModelControls({
   config,
+  models,
   onChange,
   disabled = false,
   showSessionType = true,
 }: {
   config: SessionLaunchModelConfig;
+  /** The host's catalogue, for the provider fallback when a picker names none. */
+  models: readonly PageChatModel[];
   onChange: (patch: Partial<SessionLaunchModelConfig>) => void;
   disabled?: boolean;
   showSessionType?: boolean;
 }) {
-  const provider = config.provider;
+  /**
+   * The config a picker should open against, choosing a model first if there
+   * is none.
+   *
+   * The reasoning and permission chips used to be DISABLED until a model
+   * existed, and the form seeded none — so on a host that answered no seed both
+   * chips were dead on open with no sentence saying what to press instead. A
+   * dead control that would work after a gesture the reader cannot see is worse
+   * than one extra popover, so the press opens the model picker and then the
+   * one it was for.
+   *
+   * `null` means the reader dismissed the model picker, which ends the gesture:
+   * a permission popover for a model nobody chose has no list to draw.
+   */
+  const withModel = async (
+    rect: ReturnType<typeof pickerRectFromClick>,
+  ): Promise<SessionLaunchModelConfig | null> => {
+    if (config.modelId.trim()) {
+      return { ...config, provider: resolveProvider(config, models) };
+    }
+    const chosen = await pickModel({ ...(rect ? { rect } : {}) });
+    if (!chosen) return null;
+    const patch = patchFromModelChoice(chosen, config, models);
+    onChange(patch);
+    return { ...config, ...patch };
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {showSessionType ? (
@@ -355,35 +549,24 @@ function SessionLaunchModelControls({
             rect: pickerRectFromClick(event),
           });
           if (!chosen) return;
-          const nextProvider = chosen.provider ?? provider;
-          onChange({
-            modelId: chosen.id,
-            modelLabel: chosen.label,
-            ...(nextProvider ? { provider: nextProvider, providerLabel: nextProvider } : {}),
-            fastMode: chosen.fastMode === true,
-            reasoningEffort: chosen.defaultReasoningEffort ?? null,
-            reasoningEffortLabel: chosen.defaultReasoningEffortLabel ?? null,
-            permissionMode: nextProvider === provider
-              ? config.permissionMode
-              : chosen.defaultPermissionMode ?? null,
-            permissionModeLabel: nextProvider === provider
-              ? config.permissionModeLabel
-              : chosen.defaultPermissionLabel ?? null,
-          });
+          onChange(patchFromModelChoice(chosen, config, models));
         })()}
       />
       <PickerChip
         label="Reasoning effort"
         value={config.reasoningEffortLabel}
         placeholder="Default"
-        available={hasPicker("pickReasoningEffort") && Boolean(config.modelId)}
+        available={hasPicker("pickReasoningEffort")}
         disabled={disabled}
         onPress={(event) => void (async () => {
+          const rect = pickerRectFromClick(event);
+          const effective = await withModel(rect);
+          if (!effective) return;
           const chosen = await pickReasoningEffort(
-            provider ?? "",
-            config.modelId,
-            config.reasoningEffort,
-            pickerRectFromClick(event),
+            effective.provider ?? "",
+            effective.modelId,
+            effective.reasoningEffort,
+            rect,
           );
           if (!chosen) return;
           onChange({ reasoningEffort: chosen.id || null, reasoningEffortLabel: chosen.id ? chosen.label : null });
@@ -393,13 +576,20 @@ function SessionLaunchModelControls({
         label="Permissions"
         value={config.permissionModeLabel}
         placeholder="Default"
-        available={hasPicker("pickPermissionMode") && Boolean(provider)}
+        available={hasPicker("pickPermissionMode")}
         disabled={disabled}
         onPress={(event) => void (async () => {
+          const rect = pickerRectFromClick(event);
+          const effective = await withModel(rect);
+          if (!effective) return;
+          // Never the empty string. The host refuses a permission popover with
+          // no provider in a sentence the reader then has to decode, and the
+          // provider is always derivable once a model exists — see
+          // `resolveProvider`.
           const chosen = await pickPermissionMode(
-            provider ?? "",
-            config.permissionMode,
-            pickerRectFromClick(event),
+            effective.provider || resolveProvider(effective, models),
+            effective.permissionMode,
+            rect,
           );
           if (!chosen) return;
           onChange({ permissionMode: chosen.id || null, permissionModeLabel: chosen.id ? chosen.label : null });
@@ -434,6 +624,16 @@ export function BatchLaunchModal({
   onLaunch: (entries: BatchLaunchSubmit[]) => void;
 }) {
   const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({ ...EMPTY_MODEL_CONFIG }));
+  /**
+   * The host's model catalogue.
+   *
+   * Read for two things and drawn for neither: the provider fallback when a
+   * picker answers a model without one, and the LABEL the seeded model chip
+   * prints. The list itself is still ADE's own picker's to draw. The permission
+   * vocabularies are read beside it and used in the same breath, for the seeded
+   * permission chip's label, so they need no state of their own.
+   */
+  const [models, setModels] = useState<PageChatModel[]>([]);
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   /**
    * Whether the launch copies its kickoff prompt to the clipboard.
@@ -471,6 +671,58 @@ export function BatchLaunchModal({
     void readLaunchPromptClipboardSetting().then((enabled) => {
       if (!cancelled) setClipboardEnabled(enabled);
     });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  /**
+   * What the form opens on, from the host.
+   *
+   * Applied only where nothing has been chosen — the Default row if it still
+   * has no model, and each issue row that still has none — so a read that lands
+   * a beat after the reader has already pressed the model chip cannot overwrite
+   * their answer with the app's. Same guard the saved kickoff prompt uses
+   * below, for the same reason.
+   *
+   * Both reads degrade to nothing: a host that answers neither leaves the form
+   * exactly where 2.1.1 left it, unset and with its placeholders showing.
+   */
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      const [catalogue, capabilities] = await Promise.all([
+        getChatModels().catch(() => [] as PageChatModel[]),
+        getCapabilities().catch(() => ({ providers: [], defaultModel: null })),
+      ]);
+      if (cancelled) return;
+      setModels(catalogue);
+      // The host's answer first, the catalogue ladder second. A host still on
+      // the older `chat.capabilities()` answers no `defaultModel` at all, and a
+      // form that seeded nothing there would open with Launch disabled for a
+      // reason no reader can see.
+      const seed = seedFromDefaultModel(
+        capabilities.defaultModel ?? firstAvailableModel(catalogue),
+        catalogue,
+        capabilities.providers ?? [],
+      );
+      if (!seed) return;
+      setDefaultConfig((current) => (current.modelId.trim() ? current : { ...current, ...seed }));
+      setPerIssue((current) => {
+        let changed = false;
+        const next: Record<string, PerIssueState> = {};
+        for (const [id, state] of Object.entries(current)) {
+          if (state.modelId.trim()) {
+            next[id] = state;
+            continue;
+          }
+          next[id] = { ...state, ...seed };
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    })();
     return () => {
       cancelled = true;
     };
@@ -678,6 +930,7 @@ export function BatchLaunchModal({
           ) : null}
           <SessionLaunchModelControls
             config={defaultConfig}
+            models={models}
             onChange={handleDefaultConfigChange}
           />
           {multiIssue ? (
@@ -756,6 +1009,7 @@ export function BatchLaunchModal({
                 {!skipped && !laneOnly && multiIssue ? (
                   <SessionLaunchModelControls
                     config={toLaunchModelConfig(state)}
+                    models={models}
                     onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
                   />
                 ) : null}

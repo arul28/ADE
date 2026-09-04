@@ -90,10 +90,11 @@ async function issueRow(identifier: string): Promise<HTMLElement> {
 /**
  * Choose a model in the open launch form, through the HOST's picker.
  *
- * The form seeds none. It used to seed the first Claude row of a catalog it
- * fetched itself; the host's `ui.pickModel()` owns that default now, so a walk
- * that wants to launch has to make the choice a reader makes — and the Launch
- * button stays disabled until it does, which is the point.
+ * The form SEEDS one now, from `chat.capabilities().defaultModel` — the same
+ * seed ADE's own launch form opens on, computed on the host from the recents
+ * the composer reads. So this is a reader changing a choice rather than making
+ * a first one, and the walk still presses it because the press is the contract:
+ * the chip opens ADE's picker and nothing of its own.
  */
 async function chooseModel(): Promise<void> {
   const chip = await screen.findByRole("button", { name: "Model" }, { timeout: 3_000 });
@@ -468,11 +469,17 @@ describe("the page and the plugin agree on every verb", () => {
       fireEvent.click(screen.getByRole("button", { name: "Reasoning effort" }));
     });
     await waitFor(() => {
+      // BOTH, which is the contract: `ui.pickReasoningEffort({provider, model})`.
+      // The page took a `provider` argument, named it `_provider` and posted
+      // `{model, value, rect}` — so a host that resolves the ladder through the
+      // provider (a model its static table does not carry, an ACP or Pi model
+      // whose rungs only its provider can name) had nothing to resolve it with
+      // and opened its fallback ladder instead of the model's own.
       expect(host.lastCall("ui.pickReasoningEffort")!.args).toMatchObject({
         model: "claude-opus-5",
+        provider: "claude",
       });
     });
-    expect(host.lastCall("ui.pickReasoningEffort")!.args).not.toHaveProperty("provider");
     expect(host.lastCall("ui.pickModel")!.args).not.toHaveProperty("selected");
 
     await act(async () => {
@@ -492,6 +499,139 @@ describe("the page and the plugin agree on every verb", () => {
     });
     await waitFor(() => {
       expect(host.callsTo("ui.pickLane").length).toBe(1);
+    });
+  });
+
+  it("draws no header and no backdrop of its own inside the host's picker", async () => {
+    // The bug: `PickerEntry` drew `LinearPaneModal`'s full chrome in a
+    // placement the host had already framed and titled — a portalled
+    // `bg-black/55` backdrop across the whole guest, a second branded header
+    // over the host's own, and a dialog centred at
+    // `min(1760px, 100vw - 28px)` by `min(940px, 100dvh - 28px)`, which in a
+    // 360×420 popover is a pane five times its width.
+    connected();
+    render(<PickerEntry context={tabContext({ surfaceId: "picker", placement: "composer-picker" })} />);
+    await issueRow("ADE-1");
+    expect(document.querySelector("[data-linear-pane-backdrop]")).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    // The list itself is still there, filling the frame the host sized.
+    expect(document.querySelector('[data-linear-pane="issues"]')).toBeTruthy();
+  });
+
+  it("keeps its own header where nothing else draws one", async () => {
+    // The rule is per PLACEMENT, not per entry. An `overlay` is a page floating
+    // over the app with no host frame around it, so dropping the chrome there
+    // would leave a headerless list with no way out of it.
+    connected();
+    render(<PickerEntry context={tabContext({ surfaceId: "picker", placement: "overlay" })} />);
+    await issueRow("ADE-1");
+    expect(document.querySelector("[data-linear-pane-backdrop]")).toBeTruthy();
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+  });
+
+  it("links to the lane the picker was opened for, rather than to the composer", async () => {
+    // One surface, two callers. The composer's own menu row opens it with no
+    // pointer and the answer is a chip; the chat menu's Attach row opens it
+    // through `openIssuePickerSurface`, which passes the chat's lane — because
+    // that card's Attach means "link this issue to this chat's lane".
+    connected({
+      lanes: [{
+        id: "lane-1",
+        name: "ADE-1",
+        branch: "ade/ade-1",
+        laneType: "worktree",
+        path: null,
+        linearIssueId: null,
+        linearIssueKey: null,
+        linearIssueLinks: [],
+      }],
+    });
+    render(
+      <PickerEntry
+        context={tabContext({
+          surfaceId: "picker",
+          placement: "composer-picker",
+          pointer: { laneId: "lane-1" },
+        })}
+      />,
+    );
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Attach issue" }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLinkIssue").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageLinkIssue")!.args).toEqual({ issueId: "issue-1", laneId: "lane-1" });
+    expect(host.callsTo("composer.attach").length).toBe(0);
+  });
+
+  it("opens the launch form on the model ADE's own composer opens on", async () => {
+    // The form used to seed nothing, so Launch was disabled until the reader
+    // opened a picker and chose the same model the composer beside them was
+    // already on. `chat.capabilities().defaultModel` is that seed, and the
+    // chips print the host's own labels for it rather than its ids.
+    connected();
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+
+    const model = await screen.findByRole("button", { name: "Model" }, { timeout: 3_000 });
+    await waitFor(() => {
+      expect(model.textContent).toContain("Opus 5");
+    });
+    expect(screen.getByRole("button", { name: "Reasoning effort" }).textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "Permissions" }).textContent).toContain("Accept edits");
+    // And the launch can proceed without a single picker being opened.
+    expect(host.callsTo("ui.pickModel").length).toBe(0);
+    const launch = screen.getByRole("button", { name: /Launch 1 lane/i });
+    expect(launch.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("never draws a dead chip: a press with no model opens the model picker first", async () => {
+    // The permission chip was gated on `Boolean(provider)` and the reasoning
+    // chip on `Boolean(modelId)`, and on a host that answers no seed the form
+    // had neither — so both opened on a reader who could not tell what to press
+    // to make them live. Now the press asks for the model and then for the
+    // control it was for.
+    connected();
+    host.setAction("pageCapabilities", () => ({ providers: [], defaultModel: null }));
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+
+    const permissions = await screen.findByRole("button", { name: "Permissions" }, { timeout: 3_000 });
+    expect(permissions.hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Reasoning effort" }).hasAttribute("disabled")).toBe(false);
+
+    // The host's model picker answers a model with NO provider on it, which is
+    // the case `resolveLaunchProviderAndModel` exists for: the catalogue names
+    // the group, and an unknown model falls back to OpenCode rather than to an
+    // empty string the host would refuse the popover for.
+    host.setPicker("model", { id: "claude-opus-5", label: "Opus 5", provider: null });
+    await act(async () => {
+      fireEvent.click(permissions);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("ui.pickModel").length).toBe(1);
+    });
+    await waitFor(() => {
+      expect(host.lastCall("ui.pickPermissionMode")!.args).toMatchObject({ provider: "claude" });
     });
   });
 
@@ -552,8 +692,63 @@ describe("the page and the plugin agree on every verb", () => {
 
     // And attach, which was the composer's picker rather than the header's —
     // carried here because a chat with no issue attached is exactly the chat a
-    // reader opens this card to fix.
-    expect(screen.getByRole("button", { name: /Attach a Linear issue/i })).toBeTruthy();
+    // reader opens this card to fix. It routes to the PICKER placement rather
+    // than opening a modal inside a 360×420 popover.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Attach a Linear issue/i }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:openIssuePickerSurface").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:openIssuePickerSurface")!.args).toEqual({ laneId: "lane-1" });
+    // No pane, no backdrop, no second header — the list opens in the placement
+    // that is a list.
+    expect(document.querySelector("[data-linear-pane-backdrop]")).toBeNull();
+    // The card asked one question and it is answered elsewhere, so it closes.
+    await waitFor(() => {
+      expect(host.callsTo("surface.close").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("attaches from a chat that carries no issue yet, which is the chat the row is for", async () => {
+    // `pageLanes` answers a lane's Linear links and nothing else, so the lane
+    // could only ever be found for a chat that ALREADY had an issue. The row
+    // therefore sat permanently disabled — "ADE cannot tell which lane this
+    // chat belongs to" — on every chat where pressing it was the point. The
+    // chat's own session names its lane.
+    connected({
+      lanes: [{
+        id: "lane-1",
+        name: "ADE-1",
+        branch: "ade/ade-1",
+        laneType: "worktree",
+        path: null,
+        linearIssueId: null,
+        linearIssueKey: null,
+        linearIssueLinks: [],
+      }],
+    });
+    render(
+      <IssueContextEntry
+        context={tabContext({
+          surfaceId: "issue-context",
+          placement: "popover",
+          subject: { kind: "session", id: "session-1" },
+        })}
+      />,
+    );
+    const attach = await screen.findByRole(
+      "button",
+      { name: /Attach a Linear issue/i },
+      { timeout: 3_000 },
+    );
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageSessionLane").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageSessionLane")!.args).toEqual({ sessionId: "session-1" });
+    await waitFor(() => {
+      expect(attach.hasAttribute("disabled")).toBe(false);
+    });
   });
 
   it("draws only the chips in the transcript, where a menu was never pressed", async () => {
@@ -799,17 +994,24 @@ describe("the contract itself", () => {
     const defined = new Set(
       [...child.matchAll(/^\s{4}(?:async\s+)?([A-Za-z0-9_]+)\s*\(/gm)].map((match) => match[1]),
     );
-    // The five ids the page shares with the manifest table in `actions.js`,
+    // The six ids the page shares with the manifest table in `actions.js`,
     // deliberately. Three are the webhook: the Automations trigger tile presses
     // `webhookStatus` and `registerWebhook` by name, so a second copy in the
     // page table would be a second place to keep in step. Two are the chat's
     // own verbs, which the compiled chat-header menu pressed and the chat
     // menu's issue-context card presses now.
+    //
+    // The sixth is `openIssuePickerSurface`, and it has to be in that table
+    // rather than this one: it answers `{openWebview}`, which is control flow
+    // over ADE's own UI that only a manifest ACTION may ask for. No socket
+    // names it, which is what keeps it clear of the rule that a socket already
+    // declaring its `webviewSurfaceId` must never answer a second open.
     const elsewhere = new Set([
       "webhookStatus",
       "registerWebhook",
       "unregisterWebhook",
       "openInLinear",
+      "openIssuePickerSurface",
       "commentProgress",
     ]);
 

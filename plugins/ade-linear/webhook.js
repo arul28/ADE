@@ -139,21 +139,88 @@ function baseTrigger(action, data, previous) {
 }
 
 /**
- * Labels this event ADDED, by name.
+ * Labels this event ADDED, by id.
  *
  * Only meaningful on an update, and only when Linear put `labelIds` in
  * `updatedFrom` — its absence means the label set was not part of this change.
  * Diffing against an absent previous set would make every edit look like it
  * added every label, which is the bug the built-in's comment warns about.
+ *
+ * By ID rather than by name, because the ids are what the label FILTER needs:
+ * the tile's option value is `label:<rank>:<labelId>`, and a name cannot be
+ * turned back into one. The names are still what a rule's prompt prints, which
+ * is {@link addedLabelNames} below.
  */
-function addedLabelNames(action, data, previous) {
+function addedLabelIds(action, data, previous) {
   if (action === "create" || !previous) return [];
   if (!Array.isArray(previous.labelIds)) return [];
   const before = new Set(labelIds(previous));
-  const added = labelIds(data).filter((id) => !before.has(id));
-  if (added.length === 0) return [];
+  return labelIds(data).filter((id) => !before.has(id));
+}
+
+/** The same labels, as words. Kept as its own export: it is what a reader reads. */
+function addedLabelNames(action, data, previous) {
   const names = labelNamesById(data);
-  return added.map((id) => names.get(id)).filter(Boolean);
+  return addedLabelIds(action, data, previous).map((id) => names.get(id)).filter(Boolean);
+}
+
+/**
+ * The values one declarative filter will match, for one fact.
+ *
+ * ## The bug this exists for
+ *
+ * Every one of the tile's five filters is a `select` bound to one of this
+ * plugin's collections. The HOST builds each option's value from the collection
+ * ROW KEY (`PluginAutomationTriggerTiles.tsx`), and `automationService` matches
+ * a rule's saved filter against `payload[key]` by string equality. The payload
+ * carried DISPLAY NAMES — "Engineering", "In Progress" — while the rule carried
+ * `team:9f3…` or `team:ENG:000002:s-doing`. Nothing could ever be equal, and
+ * the matcher fails CLOSED, so every rule anyone built on this tile silently
+ * never fired.
+ *
+ * ## Why a list rather than one value
+ *
+ * The matcher takes membership when the payload sends an array, and a filter
+ * can arrive spelled three ways: the row key (a reader who picked from the
+ * menu), the bare id, or the display name (a reader who typed into the text box
+ * the tile degrades to when a collection is empty or unreadable — which is
+ * every hosted-web reader, because a trigger grid opens no panel). All three
+ * name the same thing, so all three belong in the answer. Duplicates and blanks
+ * are dropped, and an empty list means the event carried no such fact.
+ */
+function filterValues(...values) {
+  const out = [];
+  for (const value of values) {
+    const trimmed = text(value);
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * The stored collection key for a state id or a label id.
+ *
+ * These two key spaces carry a RANK — `team:<teamKey>:000002:<stateId>` and
+ * `label:000007:<labelId>` — because `collections.list` orders by key and
+ * nothing else, so the rank IS the order a bound picker draws. A webhook body
+ * cannot know it. The rank cannot move into the row value either: the tile's
+ * option value is the key, and the picker's order is the key.
+ *
+ * So the keys are looked up rather than derived, from the plugin's own stored
+ * rows. Two small local reads per delivery, on a path that already spends a
+ * round trip refetching the issue over GraphQL.
+ */
+async function collectionKeysById(sdk, collection, keyPrefix) {
+  const rows = await sdk.collections
+    .list(collection, { keyPrefix, limit: 500 })
+    .catch(() => []);
+  const byId = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = text(record(row?.value)?.id);
+    const key = text(row?.key);
+    if (id && key && !byId.has(id)) byId.set(id, key);
+  }
+  return byId;
 }
 
 /**
@@ -164,8 +231,13 @@ function addedLabelNames(action, data, previous) {
  * one case that is NOT two is a pure label add — its base mapping falls
  * through to `issue_updated`, and firing both would make a rule counting label
  * adds count each one twice.
+ *
+ * `keys` carries the two key spaces a body cannot derive (see
+ * {@link collectionKeysById}). It is optional so this stays a pure function of
+ * the body: without it the state and label filters still match an id or a name,
+ * which is what a reader typing into the degraded text box wrote.
  */
-function triggersFor(payload) {
+function triggersFor(payload, keys = {}) {
   const body = record(payload);
   if (!body) return [];
   const data = record(body.data);
@@ -176,18 +248,57 @@ function triggersFor(payload) {
 
   const identifier = text(data?.identifier);
   const base = baseTrigger(action, data, previous);
-  const added = addedLabelNames(action, data, previous);
+  const addedIds = addedLabelIds(action, data, previous);
+  const labelNames = labelNamesById(data);
+  const added = addedIds.map((id) => labelNames.get(id)).filter(Boolean);
+
+  const stateKeys = keys.states instanceof Map ? keys.states : new Map();
+  const labelKeys = keys.labels instanceof Map ? keys.labels : new Map();
+
+  const teamId = nestedId(data, "team");
+  const teamKey = text(record(data?.team)?.key);
+  const projectId = nestedId(data, "project");
+  const assigneeId = nestedId(data, "assignee");
+  const stateId = nestedId(data, "state");
+
+  const labelFilter = (ids) => {
+    const out = [];
+    for (const id of ids) {
+      for (const value of filterValues(labelKeys.get(id), id, labelNames.get(id))) {
+        if (!out.includes(value)) out.push(value);
+      }
+    }
+    return out;
+  };
 
   const context = {
     issueId,
     identifier,
     title: text(data?.title),
-    team: nestedName(data, "team"),
-    project: nestedName(data, "project"),
-    assignee: nestedName(data, "assignee"),
-    state: nestedName(data, "state"),
+
+    // ── The five declarative filters ──────────────────────────────────────
+    //
+    // Named exactly as `plugin.json`'s `filters[].key` names them, because the
+    // host looks each rule's saved value up under that name and nothing else.
+    // The KEY-shaped spelling comes first in each list: it is what the tile's
+    // menu writes, and it is the one this used to get wrong.
+    project: filterValues(projectId ? `project:${projectId}` : null, projectId, nestedName(data, "project")),
+    team: filterValues(teamId ? `team:${teamId}` : null, teamId, teamKey, nestedName(data, "team")),
+    assignee: filterValues(assigneeId ? `user:${assigneeId}` : null, assigneeId, nestedName(data, "assignee")),
+    state: filterValues(stateKeys.get(stateId), stateId, nestedName(data, "state")),
+    label: labelFilter([...labelNames.keys()]),
+
+    // ── What a prompt and a ledger read ───────────────────────────────────
+    //
+    // The display names, kept beside the filters rather than instead of them.
+    // A rule's prompt interpolates these; a filter never should, because a
+    // workspace can rename a team without meaning to switch a rule off.
+    teamName: nestedName(data, "team"),
+    projectName: nestedName(data, "project"),
+    assigneeName: nestedName(data, "assignee"),
+    stateName: nestedName(data, "state"),
     previousState: base.previousState,
-    labels: [...labelNamesById(data).values()],
+    labels: [...labelNames.values()],
     changedFields: previous ? Object.keys(previous) : [],
     action,
   };
@@ -196,7 +307,16 @@ function triggersFor(payload) {
   if (added.length > 0) {
     triggers.push({
       triggerId: TRIGGER_LABELED,
-      payload: { ...context, addedLabels: added, labels: added, stateTransition: null },
+      payload: {
+        ...context,
+        addedLabels: added,
+        labels: added,
+        // A labeled rule filters on the label that was just ADDED, not on the
+        // issue's whole set — the same one-shot rule `automationService` states
+        // for `linear.issue_labeled`.
+        label: labelFilter(addedIds),
+        stateTransition: null,
+      },
     });
   }
   const suppressBase = added.length > 0 && base.triggerId === TRIGGER_UPDATED;
@@ -352,7 +472,16 @@ function createWebhookHandler(options = {}) {
       log("warn", `Linear delivery ${deliveryId} was clipped at the size cap; its triggers may be coarser.`);
     }
 
-    const triggers = triggersFor(body);
+    // The two key spaces the tile's state and label filters are written in.
+    // Read BEFORE the triggers are built, because the trigger payload carries
+    // them: a rule whose filter came out of the menu is matched on the row key,
+    // and a body cannot derive one. Both degrade to an empty map, which leaves
+    // those two filters matching an id or a name rather than nothing.
+    const [stateKeys, labelKeys] = await Promise.all([
+      collectionKeysById(sdk, "states", "team:"),
+      collectionKeysById(sdk, "labels", "label:"),
+    ]);
+    const triggers = triggersFor(body, { states: stateKeys, labels: labelKeys });
     const issueId = text(record(body.data)?.id) ?? text(body.issueId);
 
     // The refetch FIRST, so a rule that reads the plugin's collections sees the
@@ -402,6 +531,7 @@ module.exports = {
   TRIGGER_LABELED,
   TRIGGER_STATUS_CHANGED,
   TRIGGER_UPDATED,
+  addedLabelIds,
   addedLabelNames,
   baseTrigger,
   createWebhookHandler,

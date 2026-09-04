@@ -1,6 +1,6 @@
 {
   "name": "ade-linear",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "displayName": "Linear",
   "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   "icon": "brand:linear",
@@ -375,7 +375,7 @@
       "label": "Linear issue → Done when its pull request merges",
       "name": "Linear issue → Done when its pull request merges",
       "icon": "brand:linear",
-      "description": "A merged pull request moves the issues its lane linked with “close on merge” to the team's first completed state.",
+      "description": "Merging a lane's pull request moves the issues that lane linked with “close on merge” to the team's first completed state.",
       "template": {
         "enabled": true,
         "mode": "monitor",
@@ -398,11 +398,11 @@
         "name": "Linear issue → Done when its pull request merges",
         "triggers": [
           {
-            "type": "github.pr_merged"
+            "type": "lane.merged"
           }
         ],
         "trigger": {
-          "type": "github.pr_merged"
+          "type": "lane.merged"
         },
         "guardrails": {
           "maxDurationMin": 5

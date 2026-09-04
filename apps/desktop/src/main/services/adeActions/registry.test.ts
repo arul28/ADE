@@ -557,6 +557,69 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     );
   });
 
+  it("raises lane.created for every lane the action domain makes", async () => {
+    // The domain spread `laneService` straight through, so `lane.create`
+    // reached the lane service without ever reaching the automation engine.
+    // Only the IPC handlers notified — so a lane made from the desktop window
+    // raised `lane.created` and one made any other way raised nothing: the
+    // CLI's `ade lanes create`, the RPC daemon, the phone, and every plugin
+    // that creates a lane through `actions.invoke("lane", "create")`, which is
+    // the path the bundled Linear plugin's launch takes. A `lane.created` rule
+    // fired for lanes made one way and not the other, with nothing anywhere
+    // saying which way was which.
+    const onLaneCreated = vi.fn();
+    const made = (id: string) => ({
+      id,
+      name: id.toUpperCase(),
+      branchRef: `refs/heads/${id}`,
+      folder: `/w/${id}`,
+    });
+    const runtime = {
+      automationService: { onLaneCreated },
+      laneService: {
+        create: vi.fn(async () => made("lane-1")),
+        createChild: vi.fn(async () => made("lane-2")),
+        createFromUnstaged: vi.fn(async () => made("lane-3")),
+        importBranch: vi.fn(async () => made("lane-4")),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const lane = getAdeActionDomainServices(runtime).lane as Record<
+      string,
+      (args?: unknown) => Promise<{ id: string }>
+    >;
+
+    // All four creators, because the writers are enumerated once rather than
+    // discovered one bug at a time.
+    await expect(lane.create({ name: "One" })).resolves.toMatchObject({ id: "lane-1" });
+    await expect(lane.createChild({ parentLaneId: "lane-1" })).resolves.toMatchObject({ id: "lane-2" });
+    await expect(lane.createFromUnstaged({ sourceLaneId: "lane-1" })).resolves.toMatchObject({ id: "lane-3" });
+    await expect(lane.importBranch({ branchRef: "feature" })).resolves.toMatchObject({ id: "lane-4" });
+
+    expect(onLaneCreated).toHaveBeenCalledTimes(4);
+    expect(onLaneCreated).toHaveBeenNthCalledWith(1, {
+      laneId: "lane-1",
+      laneName: "LANE-1",
+      branchRef: "refs/heads/lane-1",
+      folder: "/w/lane-1",
+    });
+  });
+
+  it("still creates a lane on a runtime that binds no automation engine", async () => {
+    // Automations are gated off in a packaged state that disables them, and a
+    // lane must still be creatable there — the notification is a side effect,
+    // never a precondition.
+    const create = vi.fn(async () => ({ id: "lane-9", name: "Nine", branchRef: "refs/heads/nine" }));
+    const runtime = { laneService: { create } } as unknown as Parameters<
+      typeof getAdeActionDomainServices
+    >[0];
+    const lane = getAdeActionDomainServices(runtime).lane as Record<
+      string,
+      (args?: unknown) => Promise<{ id: string }>
+    >;
+    await expect(lane.create({ name: "Nine" })).resolves.toMatchObject({ id: "lane-9" });
+  });
+
   it("exposes Linear issue tracker composite reads for runtime-backed CTO views", () => {
     const actions = ADE_ACTION_ALLOWLIST.linear_issue_tracker ?? [];
     expect(actions).toContain("getWorkflowCatalog");

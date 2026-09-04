@@ -234,7 +234,16 @@ export type AdePluginBridge = {
       rect?: PluginWebviewPickerRect;
     }): Promise<PluginWebviewPermissionHostChoice | null>;
     pickReasoningEffort?(
-      request: { model: string; value?: string | null; rect?: PluginWebviewPickerRect },
+      request: {
+        model: string;
+        /**
+         * The provider the model belongs to. The host resolves a ladder it does
+         * not hold statically through it, and a host that holds one ignores it.
+         */
+        provider?: string;
+        value?: string | null;
+        rect?: PluginWebviewPickerRect;
+      },
     ): Promise<PluginWebviewReasoningHostChoice | null>;
     dismissToast(id: string): Promise<void>;
     prompt(prompt: unknown): Promise<unknown>;

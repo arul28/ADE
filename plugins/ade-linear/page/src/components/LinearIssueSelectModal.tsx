@@ -29,6 +29,7 @@ export function LinearIssueSelectModal({
   actionDisabled = false,
   showBranchPreview = true,
   mode = "attach",
+  chrome = true,
   onOpenChange,
   onSelectIssue,
   onRemoveIssue,
@@ -45,6 +46,11 @@ export function LinearIssueSelectModal({
   actionDisabled?: boolean;
   showBranchPreview?: boolean;
   mode?: "attach" | "details";
+  /**
+   * Whether the pane draws its own header and backdrop. False in a placement
+   * the host has already framed — see {@link LinearPaneModal}'s `chrome`.
+   */
+  chrome?: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectIssue: (issue: LaneLinearIssue) => void;
   onRemoveIssue?: (issue: LaneLinearIssue) => void;
@@ -68,6 +74,7 @@ export function LinearIssueSelectModal({
       ariaLabel={ariaLabel}
       quickView={quickView}
       loading={browserLoading}
+      chrome={chrome}
       onRefresh={() => setRefreshKey((key) => key + 1)}
       onClose={close}
     >

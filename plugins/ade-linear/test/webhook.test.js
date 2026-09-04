@@ -211,16 +211,38 @@ describe("the label rule, which is where a naive port double-counts", () => {
   });
 });
 
+/**
+ * The host's own filter rule, restated.
+ *
+ * `automationService.triggerMatchesRule` compares a rule's saved filter against
+ * `payload[key]`: trimmed string equality, or membership when the payload sent a
+ * list, and a key the payload does not carry FAILS CLOSED. It lives in the
+ * desktop's TypeScript and cannot be imported here, so it is written out —
+ * which is the point of the assertions below: they fail if either side moves.
+ */
+function ruleMatches(payload, filters) {
+  for (const [key, expected] of Object.entries(filters)) {
+    const wanted = (expected ?? "").trim();
+    if (!wanted) continue;
+    const actual = payload[key];
+    const matched = Array.isArray(actual)
+      ? actual.some((entry) => String(entry).trim() === wanted)
+      : actual != null && String(actual).trim() === wanted;
+    if (!matched) return false;
+  }
+  return true;
+}
+
 describe("the trigger payload a rule matches on", () => {
   it("carries the fields the built-in's rules read", () => {
     const payload = triggersFor(body({ updatedFrom: { assigneeId: "u1", title: "old" } }))[0].payload;
     assert.equal(payload.issueId, "a");
     assert.equal(payload.identifier, "ENG-1");
     assert.equal(payload.title, "Fix the thing");
-    assert.equal(payload.team, "Engineering");
-    assert.equal(payload.project, "Platform");
-    assert.equal(payload.assignee, "Ada");
-    assert.equal(payload.state, "In Progress");
+    assert.equal(payload.teamName, "Engineering");
+    assert.equal(payload.projectName, "Platform");
+    assert.equal(payload.assigneeName, "Ada");
+    assert.equal(payload.stateName, "In Progress");
     assert.deepEqual(payload.changedFields, ["assigneeId", "title"]);
   });
 
@@ -229,6 +251,68 @@ describe("the trigger payload a rule matches on", () => {
       triggersFor(body({ updatedFrom: { assigneeId: "u1", state: { name: "Todo" } } }))[0].payload.previousState,
       "Todo",
     );
+  });
+
+  it("matches a rule whose team filter came out of the tile's own menu", () => {
+    // THE BUG. Every filter on the tile is a `select` over one of this
+    // plugin's collections, and the host builds each option's value from the
+    // collection ROW KEY. The payload emitted display names, so a rule saying
+    // "team: Engineering" carried `team:t1` and nothing was ever equal — and
+    // the matcher fails closed, so every rule built on this tile never fired.
+    const payload = triggersFor(body({ updatedFrom: { assigneeId: "u1" } }))[0].payload;
+    assert.ok(ruleMatches(payload, { team: "team:t1" }), "the team row key did not match");
+    assert.ok(ruleMatches(payload, { project: "project:p1" }), "the project row key did not match");
+    assert.ok(ruleMatches(payload, { assignee: "user:u1" }), "the assignee row key did not match");
+    // And a team the event is not about still fails, or the filter narrows
+    // nothing at all.
+    assert.equal(ruleMatches(payload, { team: "team:other" }), false);
+  });
+
+  it("matches the same filter typed by hand, in either spelling", () => {
+    // The tile degrades a `select` to a text box whenever the collection is
+    // empty or unreadable — which is every hosted-web reader, because a trigger
+    // grid opens no panel. What they type is a name or an id, so both are in
+    // the answer beside the key.
+    const payload = triggersFor(body({ updatedFrom: { assigneeId: "u1" } }))[0].payload;
+    assert.ok(ruleMatches(payload, { team: "Engineering" }));
+    assert.ok(ruleMatches(payload, { team: "t1" }));
+    assert.ok(ruleMatches(payload, { team: "ENG" }) === false, "no team key was sent, so none should match");
+  });
+
+  it("matches a state filter on the row key the plugin actually stored", () => {
+    // A state's row key carries the rank that orders the picker
+    // (`team:<teamKey>:000002:<stateId>`), which a webhook body cannot derive.
+    // The handler reads the stored keys and hands them over.
+    const payload = triggersFor(body({ updatedFrom: { state: { name: "Todo" } } }), {
+      states: new Map([["s1", "team:ENG:000002:s1"]]),
+      labels: new Map(),
+    })[0].payload;
+    assert.ok(ruleMatches(payload, { state: "team:ENG:000002:s1" }), "the state row key did not match");
+    assert.ok(ruleMatches(payload, { state: "In Progress" }), "the state name did not match");
+  });
+
+  it("matches a label filter on the label just added, not on the whole set", () => {
+    const [labeled] = triggersFor(
+      body({
+        updatedFrom: { labelIds: ["l1"] },
+        data: { labels: [{ id: "l1", name: "bug" }, { id: "l2", name: "p1" }], labelIds: ["l1", "l2"] },
+      }),
+      { states: new Map(), labels: new Map([["l2", "label:000007:l2"]]) },
+    );
+    assert.equal(labeled.triggerId, TRIGGER_LABELED);
+    assert.ok(ruleMatches(labeled.payload, { label: "label:000007:l2" }), "the added label's key did not match");
+    assert.ok(ruleMatches(labeled.payload, { label: "p1" }), "the added label's name did not match");
+    // `bug` was already on the issue. A one-shot "is labeled" rule must not
+    // fire for a label this edit did not add.
+    assert.equal(ruleMatches(labeled.payload, { label: "bug" }), false);
+  });
+
+  it("fails a filter closed when the event carries no such fact", () => {
+    const payload = triggersFor(
+      body({ updatedFrom: { title: "old" }, data: { project: null, projectId: null } }),
+    )[0].payload;
+    assert.deepEqual(payload.project, []);
+    assert.equal(ruleMatches(payload, { project: "project:p1" }), false);
   });
 });
 

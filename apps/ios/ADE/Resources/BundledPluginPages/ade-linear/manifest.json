@@ -1,13 +1,13 @@
 {
   "pluginId": "ade-linear",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "revision": 0,
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-Bc3syUqn.js",
-      "bytes": 653911,
-      "sha256": "934c1db993d98b1851700cf59610a783e645dcd705a012536ab2083f801f2a97"
+      "path": "assets/index-B6f_xcLm.js",
+      "bytes": 655571,
+      "sha256": "a830c82cc22e95d703a3204fb0570d1df7dfb43026bddba4628ff2c13125f5f9"
     },
     {
       "path": "assets/index-Demz4CNm.css",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 367,
-      "sha256": "c26927fa29af39fdbb98425be34f39618daf497894de5a981c5fb3efef4a649c"
+      "sha256": "5f101f490094454254247744376fe1eda073b091872c16eff024d9a947129812"
     }
   ]
 }

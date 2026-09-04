@@ -633,10 +633,78 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     assert.equal(providers.find((entry) => entry.provider === "codex").permissionField, "permissionMode");
   });
 
+  it("carries the seed ADE's own launch form opens on", async () => {
+    // `providers` and `models` answer what a reader MAY choose. Neither can
+    // answer what the form is set to before they touch anything, because that
+    // is the model they launched LAST — per-user state in the project database
+    // rather than a fact about the registry. Without it the ported launch modal
+    // opened unset while the composer beside it opened on their last model, so
+    // Launch was disabled until they picked that same model again by hand.
+    const { actions } = makeDeps();
+    assert.deepEqual((await actions.pageCapabilities()).defaultModel, {
+      modelId: "anthropic/opus-5",
+      provider: "claude",
+      effort: "low",
+      permissionMode: "default",
+      fastMode: false,
+    });
+  });
+
+  it("answers a null seed rather than an empty one when the host names no model", async () => {
+    // `null` and "absent" have to be told apart: absent is a host too old to
+    // compute a seed, and a form cannot tell that from "there is nothing to
+    // seed" unless the field is always present.
+    const { actions } = makeDeps({
+      capabilities: { providers: [], models: [], defaultModel: { provider: "claude" } },
+    });
+    assert.equal((await actions.pageCapabilities()).defaultModel, null);
+  });
+
   it("draws no picker for a model ADE is retiring", async () => {
     const { actions } = makeDeps();
     const ids = (await actions.pageModels()).map((model) => model.id);
     assert.ok(!ids.includes("codex/gpt-4"), "a deprecated model is still offered");
+  });
+
+  it("names the lane of a chat that carries no Linear issue at all", async () => {
+    // `pageLanes` answers a lane's Linear links and nothing else, so it can only
+    // place a chat that ALREADY has an issue — which is the opposite of the chat
+    // the Attach row exists for. The row therefore sat permanently disabled
+    // saying ADE could not tell which lane the chat was in, on every chat where
+    // pressing it was the point.
+    const { actions } = makeDeps({
+      lanes: [{ id: "lane-7", name: "ENG-7", branchRef: "refs/heads/eng-7" }],
+      actions: {
+        "chat.getSessionSummary": async ({ sessionId }) => ({ sessionId, laneId: "lane-7" }),
+      },
+    });
+    assert.deepEqual(await actions.pageSessionLane({ sessionId: "session-9" }), { laneId: "lane-7" });
+  });
+
+  it("falls back to the session→issue walk when the chat domain refuses", async () => {
+    const { actions } = makeDeps({
+      lanes: [{ id: "lane-3", name: "ENG-3" }],
+      sessionIssues: {
+        "lane-3": [{ sessionId: "session-9", issueLinks: [] }],
+      },
+      actions: {
+        "chat.getSessionSummary": async () => {
+          throw new Error("no chat service here");
+        },
+      },
+    });
+    assert.deepEqual(await actions.pageSessionLane({ sessionId: "session-9" }), { laneId: "lane-3" });
+  });
+
+  it("answers no lane rather than somebody else's when nothing knows", async () => {
+    const { actions } = makeDeps({
+      lanes: [{ id: "lane-3", name: "ENG-3" }],
+      actions: {
+        "chat.getSessionSummary": async () => ({ sessionId: "session-9", laneId: "" }),
+      },
+    });
+    assert.deepEqual(await actions.pageSessionLane({ sessionId: "session-9" }), { laneId: null });
+    assert.deepEqual(await actions.pageSessionLane({}), { laneId: null });
   });
 
   it("answers empty lists when the host cannot report its capabilities", async () => {
@@ -1092,6 +1160,7 @@ describe("nothing a page handler answers carries a credential", () => {
       ["pageProjects", {}],
       ["pageAutolinks", {}],
       ["pageLanes", {}],
+      ["pageSessionLane", { sessionId: "session-1" }],
       ["pageModels", {}],
       ["pageCapabilities", {}],
       ["pageSetIssueState", { issueId: "issue-1", stateId: "state-done" }],

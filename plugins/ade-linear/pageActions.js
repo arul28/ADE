@@ -311,6 +311,28 @@ function createPageActions(deps) {
    * result, an issue somebody else's filter excluded.
    */
   /**
+   * The composer's seed, as the host computed it.
+   *
+   * Read field by field rather than passed through, for the same reason every
+   * other host answer here is: a page binds its chips to these names and a
+   * missing one has to read as "nothing chosen" rather than as `undefined`
+   * printed on a chip. A host too old to compute the seed answers nothing at
+   * all, which is `null` here and an unset form there.
+   */
+  function readDefaultModel(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const modelId = text(raw.modelId);
+    if (!modelId) return null;
+    return {
+      modelId,
+      provider: text(raw.provider),
+      effort: text(raw.effort),
+      permissionMode: text(raw.permissionMode),
+      fastMode: raw.fastMode === true,
+    };
+  }
+
+  /**
    * ADE's launch-form capabilities, read once.
    *
    * `sdk.chat.capabilities()` is documented static for the life of an app
@@ -327,16 +349,23 @@ function createPageActions(deps) {
   function chatCapabilities() {
     if (capabilitiesPromise) return capabilitiesPromise;
     capabilitiesPromise = (async () => {
-      if (!ready()) return { providers: [], models: [] };
+      if (!ready()) return { providers: [], models: [], defaultModel: null };
       let answer;
       try {
         answer = await deps.sdk.chat.capabilities();
       } catch (error) {
         log("debug", `Could not read the chat capabilities: ${error?.message ?? error}`);
         capabilitiesPromise = null;
-        return { providers: [], models: [] };
+        return { providers: [], models: [], defaultModel: null };
       }
       return {
+        // What ADE's OWN launch form opens on, computed on the host from the
+        // same recents the composer reads. A page cannot derive it: it is
+        // per-user state in the project database, not a fact about the
+        // registry, which is why the compiled Linear modal opened on a fixed
+        // Claude id while the composer beside it opened on the user's last
+        // model. `null` is a real answer — a registry with no models.
+        defaultModel: readDefaultModel(answer?.defaultModel),
         providers: (Array.isArray(answer?.providers) ? answer.providers : [])
           .filter((entry) => text(entry?.provider) && text(entry?.permissionField))
           .map((entry) => ({
@@ -1063,6 +1092,53 @@ function createPageActions(deps) {
     },
 
     /**
+     * The lane a chat belongs to, whether or not it carries a Linear issue.
+     *
+     * `pageLanes` answers a lane's Linear links and nothing else, so a page
+     * could name the lane of a chat that ALREADY had an issue attached and no
+     * other. That is exactly backwards for the chat menu's Attach row: the chat
+     * a reader opens that card to fix is the one with no issue on it, and the
+     * row sat permanently disabled saying ADE could not tell which lane the
+     * chat was in.
+     *
+     * The chat's own summary is the answer, and it is the only thing on this
+     * machine that has it — `AgentChatSessionSummary.laneId` is the binding
+     * itself. The session→issue walk stays as the fallback for a host whose
+     * chat domain refuses the read, because a chat that DOES carry an issue can
+     * still be placed that way.
+     */
+    async pageSessionLane(args = {}) {
+      if (!ready()) return { laneId: null };
+      const sessionId = text(args?.sessionId);
+      if (!sessionId) return { laneId: null };
+
+      try {
+        const summary = await deps.sdk.actions.invoke("chat", "getSessionSummary", { sessionId });
+        const laneId = text(summary?.laneId);
+        if (laneId) return { laneId };
+      } catch (error) {
+        log("debug", `Could not read the chat summary for ${sessionId}: ${error?.message ?? error}`);
+      }
+
+      // The walk: whichever lane holds a session with this id. One read per
+      // lane, on a press a reader made by hand, and only when the summary said
+      // nothing.
+      let lanes = [];
+      try {
+        lanes = await deps.sdk.lanes.list();
+      } catch {
+        return { laneId: null };
+      }
+      for (const lane of Array.isArray(lanes) ? lanes : []) {
+        if (!lane?.id) continue;
+        for (const group of await deps.flows.sessionIssues(lane.id)) {
+          if (String(group?.sessionId ?? "") === sessionId) return { laneId: lane.id };
+        }
+      }
+      return { laneId: null };
+    },
+
+    /**
      * The launch form's model picker.
      *
      * `sdk.chat.capabilities()` and nothing else. It used to be
@@ -1097,7 +1173,8 @@ function createPageActions(deps) {
      * when a sixth provider arrives.
      */
     async pageCapabilities() {
-      return { providers: (await chatCapabilities()).providers };
+      const answer = await chatCapabilities();
+      return { providers: answer.providers, defaultModel: answer.defaultModel };
     },
 
     /* ── Issue mutations ────────────────────────────────────────────────── */

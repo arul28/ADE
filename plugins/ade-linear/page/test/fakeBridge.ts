@@ -236,8 +236,10 @@ export function installFakeBridge(options: {
     }),
     pageLanes: () => lanes,
     pageModels: () => [{
-      id: "claude",
-      label: "Claude",
+      // The id the seed and the model picker both name, because the form looks
+      // the chip's LABEL up in this list and a miss would print an id.
+      id: "claude-opus-5",
+      label: "Opus 5",
       // The provider GROUP, from ADE's own capabilities read — never the id's
       // prefix. It is what joins a model to its permission vocabulary.
       provider: "claude",
@@ -245,7 +247,36 @@ export function installFakeBridge(options: {
       reasoningEfforts: [{ effort: "high", label: "High" }],
       defaultReasoningEffort: null,
     }],
+    // The chat's own lane, which is the only thing that can place a chat
+    // carrying no Linear issue.
+    pageSessionLane: (args) => {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
+      if (!sessionId) return { laneId: null };
+      const linked = lanes.find(
+        (lane) => (lane.linearIssueLinks ?? []).some((link) => link.sessionId === sessionId),
+      );
+      // The chat's own summary names its lane whether or not an issue is
+      // attached to it, which is the whole reason the child has this verb.
+      return { laneId: linked?.id ?? lanes[0]?.id ?? null };
+    },
+    // The picker surface, asked for by the chat menu's Attach row. The host
+    // acts on `{openWebview}`; the fake only records that it was asked.
+    openIssuePickerSurface: () => ({
+      ok: true,
+      openWebview: { surfaceId: "picker", placement: "picker" },
+    }),
     pageCapabilities: () => ({
+      // What ADE's OWN launch form opens on, computed on the host from the same
+      // recents the composer reads. A page cannot derive it, and a form that
+      // seeds nothing opens with Launch disabled while the composer beside it
+      // opens on the reader's last model.
+      defaultModel: {
+        modelId: "claude-opus-5",
+        provider: "claude",
+        effort: "high",
+        permissionMode: "acceptEdits",
+        fastMode: false,
+      },
       providers: [{
         provider: "claude",
         // The launch FIELD the chosen value belongs in. Claude's values are

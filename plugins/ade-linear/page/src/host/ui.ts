@@ -363,9 +363,19 @@ export async function pickPermissionMode(
   };
 }
 
-/** The model's own reasoning rungs. A model with none opens no picker. */
+/**
+ * The model's own reasoning rungs. A model with none opens no picker.
+ *
+ * `provider` travels with the model, and the underscore it used to carry was
+ * the bug: the contract is `ui.pickReasoningEffort({provider, model})` and this
+ * function took the argument, named it away and posted `{model, value, rect}`.
+ * A host that resolves the ladder per provider — a model id the static table
+ * does not know, an ACP or Pi model whose rungs only its provider can name —
+ * had nothing to resolve it with, so the chip opened ADE's fallback ladder
+ * instead of the model's own.
+ */
 export async function pickReasoningEffort(
-  _provider: string,
+  provider: string,
   model: string,
   selected?: string | null,
   rect?: { top: number; left: number; width?: number; height?: number },
@@ -375,6 +385,7 @@ export async function pickReasoningEffort(
     ui?.pickReasoningEffort
       ? () => ui.pickReasoningEffort!({
         model,
+        ...(provider ? { provider } : {}),
         ...(selected ? { value: selected } : {}),
         ...(rect ? { rect } : {}),
       })

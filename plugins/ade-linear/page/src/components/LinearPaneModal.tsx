@@ -42,6 +42,7 @@ export function LinearPaneModal({
   headerSubtitle,
   refreshTitle = "Refresh Linear",
   closeTitle = "Close Linear",
+  chrome = true,
   onRefresh,
   onClose,
   children,
@@ -56,6 +57,22 @@ export function LinearPaneModal({
   headerSubtitle?: string;
   refreshTitle?: string;
   closeTitle?: string;
+  /**
+   * Whether this pane draws its own chrome.
+   *
+   * False in a placement the HOST has already framed and already titled — a
+   * composer picker, an anchored popover. There the portal, the `bg-black/55`
+   * backdrop and the branded header are all a second copy of something already
+   * on screen: two headers over one list, and a black sheet painted across the
+   * reader's window. The centred dialog is worse than redundant, because
+   * `min(1760px, 100vw - 28px)` by `min(940px, 100dvh - 28px)` is measured
+   * against the GUEST viewport, so a 360×420 popover asked for a pane five
+   * times its width.
+   *
+   * True everywhere the pane IS the frame: an overlay placement, and the
+   * transcript card, where nothing else draws a dialog around it.
+   */
+  chrome?: boolean;
   onRefresh: () => void;
   onClose: () => void;
   children: React.ReactNode;
@@ -72,7 +89,12 @@ export function LinearPaneModal({
 
   useEffect(() => {
     if (!open) return;
+    // A click outside dismisses only a pane that IS the dialog. Chromeless, the
+    // pane fills a frame the host owns and every click in the app is outside
+    // it — dismissing on one would close the picker the moment the reader
+    // reached for anything around it. The host dismisses its own placement.
     const onDown = (event: MouseEvent) => {
+      if (!chrome) return;
       const target = event.target as Node | null;
       if (!target) return;
       if (popoverRef.current?.contains(target)) return;
@@ -90,9 +112,27 @@ export function LinearPaneModal({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose, open]);
+  }, [chrome, onClose, open]);
 
   if (!open) return null;
+
+  if (!chrome) {
+    // No portal either, and that is part of the same decision: a `fixed` portal
+    // contributes zero height to the document, so a host that measures the
+    // guest to size its placement would read nothing. In the frame's own flow
+    // the list fills the height the host gave it.
+    return (
+      <div
+        ref={popoverRef}
+        role="group"
+        aria-label={ariaLabel}
+        className="flex min-h-0 flex-col overflow-hidden text-fg"
+        style={{ height: "100dvh" }}
+      >
+        <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+      </div>
+    );
+  }
 
   return createPortal(
     <>

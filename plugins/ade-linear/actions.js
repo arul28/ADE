@@ -258,12 +258,56 @@ function createOwnActions(deps) {
       return await ownActions.openIssue({ issueId: link.issueId });
     },
 
-    /** The issue on the open web. */
+    /**
+     * The issue on the open web.
+     *
+     * The stored row first, and Linear itself when this project has never
+     * listed the issue. `findIssueRow` reads the collections alone, so every
+     * issue outside the stored view — a chat attached to a ticket from another
+     * team, a badge card handed an id the list never carried, an issue linked
+     * before the first catalog read — answered "that issue has no Linear link"
+     * about an issue whose link plainly exists. `automation.resolveIssue` is
+     * the read that falls through to Linear, and it is the same one every agent
+     * tool uses for the same reason.
+     */
     async openInLinear(args) {
       const issueId = args?.issueId ?? args?.context?.issueId ?? null;
-      const row = issueId ? await deps.data.findIssueRow(issueId) : null;
+      if (!issueId) return { message: "That issue has no Linear link.", ok: false };
+      let row = await deps.data.findIssueRow(issueId);
+      if (!row?.url) {
+        // Never fatal: a refusal from Linear is still "no link to open", said
+        // in the same sentence rather than as a thrown action.
+        row = await deps.automation.resolveIssue(issueId).catch(() => null);
+      }
       if (!row?.url) return { message: "That issue has no Linear link.", ok: false };
       return { openUrl: row.url };
+    },
+
+    /**
+     * Open the issue picker as a picker over whatever the page is drawn in.
+     *
+     * Pressed by the PAGE and by nothing else, which is what keeps it apart
+     * from `openIssuePicker`: that one is named by a socket whose
+     * `webviewSurfaceId` already opens the picker, so an `openWebview` there
+     * would be a second open of a surface already up. No socket names this one.
+     *
+     * The chat menu's Issue context card needs it because a card in a 360×420
+     * popover has nowhere to draw a list. It asks the host for the picker
+     * placement instead, which is the same surface the composer's own menu row
+     * opens and the same one that knows how to attach a chip.
+     */
+    async openIssuePickerSurface(args) {
+      void ensureIssues();
+      const laneId = typeof args?.laneId === "string" && args.laneId.trim() ? args.laneId.trim() : null;
+      return {
+        openWebview: {
+          surfaceId: "picker",
+          placement: "picker",
+          // The lane the attach lands on, when the caller knows it. The picker
+          // reads it as its `pointer` and attaches there rather than guessing.
+          ...(laneId ? { context: { laneId } } : {}),
+        },
+      };
     },
 
     /**

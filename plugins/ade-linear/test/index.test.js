@@ -492,6 +492,61 @@ describe("navigation actions", () => {
     await activated();
     assert.equal((await plugin.actions.openInLinear({ issueId: "nope" })).ok, false);
   });
+
+  it("openInLinear falls through to Linear for an issue this project never listed", async () => {
+    // `findIssueRow` reads the COLLECTIONS, and the collections carry the
+    // project's filtered view. Every issue outside it — a chat attached to
+    // another team's ticket, a badge card handed an id the list never carried,
+    // a link made before the first catalog read — answered "that issue has no
+    // Linear link" about a link that plainly exists.
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => response(200, {
+      data: { issue: issueNode({ id: "outside", url: "https://linear.app/acme/issue/ENG-9" }) },
+    });
+    try {
+      const { sdk } = await activated();
+      await sdk.secrets.set("LINEAR_ACCESS_TOKEN", "at");
+      await sdk.secrets.set("LINEAR_AUTH_MODE", "manual");
+      const result = await plugin.actions.openInLinear({ issueId: "outside" });
+      assert.equal(result.openUrl, "https://linear.app/acme/issue/ENG-9");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("the two automation templates the deleted toggles became", () => {
+  const templates = MANIFEST.sockets.filter((socket) => socket.socket === "automation-template");
+
+  it("passes {{trigger.laneId}} only on a trigger that carries one", () => {
+    // `github.pr_merged` is a PULL REQUEST event: its context names a repo, a
+    // number and a branch, and no lane. So `{{trigger.laneId}}` resolved to
+    // nothing, `stepCloseIssueOnMerge` was handed an empty lane, and the
+    // template that replaced the `moveToDoneOnMerge` toggle moved no issue
+    // ever. `lane.merged` is the same merge, told from the side that knows
+    // which lane it was.
+    const laneTriggers = new Set(["lane.created", "lane.merged", "lane.archived"]);
+    assert.ok(templates.length >= 2, "the gallery lost a template");
+    for (const socket of templates) {
+      const args = socket.template.actions[0].pluginStep.args;
+      if (!Object.values(args).some((value) => String(value).includes("{{trigger.laneId}}"))) continue;
+      for (const trigger of socket.template.triggers) {
+        assert.ok(
+          laneTriggers.has(trigger.type),
+          `${socket.id} interpolates {{trigger.laneId}} on ${trigger.type}, which carries no lane`,
+        );
+      }
+      assert.ok(laneTriggers.has(socket.template.trigger.type), `${socket.id}'s singular trigger carries no lane`);
+    }
+  });
+
+  it("names a step this plugin actually answers", () => {
+    for (const socket of templates) {
+      const step = socket.template.actions[0].pluginStep;
+      assert.equal(step.pluginId, MANIFEST.name);
+      assert.equal(typeof plugin.actions[step.action], "function", `${step.action} is not an action`);
+    }
+  });
 });
 
 describe("commenting a chat's progress onto its issue", () => {

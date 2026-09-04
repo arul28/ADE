@@ -15,17 +15,18 @@ import { cn, LinearMark, LinearStateIcon, LINEAR_BRAND } from "@ade-dev/ui";
 
 import type { PluginWebviewContext } from "../bridge";
 import { IssueContextPane } from "../components/IssueContextPane";
-import { LinearIssueSelectModal } from "../components/LinearIssueSelectModal";
 import { linearBrowserIssueToLaneIssue } from "../components/LinearIssueBrowser";
 import {
   commentProgress,
   getLanes,
-  linkIssueToLane,
+  getSessionLane,
   openIssueInLinear,
+  openIssuePickerSurface,
   searchIssues,
   unlinkIssueFromLane,
 } from "../host/actions";
-import { closeSurface, openSettings, reportHeight, toast } from "../host/ui";
+import { drawsOwnChrome } from "../host/placement";
+import { closeSurface, reportHeight, toast } from "../host/ui";
 import { useHostRefresh } from "../host/refresh";
 import { useCollectionChanges } from "../host/useHostEntities";
 import type { LaneLinearIssue } from "../types";
@@ -98,7 +99,19 @@ export function IssueContextEntry({ context }: { context: PluginWebviewContext }
         const lane = lanes.find((row) => (row.linearIssueLinks ?? []).some((link) => link.sessionId === sessionId));
         const links = (lane?.linearIssueLinks ?? []).filter((link) => link.sessionId === sessionId);
         if (requestRef.current !== requestId) return;
-        setLaneId(lane?.id ?? null);
+        // The lane from the LINKS is only ever the lane of a chat that already
+        // carries a Linear issue, and the chat a reader opens this card to fix
+        // is the one that carries none. Attach therefore sat permanently
+        // disabled saying ADE could not tell which lane the chat was in — on
+        // every chat where the row was the point. The chat's own session says,
+        // so ask it whenever the links did not.
+        if (lane?.id) {
+          setLaneId(lane.id);
+        } else {
+          const fromSession = await getSessionLane(sessionId).catch(() => ({ laneId: null }));
+          if (requestRef.current !== requestId) return;
+          setLaneId(fromSession?.laneId ?? null);
+        }
         if (!links.length) {
           setIssues([]);
           return;
@@ -145,7 +158,6 @@ export function IssueContextEntry({ context }: { context: PluginWebviewContext }
           issues={issues}
           laneId={laneId}
           sessionId={sessionId}
-          projectRoot={context.project?.root ?? null}
           onChanged={load}
         />
       </div>
@@ -154,9 +166,19 @@ export function IssueContextEntry({ context }: { context: PluginWebviewContext }
 
   // Content sizing, and no page-sized ground: the host draws the transcript row
   // around this, so the page paints only the chips.
+  //
+  // The chips open a details pane, and THAT one keeps its chrome in the
+  // transcript — a `chat-card` is a row, not a frame, so nothing else would
+  // draw a dialog around it. `drawsOwnChrome` decides, so a card drawn in a
+  // host-framed placement drops it without this entry having to know which
+  // placements those are.
   return (
     <div ref={measure}>
-      <IssueContextPane issues={issues} laneId={laneId} />
+      <IssueContextPane
+        issues={issues}
+        laneId={laneId}
+        chrome={drawsOwnChrome(context.placement)}
+      />
     </div>
   );
 }
@@ -180,16 +202,13 @@ function IssueContextPopover({
   issues,
   laneId,
   sessionId,
-  projectRoot,
   onChanged,
 }: {
   issues: LaneLinearIssue[];
   laneId: string | null;
   sessionId: string | null;
-  projectRoot: string | null;
   onChanged: () => void;
 }): React.ReactElement {
-  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   /**
@@ -263,35 +282,32 @@ function IssueContextPopover({
         ))
       )}
 
+      {/*
+        Attach opens the PICKER placement, not a modal inside this card.
+
+        This card is a popover the host sized to a card — 360×420 in the chat
+        menu. `LinearIssueSelectModal` is `LinearPaneModal`, which portals a
+        `bg-black/55` backdrop across the whole guest and a dialog asking for
+        `min(1760px, 100vw - 28px)` by `min(940px, 100dvh - 28px)`: a black
+        sheet over a card, with a pane five times its width clipped inside it.
+
+        So the press asks the host to open this plugin's own picker surface at
+        the placement that IS a list — the same surface the composer's menu row
+        opens — and hands it the lane, so the choice lands on this chat's lane
+        rather than as a composer chip. This card then closes: the menu asked
+        one question and the picker is where it gets answered.
+      */}
       <PopoverVerb
         icon={Plus}
         label="Attach a Linear issue"
         disabled={!laneId}
+        busy={busy === "attach"}
         title={laneId ? undefined : "ADE cannot tell which lane this chat belongs to."}
-        onPress={() => setPicking(true)}
-      />
-
-      <LinearIssueSelectModal
-        open={picking}
-        ariaLabel="Attach Linear issue"
-        projectRoot={projectRoot}
-        selectedIssue={null}
-        actionLabel="Attach issue"
-        actionBusyLabel="Attaching issue"
-        showBranchPreview={false}
-        onOpenChange={setPicking}
-        onSelectIssue={(issue) => {
-          setPicking(false);
-          void run("attach", async () => {
-            const result = await linkIssueToLane(issue.id, laneId ?? "");
-            // The menu asked one question and it is answered, so the popover
-            // gets out of the way — the same close the composer picker performs
-            // once it has attached.
-            if (result.ok) await closeSurface();
-            return result;
-          });
-        }}
-        onOpenLinearSettings={() => void openSettings({ socketId: "connection" })}
+        onPress={() => void run("attach", async () => {
+          const result = await openIssuePickerSurface(laneId);
+          if (result?.ok !== false) await closeSurface();
+          return result;
+        })}
       />
     </div>
   );

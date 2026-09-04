@@ -202,6 +202,32 @@ export const openIssueInLinear = (issueId: string): Promise<PageActionResult> =>
   call("openInLinear", { issueId });
 
 /**
+ * Ask the host to open this plugin's picker surface, as a picker.
+ *
+ * The chat menu's Issue context card is drawn in a popover the host sized to a
+ * card. A list has nowhere to go in it, and the modal this used to open drew
+ * its own backdrop across the reader's window and asked for a pane wider than
+ * the popover by a factor of five. So the card asks for the PICKER placement
+ * instead, which is the surface the composer's own menu row opens and the one
+ * that knows how to finish an attach.
+ *
+ * `laneId` is the pointer the picker reads: with one it links the issue to that
+ * lane, without one it attaches a chip to the composer.
+ */
+export const openIssuePickerSurface = (laneId?: string | null): Promise<PageActionResult> =>
+  call("openIssuePickerSurface", laneId ? { laneId } : {});
+
+/**
+ * The lane one chat belongs to, issue or no issue.
+ *
+ * `pageLanes` answers a lane's Linear links alone, so it can only place a chat
+ * that already HAS an issue — which is the opposite of the chat the Attach row
+ * exists for. The chat's own summary carries the binding.
+ */
+export const getSessionLane = (sessionId: string): Promise<{ laneId: string | null }> =>
+  call("pageSessionLane", { sessionId });
+
+/**
  * Post this chat's last assistant turn onto its issue.
  *
  * Reads the transcript through `chat.readTranscript` in the child rather than

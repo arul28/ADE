@@ -50,8 +50,29 @@ plugin installed after Linear wanted the same one.
   under the chat menu's Issue context submenu, opening the `issue-context` page
   as a popover anchored to the row. All four verbs came with it: open in Linear,
   detach, attach, and the progress comment.
+
+  Attach is the one that needs a LIST, and a 360×420 popover has nowhere to draw
+  one — 2.1.1 opened `LinearIssueSelectModal` inside it, which portalled a
+  `bg-black/55` backdrop across the guest and a dialog asking for 1760×940. It
+  asks the host for the `picker` placement instead, through
+  `openIssuePickerSurface`, and hands it the chat's lane so the choice lands as
+  a link on that lane rather than as a composer chip. The card then closes.
+
+  The lane itself comes from `pageSessionLane`, which reads the chat's own
+  session summary. `pageLanes` answers a lane's Linear links and nothing else,
+  so it could only ever place a chat that ALREADY carried an issue — and the
+  chat a reader opens this card to fix is the one that carries none, which left
+  Attach permanently disabled on every chat where pressing it was the point.
 - **The composer's Linear bar button.** Now a `composer-menu-item`,
   "Attach a Linear issue", opening the same picker page it always opened.
+
+  The picker page draws `LinearIssueBrowser` INLINE, with no header and no
+  backdrop of its own, exactly as `DialogPickerEntry` draws its band: a picker
+  or a popover placement is a frame the host has already drawn and already
+  titled, and a page that paints a second header over it and a black sheet
+  across the window is drawing chrome that is not its to draw. One pointer
+  decides what finishing means — `laneId` links to that lane, its absence
+  attaches a chip to the composer.
 
 `LinearQuickViewPanel.tsx` went with the quick view. The launch flow it held is
 not the popover's and never was — the compiled Work-rail pane and the compiled
@@ -142,14 +163,30 @@ recents, grouping and per-provider icons come for free, because it IS
 
 Two consequences worth naming:
 
-- **The form seeds no model.** It used to pick the first Claude row of a catalog
-  it fetched itself. The host's picker owns that default, so the Launch button
-  is disabled until the reader chooses, with a sentence saying so — rather than
-  a press that silently skips the row.
+- **The form opens on the seed ADE's own launch form opens on.** 2.1.0 through
+  2.1.1 seeded nothing, on the reasoning that the host's picker owns the
+  default — and that was wrong in the one way that matters. ADE's composer opens
+  on the model the reader launched LAST, which is per-user state in the project
+  database, so "seed nothing" meant Launch was disabled until they opened a
+  picker and chose the same model the composer beside them was already on.
+  `chat.capabilities()` answers that seed as `defaultModel`, computed on the
+  host from the same recents, and `pageCapabilities` carries it through. The
+  chips print the host's own labels for it, looked up in the two lists the
+  pickers draw from rather than derived from an id. A host that answers no seed
+  leaves the form unset with its placeholders showing — "Model", and "Default"
+  on the two chips where the provider's own starting point is a real choice.
+- **No chip is ever dead.** The reasoning chip was gated on a model and the
+  permission chip on a provider, so on a host with no seed both opened disabled
+  with nothing saying which gesture would make them live. A press with no model
+  now opens `ui.pickModel()` first and then the control it was for. Dismissing
+  the model picker ends the gesture, because a permission popover for a model
+  nobody chose has no list to draw.
 - **The provider comes from the picker, not from the model id.** A model
   answered by `ui.pickModel()` names the provider it belongs to.
   `resolveLaunchProviderAndModel`, which derived it from the catalog, is now the
-  fallback for a host that answers no picker verb.
+  fallback for a host that answers no picker verb — and it is what fills the
+  `provider` argument of `ui.pickPermissionMode` and `ui.pickReasoningEffort`
+  when a picker names none.
 
 The clipboard toggle moved INTO the form, beside the prompt it copies: it is
 still the plugin's own `launchPromptClipboard` setting, written through
@@ -348,6 +385,25 @@ OAuth grant at all. A port of `linearIngressService.ts:288`, whose flow this is.
 
 **Two templates.** `automation-template` × 2, replacing the deleted toggles: a
 `lane.created` rule that moves the lane's Linear issues to the team's first
-started state (`stepStartIssueOnLane`, a new step), and a `github.pr_merged` rule
+started state (`stepStartIssueOnLane`, a new step), and a `lane.merged` rule
 that moves a merged lane's issues to Done (`stepCloseIssueOnMerge`, which existed
-and is no longer gated on a setting). Both pass `{{trigger.laneId}}`.
+and is no longer gated on a setting). Both pass `{{trigger.laneId}}`, and both
+triggers carry one — the merge template named `github.pr_merged` until 2.1.2,
+whose context is a repo, a number and a branch and no lane at all, so
+`{{trigger.laneId}}` resolved to nothing and the rule moved no issue ever.
+`lane.merged` is the same merge told from the side that knows which lane it was.
+
+**The tile's filters emit key-shaped values.** The host builds each `select`
+option's value from the collection ROW KEY, and `automationService` compares a
+rule's saved filter against `payload[<filter key>]` by string equality, failing
+CLOSED on a key the payload does not carry. The webhook emitted display names,
+so a rule saying "team: Engineering" carried `team:9f3…`, nothing was ever equal,
+and every rule anyone built on this tile silently never fired. Each of the five
+filter fields is now a LIST of every spelling the tile could have produced — the
+row key, the bare id, and the display name, since the tile degrades to a text
+box whenever a collection is empty or unreadable. The state and label key spaces
+carry the rank that orders their pickers, which a webhook body cannot derive, so
+the handler reads those two keys back from the plugin's own stored rows before
+it builds the payload. The display names stay beside the filters as
+`teamName`, `projectName`, `assigneeName` and `stateName`, because a prompt
+should print a name and a filter should never match on one.

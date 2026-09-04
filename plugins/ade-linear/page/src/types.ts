@@ -322,7 +322,35 @@ export type PageProviderCapability = {
   defaultPermissionMode: string | null;
 };
 
+/**
+ * What the launch form OPENS on, before the reader touches anything.
+ *
+ * Not derivable from the model or the provider lists: ADE's own launch form
+ * opens on the model the user launched LAST, which is per-user state in the
+ * project database. A page rebuilding that form without this opened on whatever
+ * its own author hard-coded — the ported Linear modal opened on a fixed Claude
+ * id while the composer beside it opened on the user's actual last model.
+ *
+ * The five fields are only correct together: `effort` is the default rung of
+ * THIS model, and `permissionMode` the default mode of THIS model's provider.
+ */
+export type PageDefaultModel = {
+  modelId: string;
+  /** The provider group the model belongs to. Null when the host named none. */
+  provider: string | null;
+  /** The rung to preselect. Null when this model has no reasoning ladder. */
+  effort: string | null;
+  /** The provider's own default mode, in the provider's NATIVE vocabulary. */
+  permissionMode: string | null;
+  fastMode: boolean;
+};
+
 /** What the launch form may offer, per provider. Joined to a model on `provider`. */
 export type PageCapabilities = {
   providers: PageProviderCapability[];
+  /**
+   * The seed. `null` rather than absent when there is nothing to seed, so a
+   * page can tell "no default" from a host too old to compute one.
+   */
+  defaultModel: PageDefaultModel | null;
 };

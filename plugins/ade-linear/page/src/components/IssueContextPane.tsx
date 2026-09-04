@@ -42,6 +42,7 @@ import { LinearIssueSelectModal } from "./LinearIssueSelectModal";
 export function IssueContextPane({
   issues,
   laneId,
+  chrome = true,
   className,
 }: {
   issues: LaneLinearIssue[];
@@ -52,6 +53,14 @@ export function IssueContextPane({
    * plugin's own action resolves the session side.
    */
   laneId?: string | null;
+  /**
+   * Whether the details pane a chip opens draws its own dialog chrome.
+   *
+   * True in the transcript, which is where this pane belongs and where nothing
+   * else draws a dialog around it. False in a placement the host has already
+   * framed and titled — see `host/placement.ts`.
+   */
+  chrome?: boolean;
   className?: string;
 }) {
   const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
@@ -87,6 +96,7 @@ export function IssueContextPane({
         selectedIssue={linearIssue}
         mode="details"
         showBranchPreview={false}
+        chrome={chrome}
         onOpenChange={(open) => {
           if (!open) setLinearDetailsIssueId(null);
         }}

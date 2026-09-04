@@ -81,13 +81,18 @@ import type {
   AiConfig,
   ApplyLaneTemplateArgs,
   ArchiveAndReclaimLaneArgs,
+  CreateChildLaneArgs,
+  CreateLaneArgs,
+  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
+  ImportBranchLaneArgs,
   FileChangeEvent,
   FilesWatchArgs,
   LaneBranchDriftResolution,
   LaneEnvInitProgress,
   LaneListSnapshot,
   LanePreviewInfo,
+  LaneSummary,
   ListSessionsArgs,
   ListLanesArgs,
   SessionSettleOverride,
@@ -2651,8 +2656,52 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       folder: lane.folder ?? null,
     });
   };
+  /**
+   * Raise `lane.created` for a lane this domain just made.
+   *
+   * The IPC handlers have always done this (`registerIpc.ts`), and the action
+   * domain spread `laneService` straight through — so `lane.create` reached the
+   * lane service without ever reaching the automation engine. Every lane made
+   * outside the desktop window therefore raised nothing: the CLI's
+   * `ade lanes create`, the RPC daemon, the phone, and every plugin that
+   * creates a lane through `actions.invoke("lane", "create")`, which is the
+   * path this plugin's own Linear launch takes. A `lane.created` rule the user
+   * built in Automations fired for lanes made one way and not the other, with
+   * nothing anywhere saying which way was which.
+   *
+   * All four creators notify, for the reason the guard rule gives: the writers
+   * are enumerated once, here, rather than discovered one bug at a time.
+   */
+  const notifyLaneCreated = (lane: LaneSummary): void => {
+    runtime.automationService?.onLaneCreated?.({
+      laneId: lane.id,
+      laneName: lane.name,
+      branchRef: lane.branchRef,
+      folder: lane.folder ?? null,
+    });
+  };
   return {
     ...laneService,
+    create: async (args?: CreateLaneArgs): Promise<LaneSummary> => {
+      const lane = await runtime.laneService.create((args ?? {}) as CreateLaneArgs);
+      notifyLaneCreated(lane);
+      return lane;
+    },
+    createChild: async (args?: CreateChildLaneArgs): Promise<LaneSummary> => {
+      const lane = await runtime.laneService.createChild(args as CreateChildLaneArgs);
+      notifyLaneCreated(lane);
+      return lane;
+    },
+    createFromUnstaged: async (args?: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
+      const lane = await runtime.laneService.createFromUnstaged(args as CreateLaneFromUnstagedArgs);
+      notifyLaneCreated(lane);
+      return lane;
+    },
+    importBranch: async (args?: ImportBranchLaneArgs): Promise<LaneSummary> => {
+      const lane = await runtime.laneService.importBranch(args as ImportBranchLaneArgs);
+      notifyLaneCreated(lane);
+      return lane;
+    },
     getSummary: async (args?: unknown) => {
       const record = readObjectActionArg(args, "lane.getSummary");
       const laneId = requireNonEmptyString(record.laneId, "laneId");
