@@ -71,7 +71,14 @@ struct WorkLanePickerDropdown: View {
       // the keyboard and a grown composer leave behind, which clipped the lane
       // list to a few rows. A sheet owns its own space and resizes for the
       // keyboard instead.
-      .sheet(isPresented: $menuPresented) {
+      .sheet(isPresented: $menuPresented, onDismiss: {
+        // The closed edge fires here, not from `onChange`: `menuPresented`
+        // flips when the dismissal *starts*, so restoring composer focus from
+        // there races the sheet still animating away and the keyboard loses.
+        // `onDismiss` runs once the sheet is actually gone.
+        searchQuery = ""
+        onMenuPresentationChange?(false)
+      }) {
         WorkLanePickerMenu(
           lanes: filteredLanes,
           allLanesEmpty: lanes.isEmpty,
@@ -90,8 +97,9 @@ struct WorkLanePickerDropdown: View {
         .presentationDragIndicator(.visible)
       }
       .onChange(of: menuPresented) { _, isOpen in
-        if !isOpen { searchQuery = "" }
-        onMenuPresentationChange?(isOpen)
+        // Only the open edge; the closed edge is reported from `onDismiss`.
+        guard isOpen else { return }
+        onMenuPresentationChange?(true)
       }
 
       if let onRefresh {
@@ -346,7 +354,7 @@ struct WorkLanePickerMenu: View {
 /// Desktop `ade-orchestrator-rainbow-text` gradient label for auto-create lane.
 private struct WorkOrchestratorRainbowText: View {
   let text: String
-  var size: CGFloat = 11
+  let size: CGFloat
 
   private static let colors: [Color] = [
     Color(red: 1.0, green: 0.37, blue: 0.37),

@@ -777,34 +777,46 @@ struct WorkNewChatScreen: View {
       // Collapsible header. Everything here is expendable when the composer
       // grows or the keyboard rises; the lane picker below is not.
       ScrollView {
-        VStack(spacing: 14) {
-          if headerTier.showsBranding {
-            brandMark
-            VStack(spacing: 6) {
-              Text("Start a new conversation")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-              Text("Ask ADE anything — refactor code, debug issues, or explore ideas.")
-                .font(.footnote)
-                .foregroundStyle(ADEColor.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+        // Outer stack is unspaced so the collapsed carousel below contributes
+        // neither height nor inter-item spacing.
+        VStack(spacing: 0) {
+          VStack(spacing: 14) {
+            if headerTier.showsBranding {
+              brandMark
+              VStack(spacing: 6) {
+                Text("Start a new conversation")
+                  .font(.title3.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Text("Ask ADE anything — refactor code, debug issues, or explore ideas.")
+                  .font(.footnote)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .multilineTextAlignment(.center)
+                  .padding(.horizontal, 24)
+              }
             }
-          }
 
-          if headerTier.showsActionChips {
-            sessionActionChips
+            if headerTier.showsActionChips {
+              sessionActionChips
+            }
           }
 
           // Keep activity in the scrollable content instead of pinning it
           // above the composer. When the keyboard appears, the composer can
           // expand into this space without lifting the activity card with it.
-          if headerTier.showsUsageCarousel {
-            WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
-              .environmentObject(syncService)
-              .padding(.top, 2)
-              .fixedSize(horizontal: false, vertical: true)
-          }
+          //
+          // The carousel stays mounted at every tier and collapses to nothing
+          // when the tier hides it: it owns `@State` stats behind a
+          // `.task(id:)`, so removing it from the tree would refetch and flash
+          // an empty card every time the header tier stepped back up.
+          WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
+            .environmentObject(syncService)
+            .padding(.top, usageCarouselTopPadding)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: headerTier.showsUsageCarousel ? nil : 0)
+            .clipped()
+            .opacity(headerTier.showsUsageCarousel ? 1 : 0)
+            .allowsHitTesting(headerTier.showsUsageCarousel)
+            .accessibilityHidden(!headerTier.showsUsageCarousel)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 20)
@@ -929,21 +941,34 @@ struct WorkNewChatScreen: View {
       WorkLanePickerDropdown(
         lanes: lanes,
         selectedLaneId: $selectedLaneId,
-        onMenuPresentationChange: { presented in
-          // Presenting the sheet resigns the composer; bring the keyboard back
-          // when it closes so the flow stays continuous (same pattern as
-          // HubComposerDrawer's destination picker), but only if it had focus.
-          if presented {
-            composerFocusedBeforeLaneSheet = composerFocused
-            composerFocused = false
-          } else if composerFocusedBeforeLaneSheet {
-            composerFocusedBeforeLaneSheet = false
-            composerFocused = true
-          }
-        }
+        onMenuPresentationChange: handleLaneSheetPresentation
       )
       Spacer(minLength: 0)
     }
+  }
+
+  /// Parks composer focus while the lane sheet is up and restores it after the
+  /// sheet has finished dismissing, so the flow stays continuous (same pattern
+  /// as HubComposerDrawer's destination picker) — but only if it had focus.
+  private func handleLaneSheetPresentation(_ presented: Bool) {
+    if presented {
+      composerFocusedBeforeLaneSheet = composerFocused
+      composerFocused = false
+    } else if composerFocusedBeforeLaneSheet {
+      composerFocusedBeforeLaneSheet = false
+      composerFocused = true
+    }
+  }
+
+  /// Gap above the usage carousel. Matches what the old `VStack(spacing: 14)`
+  /// plus its 2pt top padding produced: 16pt below whatever precedes it, 2pt
+  /// when it is the only header content, nothing at all when it is collapsed.
+  private var usageCarouselTopPadding: CGFloat {
+    guard headerTier.showsUsageCarousel else { return 0 }
+    // The chips row only renders for a concrete lane, so key off what is
+    // actually drawn rather than off the tier flag alone.
+    let chipsRendered = headerTier.showsActionChips && selectedConcreteLane != nil
+    return (headerTier.showsBranding || chipsRendered) ? 16 : 2
   }
 
   /// Steps the header tier from the measured scroll-area height, with a small

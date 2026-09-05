@@ -3264,7 +3264,7 @@ private func eventCard(
       // of a text ribbon. A same-provider pair is not a handoff — the desktop
       // no longer emits one, but old transcripts can still hold "Claude →
       // Claude", so drop it here rather than draw a chip that says nothing.
-      if kind == workModelHandoffNoticeKind {
+      if kind == AgentChatNoticeKind.modelHandoff.rawValue {
         guard let providers = workModelHandoffProviders(fromDetail: detail),
               providers.from != providers.to
         else { return nil }

@@ -1040,7 +1040,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         let handoffFrom = stringValue(eventDict["fromProvider"])
         let handoffTo = stringValue(eventDict["toProvider"])
         event = .systemNotice(
-          kind: workModelHandoffNoticeKind,
+          kind: AgentChatNoticeKind.modelHandoff.rawValue,
           message: workModelHandoffNoticeMessage(fromProvider: handoffFrom, toProvider: handoffTo),
           detail: workModelHandoffNoticeDetail(fromProvider: handoffFrom, toProvider: handoffTo),
           turnId: turnId,

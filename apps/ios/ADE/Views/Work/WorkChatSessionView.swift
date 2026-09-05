@@ -1376,11 +1376,21 @@ struct WorkChatSessionView: View {
     return nil
   }
 
+  /// Total height the floating badge chip row occupies over the transcript:
+  /// the chip row itself plus the padding that holds it off the bottom edge.
+  private var floatingBadgeBandHeight: CGFloat {
+    workChatComposerChipRowHeight + workChatFloatingBadgeRowBottomPadding
+  }
+
+  /// How far the scrim gradient fades above the badge band.
+  private var scrimFadeHeight: CGFloat { 20 }
+
   var jumpToLatestPillBottomPadding: CGFloat {
     // The badge chip row floats over the same bottom-left corner of the
     // transcript. Stack the pill above it so both stay fully visible.
     guard showsComposerBadgeChips else { return 16 }
-    return workChatFloatingBadgeRowBottomPadding + workChatComposerChipRowHeight + 8
+    let gapAboveBadges: CGFloat = 8
+    return floatingBadgeBandHeight + gapAboveBadges
   }
 
   /// How many items the Chat Info sheet would show. Drives both the badge's
@@ -1652,10 +1662,6 @@ struct WorkChatSessionView: View {
         WorkClaudeGoalPill(goal: claudeGoal)
       }
 
-      // Chat-info / PR badges no longer live here: they float over the
-      // transcript (see `composerBadgeChipRow`) so the thread scrolls behind
-      // them instead of losing 44pt of height to a fixed composer row.
-
       if !pendingSteers.isEmpty {
         WorkQueuedSteerStrip(
           steers: pendingSteers,
@@ -1840,9 +1846,7 @@ struct WorkChatSessionView: View {
                   // The badge chips float over the transcript, so the tail has
                   // to reserve their height or the last message hides behind
                   // them.
-                  + (showsComposerBadgeChips
-                    ? workChatComposerChipRowHeight + workChatFloatingBadgeRowBottomPadding
-                    : 0)
+                  + (showsComposerBadgeChips ? floatingBadgeBandHeight : 0)
               )
               .id("chat-end")
               .transaction { transaction in
@@ -2021,11 +2025,7 @@ struct WorkChatSessionView: View {
                       startPoint: .top,
                       endPoint: .bottom
                     )
-                    .frame(
-                      height: workChatComposerChipRowHeight
-                        + workChatFloatingBadgeRowBottomPadding
-                        + 20
-                    )
+                    .frame(height: floatingBadgeBandHeight + scrimFadeHeight)
                     .allowsHitTesting(false)
                   }
                   .transition(.opacity)

@@ -688,7 +688,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     // `detail` so `buildWorkEventCards` can paint the desktop-style
     // logo → logo divider. The message stays the VoiceOver label.
     return .systemNotice(
-      kind: workModelHandoffNoticeKind,
+      kind: AgentChatNoticeKind.modelHandoff.rawValue,
       message: workModelHandoffNoticeMessage(fromProvider: fromProvider, toProvider: toProvider),
       detail: workModelHandoffNoticeDetail(fromProvider: fromProvider, toProvider: toProvider),
       turnId: turnId,

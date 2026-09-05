@@ -1259,36 +1259,35 @@ struct WorkTurnSeparatorView: View {
 /// Provider handoff divider: the transcript's "a different agent picked this
 /// thread up" marker. Mirrors desktop `AgentChatMessageList` — hairline, the
 /// outgoing provider's logo, a small uppercase "handoff" label, an arrow, the
-/// incoming provider's logo, hairline. Model swaps *inside* one provider are
-/// not handoffs and never reach here.
+/// incoming provider's logo, hairline. Takes the two providers directly; the
+/// same-provider filter and the `metadata` unpack live in `eventCard` and the
+/// timeline call site, not here.
 struct WorkModelHandoffDivider: View {
-  let card: WorkEventCardModel
+  let fromProvider: String
+  let toProvider: String
+  let accessibilityLabel: String
 
   var body: some View {
-    let fromProvider = card.metadata.first
-    let toProvider = card.metadata.count > 1 ? card.metadata[1] : nil
-    if let fromProvider, let toProvider, fromProvider != toProvider {
-      HStack(spacing: 10) {
-        hairline
-        HStack(spacing: 8) {
-          providerMark(fromProvider)
-          Text("Handoff")
-            .font(.system(size: 10, weight: .semibold))
-            .textCase(.uppercase)
-            .tracking(1.4)
-            .foregroundStyle(ADEColor.textMuted)
-          Image(systemName: "arrow.right")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted)
-          providerMark(toProvider)
-        }
-        hairline
+    HStack(spacing: 10) {
+      hairline
+      HStack(spacing: 8) {
+        providerMark(fromProvider)
+        Text("Handoff")
+          .font(.system(size: 10, weight: .semibold))
+          .textCase(.uppercase)
+          .tracking(1.4)
+          .foregroundStyle(ADEColor.textMuted)
+        Image(systemName: "arrow.right")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+        providerMark(toProvider)
       }
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 6)
-      .accessibilityElement(children: .combine)
-      .accessibilityLabel(card.title)
+      hairline
     }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityLabel)
   }
 
   private func providerMark(_ provider: String) -> some View {

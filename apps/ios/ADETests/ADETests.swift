@@ -5082,7 +5082,7 @@ final class ADETests: XCTestCase {
     guard case .systemNotice(let kind, let message, let detail, let noticeTurnId, _) = liveEvent else {
       return XCTFail("Expected model_handoff to map to a handoff notice.")
     }
-    XCTAssertEqual(kind, workModelHandoffNoticeKind)
+    XCTAssertEqual(kind, AgentChatNoticeKind.modelHandoff.rawValue)
     XCTAssertEqual(message, "Model handoff · Codex → Claude")
     XCTAssertEqual(noticeTurnId, "turn-handoff")
     XCTAssertEqual(workModelHandoffProviders(fromDetail: detail)?.from, "codex")
@@ -5090,11 +5090,14 @@ final class ADETests: XCTestCase {
 
     // The divider is drawn from the card, so the card — not the notice text —
     // is the contract: a dedicated kind plus the provider pair in `metadata`.
+    // Build the live envelope from the parsed transcript one so the event is
+    // the only thing that differs between the two paths.
+    let parsed = try XCTUnwrap(parseWorkChatTranscript(json).first)
     let liveCard = try XCTUnwrap(buildWorkEventCards(from: [
       WorkChatEnvelope(
-        sessionId: "session-handoff",
-        timestamp: "2026-09-01T00:00:00.000Z",
-        sequence: 8,
+        sessionId: parsed.sessionId,
+        timestamp: parsed.timestamp,
+        sequence: parsed.sequence,
         event: liveEvent
       )
     ]).first)
@@ -5104,11 +5107,12 @@ final class ADETests: XCTestCase {
 
     // A replayed transcript has to land on the identical shape; the live and
     // transcript paths are separate decoders.
-    let replayedCards = buildWorkEventCards(from: parseWorkChatTranscript(json))
-    XCTAssertEqual(replayedCards, [liveCard])
+    XCTAssertEqual(buildWorkEventCards(from: [parsed]), [liveCard])
+  }
 
-    // Same-provider transitions are not handoffs. The desktop stopped emitting
-    // them, but an old transcript can still carry "Claude → Claude".
+  /// Same-provider transitions are not handoffs. The desktop stopped emitting
+  /// them, but an old transcript can still carry "Claude → Claude".
+  func testModelHandoffSameProviderProducesNoCard() throws {
     let sameProvider = parseWorkChatTranscript("""
     {
       "sessionId": "session-handoff",
@@ -5124,6 +5128,7 @@ final class ADETests: XCTestCase {
       }
     }
     """)
+    XCTAssertFalse(sameProvider.isEmpty, "The transcript row itself still parses.")
     XCTAssertTrue(buildWorkEventCards(from: sameProvider).isEmpty)
   }
 

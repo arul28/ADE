@@ -2430,6 +2430,10 @@ function renderEvent(
   const event = envelope.event;
 
   if (event.type === "model_handoff") {
+    // A same-provider transition is not a handoff. The service no longer emits
+    // one, but an old transcript can still carry "Claude -> Claude"; drawing a
+    // divider with the same logo on both sides says nothing.
+    if (event.fromProvider === event.toProvider) return null;
     const fromLabel = providerDisplayLabel(event.fromProvider, "Previous model");
     const toLabel = providerDisplayLabel(event.toProvider, "New model");
     return (
