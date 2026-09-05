@@ -5132,6 +5132,82 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(buildWorkEventCards(from: sameProvider).isEmpty)
   }
 
+  /// The new-chat header sheds branding, then the usage carousel, then the
+  /// action chips as the scroll area shrinks. Shrinking is unconditional: only
+  /// growing back pays the hysteresis, so a keyboard opening must collapse the
+  /// header at the exact published thresholds (full 300, compact 190,
+  /// minimal 96) with nothing held back.
+  func testNewChatHeaderTierCollapsesAtEachThresholdWhenHeightShrinks() {
+    let cases: [(available: CGFloat, current: WorkNewChatHeaderTier, expected: WorkNewChatHeaderTier)] = [
+      (1000, .full, .full),
+      (300, .full, .full),
+      (299.9, .full, .compact),
+      (190, .compact, .compact),
+      (189.9, .compact, .minimal),
+      (96, .minimal, .minimal),
+      (95.9, .minimal, .hidden),
+      (0, .full, .hidden),
+      // A collapse can skip tiers: the keyboard takes the whole header at once.
+      (95, .full, .hidden),
+    ]
+
+    for testCase in cases {
+      XCTAssertEqual(
+        WorkNewChatHeaderTier.resolve(available: testCase.available, current: testCase.current),
+        testCase.expected,
+        "available=\(testCase.available) current=\(testCase.current)"
+      )
+    }
+  }
+
+  /// Stepping *up* needs 24pt more than the tier's own threshold. Without it,
+  /// revealing content that re-consumes the height would immediately re-collapse
+  /// the header and the two tiers would oscillate on every layout pass.
+  func testNewChatHeaderTierNeedsHysteresisToExpandAgain() {
+    let cases: [(available: CGFloat, current: WorkNewChatHeaderTier, expected: WorkNewChatHeaderTier)] = [
+      // minimal: 96 + 24
+      (119, .hidden, .hidden),
+      (120, .hidden, .minimal),
+      // compact: 190 + 24
+      (213, .minimal, .minimal),
+      (214, .minimal, .compact),
+      // full: 300 + 24
+      (323, .compact, .compact),
+      (324, .compact, .full),
+    ]
+
+    for testCase in cases {
+      XCTAssertEqual(
+        WorkNewChatHeaderTier.resolve(available: testCase.available, current: testCase.current),
+        testCase.expected,
+        "available=\(testCase.available) current=\(testCase.current)"
+      )
+    }
+
+    // The height that just expanded the header must be stable at the new tier:
+    // re-resolving from the tier it produced cannot bounce back down.
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 120, current: .minimal), .minimal)
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 214, current: .compact), .compact)
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 324, current: .full), .full)
+  }
+
+  /// The tiers gate real content, so the branding/carousel/chips flags must stay
+  /// aligned with the ordering the resolver relies on.
+  func testNewChatHeaderTierContentFlagsFollowTheOrdering() {
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsActionChips),
+      [false, true, true, true]
+    )
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsUsageCarousel),
+      [false, false, true, true]
+    )
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsBranding),
+      [false, false, false, true]
+    )
+  }
+
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
     let json = """
     {

@@ -127,6 +127,31 @@ describe("renderChatLines", () => {
     });
   });
 
+  it("skips a handoff line when the provider did not actually change", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [{
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "claude",
+          fromModelId: "anthropic/claude-opus-5",
+          toModelId: "anthropic/claude-sonnet-5",
+        },
+      }],
+    });
+
+    // Swapping Opus for Sonnet is the same agent, so "[model] Claude → Claude"
+    // is noise. Desktop and iOS drop the row too; the TUI must agree.
+    expect(lines).toHaveLength(0);
+    expect(lines.some((line) => line.body.includes("[model]"))).toBe(false);
+    expect(lines.some((line) => line.tone === "notice")).toBe(false);
+  });
+
   it("LRU-caches assistant markdown parses by message text", () => {
     __clearAssistantMarkdownCacheForTests();
     const text = "Paragraph text\n\n```ts\nconst value = 1;\n```";
