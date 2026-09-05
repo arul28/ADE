@@ -576,6 +576,47 @@ private func workReplacingRegexMatches(
   return result
 }
 
+/// Progressive-disclosure tiers for the new-chat header. The screen picks one
+/// from the measured height left for the scrollable header after the pinned
+/// lane picker and the (growable) composer have taken their space — never from
+/// keyboard notifications, so composer growth and the keyboard collapse the
+/// header the same way.
+enum WorkNewChatHeaderTier: Int, Comparable {
+  /// Nothing but the pinned rows fit.
+  case hidden = 0
+  /// Action chips only.
+  case minimal = 1
+  /// Action chips + usage carousel.
+  case compact = 2
+  /// Word-mark, tagline, chips, usage carousel.
+  case full = 3
+
+  static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+
+  var showsBranding: Bool { self == .full }
+  var showsUsageCarousel: Bool { self >= .compact }
+  var showsActionChips: Bool { self >= .minimal }
+
+  /// Minimum scroll-area height each tier needs, richest first.
+  private static let thresholds: [(tier: Self, minHeight: CGFloat)] = [
+    (.full, 300),
+    (.compact, 190),
+    (.minimal, 96),
+  ]
+
+  /// Extra height required to step *up* a tier, so revealing content that then
+  /// re-consumes the height cannot flip the tier back and forth.
+  private static let hysteresis: CGFloat = 24
+
+  static func resolve(available: CGFloat, current: Self) -> Self {
+    for entry in thresholds {
+      let bound = entry.tier > current ? entry.minHeight + hysteresis : entry.minHeight
+      if available >= bound { return entry.tier }
+    }
+    return .hidden
+  }
+}
+
 /// Full-screen "Start a new conversation" composer that replaces the modal
 /// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
 /// one-line tagline, a minimal workspace pill users can change inline, and a
@@ -620,6 +661,15 @@ struct WorkNewChatScreen: View {
   /// Status banner shown above the composer while an auto-created lane is being
   /// minted before the chat/CLI session starts.
   @State private var autoCreateStatus: String?
+  /// Progressive header collapse driven by the measured height left for the
+  /// scroll area, not by keyboard notifications, so a grown composer collapses
+  /// the header exactly like the keyboard does.
+  @State private var headerTier: WorkNewChatHeaderTier = .full
+  /// Composer keyboard focus, hoisted out of the composer bar so presenting the
+  /// lane sheet can park it and restore it on dismiss (mirrors
+  /// `HubComposerDrawer`'s destination-picker focus restore).
+  @State private var composerFocused: Bool = false
+  @State private var composerFocusedBeforeLaneSheet: Bool = false
 
   init(
     lanes: [LaneSummary],
@@ -724,35 +774,41 @@ struct WorkNewChatScreen: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      Spacer(minLength: 8)
-
+      // Collapsible header. Everything here is expendable when the composer
+      // grows or the keyboard rises; the lane picker below is not.
       ScrollView {
         VStack(spacing: 14) {
-          brandMark
-          VStack(spacing: 6) {
-            Text("Start a new conversation")
-              .font(.title3.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("Ask ADE anything — refactor code, debug issues, or explore ideas.")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-              .multilineTextAlignment(.center)
-              .padding(.horizontal, 24)
+          if headerTier.showsBranding {
+            brandMark
+            VStack(spacing: 6) {
+              Text("Start a new conversation")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              Text("Ask ADE anything — refactor code, debug issues, or explore ideas.")
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            }
           }
 
-          laneSelector
-          sessionActionChips
+          if headerTier.showsActionChips {
+            sessionActionChips
+          }
 
           // Keep activity in the scrollable content instead of pinning it
           // above the composer. When the keyboard appears, the composer can
           // expand into this space without lifting the activity card with it.
-          WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
-            .environmentObject(syncService)
-            .padding(.top, 2)
-            .fixedSize(horizontal: false, vertical: true)
+          if headerTier.showsUsageCarousel {
+            WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
+              .environmentObject(syncService)
+              .padding(.top, 2)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.vertical, headerTier.showsBranding ? 16 : 8)
       }
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
@@ -760,6 +816,20 @@ struct WorkNewChatScreen: View {
         await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
         usageRefreshRevision &+= 1
       }
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.size.height
+      } action: { height in
+        applyHeaderHeight(height)
+      }
+      .animation(.smooth(duration: 0.2), value: headerTier)
+      .layoutPriority(0)
+
+      // Pinned: the lane picker must stay reachable no matter how tall the
+      // composer grows or whether the keyboard is up.
+      laneSelector
+        .padding(.horizontal, 20)
+        .padding(.bottom, 10)
+        .layoutPriority(1)
 
       if let autoCreateStatus, busy {
         HStack(spacing: 8) {
@@ -784,6 +854,7 @@ struct WorkNewChatScreen: View {
       }
 
       composerBar
+        .layoutPriority(1)
     }
     .adeScreenBackground()
     .adeNavigationGlass()
@@ -857,10 +928,31 @@ struct WorkNewChatScreen: View {
       Spacer(minLength: 0)
       WorkLanePickerDropdown(
         lanes: lanes,
-        selectedLaneId: $selectedLaneId
+        selectedLaneId: $selectedLaneId,
+        onMenuPresentationChange: { presented in
+          // Presenting the sheet resigns the composer; bring the keyboard back
+          // when it closes so the flow stays continuous (same pattern as
+          // HubComposerDrawer's destination picker), but only if it had focus.
+          if presented {
+            composerFocusedBeforeLaneSheet = composerFocused
+            composerFocused = false
+          } else if composerFocusedBeforeLaneSheet {
+            composerFocusedBeforeLaneSheet = false
+            composerFocused = true
+          }
+        }
       )
       Spacer(minLength: 0)
     }
+  }
+
+  /// Steps the header tier from the measured scroll-area height, with a small
+  /// deadband so freeing height by hiding content cannot immediately re-show it
+  /// and start an oscillation.
+  private func applyHeaderHeight(_ height: CGFloat) {
+    guard height > 0 else { return }
+    let next = WorkNewChatHeaderTier.resolve(available: height, current: headerTier)
+    if next != headerTier { headerTier = next }
   }
 
   // Sits just above the composer, like the context chips in a chat.
@@ -956,6 +1048,7 @@ struct WorkNewChatScreen: View {
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       codexFastMode: $codexFastMode,
+      composerFocused: $composerFocused,
       onOpenModelPicker: { modelPickerPresented = true },
       onSubmit: submit(openingMessage:attachments:)
     )
@@ -1399,6 +1492,8 @@ private struct WorkNewChatComposerBar: View {
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
   @Binding var codexFastMode: Bool
+  /// Owned by the screen so the lane sheet can park and restore keyboard focus.
+  @Binding var composerFocused: Bool
   let onOpenModelPicker: () -> Void
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
@@ -1407,7 +1502,6 @@ private struct WorkNewChatComposerBar: View {
   @State private var attachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
   @State private var composerTextHeight: CGFloat = 28
-  @State private var composerFocused: Bool = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   /// Live viewport width of the controls scroll area, so the access control
@@ -1466,10 +1560,7 @@ private struct WorkNewChatComposerBar: View {
       VStack(alignment: .leading, spacing: 12) {
         WorkPlainComposerTextView(
           text: $draft,
-          isFocused: Binding(
-            get: { composerFocused },
-            set: { composerFocused = $0 }
-          ),
+          isFocused: $composerFocused,
           measuredHeight: $composerTextHeight,
           placeholder: placeholder,
           acceptsPastedImages: attachmentsAvailable,

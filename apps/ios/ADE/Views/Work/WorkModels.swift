@@ -261,6 +261,31 @@ func workModelHandoffNoticeMessage(fromProvider: String, toProvider: String) -> 
   return "Model handoff · \(from) → \(to)"
 }
 
+/// Notice kind reserved for a provider handoff. A handoff rides the notice
+/// channel so no exhaustive `WorkChatEvent` switch has to grow a case, but it
+/// is lifted out of the generic notice card in `buildWorkEventCards` and drawn
+/// as the logo → logo divider instead of a text ribbon.
+let workModelHandoffNoticeKind = "model_handoff"
+
+/// Packs the two provider ids into the notice `detail` field. Provider ids are
+/// slugs (`claude`, `codex`, `opencode`, …) so the pipe is unambiguous, and the
+/// notice payload stays a plain `String?` — no model change needed.
+func workModelHandoffNoticeDetail(fromProvider: String, toProvider: String) -> String {
+  "\(fromProvider)|\(toProvider)"
+}
+
+/// Inverse of `workModelHandoffNoticeDetail`. Returns nil when either half is
+/// missing so a malformed row is dropped rather than drawn half-empty.
+func workModelHandoffProviders(fromDetail detail: String?) -> (from: String, to: String)? {
+  guard let detail else { return nil }
+  let parts = detail.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+  guard parts.count == 2 else { return nil }
+  let from = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+  let to = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !from.isEmpty, !to.isEmpty else { return nil }
+  return (from, to)
+}
+
 func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
   let rawSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
   let provider = rawSource?.isEmpty == false ? rawSource : fallbackProvider

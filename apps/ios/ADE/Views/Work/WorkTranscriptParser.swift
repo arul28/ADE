@@ -1034,13 +1034,15 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           )
         )
       case "model_handoff":
+        // Must produce the exact same shape as the live path in
+        // `WorkEventMapping` — a replayed transcript and a streamed event have
+        // to render the identical divider.
+        let handoffFrom = stringValue(eventDict["fromProvider"])
+        let handoffTo = stringValue(eventDict["toProvider"])
         event = .systemNotice(
-          kind: "info",
-          message: workModelHandoffNoticeMessage(
-            fromProvider: stringValue(eventDict["fromProvider"]),
-            toProvider: stringValue(eventDict["toProvider"])
-          ),
-          detail: nil,
+          kind: workModelHandoffNoticeKind,
+          message: workModelHandoffNoticeMessage(fromProvider: handoffFrom, toProvider: handoffTo),
+          detail: workModelHandoffNoticeDetail(fromProvider: handoffFrom, toProvider: handoffTo),
           turnId: turnId,
           steerId: nil
         )

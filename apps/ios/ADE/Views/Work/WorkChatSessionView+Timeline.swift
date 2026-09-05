@@ -408,6 +408,8 @@ extension WorkChatSessionView {
         enabled: isLive,
         onRecover: onRecoverCodexTurn
       )
+    } else if card.kind == "modelHandoff" {
+      WorkModelHandoffDivider(card: card)
     } else if card.kind == "turnDiagnostics" {
       WorkTurnDiagnosticsDisclosureView(
         card: card,

@@ -5078,12 +5078,53 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toModelId, "anthropic/claude-sonnet-5")
     XCTAssertEqual(turnId, "turn-handoff")
 
-    guard case .systemNotice(let kind, let message, _, let noticeTurnId, _) = makeWorkChatEvent(from: envelope.event) else {
-      return XCTFail("Expected model_handoff to map to a visible system notice.")
+    let liveEvent = makeWorkChatEvent(from: envelope.event)
+    guard case .systemNotice(let kind, let message, let detail, let noticeTurnId, _) = liveEvent else {
+      return XCTFail("Expected model_handoff to map to a handoff notice.")
     }
-    XCTAssertEqual(kind, "info")
+    XCTAssertEqual(kind, workModelHandoffNoticeKind)
     XCTAssertEqual(message, "Model handoff · Codex → Claude")
     XCTAssertEqual(noticeTurnId, "turn-handoff")
+    XCTAssertEqual(workModelHandoffProviders(fromDetail: detail)?.from, "codex")
+    XCTAssertEqual(workModelHandoffProviders(fromDetail: detail)?.to, "claude")
+
+    // The divider is drawn from the card, so the card — not the notice text —
+    // is the contract: a dedicated kind plus the provider pair in `metadata`.
+    let liveCard = try XCTUnwrap(buildWorkEventCards(from: [
+      WorkChatEnvelope(
+        sessionId: "session-handoff",
+        timestamp: "2026-09-01T00:00:00.000Z",
+        sequence: 8,
+        event: liveEvent
+      )
+    ]).first)
+    XCTAssertEqual(liveCard.kind, "modelHandoff")
+    XCTAssertEqual(liveCard.metadata, ["codex", "claude"])
+    XCTAssertEqual(liveCard.title, "Model handoff · Codex → Claude")
+
+    // A replayed transcript has to land on the identical shape; the live and
+    // transcript paths are separate decoders.
+    let replayedCards = buildWorkEventCards(from: parseWorkChatTranscript(json))
+    XCTAssertEqual(replayedCards, [liveCard])
+
+    // Same-provider transitions are not handoffs. The desktop stopped emitting
+    // them, but an old transcript can still carry "Claude → Claude".
+    let sameProvider = parseWorkChatTranscript("""
+    {
+      "sessionId": "session-handoff",
+      "timestamp": "2026-09-01T00:00:00.000Z",
+      "sequence": 9,
+      "event": {
+        "type": "model_handoff",
+        "fromProvider": "claude",
+        "toProvider": "claude",
+        "fromModelId": "anthropic/claude-opus-5",
+        "toModelId": "anthropic/claude-fable-5-1",
+        "turnId": "turn-same"
+      }
+    }
+    """)
+    XCTAssertTrue(buildWorkEventCards(from: sameProvider).isEmpty)
   }
 
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
