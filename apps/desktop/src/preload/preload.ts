@@ -1165,7 +1165,71 @@ const projectBindingChangedCallbacks = new Set<
   (binding: OpenProjectBinding | null) => void
 >();
 
-function rememberProjectBinding(binding: OpenProjectBinding | null): void {
+/**
+ * The binding the renderer has been told about, as `kind:key`.
+ *
+ * `currentProjectBinding` moves for reasons the renderer must not see — it is
+ * nulled for the duration of a project transition and restored when one fails —
+ * so "what did we last publish" is tracked separately from "what is bound right
+ * now". Publishing is edge-triggered off this value, which is also what
+ * deduplicates a rebind we performed in here against main's own
+ * `appProjectBindingChanged` push for the same rebind: whichever arrives first
+ * publishes, the second is a no-op.
+ */
+let publishedProjectBindingKey: string | null = null;
+let publishingProjectBindingChange = false;
+
+function projectBindingPublishKey(binding: OpenProjectBinding | null): string | null {
+  return binding ? `${binding.kind}:${binding.key}` : null;
+}
+
+/**
+ * Tell the renderer the binding changed.
+ *
+ * Everything in here that rebinds — the lazy `refreshProjectBinding`, a project
+ * switch, a remote open, a manual disconnect — used to mutate
+ * `currentProjectBinding` silently. That binding decides which event feed is
+ * accepted (see `subscribeUsageUpdateEvents`) and which runtime answers reads,
+ * so a renderer that never heard about the change kept rendering the previous
+ * runtime's answer until main happened to push one of its own. Only main's push
+ * ever reached the renderer, and main does not push for the bindings we
+ * establish in here.
+ */
+function publishProjectBindingChange(): void {
+  const nextKey = projectBindingPublishKey(currentProjectBinding);
+  if (nextKey === publishedProjectBindingKey) return;
+  publishedProjectBindingKey = nextKey;
+  // A listener that rebinds re-enters this; the loop below drains to the final
+  // state rather than nesting fan-outs, so listeners see each binding once and
+  // in order.
+  if (publishingProjectBindingChange) return;
+  publishingProjectBindingChange = true;
+  try {
+    let publishedKey: string | null | undefined;
+    while (publishedKey !== publishedProjectBindingKey) {
+      publishedKey = publishedProjectBindingKey;
+      const binding = currentProjectBinding;
+      clearProjectScopedReadCaches();
+      for (const callback of [...projectBindingChangedCallbacks]) {
+        try {
+          callback(binding);
+        } catch (error) {
+          console.warn(
+            "[preload] project binding listener failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    }
+  } finally {
+    publishingProjectBindingChange = false;
+  }
+}
+
+function rememberProjectBinding(
+  binding: OpenProjectBinding | null,
+  options: { publish?: boolean } = {},
+): void {
   const previousKey = currentProjectBinding?.key ?? null;
   const nextKey = binding?.key ?? null;
   projectBindingVersion += 1;
@@ -1179,6 +1243,7 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   if (binding) {
     ensureRemoteRuntimeEventPump();
   }
+  if (options.publish !== false) publishProjectBindingChange();
 }
 
 /**
@@ -1189,27 +1254,16 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
  * Detaching from nothing (a projectless/machine-tab window) clears the value:
  * there is no remote runtime to protect, so chat reads must fall through to the
  * local service.
+ *
+ * Deliberately unpublished: this null is an in-flight state, not a binding the
+ * window settled on. Publishing it would drop the renderer to "no project" for
+ * the length of every open/switch — and put it straight back when the open was
+ * cancelled. The settled binding is published by whatever ends the transition
+ * (main's push, or the restore below, which is a no-op when nothing changed).
  */
 function detachProjectBindingForTransition(): void {
   lastProjectRuntimeBindingKind = currentProjectBinding?.kind ?? null;
-  rememberProjectBinding(null);
-}
-
-function notifyProjectBindingChangedCallbacks(
-  binding: OpenProjectBinding | null,
-): void {
-  rememberProjectBinding(binding);
-  clearProjectScopedReadCaches();
-  for (const callback of [...projectBindingChangedCallbacks]) {
-    try {
-      callback(binding);
-    } catch (error) {
-      console.warn(
-        "[preload] project binding listener failed",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
+  rememberProjectBinding(null, { publish: false });
 }
 
 function localProjectBindingForRoot(rootPath: string): OpenProjectBinding {
@@ -3877,9 +3931,15 @@ const adeBridge = {
         _event: Electron.IpcRendererEvent,
         payload: OpenProjectBinding | null,
       ) => {
+        // `cb` is not called here: `rememberProjectBinding` publishes to every
+        // registered callback, this one included. Calling it directly as well
+        // would deliver main's push twice to whichever subscriber owns this
+        // listener, and not at all a second time to the others.
         rememberProjectBinding(payload);
+        // Unconditional, unlike the publish above: main re-sends the binding on
+        // project changes that keep the same binding (reopening the project it
+        // already had), and those still invalidate project-scoped reads.
         clearProjectScopedReadCaches();
-        cb(payload);
       };
       ipcRenderer.on(IPC.appProjectBindingChanged, listener);
       return () => {
@@ -4332,7 +4392,9 @@ const adeBridge = {
       return runProjectRuntimeTransition(async () => {
         const generation = ++openRemoteProjectGeneration;
         activeRemoteProjectOpenGeneration = generation;
-        rememberProjectBinding(null);
+        // In-flight, not settled — see `detachProjectBindingForTransition`.
+        // The success and failure paths below both publish the settled answer.
+        rememberProjectBinding(null, { publish: false });
         const openPromise = ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
           id,
           projectId,

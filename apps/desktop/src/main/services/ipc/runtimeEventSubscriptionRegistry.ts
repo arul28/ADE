@@ -24,8 +24,15 @@ type RuntimeEventWindowSubscriptionInput = Omit<
 // remove that, so a stale (sender, requestKey) is reclaimed by idle expiry.
 // Every live pump refreshes its subscription on each poll (750ms..5s normally,
 // 30s at the slowest failure backoff).
-const RUNTIME_EVENT_SUBSCRIPTION_IDLE_MS = 60_000;
-const RUNTIME_EVENT_SUBSCRIPTION_SWEEP_MS = 20_000;
+//
+// The bound is set by the slowest *real* refresh, not by the fastest. A
+// background window's `setTimeout` pump is throttled by Chromium to roughly one
+// wake per minute, so a 60s expiry raced its own renewal: the window lost its
+// event feed — the usage meter among them — and only got it back when it came
+// to the foreground. Three minutes clears a once-a-minute pump with room for a
+// missed wake, and still reclaims a dead (sender, requestKey) promptly.
+const RUNTIME_EVENT_SUBSCRIPTION_IDLE_MS = 180_000;
+const RUNTIME_EVENT_SUBSCRIPTION_SWEEP_MS = 60_000;
 
 export function createRuntimeEventSubscriptionRegistry() {
   const subscriptions = new Map<

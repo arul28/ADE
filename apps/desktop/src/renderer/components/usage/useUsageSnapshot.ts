@@ -75,7 +75,12 @@ export function useUsageSnapshot({
       if (!cancelled) applySnapshot(next);
     });
 
-    const load = async () => {
+    /**
+     * Read the host's cached snapshot. Not a provider poll — the host answers
+     * from the machine-scoped tracker it already has — so it is cheap enough to
+     * repeat on a wake.
+     */
+    const readCached = async () => {
       const requestedGeneration = bindingGenerationRef.current;
       let current: UsageSnapshot | null = null;
       try {
@@ -87,6 +92,12 @@ export function useUsageSnapshot({
       }
       if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
       if (current) applySnapshot(current);
+    };
+
+    const load = async () => {
+      const requestedGeneration = bindingGenerationRef.current;
+      await readCached();
+      if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
       if (!noteDemand) return;
       try {
         const demanded = await bridge.noteDemand?.();
@@ -107,8 +118,38 @@ export function useUsageSnapshot({
       if (readSnapshot) void load();
     });
 
+    /**
+     * Catch up when the window wakes.
+     *
+     * A background window is throttled and its runtime event subscription can
+     * be swept, so the pushes that keep this in step can simply stop arriving —
+     * and nothing else re-reads. That is the second half of "two windows, one
+     * machine, different numbers": whichever window was in the background is
+     * the one showing the older figure. Waking re-reads the host's cached
+     * snapshot; the ordering guard drops it if it is not newer.
+     *
+     * A read, never a poll — no interval is added here. Coalesced on the read
+     * itself, because a single wake fires `visibilitychange` and `focus`
+     * together.
+     */
+    let wakeReadPending = false;
+    const readOnWake = () => {
+      if (!readSnapshot || cancelled || wakeReadPending) return;
+      wakeReadPending = true;
+      void readCached().finally(() => {
+        wakeReadPending = false;
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") readOnWake();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", readOnWake);
+
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", readOnWake);
       unsubscribe?.();
       unsubscribeBinding?.();
     };

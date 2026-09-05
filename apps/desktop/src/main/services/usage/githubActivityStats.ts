@@ -128,6 +128,10 @@ export function runBufferedCommand(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    if (!child) {
+      reject(new Error(`${command} failed to start`));
+      return;
+    }
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -136,7 +140,7 @@ export function runBufferedCommand(
       fn();
     };
     timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      child?.kill("SIGTERM");
       finish(() => reject(new Error(`${command} timed out`)));
     }, options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS);
     timeout.unref?.();
@@ -144,7 +148,7 @@ export function runBufferedCommand(
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > maxOutputBytes) {
-        child.kill("SIGTERM");
+        child?.kill("SIGTERM");
         finish(() => reject(new Error(`${command} produced too much output`)));
       }
     });

@@ -295,7 +295,12 @@ import {
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
-import { createUsageTrackingService } from "./services/usage/usageTrackingService";
+import {
+  createUsageTrackingService,
+  isUsageSnapshot,
+  type AccountRollupFetcher,
+} from "./services/usage/usageTrackingService";
+import { bootedUsageScopeRoot } from "./services/usage/bootedUsageScope";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
   markMachineStateMigrationComplete,
@@ -4431,7 +4436,17 @@ app.whenReady().then(async () => {
       logger,
       db,
       pollIntervalMs: 120_000,
+      // In-process (tests): unbound windows have no runtime pump, so this
+      // tracker is the producer and must broadcast. Production project open
+      // never reaches this constructor — it uses `initRuntimeBackedProjectContext`
+      // with `usageTrackingService: null`. The remaining production caller is
+      // mobile-sync context init, which must not start a second poller or
+      // broadcast into the same channel the brain bridge already feeds.
       onUpdate: (snapshot) => {
+        if (shouldUseInProcessProjectRuntime()) {
+          broadcast(IPC.usageEvent, snapshot);
+          return;
+        }
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       projectRoot,
@@ -4591,17 +4606,19 @@ app.whenReady().then(async () => {
         })
       : null;
 
-    scheduleBackgroundProjectTask(
-      "usage.start",
-      () => usageTrackingService.start(),
-      (error) => {
-        logger.warn("usage.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      1_000,
-      "ADE_ENABLE_USAGE_TRACKING",
-    );
+    if (shouldUseInProcessProjectRuntime()) {
+      scheduleBackgroundProjectTask(
+        "usage.start",
+        () => usageTrackingService.start(),
+        (error) => {
+          logger.warn("usage.start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        1_000,
+        "ADE_ENABLE_USAGE_TRACKING",
+      );
+    }
 
     const budgetCapService = createBudgetCapService({
       db,
@@ -5416,7 +5433,140 @@ app.whenReady().then(async () => {
     };
   };
 
+  /**
+   * One main-process subscription to the brain's shared usage tracker.
+   *
+   * Windows with no local project binding — Welcome, Hub/Account, a
+   * remote-machine tab — accept usage only on the local `IPC.usageEvent`
+   * channel, and the dormant in-process tracker that used to feed it is stopped
+   * whenever a project is open. Without this they sat frozen at whatever the
+   * disk cache held while every bound window moved. Bound windows ignore this
+   * channel, so broadcasting costs nothing and cannot double-deliver.
+   *
+   * The brain exposes usage per project scope, so the bridge borrows any booted
+   * scope; every scope is fed by the same machine-level poller.
+   */
+  let machineUsageEventRoot: string | null = null;
+  let machineUsageEventCleanup: (() => void) | null = null;
+  let machineUsageEventRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Assigned by `registerIpc` once the account directory and the paired remote
+   * connection pool exist.
+   *
+   * The brain owns the rollup store but has no client for calling another
+   * machine's ADE; the desktop app has the transport but no longer owns the
+   * tracker. Main is the only place that sees both, so it runs the fan-out and
+   * pushes the result into the brain's shared tracker.
+   */
+  let machineAccountRollupFetcher: AccountRollupFetcher | null = null;
+  let machineAccountRollupRefreshInFlight: Promise<void> | null = null;
+  let machineAccountRollupRefreshedAtMs = 0;
+  /**
+   * Floor on the desktop fan-out. Usage events fire far more often than the
+   * tracker's own getAdeUsageStats-driven refresh (30 s), so this is 60 s.
+   */
+  const MACHINE_ACCOUNT_ROLLUP_MIN_INTERVAL_MS = 60_000;
+  const MACHINE_ACCOUNT_ROLLUP_TIMEOUT_MS = 4_000;
+  /** Re-arm delay after the brain's event stream ends or refuses to open. */
+  const MACHINE_USAGE_EVENT_RETRY_MS = 5_000;
+
+  const pushAccountRollupsToBrain = (rootPath: string): void => {
+    const fetcher = machineAccountRollupFetcher;
+    if (!fetcher || machineAccountRollupRefreshInFlight) return;
+    const startedAtMs = Date.now();
+    if (startedAtMs - machineAccountRollupRefreshedAtMs < MACHINE_ACCOUNT_ROLLUP_MIN_INTERVAL_MS) return;
+    machineAccountRollupRefreshedAtMs = startedAtMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MACHINE_ACCOUNT_ROLLUP_TIMEOUT_MS);
+    timer.unref?.();
+    const task = (async () => {
+      try {
+        const result = await fetcher({
+          timeoutMs: MACHINE_ACCOUNT_ROLLUP_TIMEOUT_MS,
+          signal: controller.signal,
+        });
+        if (result.rollups.length === 0 && result.failures.length === 0) return;
+        await localRuntimePool.callActionForRoot(rootPath, {
+          domain: "usage",
+          action: "applyAccountRollups",
+          args: { rollups: result.rollups, failures: result.failures },
+        });
+      } catch (error) {
+        // Best effort by construction: the brain renders account scope from its
+        // durable rollups whether or not this ever lands.
+        dormantContext?.logger?.debug("usage.account_rollup_push_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    })().finally(() => {
+      if (machineAccountRollupRefreshInFlight === task) {
+        machineAccountRollupRefreshInFlight = null;
+      }
+    });
+    machineAccountRollupRefreshInFlight = task;
+  };
+
+  const syncMachineUsageEventBridge = (): void => {
+    if (shouldUseInProcessProjectRuntime()) return;
+    const desired = bootedUsageScopeRoot([...projectContexts.values()]);
+    if (desired === machineUsageEventRoot) return;
+    machineUsageEventCleanup?.();
+    machineUsageEventCleanup = null;
+    machineUsageEventRoot = desired;
+    if (!desired) return;
+    const root = desired;
+    void localRuntimePool
+      .subscribeEventsForRoot(
+        root,
+        { category: "runtime", replay: false },
+        (event) => {
+          if (machineUsageEventRoot !== root) return;
+          if (event.payload?.type !== "usage") return;
+          const snapshot = event.payload.snapshot;
+          if (!isUsageSnapshot(snapshot)) return;
+          broadcast(IPC.usageEvent, snapshot);
+          pushAccountRollupsToBrain(root);
+        },
+        () => {
+          if (machineUsageEventRoot !== root) return;
+          machineUsageEventRoot = null;
+          machineUsageEventCleanup = null;
+          // A recycled brain ends the stream. Nothing else would re-arm the
+          // bridge until a project happened to open or close, which would leave
+          // every unbound window silently frozen in the meantime.
+          scheduleMachineUsageEventRetry();
+        },
+      )
+      .then((cleanup) => {
+        // The chosen root can close while the subscription is being set up.
+        if (machineUsageEventRoot !== root) {
+          cleanup();
+          return;
+        }
+        machineUsageEventCleanup = cleanup;
+      })
+      .catch((error) => {
+        if (machineUsageEventRoot === root) machineUsageEventRoot = null;
+        dormantContext?.logger?.debug("usage.machine_event_bridge_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        scheduleMachineUsageEventRetry();
+      });
+  };
+
+  function scheduleMachineUsageEventRetry(): void {
+    if (machineUsageEventRetryTimer || projectContexts.size === 0) return;
+    machineUsageEventRetryTimer = setTimeout(() => {
+      machineUsageEventRetryTimer = null;
+      syncMachineUsageEventBridge();
+    }, MACHINE_USAGE_EVENT_RETRY_MS);
+    machineUsageEventRetryTimer.unref?.();
+  }
+
   const syncDormantUsageTrackingState = (): void => {
+    syncMachineUsageEventBridge();
     const usageTrackingService = (dormantContext as AppContext | undefined)?.usageTrackingService;
     if (!usageTrackingService) return;
     if (projectContexts.size > 0) {
@@ -7888,6 +8038,9 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    onAccountRollupFetcherReady: (fetcher) => {
+      machineAccountRollupFetcher = fetcher;
+    },
     autoDiagnosticsService,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,

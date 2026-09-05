@@ -626,6 +626,14 @@ export type UsageSnapshot = {
   costsLastPolledAt?: string;
   lastPolledAt: string;
   errors: string[];
+  /**
+   * Producer-stamped ordering. `producerId` identifies the service instance that
+   * built the snapshot; `seq` increases by one on every snapshot that instance
+   * emits or returns. Consumers order by seq only within one producerId; a
+   * snapshot from a different producer is always accepted. Optional only for
+   * snapshots read from an older on-disk cache.
+   */
+  revision?: { producerId: string; seq: number };
 };
 
 // ---------------------------------------------------------------------------

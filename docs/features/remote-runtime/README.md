@@ -86,7 +86,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   window runs several pumps at once (active binding, one pinned PTY pump per
   foreign lane, one pinned chat pump) and keying by sender alone would make each
   new pump tear down its siblings. Stale entries are reclaimed by idle expiry
-  (refreshed on every poll, swept every 20 s at a 60 s idle threshold) with the
+  (refreshed on every poll, swept every 60 s at a 180 s idle threshold) with the
   renderer's release as the fast path. Every caller — release, the ended
   callback, remote disconnect, sender death, the sweep — removes through one
   function, so disposal and pruning cannot drift apart, and cleanup functions are
@@ -641,9 +641,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     is a compile error rather than a renderer silently talking to the wrong
     machine.
 
-  Remote
-  project usage/budget reads route through the remote runtime; local project
-  usage/budget reads stay on desktop usage IPC. File actions are strict once a
+  Remote project usage/budget reads route through the remote runtime.
+  Local-bound windows take usage/budget from the machine brain. A window
+  with no local project (Welcome, Hub, a remote-machine tab) still goes
+  through desktop usage IPC, which proxies those reads to a booted brain
+  project scope and falls back to the in-process tracker only when no brain
+  scope is running. Main relays the brain's usage events onto
+  `ade.usage.event` so those unbound windows stay live; bound windows ignore
+  that channel and keep the runtime event stream. File actions are strict once a
   local or remote runtime is bound. During a
   project switch, preload records a pending local binding for the target root
   and includes `rootPath` on local runtime action/sync/event calls so early

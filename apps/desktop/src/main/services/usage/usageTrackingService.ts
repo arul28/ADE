@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
@@ -20,6 +21,7 @@ import type {
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
   AdeUsageRollup,
+  AdeUsageRollupRow,
   AdeUsageScope,
   AdeUsageStats,
   AdeUsageTranscriptSource,
@@ -89,7 +91,7 @@ import {
   sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
-import { isPathInside, pathComparisonKey } from "../shared/pathCompare";
+import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
   buildRollupRows,
   mergeAccountUsageStats,
@@ -189,7 +191,7 @@ function isCostSnapshotArray(value: unknown): value is CostSnapshot[] {
   return Array.isArray(value) && value.every((entry) => isRecord(entry) && typeof entry.provider === "string");
 }
 
-function isUsageSnapshot(value: unknown): value is UsageSnapshot {
+export function isUsageSnapshot(value: unknown): value is UsageSnapshot {
   return isRecord(value)
     && Array.isArray(value.windows)
     && (value.spendControlReached === undefined || typeof value.spendControlReached === "boolean")
@@ -1172,6 +1174,17 @@ function canonicalProjectRoot(projectRoot: string): string {
   const worktreeMarker = "/.ade/worktrees/";
   const markerIndex = normalized.indexOf(worktreeMarker);
   return markerIndex >= 0 ? path.resolve(normalized.slice(0, markerIndex)) : resolved;
+}
+
+/**
+ * Map key for per-project cost snapshots. `pathKey` folds Windows/macOS case
+ * so `C:\\repo` and `c:\\repo` are one cache slot; a bare `===` left a stale
+ * extra key behind when one spelling detached.
+ */
+function scopeRootKey(root: string | null | undefined): string {
+  const trimmed = root?.trim();
+  if (!trimmed) return "";
+  return pathKey(path.resolve(trimmed));
 }
 
 /**
@@ -2216,6 +2229,27 @@ function buildProviderWindows(
 
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
+/**
+ * A project scope attached to one machine-level tracker.
+ *
+ * Provider quota is a machine fact, so one brain polls it once. Everything that
+ * genuinely differs per project — which repository GitHub activity is read
+ * from, which database ADE's own stats and account rollups live in, which
+ * project the analytics fact is attributed to — arrives through here, and the
+ * handle `attachProjectScope` returns is the per-project face of that single
+ * poller.
+ */
+export type UsageTrackingProjectScopeInput = {
+  /** Stable identity for this scope. Re-attaching the same key replaces it. */
+  key: string;
+  projectRoot?: string | null;
+  db?: AdeDb | null;
+  logger?: Logger;
+  captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /** Receives every snapshot the shared tracker publishes. */
+  onUpdate?: (snapshot: UsageSnapshot) => void;
+};
+
 /** Who this machine is, for the account directory. */
 type LocalMachineIdentity = { machineKey: string; label: string; platform: string | null };
 
@@ -2231,9 +2265,13 @@ type UsageTrackingDependencies = {
   scanDroidLogs?: () => Promise<TokenEntry[]>;
   scanCopilotLogs?: () => Promise<TokenEntry[]>;
   scanGeminiLogs?: () => Promise<TokenEntry[]>;
-  scanGitHubStats?: (range: ResolvedAdeUsageRange) => Promise<GitHubActivityStats>;
-  collectDatabaseStats?: (range: ResolvedAdeUsageRange) => AdeDatabaseUsageStats | null;
-  scanUsageLedgers?: (projectRoot: string | null | undefined, signal: AbortSignal) => Promise<UsageLedgerScanResult>;
+  scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
+  collectDatabaseStats?: (range: ResolvedAdeUsageRange, db?: AdeDb | null) => AdeDatabaseUsageStats | null;
+  scanUsageLedgers?: (
+    projectRoot: string | null | undefined,
+    signal: AbortSignal,
+    projectRoots?: readonly string[],
+  ) => Promise<UsageLedgerScanResult>;
   /** Durable per-machine rollup storage. Omitted = account scope has only this machine. */
   accountRollupStore?: AccountUsageRollupStore;
   /** Identity/label this machine publishes under. Null = not resolvable yet. */
@@ -2264,6 +2302,53 @@ export type AccountRollupFetcher = (options: { timeoutMs: number; signal: AbortS
   rollups: AdeUsageRollup[];
   failures: Array<{ machineKey: string; label: string; platform: string | null; message: string }>;
 }>;
+
+/** What one fan-out over the account's machines produced. */
+export type AccountRollupFetchResult = Awaited<ReturnType<AccountRollupFetcher>>;
+
+/** Shape guard for a rollup fan-out result that arrived over RPC. */
+function isAdeUsageRollupRow(value: unknown): value is AdeUsageRollupRow {
+  return isRecord(value)
+    && typeof value.date === "string"
+    && typeof value.provider === "string"
+    && typeof value.model === "string"
+    && typeof value.inputTokens === "number"
+    && typeof value.outputTokens === "number"
+    && typeof value.cachedTokens === "number"
+    && typeof value.totalTokens === "number"
+    && typeof value.costUsd === "number"
+    && typeof value.calls === "number";
+}
+
+function isAdeUsageTranscriptSource(value: unknown): value is AdeUsageTranscriptSource {
+  return isRecord(value)
+    && (value.sourceId === null || typeof value.sourceId === "string")
+    && Array.isArray(value.roots)
+    && value.roots.every((root) => typeof root === "string");
+}
+
+function isAccountRollup(value: unknown): value is AdeUsageRollup {
+  return isRecord(value)
+    && typeof value.machineKey === "string"
+    && typeof value.capturedAt === "string"
+    && isAdeUsageTranscriptSource(value.source)
+    && Array.isArray(value.rows)
+    && value.rows.every(isAdeUsageRollupRow);
+}
+
+function isAccountRollupFailure(
+  value: unknown,
+): value is AccountRollupFetchResult["failures"][number] {
+  return isRecord(value)
+    && typeof value.machineKey === "string"
+    && typeof value.message === "string";
+}
+
+export function isAccountRollupFetchResult(value: unknown): value is AccountRollupFetchResult {
+  if (!isRecord(value)) return false;
+  if (!Array.isArray(value.rollups) || !Array.isArray(value.failures)) return false;
+  return value.rollups.every(isAccountRollup) && value.failures.every(isAccountRollupFailure);
+}
 
 /** How long the opportunistic live pull may run before the stored rollups stand alone. */
 const ACCOUNT_LIVE_REFRESH_TIMEOUT_MS = 4_000;
@@ -2402,10 +2487,40 @@ export function createUsageTrackingService({
     Math.min(MAX_POLL_INTERVAL_MS, configuredInterval ?? DEFAULT_POLL_INTERVAL_MS)
   );
 
-  let lastSnapshot: UsageSnapshot | null = readCachedUsageSnapshot(logger);
-  let cachedCosts: CostSnapshot[] = lastSnapshot?.costs ?? [];
-  let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
-  let cachedProjectCosts: CostSnapshot[] = [];
+  /**
+   * Producer-stamped ordering (see `UsageSnapshot.revision`).
+   *
+   * Two windows on one machine used to compare snapshots by wall-clock
+   * `lastPolledAt` across unrelated producers. `producerId` names this instance
+   * and `seq` counts every snapshot it hands out, so a consumer can order
+   * within a producer and never has to guess across producers.
+   */
+  const producerId = randomUUID();
+  let revisionSeq = 0;
+  function stampRevision(snapshot: UsageSnapshot): UsageSnapshot {
+    revisionSeq += 1;
+    return { ...snapshot, revision: { producerId, seq: revisionSeq } };
+  }
+
+  const diskCachedSnapshot = readCachedUsageSnapshot(logger);
+  /**
+   * Never null. Every read path returns exactly this object, so a snapshot a
+   * caller receives is always one this instance also emitted (or is byte
+   * identical to the current one) — no caller ever gets private freshness.
+   *
+   * The disk cache is re-stamped as this instance's seq 1: it was produced by
+   * a previous process, and carrying that process's revision forward would let
+   * a consumer order two unrelated producers against each other.
+   */
+  let lastSnapshot: UsageSnapshot = stampRevision(diskCachedSnapshot ?? emptySnapshot());
+  let cachedCosts: CostSnapshot[] = diskCachedSnapshot?.costs ?? [];
+  let cachedAdeCosts: CostSnapshot[] = diskCachedSnapshot?.adeCosts ?? [];
+  /**
+   * Project-scoped cost snapshots, per attached scope. One brain hosts several
+   * projects and walks the ledgers once for all of them; the projection per
+   * root is a filter over entries the scan already read.
+   */
+  const cachedProjectCostsByRoot = new Map<string, CostSnapshot[]>();
   let projectCostsReady = false;
   /**
    * Providers whose scan threw on the last round.
@@ -2434,22 +2549,22 @@ export function createUsageTrackingService({
    * than the rest of the page" — the part a user has to be told about.
    */
   let cachedIncompleteScanProviders: string[] = [];
-  const cachedCostTimestampIso = lastSnapshot?.costsLastPolledAt
-    ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? lastSnapshot?.lastPolledAt : null);
+  const cachedCostTimestampIso = diskCachedSnapshot?.costsLastPolledAt
+    ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? diskCachedSnapshot?.lastPolledAt : null);
   const cachedCostTimestampMs = cachedCostTimestampIso ? Date.parse(cachedCostTimestampIso) : Number.NaN;
   let costCacheTimestamp = Number.isFinite(cachedCostTimestampMs) ? cachedCostTimestampMs : 0;
   let costRefreshFailureCount = 0;
   let costRefreshNextRetryAtMs = 0;
-  let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = lastSnapshot?.dailyUsage7d ?? {};
+  let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = diskCachedSnapshot?.dailyUsage7d ?? {};
   // Track the last poll that returned real windows per provider so carried-forward
   // (stale) data can still report when it was genuinely fresh.
   const providerLastSuccess: Partial<Record<UsageProvider, string>> = {};
   for (const provider of ["claude", "codex"] as const) {
-    const cachedStatus = lastSnapshot?.providerStatus?.[provider];
+    const cachedStatus = diskCachedSnapshot?.providerStatus?.[provider];
     if (cachedStatus?.lastSuccessAt) {
       providerLastSuccess[provider] = cachedStatus.lastSuccessAt;
-    } else if (lastSnapshot && lastSnapshot.windows.some((w) => w.provider === provider)) {
-      providerLastSuccess[provider] = lastSnapshot.lastPolledAt;
+    } else if (diskCachedSnapshot && diskCachedSnapshot.windows.some((w) => w.provider === provider)) {
+      providerLastSuccess[provider] = diskCachedSnapshot.lastPolledAt;
     }
   }
   const githubStatsCache = new Map<string, { fetchedAtMs: number; stats: GitHubActivityStats }>();
@@ -2474,10 +2589,23 @@ export function createUsageTrackingService({
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
   const scanCursorCostLogs = async (): Promise<TokenEntry[]> => {
     const scanned = await (dependencies?.scanCursorLogs ?? scanCursorLogs)();
-    const billed = db ? listCursorBilledUsage(db) : [];
-    if (!billed.length) return scanned;
+    // Constructor `db` is only the in-process default scope. The brain builds
+    // the tracker with no database and attaches each project's db afterward,
+    // so billed Cursor rows live on those scopes — not on the closed-over
+    // constructor handle.
+    const billedById = new Map<string, TokenEntry>();
+    for (const scope of allScopes()) {
+      if (!scope.db) continue;
+      for (const entry of listCursorBilledUsage(scope.db)) {
+        billedById.set(entry.messageId, entry);
+      }
+    }
+    if (billedById.size === 0) return scanned;
     const seen = new Set(scanned.map((entry) => entry.messageId));
-    return [...scanned, ...billed.filter((entry) => !seen.has(entry.messageId))];
+    return [
+      ...scanned,
+      ...[...billedById.values()].filter((entry) => !seen.has(entry.messageId)),
+    ];
   };
   const scanCursorAgentCostLogs = dependencies?.scanCursorAgentLogs ?? scanCursorAgentLogs;
   const scanOpenClawCostLogs = dependencies?.scanOpenClawLogs ?? scanOpenClawLogs;
@@ -2486,9 +2614,10 @@ export function createUsageTrackingService({
   const scanCopilotCostLogs = dependencies?.scanCopilotLogs ?? scanCopilotLogs;
   const scanGeminiCostLogs = dependencies?.scanGeminiLogs ?? scanGeminiLogs;
   const scanGitHubStatsForRange = dependencies?.scanGitHubStats
-    ?? ((range: ResolvedAdeUsageRange) => scanGithubActivityStats(projectRoot, range));
+    ?? ((range: ResolvedAdeUsageRange, root?: string | null) => scanGithubActivityStats(root ?? null, range));
   const collectDatabaseStatsForRange = dependencies?.collectDatabaseStats
-    ?? ((range: ResolvedAdeUsageRange) => collectAdeDatabaseUsageStats(db, range, logger));
+    ?? ((range: ResolvedAdeUsageRange, scopeDb?: AdeDb | null) =>
+      collectAdeDatabaseUsageStats(scopeDb ?? null, range, logger));
   const hasInjectedLedgerScanners = Boolean(
     dependencies?.scanClaudeLogs
     || dependencies?.scanCodexLogs
@@ -2503,9 +2632,91 @@ export function createUsageTrackingService({
   const ledgerAbortController = new AbortController();
   let disposed = false;
 
+  // ── Project scopes ─────────────────────────────────────────────
+  type AttachedScope = {
+    key: string;
+    projectRoot: string | null;
+    db: AdeDb | null;
+    logger: Logger;
+    captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+    onUpdate?: (snapshot: UsageSnapshot) => void;
+    rollupStore: AccountUsageRollupStore;
+  };
+
+  const makeScope = (input: UsageTrackingProjectScopeInput): AttachedScope => {
+    const scopeLogger = input.logger ?? logger;
+    const scopeDb = input.db ?? null;
+    return {
+      key: input.key,
+      projectRoot: input.projectRoot ?? null,
+      db: scopeDb,
+      logger: scopeLogger,
+      captureAnalytics: input.captureAnalytics,
+      onUpdate: input.onUpdate,
+      rollupStore: dependencies?.accountRollupStore
+        ?? createAccountUsageRollupStore({ db: scopeDb, logger: scopeLogger }),
+    };
+  };
+
+  /**
+   * The scope this instance was constructed with. Always present, so a host
+   * that never attaches a scope (the desktop in-process context, every test)
+   * behaves exactly as it did when the service was one-per-project.
+   */
+  const defaultScope = makeScope({
+    key: "__default__",
+    projectRoot: projectRoot ?? null,
+    db: db ?? null,
+    logger,
+    captureAnalytics: dependencies?.captureAnalytics,
+    onUpdate,
+  });
+  const attachedScopes = new Map<string, AttachedScope>();
+  const allScopes = (): AttachedScope[] => [defaultScope, ...attachedScopes.values()];
+  const scopeProjectRoots = (): string[] => {
+    const seen = new Set<string>();
+    const roots: string[] = [];
+    for (const scope of allScopes()) {
+      const root = scope.projectRoot?.trim();
+      if (!root) continue;
+      const key = scopeRootKey(root);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roots.push(root);
+    }
+    return roots;
+  };
+
   // ── Account scope ──────────────────────────────────────────────
-  const accountRollupStore = dependencies?.accountRollupStore
-    ?? createAccountUsageRollupStore({ db, logger });
+  /**
+   * Rollups are replicated per project database, so a machine-level poller has
+   * to write through to every attached scope rather than pick one. Reads merge
+   * the scopes and keep the freshest row per machine: two project databases on
+   * one computer are two replicas of the same account fact, not two facts.
+   */
+  const accountRollupStore: AccountUsageRollupStore = {
+    publish: (rollup, options) => {
+      let changed = false;
+      for (const scope of allScopes()) {
+        if (scope.rollupStore.publish(rollup, options)) changed = true;
+      }
+      return changed;
+    },
+    readAll: () => {
+      const byMachine = new Map<string, AdeUsageRollup>();
+      for (const scope of allScopes()) {
+        for (const rollup of scope.rollupStore.readAll()) {
+          const existing = byMachine.get(rollup.machineKey);
+          if (existing && Date.parse(existing.capturedAt) >= Date.parse(rollup.capturedAt)) continue;
+          byMachine.set(rollup.machineKey, rollup);
+        }
+      }
+      return [...byMachine.values()];
+    },
+    prune: (oldestDayKey) => {
+      for (const scope of allScopes()) scope.rollupStore.prune(oldestDayKey);
+    },
+  };
   const readLocalMachineIdentity = dependencies?.localMachineIdentity
     ?? defaultLocalMachineIdentity;
   const readTranscriptRoots = dependencies?.transcriptRoots
@@ -2621,6 +2832,107 @@ export function createUsageTrackingService({
   }
 
   /**
+   * Store what a fan-out over the account's machines returned.
+   *
+   * Split out from `refreshAccountRollupsInBackground` because the fan-out and
+   * the storing of its result do not have to happen in the same process: the
+   * brain owns the rollup store and the poller, while the peer transport lives
+   * in the desktop app, which pushes results here.
+   */
+  function applyAccountRollups(
+    result: AccountRollupFetchResult,
+    startedAtMs: number = Date.now(),
+  ): void {
+    // Crosses a process boundary (the desktop app pushes its fan-out result to
+    // the brain over the local socket), so the shape is checked here rather
+    // than trusted from the call site. One stale peer must not wipe the rest
+    // of the account: keep typed entries and drop only the malformed ones.
+    const payload: unknown = result;
+    if (!isRecord(payload) || !Array.isArray(payload.rollups) || !Array.isArray(payload.failures)) {
+      logger.warn("usage.account.apply_rollups_rejected");
+      return;
+    }
+    const rollups = payload.rollups.filter(isAccountRollup);
+    const failures = payload.failures.filter(isAccountRollupFailure);
+    if (rollups.length !== payload.rollups.length || failures.length !== payload.failures.length) {
+      logger.warn("usage.account.apply_rollups_partially_rejected", {
+        droppedRollups: payload.rollups.length - rollups.length,
+        droppedFailures: payload.failures.length - failures.length,
+      });
+    }
+    // `publish` returns true only when it really wrote something. Counting
+    // "did not throw" instead would emit an update for every refresh,
+    // including one that stored byte-identical history — and that update is
+    // what makes the next read, which starts the next refresh.
+    let published = 0;
+    // A peer on an older build still sends its whole decade of history. It
+    // must be cut to the same retention edge before it is stored, or this
+    // machine's own `prune` deletes those rows and the next fetch puts them
+    // straight back — the CRR delete/insert churn, arriving over the wire.
+    const oldestDay = rollupOldestDay(startedAtMs);
+    for (const rollup of rollups) {
+      try {
+        // Unknown identity cannot match anything, and nothing was published
+        // under this machine's name either, so there is no self-row to skip.
+        if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+        const bounded = oldestDay
+          ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
+          : rollup;
+        // Fetched from that machine, not scanned here: this side cannot know
+        // which of the peer's providers failed, so it must not delete one
+        // that simply did not appear. See `publish`'s `ownerAuthoritative`.
+        if (accountRollupStore.publish(bounded, { ownerAuthoritative: false })) published += 1;
+      } catch (error) {
+        logger.warn("usage.account.apply_rollup_failed", { error: getErrorMessage(error) });
+      }
+    }
+    // Replace wholesale rather than merge: a machine missing from this
+    // round's failures either answered or was not asked, and in both cases
+    // last round's error is no longer something to show.
+    //
+    // "Changed" is a real comparison against the previous round, not "there
+    // were failures". A peer that is permanently unreachable reports the
+    // same failure every time, and reading that as a change would keep the
+    // page emitting updates forever over news it already showed.
+    const previousFailures = new Map(accountRollupFailures);
+    accountRollupFailures.clear();
+    const failureKeys = new Set(failures.map((failure) => failure.machineKey));
+    for (const failure of failures) {
+      accountRollupFailures.set(failure.machineKey, {
+        label: failure.label,
+        platform: failure.platform,
+        message: failure.message,
+      });
+    }
+    for (const raw of payload.rollups) {
+      if (isAccountRollup(raw) || !isRecord(raw) || typeof raw.machineKey !== "string") continue;
+      if (failureKeys.has(raw.machineKey)) continue;
+      failureKeys.add(raw.machineKey);
+      accountRollupFailures.set(raw.machineKey, {
+        label: typeof raw.label === "string" ? raw.label : raw.machineKey,
+        platform: typeof raw.platform === "string" ? raw.platform : null,
+        message: "malformed rollup",
+      });
+    }
+    let failuresChanged = previousFailures.size !== accountRollupFailures.size;
+    if (!failuresChanged) {
+      for (const [machineKey, failure] of accountRollupFailures) {
+        const before = previousFailures.get(machineKey);
+        if (before
+          && before.label === failure.label
+          && before.platform === failure.platform
+          && before.message === failure.message) continue;
+        failuresChanged = true;
+        break;
+      }
+    }
+    // Content is unchanged; the rollup store behind it is not. Republish
+    // through the same path so the snapshot carries a new revision — an
+    // emit that reuses the current revision is dropped by ordering.
+    if (published > 0 || failuresChanged) publishSnapshot(lastSnapshot);
+  }
+
+  /**
    * Refresh reachable machines in the background and republish what they say.
    *
    * Deliberately not awaited by `getAdeUsageStats`: a sleeping laptop must cost
@@ -2644,58 +2956,7 @@ export function createUsageTrackingService({
     timer.unref?.();
     const task = fetchAccountRollups({ timeoutMs: ACCOUNT_LIVE_REFRESH_TIMEOUT_MS, signal: controller.signal })
       .then((result) => {
-        // `publish` returns true only when it really wrote something. Counting
-        // "did not throw" instead would emit an update for every refresh,
-        // including one that stored byte-identical history — and that update is
-        // what makes the next read, which starts the next refresh.
-        let published = 0;
-        // A peer on an older build still sends its whole decade of history. It
-        // must be cut to the same retention edge before it is stored, or this
-        // machine's own `prune` deletes those rows and the next fetch puts them
-        // straight back — the CRR delete/insert churn, arriving over the wire.
-        const oldestDay = rollupOldestDay(startedAtMs);
-        for (const rollup of result.rollups) {
-          // Unknown identity cannot match anything, and nothing was published
-          // under this machine's name either, so there is no self-row to skip.
-          if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
-          const bounded = oldestDay
-            ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
-            : rollup;
-          // Fetched from that machine, not scanned here: this side cannot know
-          // which of the peer's providers failed, so it must not delete one
-          // that simply did not appear. See `publish`'s `ownerAuthoritative`.
-          if (accountRollupStore.publish(bounded, { ownerAuthoritative: false })) published += 1;
-        }
-        // Replace wholesale rather than merge: a machine missing from this
-        // round's failures either answered or was not asked, and in both cases
-        // last round's error is no longer something to show.
-        //
-        // "Changed" is a real comparison against the previous round, not "there
-        // were failures". A peer that is permanently unreachable reports the
-        // same failure every time, and reading that as a change would keep the
-        // page emitting updates forever over news it already showed.
-        const previousFailures = new Map(accountRollupFailures);
-        accountRollupFailures.clear();
-        for (const failure of result.failures) {
-          accountRollupFailures.set(failure.machineKey, {
-            label: failure.label,
-            platform: failure.platform,
-            message: failure.message,
-          });
-        }
-        let failuresChanged = previousFailures.size !== accountRollupFailures.size;
-        if (!failuresChanged) {
-          for (const [machineKey, failure] of accountRollupFailures) {
-            const before = previousFailures.get(machineKey);
-            if (before
-              && before.label === failure.label
-              && before.platform === failure.platform
-              && before.message === failure.message) continue;
-            failuresChanged = true;
-            break;
-          }
-        }
-        if (published > 0 || failuresChanged) emitUpdate(lastSnapshot ?? emptySnapshot());
+        applyAccountRollups(result, startedAtMs);
       })
       .catch((error) => {
         logger.warn("usage.account.live_refresh_failed", { error: getErrorMessage(error) });
@@ -2771,25 +3032,45 @@ export function createUsageTrackingService({
     return contributions;
   }
 
-  const emptySnapshot = (): UsageSnapshot => ({
-    windows: [],
-    pacing: emptyPacing(),
-    pacingByProvider: {},
-    providerStatus: {},
-    costs: [],
-    adeCosts: [],
-    extraUsage: [],
-    lastPolledAt: nowIso(),
-    errors: [],
-  });
+  function emptySnapshot(): UsageSnapshot {
+    return {
+      windows: [],
+      pacing: emptyPacing(),
+      pacingByProvider: {},
+      providerStatus: {},
+      costs: [],
+      adeCosts: [],
+      extraUsage: [],
+      lastPolledAt: nowIso(),
+      errors: [],
+    };
+  }
 
   function emitUpdate(snapshot: UsageSnapshot): void {
     if (disposed) return;
-    try {
-      onUpdate?.(snapshot);
-    } catch {
-      // Never crash on callback error
+    // Constructor `onUpdate` lives on `defaultScope`. Attached project scopes
+    // add their own. One loop, so a host cannot observe a snapshot the others
+    // did not receive.
+    for (const scope of allScopes()) {
+      try {
+        scope.onUpdate?.(snapshot);
+      } catch {
+        // Never crash on callback error
+      }
     }
+  }
+
+  /**
+   * The one way a new snapshot becomes visible: stamp it, store it, emit it,
+   * and hand the *same* object back to whoever asked. A return path that built
+   * a fresher snapshot without emitting it gave one window a value no other
+   * window could ever receive, which is exactly how two windows drifted.
+   */
+  function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+    const published = stampRevision(snapshot);
+    lastSnapshot = published;
+    emitUpdate(published);
+    return published;
   }
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
@@ -2803,7 +3084,9 @@ export function createUsageTrackingService({
     if (!options.force
       && costCacheTimestamp > 0
       && now - costCacheTimestamp < COST_CACHE_TTL_MS
-      && projectCostsReady) {
+      && projectCostsReady
+      && cachedProjectCostsByRoot.has(scopeRootKey(projectRoot))
+      && scopeProjectRoots().every((root) => cachedProjectCostsByRoot.has(scopeRootKey(root)))) {
       return cachedCostResult();
     }
 
@@ -2817,9 +3100,10 @@ export function createUsageTrackingService({
 
     let scanResult: UsageLedgerScanResult;
     if (!hasInjectedLedgerScanners) {
-      scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal) => (
-        scanUsageLedgersInWorker(root, { signal })
-      )))(projectRoot, ledgerAbortController.signal);
+      const roots = scopeProjectRoots();
+      scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal, allRoots) => (
+        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots })
+      )))(projectRoot ?? null, ledgerAbortController.signal, roots);
     } else {
       // Recorded, not merely logged: a provider whose scan failed produced no
       // rows, and a peer sharing this home must be able to tell that from a
@@ -2875,6 +3159,10 @@ export function createUsageTrackingService({
       scanResult = {
         costs: buildCostSnapshots(providerEntries, "machine", projectRoot),
         projectCosts: buildCostSnapshots(providerEntries, "project", projectRoot),
+        projectCostsByRoot: Object.fromEntries(scopeProjectRoots().map((root) => [
+          root,
+          buildCostSnapshots(providerEntries, "project", root),
+        ])),
         daily7d: {
           ...(claudeEntries.length > 0 ? { claude: bucketDaily7d(claudeEntries, now) } : {}),
           ...(codexEntries.length > 0 ? { codex: bucketDaily7d(codexEntries, now) } : {}),
@@ -2951,9 +3239,35 @@ export function createUsageTrackingService({
       return [...kept, ...carried];
     };
     const nextCosts = carryForward(cachedCosts, scanResult.costs);
-    const nextProjectCosts = projectCostsReady
-      ? carryForward(cachedProjectCosts, scanResult.projectCosts)
-      : [...scanResult.projectCosts];
+    const scannedProjectCostsByRoot = new Map<string, CostSnapshot[]>();
+    for (const [root, snapshots] of Object.entries(scanResult.projectCostsByRoot ?? {})) {
+      const key = scopeRootKey(root);
+      if (!scannedProjectCostsByRoot.has(key)) scannedProjectCostsByRoot.set(key, snapshots);
+    }
+    // The constructor's own root is keyed by "" when there is none, so a host
+    // with no project at all still records that its project history was read
+    // (and is empty) rather than rescanning on every read.
+    const primaryRootKey = scopeRootKey(projectRoot);
+    if (!scannedProjectCostsByRoot.has(primaryRootKey)) {
+      scannedProjectCostsByRoot.set(primaryRootKey, scanResult.projectCosts);
+    }
+    const nextProjectCostsByRoot = new Map<string, CostSnapshot[]>();
+    for (const [key, scanned] of scannedProjectCostsByRoot) {
+      const previous = cachedProjectCostsByRoot.get(key);
+      nextProjectCostsByRoot.set(
+        key,
+        projectCostsReady && previous ? carryForward(previous, scanned) : [...scanned],
+      );
+    }
+    // A worker that reported no projection for a root the caller asked about
+    // must still leave that root marked as read. A missing key means "project
+    // history was never scanned", which forces a full ledger walk on every
+    // project-scoped read of that scope.
+    for (const root of scopeProjectRoots()) {
+      const key = scopeRootKey(root);
+      if (nextProjectCostsByRoot.has(key)) continue;
+      nextProjectCostsByRoot.set(key, cachedProjectCostsByRoot.get(key) ?? []);
+    }
     const nextDaily7d: Partial<Record<UsageProvider, number[]>> = { ...scanResult.daily7d };
     for (const [provider, buckets] of Object.entries(cachedDaily7d) as [UsageProvider, number[]][]) {
       if (unreadableProviders.has(provider) && !(provider in nextDaily7d)) {
@@ -2980,7 +3294,10 @@ export function createUsageTrackingService({
     ])].sort();
     cachedCosts = nextCosts;
     cachedAdeCosts = [];
-    cachedProjectCosts = nextProjectCosts;
+    cachedProjectCostsByRoot.clear();
+    for (const [root, snapshots] of nextProjectCostsByRoot) {
+      cachedProjectCostsByRoot.set(root, snapshots);
+    }
     projectCostsReady = true;
     cachedDaily7d = nextDaily7d;
     costCacheTimestamp = now;
@@ -3022,7 +3339,7 @@ export function createUsageTrackingService({
 
       try {
         const providerTasks = providerStrategies.map(async (strategy) => {
-          const previousStatus = lastSnapshot?.providerStatus?.[strategy.provider] ?? null;
+          const previousStatus = lastSnapshot.providerStatus?.[strategy.provider] ?? null;
           const nextRetryMs = providerNextRetryAtMs[strategy.provider] ?? 0;
           const shouldHonorBackoff = reason === "automatic" || previousStatus?.errorKind === "rate_limited";
           if (shouldHonorBackoff && nextRetryMs > Date.now()) {
@@ -3096,12 +3413,12 @@ export function createUsageTrackingService({
         // Reconcile each provider against the last snapshot so a transient
         // failure (409/timeout) carries forward good data instead of wiping it.
         const polledAt = nowIso();
-        const prevWindows = lastSnapshot?.windows ?? [];
+        const prevWindows = lastSnapshot.windows;
         const providerStatus: UsageProviderStatusMap = {};
         const mergedRaw: UsageWindow[] = [];
         for (const entry of providerResults) {
           const { provider, result, skipped, backoffSkipped } = entry;
-          const previousStatus = lastSnapshot?.providerStatus?.[provider] ?? null;
+          const previousStatus = lastSnapshot.providerStatus?.[provider] ?? null;
           if (skipped) {
             /*
              * A user asked for this refresh and the provider was skipped because
@@ -3137,7 +3454,7 @@ export function createUsageTrackingService({
             );
             mergedRaw.push(...carriedWindows);
             const hasLegacyNonInteractiveCredentialError = provider === "claude"
-              && lastSnapshot?.errors.includes("claude: no non-interactive credentials found") === true;
+              && lastSnapshot.errors.includes("claude: no non-interactive credentials found");
             if (
               previousStatus
               && !hasLegacyNonInteractiveCredentialError
@@ -3188,23 +3505,23 @@ export function createUsageTrackingService({
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
         else if (claudePollEntry?.skipped || providerStatus.claude?.state === "stale" || providerStatus.claude?.state === "unauthed") {
-          const previousClaudeExtra = lastSnapshot?.extraUsage.find((extra) => extra.provider === "claude");
+          const previousClaudeExtra = lastSnapshot.extraUsage.find((extra) => extra.provider === "claude");
           if (previousClaudeExtra) extraUsage.push(previousClaudeExtra);
         }
-        const costsLastPolledAt = lastSnapshot?.costsLastPolledAt;
+        const costsLastPolledAt = lastSnapshot.costsLastPolledAt;
         const dailyUsage7d: Partial<Record<UsageProvider, number[]>> = { ...cachedDaily7d };
         if (codexResult.dailyUsage7d?.some((value) => value > 0)) {
           dailyUsage7d.codex = codexResult.dailyUsage7d;
           cachedDaily7d = dailyUsage7d;
         }
         const providerMessages = [
-          ...(lastSnapshot?.providerMessages ?? []).filter((message) => message.provider !== "codex"),
+          ...(lastSnapshot.providerMessages ?? []).filter((message) => message.provider !== "codex"),
           ...(codexResult.providerMessages ?? []),
         ];
         let spendControlReached = codexResult.spendControlReached;
         if (typeof spendControlReached !== "boolean" && (codexPollEntry?.skipped || codexResult.windows.length === 0)) {
           // Codex wasn't polled this round — retain the last known spend-control state.
-          spendControlReached = lastSnapshot?.spendControlReached;
+          spendControlReached = lastSnapshot.spendControlReached;
         }
         const costResult = cachedCostResult();
 
@@ -3224,10 +3541,8 @@ export function createUsageTrackingService({
           errors,
         };
 
-        lastSnapshot = snapshot;
-        void writeCachedUsageSnapshot(snapshot, logger);
-
-        emitUpdate(snapshot);
+        const published = publishSnapshot(snapshot);
+        void writeCachedUsageSnapshot(published, logger);
 
         logger.debug("usage.poll.complete", {
           reason,
@@ -3237,17 +3552,17 @@ export function createUsageTrackingService({
           pacing: pacing.status,
         });
 
-        return snapshot;
+        return published;
       } catch (err) {
         const msg = getErrorMessage(err);
         logger.error("usage.poll.unexpected_error", { error: msg });
         errors.push(`unexpected: ${msg}`);
 
-        if (lastSnapshot) {
-          return { ...lastSnapshot, errors, lastPolledAt: nowIso() };
-        }
-
-        return { ...emptySnapshot(), errors };
+        // Published, not merely returned. This snapshot carries a fresher
+        // `lastPolledAt` than the one every other window holds, so handing it
+        // to this one caller alone is how a second window fell behind and
+        // stayed behind until its own poll landed.
+        return publishSnapshot({ ...lastSnapshot, errors, lastPolledAt: nowIso() });
       } finally {
         if (inFlightPoll === currentPoll) {
           inFlightPoll = null;
@@ -3300,7 +3615,7 @@ export function createUsageTrackingService({
   }
 
   function getUsageSnapshot(): UsageSnapshot {
-    return lastSnapshot ?? emptySnapshot();
+    return lastSnapshot;
   }
 
   function noteQuotaDemand(): UsageSnapshot {
@@ -3326,7 +3641,7 @@ export function createUsageTrackingService({
         logger.warn("usage.force_refresh_returning_cached_snapshot", {
           timeoutMs: QUOTA_REFRESH_RESPONSE_TIMEOUT_MS,
         });
-        resolve(lastSnapshot ?? emptySnapshot());
+        resolve(lastSnapshot);
       }, QUOTA_REFRESH_RESPONSE_TIMEOUT_MS).unref?.();
     });
     try {
@@ -3342,7 +3657,7 @@ export function createUsageTrackingService({
     if (inFlightHistoryRefresh) return await inFlightHistoryRefresh;
     const reason = options.reason ?? "user";
     if (reason === "automatic" && Date.now() < costRefreshNextRetryAtMs) {
-      return lastSnapshot ?? emptySnapshot();
+      return lastSnapshot;
     }
     githubStatsCache.clear();
     githubStatsInFlight.clear();
@@ -3357,25 +3672,19 @@ export function createUsageTrackingService({
         costRefreshFailureCount = 0;
         costRefreshNextRetryAtMs = 0;
         const refreshedAt = nowIso();
-        const snapshot: UsageSnapshot = {
-          ...(lastSnapshot ?? emptySnapshot()),
+        const published = publishSnapshot({
+          ...lastSnapshot,
           costs: costResult.costs,
           adeCosts: costResult.adeCosts,
           dailyUsage7d: { ...cachedDaily7d },
           costsLastPolledAt: refreshedAt,
-        };
-        lastSnapshot = snapshot;
-        void writeCachedUsageSnapshot(snapshot, logger);
-        try {
-          onUpdate?.(snapshot);
-        } catch {
-          // Never crash on callback error.
-        }
+        });
+        void writeCachedUsageSnapshot(published, logger);
         logger.debug("usage.refresh.history_complete", {
           durationMs: Date.now() - startedAt,
           providerCount: costResult.costs.length,
         });
-        return snapshot;
+        return published;
       })
       .catch((error) => {
         costRefreshFailureCount += 1;
@@ -3406,29 +3715,35 @@ export function createUsageTrackingService({
    * read-heavy path costs at most three accepted events a day. Never allowed to
    * affect the read: analytics failing must not fail the Usage page.
    */
-  function captureScopeAnalytics(scope: AdeUsageScope): void {
-    if (!dependencies?.captureAnalytics) return;
+  function captureScopeAnalytics(usageScope: AdeUsageScope, scope: AttachedScope): void {
+    const capture = scope.captureAnalytics;
+    if (!capture) return;
     try {
-      dependencies.captureAnalytics(usageScopeSelectedCapture(scope));
+      capture(usageScopeSelectedCapture(usageScope));
     } catch (error) {
-      logger.debug("usage.scope_analytics_failed", { error: getErrorMessage(error) });
+      scope.logger.debug("usage.scope_analytics_failed", { error: getErrorMessage(error) });
     }
   }
 
-  async function getAdeUsageStats(args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats> {
+  async function getAdeUsageStats(
+    args: GetAdeUsageStatsArgs = {},
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeUsageStats> {
     const nowMs = Date.now();
     const scope = normalizeScope(args.scope);
-    captureScopeAnalytics(scope);
+    captureScopeAnalytics(scope, forScope);
     const range = resolveAdeUsageRange(args, nowMs);
     const exactRange = Boolean(args.since || args.until);
-    const cacheKey = githubStatsCacheKey(range, exactRange);
+    const cacheKey = githubStatsCacheKey(range, exactRange, forScope);
     const githubCached = githubStatsCache.get(cacheKey)?.stats ?? null;
-    const machineSnapshot = lastSnapshot ?? emptySnapshot();
+    const machineSnapshot = lastSnapshot;
+    const scopeProjectCosts = cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? [];
     const snapshot = scope === "project"
-      ? { ...machineSnapshot, costs: cachedProjectCosts }
+      ? { ...machineSnapshot, costs: scopeProjectCosts }
       : machineSnapshot;
     const providerHistoryMissing = costCacheTimestamp === 0;
-    const projectHistoryMissing = scope === "project" && !projectCostsReady;
+    const projectHistoryMissing = scope === "project"
+      && !cachedProjectCostsByRoot.has(scopeRootKey(forScope.projectRoot));
     const providerHistoryIncomplete = providerHistoryMissing || projectHistoryMissing;
     const providerHistoryStale = providerHistoryIncomplete
       || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS;
@@ -3441,12 +3756,12 @@ export function createUsageTrackingService({
       && nowMs >= costRefreshNextRetryAtMs;
     const githubNeedsRefresh = !githubCached || nowMs - (githubStatsCache.get(cacheKey)?.fetchedAtMs ?? 0) > GITHUB_STATS_CACHE_TTL_MS;
     if (providerNeedsRefresh || githubNeedsRefresh) {
-      refreshStatsInBackground(range, { provider: providerNeedsRefresh, github: githubNeedsRefresh }, exactRange);
+      refreshStatsInBackground(range, { provider: providerNeedsRefresh, github: githubNeedsRefresh }, exactRange, forScope);
     }
     const stats = collectAdeUsageStats({
       snapshot,
       githubStats: githubCached,
-      databaseStats: collectDatabaseStatsForRange(range),
+      databaseStats: collectDatabaseStatsForRange(range, forScope.db),
       args,
       nowMs,
     });
@@ -3513,49 +3828,59 @@ export function createUsageTrackingService({
     range: ResolvedAdeUsageRange,
     requested: { provider: boolean; github: boolean },
     exactRange = false,
+    forScope: AttachedScope = defaultScope,
   ): void {
-    const key = `${githubStatsCacheKey(range, exactRange)}:${requested.provider ? "provider" : ""}:${requested.github ? "github" : ""}`;
+    const key = `${githubStatsCacheKey(range, exactRange, forScope)}:${requested.provider ? "provider" : ""}:${requested.github ? "github" : ""}`;
     if (statsRefreshInFlight.has(key)) return;
     const task = (async () => {
       const work: Promise<unknown>[] = [];
       if (requested.provider) work.push(refreshHistory({ reason: "automatic" }));
-      if (requested.github) work.push(getGithubStatsForRange(range, exactRange, true));
+      if (requested.github) work.push(getGithubStatsForRange(range, exactRange, true, forScope));
       await Promise.allSettled(work);
       // History refresh emits when its ledger scan settles. GitHub can finish
       // later, so always emit again after its cache is populated.
-      if (requested.github) emitUpdate(lastSnapshot ?? emptySnapshot());
+      if (requested.github) publishSnapshot(lastSnapshot);
     })().finally(() => {
       statsRefreshInFlight.delete(key);
     });
     statsRefreshInFlight.set(key, task);
   }
 
-  function githubStatsCacheKey(range: ResolvedAdeUsageRange, exactRange = false): string {
+  function githubStatsCacheKey(
+    range: ResolvedAdeUsageRange,
+    exactRange = false,
+    forScope: AttachedScope = defaultScope,
+  ): string {
+    // GitHub activity is read from one repository, so the cache is keyed by the
+    // scope's project root as well: two projects on one brain must not serve
+    // each other's commit counts.
+    const scopeKey = scopeRootKey(forScope.projectRoot);
     // Preset ranges move by milliseconds on every request. Keying on `until`
     // made the old cache miss forever, so every Stats render launched `gh`.
     // Calendar-day buckets preserve exact-range semantics while making normal
     // day/week/month/year requests stable for the full cache TTL.
     if (exactRange) {
-      return `${range.preset}:${range.since ?? "all"}:${range.until}`;
+      return `${scopeKey}:${range.preset}:${range.since ?? "all"}:${range.until}`;
     }
     const untilDay = localDayKey(range.until);
     const sinceDay = range.since ? localDayKey(range.since) : "all";
-    return `${range.preset}:${sinceDay || "all"}:${untilDay}`;
+    return `${scopeKey}:${range.preset}:${sinceDay || "all"}:${untilDay}`;
   }
 
   async function getGithubStatsForRange(
     range: ResolvedAdeUsageRange,
     exactRange = false,
     waitForComplete = false,
+    forScope: AttachedScope = defaultScope,
   ): Promise<GitHubActivityStats> {
-    const cacheKey = githubStatsCacheKey(range, exactRange);
+    const cacheKey = githubStatsCacheKey(range, exactRange, forScope);
     const cached = githubStatsCache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAtMs < GITHUB_STATS_CACHE_TTL_MS) {
       return cached.stats;
     }
     let inFlight = githubStatsInFlight.get(cacheKey);
     if (!inFlight) {
-      inFlight = scanGitHubStatsForRange(range)
+      inFlight = scanGitHubStatsForRange(range, forScope.projectRoot)
         .catch((error) => makeEmptyGithubStats(getErrorMessage(error)))
         .then((statsForRange) => {
           githubStatsCache.set(cacheKey, { fetchedAtMs: Date.now(), stats: statsForRange });
@@ -3583,6 +3908,57 @@ export function createUsageTrackingService({
     }
   }
 
+  /**
+   * Scopes that asked for polling. The shared poller runs while at least one
+   * does and stops when the last one detaches, so a project closing does not
+   * take the machine's quota feed away from the projects still open.
+   */
+  const startedScopeKeys = new Set<string>();
+
+  function attachProjectScope(input: UsageTrackingProjectScopeInput) {
+    const scope = makeScope(input);
+    attachedScopes.set(scope.key, scope);
+    let detached = false;
+
+    const scopeStop = (): void => {
+      if (!startedScopeKeys.delete(scope.key)) return;
+      if (startedScopeKeys.size === 0) stop();
+    };
+
+    return {
+      start: (): void => {
+        if (detached || startedScopeKeys.has(scope.key)) return;
+        startedScopeKeys.add(scope.key);
+        start();
+      },
+      stop: scopeStop,
+      getUsageSnapshot,
+      noteQuotaDemand,
+      forceRefresh,
+      refreshHistory,
+      getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
+      getUsageRollup,
+      setAccountRollupFetcher,
+      applyAccountRollups,
+      poll,
+      /**
+       * Detach this project, not the machine's poller. The shared service is
+       * owned by the process and outlives every scope on it.
+       */
+      dispose: (): void => {
+        if (detached) return;
+        detached = true;
+        scopeStop();
+        if (attachedScopes.get(scope.key) === scope) attachedScopes.delete(scope.key);
+        const rootKey = scopeRootKey(scope.projectRoot);
+        if (rootKey
+          && !allScopes().some((other) => scopeRootKey(other.projectRoot) === rootKey)) {
+          cachedProjectCostsByRoot.delete(rootKey);
+        }
+      },
+    };
+  }
+
   return {
     start,
     stop,
@@ -3593,7 +3969,11 @@ export function createUsageTrackingService({
     getAdeUsageStats,
     getUsageRollup,
     setAccountRollupFetcher,
+    applyAccountRollups,
     poll,
+    attachProjectScope,
+    /** The producer identity every snapshot from this instance is stamped with. */
+    producerId,
     dispose: () => {
       disposed = true;
       ledgerAbortController.abort();
@@ -3601,6 +3981,16 @@ export function createUsageTrackingService({
     },
   };
 }
+
+/** One project's face on a machine-level tracker. See `attachProjectScope`. */
+export type UsageTrackingProjectScope = ReturnType<UsageTrackingService["attachProjectScope"]>;
+
+/**
+ * What a host consumes from usage tracking: either the machine-level tracker
+ * directly (desktop in-process, tests) or one project's scope on a shared one
+ * (the brain). Consumers depend on this, never on which of the two they hold.
+ */
+export type UsageTrackingHost = UsageTrackingService | UsageTrackingProjectScope;
 
 // ── Exported for testing ─────────────────────────────────────────
 export const _testing = {
@@ -3653,3 +4043,9 @@ export const _testing = {
   setDynamicTokenPricingForTest,
   pollCodexViaCliRpc,
 };
+
+export {
+  attachSharedUsageTrackingScope,
+  clearSharedUsageTrackingServicesForTesting,
+  peekSharedUsageTrackingService,
+} from "./sharedUsageTracking";

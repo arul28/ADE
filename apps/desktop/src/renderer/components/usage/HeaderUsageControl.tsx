@@ -171,13 +171,19 @@ export function HeaderUsageControl({
   });
   const { snapshot, refreshing, bindingRevision, refreshNow } = usage;
 
-  // Tick the "updated Xs ago" label only while the popup is open.
+  // Tick the "updated Xs ago" label only while the popup is open — it is the
+  // only place the label is drawn.
+  //
+  // `snapshot` is a dependency so the clock is re-seeded when one arrives
+  // rather than only when the popover opened. Two windows handed the same
+  // snapshot then measure its age from the same instant, instead of each from
+  // whenever its own popover happened to open.
   useEffect(() => {
     if (!open) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
     return () => window.clearInterval(timer);
-  }, [open]);
+  }, [open, snapshot]);
 
   // Drop the previous runtime's answer the moment the binding changes, so the
   // old project's meters are not drawn for the fraction of a second the new

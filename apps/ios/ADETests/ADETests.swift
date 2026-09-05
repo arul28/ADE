@@ -7810,7 +7810,8 @@ final class ADETests: XCTestCase {
       },
       "lastPolledAt": "2026-07-10T18:00:00.000Z",
       "errors": ["claude: API returned 429"],
-      "pacing": { "status": "on-track" }
+      "pacing": { "status": "on-track" },
+      "revision": { "producerId": "brain-1", "seq": 12 }
     }
     """
 

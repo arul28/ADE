@@ -85,7 +85,7 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
-import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
 import {
@@ -102,7 +102,7 @@ import {
 
 type SyncServiceArgs = {
   db: AdeDb;
-  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  usageTrackingService?: UsageTrackingHost | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
