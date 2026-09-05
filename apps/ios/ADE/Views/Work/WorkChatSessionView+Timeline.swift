@@ -408,6 +408,13 @@ extension WorkChatSessionView {
         enabled: isLive,
         onRecover: onRecoverCodexTurn
       )
+    } else if card.kind == "modelHandoff", card.metadata.count == 2 {
+      WorkModelHandoffDivider(
+        fromProvider: card.metadata[0],
+        toProvider: card.metadata[1],
+        // The card title doubles as the divider's accessibility label.
+        accessibilityLabel: card.title
+      )
     } else if card.kind == "turnDiagnostics" {
       WorkTurnDiagnosticsDisclosureView(
         card: card,

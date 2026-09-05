@@ -5078,12 +5078,138 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toModelId, "anthropic/claude-sonnet-5")
     XCTAssertEqual(turnId, "turn-handoff")
 
-    guard case .systemNotice(let kind, let message, _, let noticeTurnId, _) = makeWorkChatEvent(from: envelope.event) else {
-      return XCTFail("Expected model_handoff to map to a visible system notice.")
+    let liveEvent = makeWorkChatEvent(from: envelope.event)
+    guard case .systemNotice(let kind, let message, let detail, let noticeTurnId, _) = liveEvent else {
+      return XCTFail("Expected model_handoff to map to a handoff notice.")
     }
-    XCTAssertEqual(kind, "info")
+    XCTAssertEqual(kind, AgentChatNoticeKind.modelHandoff.rawValue)
     XCTAssertEqual(message, "Model handoff · Codex → Claude")
     XCTAssertEqual(noticeTurnId, "turn-handoff")
+    XCTAssertEqual(workModelHandoffProviders(fromDetail: detail)?.from, "codex")
+    XCTAssertEqual(workModelHandoffProviders(fromDetail: detail)?.to, "claude")
+
+    // The divider is drawn from the card, so the card — not the notice text —
+    // is the contract: a dedicated kind plus the provider pair in `metadata`.
+    // Build the live envelope from the parsed transcript one so the event is
+    // the only thing that differs between the two paths.
+    let parsed = try XCTUnwrap(parseWorkChatTranscript(json).first)
+    let liveCard = try XCTUnwrap(buildWorkEventCards(from: [
+      WorkChatEnvelope(
+        sessionId: parsed.sessionId,
+        timestamp: parsed.timestamp,
+        sequence: parsed.sequence,
+        event: liveEvent
+      )
+    ]).first)
+    XCTAssertEqual(liveCard.kind, "modelHandoff")
+    XCTAssertEqual(liveCard.metadata, ["codex", "claude"])
+    XCTAssertEqual(liveCard.title, "Model handoff · Codex → Claude")
+
+    // A replayed transcript has to land on the identical shape; the live and
+    // transcript paths are separate decoders.
+    XCTAssertEqual(buildWorkEventCards(from: [parsed]), [liveCard])
+  }
+
+  /// Same-provider transitions are not handoffs. The desktop stopped emitting
+  /// them, but an old transcript can still carry "Claude → Claude".
+  func testModelHandoffSameProviderProducesNoCard() throws {
+    let sameProvider = parseWorkChatTranscript("""
+    {
+      "sessionId": "session-handoff",
+      "timestamp": "2026-09-01T00:00:00.000Z",
+      "sequence": 9,
+      "event": {
+        "type": "model_handoff",
+        "fromProvider": "claude",
+        "toProvider": "claude",
+        "fromModelId": "anthropic/claude-opus-5",
+        "toModelId": "anthropic/claude-fable-5-1",
+        "turnId": "turn-same"
+      }
+    }
+    """)
+    XCTAssertFalse(sameProvider.isEmpty, "The transcript row itself still parses.")
+    XCTAssertTrue(buildWorkEventCards(from: sameProvider).isEmpty)
+
+    // A detail carrying more than the two packed halves is malformed, not a
+    // handoff with a stray suffix.
+    XCTAssertNil(workModelHandoffProviders(fromDetail: "claude|codex|extra"))
+  }
+
+  /// The new-chat header sheds branding, then the usage carousel, then the
+  /// action chips as the scroll area shrinks. Shrinking is unconditional: only
+  /// growing back pays the hysteresis, so a keyboard opening must collapse the
+  /// header at the exact published thresholds (full 300, compact 190,
+  /// minimal 96) with nothing held back.
+  func testNewChatHeaderTierCollapsesAtEachThresholdWhenHeightShrinks() {
+    let cases: [(available: CGFloat, current: WorkNewChatHeaderTier, expected: WorkNewChatHeaderTier)] = [
+      (1000, .full, .full),
+      (300, .full, .full),
+      (299.9, .full, .compact),
+      (190, .compact, .compact),
+      (189.9, .compact, .minimal),
+      (96, .minimal, .minimal),
+      (95.9, .minimal, .hidden),
+      (0, .full, .hidden),
+      // A collapse can skip tiers: the keyboard takes the whole header at once.
+      (95, .full, .hidden),
+    ]
+
+    for testCase in cases {
+      XCTAssertEqual(
+        WorkNewChatHeaderTier.resolve(available: testCase.available, current: testCase.current),
+        testCase.expected,
+        "available=\(testCase.available) current=\(testCase.current)"
+      )
+    }
+  }
+
+  /// Stepping *up* needs 24pt more than the tier's own threshold. Without it,
+  /// revealing content that re-consumes the height would immediately re-collapse
+  /// the header and the two tiers would oscillate on every layout pass.
+  func testNewChatHeaderTierNeedsHysteresisToExpandAgain() {
+    let cases: [(available: CGFloat, current: WorkNewChatHeaderTier, expected: WorkNewChatHeaderTier)] = [
+      // minimal: 96 + 24
+      (119, .hidden, .hidden),
+      (120, .hidden, .minimal),
+      // compact: 190 + 24
+      (213, .minimal, .minimal),
+      (214, .minimal, .compact),
+      // full: 300 + 24
+      (323, .compact, .compact),
+      (324, .compact, .full),
+    ]
+
+    for testCase in cases {
+      XCTAssertEqual(
+        WorkNewChatHeaderTier.resolve(available: testCase.available, current: testCase.current),
+        testCase.expected,
+        "available=\(testCase.available) current=\(testCase.current)"
+      )
+    }
+
+    // The height that just expanded the header must be stable at the new tier:
+    // re-resolving from the tier it produced cannot bounce back down.
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 120, current: .minimal), .minimal)
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 214, current: .compact), .compact)
+    XCTAssertEqual(WorkNewChatHeaderTier.resolve(available: 324, current: .full), .full)
+  }
+
+  /// The tiers gate real content, so the branding/carousel/chips flags must stay
+  /// aligned with the ordering the resolver relies on.
+  func testNewChatHeaderTierContentFlagsFollowTheOrdering() {
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsActionChips),
+      [false, true, true, true]
+    )
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsUsageCarousel),
+      [false, false, true, true]
+    )
+    XCTAssertEqual(
+      [WorkNewChatHeaderTier.hidden, .minimal, .compact, .full].map(\.showsBranding),
+      [false, false, false, true]
+    )
   }
 
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {

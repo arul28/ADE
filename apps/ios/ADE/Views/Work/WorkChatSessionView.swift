@@ -22,6 +22,10 @@ let workChatSubagentActivePopupHeight: CGFloat = 34
 /// target, so the row that holds them has to be 44 too — pinning it to 34 was
 /// what squeezed the PR chip's label into an ellipsis.
 let workChatComposerChipRowHeight: CGFloat = 44
+/// Gap between the floating badge chip row and the bottom of the transcript
+/// viewport. The row floats over the thread instead of sitting in the
+/// composer, so this is pure visual breathing room.
+let workChatFloatingBadgeRowBottomPadding: CGFloat = 12
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
@@ -1372,8 +1376,75 @@ struct WorkChatSessionView: View {
     return nil
   }
 
+  /// Total height the floating badge chip row occupies over the transcript:
+  /// the chip row itself plus the padding that holds it off the bottom edge.
+  private var floatingBadgeBandHeight: CGFloat {
+    workChatComposerChipRowHeight + workChatFloatingBadgeRowBottomPadding
+  }
+
+  /// How far the scrim gradient fades above the badge band.
+  private var scrimFadeHeight: CGFloat { 20 }
+
   var jumpToLatestPillBottomPadding: CGFloat {
-    16
+    // The badge chip row floats over the same bottom-left corner of the
+    // transcript. Stack the pill above it so both stay fully visible.
+    guard showsComposerBadgeChips else { return 16 }
+    let gapAboveBadges: CGFloat = 8
+    return floatingBadgeBandHeight + gapAboveBadges
+  }
+
+  /// How many items the Chat Info sheet would show. Drives both the badge's
+  /// count and whether it exists at all.
+  var composerBadgeChatInfoCount: Int {
+    workChatInfoItemCount(
+      subagents: subagentSnapshots,
+      scheduledWork: scheduledWorkSnapshots
+    )
+  }
+
+  var showsComposerChatInfoBadge: Bool {
+    inputLockMessage == nil && composerBadgeChatInfoCount > 0 && onOpenChatInfo != nil
+  }
+
+  var showsComposerPrBadge: Bool {
+    inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
+  }
+
+  /// Whether the floating badge row is on screen. Also reserves transcript
+  /// tail space so the last message can still scroll clear of the chips.
+  var showsComposerBadgeChips: Bool {
+    showsComposerChatInfoBadge || showsComposerPrBadge
+  }
+
+  /// Chat-info / PR badges. These used to be a fixed 44pt row inside
+  /// `composerInset`, which cost the thread that much height on every chat
+  /// that had a badge. They now float over the transcript like the
+  /// "jump to latest" pill, so the thread scrolls behind them.
+  @ViewBuilder
+  var composerBadgeChipRow: some View {
+    let chatInfoCount = composerBadgeChatInfoCount
+    let chips = HStack(spacing: 8) {
+      if showsComposerChatInfoBadge, let onOpenChatInfo {
+        WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
+      }
+      if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
+        WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
+      }
+    }
+    // Today's two chips always fit, and a plain HStack leaves the rest of the
+    // row non-interactive — important now that the row floats over the
+    // transcript, since a full-width horizontal ScrollView would swallow
+    // vertical drags in that band. A future chip that overflows still gets the
+    // scroller (and then the band is genuinely its own).
+    ViewThatFits(in: .horizontal) {
+      chips
+      ScrollView(.horizontal, showsIndicators: false) {
+        chips.padding(.trailing, 8)
+      }
+      .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(height: workChatComposerChipRowHeight, alignment: .leading)
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -1591,33 +1662,6 @@ struct WorkChatSessionView: View {
         WorkClaudeGoalPill(goal: claudeGoal)
       }
 
-      // One chip per destination. Subagents used to get their own capsule that
-      // opened the very same sheet as Chat Info; the count now covers both.
-      let chatInfoCount = workChatInfoItemCount(
-        subagents: subagentSnapshots,
-        scheduledWork: scheduledWorkSnapshots
-      )
-      let showsChatInfoBadge = inputLockMessage == nil && chatInfoCount > 0 && onOpenChatInfo != nil
-      let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
-      if showsChatInfoBadge || showsPrBadge {
-        // Horizontally scrollable so a future chip can never truncate the ones
-        // beside it — it just scrolls out of reach instead.
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            if showsChatInfoBadge, let onOpenChatInfo {
-              WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
-            }
-            if showsPrBadge, let prBadge, let onOpenPrDetails {
-              WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
-            }
-          }
-          .padding(.trailing, 8)
-        }
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: workChatComposerChipRowHeight, alignment: .leading)
-      }
-
       if !pendingSteers.isEmpty {
         WorkQueuedSteerStrip(
           steers: pendingSteers,
@@ -1796,7 +1840,14 @@ struct WorkChatSessionView: View {
             streamingStatusSection
 
             Color.clear
-              .frame(height: workChatContentBottomGutterHeight + workChatBottomAnchorSpacerHeight)
+              .frame(
+                height: workChatContentBottomGutterHeight
+                  + workChatBottomAnchorSpacerHeight
+                  // The badge chips float over the transcript, so the tail has
+                  // to reserve their height or the last message hides behind
+                  // them.
+                  + (showsComposerBadgeChips ? floatingBadgeBandHeight : 0)
+              )
               .id("chat-end")
               .transaction { transaction in
                 transaction.animation = nil
@@ -1954,6 +2005,34 @@ struct WorkChatSessionView: View {
   private func chatColumn(proxy: ScrollViewProxy) -> some View {
       VStack(spacing: 0) {
         transcriptScrollView(proxy: proxy)
+          .overlay(alignment: .bottomLeading) {
+            // Floats over the thread instead of consuming composer height, so
+            // the transcript scrolls behind the badges (same treatment as the
+            // "jump to latest" pill, which stacks above these).
+            Group {
+              if showsComposerBadgeChips {
+                composerBadgeChipRow
+                  .padding(.horizontal, 16)
+                  .padding(.bottom, workChatFloatingBadgeRowBottomPadding)
+                  .background(alignment: .bottom) {
+                    // Short scrim so capsule text stays legible over prose the
+                    // chips are now floating on top of.
+                    LinearGradient(
+                      colors: [
+                        workChatCanvasBackground.opacity(0),
+                        workChatCanvasBackground.opacity(0.9)
+                      ],
+                      startPoint: .top,
+                      endPoint: .bottom
+                    )
+                    .frame(height: floatingBadgeBandHeight + scrimFadeHeight)
+                    .allowsHitTesting(false)
+                  }
+                  .transition(.opacity)
+              }
+            }
+            .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
+          }
 
         composerInset(proxy: proxy)
           .fixedSize(horizontal: false, vertical: true)

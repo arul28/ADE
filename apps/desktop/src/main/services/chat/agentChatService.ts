@@ -48748,11 +48748,19 @@ export function createAgentChatService(args: {
         );
       }
 
+      // A handoff chip marks a change of *agent*, not a change of model. Only
+      // a different top-level ADE provider group qualifies: claude -> codex is
+      // a handoff, Claude Opus -> Claude Fable is not. Aggregator providers
+      // (opencode, cursor, droid) collapse to a single group, so switching the
+      // model they front is also not a handoff. `modelChanged` stays broader on
+      // purpose — it still drives the runtime teardown and title re-adoption
+      // below, which any model switch needs.
+      const providerChanged = previousProvider !== nextProvider;
       const modelChanged =
-        previousProvider !== nextProvider
+        providerChanged
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
-      if (modelChanged) {
+      if (providerChanged) {
         modelHandoff = {
           fromProvider: previousProvider,
           toProvider: nextProvider,

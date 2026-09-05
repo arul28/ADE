@@ -656,6 +656,26 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
   }
 }
 
+#Preview("Lane picker sheet") {
+  WorkLanePickerMenuPreviewHost()
+    .preferredColorScheme(.dark)
+}
+
+private struct WorkLanePickerMenuPreviewHost: View {
+  @State private var searchQuery = ""
+
+  var body: some View {
+    WorkLanePickerMenu(
+      lanes: [WorkPreviewData.lane],
+      allLanesEmpty: false,
+      selectedLaneId: WorkPreviewData.lane.id,
+      showsAutoCreateOption: true,
+      searchQuery: $searchQuery,
+      onSelect: { _ in }
+    )
+  }
+}
+
 #Preview("Model picker") {
   WorkModelPickerSheet(
     currentModelId: WorkPreviewData.chatSummary.model,

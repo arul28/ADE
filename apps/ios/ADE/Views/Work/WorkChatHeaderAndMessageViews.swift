@@ -1256,6 +1256,57 @@ struct WorkTurnSeparatorView: View {
   }
 }
 
+/// Provider handoff divider: the transcript's "a different agent picked this
+/// thread up" marker. Mirrors desktop `AgentChatMessageList` — hairline, the
+/// outgoing provider's logo, a small uppercase "handoff" label, an arrow, the
+/// incoming provider's logo, hairline. Takes the two providers directly; the
+/// same-provider filter and the `metadata` unpack live in `eventCard` and the
+/// timeline call site, not here.
+struct WorkModelHandoffDivider: View {
+  let fromProvider: String
+  let toProvider: String
+  let accessibilityLabel: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      hairline
+      HStack(spacing: 8) {
+        providerMark(fromProvider)
+        Text("Handoff")
+          .font(.system(size: 10, weight: .semibold))
+          .textCase(.uppercase)
+          .tracking(1.4)
+          .foregroundStyle(ADEColor.textMuted)
+        Image(systemName: "arrow.right")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+        providerMark(toProvider)
+      }
+      hairline
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityLabel)
+  }
+
+  private func providerMark(_ provider: String) -> some View {
+    WorkProviderBareLogo(
+      provider: provider,
+      fallbackSymbol: "terminal.fill",
+      tint: ADEColor.textMuted,
+      size: 15
+    )
+    .opacity(0.9)
+  }
+
+  private var hairline: some View {
+    Rectangle()
+      .fill(ADEColor.glassBorder)
+      .frame(height: 0.6)
+  }
+}
+
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var toolCount: Int = 0

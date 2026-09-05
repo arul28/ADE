@@ -4404,6 +4404,34 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("does not record a handoff when the model switch stays inside one provider", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.updateSession({
+        sessionId: created.id,
+        modelId: "anthropic/claude-opus-5" as never,
+      });
+
+      // The chip means "a different agent picked this thread up". Opus and
+      // Sonnet are the same agent, so emitting a handoff here produced the
+      // nonsense card "Claude -> Claude" in the transcript.
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("claude");
+      expect(summary?.modelId).toBe("anthropic/claude-opus-5");
+      expect(summary?.modelHandoffHistory ?? []).toEqual([]);
+      expect(events.map((event) => event.event)).not.toContainEqual(
+        expect.objectContaining({ type: "model_handoff" }),
+      );
+    });
+
     it("refuses a model switch onto a provider that cannot carry the injected servers", async () => {
       const { service } = createService();
       const created = await service.createSession({

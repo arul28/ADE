@@ -267,11 +267,21 @@ that could not work without it.
   provider and snap the picker back to a default. The pending pick is scoped to
   that chat: switching to another locked Work chat hydrates the incoming
   session instead of carrying the pick across. Send applies the existing
-  handoff together with those pending native controls, records a `model_handoff`
-  divider with the previous and current provider marks (20px marks, one
-  baseline), and keeps the current provider mark stacked above prior handoff
-  marks on the Work session card. The TUI prints `[model] Codex → Claude`.
-  iOS renders the same event as a system notice (`Model handoff · Claude → Codex`).
+  handoff together with those pending native controls. A `model_handoff`
+  divider is recorded only when the *top-level provider group* actually
+  changes — `claude` → `codex` is a handoff; Claude Opus → Claude Fable is
+  not, and neither is swapping the vendor model fronted by an aggregator
+  provider (OpenCode, Cursor, and Droid each collapse to a single group).
+  A same-provider switch is still a full model change: it tears down and
+  rebinds the provider runtime and re-adopts the title, it just emits no
+  handoff, because a divider with the same logo on both sides says nothing.
+  When one is emitted, desktop draws the divider with the previous and
+  current provider marks (20px marks, one baseline) and keeps the current
+  provider mark stacked above prior handoff marks on the Work session card.
+  The TUI prints `[model] Codex → Claude`. iOS draws its own
+  logo → `HANDOFF` → logo divider. All three renderers additionally drop a
+  same-provider pair at render time, so an older transcript that already
+  carries `Claude → Claude` stops showing it.
 
 - **Text input** with auto-grow up to `composerMaxHeightPx`. Grid tiles
   pass a fixed 144 px ceiling (computed statically from `layoutVariant`)

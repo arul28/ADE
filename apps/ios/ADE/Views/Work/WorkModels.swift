@@ -261,6 +261,27 @@ func workModelHandoffNoticeMessage(fromProvider: String, toProvider: String) -> 
   return "Model handoff · \(from) → \(to)"
 }
 
+/// Packs the two provider ids into the notice `detail` field. Provider ids are
+/// slugs (`claude`, `codex`, `opencode`, …) so the pipe is unambiguous, and the
+/// notice payload stays a plain `String?` — no model change needed.
+func workModelHandoffNoticeDetail(fromProvider: String, toProvider: String) -> String {
+  "\(fromProvider)|\(toProvider)"
+}
+
+/// Inverse of `workModelHandoffNoticeDetail`. Returns nil when either half is
+/// missing — or when the detail carries anything other than exactly two
+/// pipe-separated halves — so a malformed row is dropped rather than drawn
+/// half-empty.
+func workModelHandoffProviders(fromDetail detail: String?) -> (from: String, to: String)? {
+  guard let detail else { return nil }
+  let parts = detail.split(separator: "|", omittingEmptySubsequences: false)
+  guard parts.count == 2 else { return nil }
+  let from = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+  let to = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !from.isEmpty, !to.isEmpty else { return nil }
+  return (from, to)
+}
+
 func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
   let rawSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
   let provider = rawSource?.isEmpty == false ? rawSource : fallbackProvider

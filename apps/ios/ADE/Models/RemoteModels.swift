@@ -1859,6 +1859,9 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case hostAsleep = "host_asleep"
   /// Resumed half of the same chip.
   case hostAwake = "host_awake"
+  /// Provider handoff divider. Synthesized locally from the `model_handoff`
+  /// event — see `workModelHandoffNoticeDetail`.
+  case modelHandoff = "model_handoff"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an

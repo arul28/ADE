@@ -1236,6 +1236,28 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(divider.querySelector(".items-center.h-6")).toBeTruthy();
   });
 
+  it("draws no handoff divider when the provider did not actually change", () => {
+    const { container } = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "claude",
+          fromModelId: "anthropic/claude-opus-5",
+          toModelId: "anthropic/claude-sonnet-5",
+        },
+      },
+    ]);
+
+    expect(screen.queryByTestId("model-handoff-event")).toBeNull();
+    // The envelope is filtered out upstream, so no row wrapper is mounted at
+    // all — an empty row would still consume a `--chat-row-gap`.
+    const rowList = container.querySelector('[class*="--chat-row-gap"]');
+    expect(rowList?.children.length ?? 0).toBe(0);
+  });
+
   it("draws exactly one fork-history divider between seeded history and the first live event", async () => {
     renderMessageList([
       {

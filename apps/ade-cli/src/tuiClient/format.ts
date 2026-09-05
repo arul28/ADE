@@ -793,6 +793,9 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "model_handoff") {
+      // Same-provider transitions are not handoffs (mirrors desktop/iOS): skip
+      // the line rather than print "Claude → Claude".
+      if (event.fromProvider === event.toProvider) continue;
       const from = providerDisplayLabel(event.fromProvider, "previous model");
       const to = providerDisplayLabel(event.toProvider, "new model");
       lines.push({ id, tone: "notice", body: `[model] ${from} → ${to}` });

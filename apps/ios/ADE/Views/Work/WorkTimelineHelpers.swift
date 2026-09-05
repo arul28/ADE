@@ -3258,6 +3258,29 @@ private func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // ── Provider handoff ──
+      // Its own card kind so the timeline can draw the desktop divider
+      // (hairline · from logo · HANDOFF · arrow · to logo · hairline) instead
+      // of a text ribbon. A same-provider pair is not a handoff — the desktop
+      // no longer emits one, but old transcripts can still hold "Claude →
+      // Claude", so drop it here rather than draw a chip that says nothing.
+      if kind == AgentChatNoticeKind.modelHandoff.rawValue {
+        guard let providers = workModelHandoffProviders(fromDetail: detail),
+              providers.from != providers.to
+        else { return nil }
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "modelHandoff",
+          // Doubles as the accessibility label for the logo-only divider.
+          title: message,
+          icon: "arrow.left.arrow.right",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [providers.from, providers.to]
+        )
+      }
       // ── Host sleep: ONE chip per sleep ──
       // The paused half creates the row; the resumed half carries the same
       // sleep id, so it lands on that row and replaces it rather than stacking

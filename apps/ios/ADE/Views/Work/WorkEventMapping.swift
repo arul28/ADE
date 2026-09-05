@@ -684,10 +684,13 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     // this decoder has no envelope context.
     return .adeCard(card)
   case .modelHandoff(let fromProvider, let toProvider, _, _, let turnId):
+    // Rides the notice channel, but with its own kind and the provider pair in
+    // `detail` so `buildWorkEventCards` can paint the desktop-style
+    // logo → logo divider. The message stays the VoiceOver label.
     return .systemNotice(
-      kind: "info",
+      kind: AgentChatNoticeKind.modelHandoff.rawValue,
       message: workModelHandoffNoticeMessage(fromProvider: fromProvider, toProvider: toProvider),
-      detail: nil,
+      detail: workModelHandoffNoticeDetail(fromProvider: fromProvider, toProvider: toProvider),
       turnId: turnId,
       steerId: nil
     )
