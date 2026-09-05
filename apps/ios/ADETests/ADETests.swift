@@ -5130,6 +5130,10 @@ final class ADETests: XCTestCase {
     """)
     XCTAssertFalse(sameProvider.isEmpty, "The transcript row itself still parses.")
     XCTAssertTrue(buildWorkEventCards(from: sameProvider).isEmpty)
+
+    // A detail carrying more than the two packed halves is malformed, not a
+    // handoff with a stray suffix.
+    XCTAssertNil(workModelHandoffProviders(fromDetail: "claude|codex|extra"))
   }
 
   /// The new-chat header sheds branding, then the usage carousel, then the

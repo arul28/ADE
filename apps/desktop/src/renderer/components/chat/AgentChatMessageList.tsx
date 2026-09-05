@@ -2277,6 +2277,20 @@ function isAutomaticContextUsageEvent(event: { type: string; origin?: string }):
   return event.type === "context_usage" && event.origin !== undefined && event.origin !== "command";
 }
 
+/**
+ * A same-provider transition is not a handoff. The service no longer emits one,
+ * but an old transcript can still carry "Claude -> Claude"; drawing a divider
+ * with the same logo on both sides says nothing. Filtered out alongside the
+ * automatic context-usage snapshots so no empty row (and its gap) is mounted.
+ */
+function isSameProviderModelHandoffEvent(event: {
+  type: string;
+  fromProvider?: string;
+  toProvider?: string;
+}): boolean {
+  return event.type === "model_handoff" && event.fromProvider === event.toProvider;
+}
+
 function QueueRecoveryCard({
   recoveryId,
   messageCount,
@@ -2430,10 +2444,8 @@ function renderEvent(
   const event = envelope.event;
 
   if (event.type === "model_handoff") {
-    // A same-provider transition is not a handoff. The service no longer emits
-    // one, but an old transcript can still carry "Claude -> Claude"; drawing a
-    // divider with the same logo on both sides says nothing.
-    if (event.fromProvider === event.toProvider) return null;
+    // Same-provider handoffs never reach here: they are dropped upstream by
+    // `isSameProviderModelHandoffEvent` so they do not mount an empty row.
     const fromLabel = providerDisplayLabel(event.fromProvider, "Previous model");
     const toLabel = providerDisplayLabel(event.toProvider, "New model");
     return (
@@ -5646,10 +5658,15 @@ function AgentChatMessageListMain({
     return byRowKey;
   }, [rows]);
   const allGroupedRows = useMemo(
-    // Drop automatic context-usage snapshots before they become flex rows: an
-    // empty (null-rendered) row still consumes a `--chat-row-gap` on each side,
-    // so leaving them in would stack blank gaps during a streaming turn.
-    () => groupChatTranscriptRows(rows).filter((row) => !isAutomaticContextUsageEvent(row.event)),
+    // Drop automatic context-usage snapshots and same-provider "handoffs"
+    // before they become flex rows: an empty (null-rendered) row still consumes
+    // a `--chat-row-gap` on each side, so leaving them in would stack blank
+    // gaps during a streaming turn.
+    () =>
+      groupChatTranscriptRows(rows).filter(
+        (row) =>
+          !isAutomaticContextUsageEvent(row.event) && !isSameProviderModelHandoffEvent(row.event),
+      ),
     [rows],
   );
   // Same lookup-map shape as turnProofByRowKey / turnEndDurationByRowKey rather

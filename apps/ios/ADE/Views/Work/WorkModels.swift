@@ -269,10 +269,12 @@ func workModelHandoffNoticeDetail(fromProvider: String, toProvider: String) -> S
 }
 
 /// Inverse of `workModelHandoffNoticeDetail`. Returns nil when either half is
-/// missing so a malformed row is dropped rather than drawn half-empty.
+/// missing — or when the detail carries anything other than exactly two
+/// pipe-separated halves — so a malformed row is dropped rather than drawn
+/// half-empty.
 func workModelHandoffProviders(fromDetail detail: String?) -> (from: String, to: String)? {
   guard let detail else { return nil }
-  let parts = detail.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+  let parts = detail.split(separator: "|", omittingEmptySubsequences: false)
   guard parts.count == 2 else { return nil }
   let from = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
   let to = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
