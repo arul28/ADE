@@ -148,8 +148,6 @@ describe("renderChatLines", () => {
     // Swapping Opus for Sonnet is the same agent, so "[model] Claude → Claude"
     // is noise. Desktop and iOS drop the row too; the TUI must agree.
     expect(lines).toHaveLength(0);
-    expect(lines.some((line) => line.body.includes("[model]"))).toBe(false);
-    expect(lines.some((line) => line.tone === "notice")).toBe(false);
   });
 
   it("LRU-caches assistant markdown parses by message text", () => {
