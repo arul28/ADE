@@ -68,6 +68,9 @@ import type {
   BuiltInBrowserDragArgs,
   BuiltInBrowserEmulationResult,
   BuiltInBrowserEmulationState,
+  DevServerRecord,
+  DevServersArgs,
+  DevServersResult,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
@@ -130,9 +133,12 @@ import {
   resolveBuiltInBrowserUploadPaths,
   type BuiltInBrowserNetworkLogStore,
 } from "./builtInBrowserCapabilities";
+import { devServerRegistry as sharedDevServerRegistry } from "../devServers/devServerRegistry";
+import type { DevServerRegistry } from "../devServers/devServerRegistry";
 import {
   BUILT_IN_BROWSER_EMULATION_PRESETS,
   builtInBrowserEmulationMetrics,
+  builtInBrowserEmulationUserAgentMetadata,
   resolveBuiltInBrowserEmulation,
 } from "../../../shared/builtInBrowserEmulation";
 import { createBuiltInBrowserPreviewStreams } from "./builtInBrowserPreviewStream";
@@ -294,6 +300,14 @@ type BrowserTabState = {
   handoff: BrowserTabHandoffState | null;
   zoomFactor: number;
   emulation: BuiltInBrowserEmulationState | null;
+  /**
+   * The tab was created with no URL, so it is parked on `about:blank` as a
+   * launchpad rather than a page. Cleared the moment it navigates anywhere.
+   */
+  isLaunchpad: boolean;
+  /** Last favicon Chromium reported, and the origin it belongs to. */
+  faviconUrl: string | null;
+  faviconOrigin: string | null;
   devToolsMode: BuiltInBrowserDevToolsMode | null;
   networkLoggingEnabled: boolean;
   networkLog: BuiltInBrowserNetworkLogStore;
@@ -308,10 +322,19 @@ type BrowserTabState = {
   consoleErrorCount: number;
   failedRequestCount: number;
   /** CDP owners that must keep the debugger attached between actions. */
-  debuggerHolds: Set<"network">;
+  debuggerHolds: Set<BrowserDebuggerHoldOwner>;
   cdpListener: DebuggerMessageListener | null;
   findRequestId: number | null;
 };
+
+/**
+ * CDP consumers that need the debugger attached across many commands.
+ *
+ * `network` is the opt-in request log; `emulation` is a device override, which
+ * Chromium drops the instant the DevTools session that set it detaches — which
+ * is exactly why device presets used to change the label and nothing else.
+ */
+type BrowserDebuggerHoldOwner = "network" | "emulation";
 
 /**
  * Side-channel for the parts of a login handoff that are not the browser's job:
@@ -462,6 +485,17 @@ export function createBuiltInBrowserService(args: {
   createRecordingWindow?: (() => CaptureWindowLike) | null;
   /** Test seam that replaces the whole recorder (skips Electron entirely). */
   createTabRecorder?: BuiltInBrowserRecorderFactory | null;
+  /**
+   * Passive dev-server discovery fed by the PTY output pipeline. Defaults to
+   * the process-wide registry; tests inject their own.
+   */
+  devServers?: DevServerRegistry | null;
+  /**
+   * `browser.autoOpenDevServer` for the project. Defaults to enabled — the
+   * setting exists so a person who does not want ADE opening tabs can say so,
+   * not so the feature has to be discovered before it works.
+   */
+  isDevServerAutoOpenEnabled?: (() => boolean | Promise<boolean>) | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -741,6 +775,100 @@ export function createBuiltInBrowserService(args: {
     return activeService();
   };
 
+  /* ── Dev-server discovery ───────────────────────────────────────────────── */
+
+  const devServers = args.devServers ?? sharedDevServerRegistry;
+  /** `${laneId}:${port}` keys already auto-opened during this app session. */
+  const autoOpenedDevServers = new Set<string>();
+
+  const allWindowServices = (): WindowBrowserService[] => [
+    ...[...windowServices.values()].map((entry) => entry.service),
+    ...fallbackServices.values(),
+  ];
+
+  /**
+   * Picks the collection a detected dev server belongs to.
+   *
+   * A lane whose chat already holds a browser tab gets the new tab in the same
+   * pane it is already using. Otherwise the only safe target is a Browser tool
+   * with nothing open at all: dropping a tab into a pane someone is working in
+   * would be exactly the kind of surprise this feature must not cause.
+   */
+  const devServerTargetService = (laneId: string | null): WindowBrowserService | null => {
+    const services = allWindowServices();
+    if (laneId) {
+      for (const service of services) {
+        if (service.getStatus().tabs.some((tab) => tab.ownerLaneId === laneId)) return service;
+      }
+    }
+    const active = services.length > 0 ? activeService() : null;
+    if (active && active.getStatus().tabs.length === 0) return active;
+    return null;
+  };
+
+  const handleDevServerDetected = async (record: DevServerRecord): Promise<void> => {
+    const laneId = record.source.laneId;
+    const key = `${laneId ?? ""}:${record.port}`;
+    // Once per (lane, port) per app session: a dev server that restarts twenty
+    // times during a watch run must not open twenty tabs.
+    if (autoOpenedDevServers.has(key)) return;
+    autoOpenedDevServers.add(key);
+    let enabled = true;
+    try {
+      enabled = (await args.isDevServerAutoOpenEnabled?.()) ?? true;
+    } catch {
+      enabled = true;
+    }
+    const service = enabled ? devServerTargetService(laneId) : null;
+    if (!service) {
+      // Still tell surfaces about it: the launchpad chips and the corner card
+      // want the server even when nothing was opened for it.
+      args.onEvent?.({
+        type: "dev-server-detected",
+        server: record,
+        tabId: null,
+        autoOpened: false,
+        status: activeService().getStatus(),
+        detectedAt: record.detectedAt,
+      }, null);
+      return;
+    }
+    // Claiming the tab for the lane is what lets the next detection find "the
+    // pane this lane is already using" — but a claim also puts the open through
+    // the agent-origin gate, and a localhost origin that has been granted a
+    // privileged permission would raise a native prompt. An unattended
+    // background open must never do that, so in that one case the tab opens
+    // unclaimed rather than interrupting anyone.
+    const claimWouldPrompt = laneId != null
+      && agentAccessController.isUrlAccessRequiredSync(record.url, { laneId, chatSessionId: null });
+    // Background tab, no panel request, no focus steal: the person finds out
+    // from the corner card, not by having their pane yanked.
+    const status = await service.createTab({
+      url: record.url,
+      activate: false,
+      openPanel: false,
+      ...(laneId && !claimWouldPrompt ? { laneId } : {}),
+    });
+    const openedTabId = status.tabs.at(-1)?.id ?? null;
+    args.onEvent?.({
+      type: "dev-server-detected",
+      server: record,
+      tabId: openedTabId,
+      autoOpened: true,
+      status,
+      detectedAt: record.detectedAt,
+    }, null);
+  };
+
+  const unsubscribeDevServers = devServers.onDetected((record) => {
+    void handleDevServerDetected(record).catch((error) => {
+      args.getLogger?.().debug("built_in_browser.dev_server_auto_open_failed", {
+        port: record.port,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+
   const flushStorage = async (): Promise<void> => {
     const startedAt = Date.now();
     await profileMigrationPromise;
@@ -770,6 +898,13 @@ export function createBuiltInBrowserService(args: {
 
   return {
     flushStorage,
+    /** Stops the dev-server subscription; used when a test disposes a service. */
+    stopDevServerWatch(): void {
+      unsubscribeDevServers();
+    },
+    getDevServers(input: DevServersArgs = {}): DevServersResult {
+      return { servers: devServers.list(input) };
+    },
     listPermissions(): BuiltInBrowserPermissionsResult {
       return { permissions: permissionController.list() };
     },
@@ -1929,16 +2064,38 @@ function createBuiltInBrowserWindowService(args: {
       noteNetworkActivity(tabForWebContents(wc));
       emitStatus();
     });
-    wc.on("did-navigate", () => {
+    wc.on("did-navigate", (_event, url: string) => {
       const tab = tabForWebContents(wc);
       notifyTabActivity(tab);
-      if (tab) resetTabDiagnosticCounts(tab);
+      if (tab) {
+        resetTabDiagnosticCounts(tab);
+        // A URL means this is a real page now, not a launchpad.
+        if (tab.isLaunchpad && originOrNull(url) != null) tab.isLaunchpad = false;
+        // Chromium only pushes `page-favicon-updated` when the new document has
+        // one, so a site without a favicon would otherwise keep wearing the
+        // previous origin's icon.
+        const nextOrigin = originOrNull(url);
+        if (tab.faviconOrigin !== nextOrigin) {
+          tab.faviconUrl = null;
+          tab.faviconOrigin = nextOrigin;
+        }
+      }
       if (tab?.id === lastSelectedTabId) {
         clearSelectionInternal();
       }
       // Chromium tracks zoom per origin, so a cross-origin navigation drops the
       // tab's zoom. Re-apply the tab's own factor so the setting is per tab.
       if (tab && tab.zoomFactor !== BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR) applyTabZoom(tab, tab.zoomFactor);
+      if (tab) reapplyTabEmulation(tab);
+      emitStatus();
+    });
+    wc.on("page-favicon-updated", (_event, favicons: string[]) => {
+      const tab = tabForWebContents(wc);
+      if (!tab) return;
+      const next = pickBrowserFaviconUrl(favicons);
+      if (!next || next === tab.faviconUrl) return;
+      tab.faviconUrl = next;
+      tab.faviconOrigin = wc.isDestroyed() ? null : originOrNull(wc.getURL());
       emitStatus();
     });
     wc.on("found-in-page", (_event, result) => {
@@ -2059,6 +2216,9 @@ function createBuiltInBrowserWindowService(args: {
       handoff: null,
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
       emulation: null,
+      isLaunchpad: false,
+      faviconUrl: null,
+      faviconOrigin: null,
       devToolsMode: null,
       networkLoggingEnabled: false,
       networkLog: createBuiltInBrowserNetworkLog(),
@@ -2734,8 +2894,11 @@ function createBuiltInBrowserWindowService(args: {
     if (unchanged) return scopeStatusForInput(getStatus(), nextBounds);
     bounds = normalized;
     visible = nextVisible;
+    // Showing the pane must not conjure a tab: closing the last tab is how a
+    // person says "I'm done", and re-opening one behind their back is what made
+    // the browser reappear on google.com every time. Zero tabs is a valid state
+    // and the pane renders its launchpad for it.
     if (visible || tabs.length) {
-      if (visible) ensureActiveTab();
       attachViewsToCurrentWindow();
     }
     emitStatus();
@@ -2884,6 +3047,10 @@ function createBuiltInBrowserWindowService(args: {
       clearSelectionInternal();
     }
     const tab = createTabState();
+    // No URL means "give me somewhere to start": the tab stays on about:blank
+    // and the pane renders its launchpad. ADE never picks a home page for you,
+    // and never issues a request you did not ask for.
+    tab.isLaunchpad = !normalizedUrl;
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
     tabs = [...tabs, tab];
@@ -3301,7 +3468,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const acquireDebuggerHold = async (
     tab: BrowserTabState,
-    owner: "network",
+    owner: BrowserDebuggerHoldOwner,
   ): Promise<void> => {
     ensureTabCdpListener(tab);
     try {
@@ -3317,7 +3484,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const releaseDebuggerHold = (
     tab: BrowserTabState,
-    owner: "network",
+    owner: BrowserDebuggerHoldOwner,
   ): void => {
     tab.debuggerHolds.delete(owner);
     if (tab.debuggerHolds.size > 0) return;
@@ -3350,6 +3517,78 @@ function createBuiltInBrowserWindowService(args: {
 
   /* ── Device emulation ──────────────────────────────────────────────────── */
 
+  /**
+   * Sends the CDP commands that make a device preset visible.
+   *
+   * `setDeviceMetricsOverride` alone is not enough: without `screenWidth` /
+   * `screenHeight` the page still reads the host window's `screen.*`, and
+   * without touch emulation and the mobile user-agent metadata a responsive
+   * site keeps serving its desktop breakpoint. All five commands together are
+   * what "iPhone 17" means.
+   */
+  const sendEmulationCommands = async (
+    wc: WebContents,
+    next: BuiltInBrowserEmulationState | null,
+  ): Promise<void> => {
+    const hasTouch = next?.hasTouch ?? false;
+    await sendDebuggerCommand(wc, "Emulation.setTouchEmulationEnabled", {
+      enabled: hasTouch,
+      maxTouchPoints: hasTouch ? 5 : 1,
+    }).catch(() => {});
+    // Without this a trackpad click never produces a touch event, so mobile
+    // sites that only bind touch handlers look dead under the preset.
+    await sendDebuggerCommand(wc, "Emulation.setEmitTouchEventsForMouse", {
+      enabled: hasTouch,
+      configuration: next?.mobile ? "mobile" : "desktop",
+    }).catch(() => {});
+    if (!next) {
+      await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride");
+      // CDP has no "clear UA override"; an empty string is Chromium's reset.
+      await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
+      return;
+    }
+    const metrics = builtInBrowserEmulationMetrics(next);
+    await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
+      width: metrics.width,
+      height: metrics.height,
+      deviceScaleFactor: metrics.deviceScaleFactor,
+      mobile: metrics.mobile,
+      screenWidth: metrics.width,
+      screenHeight: metrics.height,
+      positionX: 0,
+      positionY: 0,
+      screenOrientation: metrics.width > metrics.height
+        ? { type: "landscapePrimary", angle: 90 }
+        : { type: "portraitPrimary", angle: 0 },
+    });
+    if (next.userAgent) {
+      const userAgentMetadata = builtInBrowserEmulationUserAgentMetadata(next);
+      await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", {
+        userAgent: next.userAgent,
+        ...(userAgentMetadata ? { userAgentMetadata } : {}),
+      }).catch(() => {});
+    }
+  };
+
+  /**
+   * Re-applies the tab's override after a navigation.
+   *
+   * The debugger hold normally keeps Chromium's override alive across
+   * navigations, but a cross-process swap can still drop it; re-sending is
+   * idempotent and costs one CDP round trip on a tab that is already emulating.
+   */
+  const reapplyTabEmulation = (tab: BrowserTabState): void => {
+    if (!tab.emulation) return;
+    const wc = tab.webContents;
+    if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
+    void sendEmulationCommands(wc, tab.emulation).catch((error) => {
+      logger()?.debug("built_in_browser.emulation_reapply_failed", {
+        tabId: tab.id,
+        err: errorMessage(error),
+      });
+    });
+  };
+
   async function setEmulation(
     input: BuiltInBrowserSetEmulationArgs,
   ): Promise<BuiltInBrowserEmulationResult> {
@@ -3359,30 +3598,27 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     const traceDraft = beginActionTrace(tab, "setEmulation", input as Record<string, unknown>);
     try {
-      await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Emulation.setTouchEmulationEnabled", {
-          enabled: next?.hasTouch ?? false,
-          maxTouchPoints: next?.hasTouch ? 5 : 1,
-        }).catch(() => {});
-        if (!next) {
-          await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride");
-          // CDP has no "clear UA override"; an empty string is Chromium's reset.
-          await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
-          return;
+      if (next) {
+        // Chromium reverts every Emulation.* override when the CDP session that
+        // set it detaches, so an override has to own a debugger hold for as long
+        // as it is in force. This is the whole reason presets used to relabel
+        // the toolbar without ever re-laying-out the page.
+        await acquireDebuggerHold(tab, "emulation");
+        try {
+          await sendEmulationCommands(wc, next);
+        } catch (error) {
+          releaseDebuggerHold(tab, "emulation");
+          throw error;
         }
-        const metrics = builtInBrowserEmulationMetrics(next);
-        await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
-          width: metrics.width,
-          height: metrics.height,
-          deviceScaleFactor: metrics.deviceScaleFactor,
-          mobile: metrics.mobile,
-        });
-        if (next.userAgent) {
-          await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", {
-            userAgent: next.userAgent,
-          }).catch(() => {});
+      } else if (tab.debuggerHolds.has("emulation")) {
+        try {
+          await sendEmulationCommands(wc, null);
+        } finally {
+          releaseDebuggerHold(tab, "emulation");
         }
-      });
+      } else {
+        await withTemporaryDebugger(wc, () => sendEmulationCommands(wc, null));
+      }
       tab.emulation = next;
       finishActionTrace(tab, traceDraft, "ok");
     } catch (error) {
@@ -3445,16 +3681,38 @@ function createBuiltInBrowserWindowService(args: {
     );
     const traceDraft = beginActionTrace(tab, "findInPage", input as Record<string, unknown>);
     try {
+      // Chromium streams `found-in-page`: incremental results first, and a
+      // `finalUpdate` only once the whole document has been walked — which for
+      // a find that is superseded by the next keystroke never arrives at all.
+      // Waiting for `finalUpdate` therefore timed out on searches that had
+      // already produced correct counts. Resolve on the first result for this
+      // request instead, and keep every later update flowing as an event.
       const result = await new Promise<Electron.Result>((resolve, reject) => {
         let requestId: number | null = null;
+        // A synchronous emit lands before `wc.findInPage` has even returned the
+        // id, so hold that first result until there is an id to compare with.
+        let pendingBeforeRequestId: Electron.Result | null = null;
+        let lastResult: Electron.Result | null = null;
         let settled = false;
         const timer = setTimeout(() => {
+          const arrived = lastResult ?? pendingBeforeRequestId;
           finish();
+          // Never surface a raw timeout when results actually arrived: the find
+          // bar has counts on screen, and an error banner over working counts
+          // is the bug this replaced.
+          if (arrived) {
+            resolve(arrived);
+            return;
+          }
           reject(new Error(`Timed out waiting for browser find results after ${timeoutMs}ms.`));
         }, timeoutMs);
         const listener = (_event: unknown, found: Electron.Result): void => {
-          if (requestId != null && found.requestId !== requestId) return;
-          if (!found.finalUpdate) return;
+          if (requestId == null) {
+            pendingBeforeRequestId = found;
+            return;
+          }
+          if (found.requestId !== requestId) return;
+          lastResult = found;
           finish();
           resolve(found);
         };
@@ -3476,6 +3734,14 @@ function createBuiltInBrowserWindowService(args: {
             matchCase: input.matchCase === true,
           });
           tab.findRequestId = requestId;
+          // Replay a result that raced ahead of the request id. Read through a
+          // callback so TypeScript does not narrow away the listener's write.
+          const buffered = ((): Electron.Result | null => pendingBeforeRequestId)();
+          if (buffered && (buffered.requestId == null || buffered.requestId === requestId)) {
+            lastResult = buffered;
+            finish();
+            resolve(buffered);
+          }
         } catch (error) {
           finish();
           reject(error instanceof Error ? error : new Error(String(error)));
@@ -3536,8 +3802,12 @@ function createBuiltInBrowserWindowService(args: {
         // DevTools would silently kill an in-flight network log. Recording is
         // unaffected: it captures through getDisplayMedia, not the debugger.
         if (tab.debuggerHolds.size > 0) {
+          const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
+          const fix = owner === "network"
+            ? "Run `setNetworkLogging { enabled: false }` before opening DevTools."
+            : "Run `setEmulation { preset: \"off\" }` before opening DevTools.";
           throw new Error(
-            `Browser tab ${tab.id} is network logging, which owns the debugger. Run \`setNetworkLogging { enabled: false }\` before opening DevTools.`,
+            `Browser tab ${tab.id} is ${owner === "network" ? "network logging" : "emulating a device"}, which owns the debugger. ${fix}`,
           );
         }
         wc.openDevTools({ mode });
@@ -5030,6 +5300,46 @@ function emptyToNull(value: string): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+/** Origin of an http(s) URL; `null` for `about:blank` and anything unparsable. */
+function originOrNull(value: string | null | undefined): string | null {
+  const url = emptyToNull(value ?? "");
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Inline icons a page can hand us before any network round trip. */
+const MAX_INLINE_FAVICON_CHARS = 32 * 1024;
+
+/**
+ * Picks the favicon to show for a tab.
+ *
+ * Prefers a real http(s) URL — the renderer points an `<img>` at it and lets
+ * Chromium's cache do the work, so main never fetches anything. A `data:` icon
+ * is accepted as a fallback but only under 32 KB: some pages inline a full PNG
+ * sprite, and copying that into every status event would put megabytes on the
+ * IPC path for a 16 px square.
+ */
+function pickBrowserFaviconUrl(favicons: unknown): string | null {
+  if (!Array.isArray(favicons)) return null;
+  let inlineFallback: string | null = null;
+  for (const entry of favicons) {
+    if (typeof entry !== "string") continue;
+    const value = entry.trim();
+    if (!value) continue;
+    if (/^https?:\/\//i.test(value)) return value;
+    if (inlineFallback == null && /^data:image\//i.test(value) && value.length <= MAX_INLINE_FAVICON_CHARS) {
+      inlineFallback = value;
+    }
+  }
+  return inlineFallback;
+}
+
 function urlForBrowserLog(value: string): string | null {
   const url = emptyToNull(value);
   if (!url) return null;
@@ -5045,10 +5355,16 @@ function urlForBrowserLog(value: string): string | null {
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
+  const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
+  // A launchpad tab stops being one the moment it points at a real page, even
+  // if the flag has not been cleared yet (a redirect chain, a restored tab).
+  const isLaunchpad = tab.isLaunchpad && (url == null || url === "about:blank");
   return {
     id: tab.id,
-    url: wc.isDestroyed() ? null : emptyToNull(wc.getURL()),
-    title: wc.isDestroyed() ? null : emptyToNull(wc.getTitle()),
+    url,
+    title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
+    isLaunchpad,
+    faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),
     canGoForward: wc.isDestroyed() ? false : wc.canGoForward(),

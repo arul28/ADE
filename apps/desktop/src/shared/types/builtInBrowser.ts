@@ -43,6 +43,20 @@ export type BuiltInBrowserTab = {
   id: string;
   url: string | null;
   title: string | null;
+  /**
+   * The tab was opened with no URL and has not navigated yet, so it is sitting
+   * on `about:blank` as a launchpad. Surfaces render their own empty state
+   * (recent origins, detected dev servers) instead of a blank page, and the
+   * title reads "New tab" rather than the empty document title.
+   */
+  isLaunchpad: boolean;
+  /**
+   * Best favicon Chromium reported for the current document: the first http(s)
+   * URL, or a `data:` icon under 32 KB. Cleared the moment the tab navigates to
+   * a different origin so a stale icon never labels the new page. Main never
+   * fetches it — the renderer points an `<img>` at whatever is here.
+   */
+  faviconUrl: string | null;
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -573,7 +587,47 @@ export type BuiltInBrowserEventPayload =
       failedRequestCount: number;
       updatedAt: string;
     }
+  /**
+   * A dev server was sniffed out of a terminal session's output. Carries
+   * `open-request`-style metadata (url + tab + status) so the corner card can
+   * caption "opened localhost:5173 in the background" without polling.
+   */
+  | {
+      type: "dev-server-detected";
+      server: DevServerRecord;
+      /** The background tab it was opened in, or `null` when nothing opened. */
+      tabId: string | null;
+      autoOpened: boolean;
+      status: BuiltInBrowserStatus;
+      detectedAt: string;
+    }
   | { type: "error"; message: string; occurredAt: string };
+
+/* ── Dev servers ──────────────────────────────────────────────────────────── */
+
+/**
+ * A local dev server ADE noticed in terminal output. Detection is passive: the
+ * PTY output pipeline matches the ready lines frameworks already print
+ * (`http://localhost:5173`, `Local:   …`, `listening on …`), so nothing probes
+ * or fetches anything the user did not already start.
+ */
+export type DevServerRecord = {
+  port: number;
+  url: string;
+  source: {
+    sessionId: string | null;
+    laneId: string | null;
+  };
+  detectedAt: string;
+};
+
+export type DevServersArgs = {
+  laneId?: string | null;
+};
+
+export type DevServersResult = {
+  servers: DevServerRecord[];
+};
 
 /* ── Device emulation ─────────────────────────────────────────────────────── */
 
@@ -594,6 +648,17 @@ export type BuiltInBrowserEmulationMetrics = {
   userAgent?: string | null;
 };
 
+/** CDP `Emulation.UserAgentMetadata`, sent alongside a mobile UA override. */
+export type BuiltInBrowserUserAgentMetadata = {
+  brands: Array<{ brand: string; version: string }>;
+  fullVersion: string;
+  platform: string;
+  platformVersion: string;
+  architecture: string;
+  model: string;
+  mobile: boolean;
+};
+
 export type BuiltInBrowserEmulationPreset = {
   id: BuiltInBrowserEmulationPresetId;
   label: string;
@@ -605,7 +670,18 @@ export type BuiltInBrowserEmulationPreset = {
   userAgent: string | null;
 };
 
-/** Emulation currently applied to one tab. `null` means "no override". */
+/**
+ * Emulation currently applied to one tab. `null` means "no override".
+ *
+ * This is also the renderer's letterboxing contract: whenever `emulation` is
+ * non-null, `width` / `height` are the *effective* CSS pixel size the page was
+ * laid out at, `deviceScaleFactor` the DPR it renders with, `mobile` whether it
+ * is in mobile viewport mode, and `label` the human name for the chrome
+ * ("iPhone 17 Pro", "820×1180"). The pane sizes the native view to exactly
+ * `width × height` CSS px, centers it in the pane, and letterboxes the rest —
+ * never stretched, never scaled to fit, so a screenshot an agent takes matches
+ * what the human sees.
+ */
 export type BuiltInBrowserEmulationState = {
   presetId: BuiltInBrowserEmulationPresetId | null;
   label: string;

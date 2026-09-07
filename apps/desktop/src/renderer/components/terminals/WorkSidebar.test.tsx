@@ -136,6 +136,25 @@ vi.mock("../chat/ChatTerminalDrawer", async () => {
   };
 });
 
+vi.mock("../chat/ChatPrPane", async () => {
+  const React = await import("react");
+  return {
+    ChatPrPane: ({ chromeless, onRegisterRefresh }: {
+      chromeless?: boolean;
+      onRegisterRefresh?: (action: { run: () => void; syncing: boolean } | null) => void;
+    }) => {
+      React.useEffect(() => {
+        onRegisterRefresh?.({ run: () => {}, syncing: false });
+        return () => onRegisterRefresh?.(null);
+      }, [onRegisterRefresh]);
+      return React.createElement("div", {
+        "data-testid": "pr-pane",
+        "data-chromeless": chromeless ? "true" : "false",
+      });
+    },
+  };
+});
+
 vi.mock("../files/FilesTab", async () => {
   const React = await import("react");
   return { FilesTab: () => React.createElement("div", null, "Files") };
@@ -739,5 +758,154 @@ describe("WorkSidebar context targets", () => {
     expect(screen.queryByTestId("ios-panel")).toBeNull();
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkSidebar live tool status", () => {
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ project: null, projectBinding: null } as any);
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The pane with a terminal list that can change, plus the two events that can
+   * change it. `installAdeMock` deliberately has neither, so this builds on it
+   * rather than widening the mock every other test in this file shares.
+   */
+  function installLiveTerminalMock() {
+    installAdeMock();
+    const shells: Array<{ terminalId: string; ptyId: string; title: string; status: string }> = [];
+    const sessionListeners: Array<() => void> = [];
+    const list = vi.fn(async () => shells.map((shell) => ({ ...shell })));
+    Object.assign(window.ade as Record<string, unknown>, {
+      terminal: { ...(window.ade as { terminal: object }).terminal, list },
+      sessions: {
+        onChanged: vi.fn((cb: () => void) => {
+          sessionListeners.push(cb);
+          return () => {};
+        }),
+      },
+      pty: { onExit: vi.fn(() => () => {}) },
+    });
+    return {
+      list,
+      startShell(title: string) {
+        shells.push({ terminalId: `term-${shells.length + 1}`, ptyId: `pty-${shells.length + 1}`, title, status: "running" });
+        for (const listener of sessionListeners) listener();
+      },
+    };
+  }
+
+  it("re-reads attached shells when a session appears, without remounting the pane", async () => {
+    const live = installLiveTerminalMock();
+    const { container } = render(
+      <MemoryRouter>
+        <WorkSidebar
+          active
+          laneId="lane-1"
+          lanes={[lane]}
+          activeSession={null}
+          tool="terminal"
+          onToolChange={vi.fn()}
+          onClose={vi.fn()}
+          contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+          contextDisabledReason={null}
+        />
+      </MemoryRouter>,
+    );
+
+    // The defect: the header committed to this and never moved again.
+    await waitFor(() => expect(screen.getByText("No shells")).toBeTruthy());
+    const paneBefore = container.querySelector("aside");
+
+    live.startShell("zsh");
+
+    await waitFor(() => expect(screen.getByText("1 shell · zsh")).toBeTruthy());
+    expect(live.list).toHaveBeenCalledTimes(2);
+    // Same <aside> node: the status is live, not the product of a remount.
+    expect(container.querySelector("aside")).toBe(paneBefore);
+  });
+});
+
+describe("WorkSidebar pane chrome", () => {
+  beforeEach(() => {
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "MacIntel" });
+    installAdeMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ project: null, projectBinding: null } as any);
+    delete (window as unknown as { ade?: unknown }).ade;
+    if (originalNavigatorPlatform) {
+      Object.defineProperty(window.navigator, "platform", originalNavigatorPlatform);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("mounts the PR pane chromeless and lifts its refresh into the shell header", async () => {
+    renderSidebar({ tab: "pr", contextTarget: { kind: "chat", sessionId: "chat-1" } });
+
+    // One header, not two: the pane surrenders its own title bar...
+    expect(screen.getByTestId("pr-pane").getAttribute("data-chromeless")).toBe("true");
+    // ...and does not lose its one action doing so.
+    await waitFor(() => expect(screen.getByLabelText("Refresh pull request")).toBeTruthy());
+    expect(screen.getAllByText("Pull request")).toHaveLength(1);
+  });
+
+  it("returns to the picker on Escape from inside the pane", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const inside = container.querySelector("aside")!.querySelector("div")!;
+    fireEvent.keyDown(inside, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves plain Escape to the terminal and takes Shift+Escape instead", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // Stand in for xterm's helper textarea: the pane identifies a terminal by
+    // the `.xterm` container it always renders into.
+    const xterm = document.createElement("div");
+    xterm.className = "xterm";
+    const textarea = document.createElement("textarea");
+    xterm.appendChild(textarea);
+    container.querySelector("aside")!.appendChild(xterm);
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: "Escape", shiftKey: true });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("stands down while a modal layer owns Escape", () => {
+    const onTabChange = vi.fn();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    try {
+      const { container } = renderSidebar({
+        tab: "git",
+        contextTarget: { kind: "chat", sessionId: "chat-1" },
+        onTabChange,
+      });
+      fireEvent.keyDown(container.querySelector("aside")!.querySelector("div")!, { key: "Escape" });
+      expect(onTabChange).not.toHaveBeenCalled();
+    } finally {
+      dialog.remove();
+    }
   });
 });

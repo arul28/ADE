@@ -1098,6 +1098,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     service.attachToWindow(browserWin);
     projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    // Showing the pane no longer conjures a tab, so each collection opens one
+    // explicitly; what is under test is which window the view attaches to.
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,
@@ -1115,6 +1118,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(win.contentView.children).toHaveLength(1);
 
     projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-beta",
       x: 12,
@@ -1154,6 +1158,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     windowsByProjectRoot.set("/Users/ade/project-alpha", win);
 
     service.attachToWindow(browserWin);
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,
@@ -1205,6 +1210,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
     windowsByProjectRoot.set("/Users/ade/project-beta", winB);
 
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
+    await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,

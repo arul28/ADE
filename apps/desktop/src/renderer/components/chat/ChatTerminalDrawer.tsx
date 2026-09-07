@@ -514,6 +514,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   if (!open) return null;
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs.at(-1) ?? null;
+  // An empty tab strip is a row of chrome for tabs that do not exist, and its
+  // "+" competes with the centred button below it for the same single action.
+  // With no shells the panel shows one affordance, not two.
+  const showEmptyState = isPanel && tabs.length === 0;
 
   return (
     <div
@@ -534,9 +538,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         </div>
       ) : null}
 
+      {showEmptyState ? null : (
       <div
         className={cn(
-          "flex shrink-0 items-stretch overflow-x-auto border-b border-white/[0.07] bg-[var(--color-surface-recessed)] px-1",
+          "ade-pane-chrome flex shrink-0 items-stretch overflow-x-auto border-b border-white/[0.07] bg-[var(--color-surface-recessed)] px-1",
           isPanel ? "h-9" : "h-7",
         )}
       >
@@ -629,6 +634,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
         <div className="flex-1" />
       </div>
+      )}
 
       <div className="flex-1 min-h-0 overflow-hidden p-2">
         {activeTab ? (
@@ -641,17 +647,28 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
             className="h-full w-full"
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-4">
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
+            <TerminalIcon size={22} weight="duotone" className="text-fg/25" />
+            <div className="flex flex-col gap-1">
+              <p className="font-sans text-[13px] font-semibold text-fg/80">Start a shell in this lane</p>
+              <p className="max-w-[240px] font-sans text-[11.5px] leading-[17px] text-muted-fg">{emptyMessage}</p>
+            </div>
             <button
               type="button"
               onClick={() => { void createTab(); }}
               disabled={creatingTab}
-              title={emptyMessage}
-              className="inline-flex h-8 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.035] px-3 font-sans text-[12px] font-medium text-fg/72 transition-colors hover:border-violet-400/24 hover:bg-violet-500/[0.08] hover:text-fg disabled:cursor-default disabled:opacity-45"
+              className="inline-flex h-8 items-center gap-2 rounded-md border border-violet-400/24 bg-violet-500/[0.10] px-3 font-sans text-[12px] font-medium text-fg/88 transition-colors hover:border-violet-400/40 hover:bg-violet-500/[0.16] hover:text-fg disabled:cursor-default disabled:opacity-45"
             >
               <Plus size={13} weight="bold" />
               <span>New terminal</span>
             </button>
+            {/* `ade terminal list | resume | read | write | signal` is a real
+                command (apps/ade-cli/src/cli.ts). It drives shells that already
+                exist rather than opening them, and the copy says so. */}
+            <p className="font-sans text-[11px] leading-4 text-muted-fg/65">
+              Agents read and drive these shells with{" "}
+              <code className="rounded bg-white/[0.05] px-1 py-px font-mono text-[10.5px] text-fg/70">ade terminal</code>
+            </p>
           </div>
         )}
       </div>

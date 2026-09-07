@@ -709,6 +709,8 @@ import type {
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
   BuiltInBrowserFindInPageResult,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLoggingResult,
@@ -2537,6 +2539,8 @@ declare global {
           args?: BuiltInBrowserSetZoomArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserZoomResult>;
+        /** Dev servers sniffed from terminal output; feature-detect before use. */
+        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
         findInPage: (
           args: BuiltInBrowserFindInPageArgs,
           pin?: OpenProjectBinding | null,
@@ -2625,6 +2629,7 @@ declare global {
       };
       localhost: {
         probePort: (port: number) => Promise<boolean>;
+        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;

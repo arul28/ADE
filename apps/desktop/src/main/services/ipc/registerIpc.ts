@@ -224,6 +224,8 @@ import type {
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserSetDevToolsArgs,
   BuiltInBrowserSetEmulationArgs,
@@ -3672,6 +3674,15 @@ export function registerIpc({
     IPC.localhostProbePort,
     async (_event, args: { port: number }): Promise<boolean> => {
       return probeLocalhostPort(args?.port);
+    },
+  );
+
+  // Dev servers ADE noticed in terminal output. Read-only and in-memory: this
+  // never probes a port, it reports what a command already printed.
+  ipcMain.handle(
+    IPC.localhostGetDevServers,
+    async (_event, args: DevServersArgs = {}): Promise<DevServersResult> => {
+      return ensureBuiltInBrowser().getDevServers(args ?? {});
     },
   );
 

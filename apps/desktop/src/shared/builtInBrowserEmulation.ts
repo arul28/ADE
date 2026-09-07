@@ -1,5 +1,6 @@
 import type {
   BuiltInBrowserEmulationMetrics,
+  BuiltInBrowserUserAgentMetadata,
   BuiltInBrowserEmulationPreset,
   BuiltInBrowserEmulationPresetId,
   BuiltInBrowserEmulationState,
@@ -221,6 +222,54 @@ export function resolveBuiltInBrowserEmulation(
     userAgent: typeof request.userAgent === "string" && request.userAgent.trim()
       ? request.userAgent.trim()
       : (rawPreset ? base.userAgent : null),
+  };
+}
+
+/**
+ * CDP `Emulation.setUserAgentOverride.userAgentMetadata`.
+ *
+ * A mobile preset that only overrides the UA string still fails every
+ * `navigator.userAgentData.mobile` check, so responsive sites that branch on
+ * client hints keep serving the desktop layout. Derived from the preset's own
+ * UA string so the two can never disagree. Desktop presets return `null`:
+ * Chromium's default metadata is already right for them.
+ */
+export function builtInBrowserEmulationUserAgentMetadata(
+  state: BuiltInBrowserEmulationState,
+): BuiltInBrowserUserAgentMetadata | null {
+  if (!state.mobile) return null;
+  const userAgent = state.userAgent ?? "";
+  const android = /Android/i.test(userAgent);
+  const chromeVersion = /Chrome\/(\d+)/.exec(userAgent)?.[1] ?? null;
+  const androidVersion = /Android (\d+)/i.exec(userAgent)?.[1] ?? "16";
+  const iosVersion = /OS (\d+)[._]/i.exec(userAgent)?.[1] ?? "19";
+  if (android) {
+    const model = /;\s*([^;)]+)\)\s*AppleWebKit/i.exec(userAgent)?.[1]?.trim() ?? "Pixel";
+    const major = chromeVersion ?? "142";
+    return {
+      brands: [
+        { brand: "Chromium", version: major },
+        { brand: "Google Chrome", version: major },
+        { brand: "Not=A?Brand", version: "24" },
+      ],
+      fullVersion: `${major}.0.0.0`,
+      platform: "Android",
+      platformVersion: `${androidVersion}.0.0`,
+      architecture: "",
+      model,
+      mobile: true,
+    };
+  }
+  return {
+    // Safari on iOS ships no Sec-CH-UA brands at all; sending an empty list is
+    // the honest emulation of that.
+    brands: [],
+    fullVersion: `${iosVersion}.0`,
+    platform: /iPad/i.test(userAgent) ? "iPadOS" : "iOS",
+    platformVersion: `${iosVersion}.0`,
+    architecture: "",
+    model: /iPad/i.test(userAgent) ? "iPad" : "iPhone",
+    mobile: true,
   };
 }
 

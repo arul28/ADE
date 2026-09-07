@@ -115,6 +115,7 @@ vi.mock("ws", async () => {
 });
 
 import { createAppControlService } from "./appControlService";
+import type { AppControlEventPayload } from "../../../shared/types";
 
 function createLogger(): Logger {
   return {
@@ -418,6 +419,67 @@ describe("appControlService", () => {
       { x: 10, y: 10 },
       { x: 10, y: 10 },
     ]);
+  });
+
+  it("emits a diagnostics event on each new console error and failed request", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+    const events: AppControlEventPayload[] = [];
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+      onEvent: (payload) => events.push(payload),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const socket = mockState.sockets.at(-1)!;
+    const sessionId = service.getStatus().activeSession?.id;
+    expect(sessionId).toBeTruthy();
+
+    socket.emitMessage({
+      method: "Runtime.consoleAPICalled",
+      params: { type: "error", args: [{ value: "boom" }] },
+    });
+    socket.emitMessage({
+      method: "Network.requestWillBeSent",
+      params: { requestId: "r1", request: { url: "http://app.test/api", method: "GET" } },
+    });
+    socket.emitMessage({
+      method: "Network.responseReceived",
+      params: { requestId: "r1", response: { url: "http://app.test/api", status: 500 } },
+    });
+
+    const diagnostics = events.filter((event) => event.type === "diagnostics");
+    expect(diagnostics.at(-1)).toMatchObject({
+      type: "diagnostics",
+      sessionId,
+      consoleErrorCount: 1,
+      failedRequestCount: 1,
+    });
+
+    // A healthy response is not an error: nothing new is published for it.
+    const before = diagnostics.length;
+    socket.emitMessage({
+      method: "Network.requestWillBeSent",
+      params: { requestId: "r2", request: { url: "http://app.test/ok", method: "GET" } },
+    });
+    socket.emitMessage({
+      method: "Network.responseReceived",
+      params: { requestId: "r2", response: { url: "http://app.test/ok", status: 200 } },
+    });
+    expect(events.filter((event) => event.type === "diagnostics")).toHaveLength(before);
+
+    // A main-frame navigation is a fresh page, so its predecessor's errors stop
+    // counting and the tools pane's red dot goes out.
+    socket.emitMessage({
+      method: "Page.frameNavigated",
+      params: { frame: { id: "f1", url: "app://test/?view=a" } },
+    });
+    expect(events.filter((event) => event.type === "diagnostics").at(-1)).toMatchObject({
+      consoleErrorCount: 0,
+      failedRequestCount: 0,
+    });
   });
 
   it("uses CDP node lookup for point inspection", async () => {

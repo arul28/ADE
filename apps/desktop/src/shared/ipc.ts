@@ -959,6 +959,7 @@ export const IPC = {
   perfFinalize: "ade.perf.finalize",
   perfScenarioComplete: "ade.perf.scenarioComplete",
   localhostProbePort: "ade.localhost.probePort",
+  localhostGetDevServers: "ade.localhost.getDevServers",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

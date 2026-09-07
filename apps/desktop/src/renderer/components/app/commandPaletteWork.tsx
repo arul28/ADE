@@ -472,6 +472,30 @@ export function useWorkSessionActions({
   );
 }
 
+/**
+ * Should the static command groups be rendered ABOVE the async Work results?
+ *
+ * Threads normally lead: with an empty or vague query the thing you came for is
+ * a chat you were just in. But the backend index also matches the *words* of a
+ * command — every transcript that ever said "tools" and "browser" comes back
+ * for "Tools: Browser" — and those results are capped at a limit that filled
+ * the whole list. The exact command you typed the full title of was pushed
+ * below seven chat rows and read as missing.
+ *
+ * So: when the query is a prefix of a command's title, that command led the
+ * intent, and its group leads the list. Deliberately a prefix test on the title
+ * only — "browser" alone still puts your chats first, which is the behaviour
+ * threads-lead was written for.
+ */
+export function commandsLeadPaletteResults(
+  query: string,
+  commandTitles: readonly string[],
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2) return false;
+  return commandTitles.some((title) => title.toLowerCase().startsWith(needle));
+}
+
 export type WorkToolPaletteCommand = {
   id: string;
   title: string;

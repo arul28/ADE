@@ -2059,13 +2059,24 @@ function coerceProjectUiConfig(value: unknown): ProjectConfigFile["ui"] {
 /**
  * Only the two modes are accepted. An unknown string is dropped rather than
  * passed through, so a hand-edited YAML typo falls back to the in-app default
- * instead of silently routing every link to the system browser.
+ * instead of silently routing every link to the system browser. The same rule
+ * applies to `autoOpenDevServer`: anything that is not a boolean is dropped and
+ * the default (open it) stands.
  */
 function coerceProjectBrowserConfig(value: unknown): ProjectConfigFile["browser"] {
   if (!isRecord(value)) return undefined;
-  const linkOpenMode = asString(value.linkOpenMode)?.trim();
-  if (linkOpenMode !== "in-app" && linkOpenMode !== "external") return undefined;
-  return { linkOpenMode };
+  const rawLinkOpenMode = asString(value.linkOpenMode)?.trim();
+  const linkOpenMode = rawLinkOpenMode === "in-app" || rawLinkOpenMode === "external"
+    ? rawLinkOpenMode
+    : undefined;
+  const autoOpenDevServer = typeof value.autoOpenDevServer === "boolean"
+    ? value.autoOpenDevServer
+    : undefined;
+  if (linkOpenMode === undefined && autoOpenDevServer === undefined) return undefined;
+  return {
+    ...(linkOpenMode !== undefined ? { linkOpenMode } : {}),
+    ...(autoOpenDevServer !== undefined ? { autoOpenDevServer } : {}),
+  };
 }
 
 function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {

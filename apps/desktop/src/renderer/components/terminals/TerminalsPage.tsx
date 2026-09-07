@@ -100,6 +100,17 @@ type SessionMutationOptions<T> = {
   onSuccess?: (result: T) => void;
 };
 
+/**
+ * The tools pane's flex box, found by attribute rather than held in a ref.
+ *
+ * It is the direct child of an `AnimatePresence`, and motion's `PopChild` reads
+ * `children.props.ref` on that child unconditionally — which under React 18
+ * trips the "`ref` is not a prop" warning for ANY ref, forwardRef included. The
+ * resize drag only needs the node while a drag is in flight, so it queries for
+ * it at mousedown instead of carrying one.
+ */
+const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
+
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
 }
@@ -190,7 +201,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
-  const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
 
@@ -1116,7 +1126,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
     contextDisabledReason = `Continue this ${formatToolTypeLabel(activeWorkSession.toolType)} session before inserting tool context.`;
   } else if (!contextTarget) {
-    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} session can use the lane tools, but it cannot receive inserted context.`;
+    // `formatToolTypeLabel` already ends in "session"/"chat" ("OpenCode CLI
+    // session"), so a second "session" here read as "…CLI session session".
+    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} can use the lane tools, but it cannot receive inserted context.`;
   } else {
     contextDisabledReason = null;
   }
@@ -1296,11 +1308,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const startWidthPct = work.workSidebarWidthPct;
     let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct);
     let animationFrame: number | null = null;
+    const sidebarPane = container.querySelector<HTMLElement>(`[${WORK_SIDEBAR_PANE_ATTR}]`);
     const applyWidth = (widthPct: number) => {
       const nextWidthPct = clampWorkSidebarWidthPct(widthPct);
       pendingWidthPct = nextWidthPct;
       const contentPane = workContentPaneRef.current;
-      const sidebarPane = workSidebarPaneRef.current;
       if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
       if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
     };
@@ -1455,7 +1467,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             // shrinks smoothly with it — no instant reflow / black flash on close.
             <motion.div
               key="work-tools-sidebar"
-              ref={workSidebarPaneRef}
+              {...{ [WORK_SIDEBAR_PANE_ATTR]: "" }}
               className="min-h-0 min-w-0 basis-0 overflow-hidden"
               style={{ maxWidth: "55%" }}
               initial={{ flexGrow: 0 }}

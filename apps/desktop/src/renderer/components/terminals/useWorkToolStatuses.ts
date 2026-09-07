@@ -44,6 +44,13 @@ export type WorkToolStatus = {
    * a count for "it died" would be a lie.
    */
   errored?: boolean;
+  /**
+   * The tool is waiting on the PERSON, not on itself — a login handoff where
+   * the agent has stepped back from the tab. Distinct from `live` (something is
+   * running) and from `errored` (something broke): this is the only state whose
+   * dot is asking for a hand.
+   */
+  attention?: boolean;
 };
 
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
@@ -53,6 +60,41 @@ const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: 
 /** True when a tool's dot should read as a problem rather than as activity. */
 export function workToolHasError(status: WorkToolStatus | undefined): boolean {
   return Boolean(status && (status.errored === true || (status.errorCount ?? 0) > 0));
+}
+
+/**
+ * What an activity dot MEANS, in one word.
+ *
+ * The dots used to be coloured by which tool they belonged to, which made every
+ * dot the same news: "this tool exists". State is the only thing worth a colour
+ * here — the tool's own hue still identifies it, but only once the dot has
+ * something to say. Shared by the header and the picker so one colour can never
+ * mean two things in the same pane.
+ */
+export type WorkToolDotState = "idle" | "live" | "attention" | "error";
+
+export function workToolDotState(status: WorkToolStatus | undefined): WorkToolDotState {
+  if (workToolHasError(status)) return "error";
+  if (status?.attention === true) return "attention";
+  if (status?.live === true) return "live";
+  return "idle";
+}
+
+/** Red for broken, amber for "needs you", the tool's own hue for live, muted for idle. */
+export const WORK_TOOL_DOT_ERROR_COLOR = "#f87171";
+export const WORK_TOOL_DOT_ATTENTION_COLOR = "#fbbf24";
+
+export function workToolDotColor(state: WorkToolDotState, toolColor: string): string {
+  switch (state) {
+    case "error":
+      return WORK_TOOL_DOT_ERROR_COLOR;
+    case "attention":
+      return WORK_TOOL_DOT_ATTENTION_COLOR;
+    case "live":
+      return toolColor;
+    case "idle":
+      return "color-mix(in srgb, var(--color-muted-fg) 45%, transparent)";
+  }
 }
 
 /** How long the picker is allowed to show skeleton lines before committing. */
@@ -101,7 +143,7 @@ export function browserStatusLine(
       : status.tabs.length > 1
         ? ` · ${pluralize(status.tabs.length, "tab", "tabs")}`
         : "";
-  return { line: `${label}${suffix}`, live: true, errorCount, errored: false };
+  return { line: `${label}${suffix}`, live: true, errorCount, errored: false, attention: handedOff };
 }
 
 export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
@@ -331,9 +373,24 @@ export function useWorkToolStatuses(args: {
     };
   }, [canReadAppControl, enabled, offline, runtimePinKey]);
 
-  // Attached shells have no status event, so this is a one-shot read taken when
-  // the pane becomes interesting — never a poll. It re-runs when the owning
-  // session or machine changes, which is exactly when the answer can differ.
+  // Attached shells have no dedicated status event, so the list is re-read
+  // whenever one could have changed: a session is created/deleted, or a PTY
+  // exits. Still not a poll — every re-read is caused by something that
+  // happened. Before this the header could say "No shells" for the lifetime of
+  // the pane while a shell you had just started scrolled past underneath it.
+  const [terminalEpoch, setTerminalEpoch] = useState(0);
+  useEffect(() => {
+    if (!enabled || offline || !terminalOwnerSessionId) return undefined;
+    const bump = () => setTerminalEpoch((epoch) => epoch + 1);
+    const disposers: Array<(() => void) | undefined> = [
+      window.ade?.sessions?.onChanged?.(bump),
+      window.ade?.pty?.onExit?.(bump, runtimePinRef.current),
+    ];
+    return () => {
+      for (const dispose of disposers) dispose?.();
+    };
+  }, [enabled, offline, runtimePinKey, terminalOwnerSessionId]);
+
   useEffect(() => {
     if (!enabled || offline || !terminalOwnerSessionId) {
       setTerminalTitles(null);
@@ -357,7 +414,7 @@ export function useWorkToolStatuses(args: {
     return () => {
       cancelled = true;
     };
-  }, [enabled, offline, runtimePinKey, terminalOwnerSessionId]);
+  }, [enabled, offline, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
   const prsByLaneId = useLanePrsByLaneId();
 
@@ -367,9 +424,11 @@ export function useWorkToolStatuses(args: {
       ? IDLE
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
-    // No cheap changed-file count exists today; the card shows its blurb rather
-    // than paying for a git read the pane would then have to keep fresh.
-    files: IDLE,
+    // No changed-file count is cheap here: `LaneSummary.status` carries a dirty
+    // BOOLEAN, not a tally, and a real count means a git read the pane would
+    // then have to keep fresh. So the card states what it does rather than
+    // padding the slot with the marketing blurb.
+    files: { line: "Browse worktree", live: false, errorCount: 0, errored: false },
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
     // Machine-scoped, like every other PR render path: lane ids are not unique

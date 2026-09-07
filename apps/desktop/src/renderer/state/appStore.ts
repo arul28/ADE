@@ -212,6 +212,14 @@ export type WorkProjectViewState = {
    * instead of stranding it off the edge.
    */
   workLiveCardPosition?: { xPct: number; yPct: number } | null;
+  /**
+   * Per-tool "×" dismissals of that same card, keyed by tool id, valued with
+   * the activity stamp the card was showing when it was closed. Lane-scoped in
+   * practice (written through `setLaneWorkViewState`): dismissing the browser
+   * preview in one lane says nothing about the next one. Optional for the same
+   * reason as the position — absent means nobody has ever closed it.
+   */
+  workLiveCardDismissed?: Record<string, number> | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
@@ -300,6 +308,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarTool: null,
     workSidebarWidthPct: 36,
     workLiveCardPosition: null,
+    workLiveCardDismissed: null,
     laneSessionOrder: {},
     pinnedSessionIds: [],
     workPinnedLaneIds: [],
@@ -343,6 +352,23 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "pr"
   ) return value;
   return null;
+}
+
+/**
+ * Persistence-level twin of the card's own normalizer (kept local for the same
+ * reason as {@link normalizeWorkLiveCardPosition}: the store must not import a
+ * component module). Drops unknown tool ids and non-positive stamps, so a
+ * hand-edited blob cannot hide the card forever.
+ */
+function normalizeWorkLiveCardDismissals(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const next: Record<string, number> = {};
+  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
+    if (key !== "browser" && key !== "app-control" && key !== "ios") continue;
+    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
+    next[key] = stamp;
+  }
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizeWorkLiveCardPosition(value: unknown): { xPct: number; yPct: number } | null {
@@ -395,6 +421,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workSidebarTool: normalizeWorkSidebarTool(candidate.workSidebarTool),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
+    workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
     // Deduped: a hand-edited or half-written blob must not be able to render the

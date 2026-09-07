@@ -2181,6 +2181,61 @@ button:active, [role="button"]:active {
   }
 }
 
+/* Pane chrome (tool header, picker grid, terminal tab strip) is furniture, not
+   content. Dragging the pane divider or a tab used to leave half the labels
+   selected in accent blue; nothing in here is worth copying. */
+.ade-pane-chrome,
+.ade-pane-chrome * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The pane's own tooltip — see components/ui/PaneTooltip.tsx. Deliberately
+   plainer than `.ade-smart-tooltip`: one line, no card sections, and never
+   interactive, so it can carry `pointer-events: none`. */
+.ade-pane-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 24px));
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-popup-bg, #151325);
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.65);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-fg);
+  animation: ade-pane-tooltip-in 100ms ease forwards;
+}
+
+.ade-pane-tooltip-kbd {
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--color-muted-fg);
+}
+
+@keyframes ade-pane-tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-pane-tooltip {
+    animation: none;
+  }
+}
+
 /* Work tools picker: placeholder status lines held for at most 300ms while the
    tool reads settle. Stepped like the other idle animations here — a smooth
    sweep costs a compositor frame per display refresh for a shimmer nobody is

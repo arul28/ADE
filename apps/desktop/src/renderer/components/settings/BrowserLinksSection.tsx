@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
+import { LinkSimple } from "@phosphor-icons/react";
 
 import type { BrowserLinkOpenMode } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, cardStyle } from "../lanes/laneDesignTokens";
 import { modifierKeyLabel } from "../../lib/platform";
 import { refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
-import { SavedFlash, SettingsCard, SettingsGroup, SettingsSegmented, useSavedFlash } from "./primitives";
+import { SavedFlash, SettingsSegmented, useSavedFlash } from "./primitives";
 
 const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string }> = [
   { value: "in-app", label: "In ADE" },
@@ -69,19 +70,31 @@ export function BrowserLinksSection() {
     }
   };
 
+  // Icon-led, like "Project files" and "ADE command" directly above it, rather
+  // than a bare LINKS band over an unillustrated card: one setting does not
+  // earn its own section heading, and the group label plus the card's own
+  // padding is where the ~28px of dead space at the bottom of General came from.
   return (
-    <SettingsGroup title="Links">
-      <SettingsCard
-        anchor="link-open-mode"
-        title="Open links"
-        description={
-          <span style={{ fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-            ADE's browser keeps you signed in across chats. {modifierKeyLabel}-click always opens in
-            your system browser, and Shift-click always opens in ADE.
-          </span>
-        }
-        scope="machine"
-        control={
+    <section
+      id="link-open-mode"
+      data-settings-anchor="link-open-mode"
+      style={{ ...cardStyle(), scrollMarginTop: 16 }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+          <LinkSimple size={28} weight="duotone" style={{ color: COLORS.textSecondary, flexShrink: 0 }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              Links
+            </div>
+            <div style={{ marginTop: 4, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
+              Where a link clicked inside ADE opens. {modifierKeyLabel}-click always uses your system
+              browser; Shift-click always uses ADE's, which stays signed in across chats.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <SavedFlash state={flash.state} />
           <SettingsSegmented
             ariaLabel="Open links"
             value={mode}
@@ -91,10 +104,8 @@ export function BrowserLinksSection() {
             options={OPTIONS}
             disabled={busy}
           />
-        }
-      >
-        <SavedFlash state={flash.state} />
-      </SettingsCard>
-    </SettingsGroup>
+        </div>
+      </div>
+    </section>
   );
 }

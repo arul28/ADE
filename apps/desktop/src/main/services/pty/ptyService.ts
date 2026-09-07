@@ -54,6 +54,7 @@ import {
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -746,6 +747,8 @@ type PtyEntry = {
   resumeCommand: string | null;
   resumeCommandIsFallback: boolean;
   resumeScanBuffer: string;
+  /** Trailing partial line held back by the dev-server sniffer. */
+  devServerScanCarry: string;
   lastRuntimeSignalAt: number;
   lastRuntimeSignalState: TerminalRuntimeState;
   lastRuntimeSignalPreview: string | null;
@@ -4316,6 +4319,9 @@ export function createPtyService({
     entry.piSessionLease = null;
     entry.disposed = true;
     entry.attentionRequested = false;
+    // The process that was serving those ports is gone, so the launchpad chips
+    // must go with it rather than pointing at a dead port.
+    devServerRegistry.forgetSession(entry.sessionId);
     sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       revokeBrowserActorToken(entry.sessionId);
@@ -6368,6 +6374,7 @@ export function createPtyService({
         resumeCommand: initialResumeCommand,
         resumeCommandIsFallback: Boolean(initialResumeCommand),
         resumeScanBuffer: "",
+        devServerScanCarry: "",
         lastRuntimeSignalAt: 0,
         lastRuntimeSignalState: "running",
         lastRuntimeSignalPreview: null,
@@ -6583,6 +6590,20 @@ export function createPtyService({
           }
         } else if (entry.resumeScanBuffer.length > 0) {
           entry.resumeScanBuffer = "";
+        }
+
+        // Dev-server discovery rides this same chunk: one bounded regex pass so
+        // the Browser tool's launchpad chips and the background auto-open are
+        // driven by what the user's own command printed, never by probing.
+        const devServerScan = detectDevServersInChunk(data, entry.devServerScanCarry);
+        entry.devServerScanCarry = devServerScan.carry;
+        for (const detection of devServerScan.detections) {
+          devServerRegistry.record({
+            port: detection.port,
+            url: detection.url,
+            sessionId: entry.sessionId,
+            laneId: entry.laneId,
+          });
         }
 
         // Accumulate initial output for session title generation
@@ -8107,6 +8128,8 @@ export function createPtyService({
       entry.piSessionLease = null;
       entry.disposed = true;
       entry.attentionRequested = false;
+      // Same rule as closeEntry: the process serving those ports is going away.
+      devServerRegistry.forgetSession(entry.sessionId);
       sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
         revokeBrowserActorToken(entry.sessionId);

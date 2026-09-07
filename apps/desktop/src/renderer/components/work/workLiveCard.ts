@@ -28,6 +28,39 @@ export type WorkLiveActivity = {
   live: boolean;
 };
 
+/* ── Dismissal ────────────────────────────────────────────────────────────── */
+
+/**
+ * The activity stamp each tool's card was dismissed at, keyed by tool id.
+ *
+ * Per TOOL rather than one flag because "I don't need to watch the browser
+ * right now" says nothing about the simulator that boots ten seconds later.
+ * The value is the activity clock the card was showing when you closed it, so
+ * the rule "come back on NEW activity" is a plain `>` and cannot be defeated by
+ * the bookkeeping event that closing the card itself provokes.
+ */
+export type WorkLiveCardDismissals = Record<string, number>;
+
+export function normalizeWorkLiveCardDismissals(value: unknown): WorkLiveCardDismissals | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const next: WorkLiveCardDismissals = {};
+  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
+    if (!isWorkLiveScreenTool(key as WorkSidebarTab)) continue;
+    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
+    next[key] = stamp;
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+export function commitWorkLiveCardDismissal(
+  dismissals: WorkLiveCardDismissals | null | undefined,
+  tool: WorkLiveScreenTool,
+  activityStamp: number,
+): WorkLiveCardDismissals {
+  const previous = dismissals?.[tool] ?? 0;
+  return { ...(dismissals ?? {}), [tool]: Math.max(previous, activityStamp) };
+}
+
 /**
  * Which tool the card shows, or null for "show nothing".
  *
@@ -36,22 +69,24 @@ export type WorkLiveActivity = {
  * of the pane next to the pane. Ties go to the most recent activity, which is
  * what "the thing that just happened" means to the person watching.
  *
- * `dismissedAt` implements the "×" affordance: hidden until something newer
- * than the dismissal happens, so closing it silences the current burst of
- * activity rather than the feature.
+ * `dismissals` implements the "×" affordance: a dismissed tool stays hidden
+ * until it does something strictly newer than the stamp it was dismissed at, so
+ * closing it silences the current burst of activity rather than the feature —
+ * and never silences a different tool.
  */
 export function selectWorkLiveCardTool(args: {
   activeTool: WorkSidebarTab | null;
   activities: readonly WorkLiveActivity[];
-  /** `Date.now()` when the card was last dismissed for this lane, or null. */
-  dismissedAt: number | null;
+  /** Per-tool dismissal stamps for the current lane, or null. */
+  dismissals: WorkLiveCardDismissals | null;
 }): WorkLiveScreenTool | null {
-  const { activeTool, activities, dismissedAt } = args;
+  const { activeTool, activities, dismissals } = args;
   let best: WorkLiveActivity | null = null;
   for (const activity of activities) {
     if (!activity.available || !activity.live) continue;
     if (activity.tool === activeTool) continue;
     if (activity.lastActivityAt <= 0) continue;
+    const dismissedAt = dismissals?.[activity.tool];
     if (dismissedAt != null && activity.lastActivityAt <= dismissedAt) continue;
     if (!best || activity.lastActivityAt > best.lastActivityAt) best = activity;
   }
@@ -68,6 +103,15 @@ export type WorkLiveScrubFrame = {
   /** The action that closed this frame, e.g. `click 'Sign in'`. */
   caption: string | null;
   at: number;
+  /**
+   * The trace entry this frame belongs to, when the source knows it.
+   *
+   * App Control announces that an action happened before the caption for it can
+   * be read back, so the frame is committed at the instant it was true and the
+   * words arrive a round-trip later — addressed by id rather than by index,
+   * which the ring buffer keeps shifting.
+   */
+  id?: string | null;
 };
 
 /**
@@ -87,6 +131,21 @@ export function commitWorkLiveScrubFrame(
   return next.length > WORK_LIVE_SCRUB_BUFFER_SIZE
     ? next.slice(next.length - WORK_LIVE_SCRUB_BUFFER_SIZE)
     : next;
+}
+
+/** Fills in the caption of an already-committed frame, by trace id. */
+export function updateWorkLiveScrubCaption(
+  buffer: readonly WorkLiveScrubFrame[],
+  id: string,
+  caption: string | null,
+): WorkLiveScrubFrame[] {
+  let changed = false;
+  const next = buffer.map((frame) => {
+    if (frame.id !== id || frame.caption === caption) return frame;
+    changed = true;
+    return { ...frame, caption };
+  });
+  return changed ? next : [...buffer];
 }
 
 /**
@@ -161,13 +220,65 @@ export const WORK_LIVE_CARD_INSET = 12;
 export const WORK_LIVE_CARD_MIN_HOST_WIDTH = 380;
 export const WORK_LIVE_CARD_MIN_HOST_HEIGHT = 260;
 
+/**
+ * The frame width to ask the source for: the card's own width in DEVICE
+ * pixels, so a Retina card is not fed a 260px image and upscaled into mush —
+ * and a 5K panel is not fed a 1280px one for a thumbnail.
+ */
+export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): number {
+  const ratio = Number.isFinite(devicePixelRatio) && (devicePixelRatio ?? 0) > 0
+    ? (devicePixelRatio as number)
+    : 1;
+  return Math.max(320, Math.min(960, Math.round(WORK_LIVE_CARD_WIDTH * ratio)));
+}
+
 export function workLiveCardFits(host: { width: number; height: number }): boolean {
   return host.width >= WORK_LIVE_CARD_MIN_HOST_WIDTH && host.height >= WORK_LIVE_CARD_MIN_HOST_HEIGHT;
 }
 
 /**
+ * The travel the card is allowed, in host pixels.
+ *
+ * One source of truth for three callers — the default corner, the clamp that
+ * restores a stored position, and the drag constraint — because the bug this
+ * replaces was exactly those three disagreeing: drag let the card leave the
+ * column, and the column clips.
+ */
+export function workLiveCardTravel(args: {
+  host: { width: number; height: number };
+  cardHeight: number;
+  bottomReserve?: number;
+}): { minLeft: number; maxLeft: number; minTop: number; maxTop: number } {
+  const bottomReserve = Math.max(0, args.bottomReserve ?? 0);
+  const minLeft = WORK_LIVE_CARD_INSET;
+  const minTop = WORK_LIVE_CARD_INSET;
+  return {
+    minLeft,
+    minTop,
+    maxLeft: Math.max(minLeft, args.host.width - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET),
+    maxTop: Math.max(minTop, args.host.height - args.cardHeight - WORK_LIVE_CARD_INSET - bottomReserve),
+  };
+}
+
+/** Pins an arbitrary pixel position inside {@link workLiveCardTravel}. */
+export function clampWorkLiveCardRect(args: {
+  host: { width: number; height: number };
+  left: number;
+  top: number;
+  cardHeight: number;
+  bottomReserve?: number;
+}): { left: number; top: number } {
+  const travel = workLiveCardTravel(args);
+  return {
+    left: Math.max(travel.minLeft, Math.min(travel.maxLeft, args.left)),
+    top: Math.max(travel.minTop, Math.min(travel.maxTop, args.top)),
+  };
+}
+
+/**
  * Turns a stored fractional position into pixels, clamped so a card saved in a
- * wide column can never end up off-screen in a narrow one.
+ * wide column can never end up off-screen in a narrow one. With nothing stored
+ * it is the bottom-right corner, one inset in from both edges.
  */
 export function workLiveCardRect(args: {
   host: { width: number; height: number };
@@ -177,17 +288,36 @@ export function workLiveCardRect(args: {
   bottomReserve?: number;
 }): { left: number; top: number } {
   const { host, position, cardHeight } = args;
-  const bottomReserve = Math.max(0, args.bottomReserve ?? 0);
-  const maxLeft = Math.max(0, host.width - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
-  const maxTop = Math.max(0, host.height - cardHeight - WORK_LIVE_CARD_INSET - bottomReserve);
+  const travel = workLiveCardTravel(args);
   if (!position) {
-    return { left: maxLeft, top: maxTop };
+    return { left: travel.maxLeft, top: travel.maxTop };
   }
-  const left = position.xPct * (host.width - WORK_LIVE_CARD_WIDTH);
-  const top = position.yPct * (host.height - cardHeight);
+  return clampWorkLiveCardRect({
+    ...args,
+    left: position.xPct * (host.width - WORK_LIVE_CARD_WIDTH),
+    top: position.yPct * (host.height - cardHeight),
+  });
+}
+
+/**
+ * Motion drag constraints, expressed as an offset budget around the card's
+ * current origin. Numbers rather than the host ref: the host box is the whole
+ * column and the card has to stop one inset short of it, on every edge, above
+ * the composer.
+ */
+export function workLiveCardDragConstraints(args: {
+  host: { width: number; height: number };
+  origin: { left: number; top: number };
+  cardHeight: number;
+  bottomReserve?: number;
+}): { left: number; right: number; top: number; bottom: number } {
+  const travel = workLiveCardTravel(args);
+  const { origin } = args;
   return {
-    left: Math.max(WORK_LIVE_CARD_INSET, Math.min(maxLeft, left)),
-    top: Math.max(WORK_LIVE_CARD_INSET, Math.min(maxTop, top)),
+    left: travel.minLeft - origin.left,
+    right: Math.max(travel.minLeft - origin.left, travel.maxLeft - origin.left),
+    top: travel.minTop - origin.top,
+    bottom: Math.max(travel.minTop - origin.top, travel.maxTop - origin.top),
   };
 }
 

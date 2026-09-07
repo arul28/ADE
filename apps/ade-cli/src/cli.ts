@@ -2647,6 +2647,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
     $ ade --socket browser record stop --tab <tab-id>
     $ ade --socket browser proof --tab <tab-id> --caption "Verified"
+    $ ade --socket browser proof --tab <tab-id> --har --caption "Checkout 500s"
     $ ade --socket browser reload --tab <tab-id>
     $ ade --socket browser back --tab <tab-id>
     $ ade --socket browser forward --tab <tab-id>
@@ -2693,6 +2694,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --mode <dock>        DevTools dock mode for browser devtools: right, bottom, detach.
     --filter <text>      Substring filter for browser network/har entries.
     --failed             Only failed/4xx-5xx entries for browser network/har.
+    --har                Also export the tab's HAR with browser proof and file it as a
+                         browser_trace artifact beside the screenshot. Requires network
+                         logging on for that tab.
     --to-selector, --to-text-match, --to-test-id, --to-element, --to-handle, --to-x, --to-y
                          Drag destination for browser drag.
     --option-value/--option-label/--option-index
@@ -12303,15 +12307,39 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
     const ownerBase = readProofOwnerBase(args);
+    const includeHar = readFlag(args, ["--har", "--with-har"]);
+    const observationArgs = readBrowserObservationArgs(args);
     const observeArgs = collectGenericObjectArgs(args, {
-      ...readBrowserObservationArgs(args),
+      ...observationArgs,
       includeDom: false,
     });
+    // `--tab` and the lane claim were already consumed by the observation
+    // reader, so the HAR step reuses the same resolved target rather than
+    // re-reading flags that are no longer in argv.
+    const observationOnlyKeys = new Set([
+      "keepCount",
+      "includeDom",
+      "includeDiagnostics",
+      "includeElementMap",
+      "maxElements",
+    ]);
+    const harTargetArgs: JsonObject = Object.fromEntries(
+      Object.entries(observationArgs).filter(([key]) => !observationOnlyKeys.has(key)),
+    );
     return {
       kind: "execute",
       label: "browser proof",
       steps: [
         actionStep("observation", "built_in_browser", "observe", observeArgs),
+        // The HAR rides the same proof: a screenshot says what the page looked
+        // like, the trace says what it asked the network for. Exporting fails
+        // loudly (with the "turn network logging on" message) rather than
+        // filing a screenshot and silently dropping the half that was asked for.
+        ...(includeHar
+          ? [
+              actionStep("har", "built_in_browser", "exportHar", harTargetArgs),
+            ]
+          : []),
         {
           key: "result",
           method: "ade/actions/call",
@@ -12323,6 +12351,13 @@ function buildBrowserPlan(args: string[]): CliPlan {
             const filePath = isRecord(observation) ? asString(observation.filePath) : null;
             if (!filePath) {
               throw new CliUsageError("Browser proof could not find an observation file path.");
+            }
+            const harExport = includeHar ? unwrapActionEnvelope(values.har) : null;
+            const harPath = isRecord(harExport) ? asString(harExport.filePath) : null;
+            if (includeHar && !harPath) {
+              throw new CliUsageError(
+                "Browser proof could not find the exported HAR path. Turn network logging on for the tab (`ade browser network on`) and retry.",
+              );
             }
             return {
               name: "ingest_computer_use_artifacts",
@@ -12339,6 +12374,18 @@ function buildBrowserPlan(args: string[]): CliPlan {
                     ...(caption ? { description: caption } : {}),
                     path: filePath,
                   },
+                  // Same owners, same call: one ingest keeps the trace linked to
+                  // the screenshot it belongs with.
+                  ...(harPath
+                    ? [
+                        {
+                          kind: "browser_trace",
+                          title: `${title} (network)`,
+                          ...(caption ? { description: caption } : {}),
+                          path: harPath,
+                        },
+                      ]
+                    : []),
                 ],
               },
             };

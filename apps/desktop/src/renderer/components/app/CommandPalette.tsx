@@ -68,6 +68,7 @@ import {
 import {
   buildWorkResults,
   buildWorkToolCommands,
+  commandsLeadPaletteResults,
   WorkFilterBar,
   useWorkSessionActions,
   type WorkFilterMenuKey,
@@ -1039,6 +1040,15 @@ export function CommandPalette({
   const threadCount = visibleWorkResults.length;
   const commandCount = filtered.length;
   const totalFlat = threadCount + commandCount + flatEntities.length;
+  // Typing a command's full title puts its group first — see
+  // `commandsLeadPaletteResults`. Both the render order and this flat keyboard
+  // index read the same flag, so ↓↓↵ always runs the row you are looking at.
+  const commandsLead = commandsLeadPaletteResults(
+    q,
+    filtered.map((command) => command.title),
+  );
+  const commandStartIndex = commandsLead ? 0 : threadCount;
+  const threadStartIndex = commandsLead ? commandCount : 0;
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1564,15 +1574,15 @@ export function CommandPalette({
 
   const activateFlat = useCallback(
     (index: number) => {
-      if (index < threadCount) {
-        const result = visibleWorkResults[index];
+      if (index >= threadStartIndex && index < threadStartIndex + threadCount) {
+        const result = visibleWorkResults[index - threadStartIndex];
         if (!result) return;
         if (result.type === "thread") activateThread(result.match.entry);
         else activateResult(result.item);
         return;
       }
-      if (index < threadCount + commandCount) {
-        const command = filtered[index - threadCount];
+      if (index >= commandStartIndex && index < commandStartIndex + commandCount) {
+        const command = filtered[index - commandStartIndex];
         if (command) runCommand(command);
         return;
       }
@@ -1585,10 +1595,12 @@ export function CommandPalette({
       activateResult,
       activateThread,
       commandCount,
+      commandStartIndex,
       filtered,
       flatEntities,
       runCommand,
       threadCount,
+      threadStartIndex,
       toggleExpandKind,
       visibleWorkResults,
     ],
@@ -2552,7 +2564,10 @@ export function CommandPalette({
                         <ul ref={listRef} className="py-2">
                           {(() => {
                             let flatIndex = 0;
-                            const threadNodes =
+                            // Each builder consumes `flatIndex` as it runs, so
+                            // these are called in RENDER order (below), never
+                            // declared in one order and spread in another.
+                            const buildThreadNodes = () =>
                               visibleWorkResults.length > 0
                                 ? [
                                     <li key="threads">
@@ -2613,7 +2628,7 @@ export function CommandPalette({
                                     </li>,
                                   ]
                                 : [];
-                            const commandNodes = grouped.map((group) => (
+                            const buildCommandNodes = () => grouped.map((group) => (
                               <li key={group.label}>
                                 <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
                                   {group.label}
@@ -2668,7 +2683,7 @@ export function CommandPalette({
                               </li>
                             ));
 
-                            const entityNodes = entitySections.map(
+                            const buildEntityNodes = () => entitySections.map(
                               (section) => {
                                 const expanded = expandedKinds.has(
                                   section.kind,
@@ -2728,11 +2743,17 @@ export function CommandPalette({
                               },
                             );
 
-                            return [
-                              ...threadNodes,
-                              ...commandNodes,
-                              ...entityNodes,
-                            ];
+                            return commandsLead
+                              ? [
+                                  ...buildCommandNodes(),
+                                  ...buildThreadNodes(),
+                                  ...buildEntityNodes(),
+                                ]
+                              : [
+                                  ...buildThreadNodes(),
+                                  ...buildCommandNodes(),
+                                  ...buildEntityNodes(),
+                                ];
                           })()}
                         </ul>
                       )}

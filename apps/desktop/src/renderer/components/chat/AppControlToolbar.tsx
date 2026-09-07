@@ -120,7 +120,10 @@ export function AppControlToolbar({
         triggerTitle={hasSession ? statusDetail : "Pick an app to drive"}
         triggerIcon={<AppWindow size={12} weight="duotone" className="shrink-0 text-muted-fg/75" />}
         triggerLabel={appLabel}
-        triggerClassName="h-[24px] max-w-[46%]"
+        // Fixed px, never a percentage: the trigger's own width is what sizes
+        // its (content-sized, shrink-0) wrapper, so a `%` max-width resolved
+        // against itself and collapsed "Playground" down to "P".
+        triggerClassName="h-[24px] min-w-[120px] max-w-[240px]"
         menuClassName="w-[268px]"
         open={pickerOpen}
         onOpenChange={onPickerOpenChange}

@@ -1845,6 +1845,13 @@ export type ProjectBrowserConfig = {
    * Mod+Click always overrides this to external, and Shift+Click to in-app.
    */
   linkOpenMode?: BrowserLinkOpenMode;
+  /**
+   * Open a background tab when a terminal in this project prints a dev-server
+   * ready line. Defaults to `true`. The tab never steals focus and never opens
+   * the pane; it is there when you look. Set `false` to keep the Browser tool
+   * strictly manual.
+   */
+  autoOpenDevServer?: boolean;
 };
 
 export type ProjectConfigFile = {

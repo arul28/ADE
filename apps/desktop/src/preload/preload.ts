@@ -788,6 +788,8 @@ import type {
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
   BuiltInBrowserFindInPageResult,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLoggingResult,
@@ -8634,6 +8636,13 @@ const adeBridge = {
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserSetZoom, args),
           ),
+    /**
+     * Dev servers ADE sniffed out of terminal output, for the launchpad chips.
+     * Always local: dev-server discovery is a property of this machine's PTYs,
+     * so it never routes through a pinned remote runtime.
+     */
+    getDevServers: async (args: DevServersArgs = {}): Promise<DevServersResult> =>
+      ipcRenderer.invoke(IPC.localhostGetDevServers, args),
     findInPage: async (
       args: BuiltInBrowserFindInPageArgs,
       pin?: OpenProjectBinding | null,
@@ -8814,6 +8823,8 @@ const adeBridge = {
   localhost: {
     probePort: async (port: number): Promise<boolean> =>
       ipcRenderer.invoke(IPC.localhostProbePort, { port }),
+    getDevServers: async (args: DevServersArgs = {}): Promise<DevServersResult> =>
+      ipcRenderer.invoke(IPC.localhostGetDevServers, args),
   },
   // Universal search is daemon-only by design: it always routes through the
   // ADE runtime action bridge (never an in-process IPC fallback) so packaged

@@ -636,8 +636,15 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
+      // Dev-server discovery reads this machine's PTY output. A phone or a web
+      // tab has none, so the honest answer is an empty list rather than the
+      // desktop's — the launchpad simply shows no chips.
+      getDevServers: async () => ({ servers: [] }),
       loginImport: createLoginImportUnavailableStub(),
-    } as AdeNamespace<"builtInBrowser">,
+      // The stub implements the handful of members the web client actually
+      // reaches for; the rest of the namespace is deliberately absent so a
+      // caller that needs it feature-detects instead of getting a fake.
+    } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
     review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,

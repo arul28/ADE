@@ -1089,15 +1089,45 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   let lastObservedUrl: string | null = null;
   let lastObservedTitle: string | null = null;
 
+  /**
+   * Error tallies since the app's last navigation or reattach — the number the
+   * Work tools pane's red dot reports. Kept as counters rather than derived
+   * from the diagnostic buffers, which are capped rolling windows: an app that
+   * logs 200 errors would otherwise report only the last 50.
+   */
+  let consoleErrorCount = 0;
+  let failedRequestCount = 0;
+
   const resetDiagnostics = (): void => {
     consoleDiagnostics = [];
     networkDiagnostics = [];
     pendingNetworkRequests.clear();
     lastNetworkActivityAtMs = Date.now();
+    if (consoleErrorCount === 0 && failedRequestCount === 0) return;
+    consoleErrorCount = 0;
+    failedRequestCount = 0;
+    emitDiagnostics();
   };
 
   const emit = (payload: AppControlEventPayload) => {
     args.onEvent?.(payload);
+  };
+
+  /**
+   * Publishes the session's error tally. Emitted on change only, and only from
+   * the paths that can move it, so nothing has to poll `observe` to find out
+   * whether the app under control is broken.
+   */
+  const emitDiagnostics = (): void => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) return;
+    emit({
+      type: "diagnostics",
+      sessionId,
+      consoleErrorCount,
+      failedRequestCount,
+      updatedAt: nowIso(),
+    });
   };
 
   const updateSession = (patch: Partial<AppControlSession>) => {
@@ -1147,10 +1177,20 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const pushConsoleDiagnostic = (entry: AppControlConsoleDiagnostic): void => {
     consoleDiagnostics = [...consoleDiagnostics, entry].slice(-MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS);
+    if (entry.level === "error") {
+      consoleErrorCount += 1;
+      emitDiagnostics();
+    }
   };
 
   const pushNetworkDiagnostic = (entry: AppControlNetworkDiagnostic): void => {
     networkDiagnostics = [...networkDiagnostics, entry].slice(-MAX_APP_CONTROL_NETWORK_DIAGNOSTICS);
+    // A transport failure and a 4xx/5xx both read as "this app is broken" to
+    // the person glancing at the tools pane; a 200 does not.
+    if (entry.error != null || (entry.statusCode != null && entry.statusCode >= 400)) {
+      failedRequestCount += 1;
+      emitDiagnostics();
+    }
   };
 
   const consoleLevelFor = (value: unknown): AppControlConsoleDiagnostic["level"] => {
@@ -1272,6 +1312,13 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         endedAt: nowIso(),
         durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
       });
+    });
+    client.on("Page.frameNavigated", (params) => {
+      // Main frame only: an iframe swapping documents is not a new page, and
+      // zeroing the tally on one would hide errors the app just logged.
+      const frame = isRecord(params) && isRecord(params.frame) ? params.frame : null;
+      if (!frame || stringOrNull(frame.parentId)) return;
+      resetDiagnostics();
     });
     // Best-effort: a target that refuses one of these still streams frames and
     // serves input, it just reports fewer diagnostics.

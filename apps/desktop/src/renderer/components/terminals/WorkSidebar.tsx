@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { WarningCircle } from "@phosphor-icons/react";
+import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   AgentChatFileRef,
@@ -38,6 +38,7 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
+import { PaneTooltip } from "../ui/PaneTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
@@ -48,6 +49,23 @@ import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
 const TOOLS_PICKER_DEFAULT_BINDING = "Escape";
+
+/**
+ * Anything that owns Escape more strongly than the pane does.
+ *
+ * A dialog, a menu, or a Radix popper is a modal layer: its Escape closes it,
+ * and the pane must not race that. Checked against the whole document because
+ * these all portal to `document.body`, outside the pane's own subtree.
+ */
+const MODAL_LAYER_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="menu"], [data-radix-popper-content-wrapper]';
+
+function aModalLayerIsOpen(): boolean {
+  return document.querySelector(MODAL_LAYER_SELECTOR) != null;
+}
+
+/** See `ChatPrPane.onRegisterRefresh`. */
+type PrRefreshAction = { run: () => void; syncing: boolean };
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
@@ -307,6 +325,13 @@ export function WorkSidebar({
       : null;
   }, [activeSession, contextTarget]);
 
+  // The PR tool's refresh, surrendered by `ChatPrPane` when it renders without
+  // its own title bar. Held here so the shell header can place it.
+  const [prRefreshAction, setPrRefreshAction] = useState<PrRefreshAction | null>(null);
+  useEffect(() => {
+    if (effectiveTool !== "pr") setPrRefreshAction(null);
+  }, [effectiveTool]);
+
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };
 
@@ -424,7 +449,10 @@ export function WorkSidebar({
       }
       if (!terminalOwnerSessionId) {
         const message = activeSession?.status && activeSession.status !== "running"
-          ? `Continue this ${formatToolTypeLabel(activeSession.toolType)} session before opening an attached terminal.`
+          // `formatToolTypeLabel` already ends in "session" for the CLI tools
+          // ("OpenCode CLI session"), so appending another produced "…CLI
+          // session session before opening…".
+          ? `Continue this ${formatToolTypeLabel(activeSession.toolType)} before opening an attached terminal.`
           : "Open a chat or running agent CLI session to attach terminals.";
         return <TerminalPanelEmpty message={message} />;
       }
@@ -442,7 +470,7 @@ export function WorkSidebar({
           laneId={laneId}
           chatSessionId={terminalOwnerSessionId}
           runtimePin={runtimePin}
-          emptyMessage="Create a terminal to work alongside this session."
+          emptyMessage="Shells you open here stay attached to this session."
         />
       );
     }
@@ -547,6 +575,10 @@ export function WorkSidebar({
             sessionId={panelSessionId}
             runtimePin={runtimePin}
             onClose={() => onToolChange(null)}
+            // The shell header above already says "Pull request" and owns the
+            // close button; the pane's refresh moves up into it.
+            chromeless
+            onRegisterRefresh={setPrRefreshAction}
           />
         </div>
       );
@@ -613,6 +645,7 @@ export function WorkSidebar({
     selectedCommit,
     selectedMode,
     selectedPath,
+    setPrRefreshAction,
     active,
     effectiveTool,
     activeSession,
@@ -641,13 +674,28 @@ export function WorkSidebar({
     TOOLS_PICKER_BINDING_ID,
     TOOLS_PICKER_DEFAULT_BINDING,
   );
-  const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+  // Inside a terminal the pane cannot have plain Escape. xterm hands Escape to
+  // whatever is running — vim, less, a TUI menu — and it does not report back
+  // whether that program wanted it, so "act only if the terminal declined" is
+  // not knowable from here. Shift+Escape is the pane's way out instead, and the
+  // "Back to tools" tooltip says so wherever a terminal is on screen.
+  const terminalPickerBinding = `Shift+${pickerBinding}`;
+  const handleKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (!effectiveTool) return;
-    if (!eventMatchesBinding(event.nativeEvent, pickerBinding)) return;
+    const target = event.target as Node | null;
+    // Capture phase, so this runs before xterm's own key handling — but only
+    // for keys pressed inside this pane, and never while a modal layer is up.
+    if (!target || !sidebarRef.current?.contains(target)) return;
+    if (aModalLayerIsOpen()) return;
+    const insideTerminal = target instanceof Element
+      ? target.closest(".xterm") != null
+      : (target.parentElement?.closest(".xterm") ?? null) != null;
+    const binding = insideTerminal ? terminalPickerBinding : pickerBinding;
+    if (!eventMatchesBinding(event.nativeEvent, binding)) return;
     event.preventDefault();
     event.stopPropagation();
     selectTool(null);
-  }, [effectiveTool, pickerBinding, selectTool]);
+  }, [effectiveTool, pickerBinding, selectTool, terminalPickerBinding]);
 
   // Browser: the page you are on. Terminal: how many shells. Git: the branch.
   // One compact fact, so the header answers "which one of these am I looking
@@ -666,7 +714,7 @@ export function WorkSidebar({
   return (
     <aside
       ref={sidebarRef}
-      onKeyDown={handleKeyDown}
+      onKeyDownCapture={handleKeyDownCapture}
       className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85"
     >
       {effectiveTool ? (
@@ -675,6 +723,27 @@ export function WorkSidebar({
           context={toolContext}
           contextLabel={headerContextLabel}
           statuses={statuses}
+          contextAction={effectiveTool === "pr" && prRefreshAction ? (
+            <PaneTooltip label={prRefreshAction.syncing ? "Syncing PR status…" : "Refresh pull request"} side="bottom">
+              <button
+                type="button"
+                onClick={prRefreshAction.run}
+                disabled={prRefreshAction.syncing}
+                aria-label="Refresh pull request"
+                className={cn(
+                  "inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-fg/70",
+                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                  "disabled:pointer-events-none disabled:opacity-45",
+                )}
+              >
+                <ArrowsClockwise size={12} weight="bold" className={cn(prRefreshAction.syncing && "animate-spin")} />
+              </button>
+            </PaneTooltip>
+          ) : null}
+          // Reads the real binding rather than a hard-coded "Esc", so a
+          // rebound `work.tools.picker` never advertises the wrong key.
+          backShortcut={effectiveTool === "terminal" ? terminalPickerBinding : pickerBinding}
           onShowPicker={() => selectTool(null)}
           onPick={selectTool}
           onClose={closePane}

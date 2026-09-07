@@ -1,16 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserLetterboxFrame,
   browserTabLabel,
+  browserToolbarLayout,
+  clampBrowserViewBounds,
+  clipboardUrlCandidate,
   deviceMenuPresets,
+  devServerChipLabel,
   emulationButtonLabel,
+  emulationCaption,
   emulationSizeLabel,
+  findErrorMessage,
   findMatchLabel,
   formatRecordingElapsed,
+  mergeDevServer,
+  normalizeDevServer,
+  normalizeDevServers,
   normalizeRecordingFps,
   recordingElapsedMs,
   recordingPillLabel,
   shortHostLabel,
   simulatorEmulationPreset,
+  splitUrlForDisplay,
   stepZoomFactor,
   urlLockKind,
   zoomPercentLabel,
@@ -179,5 +190,201 @@ describe("tab labels", () => {
   it("drops the www prefix from a host", () => {
     expect(shortHostLabel("https://www.google.com/")).toBe("google.com");
     expect(shortHostLabel("not a url")).toBeNull();
+  });
+});
+
+describe("browserToolbarLayout", () => {
+  it("keeps every control and its label in a pane with room", () => {
+    const layout = browserToolbarLayout(720);
+    expect(layout.density).toBe("full");
+    expect(layout).toMatchObject({
+      showLabels: true,
+      showForward: true,
+      showDevice: true,
+      showCamera: true,
+      showInspect: true,
+      showOpenButton: true,
+    });
+  });
+
+  it("drops labels first, keeping every control reachable", () => {
+    const layout = browserToolbarLayout(400);
+    expect(layout.density).toBe("compact");
+    expect(layout.showLabels).toBe(false);
+    expect(layout.showDevice).toBe(true);
+    expect(layout.showCamera).toBe(true);
+    expect(layout.showInspect).toBe(true);
+  });
+
+  it("leaves back, reload, the URL and the overflow menu at 300px", () => {
+    const layout = browserToolbarLayout(300);
+    expect(layout.density).toBe("minimal");
+    expect(layout.showForward).toBe(false);
+    expect(layout.showDevice).toBe(false);
+    expect(layout.showCamera).toBe(false);
+    expect(layout.showInspect).toBe(false);
+    expect(layout.showOpenButton).toBe(false);
+  });
+
+  it("switches exactly on its thresholds", () => {
+    expect(browserToolbarLayout(420).density).toBe("full");
+    expect(browserToolbarLayout(419).density).toBe("compact");
+    expect(browserToolbarLayout(360).density).toBe("compact");
+    expect(browserToolbarLayout(359).density).toBe("minimal");
+  });
+
+  it("assumes room when the pane has not been measured yet", () => {
+    expect(browserToolbarLayout(null).density).toBe("full");
+    expect(browserToolbarLayout(0).density).toBe("full");
+  });
+});
+
+describe("browserLetterboxFrame", () => {
+  it("fills the stage inside the hairline when nothing is emulated", () => {
+    expect(browserLetterboxFrame({ width: 600, height: 400 }, null)).toEqual({
+      left: 1,
+      top: 1,
+      width: 598,
+      height: 398,
+    });
+  });
+
+  it("centres the exact CSS size of the emulated device", () => {
+    expect(browserLetterboxFrame({ width: 800, height: 1000 }, { width: 393, height: 852 })).toEqual({
+      left: 1 + Math.floor((798 - 393) / 2),
+      top: 1 + Math.floor((998 - 852) / 2),
+      width: 393,
+      height: 852,
+    });
+  });
+
+  it("never paints a phone wider than the pane it sits in", () => {
+    const frame = browserLetterboxFrame({ width: 300, height: 400 }, { width: 393, height: 852 });
+    expect(frame.width).toBe(298);
+    expect(frame.height).toBe(398);
+    expect(frame.left).toBe(1);
+  });
+
+  it("treats a zero-sized emulation as no emulation", () => {
+    expect(browserLetterboxFrame({ width: 500, height: 300 }, { width: 0, height: 0 })).toEqual({
+      left: 1,
+      top: 1,
+      width: 498,
+      height: 298,
+    });
+  });
+});
+
+describe("clampBrowserViewBounds", () => {
+  it("trims a stale measurement back into the pane", () => {
+    expect(clampBrowserViewBounds(
+      { x: 1_160, y: 60, width: 640, height: 800 },
+      { left: 1_160, top: 60, right: 1_460, bottom: 860 },
+    )).toEqual({ x: 1_160, y: 60, width: 300, height: 800 });
+  });
+
+  it("collapses to nothing rather than reporting a negative size", () => {
+    // A frame entirely outside the box reads as zero-width, which is what the
+    // panel treats as "not visible" — never as a negative rectangle.
+    expect(clampBrowserViewBounds(
+      { x: 900, y: 10, width: 200, height: 200 },
+      { left: 0, top: 0, right: 400, bottom: 400 },
+    )).toEqual({ x: 900, y: 10, width: 0, height: 200 });
+  });
+});
+
+describe("emulationCaption", () => {
+  it("reads as the device's CSS size", () => {
+    expect(emulationCaption({ width: 393, height: 852 })).toBe("393 × 852");
+    expect(emulationCaption(null)).toBeNull();
+    expect(emulationCaption({ width: 0, height: 0 })).toBeNull();
+  });
+});
+
+describe("findErrorMessage", () => {
+  it("never surfaces the service's own words", () => {
+    expect(findErrorMessage(new Error(
+      "Error invoking remote method 'built-in-browser:find-in-page': TypeError: x is not a function",
+    ))).toBe("Find is not available on this page.");
+  });
+
+  it("says what to do when there is no page to search", () => {
+    expect(findErrorMessage(new Error("No active tab for this collection")))
+      .toBe("Open a page before searching it.");
+  });
+
+  it("has an answer for anything at all", () => {
+    expect(findErrorMessage(undefined)).toBe("Find is not available on this page.");
+    expect(findErrorMessage("boom")).toBe("Find is not available on this page.");
+  });
+});
+
+describe("dev servers", () => {
+  it("reads a full record, a bare port and a bare host alike", () => {
+    expect(normalizeDevServer({ url: "http://localhost:5173", command: "npm run dev" }))
+      .toEqual({ url: "http://localhost:5173", port: 5_173, source: "npm run dev" });
+    expect(normalizeDevServer(3_000)).toEqual({
+      url: "http://localhost:3000",
+      port: 3_000,
+      source: null,
+    });
+    expect(normalizeDevServer("localhost:8080")).toEqual({
+      url: "http://localhost:8080",
+      port: 8_080,
+      source: null,
+    });
+    expect(normalizeDevServer({})).toBeNull();
+  });
+
+  it("de-duplicates a list and survives a shape it has never seen", () => {
+    expect(normalizeDevServers([
+      { port: 5_173 },
+      { url: "http://localhost:5173" },
+      null,
+    ])).toEqual([{ url: "http://localhost:5173", port: 5_173, source: null }]);
+    expect(normalizeDevServers(undefined)).toEqual([]);
+  });
+
+  it("adds a newly detected server and enriches one it already knew", () => {
+    const known = [{ url: "http://localhost:5173", port: 5_173, source: null }];
+    expect(mergeDevServer(known, { url: "http://localhost:3000", port: 3_000, source: null }))
+      .toHaveLength(2);
+    expect(mergeDevServer(known, { url: "http://localhost:5173", port: 5_173, source: "npm run dev" }))
+      .toEqual([{ url: "http://localhost:5173", port: 5_173, source: "npm run dev" }]);
+  });
+
+  it("names the command when it knows it, and the port when it does not", () => {
+    expect(devServerChipLabel({ url: "http://localhost:5173", port: 5_173, source: "npm run dev" }))
+      .toBe("npm run dev · :5173");
+    expect(devServerChipLabel({ url: "http://localhost:5173", port: 5_173, source: null }))
+      .toBe("localhost:5173");
+  });
+});
+
+describe("splitUrlForDisplay", () => {
+  it("emphasises the host and dims the rest", () => {
+    expect(splitUrlForDisplay("https://www.example.com/docs/page?q=1#top"))
+      .toEqual({ host: "example.com", rest: "/docs/page?q=1#top" });
+    expect(splitUrlForDisplay("https://example.com/")).toEqual({ host: "example.com", rest: "" });
+  });
+
+  it("declines anything that is not an http(s) address", () => {
+    expect(splitUrlForDisplay("about:blank")).toBeNull();
+    expect(splitUrlForDisplay("")).toBeNull();
+    expect(splitUrlForDisplay("not a url")).toBeNull();
+  });
+});
+
+describe("clipboardUrlCandidate", () => {
+  it("offers a link the clipboard actually holds", () => {
+    expect(clipboardUrlCandidate("https://example.com/x")).toBe("https://example.com/x");
+    expect(clipboardUrlCandidate(" localhost:5173 ")).toBe("http://localhost:5173");
+    expect(clipboardUrlCandidate("example.com")).toBe("https://example.com");
+  });
+
+  it("stays quiet when the clipboard holds prose", () => {
+    expect(clipboardUrlCandidate("fix the login page")).toBeNull();
+    expect(clipboardUrlCandidate("")).toBeNull();
+    expect(clipboardUrlCandidate(null)).toBeNull();
   });
 });

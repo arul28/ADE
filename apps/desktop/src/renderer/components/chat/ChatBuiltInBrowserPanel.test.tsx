@@ -128,7 +128,12 @@ function installBrowserApi() {
     stop: vi.fn().mockResolvedValue(browserStatus),
     startInspect: vi.fn().mockResolvedValue(browserStatus),
     stopInspect: vi.fn().mockResolvedValue(browserStatus),
-    captureScreenshot: vi.fn(),
+    captureScreenshot: vi.fn().mockResolvedValue({
+      dataUrl: "data:image/png;base64,underlay",
+      width: 640,
+      height: 360,
+      capturedAt: "2026-09-07T00:00:00.000Z",
+    }),
     selectPoint: vi.fn(),
     selectCurrent: vi.fn(),
     clearSelection: vi.fn().mockResolvedValue(undefined),
@@ -161,6 +166,9 @@ function installBrowserApi() {
       entryCount: 0,
       status: browserStatus,
     }),
+    getDevServers: vi.fn().mockResolvedValue([
+      { url: "http://localhost:5173", port: 5173, command: "npm run dev" },
+    ]),
     exportHar: vi.fn(),
     startRecording: vi.fn(),
     stopRecording: vi.fn().mockResolvedValue({
@@ -1020,6 +1028,236 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
       expect(screen.queryByTestId("browser-handoff-bar")).toBeNull();
+    });
+  });
+
+  describe("launchpad", () => {
+    const EMPTY_STATUS = {
+      ...browserStatus,
+      activeTabId: null,
+      tabs: [],
+      url: null,
+      title: null,
+    };
+
+    it("waits for an address instead of opening a search engine nobody asked for", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+      // The old panel navigated to Google on its own; closing the last tab then
+      // silently opened a new one.
+      expect(api.navigate).not.toHaveBeenCalled();
+      expect(api.createTab).not.toHaveBeenCalled();
+    });
+
+    it("offers the dev servers the machine actually has, named by their command", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      const chip = await screen.findByText("npm run dev · :5173");
+      expect(screen.queryByText("localhost:3000")).toBeNull();
+
+      fireEvent.click(chip);
+
+      await waitFor(() => {
+        expect(api.navigate).toHaveBeenCalledWith(
+          expect.objectContaining({ url: "http://localhost:5173" }),
+          null,
+        );
+      });
+    });
+
+    it("offers Paste a link only when the clipboard holds one", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+      vi.mocked(window.ade.app.readClipboardText).mockResolvedValue("fix the login page");
+
+      const { unmount } = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-launchpad");
+      await waitFor(() => expect(window.ade.app.readClipboardText).toHaveBeenCalled());
+      expect(screen.queryByText("Paste a link")).toBeNull();
+      unmount();
+
+      vi.mocked(window.ade.app.readClipboardText).mockResolvedValue("https://example.com/pr/1");
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      expect(await screen.findByText("Paste a link")).toBeTruthy();
+    });
+
+    it("opens an empty tab from +, not a page", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      fireEvent.click(await screen.findByLabelText("New tab"));
+
+      await waitFor(() => {
+        expect(api.createTab).toHaveBeenCalledWith(
+          expect.objectContaining({ activate: true }),
+          null,
+        );
+      });
+      expect(api.createTab.mock.calls[0]?.[0]).not.toHaveProperty("url");
+    });
+
+    it("hides the native view so nothing paints over the launchpad", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-launchpad");
+
+      // The view is composited above this renderer; leaving it visible would
+      // put an unreachable blank page on top of the chips.
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(
+          expect.objectContaining({ visible: false }),
+          null,
+        );
+      });
+    });
+
+    it("stays out of the way once a tab has a page", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+      expect(screen.queryByTestId("browser-launchpad")).toBeNull();
+    });
+
+    it("never flashes over a loaded page and leaves the omnibox blank", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      // The launchpad focuses the URL field; showing it for the frame before the
+      // first status lands used to strand an empty, focused omnibox over a page
+      // that was in fact loaded.
+      const urlInput = await screen.findByLabelText("ADE browser URL");
+      await waitFor(() => {
+        expect((urlInput as HTMLInputElement).value).toBe("https://example.test/");
+      });
+      expect(screen.queryByTestId("browser-launchpad")).toBeNull();
+    });
+  });
+
+  describe("find bar", () => {
+    it("focuses and selects the field on ⌘F, and searches after the debounce", async () => {
+      const { api } = installBrowserApi();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+        const panel = await screen.findByLabelText("ADE browser URL");
+
+        fireEvent.keyDown(panel, { key: "f", metaKey: true });
+
+        const input = await screen.findByLabelText("Find on page");
+        await waitFor(() => expect(document.activeElement).toBe(input));
+
+        fireEvent.change(input, { target: { value: "widget" } });
+        // Nothing goes out mid-word.
+        expect(api.findInPage).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(160);
+        await waitFor(() => {
+          expect(api.findInPage).toHaveBeenCalledWith(
+            expect.objectContaining({ text: "widget", findNext: false }),
+            null,
+          );
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("steps forward on Enter and backwards on Shift-Enter", async () => {
+      const { api } = installBrowserApi();
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("Find on page"));
+
+      const input = await screen.findByLabelText("Find on page");
+      fireEvent.change(input, { target: { value: "widget" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await waitFor(() => {
+        expect(api.findInPage).toHaveBeenCalledWith(
+          expect.objectContaining({ findNext: true, forward: true }),
+          null,
+        );
+      });
+
+      fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+      await waitFor(() => {
+        expect(api.findInPage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ findNext: true, forward: false }),
+          null,
+        );
+      });
+    });
+
+    it("says what went wrong in a sentence, never in the service's words", async () => {
+      const { api } = installBrowserApi();
+      api.findInPage.mockRejectedValue(new Error(
+        "Error invoking remote method 'built-in-browser:find-in-page': TypeError: undefined",
+      ));
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("Find on page"));
+
+      const input = await screen.findByLabelText("Find on page");
+      fireEvent.change(input, { target: { value: "widget" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(await screen.findByText("Find is not available on this page.")).toBeTruthy();
+      expect(screen.queryByText(/invoking remote method/)).toBeNull();
+    });
+  });
+
+  describe("popover underlay", () => {
+    it("freezes the last frame before hiding the view, and clears it once the view is back", async () => {
+      const { api } = installBrowserApi();
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenCalledWith(
+          expect.objectContaining({ visible: true }),
+          null,
+        );
+      });
+
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+
+      // The frozen frame is painted at the view's bounds…
+      const underlay = await screen.findByTestId("browser-underlay");
+      expect(underlay.getAttribute("src")).toBe("data:image/png;base64,underlay");
+      expect(api.captureScreenshot).toHaveBeenCalled();
+      // …and only then does the live view go, so no black rectangle appears.
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(
+          expect.objectContaining({ visible: false }),
+          null,
+        );
+      });
+
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(
+          expect.objectContaining({ visible: true }),
+          null,
+        );
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId("browser-underlay")).toBeNull();
+      });
     });
   });
 });

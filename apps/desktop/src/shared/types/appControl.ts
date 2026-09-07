@@ -263,7 +263,20 @@ export type AppControlEventPayload =
   | { type: "session-updated"; session: AppControlSession | null }
   | { type: "session-stopped"; previousSession: AppControlSession | null }
   | { type: "selection"; item: AppControlContextItem }
-  | { type: "frame"; frame: AppControlScreencastFrame };
+  | { type: "frame"; frame: AppControlScreencastFrame }
+  /**
+   * The session's error tally changed. Mirrors the built-in browser's
+   * `diagnostics` event so the Work tools pane lights the same red dot for App
+   * Control that it lights for the Browser, push-driven rather than polled.
+   * Counts are since the app's last navigation or reattach.
+   */
+  | {
+      type: "diagnostics";
+      sessionId: string;
+      consoleErrorCount: number;
+      failedRequestCount: number;
+      updatedAt: string;
+    };
 
 /* ---------------------------------------------------------------------------
  * Agent action model

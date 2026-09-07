@@ -954,17 +954,39 @@ function SessionSurface({
         />
       );
     }
+    // A plain shell used to be the one Work surface with no header at all —
+    // and therefore the one surface you could not open the Tools pane from,
+    // even though a shell is exactly where you want Git or the browser beside
+    // you. It gets the same header every other CLI surface has; only the
+    // terminal's own paste behaviour stays shell-specific.
     return (
-      <TerminalView
-        key={session.id}
-        ptyId={session.ptyId}
-        sessionId={session.id}
-        isActive={surfaceActive}
-        isVisible={pageActive && terminalVisible}
-        runtimePin={runtimePin}
-        toolType={session.toolType}
-        className="h-full w-full"
-      />
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+        {layoutVariant !== "grid-tile" ? (
+          <CliSessionWorkSurfaceHeader
+            session={session}
+            lanes={lanes}
+            stopping={stopping}
+            onInfoClick={onInfoClick}
+            onContextMenu={onContextMenu}
+            onStopRunningSession={onStopRunningSession}
+            onToggleToolsPane={onToggleToolsPane}
+            toolsPaneOpen={toolsPaneOpen}
+            runtimePin={runtimePin}
+          />
+        ) : null}
+        <div className="min-h-0 w-full flex-1 overflow-hidden">
+          <TerminalView
+            key={session.id}
+            ptyId={session.ptyId}
+            sessionId={session.id}
+            isActive={surfaceActive}
+            isVisible={pageActive && terminalVisible}
+            runtimePin={runtimePin}
+            toolType={session.toolType}
+            className="h-full w-full"
+          />
+        </div>
+      </div>
     );
   }
 

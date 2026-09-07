@@ -365,6 +365,7 @@ import {
   type BrowserActorCapabilityIssuer,
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
+import { devServerRegistry } from "../devServers/devServerRegistry";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -7405,6 +7406,39 @@ describe("ptyService", () => {
         { clearSettled: true },
       );
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
+    it("records a dev server from terminal output and forgets it when the session ends", async () => {
+      devServerRegistry.clear();
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Dev server",
+        cols: 80,
+        rows: 24,
+        toolType: "shell",
+      });
+
+      // Split across chunks, exactly as a PTY delivers it.
+      mockPty._emitter.emit("data", "  \u001B[32m\u27A1\u001B[39m  Local:   http://localh");
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([]);
+      mockPty._emitter.emit("data", "ost:5173/\n");
+
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([
+        expect.objectContaining({
+          port: 5173,
+          url: "http://localhost:5173/",
+          source: { laneId: "lane-1", sessionId },
+        }),
+      ]);
+
+      // A plain URL in later output is not a second server.
+      mockPty._emitter.emit("data", "see http://localhost:9999/docs\n");
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toHaveLength(1);
+
+      // The process serving that port is gone, so the chip must go with it.
+      service.dispose({ ptyId });
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([]);
     });
 
     it("broadcasts data events when the PTY emits data", async () => {

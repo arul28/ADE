@@ -102,8 +102,8 @@ describe("WorkLiveCornerCard", () => {
 
     const card = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
     expect(card).toBeTruthy();
-    // The lease is held by a chat, so the header says so.
-    expect(screen.getByText("agent")).toBeTruthy();
+    // The lease is held by a chat, so the title reads "Browser · agent".
+    expect(screen.getByText("· agent")).toBeTruthy();
     await waitFor(() => expect(startPreviewStream).toHaveBeenCalledWith(
       expect.objectContaining({ tabId: "tab-1", fps: 12 }),
     ));
@@ -153,5 +153,166 @@ describe("WorkLiveCornerCard", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
     expect(startPreviewStream).not.toHaveBeenCalled();
+  });
+});
+
+/* ── Placement, dismissal and scrubbing ──────────────────────────────────── */
+
+const PROJECT_ROOT = "/p/live-card";
+
+function useProject(): void {
+  useAppStore.setState({
+    project: { rootPath: PROJECT_ROOT } as never,
+    projectBinding: null,
+    workViewByProject: {},
+    laneWorkViewByScope: {},
+  });
+}
+
+function traceEvent(id: string, action: string, text: string) {
+  return {
+    type: "trace",
+    tabId: "tab-1",
+    entry: {
+      id,
+      tabId: "tab-1",
+      action,
+      status: "ok",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: 12,
+      target: { text },
+    },
+  };
+}
+
+/**
+ * jsdom has no PointerEvent constructor, so `fireEvent.pointerMove` drops
+ * `clientX` — which is the only thing the scrubber reads. A MouseEvent named
+ * `pointermove` carries it and React dispatches it to `onPointerMove` all the
+ * same.
+ */
+function scrubTo(card: HTMLElement, clientX: number): void {
+  fireEvent(card, new MouseEvent("pointermove", { bubbles: true, clientX, clientY: 10 }));
+}
+
+async function showCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>[0]> = {}) {
+  const view = renderCard(overrides);
+  await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+  emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+  const card = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+  return { ...view, card };
+}
+
+describe("WorkLiveCornerCard placement", () => {
+  it("restores a persisted position instead of always parking bottom-right", async () => {
+    useProject();
+    useAppStore.setState({
+      workViewByProject: {
+        [PROJECT_ROOT]: { workLiveCardPosition: { xPct: 0.5, yPct: 0.25 } } as never,
+      },
+    });
+    const { card } = await showCard();
+    // 900-wide host, 260-wide card: half of the 640px of travel.
+    expect(card.style.left).toBe("320px");
+    expect(card.style.top).toBe(`${0.25 * (600 - 211)}px`);
+  });
+
+  it("clamps a stored position that would hang outside the column", async () => {
+    useProject();
+    useAppStore.setState({
+      workViewByProject: {
+        [PROJECT_ROOT]: { workLiveCardPosition: { xPct: 0, yPct: 0 } } as never,
+      },
+    });
+    const { card } = await showCard();
+    expect(card.style.left).toBe("12px");
+    expect(card.style.top).toBe("12px");
+  });
+});
+
+describe("WorkLiveCornerCard dismissal", () => {
+  it("persists the dismissal for the lane and survives a remount", async () => {
+    useProject();
+    const { unmount } = await showCard();
+
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+
+    const stamp = useAppStore.getState()
+      .laneWorkViewByScope[`${PROJECT_ROOT}::lane-1`]?.workLiveCardDismissed?.browser;
+    expect(typeof stamp).toBe("number");
+
+    // Re-reading the same status after a remount is not "new activity", so the
+    // card must stay closed rather than popping back the moment you navigate.
+    unmount();
+    renderCard();
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+  });
+
+  it("keeps a dismissal scoped to its own lane", async () => {
+    useProject();
+    const { unmount } = await showCard();
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    unmount();
+
+    renderCard({ laneId: "lane-2" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+});
+
+describe("WorkLiveCornerCard scrubbing", () => {
+  it("shows the hovered frame's caption and snaps back to live on leave", async () => {
+    useProject();
+    const { card } = await showCard();
+    emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
+    emitBrowserEvent(traceEvent("trace-2", "fill", "Email"));
+    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+
+    card.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 260, bottom: 211, width: 260, height: 211,
+      toJSON: () => ({}),
+    });
+
+    // Left edge is the oldest of the two remembered actions.
+    scrubTo(card, 0);
+    expect(await screen.findByTitle(/click 'Sign in'/)).toBeTruthy();
+
+    // Right edge is the newest.
+    scrubTo(card, 260);
+    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+
+    fireEvent.pointerLeave(card);
+    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+  });
+
+  it("offers no scrubbing until there are two frames to scrub between", async () => {
+    useProject();
+    const { card } = await showCard();
+    emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
+    card.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 260, bottom: 211, width: 260, height: 211,
+      toJSON: () => ({}),
+    });
+    scrubTo(card, 130);
+    expect(await screen.findByText("Live")).toBeTruthy();
+    expect(screen.getByTitle(/click 'Sign in'/)).toBeTruthy();
+  });
+
+  it("activates the tool when the card's chrome is clicked, but not its ×", async () => {
+    useProject();
+    const { card, onPick } = await showCard();
+    fireEvent.click(card.querySelector("header") as HTMLElement);
+    expect(onPick).toHaveBeenCalledWith("browser");
+
+    onPick.mockClear();
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    expect(onPick).not.toHaveBeenCalled();
   });
 });

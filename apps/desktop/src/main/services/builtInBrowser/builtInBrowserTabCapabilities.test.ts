@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import { createBuiltInBrowserService } from "./builtInBrowserService";
+import { createDevServerRegistry } from "../devServers/devServerRegistry";
 
 /**
  * Service-level coverage for the tab capability surface added alongside the
@@ -291,6 +292,205 @@ describe("built-in browser emulation", () => {
       .rejects.toThrow(/Unknown browser device preset/);
     expect(service.getStatus().tabs[0]?.emulation).toBeNull();
   });
+
+  it("sends the screen metrics, touch-from-mouse and UA metadata a preset needs to re-lay-out", async () => {
+    const { service, tabId } = await serviceWithTab();
+    await service.setEmulation({ tabId, preset: "pixel" });
+
+    // Without screenWidth/screenHeight the page still reads the host window's
+    // `screen.*`, so a responsive site keeps its desktop breakpoint.
+    expect(fakes.sentCommands.find((call) => call.method === "Emulation.setDeviceMetricsOverride")?.params)
+      .toMatchObject({ width: 412, height: 915, screenWidth: 412, screenHeight: 915, mobile: true });
+    expect(fakes.sentCommands.find((call) => call.method === "Emulation.setEmitTouchEventsForMouse")?.params)
+      .toMatchObject({ enabled: true, configuration: "mobile" });
+    const ua = fakes.sentCommands.find((call) => call.method === "Emulation.setUserAgentOverride")?.params;
+    expect(ua).toMatchObject({
+      userAgentMetadata: expect.objectContaining({ platform: "Android", mobile: true }),
+    });
+  });
+
+  it("keeps the debugger attached while emulating and releases it when cleared", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+
+    await service.setEmulation({ tabId, preset: "ipad" });
+    // Chromium reverts every Emulation.* override when the CDP session that set
+    // it detaches, so the override has to hold the debugger open.
+    expect(wc.debugger.isAttached()).toBe(true);
+
+    await service.setEmulation({ tabId, preset: "off" });
+    expect(wc.debugger.isAttached()).toBe(false);
+  });
+
+  it("re-applies the override after a navigation drops it", async () => {
+    const { service, tabId } = await serviceWithTab();
+    await service.setEmulation({ tabId, preset: "iphone-17" });
+    const wc = fakes.webContentsInstances[0]!;
+    fakes.sentCommands.length = 0;
+
+    wc.emit("did-navigate", {}, "http://localhost:5173/next");
+    // The re-apply is fire-and-forget; let its CDP round trips settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fakes.sentCommands.find((call) => call.method === "Emulation.setDeviceMetricsOverride")?.params)
+      .toMatchObject({ width: 393, height: 852 });
+    expect(service.getStatus().tabs[0]?.emulation).toMatchObject({ presetId: "iphone-17" });
+  });
+
+  it("refuses DevTools while a device preset owns the debugger", async () => {
+    const { service, tabId } = await serviceWithTab();
+    await service.setEmulation({ tabId, preset: "ipad" });
+    await expect(service.setDevTools({ tabId, open: true }))
+      .rejects.toThrow(/emulating a device/);
+  });
+});
+
+describe("built-in browser launchpad tabs", () => {
+  it("opens about:blank with no request when createTab gets no url", async () => {
+    const collector = collectEvents();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+    });
+    await service.createTab({});
+
+    const tab = service.getStatus().tabs[0];
+    expect(tab).toMatchObject({ isLaunchpad: true, title: "New tab" });
+    // ADE never picks a home page: nothing was loaded at all.
+    expect(fakes.webContentsInstances[0]?.currentUrl).toBe("");
+  });
+
+  it("stops being a launchpad once the tab navigates", async () => {
+    const collector = collectEvents();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+    });
+    await service.createTab({});
+    await service.navigate({ url: LOCAL_URL });
+
+    expect(service.getStatus().tabs[0]).toMatchObject({ isLaunchpad: false });
+  });
+
+  it("leaves zero tabs when the last tab is closed", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const status = await service.closeTab({ tabId });
+    expect(status.tabs).toEqual([]);
+    expect(status.activeTabId).toBeNull();
+
+    // Revealing the pane must not conjure a replacement tab.
+    await service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible: true });
+    expect(service.getStatus().tabs).toEqual([]);
+  });
+});
+
+describe("built-in browser favicons", () => {
+  it("keeps the first http(s) icon and reports it in tab state", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+
+    wc.emit("page-favicon-updated", {}, [
+      "data:image/png;base64,AAAA",
+      "http://localhost:5173/favicon.ico",
+    ]);
+
+    expect(service.getStatus().tabs.find((tab) => tab.id === tabId)?.faviconUrl)
+      .toBe("http://localhost:5173/favicon.ico");
+  });
+
+  it("accepts a small inline icon but ignores an oversized one", async () => {
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+
+    wc.emit("page-favicon-updated", {}, [`data:image/png;base64,${"A".repeat(64 * 1024)}`]);
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBeNull();
+
+    wc.emit("page-favicon-updated", {}, ["data:image/png;base64,AAAA"]);
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("data:image/png;base64,AAAA");
+  });
+
+  it("clears the icon when the tab navigates to a different origin", async () => {
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    wc.emit("page-favicon-updated", {}, ["http://localhost:5173/favicon.ico"]);
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:5173/favicon.ico");
+
+    wc.currentUrl = "http://localhost:4000/";
+    wc.emit("did-navigate", {}, "http://localhost:4000/");
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBeNull();
+
+    // A same-origin navigation keeps it: the page still has that icon.
+    wc.emit("page-favicon-updated", {}, ["http://localhost:4000/favicon.ico"]);
+    wc.emit("did-navigate", {}, "http://localhost:4000/about");
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:4000/favicon.ico");
+  });
+});
+
+describe("built-in browser dev-server auto-open", () => {
+  it("opens one background tab per (lane, port) and reports it as an event", async () => {
+    const registry = createDevServerRegistry();
+    const collector = collectEvents();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+    });
+    // A Browser tool with nothing open is the only pane safe to drop a tab in.
+    registry.record({ port: 5173, url: "http://localhost:5173/", laneId: "lane-1", sessionId: "sess-1" });
+    await vi.waitFor(() => expect(service.getStatus().tabs).toHaveLength(1));
+
+    expect(service.getStatus().tabs[0]?.url).toBe("http://localhost:5173/");
+    const event = collector.events.find((entry) => entry.type === "dev-server-detected");
+    expect(event).toMatchObject({
+      type: "dev-server-detected",
+      autoOpened: true,
+      server: { port: 5173, source: { laneId: "lane-1", sessionId: "sess-1" } },
+    });
+
+    // A watch run that restarts the server must not open a second tab.
+    registry.record({ port: 5173, url: "http://localhost:5173/", laneId: "lane-1", sessionId: "sess-2" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(service.getStatus().tabs).toHaveLength(1);
+  });
+
+  it("reports the server without opening anything when auto-open is off", async () => {
+    const registry = createDevServerRegistry();
+    const collector = collectEvents();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      isDevServerAutoOpenEnabled: () => false,
+    });
+    registry.record({ port: 3000, url: "http://localhost:3000/", laneId: "lane-2" });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    expect(service.getStatus().tabs).toEqual([]);
+    expect(collector.events.find((entry) => entry.type === "dev-server-detected"))
+      .toMatchObject({ autoOpened: false, tabId: null });
+  });
+
+  it("exposes discovered servers to the renderer, newest first and scoped by lane", async () => {
+    const registry = createDevServerRegistry();
+    const service = createBuiltInBrowserService({
+      onEvent: () => {},
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      isDevServerAutoOpenEnabled: () => false,
+    });
+    registry.record({ port: 3000, url: "http://localhost:3000/", laneId: "lane-a", detectedAt: "2026-01-01T00:00:00.000Z" });
+    registry.record({ port: 5173, url: "http://localhost:5173/", laneId: "lane-b", detectedAt: "2026-01-02T00:00:00.000Z" });
+
+    expect(service.getDevServers().servers.map((server) => server.port)).toEqual([5173, 3000]);
+    expect(service.getDevServers({ laneId: "lane-a" }).servers.map((server) => server.port)).toEqual([3000]);
+  });
 });
 
 describe("built-in browser zoom", () => {
@@ -336,6 +536,74 @@ describe("built-in browser find in page", () => {
   it("requires search text", async () => {
     const { service, tabId } = await serviceWithTab();
     await expect(service.findInPage({ tabId, text: "  " })).rejects.toThrow(/Find text is required/);
+  });
+
+  it("resolves on the first incremental result instead of waiting for finalUpdate", async () => {
+    const { service, tabId, collector } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    // Chromium only sends `finalUpdate` once the whole document is walked, and
+    // for a find superseded by the next keystroke it never sends one at all.
+    // The old waiter timed out here while the counts were already on screen.
+    wc.findInPage = ((text: string, options?: Record<string, unknown>): number => {
+      wc.findCalls.push({ text, options });
+      const requestId = wc.findCalls.length;
+      setTimeout(() => {
+        wc.emit("found-in-page", {}, {
+          requestId,
+          activeMatchOrdinal: 2,
+          matches: 7,
+          finalUpdate: false,
+          selectionArea: {},
+        });
+      }, 0);
+      return requestId;
+    }) as typeof wc.findInPage;
+
+    const result = await service.findInPage({ tabId, text: "checkout", timeoutMs: 250 });
+    expect(result).toMatchObject({ matches: 7, activeMatchOrdinal: 2, finalUpdate: false });
+    // Later updates keep streaming as events rather than being swallowed.
+    wc.emit("found-in-page", {}, {
+      requestId: 1,
+      activeMatchOrdinal: 2,
+      matches: 9,
+      finalUpdate: true,
+      selectionArea: {},
+    });
+    const streamed = collector.events.filter((event) => event.type === "found-in-page");
+    expect(streamed.at(-1)).toMatchObject({ tabId, matches: 9, finalUpdate: true });
+  });
+
+  it("resolves when the result is emitted synchronously from findInPage", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    wc.findInPage = ((text: string, options?: Record<string, unknown>): number => {
+      wc.findCalls.push({ text, options });
+      // Emitted before the request id has been returned: the waiter has to
+      // buffer this rather than discard it.
+      wc.emit("found-in-page", {}, {
+        requestId: 1,
+        activeMatchOrdinal: 1,
+        matches: 4,
+        finalUpdate: false,
+        selectionArea: {},
+      });
+      return 1;
+    }) as typeof wc.findInPage;
+
+    await expect(service.findInPage({ tabId, text: "checkout", timeoutMs: 250 }))
+      .resolves.toMatchObject({ matches: 4, activeMatchOrdinal: 1 });
+  });
+
+  it("times out only when no result ever arrived", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    wc.findInPage = ((text: string, options?: Record<string, unknown>): number => {
+      wc.findCalls.push({ text, options });
+      return 1;
+    }) as typeof wc.findInPage;
+
+    await expect(service.findInPage({ tabId, text: "checkout", timeoutMs: 250 }))
+      .rejects.toThrow(/Timed out waiting for browser find results/);
   });
 });
 

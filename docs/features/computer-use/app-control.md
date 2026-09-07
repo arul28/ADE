@@ -55,7 +55,7 @@ node, so App Control keeps working inside the headless `ade` daemon.
   - inputs: `AppControlLaunchArgs`, `AppControlConnectArgs`, `AppControlStopArgs`, `AppControlClickArgs`, `AppControlTypeTextArgs`, `AppControlInspectPointArgs`.
   - drivers: `AppControlDriver` (`cdp` | `computer_use`), `AppControlDriverCapability`, `AppControlDriversResult`. Every session carries a `driver`; `launch` and `connect` accept one and reject anything but `cdp` today.
   - agent actions: `AppControlObservation`, `AppControlDomSnapshot`, `AppControlElementSnapshot`, `AppControlObservationElementMap`, `AppControlDiagnostics`, `AppControlActionTraceEntry`, `AppControlTraceResult`, `AppControlAgentActionResult`, the per-action arg types (`AppControlAgentClickArgs`, `…HoverArgs`, `…FillArgs`, `…ClearArgs`, `…TypeArgs`, `…PressArgs`, `…ScrollArgs`, `…WaitArgs`), `AppControlWindowsResult`, and `AppControlSwitchWindowArgs`. Sessions also carry `lastObservationId` and `lastTraceEntryId`.
-  - eventing: `AppControlEventPayload` union (`session-started`, `session-updated`, `session-stopped`, `selection`, `frame`).
+  - eventing: `AppControlEventPayload` union (`session-started`, `session-updated`, `session-stopped`, `selection`, `frame`, `diagnostics`). `diagnostics` mirrors the built-in browser's event of the same name — `{ sessionId, consoleErrorCount, failedRequestCount }`, emitted on change only, zeroed on a main-frame navigation or a reattach — so the Work tools pane lights the same red dot for App Control that it lights for the Browser without polling `observe`.
   - `AppControlStatus` reports `platform`, `supported`, the active session, and per-provider availability.
 
 ### IPC (apps/desktop/src/shared/ipc.ts)

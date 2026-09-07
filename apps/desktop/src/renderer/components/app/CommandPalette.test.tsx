@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import { commandsLeadPaletteResults } from "./commandPaletteWork";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import {
   SESSION_TONE_DOT_CLASS,
@@ -1603,5 +1604,76 @@ describe("CommandPalette", () => {
     expect(await screen.findByText("bind failed")).toBeTruthy();
     expect(screen.getByRole("button", { name: /create and open/i })).toBeTruthy();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+  describe("Work tools commands", () => {
+    it("only leads with commands when the query is a command title prefix", () => {
+      const titles = ["Tools: Browser", "Go to Settings"];
+      expect(commandsLeadPaletteResults("Tools: Brow", titles)).toBe(true);
+      expect(commandsLeadPaletteResults("tools:", titles)).toBe(true);
+      // A bare word is what threads-lead was written for.
+      expect(commandsLeadPaletteResults("browser", titles)).toBe(false);
+      // One character is a keystroke, not an intent.
+      expect(commandsLeadPaletteResults("T", titles)).toBe(false);
+      expect(commandsLeadPaletteResults("   ", titles)).toBe(false);
+    });
+
+    it("keeps the Work tools group when thread results arrive, and leads with it", async () => {
+      // Every one of these matches the free text of "Tools: Browser". Before
+      // the fix they filled the capped Work-results section and pushed the
+      // command you had typed the full title of off the bottom of the list.
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+        makeSession({ id: "s3", title: "improving tools: browser picker" }),
+        makeSession({ id: "s4", title: "improving tools: browser corner card" }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads\u2026"),
+        { target: { value: "Tools: Browser" } },
+      );
+
+      // The threads still match...
+      expect(await screen.findByText("Work results")).toBeTruthy();
+      // ...and the command group is still there, which is the regression.
+      const commandsHeading = await screen.findByText("Work tools");
+      expect(screen.getByText("Tools: Browser")).toBeTruthy();
+
+      // Typing a command's full title means you meant the command: its group
+      // leads rather than trailing four chat rows.
+      const threadsHeading = screen.getByText("Work results");
+      expect(
+        commandsHeading.compareDocumentPosition(threadsHeading)
+          & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("still leads with threads for an ordinary word", async () => {
+      seedThreads([makeSession({ id: "s1", title: "browser lane" })]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads\u2026"),
+        { target: { value: "browser" } },
+      );
+
+      const threadsHeading = await screen.findByText("Work results");
+      const commandsHeading = await screen.findByText("Work tools");
+      expect(
+        threadsHeading.compareDocumentPosition(commandsHeading)
+          & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
   });
 });

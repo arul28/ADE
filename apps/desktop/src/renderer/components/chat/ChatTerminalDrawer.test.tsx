@@ -58,6 +58,30 @@ describe("ChatTerminalDrawer", () => {
     }
   });
 
+  it("shows one affordance, not two, when a panel has no shells", async () => {
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        variant="panel"
+        autoCreateOnOpen={false}
+        emptyMessage="Shells you open here stay attached to this session."
+      />,
+    );
+
+    // The empty tab strip is gone: its "+" and the centred button were the same
+    // action rendered twice, 28px apart.
+    await waitFor(() => expect(screen.queryByTitle("New terminal")).toBeNull());
+    expect(screen.getByText("Start a shell in this lane")).toBeTruthy();
+    expect(screen.getByText("Shells you open here stay attached to this session.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /New terminal/i })).toBeTruthy();
+    // Verified against apps/ade-cli/src/cli.ts — `ade terminal` exists and
+    // drives existing shells, which is what the hint claims.
+    expect(screen.getByText("ade terminal")).toBeTruthy();
+  });
+
   it("deduplicates a created tab when the same terminal was already revealed", async () => {
     render(
       <ChatTerminalDrawer
@@ -149,7 +173,9 @@ describe("ChatTerminalDrawer", () => {
     expect(view.container.querySelector(".cursor-row-resize")).toBeNull();
     expect((view.container.firstElementChild as HTMLElement).style.height).toBe("");
 
-    fireEvent.click(screen.getByTitle("New terminal"));
+    // With no shells the panel shows one affordance — the empty state's button
+    // — rather than that plus an empty tab strip carrying a second "+".
+    fireEvent.click(screen.getByRole("button", { name: /New terminal/i }));
 
     await waitFor(() => expect(window.ade.pty.create).toHaveBeenCalledTimes(1));
     expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({

@@ -12386,6 +12386,60 @@ describe("ADE CLI", () => {
     });
   }));
 
+  it("browser proof --har exports the HAR and files it as a browser_trace beside the screenshot", () => {
+    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]);
+    expect(proof.kind).toBe("execute");
+    if (proof.kind !== "execute") return;
+
+    // observe → exportHar → ingest, so both artifacts come from the same tab
+    // state and land under the same owners.
+    expect(proof.steps).toHaveLength(3);
+    expect(proof.steps[1]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "built_in_browser",
+        action: "exportHar",
+        args: { tabId: "tab-1" },
+      },
+    });
+
+    const ingest = proof.steps[2]?.params;
+    expect(typeof ingest).toBe("function");
+    if (typeof ingest !== "function") return;
+    expect(ingest({
+      observation: { filePath: "/tmp/browser-proof.png" },
+      har: { filePath: "/tmp/network-1.har" },
+    })).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendName: "ade-browser",
+        toolName: "browser proof",
+        inputs: [
+          { kind: "screenshot", title: "Checkout 500s", path: "/tmp/browser-proof.png" },
+          { kind: "browser_trace", title: "Checkout 500s (network)", path: "/tmp/network-1.har" },
+        ],
+      },
+    });
+
+    // Network logging off means exportHar answered without a file: say so
+    // instead of quietly filing half the proof that was asked for.
+    expect(() => ingest({ observation: { filePath: "/tmp/browser-proof.png" }, har: {} }))
+      .toThrow(/network logging/i);
+  });
+
+  it("browser proof without --har files only the screenshot", () => {
+    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1"]);
+    expect(proof.kind).toBe("execute");
+    if (proof.kind !== "execute") return;
+    expect(proof.steps).toHaveLength(2);
+    const ingest = proof.steps[1]?.params;
+    if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
+    const params = ingest({ observation: { filePath: "/tmp/browser-proof.png" } }) as {
+      arguments: { inputs: unknown[] };
+    };
+    expect(params.arguments.inputs).toHaveLength(1);
+  });
+
   it("browser open and claim commands carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;

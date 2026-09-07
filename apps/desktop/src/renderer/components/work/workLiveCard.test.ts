@@ -7,11 +7,18 @@ import {
   formatWorkLiveActionCaption,
   formatWorkLiveAge,
   isWorkLiveScreenTool,
+  clampWorkLiveCardRect,
+  commitWorkLiveCardDismissal,
+  normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
   selectWorkLiveCardTool,
+  updateWorkLiveScrubCaption,
+  workLiveCardDragConstraints,
   workLiveCardFits,
   workLiveCardPositionFromRect,
   workLiveCardRect,
+  workLiveCardTravel,
+  workLivePreviewMaxWidth,
   workLiveScrubIndex,
   type WorkLiveActivity,
   type WorkLiveScrubFrame,
@@ -37,7 +44,7 @@ describe("selectWorkLiveCardTool", () => {
         activity({ tool: "app-control", lastActivityAt: 900 }),
         activity({ tool: "ios", lastActivityAt: 700 }),
       ],
-      dismissedAt: null,
+      dismissals: null,
     });
     expect(tool).toBe("app-control");
   });
@@ -49,7 +56,7 @@ describe("selectWorkLiveCardTool", () => {
         activity({ tool: "browser", lastActivityAt: 500 }),
         activity({ tool: "app-control", lastActivityAt: 900 }),
       ],
-      dismissedAt: null,
+      dismissals: null,
     });
     expect(tool).toBe("browser");
   });
@@ -58,7 +65,7 @@ describe("selectWorkLiveCardTool", () => {
     expect(selectWorkLiveCardTool({
       activeTool: "browser",
       activities: [activity({ tool: "browser", lastActivityAt: 900 })],
-      dismissedAt: null,
+      dismissals: null,
     })).toBeNull();
   });
 
@@ -70,7 +77,7 @@ describe("selectWorkLiveCardTool", () => {
         activity({ tool: "app-control", lastActivityAt: 800, live: false }),
         activity({ tool: "browser", lastActivityAt: 100 }),
       ],
-      dismissedAt: null,
+      dismissals: null,
     })).toBe("browser");
   });
 
@@ -78,30 +85,77 @@ describe("selectWorkLiveCardTool", () => {
     expect(selectWorkLiveCardTool({
       activeTool: null,
       activities: [activity({ tool: "browser", lastActivityAt: 0 })],
-      dismissedAt: null,
+      dismissals: null,
     })).toBeNull();
   });
 
   it("stays hidden after a dismissal until something newer happens", () => {
     const activities = [activity({ tool: "browser", lastActivityAt: 1_000 })];
-    expect(selectWorkLiveCardTool({ activeTool: null, activities, dismissedAt: 1_000 })).toBeNull();
-    expect(selectWorkLiveCardTool({ activeTool: null, activities, dismissedAt: 1_500 })).toBeNull();
+    expect(selectWorkLiveCardTool({
+      activeTool: null,
+      activities,
+      dismissals: { browser: 1_000 },
+    })).toBeNull();
+    expect(selectWorkLiveCardTool({
+      activeTool: null,
+      activities,
+      dismissals: { browser: 1_500 },
+    })).toBeNull();
     expect(selectWorkLiveCardTool({
       activeTool: null,
       activities: [activity({ tool: "browser", lastActivityAt: 2_000 })],
-      dismissedAt: 1_500,
+      dismissals: { browser: 1_500 },
     })).toBe("browser");
   });
 
-  it("lets a different tool through a dismissal only when it is newer too", () => {
+  it("silences only the tool the dismissal was aimed at", () => {
     expect(selectWorkLiveCardTool({
       activeTool: null,
       activities: [
-        activity({ tool: "browser", lastActivityAt: 900 }),
-        activity({ tool: "ios", lastActivityAt: 1_200 }),
+        activity({ tool: "browser", lastActivityAt: 1_800 }),
+        activity({ tool: "ios", lastActivityAt: 900 }),
       ],
-      dismissedAt: 1_000,
+      dismissals: { browser: 2_000 },
     })).toBe("ios");
+  });
+});
+
+describe("dismissals", () => {
+  it("records the stamp a tool was dismissed at, leaving the others alone", () => {
+    const first = commitWorkLiveCardDismissal(null, "browser", 1_000);
+    expect(first).toEqual({ browser: 1_000 });
+    const second = commitWorkLiveCardDismissal(first, "ios", 2_000);
+    expect(second).toEqual({ browser: 1_000, ios: 2_000 });
+    expect(first).toEqual({ browser: 1_000 });
+  });
+
+  it("never moves a stamp backwards", () => {
+    const dismissals = commitWorkLiveCardDismissal({ browser: 5_000 }, "browser", 1_000);
+    expect(dismissals.browser).toBe(5_000);
+  });
+
+  it("drops keys that are not screen tools and stamps that are not stamps", () => {
+    expect(normalizeWorkLiveCardDismissals({
+      browser: 1_000,
+      git: 2_000,
+      ios: "soon",
+      "app-control": -4,
+    })).toEqual({ browser: 1_000 });
+    expect(normalizeWorkLiveCardDismissals({ git: 1 })).toBeNull();
+    expect(normalizeWorkLiveCardDismissals(null)).toBeNull();
+    expect(normalizeWorkLiveCardDismissals([1, 2])).toBeNull();
+    expect(normalizeWorkLiveCardDismissals("nope")).toBeNull();
+  });
+
+  it("round-trips through the normalizer so a persisted dismissal still hides", () => {
+    const persisted = JSON.parse(JSON.stringify(
+      commitWorkLiveCardDismissal(null, "browser", 4_000),
+    )) as unknown;
+    expect(selectWorkLiveCardTool({
+      activeTool: null,
+      activities: [activity({ tool: "browser", lastActivityAt: 3_900 })],
+      dismissals: normalizeWorkLiveCardDismissals(persisted),
+    })).toBeNull();
   });
 });
 
@@ -243,5 +297,101 @@ describe("placement", () => {
     expect(normalizeWorkLiveCardPosition({ xPct: "a", yPct: 1 })).toBeNull();
     expect(normalizeWorkLiveCardPosition(null)).toBeNull();
     expect(normalizeWorkLiveCardPosition("nope")).toBeNull();
+  });
+});
+
+describe("drag bounds", () => {
+  const host = { width: 900, height: 600 };
+
+  it("never lets the card past the inset on any edge", () => {
+    const travel = workLiveCardTravel({ host, cardHeight: CARD_HEIGHT, bottomReserve: 120 });
+    expect(travel.minLeft).toBe(WORK_LIVE_CARD_INSET);
+    expect(travel.minTop).toBe(WORK_LIVE_CARD_INSET);
+    expect(travel.maxLeft).toBe(900 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(travel.maxTop).toBe(600 - CARD_HEIGHT - WORK_LIVE_CARD_INSET - 120);
+  });
+
+  it("clamps a drag that ran off the left of the column", () => {
+    // The reported bug: dragging left parked the card under the column's
+    // `overflow-hidden`, which ate the title and half the caption.
+    const clamped = clampWorkLiveCardRect({ host, left: -180, top: 40, cardHeight: CARD_HEIGHT });
+    expect(clamped.left).toBe(WORK_LIVE_CARD_INSET);
+    expect(clamped.top).toBe(40);
+  });
+
+  it("clamps a drag that ran off the bottom-right", () => {
+    const clamped = clampWorkLiveCardRect({
+      host,
+      left: 4_000,
+      top: 4_000,
+      cardHeight: CARD_HEIGHT,
+      bottomReserve: 120,
+    });
+    expect(clamped.left).toBe(900 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(clamped.top).toBe(600 - CARD_HEIGHT - WORK_LIVE_CARD_INSET - 120);
+  });
+
+  it("expresses the same box as an offset budget around the card's origin", () => {
+    const origin = workLiveCardRect({ host, position: null, cardHeight: CARD_HEIGHT, bottomReserve: 120 });
+    const constraints = workLiveCardDragConstraints({
+      host,
+      origin,
+      cardHeight: CARD_HEIGHT,
+      bottomReserve: 120,
+    });
+    // Parked in the bottom-right corner: no room right or down, the rest of the
+    // column to the left and up.
+    expect(constraints.right).toBe(0);
+    expect(constraints.bottom).toBe(0);
+    expect(origin.left + constraints.left).toBe(WORK_LIVE_CARD_INSET);
+    expect(origin.top + constraints.top).toBe(WORK_LIVE_CARD_INSET);
+  });
+
+  it("degenerates safely in a box smaller than the card", () => {
+    const tiny = { width: 200, height: 120 };
+    const constraints = workLiveCardDragConstraints({
+      host: tiny,
+      origin: { left: 12, top: 12 },
+      cardHeight: CARD_HEIGHT,
+    });
+    expect(constraints.right).toBeGreaterThanOrEqual(constraints.left);
+    expect(constraints.bottom).toBeGreaterThanOrEqual(constraints.top);
+  });
+});
+
+describe("updateWorkLiveScrubCaption", () => {
+  it("fills in the caption of the frame with that trace id", () => {
+    const buffer = commitWorkLiveScrubFrame(
+      commitWorkLiveScrubFrame([], { id: "t1", dataUrl: "d1", caption: null, at: 1 }),
+      { id: "t2", dataUrl: "d2", caption: null, at: 2 },
+    );
+    const next = updateWorkLiveScrubCaption(buffer, "t2", "click 'Save'");
+    expect(next[0]?.caption).toBeNull();
+    expect(next[1]?.caption).toBe("click 'Save'");
+  });
+
+  it("ignores an id the ring buffer has already dropped", () => {
+    const buffer = commitWorkLiveScrubFrame([], { id: "t1", dataUrl: "d1", caption: null, at: 1 });
+    expect(updateWorkLiveScrubCaption(buffer, "gone", "click")).toEqual(buffer);
+  });
+
+  it("does not mutate the buffer it was given", () => {
+    const buffer = commitWorkLiveScrubFrame([], { id: "t1", dataUrl: "d1", caption: null, at: 1 });
+    updateWorkLiveScrubCaption(buffer, "t1", "click");
+    expect(buffer[0]?.caption).toBeNull();
+  });
+});
+
+describe("workLivePreviewMaxWidth", () => {
+  it("asks for the card's width in device pixels", () => {
+    expect(workLivePreviewMaxWidth(2)).toBe(Math.max(320, WORK_LIVE_CARD_WIDTH * 2));
+  });
+
+  it("stays inside sane bounds for junk and extreme ratios", () => {
+    expect(workLivePreviewMaxWidth(1)).toBe(320);
+    expect(workLivePreviewMaxWidth(undefined)).toBe(320);
+    expect(workLivePreviewMaxWidth(0)).toBe(320);
+    expect(workLivePreviewMaxWidth(Number.NaN)).toBe(320);
+    expect(workLivePreviewMaxWidth(12)).toBe(960);
   });
 });

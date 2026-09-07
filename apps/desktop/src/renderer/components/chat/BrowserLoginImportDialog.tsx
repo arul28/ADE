@@ -2,13 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  Browser,
+  Browsers,
   CheckCircle,
+  Compass,
   Gear,
+  GoogleChromeLogo,
   MagnifyingGlass,
   SignIn,
   SpinnerGap,
   WarningCircle,
   X,
+  type Icon,
 } from "@phosphor-icons/react";
 import type {
   BrowserLoginImportDomain,
@@ -39,6 +44,28 @@ type LoginImportApi = {
 type Step = "sources" | "domains" | "done";
 
 const REVEAL = { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
+
+/** The three steps, named the way the dialog talks about them. */
+const STEPS: ReadonlyArray<{ id: Step; label: string }> = [
+  { id: "sources", label: "Browser" },
+  { id: "domains", label: "Sites" },
+  { id: "done", label: "Done" },
+];
+
+/**
+ * A recognisable mark per browser.
+ *
+ * An "S" in a circle could be Safari, Sigma or Slack. Phosphor has Chrome's
+ * mark and Safari's compass; the rest fall back to a browser window, which at
+ * least says "this is a browser" rather than "this is a letter".
+ */
+function browserGlyph(source: BrowserLoginImportSource): Icon {
+  const id = `${source.browserId} ${source.browserName}`.toLowerCase();
+  if (id.includes("chrome") || id.includes("chromium")) return GoogleChromeLogo;
+  if (id.includes("safari")) return Compass;
+  if (source.engine === "firefox" || id.includes("firefox") || id.includes("zen")) return Browsers;
+  return Browser;
+}
 
 function loginImportApi(): LoginImportApi | null {
   const api = (window.ade as unknown as {
@@ -201,9 +228,11 @@ export function BrowserLoginImportDialog({
       <AnimatePresence>
         {open ? (
           <Dialog.Portal forceMount>
+            {/* The dim-and-blur every other ADE modal uses, so this one reads
+                as the same kind of interruption rather than a stray panel. */}
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-xl"
+                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
                 initial={reduceMotion ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -214,10 +243,20 @@ export function BrowserLoginImportDialog({
               <motion.div
                 className={cn(
                   "fixed left-1/2 top-[12%] z-[130] flex max-h-[76vh] w-[560px] max-w-[94vw] -translate-x-1/2",
-                  "flex-col overflow-hidden rounded-[var(--radius-xl)] border border-white/[0.08]",
-                  "bg-[var(--color-popup-bg,var(--color-card))] font-sans text-[12px] text-fg/80",
-                  "shadow-[var(--shadow-popup,0_36px_100px_-28px_rgba(0,0,0,0.85))] focus:outline-none",
+                  "flex-col overflow-hidden rounded-[var(--radius-xl)]",
+                  "font-sans text-[12px] text-fg/80 focus:outline-none",
                 )}
+                style={{
+                  background:
+                    "radial-gradient(120% 120% at 0% 0%, rgba(167,139,250,0.10), transparent 55%), "
+                    + "radial-gradient(100% 100% at 100% 100%, rgba(82,56,175,0.10), transparent 60%), "
+                    + "var(--color-popup-bg, var(--color-card))",
+                  border: "1px solid transparent",
+                  backgroundClip: "padding-box",
+                  boxShadow:
+                    "0 36px 100px -28px rgba(0,0,0,0.88), 0 0 0 1px rgba(167,139,250,0.22), "
+                    + "0 18px 48px -24px rgba(167,139,250,0.28)",
+                }}
                 initial={reduceMotion ? false : { opacity: 0, scale: 0.97, y: 6 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: 4 }}
@@ -225,14 +264,15 @@ export function BrowserLoginImportDialog({
               >
                 <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-3.5 py-2.5">
                   <SignIn size={15} weight="duotone" className="shrink-0 text-[var(--color-accent)]" />
-                  <Dialog.Title className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg">
+                  <Dialog.Title className="min-w-0 truncate text-[12.5px] font-medium text-fg">
                     Import logins
                   </Dialog.Title>
+                  <StepIndicator step={step} />
                   <Dialog.Close asChild>
                     <button
                       type="button"
                       aria-label="Close"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-muted-fg/70 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                      className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-muted-fg/70 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                     >
                       <X size={13} />
                     </button>
@@ -326,13 +366,16 @@ export function BrowserLoginImportDialog({
                   ) : null}
                   {step === "sources" ? (
                     <>
+                      {/* Ghost, not bare text: it is a real control, and a
+                          borderless label read as a caption in QA. */}
                       <button
                         type="button"
                         disabled={busy}
                         onClick={() => void loadSources()}
-                        className="ade-shell-control inline-flex h-7 items-center px-2.5 text-[11px] font-medium disabled:opacity-45"
+                        className="ade-shell-control inline-flex h-7 items-center gap-1.5 px-2.5 text-[11px] font-medium disabled:opacity-45"
                         data-variant="ghost"
                       >
+                        {busy ? <SpinnerGap size={11} className="animate-spin" /> : null}
                         Check again
                       </button>
                       <Dialog.Close asChild>
@@ -362,6 +405,47 @@ export function BrowserLoginImportDialog({
         ) : null}
       </AnimatePresence>
     </Dialog.Root>
+  );
+}
+
+/**
+ * Where you are in the three steps.
+ *
+ * The dialog does the whole import on one surface, which is right — but that
+ * left no answer to "how much more of this is there?". Three dots answer it
+ * without adding a screen.
+ */
+function StepIndicator({ step }: { step: Step }) {
+  const activeIndex = STEPS.findIndex((entry) => entry.id === step);
+  return (
+    <div
+      className="ml-auto flex shrink-0 select-none items-center gap-1.5"
+      role="group"
+      aria-label={`Step ${activeIndex + 1} of ${STEPS.length}: ${STEPS[activeIndex]?.label ?? ""}`}
+    >
+      {STEPS.map((entry, index) => {
+        const done = index < activeIndex;
+        const active = index === activeIndex;
+        return (
+          <span key={entry.id} className="flex items-center gap-1.5">
+            {index > 0 ? (
+              <span
+                aria-hidden="true"
+                className={cn("h-px w-3", done || active ? "bg-[var(--color-accent)]/40" : "bg-white/[0.10]")}
+              />
+            ) : null}
+            <span
+              className={cn(
+                "text-[9.5px] font-medium uppercase tracking-[0.08em] transition-colors duration-[120ms] ease-out",
+                active ? "text-fg/85" : done ? "text-[var(--color-accent)]/70" : "text-muted-fg/45",
+              )}
+            >
+              {entry.label}
+            </span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -399,19 +483,24 @@ function SourceList({
       {sources.map((source) => {
         const ready = source.status === "ready";
         const reason = sourceReason(source);
+        const Glyph = browserGlyph(source);
         return (
           <li key={source.id}>
             <div
               className={cn(
                 "flex items-center gap-2.5 rounded-[var(--radius-lg)] border border-white/[0.07] bg-card/55 px-2.5 py-2",
-                ready ? null : "opacity-70",
+                "transition-colors duration-[120ms] ease-out",
+                ready ? "hover:border-white/[0.14]" : "opacity-70",
               )}
             >
               <span
                 aria-hidden="true"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.05] text-[10px] font-semibold uppercase text-fg/70"
+                className={cn(
+                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.05]",
+                  ready ? "text-fg/80" : "text-muted-fg/60",
+                )}
               >
-                {source.browserName.slice(0, 1)}
+                <Glyph size={15} weight="duotone" />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-1.5">

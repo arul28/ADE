@@ -1650,6 +1650,11 @@ app.whenReady().then(async () => {
       }
       broadcast(IPC.builtInBrowserEvent, payload);
     },
+    // `browser.autoOpenDevServer`, read live from whichever project is in the
+    // foreground: the setting is per project, and the browser service outlives
+    // any single project context.
+    isDevServerAutoOpenEnabled: () =>
+      getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true,
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can
