@@ -1054,20 +1054,20 @@ describe("appStore", () => {
       expect(state.laneFilter).toBe("my-lane");
     });
 
-    it("defaults work sidebar state to closed/git/36% and persists overrides", () => {
+    it("defaults work sidebar state to closed/picker/36% and persists overrides", () => {
       const fresh = useAppStore.getState().getWorkViewState("/project/sidebar");
       expect(fresh.workSidebarOpen).toBe(false);
-      expect(fresh.workSidebarTab).toBe("git");
+      expect(fresh.workSidebarTool).toBe(null);
       expect(fresh.workSidebarWidthPct).toBe(36);
 
       useAppStore.getState().setWorkViewState("/project/sidebar", {
         workSidebarOpen: true,
-        workSidebarTab: "browser",
+        workSidebarTool: "browser",
         workSidebarWidthPct: 48,
       });
       const updated = useAppStore.getState().getWorkViewState("/project/sidebar");
       expect(updated.workSidebarOpen).toBe(true);
-      expect(updated.workSidebarTab).toBe("browser");
+      expect(updated.workSidebarTool).toBe("browser");
       expect(updated.workSidebarWidthPct).toBe(48);
       expect(updated.draftKind).toBe("chat");
     });
@@ -1102,7 +1102,7 @@ describe("appStore", () => {
           version?: number;
           workViewByProject?: Record<string, Record<string, unknown>>;
         };
-        expect(persisted.version).toBe(4);
+        expect(persisted.version).toBe(5);
         expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");

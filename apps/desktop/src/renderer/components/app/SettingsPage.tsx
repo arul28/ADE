@@ -28,6 +28,7 @@ import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
 import { NotificationsSection } from "../settings/NotificationsSection";
 import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
+import { BrowserLinksSection } from "../settings/BrowserLinksSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
@@ -216,6 +217,9 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.keep-awake"]}>
             <KeepAwakeSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.link-open-mode"]}>
+            <BrowserLinksSection />
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.analytics"]}>
             <ProductAnalyticsSection />

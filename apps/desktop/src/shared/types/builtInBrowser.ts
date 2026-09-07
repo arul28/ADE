@@ -50,6 +50,11 @@ export type BuiltInBrowserTab = {
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
   ownerLeaseExpiresAt: string | null;
+  zoomFactor: number;
+  devToolsOpen: boolean;
+  emulation: BuiltInBrowserEmulationState | null;
+  networkLogging: boolean;
+  recording: BuiltInBrowserRecordingStatus | null;
 };
 
 export type BuiltInBrowserSession = {
@@ -351,6 +356,15 @@ export type BuiltInBrowserDiagnostics = {
   pendingRequestCount: number;
   console: BuiltInBrowserConsoleDiagnostic[];
   network: BuiltInBrowserNetworkDiagnostic[];
+  /** Present only while full network logging is enabled for the tab. */
+  networkLog?: BuiltInBrowserObservationNetworkLog | null;
+};
+
+export type BuiltInBrowserObservationNetworkLog = {
+  enabled: true;
+  recordedCount: number;
+  droppedCount: number;
+  recent: BuiltInBrowserNetworkLogEntry[];
 };
 
 export type BuiltInBrowserActionTraceEntry = {
@@ -413,4 +427,387 @@ export type BuiltInBrowserEventPayload =
     }
   | { type: "selection"; item: BuiltInBrowserContextItem }
   | { type: "selection-cleared"; item: null; clearedAt: string }
+  | {
+      type: "found-in-page";
+      tabId: string;
+      requestId: number;
+      activeMatchOrdinal: number | null;
+      matches: number | null;
+      finalUpdate: boolean;
+      foundAt: string;
+    }
+  | {
+      type: "recording";
+      tabId: string;
+      recording: BuiltInBrowserRecordingStatus | null;
+      frameCount: number;
+      updatedAt: string;
+    }
+  /**
+   * A human-run login import finished. Carries only counts and domain names —
+   * never a cookie name or value — so the renderer can toast the result without
+   * the event stream becoming a credential channel.
+   */
+  | {
+      type: "login-import-completed";
+      importedCount: number;
+      domains: string[];
+      completedAt: string;
+    }
+  /**
+   * One frame of a tab's live preview stream, emitted only while something has
+   * called `startPreviewStream` for that tab. JPEG data URL, already downscaled
+   * in main so the renderer never resizes on the paint path.
+   */
+  | {
+      type: "preview-frame";
+      tabId: string;
+      dataUrl: string;
+      width: number;
+      height: number;
+      capturedAt: string;
+    }
+  /**
+   * An agent action finished. Carries the trace entry that was just appended so
+   * surfaces can caption "what just happened" without polling `getTrace`.
+   */
+  | { type: "trace"; tabId: string; entry: BuiltInBrowserActionTraceEntry }
+  /**
+   * The tab's error tally changed — a console error, or a request that failed
+   * or came back 4xx/5xx. Counts are since the tab's last main-frame
+   * navigation, so a reload clears the badge without a second event.
+   */
+  | {
+      type: "diagnostics";
+      tabId: string;
+      consoleErrorCount: number;
+      failedRequestCount: number;
+      updatedAt: string;
+    }
   | { type: "error"; message: string; occurredAt: string };
+
+/* ── Device emulation ─────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserEmulationPresetId =
+  | "desktop"
+  | "iphone-17"
+  | "iphone-17-pro"
+  | "iphone-17-pro-max"
+  | "ipad"
+  | "pixel"
+  | "responsive";
+
+export type BuiltInBrowserEmulationMetrics = {
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  mobile: boolean;
+  userAgent?: string | null;
+};
+
+export type BuiltInBrowserEmulationPreset = {
+  id: BuiltInBrowserEmulationPresetId;
+  label: string;
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  mobile: boolean;
+  hasTouch: boolean;
+  userAgent: string | null;
+};
+
+/** Emulation currently applied to one tab. `null` means "no override". */
+export type BuiltInBrowserEmulationState = {
+  presetId: BuiltInBrowserEmulationPresetId | null;
+  label: string;
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  mobile: boolean;
+  hasTouch: boolean;
+  userAgent: string | null;
+};
+
+export type BuiltInBrowserSetEmulationArgs = BuiltInBrowserTabTargetArgs & {
+  /** Preset id/label, or `off`/`none`/`null` to clear the override. */
+  preset?: string | null;
+  width?: number | null;
+  height?: number | null;
+  deviceScaleFactor?: number | null;
+  mobile?: boolean | null;
+  userAgent?: string | null;
+};
+
+export type BuiltInBrowserEmulationResult = {
+  tabId: string;
+  emulation: BuiltInBrowserEmulationState | null;
+  presets: BuiltInBrowserEmulationPreset[];
+  status: BuiltInBrowserStatus;
+};
+
+/* ── Zoom ─────────────────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserSetZoomArgs = BuiltInBrowserTabTargetArgs & {
+  factor?: number | null;
+  /** Convenience for `factor: 1`. */
+  reset?: boolean;
+};
+
+export type BuiltInBrowserZoomResult = {
+  tabId: string;
+  zoomFactor: number;
+  status: BuiltInBrowserStatus;
+};
+
+/* ── Find in page ─────────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserFindInPageArgs = BuiltInBrowserTabTargetArgs & {
+  text: string;
+  forward?: boolean;
+  matchCase?: boolean;
+  /** Advance to the next match of an already-running find instead of restarting. */
+  findNext?: boolean;
+  timeoutMs?: number | null;
+};
+
+export type BuiltInBrowserFindInPageResult = {
+  tabId: string;
+  text: string;
+  requestId: number;
+  activeMatchOrdinal: number | null;
+  matches: number | null;
+  finalUpdate: boolean;
+  status: BuiltInBrowserStatus;
+};
+
+export type BuiltInBrowserStopFindInPageArgs = BuiltInBrowserTabTargetArgs & {
+  action?: "clearSelection" | "keepSelection" | "activateSelection";
+};
+
+export type BuiltInBrowserStopFindInPageResult = {
+  tabId: string;
+  stopped: true;
+  status: BuiltInBrowserStatus;
+};
+
+/* ── DevTools ─────────────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserDevToolsMode = "right" | "bottom" | "detach";
+
+export type BuiltInBrowserSetDevToolsArgs = BuiltInBrowserTabTargetArgs & {
+  open: boolean;
+  mode?: BuiltInBrowserDevToolsMode | null;
+};
+
+export type BuiltInBrowserDevToolsResult = {
+  tabId: string;
+  devToolsOpen: boolean;
+  mode: BuiltInBrowserDevToolsMode | null;
+  status: BuiltInBrowserStatus;
+};
+
+/* ── Full network log ─────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserNetworkHeader = {
+  name: string;
+  value: string;
+  /** True when the value was replaced with a redaction marker. */
+  redacted: boolean;
+};
+
+export type BuiltInBrowserNetworkTimings = {
+  /** Wall-clock start of the request, ISO 8601. */
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  /** Time to first response byte, when the response phase was observed. */
+  waitMs: number | null;
+  receiveMs: number | null;
+};
+
+export type BuiltInBrowserNetworkLogEntry = {
+  id: string;
+  method: string | null;
+  url: string;
+  status: number | null;
+  statusText: string | null;
+  mimeType: string | null;
+  resourceType: string | null;
+  protocol: string | null;
+  fromCache: boolean;
+  requestHeaders: BuiltInBrowserNetworkHeader[];
+  responseHeaders: BuiltInBrowserNetworkHeader[];
+  requestBodySize: number | null;
+  responseBodySize: number | null;
+  responseHeaderSize: number | null;
+  timings: BuiltInBrowserNetworkTimings;
+  error: string | null;
+};
+
+export type BuiltInBrowserSetNetworkLoggingArgs = BuiltInBrowserTabTargetArgs & {
+  enabled: boolean;
+  /** Drop anything already recorded when turning logging on. */
+  clear?: boolean;
+};
+
+export type BuiltInBrowserNetworkLoggingResult = {
+  tabId: string;
+  enabled: boolean;
+  entryCount: number;
+  status: BuiltInBrowserStatus;
+};
+
+export type BuiltInBrowserNetworkLogArgs = BuiltInBrowserTabTargetArgs & {
+  limit?: number | null;
+  /** Case-insensitive substring matched against method, URL, status and mime. */
+  filter?: string | null;
+  failedOnly?: boolean;
+};
+
+export type BuiltInBrowserNetworkLogResult = {
+  tabId: string;
+  enabled: boolean;
+  recordedCount: number;
+  droppedCount: number;
+  matchedCount: number;
+  entries: BuiltInBrowserNetworkLogEntry[];
+};
+
+export type BuiltInBrowserExportHarArgs = BuiltInBrowserTabTargetArgs & {
+  filter?: string | null;
+  failedOnly?: boolean;
+};
+
+export type BuiltInBrowserExportHarResult = {
+  tabId: string;
+  filePath: string;
+  relativePath: string | null;
+  entryCount: number;
+  exportedAt: string;
+};
+
+/* ── Extra page actions ───────────────────────────────────────────────────── */
+
+export type BuiltInBrowserHoverArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
+  x?: number | null;
+  y?: number | null;
+};
+
+export type BuiltInBrowserDragArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
+  /** Source coordinates when no source element target is given. */
+  x?: number | null;
+  y?: number | null;
+  toSelector?: string | null;
+  toText?: string | null;
+  toTestId?: string | null;
+  toElementIndex?: number | null;
+  toHandle?: string | null;
+  toX?: number | null;
+  toY?: number | null;
+  /** Intermediate mouseMoved events between press and release (1–50). */
+  steps?: number | null;
+};
+
+export type BuiltInBrowserSelectOptionArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
+  value?: string | null;
+  label?: string | null;
+  index?: number | null;
+};
+
+export type BuiltInBrowserUploadFileArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
+  paths: string[];
+};
+
+/* ── Screen recording ─────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserRecordingFormat = "webm" | "mp4";
+
+export type BuiltInBrowserRecordingStatus = {
+  startedAt: string;
+  fps: number;
+};
+
+export type BuiltInBrowserStartRecordingArgs = BuiltInBrowserTabTargetArgs & {
+  /** 30 or 60; anything else is rejected. */
+  fps?: number | null;
+  /** Supplying a caption is what makes `stopRecording` file a proof entry. */
+  caption?: string | null;
+};
+
+export type BuiltInBrowserStartRecordingResult = {
+  tabId: string;
+  recording: BuiltInBrowserRecordingStatus;
+  status: BuiltInBrowserStatus;
+};
+
+export type BuiltInBrowserStopRecordingArgs = BuiltInBrowserTabTargetArgs;
+
+export type BuiltInBrowserStopRecordingResult = {
+  tabId: string;
+  path: string;
+  relativePath: string | null;
+  durationMs: number;
+  fps: number;
+  frameCount: number;
+  format: BuiltInBrowserRecordingFormat;
+  mimeType: string;
+  caption: string | null;
+  /** Reserved for encoders that emit a sidecar manifest; `null` today. */
+  manifestPath: string | null;
+  status: BuiltInBrowserStatus;
+};
+
+/* ── Live preview stream ──────────────────────────────────────────────────── */
+
+/**
+ * A cheap "what does this tab look like right now" feed for surfaces that are
+ * not the browser panel — the Work tab's floating corner card, mainly.
+ *
+ * Deliberately NOT the recording pipeline: that negotiates a `getDisplayMedia`
+ * grant and an encoder to produce a file. A preview only ever needs a small
+ * JPEG at a low frame rate, and `capturePage()` gives us that with no grant, no
+ * encoder, and no artefact on disk. It is also refcounted and never started for
+ * a tab nobody is watching, so an idle Work tab pays nothing.
+ */
+export const BUILT_IN_BROWSER_PREVIEW_DEFAULT_FPS = 12;
+export const BUILT_IN_BROWSER_PREVIEW_MAX_FPS = 24;
+export const BUILT_IN_BROWSER_PREVIEW_DEFAULT_MAX_WIDTH = 480;
+export const BUILT_IN_BROWSER_PREVIEW_MAX_WIDTH_LIMIT = 1_280;
+/** JPEG quality for preview frames — small enough to shuttle at 12fps. */
+export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
+
+export type BuiltInBrowserStartPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
+  /** Defaults to the collection's active tab. */
+  tabId?: string | null;
+  /** Clamped to `BUILT_IN_BROWSER_PREVIEW_MAX_FPS`. */
+  fps?: number | null;
+  /** Longest edge of the emitted frame, clamped to the limit above. */
+  maxWidth?: number | null;
+};
+
+export type BuiltInBrowserStopPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
+  tabId?: string | null;
+};
+
+export type BuiltInBrowserPreviewStreamResult = {
+  tabId: string;
+  /** Effective loop rate, which is the fastest rate any subscriber asked for. */
+  fps: number;
+  maxWidth: number;
+  /** How many subscribers the loop is now serving; 0 means it stopped. */
+  subscribers: number;
+};
+
+export function normalizeBuiltInBrowserPreviewFps(value: number | null | undefined): number {
+  const fps = typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value)
+    : BUILT_IN_BROWSER_PREVIEW_DEFAULT_FPS;
+  return Math.max(1, Math.min(BUILT_IN_BROWSER_PREVIEW_MAX_FPS, fps));
+}
+
+export function normalizeBuiltInBrowserPreviewMaxWidth(value: number | null | undefined): number {
+  const width = typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value)
+    : BUILT_IN_BROWSER_PREVIEW_DEFAULT_MAX_WIDTH;
+  return Math.max(80, Math.min(BUILT_IN_BROWSER_PREVIEW_MAX_WIDTH_LIMIT, width));
+}

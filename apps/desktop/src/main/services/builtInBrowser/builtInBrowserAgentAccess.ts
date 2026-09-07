@@ -1,6 +1,7 @@
 import { dialog } from "electron";
 import type { BrowserWindow } from "electron";
 import type { Logger } from "../logging/logger";
+import { lookupRemoteTunnelOrigin } from "./remoteTunnelOrigins";
 
 type AgentIdentity = {
   laneId?: string | null;
@@ -132,8 +133,23 @@ function agentIdentityKey(identity: AgentIdentity): string | null {
   return laneId ? `lane:${laneId}` : null;
 }
 
+/**
+ * A grant is scoped to (agent, origin) — plus, for a tunneled tab, the machine
+ * and remote port that origin currently stands for.
+ *
+ * Without the tunnel component a forward's `127.0.0.1:<ephemeral>` origin is a
+ * recycled identity: approve the agent for a dev server tunneled from one
+ * machine, and the next forward handed that same local port — a different
+ * machine, or a different remote port on the same one — would inherit the
+ * approval silently.
+ */
 function accessGrantKey(agentKey: string, origin: string): string {
-  return JSON.stringify([agentKey, origin]);
+  const tunnel = lookupRemoteTunnelOrigin(origin);
+  return JSON.stringify(
+    tunnel
+      ? [agentKey, origin, tunnel.machineKey, tunnel.remotePort]
+      : [agentKey, origin],
+  );
 }
 
 function browserOrigin(value: string | null | undefined): string | null {

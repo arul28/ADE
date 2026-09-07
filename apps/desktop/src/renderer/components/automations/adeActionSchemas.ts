@@ -1807,13 +1807,8 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   // ---------------------------------------------------------------------------
   // computer_use_artifacts
   // ---------------------------------------------------------------------------
-  {
-    domain: "computer_use_artifacts",
-    action: "ingest",
-    label: "Ingest computer-use artifact",
-    description: "Advanced action — pass arguments as JSON.",
-    params: [],
-  },
+  // No `ingest` entry: proof-drawer records are created only through the
+  // validated `ingest_computer_use_artifacts` tool / `ade proof` commands.
   {
     domain: "computer_use_artifacts",
     action: "listArtifacts",

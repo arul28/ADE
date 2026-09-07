@@ -632,7 +632,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
     iosSimulator: createNativeUnavailableNamespace() as AdeNamespace<"iosSimulator">,
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
-    builtInBrowser: createNativeUnavailableNamespace() as AdeNamespace<"builtInBrowser">,
+    builtInBrowser: {
+      ...createNativeUnavailableNamespace(),
+      loginImport: createLoginImportUnavailableStub(),
+    } as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
     review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
@@ -820,6 +823,33 @@ function createFeedbackStubs(): Record<string, unknown> {
     submitDraft: async () => null,
     list: async () => [],
     onUpdate: () => () => {},
+  };
+}
+
+/**
+ * Login import reads cookie jars off a local disk with a local credential
+ * store. A hosted browser tab has neither, and there is no action the sync host
+ * could register that would change that — so this reports "not here" rather
+ * than routing to the paired machine, whose cookies are not the ones the person
+ * is looking at.
+ */
+function createLoginImportUnavailableStub(): Record<string, unknown> {
+  const unavailable = (sourceId = "") => ({
+    ok: false as const,
+    sourceId,
+    status: "unsupported" as const,
+    reason: "Login import needs the ADE desktop app on the machine holding the browser.",
+    settingsPaneUrl: null,
+  });
+  return {
+    capabilities: async () => ({ platform: "other" as const, anySupported: false, browsers: [] }),
+    listSources: async () => ({
+      platform: "other" as const,
+      sources: [],
+      capabilities: { platform: "other" as const, anySupported: false, browsers: [] },
+    }),
+    listDomains: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
+    import: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
   };
 }
 

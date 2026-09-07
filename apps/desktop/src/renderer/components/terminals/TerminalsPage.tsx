@@ -6,6 +6,12 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { useWorkSidebarTool } from "./useWorkSidebarTool";
+import {
+  clearPendingWorkToolRequest,
+  subscribeWorkToolRequests,
+  takePendingWorkToolRequest,
+} from "./workToolRequests";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -1116,7 +1122,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workSidebarVisible = active && work.workSidebarOpen;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const { setWorkSidebarTab, setOrchestratorEnabled } = work;
+  // Which tool the tools pane shows is per LANE, so it hangs off the lane this
+  // page has resolved rather than off the project-wide work view state.
+  const { tool: workSidebarTool, setTool: setWorkSidebarTool } = useWorkSidebarTool(activeLaneId);
+  const { setOrchestratorEnabled } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1124,7 +1133,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // (preserves main's remote-runtime hardening; the old viewMode switch is
       // dropped with the work-tab grid).
       if (isRemoteProject) return;
-      setWorkSidebarTab("browser");
+      setWorkSidebarTool("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
@@ -1147,7 +1156,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, setOrchestratorEnabled]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTool, setOrchestratorEnabled]);
+
+  // "Open this tool" asked for from outside the Work page — the app shell's
+  // browser open-request handler, the command palette. Only this page knows the
+  // lane the pane is following, so those surfaces request and this drains,
+  // including whatever was held while the page was still mounting.
+  useEffect(() => {
+    if (!active) return undefined;
+    const pending = takePendingWorkToolRequest();
+    if (pending) setWorkSidebarTool(pending.tool);
+    return subscribeWorkToolRequests((request) => {
+      clearPendingWorkToolRequest();
+      setWorkSidebarTool(request.tool);
+    });
+  }, [active, setWorkSidebarTool]);
 
   // A filename clicked in a chat opens in the tools-pane Files panel, which
   // means the panel has to exist first. The request itself is held in the
@@ -1156,9 +1179,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!active) return undefined;
     return subscribeFilesOpenInTools(() => {
-      setWorkSidebarTab("files");
+      setWorkSidebarTool("files");
     });
-  }, [active, setWorkSidebarTab]);
+  }, [active, setWorkSidebarTool]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
@@ -1166,19 +1189,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const toggleWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
   }, [work]);
-  const terminalPaneOpen = work.workSidebarOpen && work.workSidebarTab === "terminal";
+  const terminalPaneOpen = work.workSidebarOpen && workSidebarTool === "terminal";
   const toggleTerminalPane = useCallback(() => {
-    if (work.workSidebarOpen && work.workSidebarTab === "terminal") {
+    if (work.workSidebarOpen && workSidebarTool === "terminal") {
       work.setWorkSidebarOpen(false);
     } else {
-      work.setWorkSidebarTab("terminal");
+      setWorkSidebarTool("terminal");
     }
-  }, [work]);
+  }, [setWorkSidebarTool, work, workSidebarTool]);
   const openTerminalPane = useCallback(() => {
-    if (!work.workSidebarOpen || work.workSidebarTab !== "terminal") {
-      work.setWorkSidebarTab("terminal");
+    if (!work.workSidebarOpen || workSidebarTool !== "terminal") {
+      setWorkSidebarTool("terminal");
     }
-  }, [work]);
+  }, [setWorkSidebarTool, work, workSidebarTool]);
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
@@ -1302,16 +1325,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       document.removeEventListener("mouseup", onUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
+      if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
       work.setWorkSidebarWidthPct(pendingWidthPct);
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-    if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
+    if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
     applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, [work]);
+  }, [work, workSidebarTool]);
 
   const workViewArea = useMemo(
     () => (
@@ -1379,7 +1402,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.openExistingImportedSession,
       work.closingPtyIds,
       work.workSidebarOpen,
-      work.workSidebarTab,
       terminalPaneOpen,
       toggleWorkSidebar,
       toggleTerminalPane,
@@ -1432,8 +1454,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 laneId={activeLaneId}
                 lanes={sortedLanes}
                 activeSession={activeWorkSession}
-                tab={work.workSidebarTab}
-                onTabChange={work.setWorkSidebarTab}
+                tool={workSidebarTool}
+                onToolChange={setWorkSidebarTool}
                 onClose={closeWorkSidebar}
                 contextTarget={contextTarget}
                 contextDisabledReason={contextDisabledReason}
@@ -1466,8 +1488,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleWorkSidebarResizeMouseDown,
       closeWorkSidebar,
       sortedLanes,
-      work.setWorkSidebarTab,
-      work.workSidebarTab,
+      setWorkSidebarTool,
+      workSidebarTool,
       work.workSidebarWidthPct,
       workSidebarVisible,
       workViewArea,

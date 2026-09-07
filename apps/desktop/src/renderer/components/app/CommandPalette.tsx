@@ -67,10 +67,12 @@ import {
 } from "./commandPaletteThreads";
 import {
   buildWorkResults,
+  buildWorkToolCommands,
   WorkFilterBar,
   useWorkSessionActions,
   type WorkFilterMenuKey,
 } from "./commandPaletteWork";
+import { requestWorkTool } from "../terminals/workToolRequests";
 import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -767,6 +769,12 @@ export function CommandPalette({
         keywords: entry.keywords,
         run: () => navigate(settingsEntryPath(entry)),
       })),
+      // One entry per Work tool, plus the picker. Generated from the tools
+      // registry so a new tool never needs a second edit here.
+      ...buildWorkToolCommands({
+        navigate,
+        openTool: requestWorkTool,
+      }),
       {
         id: "action-create-lane",
         title: "Create Lane",

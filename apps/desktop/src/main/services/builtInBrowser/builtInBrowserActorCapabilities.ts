@@ -78,3 +78,35 @@ function sameCapabilityScope(
     && left.projectRoot === right.projectRoot
     && left.tabCollection === right.tabCollection;
 }
+
+/**
+ * Issuance seam for the two processes that build agent environments.
+ *
+ * The registry above is process-local and only Electron main can validate
+ * against it. The runtime daemon (`ade serve`) runs in a separate process, so
+ * it must ask Electron to mint and revoke capabilities over the authenticated
+ * desktop bridge instead of calling the local registry. Desktop-hosted chats
+ * keep using {@link localBrowserActorCapabilityIssuer}.
+ *
+ * `issue` resolves to `null` when no issuer is reachable (headless machine, no
+ * desktop running). Callers then omit `ADE_BROWSER_ACTOR_TOKEN` instead of
+ * failing the launch, and `ade browser` surfaces the bridge's own error.
+ */
+export type BrowserActorCapabilityIssuer = {
+  /**
+   * Present only when this process owns the registry above. Callers use it to
+   * stay on their existing synchronous path — an agent launch in Electron main
+   * must not gain a suspension point just because the daemon needs one.
+   */
+  issueSync?: (capability: BuiltInBrowserActorCapability) => string;
+  issue: (capability: BuiltInBrowserActorCapability) => Promise<string | null>;
+  revoke: (chatSessionId: string) => Promise<void>;
+};
+
+export const localBrowserActorCapabilityIssuer: BrowserActorCapabilityIssuer = {
+  issueSync: (capability) => issueBuiltInBrowserActorCapability(capability),
+  issue: async (capability) => issueBuiltInBrowserActorCapability(capability),
+  revoke: async (chatSessionId) => {
+    revokeBuiltInBrowserActorCapability(chatSessionId);
+  },
+};

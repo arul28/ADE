@@ -17,7 +17,9 @@ import type { SessionFilingBucket } from "../../lib/terminalAttention";
 import {
   projectStateKeyForBinding,
   type WorkProjectViewState,
+  type WorkSidebarTab,
 } from "../../state/appStore";
+import { WORK_TOOL_DEFINITIONS } from "../terminals/workTools";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import {
@@ -468,4 +470,54 @@ export function useWorkSessionActions({
       switchRemoteProject,
     ],
   );
+}
+
+export type WorkToolPaletteCommand = {
+  id: string;
+  title: string;
+  hint: string;
+  keywords: string[];
+  group: string;
+  run: () => void;
+};
+
+/**
+ * "Tools: Browser", "Tools: Git", … plus "Tools: Show picker".
+ *
+ * The palette cannot write the pane's state itself — the active tool is stored
+ * per lane, and only the Work page knows which lane its pane is following. So
+ * each entry navigates to Work and files a `workToolRequests` request, which the
+ * page drains against the right scope whether it was already mounted or not.
+ */
+export function buildWorkToolCommands({
+  navigate,
+  openTool,
+}: {
+  navigate: (path: string) => void;
+  openTool: (tool: WorkSidebarTab | null) => void;
+}): WorkToolPaletteCommand[] {
+  return [
+    ...WORK_TOOL_DEFINITIONS.map((definition) => ({
+      id: `work-tools-${definition.id}`,
+      title: `Tools: ${definition.label}`,
+      hint: definition.blurb,
+      keywords: ["tools", "pane", "sidebar", definition.id, definition.label],
+      group: "Work tools",
+      run: () => {
+        navigate("/work");
+        openTool(definition.id);
+      },
+    })),
+    {
+      id: "work-tools-picker",
+      title: "Tools: Show picker",
+      hint: "Back to the grid of every tool in the Work pane",
+      keywords: ["tools", "picker", "pane", "sidebar", "grid"],
+      group: "Work tools",
+      run: () => {
+        navigate("/work");
+        openTool(null);
+      },
+    },
+  ];
 }

@@ -11,7 +11,10 @@ import type {
   WebContents,
 } from "electron";
 import { JsonRpcClient } from "../../../../../ade-cli/src/tuiClient/jsonRpcClient";
-import { createBuiltInBrowserDesktopBridgeClient } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeClient";
+import {
+  createBridgeBrowserActorCapabilityIssuer,
+  createBuiltInBrowserDesktopBridgeClient,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeClient";
 import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
@@ -23,6 +26,10 @@ import {
   resolveBuiltInBrowserActorCapability,
 } from "./builtInBrowserActorCapabilities";
 import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
+import {
+  recordRemoteTunnelOrigin,
+  resetRemoteTunnelOrigins,
+} from "./remoteTunnelOrigins";
 import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
@@ -416,6 +423,52 @@ describe("built-in browser agent access", () => {
       "https://basic.example.com/private",
       { laneId: "lane-1", chatSessionId: "chat-2" },
     )).toThrow(/requires a browser human-approval check/);
+  });
+
+  it("does not let one tunnel inherit another tunnel's approval on the same local port", async () => {
+    // Port-forward local ports are ephemeral and recycled: the same
+    // `127.0.0.1:52413` can stand for a different machine, or a different
+    // remote port, minutes later. Keying on origin alone would carry the
+    // human's approval straight across that boundary.
+    resetRemoteTunnelOrigins();
+    const prompt = vi.fn(async () => ({ granted: true }));
+    const controller = createBuiltInBrowserAgentAccessController({
+      hasAllowedPermissionForOrigin: (origin) => origin === "http://127.0.0.1:52413",
+      resolveParentWindow: () => null,
+      prompt,
+    });
+    const identity = { chatSessionId: "chat-1" };
+
+    recordRemoteTunnelOrigin({
+      localHost: "127.0.0.1",
+      localPort: 52413,
+      machineKey: "studio",
+      remotePort: 3000,
+    });
+    await controller.requireUrlAccess("http://127.0.0.1:52413/app", identity, "navigate");
+    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity)).not.toThrow();
+
+    // Same local port, now forwarding a different remote port.
+    recordRemoteTunnelOrigin({
+      localHost: "127.0.0.1",
+      localPort: 52413,
+      machineKey: "studio",
+      remotePort: 8080,
+    });
+    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
+      .toThrow(/human-approval check/);
+
+    // Same local port and remote port, but a different machine.
+    recordRemoteTunnelOrigin({
+      localHost: "127.0.0.1",
+      localPort: 52413,
+      machineKey: "laptop",
+      remotePort: 3000,
+    });
+    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
+      .toThrow(/human-approval check/);
+
+    resetRemoteTunnelOrigins();
   });
 });
 
@@ -867,7 +920,7 @@ describe("built-in browser desktop bridge", () => {
         chatSessionId: "chat-trusted",
         projectRoot: "/trusted/project",
         [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
-      })).rejects.toThrow(/issuer-validated chat capability/);
+      })).rejects.toThrow(/needs a chat capability, and this caller has none/);
 
       const actorToken = issueBuiltInBrowserActorCapability({
         chatSessionId: "chat-trusted",
@@ -880,7 +933,7 @@ describe("built-in browser desktop bridge", () => {
         chatSessionId: "chat-other",
         [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: actorToken,
         [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
-      })).rejects.toThrow(/issuer-validated chat capability/);
+      })).rejects.toThrow(/belongs to a different chat session/);
       await expect(client.request("built_in_browser.navigate", {
         url: "https://example.test",
         laneId: "lane-spoofed",
@@ -977,10 +1030,147 @@ describe("built-in browser desktop bridge", () => {
         chatSessionId: "chat-personal",
         [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: personalActorToken,
       };
-      await expect(client.navigate(revokedNavigate)).rejects.toThrow(/issuer-validated chat capability/);
+      await expect(client.navigate(revokedNavigate)).rejects.toThrow(/no longer valid/);
     } finally {
       client.dispose();
       server.dispose();
     }
   });
+
+  // The capability registry is a process-local Map in Electron main, and the
+  // runtime daemon that builds agent environments is a different process. A
+  // token the daemon minted itself could never be validated here, so the daemon
+  // must ask the desktop for one. This exercises both halves over a real socket.
+  it.skipIf(process.platform === "win32")(
+    "issues capabilities to the runtime daemon over the bridge that later validates them",
+    async () => {
+      const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+      const navigate = vi.fn(async (input: unknown) => input);
+      const server = startBuiltInBrowserDesktopBridgeServer({
+        socketPath,
+        service: { navigate } as unknown as BuiltInBrowserService,
+        logger: createLogger(),
+      });
+      const client = createBuiltInBrowserDesktopBridgeClient({
+        socketPath,
+        getAuthToken: () => server.authToken,
+        projectRoot: "/daemon/project",
+        logger: createLogger(),
+      });
+      const issuer = createBridgeBrowserActorCapabilityIssuer({ getBridge: () => client });
+      try {
+        await waitForPath(socketPath);
+
+        const token = await issuer.issue({
+          chatSessionId: "chat-daemon",
+          laneId: "lane-daemon",
+          projectRoot: "/issued/project",
+          tabCollection: null,
+        });
+        expect(token).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+        // Electron minted it, so only Electron's registry knows it.
+        expect(resolveBuiltInBrowserActorCapability(token)).toMatchObject({
+          chatSessionId: "chat-daemon",
+          laneId: "lane-daemon",
+          projectRoot: path.resolve("/issued/project"),
+        });
+
+        const daemonNavigate = {
+          url: "https://daemon.example.test",
+          chatSessionId: "chat-daemon",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: token,
+        };
+        await expect(client.navigate(daemonNavigate)).resolves.toMatchObject({
+          url: "https://daemon.example.test",
+          chatSessionId: "chat-daemon",
+          laneId: "lane-daemon",
+          projectRoot: path.resolve("/issued/project"),
+          force: false,
+        });
+
+        await issuer.revoke("chat-daemon");
+        expect(resolveBuiltInBrowserActorCapability(token)).toBeNull();
+        const revokedDaemonNavigate = {
+          url: "https://daemon.example.test/after-revoke",
+          chatSessionId: "chat-daemon",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: token,
+        };
+        await expect(client.navigate(revokedDaemonNavigate)).rejects.toThrow(/no longer valid/);
+      } finally {
+        client.dispose();
+        server.dispose();
+      }
+    },
+  );
+
+  // A personal chat has no project, and a lane chat may not be the daemon's own
+  // project. The runtime scope rewrite that protects browser actions must not
+  // touch the scope the daemon is asking to bind a capability to.
+  it.skipIf(process.platform === "win32")(
+    "binds a daemon-issued capability to the requested chat scope, not the daemon's project",
+    async () => {
+      const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+      const server = startBuiltInBrowserDesktopBridgeServer({
+        socketPath,
+        service: { navigate: async (input: unknown) => input } as unknown as BuiltInBrowserService,
+        logger: createLogger(),
+      });
+      const client = createBuiltInBrowserDesktopBridgeClient({
+        socketPath,
+        getAuthToken: () => server.authToken,
+        projectRoot: "/daemon/project",
+        logger: createLogger(),
+      });
+      const issuer = createBridgeBrowserActorCapabilityIssuer({ getBridge: () => client });
+      try {
+        await waitForPath(socketPath);
+
+        const personalToken = await issuer.issue({
+          chatSessionId: "chat-personal-daemon",
+          laneId: null,
+          projectRoot: null,
+          tabCollection: "personal",
+        });
+        expect(resolveBuiltInBrowserActorCapability(personalToken)).toEqual({
+          chatSessionId: "chat-personal-daemon",
+          laneId: null,
+          projectRoot: null,
+          tabCollection: "personal",
+        });
+      } finally {
+        client.dispose();
+        server.dispose();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a capability request that names no chat session",
+    async () => {
+      const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+      const server = startBuiltInBrowserDesktopBridgeServer({
+        socketPath,
+        service: {} as unknown as BuiltInBrowserService,
+        logger: createLogger(),
+      });
+      let client: JsonRpcClient | null = null;
+      try {
+        await waitForPath(socketPath);
+        client = await JsonRpcClient.connect(socketPath);
+
+        // Unauthenticated callers never reach issuance at all.
+        await expect(client.request("built_in_browser.issueActorCapability", {
+          chatSessionId: "chat-forged",
+        })).rejects.toThrow(/bridge authentication failed/);
+
+        await expect(client.request("built_in_browser.issueActorCapability", {
+          chatSessionId: "   ",
+          [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
+        })).rejects.toThrow(/require a chat session id/);
+      } finally {
+        client?.close();
+        server.dispose();
+      }
+    },
+  );
 });

@@ -505,7 +505,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("readArtifactPreview");
     for (const action of [
       "deleteArtifacts",
-      "ingest",
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
@@ -513,6 +512,30 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     ]) {
       expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);
     }
+  });
+
+  it("keeps proof ingestion off the action domain so owner and caller-root validation cannot be skipped", () => {
+    // `ade actions call computer_use_artifacts.ingest` used to reach the broker
+    // directly, past `validateComputerUseOwnerClaims` and the authorized
+    // import-root check that live on the RPC tool path.
+    expect(ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? []).not.toContain("ingest");
+    expect(isAllowedAdeAction("computer_use_artifacts", "ingest")).toBe(false);
+
+    const broker = {
+      getBackendStatus: vi.fn(),
+      ingest: vi.fn(),
+      listArtifacts: vi.fn(),
+      readArtifactPreview: vi.fn(),
+      updateArtifactReview: vi.fn(),
+    };
+    const runtime = {
+      computerUseArtifactBrokerService: broker,
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const artifactService = getAdeActionDomainServices(runtime)
+      .computer_use_artifacts as Record<string, unknown>;
+
+    expect(artifactService.ingest).toBeUndefined();
+    expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).not.toContain("ingest");
   });
 
   it("exposes prompt stashes through the project runtime for connected desktops", () => {

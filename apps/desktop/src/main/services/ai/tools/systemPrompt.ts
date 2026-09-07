@@ -349,7 +349,7 @@ export function buildCodingAgentSystemPrompt(args: {
             ? ["- **createPrFromLane**: Open a GitHub pull request from a lane. Use this when your changes are committed and pushed. Prefer draft PRs for work-in-progress."]
             : []),
           ...(hasCaptureScreenshot
-            ? ["- **captureScreenshot**: Take a screenshot for visual verification. Use this to document UI changes or provide evidence of completed work."]
+            ? ["- **captureScreenshot**: Take a screenshot for your own visual verification. It returns a scratch file path and does NOT create reviewer-facing proof — run `ade proof capture --caption \"…\"` (or `ade proof attach <path> --caption \"…\"`) for that."]
             : []),
           ...(hasReportCompletion
             ? ["- **reportCompletion**: Submit a structured completion report when done. Always include a summary, status, and list of artifacts produced."]

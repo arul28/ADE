@@ -14,10 +14,16 @@ import {
 import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
+  BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type { Logger } from "../logging/logger";
-import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
+import {
+  issueBuiltInBrowserActorCapability,
+  resolveBuiltInBrowserActorCapability,
+  revokeBuiltInBrowserActorCapability,
+} from "./builtInBrowserActorCapabilities";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 
@@ -157,6 +163,42 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     if (name === "authenticate") {
       return { authenticated: true };
     }
+    // Capability lifecycle. Electron owns the registry, so the runtime daemon
+    // asks for the per-chat token here rather than minting one in its own
+    // process (where nothing could ever validate it). Bridge auth is the only
+    // gate: the caller is the runtime that already decides which lane, project
+    // and chat an agent belongs to. No actor capability is required — this is
+    // where they come from.
+    if (name === BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD) {
+      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
+      if (!requestedChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Browser actor capabilities require a chat session id.",
+        );
+      }
+      const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
+      const token = issueBuiltInBrowserActorCapability({
+        chatSessionId: requestedChatSessionId,
+        laneId: normalizedString(rawParams.laneId),
+        projectRoot: tabCollection === "personal"
+          ? null
+          : normalizedString(rawParams.projectRoot),
+        tabCollection,
+      });
+      return { token };
+    }
+    if (name === BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD) {
+      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
+      if (!requestedChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Browser actor capabilities require a chat session id.",
+        );
+      }
+      revokeBuiltInBrowserActorCapability(requestedChatSessionId);
+      return { revoked: true };
+    }
     if (
       name === "getProfileDiagnostics"
       || name === "listPermissions"
@@ -181,10 +223,22 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     // revocable without sharing the in-memory registry or its authority with
     // the runtime daemon (which runs in a separate process).
     const actor = resolveBuiltInBrowserActorCapability(actorToken);
-    if (!chatSessionId || !actor || actor.chatSessionId !== chatSessionId) {
+    if (!actorToken || !chatSessionId) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        "Built-in browser automation requires an issuer-validated chat capability.",
+        "Built-in browser automation needs a chat capability, and this caller has none. `ade browser` only works from a chat or terminal that ADE launched — open ADE Desktop with this project and start the chat from there.",
+      );
+    }
+    if (!actor) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "This chat's browser capability is no longer valid — it was revoked when the chat ended, or ADE Desktop restarted after issuing it. Relaunch this chat from ADE Desktop.",
+      );
+    }
+    if (actor.chatSessionId !== chatSessionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
       );
     }
     const params = {

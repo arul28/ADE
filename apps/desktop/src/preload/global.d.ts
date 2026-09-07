@@ -1,4 +1,9 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { LocalizedRemoteUrl } from "../shared/remoteLoopbackUrl";
+import type {
+  BuiltInBrowserRemoteRequest,
+  BuiltInBrowserRemoteRequestAck,
+} from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
 import type {
   AdeCleanupResult,
@@ -491,6 +496,12 @@ import type {
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
+  BrowserLoginImportArgs,
+  BrowserLoginImportCapabilities,
+  BrowserLoginImportListDomainsArgs,
+  BrowserLoginImportListDomainsResult,
+  BrowserLoginImportListSourcesResult,
+  BrowserLoginImportResult,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigSnapshot,
@@ -655,19 +666,27 @@ import type {
   IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlObservation,
+  AppControlObservationArgs,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
+  AppControlTraceArgs,
+  AppControlTraceResult,
   AppControlTypeTextArgs,
+  AppControlWindowsResult,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserClearPermissionsArgs,
@@ -683,6 +702,26 @@ import type {
   BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserNetworkLoggingResult,
+  BuiltInBrowserNetworkLogResult,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserStopRecordingResult,
+  BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
@@ -2338,6 +2377,35 @@ declare global {
           args: { targetId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /**
+         * Agent action model, read side only. `agentClick`/`agentFill`/… are
+         * deliberately absent: the panel reports what an agent did, it does not
+         * drive agent actions, so those stay behind the action registry.
+         *
+         * All five reject when no project runtime is bound — they have no IPC
+         * channel to fall back to.
+         */
+        listDrivers: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlDriversResult>;
+        /** Writes an observation record and prunes older ones — never poll it. */
+        observe: (
+          args?: AppControlObservationArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlObservation>;
+        getTrace: (
+          args?: AppControlTraceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlTraceResult>;
+        windows: (
+          args?: AppControlSessionTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlWindowsResult>;
+        /** Re-attaches CDP and clears the trace, like `attachToTarget`. */
+        switchWindow: (
+          args: AppControlSwitchWindowArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlWindowsResult>;
         onEvent: (
           cb: (ev: AppControlEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -2357,6 +2425,18 @@ declare global {
         clearPermissions: (
           args?: BuiltInBrowserClearPermissionsArgs,
         ) => Promise<BuiltInBrowserClearPermissionsResult>;
+        /**
+         * Human-only login import. No `pin` overload anywhere in this group:
+         * an agent must not be able to hand itself a logged-in identity.
+         */
+        loginImport: {
+          capabilities: () => Promise<BrowserLoginImportCapabilities>;
+          listSources: () => Promise<BrowserLoginImportListSourcesResult>;
+          listDomains: (
+            args: BrowserLoginImportListDomainsArgs,
+          ) => Promise<BrowserLoginImportListDomainsResult>;
+          import: (args: BrowserLoginImportArgs) => Promise<BrowserLoginImportResult>;
+        };
         showPanel: (
           args?: BuiltInBrowserOpenPanelArgs,
           pin?: OpenProjectBinding | null,
@@ -2368,6 +2448,16 @@ declare global {
         attachWebview: (
           args: BuiltInBrowserAttachWebviewArgs,
         ) => Promise<BuiltInBrowserStatus>;
+        /** Resolve a loopback URL onto a forward to the pinned machine. */
+        localizeRemoteUrl: (
+          args: { url: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LocalizedRemoteUrl>;
+        /** Tell the pinned machine this desktop took its browser-open request. */
+        acknowledgeRemoteRequest: (
+          args: BuiltInBrowserRemoteRequestAck,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         navigate: (
           args: BuiltInBrowserNavigateArgs,
           pin?: OpenProjectBinding | null,
@@ -2424,8 +2514,56 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        setEmulation: (
+          args?: BuiltInBrowserSetEmulationArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserEmulationResult>;
+        setZoom: (
+          args?: BuiltInBrowserSetZoomArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserZoomResult>;
+        findInPage: (
+          args: BuiltInBrowserFindInPageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserFindInPageResult>;
+        stopFindInPage: (
+          args?: BuiltInBrowserStopFindInPageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStopFindInPageResult>;
+        setDevTools: (
+          args: BuiltInBrowserSetDevToolsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserDevToolsResult>;
+        setNetworkLogging: (
+          args: BuiltInBrowserSetNetworkLoggingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserNetworkLoggingResult>;
+        getNetworkLog: (
+          args?: BuiltInBrowserNetworkLogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserNetworkLogResult>;
+        exportHar: (
+          args?: BuiltInBrowserExportHarArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserExportHarResult>;
+        startRecording: (
+          args?: BuiltInBrowserStartRecordingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStartRecordingResult>;
+        stopRecording: (
+          args?: BuiltInBrowserStopRecordingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStopRecordingResult>;
         onEvent: (
           cb: (ev: BuiltInBrowserEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /**
+         * Browser-open requests forwarded from a headless machine the chat is
+         * pinned to. A no-op unsubscribe for any non-remote pin.
+         */
+        onRemoteRequest: (
+          cb: (ev: BuiltInBrowserRemoteRequest) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };

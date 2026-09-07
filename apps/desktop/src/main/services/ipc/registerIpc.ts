@@ -5,6 +5,7 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -221,6 +222,15 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   ReviewListRunsArgs,
@@ -798,6 +808,10 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
+import {
+  createBrowserLoginImportService,
+  type BrowserLoginImportService,
+} from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
@@ -2907,6 +2921,125 @@ export function registerIpc({
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       includeScreenshot,
+    };
+  };
+
+  const parseBuiltInBrowserSetEmulationArgs = (value: unknown, channel: string): BuiltInBrowserSetEmulationArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const preset = record.preset === null
+      ? null
+      : optionalBuiltInBrowserString(record, "preset", channel, 64);
+    const userAgent = optionalBuiltInBrowserString(record, "userAgent", channel, 512);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(preset === undefined ? {} : { preset }),
+      ...(record.width == null ? {} : { width: builtInBrowserNumber(record, "width", channel, { min: 1, max: 20_000 }) }),
+      ...(record.height == null ? {} : { height: builtInBrowserNumber(record, "height", channel, { min: 1, max: 20_000 }) }),
+      ...(record.deviceScaleFactor == null
+        ? {}
+        : { deviceScaleFactor: builtInBrowserNumber(record, "deviceScaleFactor", channel, { min: 0.1, max: 10 }) }),
+      ...(optionalBoolean(record.mobile) === undefined ? {} : { mobile: optionalBoolean(record.mobile) }),
+      ...(userAgent === undefined ? {} : { userAgent }),
+    };
+  };
+
+  const parseBuiltInBrowserSetZoomArgs = (value: unknown, channel: string): BuiltInBrowserSetZoomArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(record.factor == null ? {} : { factor: builtInBrowserNumber(record, "factor", channel, { min: 0.05, max: 20 }) }),
+      ...(optionalBoolean(record.reset) === undefined ? {} : { reset: optionalBoolean(record.reset) }),
+    };
+  };
+
+  const parseBuiltInBrowserFindInPageArgs = (value: unknown, channel: string): BuiltInBrowserFindInPageArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const text = optionalBuiltInBrowserString(record, "text", channel, 2048);
+    if (!text) return invalidBuiltInBrowserArg(channel, "text must be a non-empty string");
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      text,
+      ...(optionalBoolean(record.forward) === undefined ? {} : { forward: optionalBoolean(record.forward) }),
+      ...(optionalBoolean(record.matchCase) === undefined ? {} : { matchCase: optionalBoolean(record.matchCase) }),
+      ...(optionalBoolean(record.findNext) === undefined ? {} : { findNext: optionalBoolean(record.findNext) }),
+      ...(record.timeoutMs == null
+        ? {}
+        : { timeoutMs: builtInBrowserNumber(record, "timeoutMs", channel, { min: 250, max: 30_000 }) }),
+    };
+  };
+
+  const parseBuiltInBrowserStopFindInPageArgs = (value: unknown, channel: string): BuiltInBrowserStopFindInPageArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const action = optionalBuiltInBrowserString(record, "action", channel, 32);
+    if (action && action !== "clearSelection" && action !== "keepSelection" && action !== "activateSelection") {
+      return invalidBuiltInBrowserArg(channel, "action is invalid");
+    }
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(action ? { action: action as BuiltInBrowserStopFindInPageArgs["action"] } : {}),
+    };
+  };
+
+  const parseBuiltInBrowserSetDevToolsArgs = (value: unknown, channel: string): BuiltInBrowserSetDevToolsArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const open = optionalBoolean(record.open);
+    if (open === undefined) return invalidBuiltInBrowserArg(channel, "open must be a boolean");
+    const mode = optionalBuiltInBrowserString(record, "mode", channel, 16);
+    if (mode && mode !== "right" && mode !== "bottom" && mode !== "detach") {
+      return invalidBuiltInBrowserArg(channel, "mode is invalid");
+    }
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      open,
+      ...(mode ? { mode: mode as BuiltInBrowserSetDevToolsArgs["mode"] } : {}),
+    };
+  };
+
+  const parseBuiltInBrowserSetNetworkLoggingArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserSetNetworkLoggingArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const enabled = optionalBoolean(record.enabled);
+    if (enabled === undefined) return invalidBuiltInBrowserArg(channel, "enabled must be a boolean");
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      enabled,
+      ...(optionalBoolean(record.clear) === undefined ? {} : { clear: optionalBoolean(record.clear) }),
+    };
+  };
+
+  const parseBuiltInBrowserNetworkLogArgs = (value: unknown, channel: string): BuiltInBrowserNetworkLogArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const filter = optionalBuiltInBrowserString(record, "filter", channel, 512);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(record.limit == null ? {} : { limit: builtInBrowserNumber(record, "limit", channel, { min: 1, max: 500 }) }),
+      ...(filter ? { filter } : {}),
+      ...(optionalBoolean(record.failedOnly) === undefined ? {} : { failedOnly: optionalBoolean(record.failedOnly) }),
+    };
+  };
+
+  const parseBuiltInBrowserExportHarArgs = (value: unknown, channel: string): BuiltInBrowserExportHarArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const filter = optionalBuiltInBrowserString(record, "filter", channel, 512);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(filter ? { filter } : {}),
+      ...(optionalBoolean(record.failedOnly) === undefined ? {} : { failedOnly: optionalBoolean(record.failedOnly) }),
+    };
+  };
+
+  const parseBuiltInBrowserStartRecordingArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserStartRecordingArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const caption = optionalBuiltInBrowserString(record, "caption", channel, 500);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(record.fps == null ? {} : { fps: builtInBrowserNumber(record, "fps", channel, { min: 30, max: 60 }) }),
+      ...(caption ? { caption } : {}),
     };
   };
 
@@ -9162,6 +9295,79 @@ export function registerIpc({
     );
   });
 
+  // ── Login import (human-only) ──────────────────────────────────────────────
+  // Deliberately not routed through `ensureBuiltInBrowser()`: nothing here is
+  // reachable from the desktop bridge or a daemon action domain, and keeping it
+  // on its own service makes that structural rather than a review promise.
+  let browserLoginImportService: BrowserLoginImportService | null = null;
+  const ensureBrowserLoginImport = (): BrowserLoginImportService => {
+    if (!browserLoginImportService) {
+      browserLoginImportService = createBrowserLoginImportService({
+        getLogger: () => getCtx().logger,
+      });
+    }
+    return browserLoginImportService;
+  };
+
+  const parseLoginImportSourceId = (arg: unknown, channel: string): string => {
+    const record = builtInBrowserRecord(arg, channel, true);
+    const sourceId = record.sourceId;
+    if (typeof sourceId !== "string" || sourceId.trim().length === 0) {
+      invalidBuiltInBrowserArg(channel, "sourceId must be a non-empty string");
+    }
+    return (sourceId as string).trim();
+  };
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportCapabilities, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportCapabilities, { windowMs: 10_000, max: 20 });
+    return ensureBrowserLoginImport().capabilities();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportListSources, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListSources, { windowMs: 10_000, max: 20 });
+    return ensureBrowserLoginImport().listSources();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportListDomains, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListDomains, { windowMs: 60_000, max: 20 });
+    return ensureBrowserLoginImport().listDomains({
+      sourceId: parseLoginImportSourceId(arg, IPC.builtInBrowserLoginImportListDomains),
+    });
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportImport, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportImport, { windowMs: 60_000, max: 10 });
+    const channel = IPC.builtInBrowserLoginImportImport;
+    const record = builtInBrowserRecord(arg, channel, true);
+    const rawDomains = record.domains;
+    if (!Array.isArray(rawDomains)) invalidBuiltInBrowserArg(channel, "domains must be an array");
+    const domains = (rawDomains as unknown[])
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    if (domains.length === 0) invalidBuiltInBrowserArg(channel, "domains must contain at least one host");
+
+    const result = await ensureBrowserLoginImport().import({
+      sourceId: parseLoginImportSourceId(arg, channel),
+      domains,
+    });
+    if (result.ok && !win.isDestroyed()) {
+      // Same event stream the browser panel already listens on, so the toast
+      // needs no second channel. Counts and hosts only — never a cookie.
+      try {
+        win.webContents.send(IPC.builtInBrowserEvent, {
+          type: "login-import-completed",
+          importedCount: result.importedCount,
+          domains: result.domains.map((entry) => entry.domain),
+          completedAt: new Date().toISOString(),
+        } satisfies BuiltInBrowserEventPayload);
+      } catch {
+        // A stale window is not a reason to fail an import that succeeded.
+      }
+    }
+    return result;
+  });
+
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel), win);
@@ -9245,6 +9451,74 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetEmulation, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetEmulation, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().setEmulation(
+      parseBuiltInBrowserSetEmulationArgs(arg, IPC.builtInBrowserSetEmulation),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetZoom, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetZoom, { windowMs: 10_000, max: 200 });
+    return ensureBuiltInBrowser().setZoom(parseBuiltInBrowserSetZoomArgs(arg, IPC.builtInBrowserSetZoom), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserFindInPage, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFindInPage, { windowMs: 10_000, max: 200 });
+    return ensureBuiltInBrowser().findInPage(parseBuiltInBrowserFindInPageArgs(arg, IPC.builtInBrowserFindInPage), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopFindInPage, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopFindInPage, { windowMs: 10_000, max: 200 });
+    return ensureBuiltInBrowser().stopFindInPage(
+      parseBuiltInBrowserStopFindInPageArgs(arg, IPC.builtInBrowserStopFindInPage),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetDevTools, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetDevTools, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().setDevTools(parseBuiltInBrowserSetDevToolsArgs(arg, IPC.builtInBrowserSetDevTools), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetNetworkLogging, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetNetworkLogging, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().setNetworkLogging(
+      parseBuiltInBrowserSetNetworkLoggingArgs(arg, IPC.builtInBrowserSetNetworkLogging),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGetNetworkLog, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetNetworkLog, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getNetworkLog(
+      parseBuiltInBrowserNetworkLogArgs(arg, IPC.builtInBrowserGetNetworkLog),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserExportHar, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserExportHar, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().exportHar(parseBuiltInBrowserExportHarArgs(arg, IPC.builtInBrowserExportHar), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStartRecording, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartRecording, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().startRecording(
+      parseBuiltInBrowserStartRecordingArgs(arg, IPC.builtInBrowserStartRecording),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().stopRecording(
+      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStopRecording),
+      win,
+    );
   });
 
   const requirePtyService = (): ReturnType<typeof createPtyService> => {

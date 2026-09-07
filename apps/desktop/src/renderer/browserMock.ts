@@ -5313,6 +5313,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      loginImport: {
+        capabilities: resolved({ platform: "other" as const, anySupported: false, browsers: [] }),
+        listSources: resolved({
+          platform: "other" as const,
+          sources: [],
+          capabilities: { platform: "other" as const, anySupported: false, browsers: [] },
+        }),
+        listDomains: resolvedArg({} as any),
+        import: resolvedArg({} as any),
+      },
       claim: resolvedArg({} as any),
       showPanel: resolvedArg({} as any),
       setBounds: resolvedArg({} as any),

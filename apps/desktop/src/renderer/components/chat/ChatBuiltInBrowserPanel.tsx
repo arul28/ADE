@@ -28,7 +28,21 @@ import type {
 } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { formatBytes } from "../../lib/format";
-import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import {
+  parseLoopbackUrl,
+  remoteTunnelApprovalKey,
+  type RemoteLoopbackTunnel,
+} from "../../../shared/remoteLoopbackUrl";
+import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
+import {
+  reconcileTabTunnels,
+  setTabTunnel,
+  tunnelAwareUrl,
+  type TabTunnelMap,
+} from "./browserRemoteTunnels";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -161,6 +175,34 @@ type BuiltInBrowserApi = {
     cb: (event: BuiltInBrowserEventPayload) => void,
     pin?: OpenProjectBinding | null,
   ) => () => void;
+  /** Remote-pin only: resolve a loopback URL onto a forward without navigating. */
+  localizeRemoteUrl?: (
+    args: { url: string },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<{ url: string; forward: RemoteLoopbackTunnel | null }>;
+  acknowledgeRemoteRequest?: (
+    args: { requestId: string; desktopLabel: string; accepted: boolean; reason?: string | null },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<{ ok: boolean }>;
+  onRemoteRequest?: (
+    cb: (event: BuiltInBrowserRemoteRequest) => void,
+    pin?: OpenProjectBinding | null,
+  ) => () => void;
+};
+
+/**
+ * A tunnel the agent asked for that a human has not approved yet.
+ *
+ * The machine-wide `portForward` grant is consent to reach that machine's
+ * loopback, not consent to whatever port an agent names — a lane approved for a
+ * dev server on 3000 has not approved an admin console on 8080. Human-typed
+ * URLs skip this (the human just typed it) but still open the forward.
+ */
+type PendingTunnelApproval = {
+  key: string;
+  remotePort: number;
+  machineLabel: string;
+  decide: (decision: "once" | "always" | "deny") => void;
 };
 
 type BrowserWebviewElement = HTMLElement & {
@@ -387,6 +429,11 @@ function normalizeTab(value: unknown): BuiltInBrowserTab | null {
     ownerChatSessionId: stringField(value.ownerChatSessionId),
     ownerClaimedAt: stringField(value.ownerClaimedAt),
     ownerLeaseExpiresAt: stringField(value.ownerLeaseExpiresAt),
+    zoomFactor: numberField(value.zoomFactor) || 1,
+    devToolsOpen: booleanField(value.devToolsOpen, false),
+    emulation: (isRecord(value.emulation) ? value.emulation : null) as BuiltInBrowserTab["emulation"],
+    networkLogging: booleanField(value.networkLogging, false),
+    recording: (isRecord(value.recording) ? value.recording : null) as BuiltInBrowserTab["recording"],
   };
 }
 
@@ -732,22 +779,20 @@ async function cropBrowserScreenshot(
 
 /**
  * The browser window belongs to ONE computer: it is a view owned by that
- * desktop's main process, positioned over this panel's on-screen bounds. Pinned
- * to another machine, every call here would drive that machine's browser and
- * shove it around that machine's screen while this panel stayed blank — so the
- * surface says where the browser runs instead of pretending. A pin on another
- * checkout of THIS computer still drives this window's browser, so it renders
- * normally.
+ * desktop's main process, positioned over this panel's on-screen bounds. So the
+ * pane always drives THIS window's browser, whatever machine the chat is on — a
+ * pin naming another machine used to refuse the pane outright, which meant a
+ * remote lane had no browser at all.
+ *
+ * What a remote pin changes is what `localhost` means. The dev server the agent
+ * wants is on the pinned machine, and this desktop's loopback is a different box
+ * — often nothing, sometimes a *different* project's server, which is the
+ * dangerous case. So every loopback URL is rewritten onto a per-(machine, port)
+ * TCP forward before it loads, the URL bar keeps showing the remote origin that
+ * was asked for, and the first use of a new port needs a human grant even on a
+ * machine already trusted for port-forwarding, because the agent picks the port.
  */
 export function ChatBuiltInBrowserPanel(props: ChatBuiltInBrowserPanelProps) {
-  const { runtimePin = null } = props;
-  if (runtimePin?.kind === "remote") {
-    return (
-      <div className="flex h-full min-h-0 items-center justify-center px-6 text-center text-[12px] leading-5 text-muted-fg">
-        {`The browser opens on this computer. This chat runs on ${machineNameForBinding(runtimePin)}, so open the browser from a chat here.`}
-      </div>
-    );
-  }
   return <BuiltInBrowserPanelView {...props} />;
 }
 
@@ -762,6 +807,10 @@ function BuiltInBrowserPanelView({
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
+  // The chat's lane, when this pane sits inside a chat pane. "Always for this
+  // lane" tunnel grants are stored against it; outside a chat provider there is
+  // no lane and the grant falls back to the project scope.
+  const contextLaneId = useChatRuntimeScope().laneId;
   const projectRoot = projectRootOverride === undefined
     ? chatScope.rootPath
     : projectRootOverride;
@@ -802,6 +851,15 @@ function BuiltInBrowserPanelView({
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileDiagnostics, setProfileDiagnostics] = useState<BuiltInBrowserProfileDiagnostics | null>(null);
   const [permissionDecisions, setPermissionDecisions] = useState<BuiltInBrowserPermissionDecision[]>([]);
+  // Which tabs are looking at the pinned machine, and through which forward.
+  const [tabTunnels, setTabTunnels] = useState<TabTunnelMap>({});
+  const tabTunnelsRef = useRef<TabTunnelMap>(tabTunnels);
+  tabTunnelsRef.current = tabTunnels;
+  const [pendingApproval, setPendingApproval] = useState<PendingTunnelApproval | null>(null);
+  // Approvals answered "Allow once" live only as long as this pane does; the
+  // "Always" set is persisted per lane alongside the rest of its view state.
+  const sessionApprovedTunnelsRef = useRef(new Set<string>());
+  const remotePin = runtimePin?.kind === "remote" ? runtimePin : null;
   const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
     () => (projectRootOverride === null
       ? { tabCollection: "personal" }
@@ -813,6 +871,102 @@ function BuiltInBrowserPanelView({
   const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BuiltInBrowserProjectScopeArgs => (
     ({ ...args, ...browserScope }) as T & BuiltInBrowserProjectScopeArgs
   ), [browserScope]);
+  const remotePinRef = useRef<Extract<OpenProjectBinding, { kind: "remote" }> | null>(remotePin);
+  remotePinRef.current = remotePin;
+
+  const readAlwaysTunnelKeys = useCallback((): string[] => {
+    const store = useAppStore.getState();
+    return contextLaneId
+      ? store.getLaneWorkViewState(projectRoot, contextLaneId).browserTunnelAlwaysKeys
+      : store.getWorkViewState(projectRoot).browserTunnelAlwaysKeys;
+  }, [contextLaneId, projectRoot]);
+
+  const rememberAlwaysTunnelKey = useCallback((key: string) => {
+    const store = useAppStore.getState();
+    const patch = (prev: WorkProjectViewState): WorkProjectViewState => (
+      prev.browserTunnelAlwaysKeys.includes(key)
+        ? prev
+        : { ...prev, browserTunnelAlwaysKeys: [...prev.browserTunnelAlwaysKeys, key] }
+    );
+    if (contextLaneId) store.setLaneWorkViewState(projectRoot, contextLaneId, patch);
+    else store.setWorkViewState(projectRoot, patch);
+  }, [contextLaneId, projectRoot]);
+
+  /**
+   * Gate one (machine, port) pair behind a human.
+   *
+   * The pinned machine already carries a `portForward` grant, but that grant is
+   * about the machine, and here the *agent* names the port — so the first use of
+   * a port it chose needs a person to say yes. A URL the human typed does not:
+   * they just said it out loud by typing it.
+   */
+  const ensureTunnelApproval = useCallback(async (
+    remotePort: number,
+    machineLabel: string,
+    options: { human: boolean },
+  ): Promise<boolean> => {
+    const pin = remotePinRef.current;
+    if (!pin) return true;
+    const key = remoteTunnelApprovalKey(pin.targetId, remotePort);
+    if (options.human) {
+      sessionApprovedTunnelsRef.current.add(key);
+      return true;
+    }
+    if (sessionApprovedTunnelsRef.current.has(key)) return true;
+    if (readAlwaysTunnelKeys().includes(key)) return true;
+    return await new Promise<boolean>((resolve) => {
+      setPendingApproval((previous) => {
+        // A second request for the same port while one bar is up joins it
+        // rather than stacking a second bar the human has to answer twice.
+        previous?.decide("deny");
+        return {
+          key,
+          remotePort,
+          machineLabel,
+          decide: (decision) => {
+            setPendingApproval(null);
+            if (decision === "deny") {
+              resolve(false);
+              return;
+            }
+            sessionApprovedTunnelsRef.current.add(key);
+            if (decision === "always") rememberAlwaysTunnelKey(key);
+            resolve(true);
+          },
+        };
+      });
+    });
+  }, [readAlwaysTunnelKeys, rememberAlwaysTunnelKey]);
+
+  /**
+   * Everything a loopback URL needs before it can load on a remote pin: the
+   * human grant, then the forward itself. Returns the tunnel so the caller can
+   * remember which tab is showing another machine. A non-loopback URL, or a
+   * local pin, is a no-op.
+   */
+  const prepareRemoteNavigation = useCallback(async (
+    url: string,
+    options: { human: boolean },
+  ): Promise<{ ok: boolean; tunnel: RemoteLoopbackTunnel | null; reason: string | null }> => {
+    const pin = remotePinRef.current;
+    if (!pin) return { ok: true, tunnel: null, reason: null };
+    const parsed = parseLoopbackUrl(url);
+    if (!parsed) return { ok: true, tunnel: null, reason: null };
+    const machineLabel = machineNameForBinding(pin);
+    const approved = await ensureTunnelApproval(parsed.port, machineLabel, options);
+    if (!approved) {
+      return {
+        ok: false,
+        tunnel: null,
+        reason: `Reaching port ${parsed.port} on ${machineLabel} was not allowed.`,
+      };
+    }
+    const api = getBrowserApi();
+    if (!api?.localizeRemoteUrl) return { ok: true, tunnel: null, reason: null };
+    const localized = await api.localizeRemoteUrl({ url }, pin);
+    return { ok: true, tunnel: localized.forward, reason: null };
+  }, [ensureTunnelApproval]);
+
   const syncBrowserInputSuppressedState = useCallback(() => {
     setBrowserInputSuppressed(browserInputSuppressedRef.current || browserOverlayOccludedRef.current);
   }, []);
@@ -821,7 +975,9 @@ function BuiltInBrowserPanelView({
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
   const tabIdsSignature = useMemo(() => browserTabs.map((tab) => tab.id).join("|"), [browserTabs]);
   const activeTabId = status?.activeTabId ?? browserTabs[0]?.id ?? null;
-  const currentUrl = status?.url ?? "";
+  const activeTabTunnel = activeTabId ? tabTunnels[activeTabId] ?? null : null;
+  // What the human asked for, not the ephemeral forward port behind it.
+  const currentUrl = tunnelAwareUrl(status?.url ?? "", activeTabTunnel);
   const canGoBack = Boolean(status?.canGoBack);
   const canGoForward = Boolean(status?.canGoForward);
   const loading = Boolean(status?.loading);
@@ -864,7 +1020,20 @@ function BuiltInBrowserPanelView({
     selectedItemRef.current = nextSelection;
     setStatus(normalized);
     setSelectedItem(nextSelection);
-    if (!editingUrlRef.current) setUrlInput(normalized.url ?? "");
+    // Tabs that closed, or left the forwarded origin for a real site, stop
+    // being described as the pinned machine's.
+    if (Object.keys(tabTunnelsRef.current).length > 0) {
+      setTabTunnels((prev) => reconcileTabTunnels(prev, normalized.tabs));
+    }
+    if (!editingUrlRef.current) {
+      // Never show the ephemeral forward port: the human asked for the remote
+      // origin, and that is the URL they can copy, share, or retype.
+      const activeId = normalized.activeTabId;
+      setUrlInput(tunnelAwareUrl(
+        normalized.url,
+        activeId ? tabTunnelsRef.current[activeId] ?? null : null,
+      ));
+    }
   }, []);
 
   const refreshStatus = useCallback(async () => {
@@ -1199,6 +1368,63 @@ function BuiltInBrowserPanelView({
     };
   }, [applyStatus, attachBrowserContextItem, browserScope, onAddContext, projectRoot]);
 
+  /**
+   * `ade browser open` run on the pinned machine.
+   *
+   * That machine has no browser of its own — only `ade serve` — so its daemon
+   * publishes the URL and waits for a desktop that has the lane pinned to take
+   * it. This is that desktop: the URL goes through the same approval and
+   * port-forward path a human navigation does, and the ack is what lets the
+   * agent's CLI print where it ended up instead of an error.
+   */
+  useEffect(() => {
+    const api = getBrowserApi();
+    const pin = remotePin;
+    if (!api?.onRemoteRequest || !pin) return undefined;
+    let cancelled = false;
+    const unsubscribe = api.onRemoteRequest((request) => {
+      void (async () => {
+        let accepted = false;
+        let reason: string | null = null;
+        try {
+          const prepared = await prepareRemoteNavigation(request.url, { human: false });
+          if (cancelled) return;
+          if (!prepared.ok) {
+            reason = prepared.reason;
+          } else {
+            await api.navigate(
+              withBrowserScope({
+                url: request.url,
+                ...(request.openPanel ? { openPanel: true } : {}),
+                ...(request.laneId ? { laneId: request.laneId } : {}),
+                ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
+              }),
+              pin,
+            );
+            await refreshStatus();
+            if (prepared.tunnel) {
+              const tunnel = prepared.tunnel;
+              setTabTunnels((prev) => setTabTunnel(prev, statusRef.current?.activeTabId ?? null, tunnel));
+            }
+            accepted = true;
+          }
+        } catch (error) {
+          reason = errorMessage(error);
+        }
+        if (cancelled) return;
+        if (!accepted && reason) setMessage({ tone: "error", text: reason });
+        await api.acknowledgeRemoteRequest?.(
+          { requestId: request.requestId, desktopLabel: THIS_MACHINE_NAME, accepted, reason },
+          pin,
+        ).catch(() => {});
+      })();
+    }, pin);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [prepareRemoteNavigation, refreshStatus, remotePin, withBrowserScope]);
+
   useEffect(() => () => {
     for (const cleanup of browserWebviewAttachCleanupRef.current.values()) cleanup();
     for (const webview of browserWebviewsRef.current.values()) webview.remove();
@@ -1436,12 +1662,23 @@ function BuiltInBrowserPanelView({
           setUrlInput(nextUrl);
           return;
         }
+        // The human typed this, so no approval bar — but a loopback URL on a
+        // remote pin still has to be tunneled before it means anything here.
+        const prepared = await prepareRemoteNavigation(nextUrl, { human: true });
+        if (!prepared.ok) {
+          setMessage({ tone: "error", text: prepared.reason ?? "Navigation was not allowed." });
+          return;
+        }
         await api.navigate(withBrowserScope({ url: nextUrl }), runtimePinRef.current);
         setUrlInput(nextUrl);
         await refreshStatus();
+        if (prepared.tunnel) {
+          const tunnel = prepared.tunnel;
+          setTabTunnels((prev) => setTabTunnel(prev, statusRef.current?.activeTabId ?? null, tunnel));
+        }
       });
     },
-    [activeTabId, applyStatus, navigateRendererWebview, refreshStatus, restoreLiveBrowserView, runBusy, urlInput, withBrowserScope],
+    [activeTabId, applyStatus, navigateRendererWebview, prepareRemoteNavigation, refreshStatus, restoreLiveBrowserView, runBusy, urlInput, withBrowserScope],
   );
 
   const handleNewTab = useCallback(() => {
@@ -1841,7 +2078,10 @@ function BuiltInBrowserPanelView({
         <div className="flex h-[20px] shrink-0 items-end gap-0 overflow-x-auto bg-white/[0.02] pl-1.5 pr-1">
           {browserTabs.map((tab) => {
             const active = tab.id === activeTabId;
-            const label = tab.title ?? tab.url ?? "New tab";
+            // A tunneled tab falls back to the REMOTE origin, never the forward
+            // port, when the page has no title of its own.
+            const tabUrl = tunnelAwareUrl(tab.url, tabTunnels[tab.id] ?? null) || null;
+            const label = tab.title ?? tabUrl ?? "New tab";
             const ownerLabel = browserTabOwnerLabel(tab);
             return (
               <div
@@ -1852,7 +2092,7 @@ function BuiltInBrowserPanelView({
                     ? "z-10 rounded-t-lg bg-[var(--color-bg)] text-fg/90"
                     : "rounded-t-lg text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/75",
                 )}
-                title={[ownerLabel ? `Claimed by ${ownerLabel}` : null, tab.url ?? label].filter(Boolean).join(" · ")}
+                title={[ownerLabel ? `Claimed by ${ownerLabel}` : null, tabUrl ?? label].filter(Boolean).join(" · ")}
               >
                 <button
                   type="button"
@@ -1900,7 +2140,47 @@ function BuiltInBrowserPanelView({
           </button>
         </div>
 
+        {pendingApproval ? (
+          <div
+            role="alert"
+            className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90"
+          >
+            <span className="min-w-0 flex-1">
+              {`Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => pendingApproval.decide("once")}
+              className="inline-flex h-5 shrink-0 items-center rounded border border-amber-300/30 bg-amber-500/15 px-1.5 font-medium transition-colors hover:bg-amber-500/25"
+            >
+              Allow once
+            </button>
+            <button
+              type="button"
+              onClick={() => pendingApproval.decide("always")}
+              className="inline-flex h-5 shrink-0 items-center rounded border border-amber-300/30 bg-amber-500/15 px-1.5 font-medium transition-colors hover:bg-amber-500/25"
+            >
+              Always for this lane
+            </button>
+            <button
+              type="button"
+              onClick={() => pendingApproval.decide("deny")}
+              className="inline-flex h-5 shrink-0 items-center rounded border border-white/[0.12] px-1.5 font-medium text-fg/70 transition-colors hover:bg-white/[0.06]"
+            >
+              Deny
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.08] bg-white/[0.02] px-1.5 py-1">
+          {activeTabTunnel ? (
+            <span
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-sky-400/25 bg-sky-500/12 px-1.5 text-[10px] font-medium text-sky-100/85"
+              title={`Tunneled to port ${activeTabTunnel.tunnel.remotePort} on ${activeTabTunnel.tunnel.machineLabel}`}
+            >
+              {activeTabTunnel.tunnel.machineLabel}
+            </span>
+          ) : null}
           <div className="inline-flex h-6 shrink-0 items-center overflow-hidden rounded border border-white/[0.08] bg-black/25">
             <button
               type="button"

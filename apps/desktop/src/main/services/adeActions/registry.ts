@@ -258,7 +258,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   computer_use_artifacts: [
     "deleteArtifacts",
     "getOwnerSnapshot",
-    "ingest",
     "listArtifacts",
     "listBrokenArtifacts",
     "pruneBrokenArtifacts",
@@ -867,11 +866,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
+  // `ingest` is intentionally absent. Proof-drawer entries are created only by
+  // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
+  // that wrap it, which validate owner claims and the caller's import root.
   computer_use_artifacts: [
     "deleteArtifacts",
     "getOwnerSnapshot",
     "getBackendStatus",
-    "ingest",
     "listArtifacts",
     "listBrokenArtifacts",
     "pruneBrokenArtifacts",
@@ -880,8 +881,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateArtifactReview",
   ],
   ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
-  app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
-  built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
+  app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
+  // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
+  // served by the runtime daemon itself, so a desktop that took a forwarded
+  // `ade browser open` can tell the machine that asked. Absent on a desktop's
+  // own service object, where `listAllowedAdeActionNames` filters it out.
+  built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS, "acknowledgeRemoteRequest"],
   automations: [
     "list",
     "get",
@@ -2103,11 +2108,31 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   };
 }
 
+/**
+ * Deliberately NOT a spread of the broker.
+ *
+ * Spreading it published every broker method as an action, including `ingest` —
+ * the one writer that creates proof-drawer records. `ade actions call
+ * computer_use_artifacts.ingest` then reached the broker directly, skipping the
+ * `ingest_computer_use_artifacts` RPC tool where `validateComputerUseOwnerClaims`
+ * and the authorized caller-root check live. Proof entry stays on the validated
+ * tool path; this domain exposes reads and record lifecycle only.
+ */
 function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueService | null {
   const broker = runtime.computerUseArtifactBrokerService;
   if (!broker) return null;
   return {
-    ...(broker as unknown as OpaqueService),
+    listArtifacts: (args?: Parameters<typeof broker.listArtifacts>[0]) => broker.listArtifacts(args),
+    deleteArtifacts: (args: Parameters<typeof broker.deleteArtifacts>[0]) => broker.deleteArtifacts(args),
+    listBrokenArtifacts: (args?: Parameters<typeof broker.listBrokenArtifacts>[0]) =>
+      broker.listBrokenArtifacts(args),
+    pruneBrokenArtifacts: () => broker.pruneBrokenArtifacts(),
+    recoverArtifact: (args: Parameters<typeof broker.recoverArtifact>[0]) => broker.recoverArtifact(args),
+    updateArtifactReview: (args: Parameters<typeof broker.updateArtifactReview>[0]) =>
+      broker.updateArtifactReview(args),
+    readArtifactPreview: (args: Parameters<typeof broker.readArtifactPreview>[0]) =>
+      broker.readArtifactPreview(args),
+    getBackendStatus: () => broker.getBackendStatus(),
     getOwnerSnapshot: (args?: ComputerUseOwnerSnapshotArgs) => {
       if (!args?.owner) throw new Error("owner is required.");
       return buildComputerUseOwnerSnapshot({

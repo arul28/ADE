@@ -1,0 +1,117 @@
+/**
+ * Read-only "what tool is the desktop using in this lane" state.
+ *
+ * The Work tools pane (browser, App Control, iOS, terminal, git, files) runs on
+ * the desktop: it owns a `WebContentsView`, a CDP connection, and a simulator
+ * stream. None of that can exist on a phone or in a browser tab. What CAN cross
+ * is the *description* of it — which tool is open, which tabs the browser has,
+ * which app App Control is driving, and the last frame either of them captured.
+ *
+ * So iOS and the hosted web client render this shape and nothing else. There is
+ * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`.
+ */
+
+export const WORK_TOOL_IDS = [
+  "terminal",
+  "git",
+  "files",
+  "ios",
+  "app-control",
+  "browser",
+] as const;
+
+export type WorkToolId = (typeof WORK_TOOL_IDS)[number];
+
+export function isWorkToolId(value: unknown): value is WorkToolId {
+  return typeof value === "string" && (WORK_TOOL_IDS as readonly string[]).includes(value);
+}
+
+/** Shown wherever a read-only client renders a tool it cannot drive. */
+export const WORK_TOOLS_CONTROL_HINT = "Control from the desktop";
+
+/** Empty state when this machine has no desktop attached at all. */
+export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
+  "Tools run on the desktop. Open ADE on your Mac to see them here.";
+
+/**
+ * Why `browser` is null. The browser lives in the desktop's Electron main
+ * process and the daemon proxies it over `desktop-bridge.sock`, so "no desktop
+ * attached to this machine" is a normal, non-error state that clients must
+ * render as absence rather than as a failure.
+ */
+export type WorkToolsUnavailableReason = "desktop_not_attached" | "unsupported" | "error";
+
+export type WorkToolsBrowserTab = {
+  id: string;
+  title: string | null;
+  url: string | null;
+  ownerChatSessionId: string | null;
+  /** True while this tab is capturing a video recording. */
+  recording: boolean;
+  active: boolean;
+};
+
+/**
+ * A screenshot the desktop already wrote to disk. Only the metadata travels
+ * here; bytes are fetched separately through `readObservationPreview` so a
+ * state broadcast never carries an image.
+ */
+export type WorkToolsObservation = {
+  /** Host-absolute path. Opaque to clients — pass it back verbatim. */
+  path: string;
+  capturedAt: string;
+  /** One line describing what produced the frame, e.g. "click · Sign in". */
+  caption: string | null;
+};
+
+export type WorkToolsBrowserState = {
+  activeTabId: string | null;
+  tabs: WorkToolsBrowserTab[];
+  latestObservation: WorkToolsObservation | null;
+};
+
+export type WorkToolsAppControlState = {
+  appName: string;
+  status: string;
+  driver: string;
+  latestObservation: WorkToolsObservation | null;
+};
+
+export type WorkToolsLaneState = {
+  laneId: string;
+  /** Last tool the desktop published for this lane; null if it never did. */
+  activeTool: WorkToolId | null;
+  activeToolUpdatedAt: string | null;
+  browser: WorkToolsBrowserState | null;
+  /** Non-null exactly when `browser` is null. */
+  browserUnavailable: WorkToolsUnavailableReason | null;
+  appControl: WorkToolsAppControlState | null;
+  capturedAt: string;
+};
+
+export type WorkToolsSetActiveToolArgs = {
+  laneId: string;
+  tool: WorkToolId | null;
+};
+
+export type WorkToolsGetLaneStateArgs = {
+  laneId: string;
+};
+
+export type WorkToolsReadObservationPreviewArgs = {
+  /** Path taken verbatim from a `WorkToolsObservation`. */
+  path: string;
+};
+
+export type WorkToolsObservationPreview = {
+  dataUrl: string;
+  mimeType: string;
+  byteLength: number;
+};
+
+export const WORK_TOOLS_STATE_CHANGED_EVENT = "work_tools_state_changed";
+
+export type WorkToolsStateChangedEvent = {
+  type: typeof WORK_TOOLS_STATE_CHANGED_EVENT;
+  laneId: string;
+};

@@ -430,6 +430,16 @@ export const IPC = {
   builtInBrowserGetProfileDiagnostics: "ade.builtInBrowser.getProfileDiagnostics",
   builtInBrowserListPermissions: "ade.builtInBrowser.listPermissions",
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
+  /**
+   * Login import. Trusted-renderer-only, like the profile diagnostics and
+   * permission administration above it: importing a browser's cookies hands
+   * over live identities, so it is a thing a human does at their own machine
+   * and never something `ade browser` or a daemon action can reach.
+   */
+  builtInBrowserLoginImportCapabilities: "ade.builtInBrowser.loginImport.capabilities",
+  builtInBrowserLoginImportListSources: "ade.builtInBrowser.loginImport.listSources",
+  builtInBrowserLoginImportListDomains: "ade.builtInBrowser.loginImport.listDomains",
+  builtInBrowserLoginImportImport: "ade.builtInBrowser.loginImport.import",
   builtInBrowserShowPanel: "ade.builtInBrowser.showPanel",
   builtInBrowserSetBounds: "ade.builtInBrowser.setBounds",
   builtInBrowserAttachWebview: "ade.builtInBrowser.attachWebview",
@@ -447,6 +457,16 @@ export const IPC = {
   builtInBrowserSelectPoint: "ade.builtInBrowser.selectPoint",
   builtInBrowserSelectCurrent: "ade.builtInBrowser.selectCurrent",
   builtInBrowserClearSelection: "ade.builtInBrowser.clearSelection",
+  builtInBrowserSetEmulation: "ade.builtInBrowser.setEmulation",
+  builtInBrowserSetZoom: "ade.builtInBrowser.setZoom",
+  builtInBrowserFindInPage: "ade.builtInBrowser.findInPage",
+  builtInBrowserStopFindInPage: "ade.builtInBrowser.stopFindInPage",
+  builtInBrowserSetDevTools: "ade.builtInBrowser.setDevTools",
+  builtInBrowserSetNetworkLogging: "ade.builtInBrowser.setNetworkLogging",
+  builtInBrowserGetNetworkLog: "ade.builtInBrowser.getNetworkLog",
+  builtInBrowserExportHar: "ade.builtInBrowser.exportHar",
+  builtInBrowserStartRecording: "ade.builtInBrowser.startRecording",
+  builtInBrowserStopRecording: "ade.builtInBrowser.stopRecording",
   builtInBrowserEvent: "ade.builtInBrowser.event",
   ptyCreate: "ade.pty.create",
   ptyResumeSession: "ade.pty.resumeSession",

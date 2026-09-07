@@ -14,14 +14,22 @@ When the user asks to capture, send, attach, or provide proof, create evidence w
 ```bash
 ade proof status --text
 ade proof list --text
-ade proof screenshot --text
-ade proof record --seconds 20 --text
+ade proof capture --caption "Checkout confirmation visible" --text
+ade proof record --seconds 20 --caption "Retry flow recovers" --text
+ade proof attach /tmp/run/checkout.png --caption "Checkout completes" --text
 ade --socket browser proof --tab <tab-id> --caption "Verified" --text
 ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
 ade help proof
 ```
 
-## What counts as proof
+## What counts as proof — and what does not
+
+Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
+
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, and `ade browser proof` **do** file.
+- The `captureScreenshot` chat tool and a bare `screenshot_environment` / `record_environment` call **do not** — they hand you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it.
+
+Artifacts worth filing:
 
 - Screenshot or video of the UI state.
 - App Control, iOS Simulator, or ADE browser capture.

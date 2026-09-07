@@ -14,7 +14,7 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
@@ -336,7 +336,7 @@ function createTerminalLinkProvider(term: Terminal): ILinkProvider {
           decorations: { underline: true, pointerCursor: true },
           activate(event: MouseEvent) {
             event.preventDefault();
-            openUrlInAdeBrowser(text);
+            openLinkFromUi(text, event);
           },
         });
       }

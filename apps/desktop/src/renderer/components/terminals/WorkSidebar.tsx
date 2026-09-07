@@ -1,22 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Desktop,
-  DeviceMobile,
-  FolderOpen,
-  GitBranch,
-  Globe,
-  Terminal,
-  WarningCircle,
-  X,
-} from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { WarningCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   AgentChatFileRef,
   AppControlContextItem,
-  AppControlSession,
   GitCommitSummary,
   IosElementContextItem,
-  IosSimulatorSession,
   LaneSummary,
   OpenProjectBinding,
   TerminalSessionSummary,
@@ -35,77 +25,28 @@ import {
 } from "../../lib/workPtyContextEvents";
 import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
+import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
-import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
+import { WorkToolPicker } from "./WorkToolPicker";
+import { useWorkToolStatuses } from "./useWorkToolStatuses";
+import { isAvailableWorkSidebarTab, type WorkToolContext } from "./workTools";
 
-const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
-  {
-    id: "terminal",
-    label: "Terminal",
-    icon: Terminal,
-    gradient: "radial-gradient(circle, rgba(196,181,253,0.38) 0%, transparent 70%)",
-    color: "#c4b5fd",
-  },
-  {
-    id: "git",
-    label: "Git",
-    icon: GitBranch,
-    gradient: "radial-gradient(circle, rgba(52,211,153,0.42) 0%, transparent 70%)",
-    color: "#34d399",
-  },
-  {
-    id: "files",
-    label: "Files",
-    icon: FolderOpen,
-    gradient: "radial-gradient(circle, rgba(251,191,36,0.38) 0%, transparent 70%)",
-    color: "#fbbf24",
-  },
-  {
-    id: "ios",
-    label: "iOS Sim",
-    icon: DeviceMobile,
-    gradient: "radial-gradient(circle, rgba(96,165,250,0.4) 0%, transparent 70%)",
-    color: "#60a5fa",
-  },
-  {
-    id: "app-control",
-    label: "App Control",
-    icon: Desktop,
-    gradient: "radial-gradient(circle, rgba(167,139,250,0.42) 0%, transparent 70%)",
-    color: "#a78bfa",
-  },
-  {
-    id: "browser",
-    label: "Browser",
-    icon: Globe,
-    gradient: "radial-gradient(circle, rgba(34,211,238,0.38) 0%, transparent 70%)",
-    color: "#22d3ee",
-  },
-];
-
-const REMOTE_WORK_SIDEBAR_TAB_IDS = new Set<WorkSidebarTab>(["terminal", "git", "files"]);
-
-function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
-  return REMOTE_WORK_SIDEBAR_TAB_IDS.has(tab);
-}
-
-function isAvailableWorkSidebarTab(
-  tab: WorkSidebarTab,
-  options: { isRemoteProject: boolean; supportsIosSimulator: boolean },
-): boolean {
-  if (options.isRemoteProject) return isRemoteWorkSidebarTab(tab);
-  return tab !== "ios" || options.supportsIosSimulator;
-}
+/** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
+const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
+const TOOLS_PICKER_DEFAULT_BINDING = "Escape";
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
@@ -207,8 +148,8 @@ export function WorkSidebar({
   laneId,
   lanes,
   activeSession,
-  tab,
-  onTabChange,
+  tool,
+  onToolChange,
   onClose,
   contextTarget,
   contextDisabledReason: targetDisabledReason,
@@ -218,8 +159,9 @@ export function WorkSidebar({
   laneId: string | null;
   lanes: LaneSummary[];
   activeSession: TerminalSessionSummary | null;
-  tab: WorkSidebarTab;
-  onTabChange: (tab: WorkSidebarTab) => void;
+  /** The one tool on screen, or null for the picker page. */
+  tool: WorkSidebarTab | null;
+  onToolChange: (tool: WorkSidebarTab | null) => void;
   onClose: () => void;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason: string | null;
@@ -234,9 +176,9 @@ export function WorkSidebar({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
-  const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
-  const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const keybindings = useAppStore((state) => state.keybindings);
+  const reduceMotion = useReducedMotion() ?? false;
   // The browser view is owned by THIS window's main process. A pin on another
   // checkout of this computer still drives that view, just under the pinned
   // checkout's tab collection, so hiding it on leave has to follow the pin. A
@@ -244,20 +186,19 @@ export function WorkSidebar({
   // instead of driving a browser nobody in this window can see.
   const browserViewRoot = runtimePin?.kind === "local" ? runtimePin.rootPath : projectRoot;
   const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
-  const supportsIosSimulator = isMacPlatform();
   const sidebarRef = useRef<HTMLElement | null>(null);
-  const [compactTabs, setCompactTabs] = useState(false);
-  const sidebarTabs = useMemo(
-    () => WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, {
-      isRemoteProject,
-      supportsIosSimulator,
-    })),
-    [isRemoteProject, supportsIosSimulator],
-  );
-  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, {
+  // Capability flags, never a platform sniff: the hosted web client renders this
+  // same component with stubbed native namespaces.
+  const toolContext = useMemo<WorkToolContext>(() => ({
     isRemoteProject,
-    supportsIosSimulator,
-  }) ? tab : "git";
+    supportsIosSimulator: isMacPlatform(),
+    isWebClient: isWebClientMode(),
+  }), [isRemoteProject]);
+  // An unavailable tool falls back to the PICKER, not to some other tool: being
+  // dropped into Git because the simulator is unavailable on this machine is a
+  // non-sequitur, and the picker says why the card is dimmed.
+  const effectiveTool: WorkSidebarTab | null =
+    tool && isAvailableWorkSidebarTab(tool, toolContext) ? tool : null;
 
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
@@ -282,98 +223,58 @@ export function WorkSidebar({
   }, [laneId, runtimePin?.key]);
 
   useEffect(() => {
-    if (!isAvailableWorkSidebarTab(tab, {
-      isRemoteProject,
-      supportsIosSimulator,
-    })) {
-      onTabChange("git");
+    if (tool && !isAvailableWorkSidebarTab(tool, toolContext)) {
+      onToolChange(null);
     }
-  }, [isRemoteProject, onTabChange, supportsIosSimulator, tab]);
+  }, [onToolChange, tool, toolContext]);
 
+  // Hiding the native browser view is the pane's one non-React obligation: the
+  // WebContentsView lives in main and keeps painting over whatever replaces it
+  // unless it is explicitly parked. Fires on tool switch, on close, on the pane
+  // going inactive, and on unmount — the exact contract the tab strip had.
+  const previousBrowserToolRef = useRef(effectiveTool === "browser");
   useEffect(() => {
-    const el = sidebarRef.current;
-    if (!el) return undefined;
-    const update = () => {
-      setCompactTabs(el.getBoundingClientRect().width < 460);
-    };
-    update();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const previousBrowserTabRef = useRef(effectiveTab === "browser");
-  useEffect(() => {
-    const wasBrowser = previousBrowserTabRef.current;
-    const isBrowser = active && effectiveTab === "browser";
+    const wasBrowser = previousBrowserToolRef.current;
+    const isBrowser = active && effectiveTool === "browser";
     if (wasBrowser && !isBrowser) hideBuiltInBrowserView(browserViewRoot);
-    previousBrowserTabRef.current = isBrowser;
+    previousBrowserToolRef.current = isBrowser;
     return () => {
-      if (previousBrowserTabRef.current) hideBuiltInBrowserView(browserViewRoot);
+      if (previousBrowserToolRef.current) hideBuiltInBrowserView(browserViewRoot);
     };
-  }, [active, browserViewRoot, effectiveTab]);
+  }, [active, browserViewRoot, effectiveTool]);
 
-  useEffect(() => {
-    if (!active) return undefined;
-    if (effectiveTab !== "app-control") return undefined;
-    if (pinnedMachineOffline) return undefined;
-    const appControl = window.ade?.appControl;
-    if (!appControl?.getStatus || !appControl.onEvent) return undefined;
-    let cancelled = false;
-    void appControl.getStatus(runtimePin)
-      .then((status) => {
-        if (!cancelled) setAppControlSession(status.activeSession ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setAppControlSession(null);
-      });
-    const unsubscribe = appControl.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        setAppControlSession(event.session ?? null);
-      } else if (event.type === "session-stopped") {
-        setAppControlSession(null);
-      }
-    }, runtimePin);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
+  const terminalOwnerSessionIdForStatus = useMemo(() => {
+    if (activeSession && isChatToolType(activeSession.toolType)) return activeSession.id;
+    return contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
+      ? contextTarget.sessionId
+      : null;
+  }, [activeSession, contextTarget]);
 
-  useEffect(() => {
-    if (!active) return undefined;
-    if (effectiveTab !== "ios") return undefined;
-    if (pinnedMachineOffline) return undefined;
-    const iosSimulator = window.ade?.iosSimulator;
-    if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
-    let cancelled = false;
-    void iosSimulator.getStatus(runtimePin)
-      .then((status) => {
-        if (!cancelled) setIosSession(status.activeSession ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setIosSession(null);
-      });
-    const unsubscribe = iosSimulator.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        setIosSession(event.session ?? null);
-      } else if (event.type === "session-released") {
-        setIosSession(null);
-      }
-    }, runtimePin);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
+  // Status now spans every tool, not just the one on screen: the picker cards
+  // and the header's activity dots both report on tools nobody is looking at.
+  const {
+    statuses,
+    loading: statusesLoading,
+    iosSession,
+    appControlSession,
+  } = useWorkToolStatuses({
+    enabled: active,
+    context: toolContext,
+    laneId,
+    lane: activeLane,
+    runtimePin,
+    terminalOwnerSessionId: terminalOwnerSessionIdForStatus,
+    browserViewRoot,
+    pinnedMachineId: pinnedMachine?.machineId ?? null,
+    offline: pinnedMachineOffline,
+  });
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
-    if (effectiveTab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
+    if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage("App Control", appControlSession.laneId, laneId, scopedLanes);
     }
-    if (effectiveTab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
+    if (effectiveTool === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
       return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, scopedLanes);
     }
     return null;
@@ -515,8 +416,8 @@ export function WorkSidebar({
   }, [insertIntoPty, withContextTarget]);
 
   const content = useMemo(() => {
-    if (!active) return null;
-    if (effectiveTab === "terminal") {
+    if (!active || !effectiveTool) return null;
+    if (effectiveTool === "terminal") {
       if (!laneId) {
         return <TerminalPanelEmpty message="Select a lane or open a Work session to attach terminals." />;
       }
@@ -545,7 +446,7 @@ export function WorkSidebar({
       );
     }
 
-    if (effectiveTab === "browser") {
+    if (effectiveTool === "browser") {
       return (
         <div className="flex h-full min-h-0 flex-col">
           {warningReason ? <WarningBanner message={warningReason} /> : null}
@@ -571,7 +472,7 @@ export function WorkSidebar({
       );
     }
 
-    if (effectiveTab === "git") {
+    if (effectiveTool === "git") {
       if (pinnedMachineOffline) {
         return <TerminalPanelEmpty message={`${pinnedMachineName} is offline.`} />;
       }
@@ -624,7 +525,23 @@ export function WorkSidebar({
       );
     }
 
-    if (effectiveTab === "files") {
+    if (effectiveTool === "pr") {
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          <ChatPrPane
+            key={`work-pr:${runtimePin?.key ?? "bound"}:${laneId}`}
+            laneId={laneId}
+            branchName={activeLane?.branchRef ?? null}
+            sessionTitle={activeSession?.title ?? null}
+            sessionId={panelSessionId}
+            runtimePin={runtimePin}
+            onClose={() => onToolChange(null)}
+          />
+        </div>
+      );
+    }
+
+    if (effectiveTool === "files") {
       return (
         <FilesTab
           key={`work-files:${runtimePin?.key ?? "bound"}`}
@@ -635,7 +552,7 @@ export function WorkSidebar({
       );
     }
 
-    const panel = effectiveTab === "ios" ? (
+    const panel = effectiveTool === "ios" ? (
       <ChatIosSimulatorPanel
         key={`work-ios:${runtimePin?.key ?? "bound"}`}
         sessionId={panelSessionId}
@@ -668,6 +585,7 @@ export function WorkSidebar({
       </div>
     );
   }, [
+    activeLane?.branchRef,
     addAppControlContext,
     addAttachment,
     addBuiltInBrowserContext,
@@ -680,11 +598,12 @@ export function WorkSidebar({
     shouldPersistPanelAttachment,
     laneRoot,
     navigate,
+    onToolChange,
     selectedCommit,
     selectedMode,
     selectedPath,
     active,
-    effectiveTab,
+    effectiveTool,
     activeSession,
     onClose,
     pinnedMachineName,
@@ -693,39 +612,92 @@ export function WorkSidebar({
     terminalOwnerSessionId,
   ]);
 
+  const selectTool = useCallback((next: WorkSidebarTab | null) => {
+    if (effectiveTool === "browser" && next !== "browser") hideBuiltInBrowserView(browserViewRoot);
+    onToolChange(next);
+  }, [browserViewRoot, effectiveTool, onToolChange]);
+
+  const closePane = useCallback(() => {
+    if (effectiveTool === "browser") hideBuiltInBrowserView(browserViewRoot);
+    onClose();
+  }, [browserViewRoot, effectiveTool, onClose]);
+
+  // Escape is scoped to the pane, not the window: a global binding would steal
+  // Escape from the composer, from dialogs, and from the browser panel's own
+  // URL field. Keyed off `work.tools.picker` so it stays rebindable.
+  const pickerBinding = getEffectiveBinding(
+    keybindings,
+    TOOLS_PICKER_BINDING_ID,
+    TOOLS_PICKER_DEFAULT_BINDING,
+  );
+  const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!effectiveTool) return;
+    if (!eventMatchesBinding(event.nativeEvent, pickerBinding)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectTool(null);
+  }, [effectiveTool, pickerBinding, selectTool]);
+
+  // Browser: the page you are on. Terminal: how many shells. Git: the branch.
+  // One compact fact, so the header answers "which one of these am I looking
+  // at" without duplicating the panel's own chrome.
+  const headerContextLabel = useMemo(() => {
+    if (!effectiveTool) return null;
+    if (effectiveTool === "git") return activeLane?.branchRef ?? null;
+    if (effectiveTool === "files") return activeLane?.name ?? null;
+    return statuses[effectiveTool]?.line ?? null;
+  }, [activeLane, effectiveTool, statuses]);
+
+  const transition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
+
   return (
     <aside
       ref={sidebarRef}
+      onKeyDown={handleKeyDown}
       className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85"
     >
-      <div className="flex min-h-[42px] shrink-0 items-stretch border-b border-white/[0.08]">
-        <GlowMenu
-          variant="flat"
-          className="min-w-0"
-          items={sidebarTabs}
-          activeItem={effectiveTab}
-          compact={compactTabs}
-          onItemClick={(nextTab) => {
-            if (effectiveTab === "browser" && nextTab !== "browser") hideBuiltInBrowserView(browserViewRoot);
-            onTabChange(nextTab);
-          }}
+      {effectiveTool ? (
+        <WorkToolHeader
+          tool={effectiveTool}
+          context={toolContext}
+          contextLabel={headerContextLabel}
+          statuses={statuses}
+          onShowPicker={() => selectTool(null)}
+          onPick={selectTool}
+          onClose={closePane}
         />
-        <button
-          type="button"
-          className="ade-shell-control inline-flex w-9 shrink-0 items-center justify-center self-stretch rounded-none border-l border-white/[0.08] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
-          data-variant="ghost"
-          onClick={() => {
-            if (effectiveTab === "browser") hideBuiltInBrowserView(browserViewRoot);
-            onClose();
-          }}
-          title="Close Tools sidebar"
-          aria-label="Close Tools sidebar"
-        >
-          <X size={13} />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {content}
+      ) : (
+        <WorkToolPickerHeader onClose={closePane} />
+      )}
+      {/* A true crossfade, so the two surfaces overlap rather than the pane
+          blanking between them: both children are absolutely positioned and
+          the outgoing one stops taking pointer events the moment it starts to
+          leave. Switching away from the browser parks its WebContentsView
+          synchronously (`selectTool`), so the native view is never composited
+          over the incoming tool during the overlap. */}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <AnimatePresence initial={false}>
+          <motion.div
+            key={effectiveTool ?? "picker"}
+            className="absolute inset-0 min-h-0"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4, pointerEvents: "none" }}
+            transition={transition}
+          >
+            {effectiveTool ? content : (
+              <WorkToolPicker
+                activeTool={tool}
+                context={toolContext}
+                statuses={statuses}
+                loading={statusesLoading}
+                onPick={selectTool}
+              />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </aside>
   );

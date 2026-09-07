@@ -5,6 +5,7 @@ import path from "node:path";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
+  createComputerUseScratchPath,
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
@@ -515,7 +516,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Capture a local screenshot/image and store it as visual ADE proof.",
+    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof capture --caption \"…\"` sets.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -525,13 +526,14 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
+        proof: { type: "boolean", default: false, description: "File the capture as reviewer-visible ADE proof. Set by `ade proof capture`; leave false for your own look at the screen." },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
       }
     }
   },
   {
     name: "record_environment",
-    description: "Fallback-only: record a short local screen video and store it as visual ADE proof.",
+    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof record` sets.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -540,6 +542,7 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
+        proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible ADE proof. Set by `ade proof record`; leave false for your own look at the screen." },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
@@ -2197,6 +2200,20 @@ function resolveAuthorizedProofOwners(
   return owners;
 }
 
+/**
+ * Does this call intend to create a reviewer-facing proof-drawer entry?
+ *
+ * `screenshot_environment` and `record_environment` are two things at once: the
+ * agent's own eyes on the screen, and the capture engine behind
+ * `ade proof capture` / `ade proof record`. Only the second should file a
+ * record, so the drawer stays a set a reviewer can skim rather than a dump of
+ * every frame the agent looked at. The `ade proof` commands set `proof: true`;
+ * a bare tool call (agent vision, an automation-run capture) does not.
+ */
+export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean {
+  return toolArgs?.proof === true;
+}
+
 function validateComputerUseOwnerClaims(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3610,7 +3627,30 @@ async function runTool(args: {
     mimeType: string;
     metadata: Record<string, unknown>;
     toolArgs: Record<string, unknown>;
+    /** True only for an explicit proof call — see `isExplicitProofCall`. */
+    proof: boolean;
   }) => {
+    if (!args.proof) {
+      // Scratch capture: the caller gets the bytes, the proof drawer stays a
+      // curated set. Nothing is lost — the file sits in the project's cache/tmp
+      // root and `ade proof attach <path> --caption "…"` can still promote it.
+      // Owner claims are deliberately not resolved here: nothing is filed, so
+      // there is no ownership to authorize.
+      return {
+        proof: false,
+        artifact: {
+          type: args.kind,
+          title: args.title,
+          uri: toProjectArtifactUri(runtime.projectRoot, args.artifactPath),
+          path: args.artifactPath,
+          mimeType: args.mimeType,
+          metadata: args.metadata,
+        },
+        artifacts: [],
+        links: [],
+        note: "Scratch capture — no proof-drawer record was created. Use `ade proof capture --caption \"…\"`, or `ade proof attach <path> --caption \"…\"` for this file, when a reviewer should see it.",
+      };
+    }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
@@ -3630,10 +3670,13 @@ async function runTool(args: {
       owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
     });
     return {
+      proof: true,
       artifact: {
         type: args.kind,
         title: args.title,
         uri: toProjectArtifactUri(runtime.projectRoot, args.artifactPath),
+        path: args.artifactPath,
+        mimeType: args.mimeType,
         metadata: args.metadata,
       },
       artifacts: result.artifacts,
@@ -3941,6 +3984,24 @@ async function runTool(args: {
       scopedObjectArgs = scopeSearchAdeActionArgs(
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (domain === "built_in_browser" && action === "acknowledgeRemoteRequest") {
+      // Not a browser action. This machine has no desktop attached, so a
+      // `browser open` here was published to whichever desktop holds a remote
+      // pin on this lane; this is that desktop saying it took it. It reaches
+      // nothing on this machine and grants nothing, so it cannot be gated on a
+      // browser actor capability — the desktop's capability lives on its own
+      // machine, not here. Still user-clients-only: an agent must not be able
+      // to forge the outcome its own CLI is about to print.
+      if (!isUserClient) {
+        builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
       scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
@@ -4657,7 +4718,10 @@ async function runTool(args: {
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment screenshot";
-    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, format);
+    const proof = isExplicitProofCall(toolArgs);
+    const artifactPath = proof
+      ? createComputerUseArtifactPath(runtime.projectRoot, title, format)
+      : createComputerUseScratchPath(runtime.projectRoot, title, format);
     const commandArgs = ["-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
@@ -4675,6 +4739,7 @@ async function runTool(args: {
         format,
       },
       toolArgs,
+      proof,
     });
   }
 
@@ -4683,7 +4748,10 @@ async function runTool(args: {
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment recording";
-    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, "mov");
+    const proof = isExplicitProofCall(toolArgs);
+    const artifactPath = proof
+      ? createComputerUseArtifactPath(runtime.projectRoot, title, "mov")
+      : createComputerUseScratchPath(runtime.projectRoot, title, "mov");
     const commandArgs = ["-v", `-V${durationSec}`, "-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
@@ -4702,6 +4770,7 @@ async function runTool(args: {
         format: "mov",
       },
       toolArgs,
+      proof,
     });
   }
 

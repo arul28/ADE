@@ -10,8 +10,9 @@ import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
 import {
-  issueBuiltInBrowserActorCapability,
-  revokeBuiltInBrowserActorCapability,
+  localBrowserActorCapabilityIssuer,
+  type BrowserActorCapabilityIssuer,
+  type BuiltInBrowserActorCapability,
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
@@ -588,29 +589,41 @@ function withInteractiveTerminalColorEnv(
   return next;
 }
 
-function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
+async function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
   spawnLineage?: PtyCreateArgs["spawnLineage"];
-}): NodeJS.ProcessEnv {
+  issueBrowserActorToken: (
+    capability: BuiltInBrowserActorCapability,
+  ) => Promise<string | null>;
+}): Promise<NodeJS.ProcessEnv> {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_LANE_ID: args.laneId,
   };
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
-  if (terminalOwnerSessionId) {
-    next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
-    next.ADE_BROWSER_ACTOR_TOKEN = issueBuiltInBrowserActorCapability({
+  const browserActorToken = terminalOwnerSessionId
+    ? await args.issueBrowserActorToken({
       chatSessionId: terminalOwnerSessionId,
       laneId: args.laneId,
       projectRoot: args.projectRoot,
       tabCollection: null,
-    });
+    })
+    : null;
+  if (terminalOwnerSessionId) {
+    next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
   } else {
     delete next.ADE_CHAT_SESSION_ID;
+  }
+  // No owner, or no reachable issuer (headless machine / desktop closed): the
+  // terminal launches without a browser capability rather than inheriting the
+  // host process's, and `ade browser` reports the bridge is not running.
+  if (browserActorToken) {
+    next.ADE_BROWSER_ACTOR_TOKEN = browserActorToken;
+  } else {
     delete next.ADE_BROWSER_ACTOR_TOKEN;
   }
   if (args.spawnLineage) {
@@ -2143,6 +2156,7 @@ export function createPtyService({
   onSessionRuntimeSignal,
   onSessionUserInput,
   diskPressureMonitor,
+  browserActorCapabilityIssuer,
   loadPty,
   disposePtyBackend
 }: {
@@ -2175,9 +2189,38 @@ export function createPtyService({
   }) => void;
   onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * Who mints a terminal's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
+   * capability registry and is the only process that can validate against it,
+   * so the runtime daemon passes an issuer backed by the desktop bridge.
+   */
+  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
+  const browserActorCapabilities =
+    browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
+  const issueBrowserActorToken = async (
+    capability: BuiltInBrowserActorCapability,
+  ): Promise<string | null> => {
+    try {
+      return (await browserActorCapabilities.issue(capability))?.trim() || null;
+    } catch (error) {
+      logger.warn("pty.browser_actor_capability_issue_failed", {
+        sessionId: capability.chatSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+  const revokeBrowserActorToken = (chatSessionId: string): void => {
+    void browserActorCapabilities.revoke(chatSessionId).catch((error: unknown) => {
+      logger.warn("pty.browser_actor_capability_revoke_failed", {
+        sessionId: chatSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
@@ -4275,7 +4318,7 @@ export function createPtyService({
     entry.attentionRequested = false;
     sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-      revokeBuiltInBrowserActorCapability(entry.sessionId);
+      revokeBrowserActorToken(entry.sessionId);
     }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
@@ -5902,12 +5945,13 @@ export function createPtyService({
               spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
             }
           : null);
-      const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
+      const contextLaunchEnv = await withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
+        issueBrowserActorToken,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -8020,7 +8064,7 @@ export function createPtyService({
         sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
         if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
-          revokeBuiltInBrowserActorCapability(sessionId);
+          revokeBrowserActorToken(sessionId);
         }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
@@ -8065,7 +8109,7 @@ export function createPtyService({
       entry.attentionRequested = false;
       sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-        revokeBuiltInBrowserActorCapability(entry.sessionId);
+        revokeBrowserActorToken(entry.sessionId);
       }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);

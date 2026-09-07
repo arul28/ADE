@@ -2,6 +2,18 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
+import { machineNameForBinding } from "../shared/machineIdentity";
+import {
+  loopbackOriginLabel,
+  parseLoopbackUrl,
+  rewriteUrlHostPort,
+  type LocalizedRemoteUrl,
+} from "../shared/remoteLoopbackUrl";
+import {
+  BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+  type BuiltInBrowserRemoteRequest,
+  type BuiltInBrowserRemoteRequestAck,
+} from "../shared/types/builtInBrowserRemote";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
@@ -722,19 +734,33 @@ import type {
   IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlObservation,
+  AppControlObservationArgs,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
+  AppControlTraceArgs,
+  AppControlTraceResult,
   AppControlTypeTextArgs,
+  AppControlWindowsResult,
+  BrowserLoginImportArgs,
+  BrowserLoginImportCapabilities,
+  BrowserLoginImportListDomainsArgs,
+  BrowserLoginImportListDomainsResult,
+  BrowserLoginImportListSourcesResult,
+  BrowserLoginImportResult,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserClearPermissionsArgs,
@@ -750,6 +776,26 @@ import type {
   BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserNetworkLoggingResult,
+  BuiltInBrowserNetworkLogResult,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserStopRecordingResult,
+  BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
@@ -1419,20 +1465,83 @@ function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
 }
 
+/**
+ * One loopback forward per (machine, remote port), memoized for the life of the
+ * window.
+ *
+ * Main already dedupes forwards inside `SyncPortForwardClient`, but a browser
+ * navigation is on the interaction path: without this, every keystroke-driven
+ * reload paid an IPC round trip to rediscover a listener it already had. The
+ * promise (not the resolved value) is cached so two concurrent navigations to
+ * the same port share one in-flight request.
+ */
+const remoteLoopbackForwards = new Map<string, Promise<RemoteRuntimePortForward>>();
+
+function ensureRemoteLoopbackForward(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  remotePort: number,
+  label: string,
+): Promise<RemoteRuntimePortForward> {
+  const key = `${binding.targetId}:${remotePort}`;
+  const existing = remoteLoopbackForwards.get(key);
+  if (existing) return existing;
+  const pending = (ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
+    id: binding.targetId,
+    request: { remoteHost: "127.0.0.1", remotePort, label },
+  }) as Promise<RemoteRuntimePortForward>).catch((error: unknown) => {
+    // A failed forward must not be cached: the machine may simply have been
+    // mid-reconnect, and the next navigation should try again.
+    if (remoteLoopbackForwards.get(key) === pending) remoteLoopbackForwards.delete(key);
+    throw error;
+  });
+  remoteLoopbackForwards.set(key, pending);
+  return pending;
+}
+
+/**
+ * Rewrite one loopback URL onto a forward to the pinned machine.
+ *
+ * Returns the URL to actually load plus the tunnel it went through, so the
+ * caller can keep showing the remote origin the human asked for. A non-loopback
+ * URL is reachable from either machine and comes back untouched with
+ * `forward: null`.
+ */
+async function localizeRemoteLoopbackUrl(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  url: string | null | undefined,
+): Promise<LocalizedRemoteUrl> {
+  const text = (url ?? "").trim();
+  const parsed = parseLoopbackUrl(text);
+  if (!parsed) return { url: text, forward: null };
+  const forward = await ensureRemoteLoopbackForward(
+    binding,
+    parsed.port,
+    `${binding.displayName}:browser:${parsed.port}`,
+  );
+  return {
+    url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+    forward: {
+      machineKey: binding.targetId,
+      machineLabel: machineNameForBinding(binding),
+      remotePort: parsed.port,
+      remoteOrigin: loopbackOriginLabel(parsed.url),
+      localPort: forward.localPort,
+      localOrigin: `${parsed.url.protocol}//${forward.localHost}:${forward.localPort}`,
+    },
+  };
+}
+
 async function localizeRemoteLanePreviewInfo(
   binding: Extract<OpenProjectBinding, { kind: "remote" }>,
   info: LanePreviewInfo | null,
 ): Promise<LanePreviewInfo | null> {
   if (!info) return null;
   if (!isValidPreviewTargetPort(info.targetPort)) return info;
-  const forward = (await ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
-    id: binding.targetId,
-    request: {
-      remoteHost: "127.0.0.1",
-      remotePort: info.targetPort,
-      label: `${binding.displayName}:${info.laneId}`,
-    },
-  })) as RemoteRuntimePortForward;
+  const forward = await ensureRemoteLoopbackForward(
+    binding,
+    info.targetPort,
+    `${binding.displayName}:${info.laneId}`,
+  );
   return {
     ...info,
     hostname: forward.localHost,
@@ -1799,6 +1908,54 @@ function callAppControlActionOr<T>(
   local: () => Promise<T>,
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr(pin, "app_control", action, request, local);
+}
+
+/**
+ * The "local" arm for App Control actions that exist only on the runtime action
+ * domain. Rejecting with the reason beats inventing an IPC channel with no
+ * handler behind it, which would surface as an opaque
+ * "No handler registered for …".
+ */
+function appControlNeedsProjectRuntime(action: string): Promise<never> {
+  return Promise.reject(
+    new Error(
+      `App Control ${action} needs an open project. Open a project so ADE can reach its App Control service.`,
+    ),
+  );
+}
+
+/**
+ * Which pins the built-in browser actually routes on.
+ *
+ * The browser is a `WebContentsView` owned by THIS desktop's main process, so
+ * unlike the simulator or App Control there is no browser on the pinned machine
+ * to drive — a `kind: "remote"` pin used to refuse the pane outright. It no
+ * longer does: the pane mounts, drives this window's browser, and the pinned
+ * machine's loopback ports are reached through a TCP port-forward instead
+ * (`localizeRemoteLoopbackUrl`). A pin naming another *local* checkout still
+ * routes through that runtime, which proxies straight back to this same browser
+ * over the desktop bridge with the right project scope.
+ */
+function isLocalBrowserRoutingPin(
+  pin: OpenProjectBinding | null | undefined,
+): pin is OpenProjectBinding {
+  return Boolean(pin) && pin?.kind !== "remote";
+}
+
+/**
+ * Rewrite a browser call's `url` onto a forward when the chat is pinned to
+ * another machine. Non-loopback URLs, and every local pin, pass through
+ * unchanged — this is the only place a remote pin changes a browser argument.
+ */
+async function withLocalizedBrowserUrl<T extends { url?: string | null }>(
+  pin: OpenProjectBinding | null | undefined,
+  args: T,
+): Promise<T> {
+  if (pin?.kind !== "remote") return args;
+  const url = typeof args.url === "string" ? args.url : null;
+  if (!url) return args;
+  const localized = await localizeRemoteLoopbackUrl(pin, url);
+  return localized.forward ? { ...args, url: localized.url } : args;
 }
 
 function callComputerUseArtifactActionOr<T>(
@@ -3556,26 +3713,36 @@ function subscribeBuiltInBrowserEvents(
 ): () => void {
   // Unlike every sibling panel, the built-in browser is hosted by THIS desktop's
   // main process (it owns a WebContentsView); the runtime daemon only proxies
-  // calls into it over the desktop bridge socket. So a pin on another *local*
-  // checkout still drives this machine's browser and must keep reading the local
-  // IPC stream. A pin on another *machine* is the case that breaks: those calls
-  // land on that desktop's browser, so this window's local stream describes a
-  // browser the panel is not driving, and the pinned runtime stream is the only
-  // one that can describe it.
-  if (pin?.kind === "remote") {
-    const removePinned = subscribePinnedProjectRuntimeEvents(
-      pin,
-      (payload) => toWrappedEvent<BuiltInBrowserEventPayload>(
-        payload,
-        "built_in_browser_event",
-      ),
-      cb,
-      "built-in browser",
-      () => builtInBrowserStatusCache.clear(),
-    );
-    if (removePinned) return removePinned;
-  }
+  // calls into it over the desktop bridge socket. There is no browser on the
+  // pinned machine to describe — a remote pin drives THIS window's browser and
+  // reaches the pinned machine's loopback ports through a port-forward — so
+  // every pin, local or remote, reads the local IPC stream. What a remote pin
+  // adds is `subscribeBuiltInBrowserRemoteRequests`: `ade browser open` run on
+  // that machine has no browser of its own and hands the URL here instead.
+  void pin;
   return builtInBrowserEventFanout(cb);
+}
+
+/**
+ * Browser-open requests forwarded from a headless machine this chat is pinned
+ * to. Only a remote pin can produce them: a local runtime opens the browser
+ * through the desktop bridge socket directly.
+ */
+function subscribeBuiltInBrowserRemoteRequests(
+  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  if (pin?.kind !== "remote") return () => {};
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<BuiltInBrowserRemoteRequest>(
+      payload,
+      BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+    ),
+    cb,
+    "built-in browser remote request",
+  );
+  return removePinned ?? (() => {});
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -8089,6 +8256,63 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
           ),
       ),
+    // Agent action model, read side only. The panel shows what an agent did —
+    // it never drives `agentClick`/`agentFill`/… from here, so those stay off
+    // `window.ade` and remain reachable only through the action registry.
+    //
+    // None of the five has an `IPC.appControl*` channel: they were added to the
+    // App Control service for the runtime action domain, which is how the
+    // desktop reaches App Control whenever a project is open. With no project
+    // runtime bound there is nothing to fall back to, so say that plainly
+    // instead of invoking a channel that does not exist.
+    listDrivers: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlDriversResult> =>
+      callAppControlActionOr(pin, "listDrivers", {}, () =>
+        appControlNeedsProjectRuntime("listDrivers"),
+      ),
+    observe: async (
+      args: AppControlObservationArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlObservation> =>
+      // Not a read: `observe` writes an observation record under
+      // `.ade/cache/app-control-observations/`, prunes older ones, and bumps
+      // `session.lastObservationId`. Callers must drive it from an explicit
+      // user action, never a timer.
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callAppControlActionOr(pin, "observe", { args }, () =>
+            appControlNeedsProjectRuntime("observe"),
+          ),
+      ),
+    getTrace: async (
+      args: AppControlTraceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlTraceResult> =>
+      callAppControlActionOr(pin, "getTrace", { args }, () =>
+        appControlNeedsProjectRuntime("getTrace"),
+      ),
+    windows: async (
+      args: AppControlSessionTargetArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlWindowsResult> =>
+      callAppControlActionOr(pin, "windows", { args }, () =>
+        appControlNeedsProjectRuntime("windows"),
+      ),
+    switchWindow: async (
+      args: AppControlSwitchWindowArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlWindowsResult> =>
+      // Re-attaches CDP, restarts the screencast and clears the action trace,
+      // exactly like `attachToTarget` — so it invalidates the status cache too.
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callAppControlActionOr(pin, "switchWindow", { args }, () =>
+            appControlNeedsProjectRuntime("switchWindow"),
+          ),
+      ),
     onEvent: subscribeAppControlEvents,
   },
   builtInBrowser: {
@@ -8096,14 +8320,14 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "getStatus", { args })
         : builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
     requestOriginAccess: async (
       args: BuiltInBrowserRequestOriginAccessArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserOriginAccessResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserOriginAccessResult>(pin, "built_in_browser", "requestOriginAccess", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8117,21 +8341,39 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // Human-only, like `getProfileDiagnostics` / `listPermissions` above: no
+    // `pin` overload, so there is no path from a pinned runtime action — and
+    // therefore from an agent — into someone's cookie jar.
+    loginImport: {
+      capabilities: async (): Promise<BrowserLoginImportCapabilities> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportCapabilities),
+      listSources: async (): Promise<BrowserLoginImportListSourcesResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportListSources),
+      listDomains: async (
+        args: BrowserLoginImportListDomainsArgs,
+      ): Promise<BrowserLoginImportListDomainsResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportListDomains, args),
+      import: async (args: BrowserLoginImportArgs): Promise<BrowserLoginImportResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportImport, args),
+    },
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "showPanel", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserShowPanel,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     setBounds: async (
       args: BuiltInBrowserBoundsArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "setBounds", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8144,31 +8386,66 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserAttachWebview, args),
       ),
+    /**
+     * Resolve what a loopback URL means for a chat pinned to another machine,
+     * without navigating. The panel calls this so its URL bar can keep showing
+     * the REMOTE origin the human asked for while the view loads the forward.
+     */
+    localizeRemoteUrl: async (
+      args: { url: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LocalizedRemoteUrl> =>
+      pin?.kind === "remote"
+        ? localizeRemoteLoopbackUrl(pin, args.url)
+        : { url: (args.url ?? "").trim(), forward: null },
+    /**
+     * Tell the machine that asked for a browser open that this desktop took it.
+     * Deliberately routed to the PINNED runtime — the daemon waiting on the ack
+     * is the one that emitted `built_in_browser_remote_request`.
+     */
+    acknowledgeRemoteRequest: async (
+      args: BuiltInBrowserRemoteRequestAck,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      pin
+        ? callPinnedRuntimeAction<{ ok: boolean }>(
+            pin,
+            "built_in_browser",
+            "acknowledgeRemoteRequest",
+            { args },
+          )
+        : { ok: false },
     navigate: async (
       args: BuiltInBrowserNavigateArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "navigate", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserNavigate,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     createTab: async (
       args: BuiltInBrowserCreateTabArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "createTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserCreateTab,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     switchTab: async (
       args: BuiltInBrowserTabArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "switchTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8178,7 +8455,7 @@ const adeBridge = {
       args: BuiltInBrowserTabArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "closeTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8188,7 +8465,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "reload", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8198,7 +8475,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goBack", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8208,7 +8485,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goForward", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8218,7 +8495,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stop", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8228,7 +8505,7 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "startInspect", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8238,7 +8515,7 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stopInspect", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8248,34 +8525,123 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserScreenshot> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserScreenshot>(pin, "built_in_browser", "captureScreenshot", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectPoint", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
     selectCurrent: async (
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectCurrent", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent, args),
     clearSelection: async (
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<{ ok: true }>(pin, "built_in_browser", "clearSelection", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
           ),
+    setEmulation: async (
+      args: BuiltInBrowserSetEmulationArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserEmulationResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserEmulationResult>(pin, "built_in_browser", "setEmulation", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetEmulation, args),
+          ),
+    setZoom: async (
+      args: BuiltInBrowserSetZoomArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserZoomResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserZoomResult>(pin, "built_in_browser", "setZoom", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetZoom, args),
+          ),
+    findInPage: async (
+      args: BuiltInBrowserFindInPageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserFindInPageResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserFindInPageResult>(pin, "built_in_browser", "findInPage", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserFindInPage, args),
+    stopFindInPage: async (
+      args: BuiltInBrowserStopFindInPageArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStopFindInPageResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStopFindInPageResult>(pin, "built_in_browser", "stopFindInPage", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserStopFindInPage, args),
+    setDevTools: async (
+      args: BuiltInBrowserSetDevToolsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserDevToolsResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserDevToolsResult>(pin, "built_in_browser", "setDevTools", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetDevTools, args),
+          ),
+    setNetworkLogging: async (
+      args: BuiltInBrowserSetNetworkLoggingArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserNetworkLoggingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserNetworkLoggingResult>(pin, "built_in_browser", "setNetworkLogging", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetNetworkLogging, args),
+          ),
+    getNetworkLog: async (
+      args: BuiltInBrowserNetworkLogArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserNetworkLogResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserNetworkLogResult>(pin, "built_in_browser", "getNetworkLog", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserGetNetworkLog, args),
+    exportHar: async (
+      args: BuiltInBrowserExportHarArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserExportHarResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserExportHarResult>(pin, "built_in_browser", "exportHar", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserExportHar, args),
+    startRecording: async (
+      args: BuiltInBrowserStartRecordingArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStartRecordingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStartRecordingResult>(pin, "built_in_browser", "startRecording", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStartRecording, args),
+          ),
+    stopRecording: async (
+      args: BuiltInBrowserStopRecordingArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStopRecordingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStopRecordingResult>(pin, "built_in_browser", "stopRecording", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStopRecording, args),
+          ),
     onEvent: subscribeBuiltInBrowserEvents,
+    onRemoteRequest: subscribeBuiltInBrowserRemoteRequests,
   },
   terminal: {
     list: async (

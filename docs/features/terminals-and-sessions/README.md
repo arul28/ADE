@@ -681,23 +681,26 @@ Renderer surfaces:
   Auto-created lane launches keep import disabled because there is no
   existing target lane to import into yet.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
-  right-edge sidebar tied to the active lane (and active Work session
-  when present). Tabbed into `git` (lane git actions + selection-driven
-  diff), `files` (mounts `FilesTab` in `embedded` mode with the lane
-  worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
-  the active lane), `app-control` (mounts `ChatAppControlPanel`), and
-  `browser` (mounts `ChatBuiltInBrowserPanel` over the current ADE
-  window's `WebContentsView`-backed built-in browser; the sidebar hides
-  the browser viewport whenever the user switches off the tab or closes
-  the sidebar by setting bounds to `{ x: 0, y: 0, width: 0, height: 0,
-  visible: false }` and stopping any inspect mode). The browser tab is
-  not lane-scoped: each ADE window owns its own tabs and active inspect
-  state, while all windows share the same `persist:ade-browser`
-  partition for authentication. On remote-bound Work surfaces, the sidebar is
-  limited to the runtime-backed `git` and `files` tabs and automatically
-  switches away from local-only iOS / App Control / Browser tabs. It still
-  flows selections to the active
-  chat through the same dispatch path as the other tool tabs. The active
+  right-edge tools pane tied to the active lane (and active Work session
+  when present). It shows a **picker page** of tool cards, or **one
+  active tool**: `terminal` (attached shells), `browser` (mounts
+  `ChatBuiltInBrowserPanel` over the current ADE window's
+  `WebContentsView`-backed built-in browser), `git` (lane git actions +
+  selection-driven diff), `files` (mounts `FilesTab` in `embedded` mode
+  with the lane worktree pre-selected), `ios` (mounts
+  `ChatIosSimulatorPanel` against the active lane), `app-control`
+  (mounts `ChatAppControlPanel`), and `pr` (mounts `ChatPrPane` for the
+  lane). Which tool is open persists **per lane**; open/closed and width
+  stay per project. The pane hides the browser viewport whenever the user
+  switches to another tool or closes the pane, by setting bounds to
+  `{ x: 0, y: 0, width: 0, height: 0, visible: false }` and stopping any
+  inspect mode. The browser is not lane-scoped: each ADE window owns its
+  own tabs and active inspect state, while all windows share the same
+  `persist:ade-browser` partition for authentication. On remote-bound Work
+  surfaces the local-only tools (browser, iOS, App Control) and `pr` render
+  as disabled cards explaining why, and an active tool that becomes
+  unavailable falls back to the picker. It still flows selections to the
+  active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
   (`WorkSidebarContextTarget`): chat sessions (`kind: "chat"`) and
   draft composers (`kind: "draft"`, carrying `draftTargetId`, `laneId`,
@@ -1940,12 +1943,15 @@ in-memory reset stays separate.
   wrong worktree. See [runtime-isolation.md](./runtime-isolation.md).
 - **Work view state persistence** — the Work tab persists per-project
   UI state (open items, filters, collapsed groups, focus-hidden flag,
-  right `WorkSidebar` open/tab/width) to `localStorage` under
+  right `WorkSidebar` open/width) to `localStorage` under
   `ade.workViewState.v1`. The sidebar fields are
-  `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
-  | "app-control" | "browser"`, and `workSidebarWidthPct: number`
-  (clamped to 26–55). Lane-scoped state uses a composite
-  `projectRoot::laneId` key. The payload is version 3 and also owns the Lanes
+  `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
+  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "files" |
+  "ios" | "app-control" | "pr" | null` (null = the picker page).
+  `workSidebarTool` is read and written on the **lane** scope, falling back
+  to the project scope when no lane is bound; the other two are always
+  project-wide. Lane-scoped state uses a composite
+  `projectRoot::laneId` key. The payload is version 5 and also owns the Lanes
   tab's filter, pinned lane ids, and expanded lane id so those controls survive
   route/project remounts. Its version-2 one-shot migration is gated by the
   dedicated settled-collapse version, not by the current schema version, so
@@ -2018,9 +2024,12 @@ sensible target for attached-session agents. Every PTY launched through
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
 session-owned) `ADE_CHAT_SESSION_ID` plus an opaque
 `ADE_BROWSER_ACTOR_TOKEN` into the spawn env. The browser capability is
-bound in Electron memory to that owner chat/lane/project. The runtime rejects
-missing tokens and strips caller routing; Electron validates the token in the
-issuing process before restoring its scope on the authenticated bridge. The
+minted by Electron and bound in Electron memory to that owner
+chat/lane/project; a daemon-hosted terminal requests it over the desktop bridge
+and launches without one when no desktop is running. The runtime rejects
+missing tokens and strips caller routing; Electron validates the token against
+the registry that issued it before restoring its scope on the authenticated
+bridge. The
 remaining identity variables are how a
 plain shell that the user types `ade --socket terminal read --chat-session
 "$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's

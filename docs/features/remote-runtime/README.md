@@ -619,13 +619,43 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     `appControl.onEvent` take the pin and follow their reads to the pinned
     runtime's stream. Without that a pinned panel got status reads and no live
     updates, and the bound machine's stream described a different simulator
-    entirely. `builtInBrowser.onEvent` is the deliberate exception: the built-in
-    browser is hosted by *this* desktop's main process (it owns a
-    `WebContentsView`) and the runtime daemon only proxies calls into it over
-    the desktop bridge socket, so a pin naming another *local* checkout still
-    drives this machine's browser and keeps the local IPC stream. Only a
-    `kind: "remote"` pin switches to the pinned runtime stream, because those
-    calls land on that desktop's browser.
+    entirely. `builtInBrowser.onEvent` is the deliberate exception, and now in
+    both directions: the built-in browser is hosted by *this* desktop's main
+    process (it owns a `WebContentsView`) and the runtime daemon only proxies
+    calls into it over the desktop bridge socket, so **every** pin — local
+    checkout or remote machine — keeps reading the local IPC stream, because
+    there is no browser on the pinned machine to describe. `isLocalBrowserRoutingPin`
+    in preload is the one place that decides this: a local pin routes through
+    that runtime (which proxies straight back to this browser with the right
+    project scope), a remote pin falls through to local IPC.
+
+    What a remote pin *does* change is what `localhost` means.
+    `localizeRemoteLoopbackUrl` rewrites every loopback URL
+    (`localhost`, `127.0.0.0/8`, `[::1]`, `0.0.0.0`) onto a per-(machine, port)
+    TCP port-forward — the same `remoteRuntimeEnsurePortForward` the lane
+    preview uses — before `navigate` / `createTab` / `showPanel` reach main, and
+    the forward is memoized per (machine, port) so a reload does not pay an IPC
+    round trip. The pane keeps showing the REMOTE origin the human asked for
+    plus a tunnel badge naming the machine; the ephemeral forward port is never
+    surfaced. The first use of a new (machine, port) pair needs a human grant
+    even on a machine that already carries the `portForward` grant, because the
+    *agent* picks the port — "Always for this lane" decisions live in
+    `browserTunnelAlwaysKeys` on the lane's persisted Work view state.
+    Per-chat origin approvals key on the (machine, remote port) a local origin
+    currently stands for (`remoteTunnelOrigins`), so one tunnel's approval
+    cannot be inherited by the next forward handed the same local port.
+
+    A remote pin also subscribes to `builtInBrowser.onRemoteRequest`. A machine
+    running only `ade serve` has no browser at all, so `ade browser open <url>`
+    there emits a `built_in_browser_remote_request` runtime event and returns
+    `{ status: "forwarded_to_desktop", requestId }` instead of failing at the
+    desktop bridge socket. A desktop holding a remote pin for that lane takes
+    the request, runs it through the same approval + forward path, and answers
+    with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
+    CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
+    wait, "no desktop is attached to this machine". Only navigation forwards;
+    `observe` / `click` and the rest act on a specific live tab and still fail,
+    with an error that says where the browser runs.
   - **Read caches are namespaced by binding.** The preload process is shared by
     every machine a window talks to, so a read cache keyed by arguments alone is
     machine-blind: once an action can carry a pin, one machine's rows could be

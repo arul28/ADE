@@ -14,7 +14,7 @@ Top-level page for the Work tab. Wraps two panes with `PaneTilingLayout`:
   The view + sidebar share the row via a flex container with a draggable
   column separator; the sidebar width is persisted as
   `workSidebarWidthPct` (clamped 26–55%).
-  The sidebar includes the Terminal tab, which renders the same
+  The pane includes the Terminal tool, which renders the same
   attached-terminal surface for chat sessions and running tracked agent CLI
   sessions.
 
@@ -568,6 +568,76 @@ suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
 container with a 5 px draggable column separator; the sidebar width is
 persisted as `workSidebarWidthPct` (26–55%).
 
+### Picker page, then one tool
+
+The pane is a **picker page plus one active tool** — there is no tab
+strip and no multi-instance. The picker is a two-column grid of cards,
+one per tool, in the order Terminal, Browser, Git, Files, iOS
+Simulator, App Control, Pull request
+(`WorkToolPicker.tsx`, catalogue in `workTools.tsx`). Each card carries
+the tool's icon, its name, one live status line, and a right-side dot
+that is filled when the tool has something running. Status comes only
+from reads the pane already makes — the `builtInBrowser` / `iosSimulator`
+/ `appControl` status subscriptions, `terminal.list` taken once when the
+pane becomes visible, the lane's git status, and `useLanePrsByLaneId` —
+so nothing here polls. A tool with no cheap status (Files) shows what it
+is for instead of a fabricated line. Lines hold a stepped-shimmer
+skeleton for at most 300 ms while those reads settle
+(`useWorkToolStatuses.ts`).
+
+A tool that cannot run in this context renders as a **disabled card with
+the reason as its status line** rather than disappearing: "Runs on this
+computer only" (browser / iOS / App Control on a remote project), "Desktop
+app only" (the same three in the hosted web client), "macOS only" (iOS off
+a Mac), "Open the PRs tab for remote projects". Availability is decided by
+capability flags in `workToolAvailability`, never by `process.platform` —
+the web client renders this same component. An active tool that becomes
+unavailable falls back to the **picker**, not to another tool.
+
+While a tool is open the pane shows a 36 px header: a `⊞ Tools` button
+back to the picker (Escape does the same, bound as `work.tools.picker`
+with scope `work` so it only fires inside the pane), the tool's icon,
+name, and one compact context string (the browser's page, the shell
+count, the branch), then **activity dots** for the other tools that are
+usable here and currently live. A dot's tooltip is that tool's status
+line; clicking it switches, and the dot animates into the header icon
+through a shared `layoutId`. The close ✕ keeps its place on the right.
+
+Motion: picker ↔ tool is a 180 ms crossfade with a 4 px y-shift on
+`cubic-bezier(0.4, 0, 0.2, 1)`; cards lift 1 px over 120 ms on hover and
+press to `scale(0.985)`; dots enter on the overshoot curve
+`cubic-bezier(0.34, 1.56, 0.64, 1)`. All of it is disabled under
+`prefers-reduced-motion`.
+
+Inactive tools **unmount their view and keep their service alive**.
+Terminals, browser tabs, App Control sessions, and iOS simulator streams
+all live in the main process and keep running; only the React views go.
+The browser is the one tool with an explicit obligation, since its
+`WebContentsView` is composited above the renderer: `hideBuiltInBrowserView`
+parks it on every switch away, on close, when the pane goes inactive, on
+unmount, and when the Work route deactivates.
+
+### Which tool is open is per lane
+
+`workSidebarTool` (`WorkSidebarTab | null`, null = picker) is stored per
+lane in `laneWorkViewByScope` under `"<projectKey>::<laneId>"`, read and
+written through `useWorkSidebarTool(laneId)`. A lane with no stored choice
+falls back to the project-scoped copy of the same field, which is also
+where a lane-less (projectless / personal) Work surface reads and writes.
+`workSidebarOpen` and `workSidebarWidthPct` stay project-wide: the pane's
+geometry is a workspace preference, its contents are not. Picking any tool
+(including returning to the picker) forces `workSidebarOpen` true, so every
+entry point still acts as a one-click reveal.
+
+Surfaces outside the Work page cannot write this state, because only that
+page resolves the lane the pane is following. They file a request instead
+(`workToolRequests.ts`) and the Work page drains it against the right
+scope — immediately if it is mounted, on mount if the request arrived
+while another tab was open. That is the path used by the app shell's
+`builtInBrowser` open-request handler and by the command palette's
+`Tools: <name>` / `Tools: Show picker` entries
+(`buildWorkToolCommands` in `commandPaletteWork.tsx`).
+
 ### The pane follows the chat's machine
 
 `WorkSidebar` takes `runtimePin?: OpenProjectBinding | null` — the machine
@@ -633,7 +703,14 @@ Tabs:
   `window.ade.builtInBrowser.stopInspect()` and zeros the bounds with
   `visible: false` so the underlying `WebContentsView` is detached
   from the layout (otherwise it would float over neighbouring panes
-  because `WebContentsView` paints above DOM siblings).
+  because `WebContentsView` paints above DOM siblings). The pane mounts
+  for a chat pinned to another machine too — the browser is always this
+  window's — but every loopback URL it is asked for is first tunneled to
+  the pinned machine through a port-forward, the URL bar and tab titles
+  keep showing the remote origin behind a machine-name badge, and the
+  first use of a port an agent chose raises an inline "Agent wants to
+  reach port N on <machine>" bar with Allow once / Always for this lane.
+  See `docs/features/remote-runtime/README.md`.
 
 The sidebar picks a single insertion target per active Work session via
 `WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
@@ -694,10 +771,11 @@ machine would take PTY insertion down with it.
 `WorkSidebar`): claude / codex / cursor-cli / droid / opencode. Shells are
 excluded — they host terminals but are not a context-insertion target.
 
-Toggling and tab selection go through `useWorkSessions` setters
-(`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
-`setWorkSidebarTab` also opens the sidebar so clicking a tab from a
-closed state acts as a one-click reveal. The tools-pane toggle is the
+Open/closed and width go through `useWorkSessions` setters
+(`setWorkSidebarOpen`, `setWorkSidebarWidthPct`); which tool is open goes
+through `useWorkSidebarTool(laneId).setTool`, which also opens the pane so
+choosing a tool from a closed state acts as a one-click reveal. The
+tools-pane toggle is the
 mirrored `SidebarSimple` glyph on the chat/CLI `WorkSurfaceHeader` (solid
 rail on the right), so it matches the sessions-list collapse control on
 the opposite edge.
@@ -1105,8 +1183,9 @@ avoid scanning sessions while the user can't see them.
 The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
 before the IPC round-trip completes), `refresh`, and the right-sidebar
-setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
-sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
+setters `setWorkSidebarOpen` and `setWorkSidebarWidthPct` (clamped
+26–55%). Which tool the pane shows is not here — it is per lane, and lives
+in `useWorkSidebarTool`.
 `chatSessionEvents.ts` uses that optimistic path for durable chats created by
 headless/batch launch, then schedules a short background refresh.
 

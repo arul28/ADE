@@ -78,8 +78,19 @@ function stubElementFromPoint(impl: (x: number, y: number) => Element | null): (
   };
 }
 
+const REMOTE_PIN = {
+  kind: "remote",
+  key: "remote:target-studio:project-a",
+  targetId: "target-studio",
+  runtimeName: "Mac Studio",
+  projectId: "project-a",
+  rootPath: "/remote/repo-a",
+  displayName: "repo-a",
+} as const;
+
 function installBrowserApi() {
   let eventListener: ((event: unknown) => void) | null = null;
+  let remoteRequestListener: ((event: unknown) => void) | null = null;
   const api = {
     getStatus: vi.fn().mockResolvedValue(browserStatus),
     getProfileDiagnostics: vi.fn().mockResolvedValue({
@@ -127,6 +138,25 @@ function installBrowserApi() {
         eventListener = null;
       };
     }),
+    localizeRemoteUrl: vi.fn(async ({ url }: { url: string }) => ({
+      url: url.replace(/\/\/[^/]+/, "//127.0.0.1:52413"),
+      forward: {
+        machineKey: "target-studio",
+        machineLabel: "Mac Studio",
+        remotePort: Number(new URL(url).port),
+        remoteOrigin: new URL(url).origin,
+        localPort: 52413,
+        localOrigin: "http://127.0.0.1:52413",
+      },
+    })),
+    acknowledgeRemoteRequest: vi.fn().mockResolvedValue({ ok: true }),
+    onRemoteRequest: vi.fn((listener: (event: unknown) => void) => {
+      remoteRequestListener = listener;
+      return () => {
+        remoteRequestListener = null;
+      };
+    }),
+    emitRemoteRequest: (event: unknown) => remoteRequestListener?.(event),
   };
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -230,32 +260,100 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(document.querySelector("webview")).toBeNull();
   });
 
-  it("says where the browser runs instead of driving another machine's browser", async () => {
+  it("mounts for a chat on another machine and tunnels its loopback URLs", async () => {
     const { api } = installBrowserApi();
 
-    render(
-      <ChatBuiltInBrowserPanel
-        sessionId="chat-1"
-        runtimePin={{
-          kind: "remote",
-          key: "remote:target-studio:project-a",
-          targetId: "target-studio",
-          runtimeName: "Mac Studio",
-          projectId: "project-a",
-          rootPath: "/remote/repo-a",
-          displayName: "repo-a",
-        }}
-      />,
-    );
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
 
-    expect(await screen.findByText(
-      "The browser opens on this computer. This chat runs on Mac Studio, so open the browser from a chat here.",
-    )).toBeTruthy();
-    // Nothing may reach the pinned machine: its browser view would be moved
-    // around a screen nobody in this window can see.
-    expect(api.getStatus).not.toHaveBeenCalled();
-    expect(api.setBounds).not.toHaveBeenCalled();
-    expect(api.onEvent).not.toHaveBeenCalled();
+    // The pane no longer refuses a remote pin: the browser is this desktop's,
+    // and it is driven normally.
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+    expect(api.onEvent).toHaveBeenCalled();
+    expect(api.onRemoteRequest).toHaveBeenCalled();
+
+    const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
+    fireEvent.focus(urlInput);
+    fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
+    fireEvent.blur(urlInput);
+    fireEvent.click(screen.getByLabelText("Open URL"));
+
+    await waitFor(() => {
+      // The ORIGINAL loopback URL crosses the bridge; preload localizes it onto
+      // the forward, so the renderer must not pre-rewrite it (that would tunnel
+      // the forward port itself).
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://localhost:3000/app" }),
+        REMOTE_PIN,
+      );
+    });
+    expect(api.localizeRemoteUrl).toHaveBeenCalledWith(
+      { url: "http://localhost:3000/app" },
+      REMOTE_PIN,
+    );
+    // A human-typed URL is its own approval, so no bar appears.
+    expect(screen.queryByText(/Agent wants to reach port/)).toBeNull();
+  });
+
+  it("asks for a human grant before an agent's forwarded open reaches a new port", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-1",
+      url: "http://127.0.0.1:8080/admin",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(await screen.findByText("Agent wants to reach port 8080 on Mac Studio")).toBeTruthy();
+    // Nothing loads and no forward opens until a person answers.
+    expect(api.navigate).not.toHaveBeenCalled();
+    expect(api.localizeRemoteUrl).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Allow once"));
+
+    await waitFor(() => {
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://127.0.0.1:8080/admin" }),
+        REMOTE_PIN,
+      );
+    });
+    await waitFor(() => {
+      expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "bbr-1", accepted: true }),
+        REMOTE_PIN,
+      );
+    });
+  });
+
+  it("acknowledges a refusal so the waiting CLI stops guessing", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-2",
+      url: "http://localhost:5432/",
+      laneId: null,
+      chatSessionId: null,
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    fireEvent.click(await screen.findByText("Deny"));
+
+    await waitFor(() => {
+      expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "bbr-2", accepted: false }),
+        REMOTE_PIN,
+      );
+    });
+    expect(api.navigate).not.toHaveBeenCalled();
   });
 
   it("routes personal chat browser calls to the personal tab collection", async () => {

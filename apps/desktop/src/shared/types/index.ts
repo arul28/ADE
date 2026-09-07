@@ -18,6 +18,7 @@ export * from "./computerUseArtifacts";
 export * from "./iosSimulator";
 export * from "./appControl";
 export * from "./builtInBrowser";
+export * from "./builtInBrowserLoginImport";
 export * from "./config";
 export * from "./automations";
 export * from "./review";

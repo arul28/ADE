@@ -105,6 +105,7 @@ const workMocks = vi.hoisted(() => {
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
     setWorkViewState: vi.fn(),
+    setLaneWorkViewState: vi.fn(),
   };
 
   const baseWork = {
@@ -138,7 +139,6 @@ const workMocks = vi.hoisted(() => {
     workCollapsedSectionIds: [],
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
-    workSidebarTab: "git",
     workSidebarWidthPct: 36,
     pinnedSessionIds: [],
     closingPtyIds: new Set<string>(),
@@ -158,7 +158,6 @@ const workMocks = vi.hoisted(() => {
     removeSessionFromList: vi.fn(),
     setWorkFocusSessionsHidden: vi.fn(),
     setWorkSidebarOpen: vi.fn(),
-    setWorkSidebarTab: vi.fn(),
     setWorkSidebarWidthPct: vi.fn(),
     reorderLaneSessions: vi.fn(),
     togglePinnedSession: vi.fn(),
@@ -173,6 +172,8 @@ const workMocks = vi.hoisted(() => {
     projectRoot: null as string | null,
     projectBinding: null as OpenProjectBinding | null,
     handoffLaunchJobsByScope: {} as Record<string, unknown[]>,
+    laneWorkViewByScope: {} as Record<string, unknown>,
+    workViewByProject: {} as Record<string, unknown>,
     /** Bindings this window has open besides the active one (per-session pin targets). */
     openRemoteProjectTabs: [] as OpenProjectBinding[],
     /** Cross-machine union slices — lane ownership for `useWorkMachineRouter`. */
@@ -258,6 +259,9 @@ vi.mock("../../state/appStore", () => ({
     selectLane: typeof workMocks.fns.selectLane;
     focusSession: typeof workMocks.fns.focusSession;
     setWorkViewState: typeof workMocks.fns.setWorkViewState;
+    setLaneWorkViewState: typeof workMocks.fns.setLaneWorkViewState;
+    laneWorkViewByScope: Record<string, unknown>;
+    workViewByProject: Record<string, unknown>;
     lanes: LaneSummary[];
     openRemoteProjectTabs: OpenProjectBinding[];
     openProjectTabRoots: string[];
@@ -274,6 +278,9 @@ vi.mock("../../state/appStore", () => ({
       selectLane: workMocks.fns.selectLane,
       focusSession: workMocks.fns.focusSession,
       setWorkViewState: workMocks.fns.setWorkViewState,
+      setLaneWorkViewState: workMocks.fns.setLaneWorkViewState,
+      laneWorkViewByScope: workMocks.laneWorkViewByScope,
+      workViewByProject: workMocks.workViewByProject,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
@@ -515,6 +522,8 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.openRemoteProjectTabs = [];
     workMocks.crossMachineLanesByMachineId = {};
     workMocks.crossMachineLaneIntendedMachineIds = null;
+    workMocks.laneWorkViewByScope = {};
+    workMocks.workViewByProject = {};
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
     workViewAreaProps.latest = null;
@@ -1068,13 +1077,19 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { collectionProjectRoot: "/repo-two" },
     });
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
 
     browserEventListener.current?.({
       type: "open-request",
       status: { collectionProjectRoot: "/repo-one" },
     });
-    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("browser");
+    // The active tool is per lane, so the write lands on the lane scope the
+    // page resolved, not on the project-wide work view.
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "/repo-one",
+      "lane-primary",
+      { workSidebarTool: "browser" },
+    );
   });
 
   it("ignores Browser sidebar open requests for remote projects", async () => {
@@ -1112,10 +1127,11 @@ describe("TerminalsPage chat session activation", () => {
     });
     // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
     // guard now just suppresses the browser-sidebar open.)
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
   });
 
   it("opens and closes the Work Terminal sidebar from the Work surface", async () => {
+    workMocks.projectRoot = "/repo-one";
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -1124,14 +1140,20 @@ describe("TerminalsPage chat session activation", () => {
     const { rerender } = render(<TerminalsPage />);
 
     fireEvent.click(await screen.findByRole("button", { name: "toggle terminal pane" }));
-    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("terminal");
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "/repo-one",
+      "lane-primary",
+      { workSidebarTool: "terminal" },
+    );
 
     vi.clearAllMocks();
     workMocks.currentWork = {
       ...workMocks.baseWork,
       workSidebarOpen: true,
-      workSidebarTab: "terminal",
       closingPtyIds: new Set<string>(),
+    };
+    workMocks.laneWorkViewByScope = {
+      "/repo-one::lane-primary": { workSidebarTool: "terminal" },
     };
     rerender(<TerminalsPage />);
 
@@ -1140,8 +1162,9 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setWorkSidebarOpen).toHaveBeenCalledWith(false);
 
     vi.clearAllMocks();
+    // Already on Terminal: "open terminal pane" must not re-write the scope.
     fireEvent.click(screen.getByRole("button", { name: "open terminal pane" }));
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
   });
 
   it("targets the visible Work draft when no saved session is active", async () => {
@@ -1152,7 +1175,6 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = {
       ...workMocks.baseWork,
       workSidebarOpen: true,
-      workSidebarTab: "browser",
       draftLaneId: "lane-background",
       draftKind: "chat",
       closingPtyIds: new Set<string>(),

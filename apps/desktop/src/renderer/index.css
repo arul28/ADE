@@ -2181,6 +2181,39 @@ button:active, [role="button"]:active {
   }
 }
 
+/* Work tools picker: placeholder status lines held for at most 300ms while the
+   tool reads settle. Stepped like the other idle animations here — a smooth
+   sweep costs a compositor frame per display refresh for a shimmer nobody is
+   reading, which is very expensive on a 240Hz panel. */
+@keyframes ade-tool-skeleton-sweep {
+  0% {
+    transform: translateX(-100%);
+    animation-timing-function: steps(6);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.ade-tool-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-muted-fg) 16%, transparent);
+}
+
+.ade-tool-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-muted-fg) 22%, transparent),
+    transparent
+  );
+  animation: ade-tool-skeleton-sweep 1.4s linear infinite;
+}
+
 @keyframes ade-timeline-arc {
   0% {
     transform: rotate(0deg);
@@ -2220,6 +2253,7 @@ button:active, [role="button"]:active {
   }
   .ade-streaming-shimmer,
   .ade-streaming-shimmer::after,
+  .ade-tool-skeleton::after,
   .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-title-landed,

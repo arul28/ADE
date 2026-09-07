@@ -132,7 +132,18 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
   return "default";
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
-export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
+/**
+ * One tool in the Work tools pane. Still named "tab" for the persisted vocabulary
+ * the pane grew up with; the pane itself is now a picker plus one active tool.
+ */
+export type WorkSidebarTab =
+  | "terminal"
+  | "git"
+  | "files"
+  | "ios"
+  | "app-control"
+  | "browser"
+  | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -183,7 +194,15 @@ export type WorkProjectViewState = {
   workFocusSessionsHidden: boolean;
   /** Global Work right sidebar state; content follows the active lane/session. */
   workSidebarOpen: boolean;
-  workSidebarTab: WorkSidebarTab;
+  /**
+   * The one tool open in the Work tools pane, or `null` for the picker page.
+   *
+   * Read/written per LANE (`laneWorkViewByScope`) so a lane keeps the tool you
+   * left it on; the project-scoped copy of this field is the fallback for
+   * projectless / lane-less Work surfaces. Openness and width stay project-wide
+   * — the pane's geometry is a workspace preference, its contents are not.
+   */
+  workSidebarTool: WorkSidebarTab | null;
   workSidebarWidthPct: number;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
@@ -210,6 +229,14 @@ export type WorkProjectViewState = {
   lanesFilter: string;
   lanesPinnedLaneIds: string[];
   lanesExpandedLaneId: string | null;
+  /**
+   * `"<machineId>:<remotePort>"` pairs the human answered "Always for this
+   * lane" to, when a chat pinned to another machine asks the built-in browser
+   * to reach a loopback port over a tunnel. The machine-wide `portForward`
+   * grant is not enough on its own: the agent picks the port, so approving a
+   * dev server on 3000 is not approval for an admin console on 8080.
+   */
+  browserTunnelAlwaysKeys: string[];
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -262,7 +289,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workCollapsedSectionIds: ["status:settled"],
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
-    workSidebarTab: "git",
+    workSidebarTool: null,
     workSidebarWidthPct: 36,
     laneSessionOrder: {},
     pinnedSessionIds: [],
@@ -275,6 +302,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     lanesFilter: "",
     lanesPinnedLaneIds: [],
     lanesExpandedLaneId: null,
+    browserTunnelAlwaysKeys: [],
   };
 }
 
@@ -295,15 +323,17 @@ function normalizeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeWorkSidebarTab(value: unknown): WorkSidebarTab {
+function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
   if (
     value === "terminal"
+    || value === "git"
     || value === "files"
     || value === "ios"
     || value === "app-control"
     || value === "browser"
+    || value === "pr"
   ) return value;
-  return "git";
+  return null;
 }
 
 function normalizeWorkSidebarWidthPct(value: unknown): number {
@@ -344,7 +374,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
-    workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),
+    workSidebarTool: normalizeWorkSidebarTool(candidate.workSidebarTool),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
@@ -357,6 +387,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
     lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
+    browserTunnelAlwaysKeys: normalizeUniqueStringArray(candidate.browserTunnelAlwaysKeys),
   };
 }
 
@@ -412,8 +443,14 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
  *    `workLaneSortMode`, `workLaneOrder`, `workSessionFilters`). Also purely
  *    additive: a v3 blob normalizes to "created" order with no pins and no
  *    chips, which is exactly the behaviour it had before the bump.
+ * 5: replaces the fixed `workSidebarTab` with a nullable `workSidebarTool`, now
+ *    resolved per lane. A v4 blob's `workSidebarTab` is deliberately NOT
+ *    migrated: the pane opens on its picker once, so the tool grid is the first
+ *    thing everyone meets, and the next choice is remembered per lane from then
+ *    on. `workSidebarOpen` and `workSidebarWidthPct` are untouched, so a pane
+ *    that was open stays open at the width it had.
  */
-const WORK_VIEW_STATE_VERSION = 4;
+const WORK_VIEW_STATE_VERSION = 5;
 /** The version whose one-time Settled collapse must not re-run on later bumps. */
 const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
 

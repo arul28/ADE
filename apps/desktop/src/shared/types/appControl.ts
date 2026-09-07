@@ -2,6 +2,29 @@ export type AppControlAppKind = "electron";
 
 export type AppControlProvider = "cdp" | "os-accessibility" | "computer-use" | "external";
 
+/**
+ * How ADE actually drives the controlled app.
+ *
+ * - `cdp` — Chrome DevTools Protocol against an Electron renderer. Implemented.
+ * - `computer_use` — OS-level screen/keyboard/mouse control for non-Electron
+ *   apps. Typed and capability-gated here; the driver itself is not built yet.
+ */
+export type AppControlDriver = "cdp" | "computer_use";
+
+export type AppControlDriverCapability = {
+  driver: AppControlDriver;
+  status: "available" | "unavailable";
+  /** Human-readable reason, always present when status is `unavailable`. */
+  reason: string | null;
+  implemented: boolean;
+};
+
+export type AppControlDriversResult = {
+  platform: NodeJS.Platform;
+  activeDriver: AppControlDriver | null;
+  drivers: AppControlDriverCapability[];
+};
+
 export type AppControlFrame = {
   x: number;
   y: number;
@@ -47,6 +70,7 @@ export type AppControlClaimArgs = {
 
 export type AppControlLaunchArgs = {
   appKind?: AppControlAppKind | null;
+  driver?: AppControlDriver | null;
   projectRoot?: string | null;
   laneId?: string | null;
   command?: string | null;
@@ -61,6 +85,7 @@ export type AppControlLaunchArgs = {
 
 export type AppControlConnectArgs = {
   appKind?: AppControlAppKind | null;
+  driver?: AppControlDriver | null;
   projectRoot?: string | null;
   laneId?: string | null;
   cdpPort: number;
@@ -84,11 +109,16 @@ export type AppControlSession = {
   cdpEndpoint: string | null;
   cdpTargetId: string | null;
   provider: AppControlProvider;
+  driver: AppControlDriver;
   chatSessionId: string | null;
   startedAt: string;
   connectedAt: string | null;
   status: "starting" | "running" | "connected" | "stopping" | "exited" | "stopped" | "failed";
   lastError: string | null;
+  /** Id of the most recent observation captured for this session. */
+  lastObservationId: string | null;
+  /** Id of the most recent trace entry recorded for this session. */
+  lastTraceEntryId: string | null;
 };
 
 export type AppControlStopArgs = {
@@ -234,3 +264,220 @@ export type AppControlEventPayload =
   | { type: "session-stopped"; previousSession: AppControlSession | null }
   | { type: "selection"; item: AppControlContextItem }
   | { type: "frame"; frame: AppControlScreencastFrame };
+
+/* ---------------------------------------------------------------------------
+ * Agent action model
+ *
+ * Mirrors the built-in browser's observe/act contract (stable `obs-…:e:N`
+ * element handles, per-session action traces, post-action observations) so an
+ * agent drives an Electron app the same way it drives a page.
+ * ------------------------------------------------------------------------- */
+
+export type AppControlSessionTargetArgs = {
+  /** Optional guard: rejected when it names a session that is not active. */
+  sessionId?: string | null;
+};
+
+export type AppControlObservationArgs = AppControlSessionTargetArgs & {
+  keepCount?: number | null;
+  includeDataUrl?: boolean;
+  includeDom?: boolean;
+  includeElementMap?: boolean;
+  includeDiagnostics?: boolean;
+  maxElements?: number | null;
+};
+
+export type AppControlObservationCleanup = {
+  keepCount: number;
+  keptCount: number;
+  deletedCount: number;
+};
+
+export type AppControlElementSnapshot = {
+  index: number;
+  handle?: string | null;
+  framePath?: number[];
+  shadowPath?: string[];
+  tagName: string | null;
+  role: string | null;
+  label: string | null;
+  text: string | null;
+  value: string | null;
+  placeholder: string | null;
+  selector: string | null;
+  testId: string | null;
+  href: string | null;
+  disabled: boolean | null;
+  frame: AppControlFrame;
+  center: { x: number; y: number };
+};
+
+export type AppControlDomSnapshot = {
+  url: string | null;
+  title: string | null;
+  capturedAt: string;
+  viewport: AppControlFrame;
+  scroll: { x: number; y: number };
+  elementCount: number;
+  elements: AppControlElementSnapshot[];
+};
+
+export type AppControlObservationElementMap = {
+  filePath: string;
+  relativePath: string | null;
+  width: number;
+  height: number;
+  mimeType: string;
+  elementCount: number;
+  dataUrl?: string;
+};
+
+export type AppControlConsoleDiagnostic = {
+  level: "debug" | "info" | "warning" | "error";
+  message: string;
+  sourceId: string | null;
+  line: number | null;
+  column: number | null;
+  timestamp: string;
+};
+
+export type AppControlNetworkDiagnostic = {
+  url: string;
+  method: string | null;
+  resourceType: string | null;
+  statusCode: number | null;
+  error: string | null;
+  startedAt: string | null;
+  endedAt: string;
+  durationMs: number | null;
+};
+
+export type AppControlDiagnostics = {
+  capturedAt: string;
+  pendingRequestCount: number;
+  console: AppControlConsoleDiagnostic[];
+  network: AppControlNetworkDiagnostic[];
+};
+
+export type AppControlObservation = {
+  id: string;
+  sessionId: string | null;
+  cdpTargetId: string | null;
+  url: string | null;
+  title: string | null;
+  capturedAt: string;
+  width: number;
+  height: number;
+  mimeType: string;
+  filePath: string;
+  relativePath: string | null;
+  dataUrl?: string;
+  dom?: AppControlDomSnapshot | null;
+  elementMap?: AppControlObservationElementMap | null;
+  diagnostics?: AppControlDiagnostics | null;
+  laneId: string | null;
+  chatSessionId: string | null;
+  cleanup: AppControlObservationCleanup;
+};
+
+export type AppControlElementTargetArgs = {
+  selector?: string | null;
+  text?: string | null;
+  testId?: string | null;
+  elementIndex?: number | null;
+  handle?: string | null;
+};
+
+export type AppControlAgentActionArgs = AppControlObservationArgs & {
+  observe?: boolean;
+  waitAfterMs?: number | null;
+};
+
+export type AppControlAgentClickArgs = AppControlAgentActionArgs & AppControlElementTargetArgs & {
+  x?: number | null;
+  y?: number | null;
+  scale?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
+  button?: "left" | "middle" | "right";
+  clickCount?: number | null;
+};
+
+export type AppControlAgentHoverArgs = AppControlAgentActionArgs & AppControlElementTargetArgs & {
+  x?: number | null;
+  y?: number | null;
+  scale?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
+};
+
+export type AppControlAgentFillArgs = AppControlAgentActionArgs & AppControlElementTargetArgs & {
+  /** The payload to type. `text` stays reserved for matching the element. */
+  value?: string | null;
+};
+
+export type AppControlAgentClearArgs = AppControlAgentActionArgs & AppControlElementTargetArgs;
+
+export type AppControlAgentTypeArgs = AppControlAgentActionArgs & {
+  text: string;
+};
+
+export type AppControlAgentPressArgs = AppControlAgentActionArgs & AppControlElementTargetArgs & {
+  key: string;
+};
+
+export type AppControlAgentScrollArgs = AppControlAgentActionArgs & {
+  x?: number | null;
+  y?: number | null;
+  deltaX?: number | null;
+  deltaY?: number | null;
+  scale?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
+};
+
+export type AppControlAgentWaitArgs = AppControlAgentActionArgs & AppControlElementTargetArgs & {
+  url?: string | null;
+  loadState?: "domcontentloaded" | "load" | "network-idle";
+  timeoutMs?: number | null;
+  networkIdleMs?: number | null;
+};
+
+export type AppControlActionTraceEntry = {
+  id: string;
+  sessionId: string | null;
+  cdpTargetId: string | null;
+  action: string;
+  status: "ok" | "error";
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  before: { url: string | null; title: string | null };
+  after: { url: string | null; title: string | null };
+  target: Record<string, unknown> | null;
+  observationId: string | null;
+  error: string | null;
+};
+
+export type AppControlTraceArgs = AppControlSessionTargetArgs & {
+  limit?: number | null;
+};
+
+export type AppControlTraceResult = {
+  sessionId: string | null;
+  entries: AppControlActionTraceEntry[];
+};
+
+export type AppControlAgentActionResult = {
+  ok: true;
+  observation: AppControlObservation | null;
+  session: AppControlSession | null;
+  trace: AppControlActionTraceEntry | null;
+};
+
+export type AppControlWindowsResult = {
+  sessionId: string | null;
+  activeTargetId: string | null;
+  windows: AppControlTarget[];
+};
+
+export type AppControlSwitchWindowArgs = AppControlSessionTargetArgs & {
+  targetId: string;
+};

@@ -29,11 +29,14 @@ const connectedSession: AppControlSession = {
   cdpEndpoint: "ws://127.0.0.1:9222/devtools/page/1",
   cdpTargetId: "target-1",
   provider: "cdp",
+  driver: "cdp",
   chatSessionId: "chat-1",
   startedAt: "2026-05-12T00:00:00.000Z",
   connectedAt: "2026-05-12T00:00:01.000Z",
   status: "connected",
   lastError: null,
+  lastObservationId: null,
+  lastTraceEntryId: null,
 };
 
 const connectedStatus: AppControlStatus = {

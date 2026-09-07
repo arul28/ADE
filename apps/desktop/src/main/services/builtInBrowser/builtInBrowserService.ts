@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
+import * as electronModule from "electron";
 import { WebContentsView, app, nativeImage, screen, session, webContents as electronWebContents } from "electron";
 import type { BrowserWindow, DownloadItem, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   BuiltInBrowserActionTraceEntry,
@@ -53,6 +55,33 @@ import type {
   BuiltInBrowserWaitArgs,
   BuiltInBrowserFillArgs,
   BuiltInBrowserTypeTextArgs,
+  BuiltInBrowserDevToolsMode,
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserDragArgs,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserEmulationState,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserHoverArgs,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserNetworkLogEntry,
+  BuiltInBrowserNetworkLoggingResult,
+  BuiltInBrowserNetworkLogResult,
+  BuiltInBrowserSelectOptionArgs,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserStopRecordingResult,
+  BuiltInBrowserUploadFileArgs,
+  BuiltInBrowserZoomResult,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
@@ -71,6 +100,32 @@ import {
   createBuiltInBrowserStateStore,
   type BuiltInBrowserRestoredCollection,
 } from "./builtInBrowserStateStore";
+import {
+  BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
+  BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT,
+  buildBuiltInBrowserHar,
+  builtInBrowserUploadRoots,
+  clampBuiltInBrowserZoomFactor,
+  createBuiltInBrowserNetworkLog,
+  filterBuiltInBrowserNetworkLog,
+  normalizeBuiltInBrowserRecordingFps,
+  normalizeBuiltInBrowserHeaders,
+  normalizeNetworkLogLimit,
+  resolveBuiltInBrowserUploadPaths,
+  type BuiltInBrowserNetworkLogStore,
+} from "./builtInBrowserCapabilities";
+import {
+  BUILT_IN_BROWSER_EMULATION_PRESETS,
+  builtInBrowserEmulationMetrics,
+  resolveBuiltInBrowserEmulation,
+} from "../../../shared/builtInBrowserEmulation";
+import {
+  createBuiltInBrowserRecordingSession,
+  createDisplayMediaRecorderFactory,
+  type BuiltInBrowserRecorderFactory,
+  type BuiltInBrowserRecordingSession,
+  type CaptureWindowLike,
+} from "./builtInBrowserRecording";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
@@ -97,11 +152,30 @@ const MAX_BROWSER_NETWORK_IDLE_MS = 10_000;
 const DEFAULT_TAB_LEASE_TTL_MS = 10 * 60_000;
 const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
 const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
+const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
+const MAX_DRAG_STEPS = 50;
+const DEFAULT_DRAG_STEPS = 8;
+const MAX_UPLOAD_FILE_COUNT = 20;
+const RECORDING_CACHE_DIR = "recordings";
+const BROWSER_RECORDER_PARTITION = "ade-browser-recorder";
+const DISPLAY_MEDIA_ARM_TTL_MS = 10_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
+// Resolved lazily (and defensively) rather than as a named import: unit-test
+// `electron` mocks omit BrowserWindow, and only the recording path needs it.
+function electronBrowserWindowCtor(): (new (options: Record<string, unknown>) => unknown) | null {
+  try {
+    return (electronModule as unknown as {
+      BrowserWindow?: new (options: Record<string, unknown>) => unknown;
+    }).BrowserWindow ?? null;
+  } catch {
+    return null;
+  }
+}
 
 type BrowserCollection = {
   key: string;
@@ -153,6 +227,13 @@ type CdpCallFunctionResponse = {
 
 type CdpRuntimeEvaluateResponse = CdpCallFunctionResponse;
 
+type CdpRuntimeEvaluateObjectResponse = {
+  result?: {
+    objectId?: string;
+  };
+  exceptionDetails?: unknown;
+};
+
 type CdpScreenshotResponse = {
   data?: string;
 };
@@ -187,6 +268,17 @@ type BrowserTabState = {
     laneId: string | null;
     chatSessionId: string | null;
   } | null;
+  zoomFactor: number;
+  emulation: BuiltInBrowserEmulationState | null;
+  devToolsMode: BuiltInBrowserDevToolsMode | null;
+  networkLoggingEnabled: boolean;
+  networkLog: BuiltInBrowserNetworkLogStore;
+  networkLogPending: Map<string, BuiltInBrowserNetworkLogEntry>;
+  recording: BuiltInBrowserRecordingSession | null;
+  /** CDP owners that must keep the debugger attached between actions. */
+  debuggerHolds: Set<"network">;
+  cdpListener: DebuggerMessageListener | null;
+  findRequestId: number | null;
 };
 
 type BrowserPendingNetworkRequest = {
@@ -294,6 +386,10 @@ export function createBuiltInBrowserService(args: {
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
+  /** Test seam for the hidden renderer that encodes tab recordings. */
+  createRecordingWindow?: (() => CaptureWindowLike) | null;
+  /** Test seam that replaces the whole recorder (skips Electron entirely). */
+  createTabRecorder?: BuiltInBrowserRecorderFactory | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -375,6 +471,8 @@ export function createBuiltInBrowserService(args: {
       agentAccessController,
       networkRouter,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
+      createRecordingWindow: args.createRecordingWindow ?? null,
+      createTabRecorder: args.createTabRecorder ?? null,
     });
 
   const serviceKey = (windowId: number, collection: BrowserCollection): string =>
@@ -493,6 +591,8 @@ export function createBuiltInBrowserService(args: {
         agentAccessController,
         networkRouter,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
+        createRecordingWindow: args.createRecordingWindow ?? null,
+        createTabRecorder: args.createTabRecorder ?? null,
       });
       fallbackServices.set("window", fallbackService);
     }
@@ -769,6 +869,90 @@ export function createBuiltInBrowserService(args: {
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
       return serviceForInput(input, win).clearSelection(input ?? {});
     },
+    setEmulation(
+      input: BuiltInBrowserSetEmulationArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserEmulationResult> {
+      return serviceForInput(input, sourceWindow).setEmulation(input);
+    },
+    setZoom(
+      input: BuiltInBrowserSetZoomArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserZoomResult> {
+      return serviceForInput(input, sourceWindow).setZoom(input);
+    },
+    findInPage(
+      input: BuiltInBrowserFindInPageArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserFindInPageResult> {
+      return serviceForInput(input, sourceWindow).findInPage(input);
+    },
+    stopFindInPage(
+      input: BuiltInBrowserStopFindInPageArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserStopFindInPageResult> {
+      return serviceForInput(input, sourceWindow).stopFindInPage(input);
+    },
+    setDevTools(
+      input: BuiltInBrowserSetDevToolsArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserDevToolsResult> {
+      return serviceForInput(input, sourceWindow).setDevTools(input);
+    },
+    setNetworkLogging(
+      input: BuiltInBrowserSetNetworkLoggingArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserNetworkLoggingResult> {
+      return serviceForInput(input, sourceWindow).setNetworkLogging(input);
+    },
+    getNetworkLog(
+      input: BuiltInBrowserNetworkLogArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserNetworkLogResult> {
+      return serviceForInput(input, sourceWindow).getNetworkLog(input);
+    },
+    exportHar(
+      input: BuiltInBrowserExportHarArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserExportHarResult> {
+      return serviceForInput(input, sourceWindow).exportHar(input);
+    },
+    hover(
+      input: BuiltInBrowserHoverArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).hover(input);
+    },
+    drag(
+      input: BuiltInBrowserDragArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).drag(input);
+    },
+    selectOption(
+      input: BuiltInBrowserSelectOptionArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).selectOption(input);
+    },
+    uploadFile(
+      input: BuiltInBrowserUploadFileArgs,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).uploadFile(input);
+    },
+    startRecording(
+      input: BuiltInBrowserStartRecordingArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserStartRecordingResult> {
+      return serviceForInput(input, sourceWindow).startRecording(input);
+    },
+    stopRecording(
+      input: BuiltInBrowserStopRecordingArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserStopRecordingResult> {
+      return serviceForInput(input, sourceWindow).stopRecording(input);
+    },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {
         if (!win.isDestroyed()) {
@@ -803,6 +987,10 @@ function createBuiltInBrowserWindowService(args: {
   agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
   waitForProfileMigration: () => Promise<void>;
+  /** Test seam for the hidden recording renderer. */
+  createRecordingWindow?: (() => CaptureWindowLike) | null;
+  /** Test seam that replaces the whole recorder (skips Electron entirely). */
+  createTabRecorder?: BuiltInBrowserRecorderFactory | null;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
@@ -826,6 +1014,8 @@ function createBuiltInBrowserWindowService(args: {
   let restoringTabs = false;
   let disposed = false;
   const configuredWebContents = new WeakSet<WebContents>();
+  const configuredDisplayMediaSessions = new WeakSet<Electron.Session>();
+  const armedDisplayMediaFrames = new Map<number, { target: WebContents; expiresAt: number }>();
   const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
 
@@ -999,6 +1189,9 @@ function createBuiltInBrowserWindowService(args: {
   const pruneDestroyedTabs = (): void => {
     const nextTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
     if (nextTabs.length !== tabs.length) {
+      for (const tab of tabs) {
+        if (!nextTabs.includes(tab)) teardownTabCapabilities(tab);
+      }
       tabs = nextTabs;
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
@@ -1272,6 +1465,18 @@ function createBuiltInBrowserWindowService(args: {
     pendingRequestCount: tab.pendingNetworkRequests.size,
     console: tab.consoleDiagnostics.slice(-MAX_BROWSER_CONSOLE_DIAGNOSTICS),
     network: tab.networkDiagnostics.slice(-MAX_BROWSER_NETWORK_DIAGNOSTICS),
+    // The full request log is opt-in, so an observation only carries it while
+    // `setNetworkLogging` is on for this tab. Keeps the default payload small.
+    ...(tab.networkLoggingEnabled
+      ? {
+          networkLog: {
+            enabled: true as const,
+            recordedCount: tab.networkLog.size,
+            droppedCount: tab.networkLog.droppedCount,
+            recent: tab.networkLog.list().slice(-BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT),
+          },
+        }
+      : {}),
   });
 
   const trackNetworkRequestStart = (details: Record<string, unknown>): void => {
@@ -1559,6 +1764,34 @@ function createBuiltInBrowserWindowService(args: {
       if (tab?.id === lastSelectedTabId) {
         clearSelectionInternal();
       }
+      // Chromium tracks zoom per origin, so a cross-origin navigation drops the
+      // tab's zoom. Re-apply the tab's own factor so the setting is per tab.
+      if (tab && tab.zoomFactor !== BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR) applyTabZoom(tab, tab.zoomFactor);
+      emitStatus();
+    });
+    wc.on("found-in-page", (_event, result) => {
+      const tab = tabForWebContents(wc);
+      if (!tab) return;
+      emit({
+        type: "found-in-page",
+        tabId: tab.id,
+        requestId: result.requestId,
+        activeMatchOrdinal: result.activeMatchOrdinal ?? null,
+        matches: result.matches ?? null,
+        finalUpdate: Boolean(result.finalUpdate),
+        foundAt: new Date().toISOString(),
+      });
+    });
+    wc.on("devtools-opened", () => {
+      const tab = tabForWebContents(wc);
+      if (!tab) return;
+      if (!tab.devToolsMode) tab.devToolsMode = "right";
+      emitStatus();
+    });
+    wc.on("devtools-closed", () => {
+      const tab = tabForWebContents(wc);
+      if (!tab) return;
+      tab.devToolsMode = null;
       emitStatus();
     });
     wc.on("did-navigate-in-page", () => {
@@ -1651,6 +1884,16 @@ function createBuiltInBrowserWindowService(args: {
       ownerClaimedAt: null,
       ownerLeaseExpiresAt: null,
       agentNavigationGuard: null,
+      zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
+      emulation: null,
+      devToolsMode: null,
+      networkLoggingEnabled: false,
+      networkLog: createBuiltInBrowserNetworkLog(),
+      networkLogPending: new Map(),
+      recording: null,
+      debuggerHolds: new Set(),
+      cdpListener: null,
+      findRequestId: null,
     };
   };
 
@@ -2314,6 +2557,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
       endSessionsForTab(removed.id);
       if (removed.view && win && !win.isDestroyed()) {
@@ -2642,6 +2886,834 @@ function createBuiltInBrowserWindowService(args: {
     });
   }
 
+  /* ── Per-tab CDP holds ─────────────────────────────────────────────────── */
+
+  // Page actions attach the debugger only for the duration of one command
+  // (`withTemporaryDebugger`). Network logging and recording need it to stay
+  // attached across many commands, so they take a named hold: the first hold
+  // attaches and installs a per-tab message listener, the last one released
+  // detaches again (unless inspect mode still owns the debugger).
+  const tabCdpMessageListener = (tab: BrowserTabState): DebuggerMessageListener =>
+    (_event, method, params) => {
+      if (method.startsWith("Network.")) {
+        handleNetworkCdpEvent(tab, method, params);
+      }
+    };
+
+  const ensureTabCdpListener = (tab: BrowserTabState): void => {
+    if (tab.cdpListener) return;
+    const listener = tabCdpMessageListener(tab);
+    tab.cdpListener = listener;
+    try {
+      tab.webContents.debugger.on("message", listener);
+    } catch (error) {
+      tab.cdpListener = null;
+      throw error;
+    }
+  };
+
+  const removeTabCdpListener = (tab: BrowserTabState): void => {
+    const listener = tab.cdpListener;
+    if (!listener) return;
+    tab.cdpListener = null;
+    try {
+      if (!tab.webContents.isDestroyed()) tab.webContents.debugger.off("message", listener);
+    } catch {
+      // ignore listener detach races
+    }
+  };
+
+  const acquireDebuggerHold = async (
+    tab: BrowserTabState,
+    owner: "network",
+  ): Promise<void> => {
+    ensureTabCdpListener(tab);
+    try {
+      await ensureDebuggerAttached(tab.webContents, "hold");
+    } catch (error) {
+      if (tab.debuggerHolds.size === 0) removeTabCdpListener(tab);
+      throw new Error(
+        `Could not attach the ADE browser debugger to tab ${tab.id}: ${errorMessage(error)}. Close DevTools for this tab and retry.`,
+      );
+    }
+    tab.debuggerHolds.add(owner);
+  };
+
+  const releaseDebuggerHold = (
+    tab: BrowserTabState,
+    owner: "network",
+  ): void => {
+    tab.debuggerHolds.delete(owner);
+    if (tab.debuggerHolds.size > 0) return;
+    removeTabCdpListener(tab);
+    // Inspect mode owns its own attach/detach lifecycle; never yank it here.
+    if (inspecting && inspectListenerWebContents === tab.webContents) return;
+    try {
+      if (!tab.webContents.isDestroyed() && tab.webContents.debugger.isAttached()) {
+        tab.webContents.debugger.detach();
+      }
+    } catch {
+      // ignore debugger detach races
+    }
+  };
+
+  const teardownTabCapabilities = (tab: BrowserTabState): void => {
+    if (tab.recording) {
+      tab.recording.abort();
+      tab.recording = null;
+    }
+    tab.networkLoggingEnabled = false;
+    tab.networkLogPending.clear();
+    tab.debuggerHolds.clear();
+    removeTabCdpListener(tab);
+  };
+
+  /* ── Device emulation ──────────────────────────────────────────────────── */
+
+  async function setEmulation(
+    input: BuiltInBrowserSetEmulationArgs,
+  ): Promise<BuiltInBrowserEmulationResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before setting device emulation.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested device emulation for this browser tab.");
+    const next = resolveBuiltInBrowserEmulation(input);
+    const wc = tab.webContents;
+    const traceDraft = beginActionTrace(tab, "setEmulation", input as Record<string, unknown>);
+    try {
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "Emulation.setTouchEmulationEnabled", {
+          enabled: next?.hasTouch ?? false,
+          maxTouchPoints: next?.hasTouch ? 5 : 1,
+        }).catch(() => {});
+        if (!next) {
+          await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride");
+          // CDP has no "clear UA override"; an empty string is Chromium's reset.
+          await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
+          return;
+        }
+        const metrics = builtInBrowserEmulationMetrics(next);
+        await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
+          width: metrics.width,
+          height: metrics.height,
+          deviceScaleFactor: metrics.deviceScaleFactor,
+          mobile: metrics.mobile,
+        });
+        if (next.userAgent) {
+          await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", {
+            userAgent: next.userAgent,
+          }).catch(() => {});
+        }
+      });
+      tab.emulation = next;
+      finishActionTrace(tab, traceDraft, "ok");
+    } catch (error) {
+      finishActionTrace(tab, traceDraft, "error", { error });
+      throw error;
+    }
+    emitStatus();
+    return {
+      tabId: tab.id,
+      emulation: next,
+      presets: [...BUILT_IN_BROWSER_EMULATION_PRESETS],
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  /* ── Zoom ──────────────────────────────────────────────────────────────── */
+
+  async function setZoom(input: BuiltInBrowserSetZoomArgs): Promise<BuiltInBrowserZoomResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before zooming.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested a zoom change for this browser tab.");
+    const factor = input.reset === true
+      ? BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR
+      : clampBuiltInBrowserZoomFactor(input.factor);
+    applyTabZoom(tab, factor);
+    tab.zoomFactor = factor;
+    emitStatus();
+    return {
+      tabId: tab.id,
+      zoomFactor: factor,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  const applyTabZoom = (tab: BrowserTabState, factor: number): void => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed()) return;
+    try {
+      wc.setZoomFactor(factor);
+    } catch (error) {
+      logger()?.debug("built_in_browser.set_zoom_failed", {
+        tabId: tab.id,
+        err: errorMessage(error),
+      });
+    }
+  };
+
+  /* ── Find in page ──────────────────────────────────────────────────────── */
+
+  async function findInPage(
+    input: BuiltInBrowserFindInPageArgs,
+  ): Promise<BuiltInBrowserFindInPageResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before searching it.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested an in-page text search.");
+    const text = stringOrNull(input.text);
+    if (!text) throw new Error("Find text is required.");
+    const wc = tab.webContents;
+    const timeoutMs = Math.min(
+      MAX_FIND_IN_PAGE_TIMEOUT_MS,
+      Math.max(250, optionalFiniteNumber(input.timeoutMs) ?? DEFAULT_FIND_IN_PAGE_TIMEOUT_MS),
+    );
+    const traceDraft = beginActionTrace(tab, "findInPage", input as Record<string, unknown>);
+    try {
+      const result = await new Promise<Electron.Result>((resolve, reject) => {
+        let requestId: number | null = null;
+        let settled = false;
+        const timer = setTimeout(() => {
+          finish();
+          reject(new Error(`Timed out waiting for browser find results after ${timeoutMs}ms.`));
+        }, timeoutMs);
+        const listener = (_event: unknown, found: Electron.Result): void => {
+          if (requestId != null && found.requestId !== requestId) return;
+          if (!found.finalUpdate) return;
+          finish();
+          resolve(found);
+        };
+        function finish(): void {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try {
+            (wc as unknown as { off: (event: string, fn: unknown) => void }).off?.("found-in-page", listener);
+          } catch {
+            // ignore listener detach races
+          }
+        }
+        try {
+          wc.on("found-in-page", listener as never);
+          requestId = wc.findInPage(text, {
+            forward: input.forward !== false,
+            findNext: input.findNext === true,
+            matchCase: input.matchCase === true,
+          });
+          tab.findRequestId = requestId;
+        } catch (error) {
+          finish();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+      finishActionTrace(tab, traceDraft, "ok");
+      return {
+        tabId: tab.id,
+        text,
+        requestId: result.requestId,
+        activeMatchOrdinal: result.activeMatchOrdinal ?? null,
+        matches: result.matches ?? null,
+        finalUpdate: Boolean(result.finalUpdate),
+        status: scopeStatusForInput(getStatus(), input),
+      };
+    } catch (error) {
+      finishActionTrace(tab, traceDraft, "error", { error });
+      throw error;
+    }
+  }
+
+  async function stopFindInPage(
+    input: BuiltInBrowserStopFindInPageArgs = {},
+  ): Promise<BuiltInBrowserStopFindInPageResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a find.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested to stop an in-page text search.");
+    const action = input.action === "keepSelection" || input.action === "activateSelection"
+      ? input.action
+      : "clearSelection";
+    try {
+      tab.webContents.stopFindInPage(action);
+    } catch (error) {
+      logger()?.debug("built_in_browser.stop_find_failed", { err: errorMessage(error) });
+    }
+    tab.findRequestId = null;
+    return {
+      tabId: tab.id,
+      stopped: true,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  /* ── DevTools ──────────────────────────────────────────────────────────── */
+
+  async function setDevTools(
+    input: BuiltInBrowserSetDevToolsArgs,
+  ): Promise<BuiltInBrowserDevToolsResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before toggling DevTools.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested DevTools for this browser tab.");
+    const wc = tab.webContents;
+    const mode: BuiltInBrowserDevToolsMode = input.mode === "bottom" || input.mode === "detach"
+      ? input.mode
+      : "right";
+    const traceDraft = beginActionTrace(tab, "setDevTools", input as Record<string, unknown>);
+    try {
+      if (input.open) {
+        // DevTools and the CDP debugger cannot own the same target, so opening
+        // DevTools would silently kill an in-flight network log. Recording is
+        // unaffected: it captures through getDisplayMedia, not the debugger.
+        if (tab.debuggerHolds.size > 0) {
+          throw new Error(
+            `Browser tab ${tab.id} is network logging, which owns the debugger. Run \`setNetworkLogging { enabled: false }\` before opening DevTools.`,
+          );
+        }
+        wc.openDevTools({ mode });
+        tab.devToolsMode = mode;
+      } else {
+        wc.closeDevTools();
+        tab.devToolsMode = null;
+      }
+      finishActionTrace(tab, traceDraft, "ok");
+    } catch (error) {
+      finishActionTrace(tab, traceDraft, "error", { error });
+      throw error;
+    }
+    // DevTools is a human affordance; leave a breadcrumb whenever it is driven
+    // from an agent-bound call so the audit trail shows who opened it.
+    logger()?.info("built_in_browser.devtools_toggled", {
+      tabId: tab.id,
+      open: Boolean(input.open),
+      mode: input.open ? mode : null,
+      laneId: stringOrNull((input as { laneId?: string | null }).laneId),
+      chatSessionId: stringOrNull((input as { chatSessionId?: string | null }).chatSessionId),
+    });
+    emitStatus();
+    return {
+      tabId: tab.id,
+      devToolsOpen: tab.devToolsMode !== null,
+      mode: tab.devToolsMode,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  /* ── Full network log ──────────────────────────────────────────────────── */
+
+  // CDP `Network.*` is used rather than Electron's `webRequest` API because it
+  // is the only source that carries request/response headers, protocol,
+  // per-phase timings, mime type, cache hits and encoded sizes — everything HAR
+  // 1.2 needs. `webRequest` is also session-global (it already backs the
+  // always-on failure list), so building the opt-in per-tab log on top of it
+  // would mean filtering a shared firehose and still missing headers/timings.
+  const handleNetworkCdpEvent = (
+    tab: BrowserTabState,
+    method: string,
+    params: unknown,
+  ): void => {
+    if (!tab.networkLoggingEnabled || !isRecord(params)) return;
+    const requestId = stringOrNull(params.requestId);
+    if (!requestId) return;
+    const nowMs = Date.now();
+    if (method === "Network.requestWillBeSent") {
+      const request = isRecord(params.request) ? params.request : {};
+      const entry: BuiltInBrowserNetworkLogEntry = {
+        id: requestId,
+        method: stringOrNull(request.method),
+        url: stringOrNull(request.url) ?? "about:blank",
+        status: null,
+        statusText: null,
+        mimeType: null,
+        resourceType: stringOrNull(params.type),
+        protocol: null,
+        fromCache: false,
+        requestHeaders: normalizeBuiltInBrowserHeaders(request.headers),
+        responseHeaders: [],
+        requestBodySize: typeof request.postData === "string" ? request.postData.length : null,
+        responseBodySize: null,
+        responseHeaderSize: null,
+        timings: {
+          startedAt: new Date(nowMs).toISOString(),
+          endedAt: null,
+          durationMs: null,
+          waitMs: null,
+          receiveMs: null,
+        },
+        error: null,
+      };
+      tab.networkLogPending.set(requestId, entry);
+      tab.networkLog.upsert(entry);
+      return;
+    }
+    const existing = tab.networkLogPending.get(requestId) ?? tab.networkLog.find(requestId);
+    if (!existing) return;
+    if (method === "Network.responseReceived") {
+      const response = isRecord(params.response) ? params.response : {};
+      const startedAtMs = Date.parse(existing.timings.startedAt);
+      const next: BuiltInBrowserNetworkLogEntry = {
+        ...existing,
+        status: optionalFiniteNumber(response.status),
+        statusText: stringOrNull(response.statusText),
+        mimeType: stringOrNull(response.mimeType),
+        protocol: stringOrNull(response.protocol),
+        fromCache: response.fromDiskCache === true || response.fromPrefetchCache === true,
+        responseHeaders: normalizeBuiltInBrowserHeaders(response.headers),
+        responseHeaderSize: optionalFiniteNumber(response.encodedDataLength),
+        resourceType: stringOrNull(params.type) ?? existing.resourceType,
+        timings: {
+          ...existing.timings,
+          waitMs: Number.isFinite(startedAtMs) ? Math.max(0, nowMs - startedAtMs) : null,
+        },
+      };
+      tab.networkLogPending.set(requestId, next);
+      tab.networkLog.upsert(next);
+      return;
+    }
+    if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+      const startedAtMs = Date.parse(existing.timings.startedAt);
+      const durationMs = Number.isFinite(startedAtMs) ? Math.max(0, nowMs - startedAtMs) : null;
+      const waitMs = existing.timings.waitMs;
+      const next: BuiltInBrowserNetworkLogEntry = {
+        ...existing,
+        responseBodySize: method === "Network.loadingFinished"
+          ? optionalFiniteNumber(params.encodedDataLength) ?? existing.responseBodySize
+          : existing.responseBodySize,
+        error: method === "Network.loadingFailed"
+          ? stringOrNull(params.errorText) ?? "request failed"
+          : existing.error,
+        timings: {
+          ...existing.timings,
+          endedAt: new Date(nowMs).toISOString(),
+          durationMs,
+          receiveMs: durationMs != null && waitMs != null ? Math.max(0, durationMs - waitMs) : null,
+        },
+      };
+      tab.networkLogPending.delete(requestId);
+      tab.networkLog.upsert(next);
+    }
+  };
+
+  async function setNetworkLogging(
+    input: BuiltInBrowserSetNetworkLoggingArgs,
+  ): Promise<BuiltInBrowserNetworkLoggingResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before changing network logging.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested network logging for this browser tab.");
+    const wc = tab.webContents;
+    if (input.enabled) {
+      if (input.clear !== false) {
+        tab.networkLog.clear();
+        tab.networkLogPending.clear();
+      }
+      await acquireDebuggerHold(tab, "network");
+      try {
+        await sendDebuggerCommand(wc, "Network.enable", {
+          maxTotalBufferSize: 1_000_000,
+          maxResourceBufferSize: 500_000,
+        });
+      } catch (error) {
+        releaseDebuggerHold(tab, "network");
+        throw error;
+      }
+      tab.networkLoggingEnabled = true;
+    } else {
+      if (tab.networkLoggingEnabled) {
+        await sendDebuggerCommand(wc, "Network.disable").catch((error) => {
+          logger()?.debug("built_in_browser.network_disable_failed", { err: errorMessage(error) });
+        });
+      }
+      tab.networkLoggingEnabled = false;
+      tab.networkLogPending.clear();
+      releaseDebuggerHold(tab, "network");
+    }
+    emitStatus();
+    return {
+      tabId: tab.id,
+      enabled: tab.networkLoggingEnabled,
+      entryCount: tab.networkLog.size,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  async function getNetworkLog(
+    input: BuiltInBrowserNetworkLogArgs = {},
+  ): Promise<BuiltInBrowserNetworkLogResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reading its network log.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested the network log for this browser tab.");
+    const all = tab.networkLog.list();
+    const matched = filterBuiltInBrowserNetworkLog(all, input);
+    const limit = normalizeNetworkLogLimit(input.limit);
+    return {
+      tabId: tab.id,
+      enabled: tab.networkLoggingEnabled,
+      recordedCount: all.length,
+      droppedCount: tab.networkLog.droppedCount,
+      matchedCount: matched.length,
+      entries: matched.slice(-limit),
+    };
+  }
+
+  async function exportHar(
+    input: BuiltInBrowserExportHarArgs = {},
+  ): Promise<BuiltInBrowserExportHarResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before exporting a HAR.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested a HAR export for this browser tab.");
+    if (!observationRelativeBasePath) {
+      throw new Error("Browser HAR export is unavailable because no scratch root is configured.");
+    }
+    const entries = filterBuiltInBrowserNetworkLog(tab.networkLog.list(), input);
+    if (entries.length === 0 && !tab.networkLoggingEnabled) {
+      throw new Error(
+        `Browser tab ${tab.id} has no recorded requests. Run network logging first (\`setNetworkLogging { enabled: true }\`).`,
+      );
+    }
+    const exportedAt = new Date().toISOString();
+    const har = buildBuiltInBrowserHar({
+      entries,
+      pageUrl: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL()),
+      pageTitle: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
+      creatorVersion: app.getVersion?.() ?? "0.0.0",
+      exportedAt,
+    });
+    const dir = observationDirectory(tab);
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, `network-${Date.now()}.har`);
+    await fs.writeFile(filePath, `${JSON.stringify(har, null, 2)}\n`, "utf8");
+    return {
+      tabId: tab.id,
+      filePath,
+      relativePath: path.relative(observationRelativeBasePath, filePath),
+      entryCount: entries.length,
+      exportedAt,
+    };
+  }
+
+  /* ── Extra page actions ────────────────────────────────────────────────── */
+
+  async function hover(input: BuiltInBrowserHoverArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before hovering.");
+    return runTracedAgentAction(tab, "hover", input, async () => {
+      const wc = tab.webContents;
+      const { x, y } = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x,
+          y,
+          button: "none",
+        });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function drag(input: BuiltInBrowserDragArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before dragging.");
+    return runTracedAgentAction(tab, "drag", input, async () => {
+      const wc = tab.webContents;
+      const from = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
+      const to = await resolveDragDestination(tab, input);
+      const steps = Math.min(
+        MAX_DRAG_STEPS,
+        Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),
+      );
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: from.x,
+          y: from.y,
+          button: "none",
+        });
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x: from.x,
+          y: from.y,
+          button: "left",
+          clickCount: 1,
+        });
+        for (let step = 1; step <= steps; step += 1) {
+          const ratio = step / steps;
+          await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: Math.round(from.x + (to.x - from.x) * ratio),
+            y: Math.round(from.y + (to.y - from.y) * ratio),
+            button: "left",
+            buttons: 1,
+          });
+        }
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: to.x,
+          y: to.y,
+          button: "left",
+          clickCount: 1,
+        });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  const resolveDragDestination = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserDragArgs,
+  ): Promise<{ x: number; y: number }> => {
+    const toX = optionalFiniteNumber(input.toX);
+    const toY = optionalFiniteNumber(input.toY);
+    if (toX != null || toY != null) {
+      if (toX == null || toY == null) {
+        throw new Error("Browser drag requires both --to-x and --to-y when using coordinates.");
+      }
+      return { x: normalizeDimension(toX), y: normalizeDimension(toY) };
+    }
+    const destinationTarget: BuiltInBrowserClickArgs = {
+      ...input,
+      x: null,
+      y: null,
+      selector: input.toSelector ?? null,
+      text: input.toText ?? null,
+      testId: input.toTestId ?? null,
+      elementIndex: input.toElementIndex ?? null,
+      handle: input.toHandle ?? null,
+    };
+    if (!hasElementTarget(destinationTarget)) {
+      throw new Error(
+        "Browser drag requires a destination: --to-x/--to-y, --to-selector, --to-text-match, --to-test-id, --to-element, or --to-handle.",
+      );
+    }
+    const resolved = await resolveClickTarget(tab, destinationTarget);
+    return { x: resolved.x, y: resolved.y };
+  };
+
+  async function selectOption(
+    input: BuiltInBrowserSelectOptionArgs,
+  ): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting an option.");
+    return runTracedAgentAction(tab, "selectOption", input, async () => {
+      const value = typeof input.value === "string" ? input.value : null;
+      const label = typeof input.label === "string" ? input.label : null;
+      const index = optionalFiniteNumber(input.index);
+      if (value == null && label == null && index == null) {
+        throw new Error("Browser selectOption requires --value, --label, or --index.");
+      }
+      await focusElementTarget(tab, input, { select: false });
+      const result = await evaluateFocusedElementScript(tab.webContents, SELECT_OPTION_FUNCTION, {
+        value,
+        label,
+        index,
+      });
+      const record = isRecord(result) ? result : {};
+      const error = stringOrNull(record.error);
+      if (error) throw new Error(error);
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function uploadFile(
+    input: BuiltInBrowserUploadFileArgs,
+  ): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before uploading a file.");
+    return runTracedAgentAction(tab, "uploadFile", input, async () => {
+      const roots = builtInBrowserUploadRoots({
+        projectRoot: args.collection.projectRoot,
+        observationRoot: observationRootPath,
+        adeHome: null,
+        tmpDir: os.tmpdir(),
+      });
+      const paths = resolveBuiltInBrowserUploadPaths(input.paths as readonly unknown[], roots);
+      if (paths.length > MAX_UPLOAD_FILE_COUNT) {
+        throw new Error(`Browser upload accepts at most ${MAX_UPLOAD_FILE_COUNT} files.`);
+      }
+      for (const filePath of paths) {
+        const stat = await fs.stat(filePath).catch(() => null);
+        if (!stat?.isFile()) throw new Error(`Browser upload path is not a readable file: ${filePath}`);
+      }
+      await focusElementTarget(tab, input, { select: false });
+      const wc = tab.webContents;
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "DOM.enable");
+        await sendDebuggerCommand(wc, "Runtime.enable");
+        const objectId = await focusedElementObjectId(wc);
+        try {
+          await sendDebuggerCommand(wc, "DOM.setFileInputFiles", { files: paths, objectId });
+        } finally {
+          await sendDebuggerCommand(wc, "Runtime.releaseObject", { objectId }).catch(() => {});
+        }
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  const focusedElementObjectId = async (wc: WebContents): Promise<string> => {
+    const response = await sendDebuggerCommand<CdpRuntimeEvaluateObjectResponse>(wc, "Runtime.evaluate", {
+      expression: `(${DEEP_ACTIVE_ELEMENT_FUNCTION})()`,
+      returnByValue: false,
+      silent: true,
+    });
+    const objectId = response.result?.objectId;
+    if (!objectId) throw new Error("Could not resolve the focused browser element.");
+    return objectId;
+  };
+
+  const evaluateFocusedElementScript = async (
+    wc: WebContents,
+    functionSource: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const expression = `(${functionSource})((${DEEP_ACTIVE_ELEMENT_FUNCTION})(), ${JSON.stringify(payload)})`;
+    const response = await withTemporaryDebugger(wc, async () => {
+      await sendDebuggerCommand(wc, "Runtime.enable");
+      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        silent: true,
+      });
+    });
+    if (response.exceptionDetails) {
+      throw new Error("Browser element script evaluation failed.");
+    }
+    return response.result?.value;
+  };
+
+  /* ── Recording ─────────────────────────────────────────────────────────── */
+
+  const recordingDirectory = (tab: BrowserTabState, recordingId: string): string =>
+    path.join(observationDirectory(tab), RECORDING_CACHE_DIR, sanitizePathSegment(recordingId));
+
+  async function startRecording(
+    input: BuiltInBrowserStartRecordingArgs,
+  ): Promise<BuiltInBrowserStartRecordingResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before recording.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested a screen recording of this browser tab.");
+    if (tab.recording) {
+      throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    const fps = normalizeBuiltInBrowserRecordingFps(input.fps);
+    const caption = stringOrNull(input.caption);
+    const recordingId = `rec-${Date.now()}-${randomUUID()}`;
+    const directory = recordingDirectory(tab, recordingId);
+    const session: BuiltInBrowserRecordingSession = await createBuiltInBrowserRecordingSession({
+      id: recordingId,
+      directory,
+      fps,
+      caption,
+      createRecorder: tabRecorderFactory(tab),
+      logger: logger(),
+    });
+    tab.recording = session;
+    const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
+    emit({
+      type: "recording",
+      tabId: tab.id,
+      recording: status,
+      frameCount: 0,
+      updatedAt: new Date().toISOString(),
+    });
+    emitStatus();
+    return {
+      tabId: tab.id,
+      recording: status,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  async function stopRecording(
+    input: BuiltInBrowserStopRecordingArgs = {},
+  ): Promise<BuiltInBrowserStopRecordingResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a recording.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested to stop a browser screen recording.");
+    const session = tab.recording;
+    if (!session) throw new Error(`Browser tab ${tab.id} is not recording.`);
+    tab.recording = null;
+    const result = await session.stop();
+    emit({
+      type: "recording",
+      tabId: tab.id,
+      recording: null,
+      frameCount: result.frameCount,
+      updatedAt: new Date().toISOString(),
+    });
+    emitStatus();
+    return {
+      tabId: tab.id,
+      path: result.filePath,
+      relativePath: observationRelativeBasePath
+        ? path.relative(observationRelativeBasePath, result.filePath)
+        : null,
+      durationMs: result.durationMs,
+      fps: session.fps,
+      frameCount: result.frameCount,
+      format: result.format,
+      mimeType: result.mimeType,
+      caption: session.caption,
+      manifestPath: result.manifestPath,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  const tabRecorderFactory = (tab: BrowserTabState): BuiltInBrowserRecorderFactory => {
+    if (args.createTabRecorder) return args.createTabRecorder;
+    const createCaptureWindow = args.createRecordingWindow ?? defaultCaptureWindowFactory;
+    return createDisplayMediaRecorderFactory({
+      createCaptureWindow: () => {
+        const captureWindow = createCaptureWindow();
+        if (!captureWindow) {
+          throw new Error("ADE browser recording needs a desktop window; none is available.");
+        }
+        return captureWindow;
+      },
+      armDisplayMedia: (frameTreeNodeId) => armDisplayMediaCapture(frameTreeNodeId, tab.webContents),
+      logger: logger(),
+    });
+  };
+
+  /**
+   * Grants exactly one `getDisplayMedia` answer, for one capture frame, for a
+   * short window. Everything else — including a site in the browser partition
+   * trying to capture its own tab — is denied.
+   */
+  const armDisplayMediaCapture = (
+    frameTreeNodeId: number,
+    target: WebContents,
+    ttlMs = DISPLAY_MEDIA_ARM_TTL_MS,
+  ): (() => void) => {
+    const captureSession = session.fromPartition(BROWSER_RECORDER_PARTITION);
+    if (!configuredDisplayMediaSessions.has(captureSession)) {
+      configuredDisplayMediaSessions.add(captureSession);
+      captureSession.setDisplayMediaRequestHandler?.((request, callback) => {
+        const nodeId = (request as { frame?: { frameTreeNodeId?: number } }).frame?.frameTreeNodeId;
+        const armed = typeof nodeId === "number" ? armedDisplayMediaFrames.get(nodeId) ?? null : null;
+        if (!armed || armed.expiresAt < Date.now() || armed.target.isDestroyed()) {
+          callback({});
+          return;
+        }
+        callback({ video: armed.target.mainFrame });
+      });
+    }
+    armedDisplayMediaFrames.set(frameTreeNodeId, {
+      target,
+      expiresAt: Date.now() + ttlMs,
+    });
+    return () => {
+      armedDisplayMediaFrames.delete(frameTreeNodeId);
+    };
+  };
+
+  const defaultCaptureWindowFactory = (): CaptureWindowLike => {
+    const BrowserWindowCtor = electronBrowserWindowCtor();
+    if (typeof BrowserWindowCtor !== "function") {
+      throw new Error("ADE browser recording is unavailable without an Electron window.");
+    }
+    return new BrowserWindowCtor({
+      show: false,
+      width: 16,
+      height: 16,
+      webPreferences: {
+        // Throwaway in-memory partition: the capture page never touches the
+        // authenticated global browser profile.
+        partition: BROWSER_RECORDER_PARTITION,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    }) as unknown as CaptureWindowLike;
+  };
+
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested element inspection in this browser tab.");
@@ -2735,6 +3807,7 @@ function createBuiltInBrowserWindowService(args: {
     unsubscribeNetworkObserver = null;
     removeTabViewsFromWindow();
     for (const tab of tabs) {
+      teardownTabCapabilities(tab);
       MANAGED_BROWSER_WEB_CONTENTS.delete(tab.webContents);
       if (tab.ownsWebContents) {
         try {
@@ -2808,7 +3881,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const ensureDebuggerAttached = async (
     wc: WebContents,
-    owner: "inspect" | "screenshot",
+    owner: "inspect" | "screenshot" | "hold",
   ): Promise<boolean> => {
     if (wc.debugger.isAttached()) return false;
     wc.debugger.attach("1.3");
@@ -3473,6 +4546,20 @@ function createBuiltInBrowserWindowService(args: {
     selectPoint,
     selectCurrent,
     clearSelection,
+    setEmulation,
+    setZoom,
+    findInPage,
+    stopFindInPage,
+    setDevTools,
+    setNetworkLogging,
+    getNetworkLog,
+    exportHar,
+    hover,
+    drag,
+    selectOption,
+    uploadFile,
+    startRecording,
+    stopRecording,
     dispose,
   };
 }
@@ -3510,6 +4597,13 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     ownerChatSessionId: tab.ownerChatSessionId,
     ownerClaimedAt: tab.ownerClaimedAt,
     ownerLeaseExpiresAt: tab.ownerLeaseExpiresAt,
+    zoomFactor: tab.zoomFactor,
+    devToolsOpen: tab.devToolsMode !== null,
+    emulation: tab.emulation,
+    networkLogging: tab.networkLoggingEnabled,
+    recording: tab.recording
+      ? { startedAt: tab.recording.startedAt, fps: tab.recording.fps }
+      : null,
   };
 }
 
@@ -3680,8 +4774,24 @@ function actionTargetForTrace(action: string, input: Record<string, unknown>): R
     const value = optionalFiniteNumber(input[key]);
     if (value != null) target[key] = value;
   };
-  for (const key of ["selector", "testId", "handle", "button", "key", "url", "loadState"]) copyString(key);
-  for (const key of ["elementIndex", "x", "y", "deltaX", "deltaY", "clickCount", "timeoutMs", "networkIdleMs"]) copyNumber(key);
+  for (const key of [
+    "selector", "testId", "handle", "button", "key", "url", "loadState",
+    "toSelector", "toTestId", "toHandle", "label", "preset", "mode",
+  ]) copyString(key);
+  for (const key of [
+    "elementIndex", "x", "y", "deltaX", "deltaY", "clickCount", "timeoutMs", "networkIdleMs",
+    "toElementIndex", "toX", "toY", "steps", "index", "factor", "fps", "width", "height",
+  ]) copyNumber(key);
+  for (const key of ["open", "enabled", "mobile", "matchCase", "forward"]) {
+    if (typeof input[key] === "boolean") target[key] = input[key];
+  }
+  if (action === "uploadFile" && Array.isArray(input.paths)) {
+    // Never copy the paths themselves into a trace an agent can read back.
+    target.pathCount = input.paths.length;
+  }
+  if (action === "selectOption" && typeof input.value === "string") {
+    target.value = input.value.slice(0, 300);
+  }
   if (typeof input.text === "string") {
     if (action === "typeText") {
       target.textLength = input.text.length;
@@ -4649,6 +5759,72 @@ function(inputArg) {
     snapshot,
     target: describedTarget,
     error: locate && !describedTarget ? "No matching browser element was found." : null
+  };
+}
+`;
+
+/**
+ * Resolves the element the page actually has focused, descending through open
+ * shadow roots and same-origin iframes so `focusElementTarget` results inside
+ * a frame or web component still resolve to the real control.
+ */
+const DEEP_ACTIVE_ELEMENT_FUNCTION = String.raw`
+function deepActiveElement() {
+  let element = document.activeElement;
+  for (let depth = 0; depth < 20 && element; depth += 1) {
+    if (element.shadowRoot && element.shadowRoot.activeElement) {
+      element = element.shadowRoot.activeElement;
+      continue;
+    }
+    if (element.tagName === "IFRAME" || element.tagName === "FRAME") {
+      let inner = null;
+      try {
+        inner = element.contentDocument ? element.contentDocument.activeElement : null;
+      } catch (error) {
+        inner = null;
+      }
+      if (!inner || inner === element) break;
+      element = inner;
+      continue;
+    }
+    break;
+  }
+  return element;
+}
+`;
+
+const SELECT_OPTION_FUNCTION = String.raw`
+function selectBrowserOption(element, payload) {
+  if (!element) return { error: "No focused browser element to select an option on." };
+  if (element.tagName !== "SELECT") {
+    return { error: "Browser selectOption target is not a <select> element." };
+  }
+  if (element.disabled) return { error: "Matching browser element is disabled." };
+  const options = Array.prototype.slice.call(element.options || []);
+  let match = null;
+  if (payload.value != null) {
+    match = options.find(function (option) { return option.value === payload.value; }) || null;
+  }
+  if (!match && payload.label != null) {
+    const wanted = String(payload.label).trim().toLowerCase();
+    match = options.find(function (option) {
+      return (option.label || option.textContent || "").trim().toLowerCase() === wanted;
+    }) || null;
+  }
+  if (!match && payload.index != null) {
+    match = options[payload.index] || null;
+  }
+  if (!match) return { error: "No matching <option> was found for the requested value/label/index." };
+  if (match.disabled) return { error: "Matching <option> is disabled." };
+  element.value = match.value;
+  match.selected = true;
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+  return {
+    ok: true,
+    value: match.value,
+    label: (match.label || match.textContent || "").trim(),
+    index: match.index,
   };
 }
 `;

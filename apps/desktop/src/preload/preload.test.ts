@@ -8959,3 +8959,135 @@ describe("per-chat runtime routing", () => {
     }
   });
 });
+
+describe("preload built-in browser loopback tunneling", () => {
+  const REMOTE_PIN = {
+    kind: "remote" as const,
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    runtimeName: "Mac Studio",
+    projectId: "project-a",
+    rootPath: "/remote/repo-a",
+    displayName: "repo-a",
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  async function loadBridge() {
+    let forwardCalls = 0;
+    const invoke = vi.fn(async (channel: string, arg: unknown) => {
+      if (channel === IPC.remoteRuntimeEnsurePortForward) {
+        forwardCalls += 1;
+        const request = (arg as { request: { remotePort: number } }).request;
+        return {
+          targetId: "target-studio",
+          remoteHost: "127.0.0.1",
+          remotePort: request.remotePort,
+          localHost: "127.0.0.1",
+          localPort: 52413,
+          localUrl: "http://127.0.0.1:52413",
+          label: null,
+          createdAt: 0,
+          lastUsedAt: 0,
+        };
+      }
+      return { ok: true };
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return { bridge: (globalThis as any).__adeBridge, invoke, forwardCalls: () => forwardCalls };
+  }
+
+  it("navigates a remote-pinned chat through THIS desktop's browser, not the pinned one", async () => {
+    const { bridge, invoke } = await loadBridge();
+
+    await bridge.builtInBrowser.navigate({ url: "http://localhost:3000/app" }, REMOTE_PIN);
+
+    // The browser is a WebContentsView owned by this main process, so the call
+    // must land on local IPC — never `remoteRuntimeCallAction` against the
+    // pinned machine, which has no browser to drive.
+    expect(invoke).toHaveBeenCalledWith(IPC.builtInBrowserNavigate, {
+      url: "http://127.0.0.1:52413/app",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.objectContaining({
+        request: expect.objectContaining({ domain: "built_in_browser" }),
+      }),
+    );
+  });
+
+  it("reuses one forward per (machine, port) across navigations", async () => {
+    const { bridge, forwardCalls } = await loadBridge();
+
+    await bridge.builtInBrowser.navigate({ url: "http://localhost:3000/a" }, REMOTE_PIN);
+    await bridge.builtInBrowser.navigate({ url: "http://127.0.0.1:3000/b" }, REMOTE_PIN);
+    await bridge.builtInBrowser.createTab({ url: "http://[::1]:3000/c" }, REMOTE_PIN);
+
+    expect(forwardCalls()).toBe(1);
+  });
+
+  it("leaves non-loopback URLs and local pins alone", async () => {
+    const { bridge, invoke, forwardCalls } = await loadBridge();
+
+    await bridge.builtInBrowser.navigate({ url: "https://example.test/" }, REMOTE_PIN);
+    expect(invoke).toHaveBeenCalledWith(IPC.builtInBrowserNavigate, {
+      url: "https://example.test/",
+    });
+    expect(forwardCalls()).toBe(0);
+
+    // A pin on another checkout of THIS computer keeps routing through that
+    // runtime, which proxies back to this same browser.
+    await bridge.builtInBrowser.navigate(
+      { url: "http://localhost:3000/" },
+      { kind: "local", key: "local:/other", rootPath: "/other", displayName: "other" },
+    );
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.objectContaining({
+      rootPath: "/other",
+      request: expect.objectContaining({ domain: "built_in_browser", action: "navigate" }),
+    }));
+    expect(forwardCalls()).toBe(0);
+  });
+
+  it("reports the tunnel so the URL bar can show the remote origin", async () => {
+    const { bridge } = await loadBridge();
+
+    const localized = await bridge.builtInBrowser.localizeRemoteUrl(
+      { url: "http://localhost:3000/app" },
+      REMOTE_PIN,
+    );
+
+    expect(localized).toEqual({
+      url: "http://127.0.0.1:52413/app",
+      forward: {
+        machineKey: "target-studio",
+        machineLabel: "Mac Studio",
+        remotePort: 3000,
+        remoteOrigin: "http://localhost:3000",
+        localPort: 52413,
+        localOrigin: "http://127.0.0.1:52413",
+      },
+    });
+  });
+});

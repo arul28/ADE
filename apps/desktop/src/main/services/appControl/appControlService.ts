@@ -5,30 +5,95 @@ import net from "node:net";
 import path from "node:path";
 import { WebSocket, type RawData } from "ws";
 import type {
+  AppControlActionTraceEntry,
+  AppControlAgentActionArgs,
+  AppControlAgentActionResult,
+  AppControlAgentClearArgs,
+  AppControlAgentClickArgs,
+  AppControlAgentFillArgs,
+  AppControlAgentHoverArgs,
+  AppControlAgentPressArgs,
+  AppControlAgentScrollArgs,
+  AppControlAgentTypeArgs,
+  AppControlAgentWaitArgs,
   AppControlClaimArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlConsoleDiagnostic,
   AppControlContextItem,
   AppControlCoordinateSpace,
+  AppControlDiagnostics,
+  AppControlDomSnapshot,
+  AppControlDriver,
+  AppControlDriverCapability,
+  AppControlDriversResult,
   AppControlElement,
+  AppControlElementSnapshot,
+  AppControlElementTargetArgs,
   AppControlEventPayload,
   AppControlFrame,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlNetworkDiagnostic,
+  AppControlObservation,
+  AppControlObservationArgs,
+  AppControlObservationElementMap,
   AppControlScreencastFrame,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlSourceMatch,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
+  AppControlTraceArgs,
+  AppControlTraceResult,
   AppControlTypeTextArgs,
+  AppControlWindowsResult,
   WindowsShellKind,
 } from "../../../shared/types";
+import {
+  AGENT_DOM_COLLECTOR_FUNCTION,
+  AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
+  keyEventForAgentInput,
+  parseObservationElementHandle,
+  sanitizeObservationPathSegment,
+} from "../../../shared/agentObservation";
+import {
+  APP_CONTROL_OBSERVATION_CACHE_DIR,
+  APP_CONTROL_OBSERVATION_MAX_AGE_MS,
+  MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS,
+  MAX_APP_CONTROL_NETWORK_DIAGNOSTICS,
+  MAX_APP_CONTROL_TRACE_ENTRIES,
+  MAX_ELEMENT_MAP_ELEMENTS,
+  actionTargetForTrace,
+  applyObservationHandles,
+  decodeObservationDataUrl,
+  elementLocatePayload,
+  emptyDiagnostics,
+  finiteNumber,
+  hasElementTarget,
+  isRecord,
+  normalizeActionObserveDelayMs,
+  normalizeDomSnapshot,
+  normalizeElementSnapshot,
+  normalizeNetworkIdleMs,
+  normalizeObservationKeepCount,
+  normalizeObservationMaxElements,
+  normalizePositiveInteger,
+  normalizeTraceLimit,
+  normalizeWaitTimeoutMs,
+  observationDirectory,
+  optionalFiniteNumber,
+  pruneObservationCacheRoot,
+  pruneObservationDirectory,
+  stringOrNull,
+} from "./appControlObservations";
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
 import { imageDimensions } from "../shared/imageDimensions";
@@ -51,6 +116,7 @@ const MAX_DOM_ELEMENTS = 450;
 const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html", ".css"]);
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
 const SOURCE_FILE_CACHE_MAX = 200;
+const MAX_PENDING_NETWORK_REQUESTS = 500;
 
 function cleanClaimId(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -1010,6 +1076,25 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   let screencastEndpoint: string | null = null;
   let screencastGeneration = 0;
   let lastScreencastFrame: AppControlScreencastFrame | null = null;
+  // Agent-observation state. Diagnostics ride along on the persistent
+  // screencast client so `observe` can report console errors, failed requests,
+  // and in-flight request count without opening another socket per call.
+  let consoleDiagnostics: AppControlConsoleDiagnostic[] = [];
+  let networkDiagnostics: AppControlNetworkDiagnostic[] = [];
+  const pendingNetworkRequests = new Map<string, { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number }>();
+  let lastNetworkActivityAtMs = Date.now();
+  let actionTrace: AppControlActionTraceEntry[] = [];
+  // Trace before/after context. The controlled app has no tab bar to read, so
+  // observations and waits keep the last known document identity here.
+  let lastObservedUrl: string | null = null;
+  let lastObservedTitle: string | null = null;
+
+  const resetDiagnostics = (): void => {
+    consoleDiagnostics = [];
+    networkDiagnostics = [];
+    pendingNetworkRequests.clear();
+    lastNetworkActivityAtMs = Date.now();
+  };
 
   const emit = (payload: AppControlEventPayload) => {
     args.onEvent?.(payload);
@@ -1056,7 +1141,143 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     // image from the previous target after the user switches windows or the
     // app exits.
     lastScreencastFrame = null;
+    resetDiagnostics();
     await closeScreencastClient(client);
+  };
+
+  const pushConsoleDiagnostic = (entry: AppControlConsoleDiagnostic): void => {
+    consoleDiagnostics = [...consoleDiagnostics, entry].slice(-MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS);
+  };
+
+  const pushNetworkDiagnostic = (entry: AppControlNetworkDiagnostic): void => {
+    networkDiagnostics = [...networkDiagnostics, entry].slice(-MAX_APP_CONTROL_NETWORK_DIAGNOSTICS);
+  };
+
+  const consoleLevelFor = (value: unknown): AppControlConsoleDiagnostic["level"] => {
+    const raw = typeof value === "string" ? value.toLowerCase() : "";
+    if (raw === "error" || raw === "assert") return "error";
+    if (raw === "warning" || raw === "warn") return "warning";
+    if (raw === "debug" || raw === "verbose") return "debug";
+    return "info";
+  };
+
+  /**
+   * Console + network capture for `observe`. Registered on the long-lived
+   * screencast client so observations carry the same diagnostics the built-in
+   * browser reports, and so a failed fetch is visible to the agent even when
+   * the UI looks unchanged.
+   */
+  const subscribeDiagnostics = (client: CdpClient): void => {
+    client.on("Runtime.consoleAPICalled", (params) => {
+      if (!isRecord(params)) return;
+      const argsList = Array.isArray(params.args) ? params.args : [];
+      const message = argsList
+        .map((entry) => {
+          if (!isRecord(entry)) return "";
+          if (typeof entry.value === "string") return entry.value;
+          if (entry.value !== undefined) return JSON.stringify(entry.value);
+          return stringOrNull(entry.description) ?? "";
+        })
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 2_000);
+      if (!message) return;
+      pushConsoleDiagnostic({
+        level: consoleLevelFor(params.type),
+        message,
+        sourceId: null,
+        line: null,
+        column: null,
+        timestamp: nowIso(),
+      });
+    });
+    client.on("Log.entryAdded", (params) => {
+      const entry = isRecord(params) && isRecord(params.entry) ? params.entry : null;
+      if (!entry) return;
+      const message = stringOrNull(entry.text);
+      if (!message) return;
+      pushConsoleDiagnostic({
+        level: consoleLevelFor(entry.level),
+        message: message.slice(0, 2_000),
+        sourceId: stringOrNull(entry.url),
+        line: normalizePositiveInteger(entry.lineNumber),
+        column: null,
+        timestamp: nowIso(),
+      });
+    });
+    client.on("Network.requestWillBeSent", (params) => {
+      if (!isRecord(params)) return;
+      const requestId = stringOrNull(params.requestId);
+      const request = isRecord(params.request) ? params.request : {};
+      const url = stringOrNull(request.url);
+      if (!requestId || !url) return;
+      lastNetworkActivityAtMs = Date.now();
+      // A long-lived app can start requests that never emit a finished/failed
+      // event (streams, aborted sockets). Bound the map so `pendingRequestCount`
+      // stays meaningful and the session cannot leak entries.
+      if (pendingNetworkRequests.size >= MAX_PENDING_NETWORK_REQUESTS) {
+        const oldest = pendingNetworkRequests.keys().next();
+        if (!oldest.done) pendingNetworkRequests.delete(oldest.value);
+      }
+      pendingNetworkRequests.set(requestId, {
+        url,
+        method: stringOrNull(request.method),
+        resourceType: stringOrNull(params.type),
+        startedAt: nowIso(),
+        startedAtMs: Date.now(),
+      });
+    });
+    const settleRequest = (requestId: string | null): { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number } | null => {
+      lastNetworkActivityAtMs = Date.now();
+      if (!requestId) return null;
+      const pending = pendingNetworkRequests.get(requestId) ?? null;
+      pendingNetworkRequests.delete(requestId);
+      return pending;
+    };
+    client.on("Network.responseReceived", (params) => {
+      if (!isRecord(params)) return;
+      const response = isRecord(params.response) ? params.response : {};
+      const statusCode = optionalFiniteNumber(response.status);
+      if (statusCode == null || statusCode < 400) {
+        lastNetworkActivityAtMs = Date.now();
+        return;
+      }
+      const requestId = stringOrNull(params.requestId);
+      const pending = requestId ? pendingNetworkRequests.get(requestId) ?? null : null;
+      pushNetworkDiagnostic({
+        url: stringOrNull(response.url) ?? pending?.url ?? "about:blank",
+        method: pending?.method ?? null,
+        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
+        statusCode,
+        error: null,
+        startedAt: pending?.startedAt ?? null,
+        endedAt: nowIso(),
+        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
+      });
+    });
+    client.on("Network.loadingFinished", (params) => {
+      settleRequest(isRecord(params) ? stringOrNull(params.requestId) : null);
+    });
+    client.on("Network.loadingFailed", (params) => {
+      if (!isRecord(params)) return;
+      const pending = settleRequest(stringOrNull(params.requestId));
+      if (params.canceled === true) return;
+      pushNetworkDiagnostic({
+        url: pending?.url ?? "about:blank",
+        method: pending?.method ?? null,
+        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
+        statusCode: null,
+        error: stringOrNull(params.errorText) ?? "Request failed.",
+        startedAt: pending?.startedAt ?? null,
+        endedAt: nowIso(),
+        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
+      });
+    });
+    // Best-effort: a target that refuses one of these still streams frames and
+    // serves input, it just reports fewer diagnostics.
+    void client.send("Runtime.enable").catch(() => {});
+    void client.send("Log.enable").catch(() => {});
+    void client.send("Network.enable").catch(() => {});
   };
 
   const startScreencast = async (sessionId: string, targetId: string | null, cdpEndpoint: string): Promise<void> => {
@@ -1101,6 +1322,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     screencastSessionId = sessionId;
     screencastTargetId = targetId;
     screencastEndpoint = cdpEndpoint;
+    resetDiagnostics();
+    subscribeDiagnostics(client);
     try {
       await client.send("Page.enable");
     } catch {
@@ -1303,6 +1526,51 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     });
   }) ?? null;
 
+  // ---------------------------------------------------------------------
+  // Driver capability gate
+  //
+  // `cdp` is the only implemented driver. `computer_use` is typed and listed
+  // so callers can discover it, but selecting it fails with a typed error
+  // instead of silently falling back to CDP.
+  // ---------------------------------------------------------------------
+  const COMPUTER_USE_PLATFORM_REASON = "Native app control is macOS only.";
+  const COMPUTER_USE_UNIMPLEMENTED_REASON =
+    "The computer-use App Control driver is not implemented in this build.";
+
+  const computerUseCapability = (): AppControlDriverCapability => (
+    process.platform === "darwin"
+      ? { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_UNIMPLEMENTED_REASON, implemented: false }
+      : { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_PLATFORM_REASON, implemented: false }
+  );
+
+  const listDrivers = (): AppControlDriversResult => ({
+    platform: process.platform,
+    activeDriver: activeSession?.driver ?? null,
+    drivers: [
+      {
+        driver: "cdp",
+        status: "available",
+        reason: null,
+        implemented: true,
+      },
+      computerUseCapability(),
+    ],
+  });
+
+  const normalizeDriver = (value: AppControlDriver | null | undefined): AppControlDriver => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw || raw === "cdp") return "cdp";
+    if (raw === "computer_use" || raw === "computer-use") return "computer_use";
+    throw new Error(`Unknown App Control driver '${raw}'. Supported drivers: cdp, computer_use.`);
+  };
+
+  const requireSupportedDriver = (value: AppControlDriver | null | undefined): AppControlDriver => {
+    const driver = normalizeDriver(value);
+    if (driver === "cdp") return driver;
+    const capability = computerUseCapability();
+    throw new Error(`App Control driver 'computer_use' is unavailable: ${capability.reason}`);
+  };
+
   const getStatus = (): AppControlStatus => {
     const waitingForCdp = activeSession
       && (activeSession.status === "starting" || activeSession.status === "running")
@@ -1493,6 +1761,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   };
 
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {
+    requireSupportedDriver(connectArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !connectArgs.force) {
       throw new Error("App Control already has an active session. Pass force=true to replace it.");
@@ -1525,11 +1794,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       cdpEndpoint: target.webSocketDebuggerUrl,
       cdpTargetId: target.id,
       provider: "cdp",
+      driver: "cdp",
       chatSessionId: connectArgs.chatSessionId ?? null,
       startedAt: nowIso(),
       connectedAt: nowIso(),
       status: "connected",
       lastError: null,
+      lastObservationId: null,
+      lastTraceEntryId: null,
     };
     emit({ type: "session-started", session: activeSession });
     startCdpHealthCheck(activeSession.id, cdpPort);
@@ -1538,6 +1810,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   };
 
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+    requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
       throw new Error("App Control already has an active session. Pass --force to replace it.");
@@ -1574,11 +1847,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       cdpEndpoint: null,
       cdpTargetId: null,
       provider: "cdp",
+      driver: "cdp",
       chatSessionId: launchArgs.chatSessionId ?? null,
       startedAt: nowIso(),
       connectedAt: null,
       status: "starting",
       lastError: null,
+      lastObservationId: null,
+      lastTraceEntryId: null,
     };
     activeSession = session;
     const inheritedEnv = Object.fromEntries(
@@ -2329,6 +2605,615 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return args.ptyService!.signalTerminal({ terminalId, signal: terminalArgs.signal ?? "SIGINT" });
   };
 
+  // =====================================================================
+  // Agent action model
+  //
+  // Mirrors the built-in browser: `observe` returns a screenshot plus a
+  // bounded element list carrying stable `obs-…:e:N` handles, and every action
+  // resolves its target, scrolls it into view, focuses it, refuses disabled
+  // targets, records a bounded per-session trace entry, and answers with a
+  // fresh post-action observation.
+  //
+  // The legacy `click` / `typeText` / `scroll` / `dispatchKey` primitives stay
+  // as-is for the renderer's live-frame input; these are the agent surface.
+  // =====================================================================
+
+  const agentSessionFor = (input: AppControlSessionTargetArgs = {}): AppControlSession => {
+    if (!activeSession) throw new Error("No active App Control session. Launch or connect first.");
+    const requested = stringOrNull(input.sessionId);
+    if (requested && requested !== activeSession.id) {
+      throw new Error(`App Control session '${requested}' is not the active session.`);
+    }
+    return activeSession;
+  };
+
+  const observationRootFor = (session: AppControlSession): string => {
+    const projectRoot = normalizeProjectRoot(session.projectRoot, args.projectRoot);
+    return path.join(projectRoot, APP_CONTROL_OBSERVATION_CACHE_DIR);
+  };
+
+  const evaluateAgentDom = async (
+    client: CdpClient,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
+    const expression = `(${AGENT_DOM_COLLECTOR_FUNCTION})(${JSON.stringify(payload)})`;
+    const evaluated = await client.send<CdpRuntimeEvaluateResponse<unknown>>("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      silent: true,
+    });
+    if (evaluated.exceptionDetails) {
+      throw new Error("App Control DOM evaluation failed in the controlled app.");
+    }
+    const value = evaluated.result?.value;
+    return isRecord(value) ? value : {};
+  };
+
+  const evaluateElementMapOverlay = async (
+    client: CdpClient,
+    payload: Record<string, unknown>,
+  ): Promise<void> => {
+    const expression = `(${AGENT_ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`;
+    await client.send("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      silent: true,
+    });
+  };
+
+  const readAgentDomSnapshot = async (
+    client: CdpClient,
+    input: AppControlObservationArgs,
+  ): Promise<AppControlDomSnapshot | null> => {
+    const result = await evaluateAgentDom(client, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+    });
+    return normalizeDomSnapshot(result.snapshot);
+  };
+
+  const captureElementMapScreenshot = async (
+    client: CdpClient,
+    session: AppControlSession,
+    dom: AppControlDomSnapshot,
+  ): Promise<AppControlScreenshot | null> => {
+    if (!dom.elements.length) return null;
+    await evaluateElementMapOverlay(client, { elements: dom.elements.slice(0, MAX_ELEMENT_MAP_ELEMENTS) });
+    try {
+      return await capturePageScreenshotForObservation(client, session);
+    } finally {
+      await evaluateElementMapOverlay(client, { clear: true }).catch(() => {});
+    }
+  };
+
+  /**
+   * Observations always want a fresh full-fidelity paint, so this forces
+   * `Page.captureScreenshot` rather than reusing the throttled screencast
+   * frame; the cached frame is only a fallback when capture is unavailable.
+   */
+  const capturePageScreenshotForObservation = async (
+    client: CdpClient,
+    session: AppControlSession,
+  ): Promise<AppControlScreenshot> => {
+    await enablePageDomain(client);
+    const response = await client.send<CdpScreenshotResponse>("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+    });
+    const buffer = Buffer.from(response.data, "base64");
+    const dimensions = imageDimensions(buffer) ?? { width: 0, height: 0 };
+    return {
+      sessionId: session.id,
+      cdpTargetId: session.cdpTargetId,
+      capturedAt: nowIso(),
+      width: dimensions.width,
+      height: dimensions.height,
+      dataUrl: `data:image/png;base64,${response.data}`,
+    };
+  };
+
+  const snapshotAgentDiagnostics = (): AppControlDiagnostics => ({
+    capturedAt: nowIso(),
+    pendingRequestCount: pendingNetworkRequests.size,
+    console: [...consoleDiagnostics],
+    network: [...networkDiagnostics],
+  });
+
+  const writeObservation = async (
+    session: AppControlSession,
+    screenshot: AppControlScreenshot,
+    input: AppControlObservationArgs,
+    dom: AppControlDomSnapshot | null,
+    elementMapScreenshot: AppControlScreenshot | null,
+    diagnostics: AppControlDiagnostics | null,
+  ): Promise<AppControlObservation> => {
+    const projectRoot = normalizeProjectRoot(session.projectRoot, args.projectRoot);
+    const rootPath = observationRootFor(session);
+    const keepCount = normalizeObservationKeepCount(input.keepCount);
+    const id = `obs-${Date.now()}-${randomUUID()}`;
+    const dir = observationDirectory(rootPath, session.id);
+    const filePath = path.join(dir, `${id}.png`);
+    const elementMapPath = path.join(dir, `${id}.map.png`);
+    const jsonPath = path.join(dir, `${id}.json`);
+    const image = decodeObservationDataUrl(screenshot.dataUrl);
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(filePath, image.buffer);
+    const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
+    let elementMap: AppControlObservationElementMap | null = null;
+    if (elementMapScreenshot) {
+      const elementMapImage = decodeObservationDataUrl(elementMapScreenshot.dataUrl);
+      await fs.promises.writeFile(elementMapPath, elementMapImage.buffer);
+      elementMap = {
+        filePath: elementMapPath,
+        relativePath: path.relative(projectRoot, elementMapPath),
+        width: elementMapScreenshot.width,
+        height: elementMapScreenshot.height,
+        mimeType: elementMapImage.mimeType,
+        elementCount: domWithHandles?.elements.length ?? 0,
+        ...(input.includeDataUrl ? { dataUrl: elementMapScreenshot.dataUrl } : {}),
+      };
+    }
+    const observation: AppControlObservation = {
+      id,
+      sessionId: session.id,
+      cdpTargetId: session.cdpTargetId,
+      url: domWithHandles?.url ?? null,
+      title: domWithHandles?.title ?? null,
+      capturedAt: screenshot.capturedAt,
+      width: screenshot.width,
+      height: screenshot.height,
+      mimeType: image.mimeType,
+      filePath,
+      relativePath: path.relative(projectRoot, filePath),
+      ...(input.includeDataUrl ? { dataUrl: screenshot.dataUrl } : {}),
+      ...(domWithHandles ? { dom: domWithHandles } : {}),
+      ...(elementMap ? { elementMap } : {}),
+      ...(diagnostics ? { diagnostics } : {}),
+      laneId: session.laneId,
+      chatSessionId: session.chatSessionId,
+      cleanup: { keepCount, keptCount: 1, deletedCount: 0 },
+    };
+    // Write once so the record (and its handles) exist before pruning counts
+    // it, then rewrite with the final cleanup numbers.
+    await fs.promises.writeFile(jsonPath, `${JSON.stringify(observation, null, 2)}\n`, "utf8");
+    observation.cleanup = await pruneObservationDirectory(dir, keepCount);
+    void pruneObservationCacheRoot(rootPath, APP_CONTROL_OBSERVATION_MAX_AGE_MS).catch(() => {});
+    await fs.promises.writeFile(jsonPath, `${JSON.stringify(observation, null, 2)}\n`, "utf8");
+    return observation;
+  };
+
+  const observeWithClient = async (
+    client: CdpClient,
+    session: AppControlSession,
+    input: AppControlObservationArgs,
+  ): Promise<AppControlObservation> => {
+    let screenshot: AppControlScreenshot;
+    try {
+      screenshot = await capturePageScreenshotForObservation(client, session);
+    } catch (error) {
+      const cached = lastScreencastFrame;
+      if (!cached || cached.sessionId !== session.id) throw error;
+      screenshot = {
+        sessionId: session.id,
+        cdpTargetId: session.cdpTargetId,
+        capturedAt: cached.capturedAt,
+        width: cached.width,
+        height: cached.height,
+        dataUrl: `data:${cached.mimeType};base64,${cached.data}`,
+      };
+    }
+    const dom = input.includeDom === false
+      ? null
+      : await readAgentDomSnapshot(client, input).catch((error) => {
+          args.logger.debug?.("app_control.observe_dom_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+    const elementMapScreenshot = input.includeElementMap && dom
+      ? await captureElementMapScreenshot(client, session, dom).catch((error) => {
+          args.logger.debug?.("app_control.observe_element_map_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        })
+      : null;
+    const diagnostics = input.includeDiagnostics === false ? null : snapshotAgentDiagnostics();
+    const observation = await writeObservation(session, screenshot, input, dom, elementMapScreenshot, diagnostics);
+    if (observation.url) lastObservedUrl = observation.url;
+    if (observation.title) lastObservedTitle = observation.title;
+    updateSession({ lastObservationId: observation.id });
+    return observation;
+  };
+
+  const observe = async (input: AppControlObservationArgs = {}): Promise<AppControlObservation> => {
+    agentSessionFor(input);
+    return withCdp((client, session) => observeWithClient(client, session, input));
+  };
+
+  const readObservationElementHandle = async (
+    session: AppControlSession,
+    handle: string,
+  ): Promise<AppControlElementSnapshot> => {
+    const parsed = parseObservationElementHandle(handle);
+    if (!parsed) {
+      throw new Error("App Control element handle must look like obs-...:e:<index>.");
+    }
+    const jsonPath = path.join(
+      observationDirectory(observationRootFor(session), session.id),
+      `${sanitizeObservationPathSegment(parsed.observationId)}.json`,
+    );
+    let parsedObservation: unknown;
+    try {
+      parsedObservation = JSON.parse(await fs.promises.readFile(jsonPath, "utf8"));
+    } catch {
+      throw new Error("App Control element handle expired or was pruned from scratch observations.");
+    }
+    const record = isRecord(parsedObservation) ? parsedObservation : {};
+    if (stringOrNull(record.sessionId) !== session.id) {
+      throw new Error("App Control element handle belongs to a different session.");
+    }
+    const dom = isRecord(record.dom) ? record.dom : {};
+    const elements = Array.isArray(dom.elements)
+      ? dom.elements
+          .map(normalizeElementSnapshot)
+          .filter((entry): entry is AppControlElementSnapshot => Boolean(entry))
+      : [];
+    const element = elements.find((entry) => entry.index === parsed.index) ?? null;
+    if (!element) {
+      throw new Error("App Control element handle no longer points to a saved element.");
+    }
+    return element;
+  };
+
+  const elementLocatePayloadForInput = async (
+    session: AppControlSession,
+    input: AppControlElementTargetArgs,
+  ): Promise<Record<string, unknown>> => {
+    const direct = elementLocatePayload(input);
+    if (Object.keys(direct).length > 0) return direct;
+    const handle = stringOrNull(input.handle);
+    if (!handle) return direct;
+    const element = await readObservationElementHandle(session, handle);
+    const text = element.label ?? element.text ?? element.value ?? element.placeholder;
+    const context = {
+      ...(element.framePath ? { framePath: element.framePath } : {}),
+      ...(element.shadowPath ? { shadowPath: element.shadowPath } : {}),
+    };
+    if (element.selector) return { ...context, selector: element.selector };
+    if (element.testId) return { ...context, testId: element.testId };
+    if (text) return { ...context, text };
+    return { ...context, elementIndex: element.index };
+  };
+
+  const locateElementTarget = async (
+    client: CdpClient,
+    session: AppControlSession,
+    input: AppControlElementTargetArgs & AppControlObservationArgs,
+    options: { focus?: boolean; select?: boolean; clear?: boolean; editableRequired?: boolean } = {},
+  ): Promise<AppControlElementSnapshot> => {
+    if (!hasElementTarget(input)) {
+      throw new Error("App Control element target requires selector, text, testId, elementIndex, or handle.");
+    }
+    const result = await evaluateAgentDom(client, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+      ...(options.focus ? { focus: true } : {}),
+      ...(options.select ? { select: true } : {}),
+      ...(options.clear ? { clear: true } : {}),
+      ...(options.editableRequired ? { editableRequired: true } : {}),
+      locate: await elementLocatePayloadForInput(session, input),
+    });
+    const error = stringOrNull(result.error);
+    if (error) throw new Error(error);
+    const target = normalizeElementSnapshot(result.target);
+    if (!target) throw new Error("No matching App Control element was found.");
+    if (target.disabled) throw new Error("Matching App Control element is disabled.");
+    return target;
+  };
+
+  const resolveAgentPoint = async (
+    client: CdpClient,
+    session: AppControlSession,
+    input: AppControlAgentClickArgs | AppControlAgentHoverArgs,
+  ): Promise<{ x: number; y: number; element: AppControlElementSnapshot | null }> => {
+    const x = optionalFiniteNumber(input.x);
+    const y = optionalFiniteNumber(input.y);
+    if (x != null || y != null) {
+      if (x == null || y == null) {
+        throw new Error("App Control click requires both x and y when using coordinates.");
+      }
+      const point = await normalizeViewportPoint(client, {
+        x,
+        y,
+        scale: input.scale ?? null,
+        coordinateSpace: input.coordinateSpace ?? null,
+      });
+      return { x: point.x, y: point.y, element: null };
+    }
+    const element = await locateElementTarget(client, session, input, { focus: true });
+    return { x: round(element.center.x), y: round(element.center.y), element };
+  };
+
+  const beginActionTrace = (
+    session: AppControlSession,
+    action: string,
+    input: Record<string, unknown>,
+  ) => ({
+    id: `trace-${Date.now()}-${randomUUID()}`,
+    action,
+    startedAt: nowIso(),
+    startedAtMs: Date.now(),
+    before: sessionSnapshotForTrace(),
+    target: actionTargetForTrace(action, input),
+    sessionId: session.id,
+    cdpTargetId: session.cdpTargetId,
+  });
+
+  const sessionSnapshotForTrace = (): { url: string | null; title: string | null } => ({
+    url: lastObservedUrl,
+    title: lastObservedTitle,
+  });
+
+  const finishActionTrace = (
+    draft: ReturnType<typeof beginActionTrace>,
+    status: AppControlActionTraceEntry["status"],
+    extra: { observationId?: string | null; error?: unknown } = {},
+  ): AppControlActionTraceEntry => {
+    const endedAtMs = Date.now();
+    const entry: AppControlActionTraceEntry = {
+      id: draft.id,
+      sessionId: draft.sessionId,
+      cdpTargetId: draft.cdpTargetId,
+      action: draft.action,
+      status,
+      startedAt: draft.startedAt,
+      endedAt: new Date(endedAtMs).toISOString(),
+      durationMs: Math.max(0, endedAtMs - draft.startedAtMs),
+      before: draft.before,
+      after: sessionSnapshotForTrace(),
+      target: draft.target,
+      observationId: extra.observationId ?? null,
+      error: extra.error == null
+        ? null
+        : extra.error instanceof Error ? extra.error.message : String(extra.error),
+    };
+    actionTrace = [...actionTrace, entry].slice(-MAX_APP_CONTROL_TRACE_ENTRIES);
+    updateSession({ lastTraceEntryId: entry.id });
+    return entry;
+  };
+
+  const agentActionResult = async (
+    client: CdpClient,
+    session: AppControlSession,
+    input: AppControlAgentActionArgs,
+  ): Promise<AppControlObservation | null> => {
+    if (input.observe === false) return null;
+    const waitMs = normalizeActionObserveDelayMs(input.waitAfterMs);
+    if (waitMs > 0) await delay(waitMs);
+    return observeWithClient(client, session, input);
+  };
+
+  const runAgentAction = async (
+    action: string,
+    input: AppControlAgentActionArgs,
+    run: (client: CdpClient, session: AppControlSession) => Promise<void>,
+  ): Promise<AppControlAgentActionResult> => {
+    agentSessionFor(input);
+    return withCdp(async (client, session) => {
+      const draft = beginActionTrace(session, action, input as Record<string, unknown>);
+      try {
+        await run(client, session);
+        const observation = await agentActionResult(client, session, input);
+        const trace = finishActionTrace(draft, "ok", { observationId: observation?.id ?? null });
+        return { ok: true as const, observation, session: activeSession, trace };
+      } catch (error) {
+        finishActionTrace(draft, "error", { error });
+        throw error;
+      }
+    });
+  };
+
+  const agentClick = async (input: AppControlAgentClickArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("click", input, async (client, session) => {
+      const point = await resolveAgentPoint(client, session, input);
+      const button = input.button === "middle" || input.button === "right" ? input.button : "left";
+      const clickCount = Math.max(1, Math.min(3, normalizePositiveInteger(input.clickCount) ?? 1));
+      await enablePageDomain(client);
+      await client.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button,
+        clickCount,
+      });
+      await client.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button,
+        clickCount,
+      });
+    });
+
+  const agentHover = async (input: AppControlAgentHoverArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("hover", input, async (client, session) => {
+      const point = await resolveAgentPoint(client, session, input);
+      await enablePageDomain(client);
+      await client.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "none",
+      });
+    });
+
+  const agentFill = async (input: AppControlAgentFillArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("fill", input, async (client, session) => {
+      // `text` doubles as an element-match term, so only an explicit `value`
+      // is ever treated as the payload to type.
+      const fillValue = typeof input.value === "string" ? input.value : null;
+      if (fillValue == null) throw new Error("App Control fill requires a value.");
+      await locateElementTarget(client, session, input, {
+        focus: true,
+        select: true,
+        clear: true,
+        editableRequired: true,
+      });
+      await enablePageDomain(client);
+      await client.send("Input.insertText", { text: fillValue });
+    });
+
+  const agentClear = async (input: AppControlAgentClearArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("clear", input, async (client, session) => {
+      await locateElementTarget(client, session, input, {
+        focus: true,
+        select: true,
+        clear: true,
+        editableRequired: true,
+      });
+    });
+
+  const agentType = async (input: AppControlAgentTypeArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("type", input, async (client) => {
+      const text = typeof input.text === "string" ? input.text : "";
+      if (!text.length) throw new Error("App Control type requires text.");
+      await enablePageDomain(client);
+      await client.send("Input.insertText", { text });
+    });
+
+  const agentPress = async (input: AppControlAgentPressArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("press", input, async (client, session) => {
+      const key = stringOrNull(input.key);
+      if (!key) throw new Error("App Control press requires a key.");
+      if (hasElementTarget(input)) {
+        await locateElementTarget(client, session, input, { focus: true });
+      }
+      const event = keyEventForAgentInput(key);
+      await enablePageDomain(client);
+      await client.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        ...event,
+        text: undefined,
+        unmodifiedText: undefined,
+      });
+    });
+
+  const agentScroll = async (input: AppControlAgentScrollArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("scroll", input, async (client) => {
+      const deltaX = finiteNumber(input.deltaX);
+      const deltaY = finiteNumber(input.deltaY);
+      if (deltaX === 0 && deltaY === 0) throw new Error("App Control scroll requires deltaX or deltaY.");
+      const point = await normalizeViewportPoint(client, {
+        x: finiteNumber(input.x),
+        y: finiteNumber(input.y),
+        scale: input.scale ?? null,
+        coordinateSpace: input.coordinateSpace ?? null,
+      });
+      await enablePageDomain(client);
+      await client.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: point.x,
+        y: point.y,
+        deltaX: Math.round(deltaX),
+        deltaY: Math.round(deltaY),
+        button: "none",
+        modifiers: 0,
+      });
+    });
+
+  const agentWaitConditionMatched = async (
+    client: CdpClient,
+    session: AppControlSession,
+    input: AppControlAgentWaitArgs,
+  ): Promise<boolean> => {
+    const loadState = input.loadState ?? null;
+    if (loadState != null && !["domcontentloaded", "load", "network-idle"].includes(loadState)) {
+      throw new Error("App Control wait loadState must be domcontentloaded, load, or network-idle.");
+    }
+    const result = await evaluateAgentDom(client, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+      ...(hasElementTarget(input) ? { locate: await elementLocatePayloadForInput(session, input) } : {}),
+    });
+    const snapshot = normalizeDomSnapshot(result.snapshot);
+    if (snapshot?.url) lastObservedUrl = snapshot.url;
+    if (snapshot?.title) lastObservedTitle = snapshot.title;
+
+    const expectedUrl = stringOrNull(input.url);
+    if (expectedUrl && !(snapshot?.url ?? "").includes(expectedUrl)) return false;
+
+    if (loadState) {
+      const readyState = stringOrNull(result.readyState);
+      if (loadState === "network-idle") {
+        if (pendingNetworkRequests.size > 0) return false;
+        if (Date.now() - lastNetworkActivityAtMs < normalizeNetworkIdleMs(input.networkIdleMs)) return false;
+      }
+      if (loadState === "domcontentloaded" && readyState !== "interactive" && readyState !== "complete") return false;
+      if ((loadState === "load" || loadState === "network-idle") && readyState !== "complete") return false;
+    }
+
+    if (hasElementTarget(input)) {
+      const target = normalizeElementSnapshot(result.target);
+      return Boolean(target && !target.disabled);
+    }
+    return true;
+  };
+
+  const agentWait = async (input: AppControlAgentWaitArgs): Promise<AppControlAgentActionResult> =>
+    runAgentAction("wait", input, async (client, session) => {
+      if (!hasElementTarget(input) && !stringOrNull(input.url) && !input.loadState) {
+        throw new Error("App Control wait requires selector, text, testId, elementIndex, handle, url, or loadState.");
+      }
+      const timeoutMs = normalizeWaitTimeoutMs(input.timeoutMs);
+      const deadline = Date.now() + timeoutMs;
+      let lastError: string | null = null;
+      for (;;) {
+        try {
+          if (await agentWaitConditionMatched(client, session, input)) return;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+        }
+        if (Date.now() >= deadline) break;
+        await delay(Math.min(250, Math.max(1, deadline - Date.now())));
+      }
+      throw new Error(lastError ?? `Timed out waiting for the App Control condition after ${timeoutMs}ms.`);
+    });
+
+  const getTrace = (input: AppControlTraceArgs = {}): AppControlTraceResult => {
+    const session = agentSessionFor(input);
+    const limit = normalizeTraceLimit(input.limit);
+    return {
+      sessionId: session.id,
+      entries: actionTrace.filter((entry) => entry.sessionId === session.id).slice(-limit),
+    };
+  };
+
+  const windows = async (input: AppControlSessionTargetArgs = {}): Promise<AppControlWindowsResult> => {
+    const session = agentSessionFor(input);
+    return {
+      sessionId: session.id,
+      activeTargetId: session.cdpTargetId,
+      windows: await listTargets(),
+    };
+  };
+
+  const switchWindow = async (input: AppControlSwitchWindowArgs): Promise<AppControlWindowsResult> => {
+    agentSessionFor(input);
+    const targetId = stringOrNull(input.targetId);
+    if (!targetId) throw new Error("App Control switchWindow requires a targetId.");
+    const updated = await attachToTarget(targetId);
+    // A different window means a different document: handles minted against
+    // the previous target no longer resolve, so start the trace/diagnostics
+    // ledger clean rather than letting stale entries look current.
+    actionTrace = [];
+    return {
+      sessionId: updated.id,
+      activeTargetId: updated.cdpTargetId,
+      windows: await listTargets(),
+    };
+  };
+
   const focusWindow = (): Promise<{ ok: true }> => setWindowState("normal");
   const minimizeWindow = (): Promise<{ ok: true }> => setWindowState("minimized");
 
@@ -2362,5 +3247,19 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     dispatchKey,
     listTargets,
     attachToTarget,
+    // Agent action model (parity with the built-in browser).
+    listDrivers,
+    observe,
+    agentClick,
+    agentHover,
+    agentFill,
+    agentClear,
+    agentType,
+    agentPress,
+    agentScroll,
+    agentWait,
+    getTrace,
+    windows,
+    switchWindow,
   };
 }

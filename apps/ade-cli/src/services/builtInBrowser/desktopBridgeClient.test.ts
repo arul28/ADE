@@ -272,7 +272,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(
-      /Desktop browser bridge not running/,
+      /No ADE Desktop browser is attached to this machine/,
     );
     client.dispose();
   });

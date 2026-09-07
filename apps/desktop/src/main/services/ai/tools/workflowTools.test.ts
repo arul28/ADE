@@ -1,5 +1,37 @@
+import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { REVIEW_THREAD_DIFF_HUNK_MAX_CHARS, createWorkflowTools } from "./workflowTools";
+
+vi.mock("../../computerUse/localComputerUse", () => ({
+  getLocalComputerUseCapabilities: () => ({
+    platform: "darwin" as const,
+    screenshot: {
+      state: "present" as const,
+      available: true,
+      command: "fake-screencapture",
+      detail: "stubbed",
+    },
+  }),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    default: actual,
+    // Stand in for `screencapture`: write the bytes the real binary would, so
+    // the tool takes its success path without touching the display.
+    execFile: (
+      _command: string,
+      args: string[],
+      _options: unknown,
+      callback: (error: unknown, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      fs.writeFileSync(args[args.length - 1]!, "fake-png-bytes");
+      callback(null, { stdout: "", stderr: "" });
+    },
+  };
+});
 
 function makeTools(prServiceOverrides: Record<string, unknown> = {}) {
   const prService = {
@@ -236,5 +268,41 @@ describe("createWorkflowTools", () => {
     const result = await (tools.prRefreshIssueInventory as any).execute({ prId: "pr-80" });
 
     expect(result.reviewThreads[0].diffHunk).toBeNull();
+  });
+});
+
+describe("captureScreenshot", () => {
+  function makeCaptureTools() {
+    const broker = { ingest: vi.fn() };
+    const tools = createWorkflowTools({
+      laneService: {} as any,
+      computerUseArtifactBrokerService: broker as any,
+      sessionId: "session-1",
+      laneId: "lane-1",
+    });
+    return { broker, tools };
+  }
+
+  it("returns a scratch capture without filing a proof-drawer record", async () => {
+    const { broker, tools } = makeCaptureTools();
+
+    const result = await (tools.captureScreenshot as any).execute({ title: "Login screen" });
+
+    // The locked rule: only proof-named commands write to the drawer.
+    expect(broker.ingest).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(result.proof).toBe(false);
+    expect(result.artifactId).toBeUndefined();
+    // The bytes survive so `ade proof attach` can still promote them.
+    expect(fs.existsSync(result.path)).toBe(true);
+    expect(fs.readFileSync(result.path, "utf8")).toBe("fake-png-bytes");
+    fs.rmSync(result.path, { force: true });
+  });
+
+  it("points the agent at the explicit proof command in its description", () => {
+    const { tools } = makeCaptureTools();
+
+    expect((tools.captureScreenshot as any).description).toContain("ade proof capture --caption");
+    expect((tools.captureScreenshot as any).description).toContain("does NOT create reviewer-facing proof");
   });
 });

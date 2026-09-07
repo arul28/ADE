@@ -1,4 +1,7 @@
 import type { AppNavigationTarget } from "../../shared/types/core";
+import type { BrowserLinkOpenMode } from "../../shared/types/config";
+import { isMacRuntimeTarget } from "./platform";
+import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget";
 
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
@@ -153,6 +156,71 @@ export function navigateUrlInAdeBrowser(
   });
 }
 
+/* ── Link routing preference ──────────────────────────────────────────────── */
+
+/**
+ * The machine-local `browser.linkOpenMode` value, cached here rather than in the
+ * app store.
+ *
+ * A link click has to answer "in-app or external" synchronously — there is no
+ * await between mousedown and the window opening — so the preference has to be
+ * in hand before the click, not fetched during it. It is read once per renderer
+ * and refreshed by the Settings control that changes it.
+ */
+let linkOpenMode: BrowserLinkOpenMode = "in-app";
+let linkOpenModeLoad: Promise<void> | null = null;
+
+export function getLinkOpenMode(): BrowserLinkOpenMode {
+  return linkOpenMode;
+}
+
+export function setLinkOpenMode(mode: BrowserLinkOpenMode): void {
+  linkOpenMode = mode;
+}
+
+/** Loads the stored preference once. Safe to call from anywhere, repeatedly. */
+export function refreshLinkOpenMode(force = false): Promise<void> {
+  if (linkOpenModeLoad && !force) return linkOpenModeLoad;
+  const config = typeof window !== "undefined" ? window.ade?.projectConfig : undefined;
+  if (!config) return Promise.resolve();
+  linkOpenModeLoad = config
+    .get()
+    .then((snapshot) => {
+      setLinkOpenMode(snapshot.effective.browser?.linkOpenMode ?? "in-app");
+    })
+    .catch(() => {
+      // An unreadable config is not worth a visible failure; the default holds.
+    });
+  return linkOpenModeLoad;
+}
+
+/**
+ * Opens a link the user clicked inside ADE, honouring the preference and the
+ * Mod/Shift overrides.
+ *
+ * Every in-content link click routes through here so the rule lives in one
+ * place. Buttons that deliberately hand off to an external service (a provider's
+ * docs, a GitHub App install page) keep calling `openExternalUrl` directly —
+ * those are not "a link the user clicked", they are a specific destination the
+ * product chose.
+ */
+export function openLinkFromUi(
+  url: string | undefined | null,
+  modifiers?: LinkOpenModifiers | null,
+): void {
+  if (!url) return;
+  const target = resolveLinkOpenTarget({
+    mode: linkOpenMode,
+    modifiers,
+    isMac: isMacRuntimeTarget(),
+  });
+  if (target === "external" || !canOpenInAdeBrowser(url)) {
+    openExternalUrl(url);
+    return;
+  }
+  openUrlInAdeBrowser(url);
+}
+
 export function openExternalUrl(url: string | undefined | null): void {
   if (!url) return;
   const bridge =
@@ -164,4 +232,10 @@ export function openExternalUrl(url: string | undefined | null): void {
   if (typeof window !== "undefined") {
     window.open(url, "_blank", "noopener,noreferrer");
   }
+}
+
+// Warm the preference as soon as the renderer loads, so the first link click
+// already has the right answer rather than the default.
+if (typeof window !== "undefined") {
+  void refreshLinkOpenMode();
 }

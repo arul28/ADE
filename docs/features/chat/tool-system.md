@@ -131,7 +131,7 @@ in `workflowTools.ts`.
 |---|---|
 | `createLane({ name, description?, parentLaneId? })` | Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
-| `captureScreenshot()` | Screenshots the current environment and files the result through the proof broker. macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
+| `captureScreenshot()` | Screenshots the current environment and returns the scratch file path. It does **not** file proof — see [Proof capture](#proof-capture). macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
 | `reportCompletion({ status, summary, artifacts, blockerDescription? })` | Persists an `AgentChatCompletionReport` on the session. Renders a closeout card in the transcript. |
 | `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. Each returned thread carries a `diffHunk` — the code the thread is anchored to, taken from the first comment that has one. Review feedback ("this leaks a handle") is not actionable from a path and a line number alone; without the hunk the resolver has to go re-find the code, or guess. GitHub's `diff_hunk` is normally a few hundred bytes, so the `REVIEW_THREAD_DIFF_HUNK_MAX_CHARS` = 2,000 cap only bites on pathological hunks. Trimming is from the **front** (on a line boundary where one exists, with the `...` marker counted inside the budget rather than added to it), because a diff hunk ends at the commented line — the tail is the part the comment is about. |
 | `prRerunFailedChecks({ prNumber })` | Re-triggers failed GitHub Actions check runs. |
@@ -152,13 +152,22 @@ chat gets these four tools in its palette.
 
 ### Proof capture
 
-`captureScreenshot` files the resulting image through
-`computerUseArtifactBrokerService.ingest()`. It is not gated by
-a policy — the proof-observer model (and `ComputerUsePolicy`) was
-removed. The tool still reports `blocked_by_capability` when it runs on
-a platform without a supported capture backend (Linux/Windows); the
-agent can fall back to `ade proof attach <path>` with a headless-browser
-or Playwright-produced PNG in that case.
+`captureScreenshot` does **not** file proof. Proof-drawer entries are
+explicit-only: the tool writes the capture to a scratch temp file, hands
+the path back to the agent, and its description points at
+`ade proof capture --caption "…"` (or `ade proof attach <path> --caption
+"…"` to promote the file it just produced). The broker is still what
+gates *exposure* of the tool — it is present only when computer use is
+available — but nothing reaches
+`computerUseArtifactBrokerService.ingest()` from here. See
+`docs/features/proof.md` for the rule and the other two paths it covers.
+
+It is not gated by a policy — the proof-observer model (and
+`ComputerUsePolicy`) was removed. The tool still reports
+`blocked_by_capability` when it runs on a platform without a supported
+capture backend (Linux/Windows); the agent can fall back to
+`ade proof attach <path>` with a headless-browser or Playwright-produced
+PNG in that case.
 
 ## CTO operator tools
 

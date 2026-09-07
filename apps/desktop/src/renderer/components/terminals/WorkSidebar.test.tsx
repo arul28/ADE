@@ -227,11 +227,14 @@ const otherLaneAppControlSession: AppControlSession = {
   cdpEndpoint: "http://127.0.0.1:9222",
   cdpTargetId: "target-2",
   provider: "cdp",
+  driver: "cdp",
   chatSessionId: "chat-2",
   startedAt: "2026-05-13T00:00:00.000Z",
   connectedAt: "2026-05-13T00:00:01.000Z",
   status: "connected",
   lastError: null,
+  lastObservationId: null,
+  lastTraceEntryId: null,
 };
 
 const otherLaneIosSession: IosSimulatorSession = {
@@ -340,7 +343,7 @@ function renderSidebar(args: {
   laneId?: string;
   lanes?: LaneSummary[];
   activeSession?: TerminalSessionSummary | null;
-  onTabChange?: (tab: WorkSidebarTab) => void;
+  onTabChange?: (tab: WorkSidebarTab | null) => void;
   runtimePin?: OpenProjectBinding | null;
 }) {
   return render(
@@ -350,8 +353,8 @@ function renderSidebar(args: {
         laneId={args.laneId ?? "lane-1"}
         lanes={args.lanes ?? [lane]}
         activeSession={args.activeSession ?? activeSession}
-        tab={args.tab}
-        onTabChange={args.onTabChange ?? vi.fn()}
+        tool={args.tab}
+        onToolChange={args.onTabChange ?? vi.fn()}
         onClose={vi.fn()}
         contextTarget={args.contextTarget}
         contextDisabledReason={args.contextDisabledReason ?? null}
@@ -359,6 +362,14 @@ function renderSidebar(args: {
       />
     </MemoryRouter>,
   );
+}
+
+/** A picker card, found by the tool name it renders. */
+function cardFor(label: string): HTMLButtonElement {
+  const heading = screen.getByText(label);
+  const card = heading.closest("button");
+  if (!card) throw new Error(`No picker card for ${label}`);
+  return card as HTMLButtonElement;
 }
 
 describe("WorkSidebar context targets", () => {
@@ -597,29 +608,66 @@ describe("WorkSidebar context targets", () => {
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("returns to the picker on Escape and parks the browser view on the way out", async () => {
+    installAdeMock({});
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "browser",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(screen.getByTestId("browser-panel")).toBeTruthy();
+    fireEvent.keyDown(container.querySelector("aside")!, { key: "Escape" });
+
+    expect(onTabChange).toHaveBeenCalledWith(null);
+    await waitFor(() => {
+      expect(window.ade.builtInBrowser.setBounds).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: false }),
+      );
+    });
+  });
+
+  it("offers an activity dot for another lane-usable tool that is live", async () => {
+    installAdeMock({
+      iosSession: { ...otherLaneIosSession, laneId: "lane-1", deviceName: "iPhone 17 Pro" },
+    });
+    const onTabChange = vi.fn();
+    renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
+
+    const dot = await screen.findByRole("button", {
+      name: "Switch to iOS Simulator — iPhone 17 Pro booted",
+    });
+    fireEvent.click(dot);
+    expect(onTabChange).toHaveBeenCalledWith("ios");
+  });
+
   it("hides the browser view for the pinned checkout, not the tab's project", async () => {
     installAdeMock({});
     useAppStore.setState({
       project: { rootPath: "/repo-one", name: "Repo One" },
     } as any);
     const browser = window.ade.builtInBrowser;
+    const pin = {
+      kind: "local" as const,
+      key: "local:/repo-two",
+      rootPath: "/repo-two",
+      displayName: "Repo Two",
+    };
 
     renderSidebar({
       tab: "browser",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
-      runtimePin: {
-        kind: "local",
-        key: "local:/repo-two",
-        rootPath: "/repo-two",
-        displayName: "Repo Two",
-      },
+      runtimePin: pin,
     });
 
-    // The sidebar itself never reads browser status: that read is unpinned, so
-    // it could only ever answer for the tab's own machine.
-    expect(browser.getStatus).not.toHaveBeenCalled();
+    // Every browser read the pane makes follows the pin, so a pinned checkout
+    // never describes (or parks) the tab's own project's view.
+    await waitFor(() => {
+      expect(browser.getStatus).toHaveBeenCalledWith({ projectRoot: "/repo-two" }, pin);
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "Git" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to tools" }));
 
     await waitFor(() => {
       expect(browser.setBounds).toHaveBeenCalledWith(expect.objectContaining({
@@ -633,7 +681,7 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("only exposes remote-aware tool panes for remote projects", async () => {
+  it("disables the local-only tools for remote projects and falls back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -653,20 +701,25 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
+    // Every tool still has a card — an unavailable one says why rather than
+    // vanishing — but only the remote-capable ones are clickable.
+    expect(cardFor("Git").disabled).toBe(false);
+    expect(cardFor("Files").disabled).toBe(false);
+    expect(cardFor("Terminal").disabled).toBe(false);
+    expect(cardFor("iOS Simulator").disabled).toBe(true);
+    expect(cardFor("App Control").disabled).toBe(true);
+    expect(cardFor("Browser").disabled).toBe(true);
+    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("browser-panel")).toBeNull();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    // The picker, not some other tool: being dumped into Git because the
+    // browser is unavailable would be a non-sequitur.
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(window.ade.builtInBrowser.getStatus).not.toHaveBeenCalled();
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
     expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
   });
 
-  it("hides the macOS-only iOS Simulator pane on Windows", async () => {
+  it("disables the macOS-only iOS Simulator card on Windows", async () => {
     Object.defineProperty(window.navigator, "platform", {
       configurable: true,
       value: "Win32",
@@ -679,11 +732,12 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.getByRole("button", { name: "App Control" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
+    expect(cardFor("iOS Simulator").disabled).toBe(true);
+    expect(screen.getByText("macOS only")).toBeTruthy();
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(cardFor("Browser").disabled).toBe(false);
     expect(screen.queryByTestId("ios-panel")).toBeNull();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
   });
 });

@@ -15,7 +15,9 @@ App Control runs on the machine the chat runs on. The launch terminal, CDP attac
   - window controls: `focusWindow`, `minimizeWindow` — explicit user actions for raising or minimizing the controlled Electron window
   - capture: `screenshot`, `getSnapshot` (screenshot + DOM elements)
   - context: `inspectPoint`, `selectPoint` — produce an `AppControlContextItem` from screenshot or viewport coordinates with element + source-file matches
-  - input: `click`, `typeText`, `scroll`, `dispatchKey`
+  - input primitives (renderer live-frame path): `click`, `typeText`, `scroll`, `dispatchKey`
+  - agent actions: `observe`, `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentType`, `agentPress`, `agentScroll`, `agentWait`, `getTrace`, `windows`, `switchWindow`
+  - capability: `listDrivers`
   - launch terminal passthrough: `readTerminal`, `writeTerminal`, `signalTerminal`
   - screencast frames stream out via the `onEvent` channel (`type: "frame"`)
 - `appControlLaunchCommand.ts` — launch parsing and rewrite helpers for direct
@@ -25,8 +27,23 @@ App Control runs on the machine the chat runs on. The launch terminal, CDP attac
   cmd syntax. POSIX retains the existing shell rewrite semantics. The literal
   `{ADE_APP_CONTROL_DEBUG_FLAGS}` opt-in path remains available on every
   platform.
+- `appControlObservations.ts` — observation storage and normalization helpers:
+  cache paths and bounds, DOM/element-snapshot normalizers, `obs-…:e:N` handle
+  stamping, trace target formatting, and the keep-latest-3 pruner.
 - `appControlService.test.ts` — service tests.
+- `appControlAgentActions.test.ts` — agent action coverage (handle stability and
+  pruning, click by handle, disabled-target rejection, trace bounds, fill value
+  rules, driver gating, window switching).
 - `appControlLaunchCommand.test.ts` — launch-command rewrite coverage.
+
+### Shared agent-observation module
+
+`apps/desktop/src/shared/agentObservation.ts` holds the dependency-free pieces
+the built-in browser and App Control both need: `obs-…:e:N` handle formatting
+and parsing, path-segment sanitizing, the CDP key-event map, the in-page element
+collector (`AGENT_DOM_COLLECTOR_FUNCTION`), and the numbered element-map overlay
+(`AGENT_ELEMENT_MAP_OVERLAY_FUNCTION`). It imports nothing from Electron or
+node, so App Control keeps working inside the headless `ade` daemon.
 
 ### Shared types
 
@@ -36,6 +53,8 @@ App Control runs on the machine the chat runs on. The launch terminal, CDP attac
   - coordinate spaces: `AppControlCoordinateSpace` is `"screenshot"` for bitmap pixels or `"viewport"` for CDP CSS viewport coordinates. Live renderer clicks use viewport coordinates so CDP input lands on the actual element under the pointer.
   - context: `AppControlContextItem` (`kind: "app_control_element"`), `AppControlSourceMatch`, `AppControlInspectResult`, `AppControlSelectResult`.
   - inputs: `AppControlLaunchArgs`, `AppControlConnectArgs`, `AppControlStopArgs`, `AppControlClickArgs`, `AppControlTypeTextArgs`, `AppControlInspectPointArgs`.
+  - drivers: `AppControlDriver` (`cdp` | `computer_use`), `AppControlDriverCapability`, `AppControlDriversResult`. Every session carries a `driver`; `launch` and `connect` accept one and reject anything but `cdp` today.
+  - agent actions: `AppControlObservation`, `AppControlDomSnapshot`, `AppControlElementSnapshot`, `AppControlObservationElementMap`, `AppControlDiagnostics`, `AppControlActionTraceEntry`, `AppControlTraceResult`, `AppControlAgentActionResult`, the per-action arg types (`AppControlAgentClickArgs`, `…HoverArgs`, `…FillArgs`, `…ClearArgs`, `…TypeArgs`, `…PressArgs`, `…ScrollArgs`, `…WaitArgs`), `AppControlWindowsResult`, and `AppControlSwitchWindowArgs`. Sessions also carry `lastObservationId` and `lastTraceEntryId`.
   - eventing: `AppControlEventPayload` union (`session-started`, `session-updated`, `session-stopped`, `selection`, `frame`).
   - `AppControlStatus` reports `platform`, `supported`, the active session, and per-provider availability.
 
@@ -73,7 +92,7 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
 - `apps/desktop/src/renderer/components/chat/ChatAppControlPanel.tsx` — the App Control panel. Two mount points:
   - Under `AgentChatPane`'s in-chat drawer (chat-scoped, `sessionId` set, persisted under `sessionStorage["ade.chat.appControlPanel.chat:<sessionId>"]`).
-  - Inside the Work right-edge sidebar's `app-control` tab (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<machineKey>:<laneId>:<projectRoot>"]`). The machine key is part of the state key because a launch command and CDP port describe a process on one machine, a lane id is only unique within its machine, and the same project root exists on both sides of a cross-machine checkout.
+  - Inside the Work right-edge tools pane's `app-control` tool (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<machineKey>:<laneId>:<projectRoot>"]`). The machine key is part of the state key because a launch command and CDP port describe a process on one machine, a lane id is only unique within its machine, and the same project root exists on both sides of a cross-machine checkout.
 
   Both mounts take `runtimePin`, the machine the panel drives. Status reads, `listTargets`, `getSnapshot` / `screenshot`, `inspectPoint` / `selectPoint`, launch / connect / attach / stop, `focusWindow` / `minimizeWindow`, every input call, and the `appControl.onEvent` subscription all carry it. The event half matters as much as the reads: without a pinned subscription a pinned panel got status reads and no live updates — no screencast frames, no session transitions — while the bound machine's stream described a different app entirely.
 
@@ -83,7 +102,7 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
   Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus(chatRuntimePin)` to gate the header toggle on platform support only when lane tool drawers are visible. Support is a property of the machine the chat runs on, so it asks that machine; skipping the probe for a remote project left the toggle permanently hidden, and hiding the toggle is what kept the panel from ever opening to un-skip it. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat App Control drawer toggle and status poll are suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
-- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel under the `app-control` tab, keyed `work-appcontrol:<pinKey>` so a machine switch remounts it, and runs its own pinned `appControl.getStatus` / `onEvent` pair against the same machine (skipped entirely when that machine is known offline). Lane names in its messages resolve against the pinned machine's lanes, since a foreign chat's lane is absent from the tab-bound lane list. When the active session's `laneId` differs from the sidebar's active lane it shows a `WarningBanner` ("App Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel as the `app-control` tool, keyed `work-appcontrol:<pinKey>` so a machine switch remounts it. The pane's shared status reads (`useWorkToolStatuses`) run one pinned `appControl.getStatus` / `onEvent` pair against the same machine for as long as the pane is open — feeding the picker card, the header's activity dots, and the mismatch banner — skipped entirely when that machine is known offline or App Control cannot run here. Lane names in its messages resolve against the pinned machine's lanes, since a foreign chat's lane is absent from the tab-bound lane list. When the active session's `laneId` differs from the pane's active lane it shows a `WarningBanner` ("App Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
 - `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` reads `AppControlSession` to decorate the App Control launch terminal tab with a status tone (`active` / `warn` / `error`).
 
 ### ADE CLI
@@ -94,7 +113,9 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - `status`, `actions` (list every callable `app_control` action)
   - `launch`, `connect`, `focus`, `minimize`, `stop`
   - `screenshot`, `snapshot`, `inspect`, `select`
-  - `click`, `type`, `scroll`, `key` (`inspect`, `select`, `click`, and `scroll` accept `--coords screenshot|viewport`)
+  - `click`, `type`, `scroll`, `key` (`inspect`, `select`, `click`, `hover`, and `scroll` accept `--coords screenshot|viewport`)
+  - `observe`, `click`, `hover`, `fill`, `clear`, `press`, `type`, `key`, `scroll`, `wait`, `trace`, `proof` — the agent loop, with the same flags as `ade browser` (`--session`, `--handle` / `--selector` / `--text-match` / `--test-id` / `--element` / `--x --y`, `--map`, `--fast`, `--no-observe`)
+  - `windows`, `switch-window`, `drivers`
   - `targets`, `attach`
   - `logs`, `terminal write`, `terminal signal` — operate on the active App Control launch terminal
 - `ade terminal <sub>`: `list`, `active`, `read`, `write`, `signal` — control the in-chat terminal owned by a chat session.
@@ -107,7 +128,7 @@ The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells ag
 
 `apps/desktop/src/main/services/adeActions/registry.ts` adds two domains:
 
-- `app_control` — every public method on `AppControlService` (`getStatus`, `launch`, `launchInTerminal`, `connect`, `stop`, `focusWindow`, `minimizeWindow`, `screenshot`, `getSnapshot`, `inspectPoint`, `selectPoint`, `click`, `typeText`, `scroll`, `dispatchKey`, `listTargets`, `attachToTarget`, `readTerminal`, `writeTerminal`, `signalTerminal`).
+- `app_control` — every public method on `AppControlService` (`getStatus`, `launch`, `launchInTerminal`, `connect`, `stop`, `focusWindow`, `minimizeWindow`, `screenshot`, `getSnapshot`, `inspectPoint`, `selectPoint`, `click`, `typeText`, `scroll`, `dispatchKey`, `listTargets`, `attachToTarget`, `readTerminal`, `writeTerminal`, `signalTerminal`, `listDrivers`, `observe`, `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentType`, `agentPress`, `agentScroll`, `agentWait`, `getTrace`, `windows`, `switchWindow`). Registering the agent actions here is what lets a runtime-pinned `callAppControlActionOr` call resolve them on a remote machine.
 - `terminal` — `list`, `read`, `write`, `signal`, `activeForChat` against `ptyService` so headless agents can control chat-owned terminals.
 
 ## Launch and connect flow
@@ -151,6 +172,73 @@ Routine capture and input paths do not raise or normalize the external Electron 
 - `typeText({ text })` calls `Input.insertText`. `dispatchKey({ type, key, code, text, modifiers })` is the lower-level escape hatch for shortcuts and special keys.
 - `scroll({ x, y, deltaX, deltaY, coordinateSpace })` is `Input.dispatchMouseEvent` with `type: "mouseWheel"`.
 - All input calls go through a single shared `CdpClient` (`withCdp`) so the WebSocket isn't reopened per click; this measurably reduces input latency.
+
+## Agent action model
+
+`getSnapshot` / `click` / `typeText` remain the renderer's live-frame path. The
+agent surface is a separate observe-then-act loop that mirrors the built-in
+browser, so an agent drives an Electron app exactly the way it drives a page.
+
+`observe({ sessionId?, includeDom?, includeElementMap?, includeDiagnostics?, maxElements?, keepCount?, includeDataUrl? })`:
+
+1. Forces `Page.captureScreenshot` (falling back to the last screencast frame
+   only if capture fails), so the image is a fresh full-fidelity paint.
+2. Runs the shared element collector in the app's page target. It walks the
+   document plus same-origin iframes, `webview`s, and open shadow roots to depth
+   4, ranks interactive elements top-left first, and returns a bounded list
+   (`maxElements`, default 80, max 200) with `framePath` / `shadowPath` so the
+   element can be re-located later.
+3. Stamps each element with a stable `obs-<timestamp>-<uuid>:e:<index>` handle.
+4. Optionally paints the numbered element-map overlay and captures a second
+   screenshot (`--map`), then removes the overlay.
+5. Attaches diagnostics: buffered console entries, failed/4xx-5xx network
+   requests, and the in-flight request count. These ride on the long-lived
+   screencast client (`Runtime`/`Log`/`Network` domains), so no extra socket is
+   opened per observation.
+6. Writes `<id>.png`, optional `<id>.map.png`, and `<id>.json` under
+   `<projectRoot>/.ade/cache/app-control-observations/<sessionId>/`, prunes the
+   directory to the latest 3 observations, and sweeps records older than 30
+   minutes from other sessions.
+
+Actions are `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentType`,
+`agentPress`, `agentScroll`, and `agentWait`. Each one:
+
+- Resolves its target from a handle, `selector`, `text`, `testId`,
+  `elementIndex`, or raw `x`/`y` (click, hover, and scroll only). A handle is
+  resolved by reading the saved observation JSON, so a pruned or foreign-session
+  handle fails with a clear error instead of clicking the wrong thing.
+- Scrolls the element into view and focuses it, and refuses a disabled target.
+  `fill` and `clear` additionally require an editable target, and `fill` only
+  types an explicit `value` (`text` is reserved for matching).
+- Dispatches CDP `Input.*` against the session's current window target.
+- Records a bounded per-session trace entry (last 80 kept) with the action,
+  status, duration, a redacted target bag, and the resulting observation id.
+- Returns a post-action observation after a short settle delay (default 150 ms;
+  `waitAfterMs: 0` / `--fast` skips it, `observe: false` / `--no-observe` skips
+  the observation entirely).
+
+`getTrace({ sessionId?, limit? })` returns the newest entries for the active
+session. `windows()` lists the session's debuggable window targets and
+`switchWindow({ targetId })` re-attaches to one of them — which resets the trace,
+because handles minted against the previous document no longer resolve.
+
+`ade app-control proof --caption "..."` runs an `observe` and hands the resulting
+screenshot to `ingest_computer_use_artifacts` with `backendName: "ade-app-control"`,
+mirroring `ade browser proof`.
+
+## Drivers
+
+`AppControlSession.driver` records how ADE drives the app.
+
+- `cdp` — Chrome DevTools Protocol against an Electron renderer. The only
+  implemented driver, and the default for `launch` and `connect`.
+- `computer_use` — OS-level control for non-Electron apps. Typed and listed by
+  `listDrivers()` / `ade app-control drivers` so callers can discover it, but
+  always `status: "unavailable"` today: on Windows and Linux the reason is
+  "Native app control is macOS only.", and on macOS it is "The computer-use App
+  Control driver is not implemented in this build." Passing
+  `driver: "computer_use"` to `launch` or `connect` fails with that reason
+  instead of silently falling back to CDP.
 
 ## Chat-owned terminal model
 

@@ -162,10 +162,15 @@ import {
 } from "../../desktop/src/main/services/appControl/appControlService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
+  createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  createRemoteBrowserForwarder,
+  withRemoteBrowserForwarding,
+} from "./services/builtInBrowser/remoteBrowserForwarder";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -1173,6 +1178,16 @@ export async function createAdeRuntime(args: {
     let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
+    // The capability registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in
+    // Electron main, not here — a token minted in this process could never be
+    // validated. So the daemon asks the desktop to mint and revoke them over
+    // the authenticated bridge. The bridge client is built further down (it
+    // needs the auth token), hence the late-bound holder.
+    let builtInBrowserBridgeForCapabilities: BuiltInBrowserDesktopBridgeClient | null = null;
+    const browserActorCapabilityIssuer = createBridgeBrowserActorCapabilityIssuer({
+      getBridge: () => builtInBrowserBridgeForCapabilities,
+    });
+
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: paths.transcriptsDir,
@@ -1214,6 +1229,7 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      browserActorCapabilityIssuer,
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -1332,15 +1348,32 @@ export async function createAdeRuntime(args: {
     const builtInBrowserBridgeSocketPath =
       process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveMachineAdeLayout().desktopBridgeSocketPath;
-    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
+    // With no desktop attached HERE, `browser open` is still satisfiable: a
+    // desktop that holds a remote pin on this machine can open the URL in its
+    // own browser and reach this machine's localhost through a port-forward.
+    const remoteBrowserForwarder = chatOnlyRuntime
       ? null
-      : createBuiltInBrowserDesktopBridgeClient({
-        socketPath: builtInBrowserBridgeSocketPath,
-        getAuthToken: () => builtInBrowserBridgeAuthToken,
-        projectRoot,
+      : createRemoteBrowserForwarder({
+        emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
       });
-    teardown.push(() => builtInBrowserBridge?.dispose());
+    if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
+      ? withRemoteBrowserForwarding(
+        createBuiltInBrowserDesktopBridgeClient({
+          socketPath: builtInBrowserBridgeSocketPath,
+          getAuthToken: () => builtInBrowserBridgeAuthToken,
+          projectRoot,
+          logger,
+        }),
+        remoteBrowserForwarder,
+      )
+      : null;
+    builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
+    teardown.push(() => {
+      builtInBrowserBridgeForCapabilities = null;
+      builtInBrowserBridge?.dispose();
+    });
 
     const headlessLinearServices = createHeadlessLinearServices({
       projectRoot,
@@ -1405,6 +1438,7 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         runtimeBudget: chatRuntimeBudget,
+        browserActorCapabilityIssuer,
         getOrchestrationService: () => orchestrationService,
         projectRoot,
         adeDir: paths.adeDir,

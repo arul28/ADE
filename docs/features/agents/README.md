@@ -51,8 +51,10 @@ the parent id.
 The `ade --socket browser ...` driver is available only to an ADE-launched,
 chat-bound agent or owned terminal. Its opaque browser actor capability binds
 the call to that chat's lane/project or personal tab collection. The runtime
-rejects missing capabilities and strips forged routing; Electron validates the
-opaque token in its issuing process before restoring the bound scope. Neither
+rejects missing capabilities and strips forged routing; Electron mints and
+validates the opaque token against its own in-memory registry — the daemon
+requests one over the desktop bridge when it launches a chat — before restoring
+the bound scope. Neither
 path exposes renderer-only profile diagnostics or permission administration.
 
 Every regular chat runtime can schedule its own durable future work through

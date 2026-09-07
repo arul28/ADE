@@ -63,6 +63,7 @@ import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineSto
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
+import { recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
@@ -1184,11 +1185,22 @@ export function registerRuntimeBridge({
       if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
         throw new Error("Remote port must be an integer from 1 to 65535.");
       }
-      return await remoteConnectionService.ensurePortForward(id, {
+      const forward = await remoteConnectionService.ensurePortForward(id, {
         remoteHost,
         remotePort,
         label,
       });
+      // The browser's per-chat origin approvals key on origin, and a forward's
+      // local port is reused across machines and sessions. Record what this one
+      // currently stands for so one tunnel's approval cannot be inherited by
+      // another (see `remoteTunnelOrigins`).
+      recordRemoteTunnelOrigin({
+        localHost: forward.localHost,
+        localPort: forward.localPort,
+        machineKey: id,
+        remotePort: forward.remotePort,
+      });
+      return forward;
     },
   );
 

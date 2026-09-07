@@ -8,6 +8,26 @@ The old system sat upstream of the agent and tried to normalize every backend. I
 
 The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
 
+## The explicit-only rule
+
+**Only a proof-named call creates a proof-drawer entry.** Capturing pixels and
+filing evidence are two different acts: an agent looks at the screen constantly,
+and a drawer that collects every one of those looks is a dump, not a proof set.
+So the capture tools are scratch by default and the `ade proof …` commands — the
+ones a human or an agent runs on purpose, with a caption — are the only writers.
+
+Three paths used to file records without anyone asking:
+
+| Path | Now |
+|---|---|
+| `captureScreenshot` chat tool (`apps/desktop/src/main/services/ai/tools/workflowTools.ts`) | Returns the capture's scratch file path to the agent. Files nothing. Its description points at `ade proof capture --caption` / `ade proof attach`. |
+| `screenshot_environment` / `record_environment` RPC tools (`apps/ade-cli/src/adeRpcServer.ts`) | File a record only when the call passes `proof: true`, which `ade proof capture` and `ade proof record` set. A bare call — agent vision, an automation run's `browser` tool family — writes to `.ade/cache/tmp/computer-use/` and returns the path. |
+| `computer_use_artifacts` action domain (`apps/desktop/src/main/services/adeActions/registry.ts`) | No longer exposes `ingest`. `ade actions call computer_use_artifacts.ingest` reached the broker past `validateComputerUseOwnerClaims` and the authorized caller-root check; ingestion now happens only through `ingest_computer_use_artifacts`, where both live. The domain exposes reads and record lifecycle. |
+
+Nothing is lost on the scratch paths. The bytes stay on disk in a root the
+broker already accepts for import, so `ade proof attach <path> --caption "…"`
+promotes any of them after the fact.
+
 ## Source file map
 
 | Path | Role |
@@ -129,7 +149,7 @@ If no env var is set and no `--owner-kind`/`--owner-id` flags are passed, `ade p
 
 ### Explicit owner on RPC tools
 
-The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `get_environment_info`, `interact_gui`, and `list_computer_use_artifacts` JSON-RPC tools accept explicit `ownerKind` + `ownerId` fields. `resolveComputerUseOwners` in `apps/ade-cli/src/adeRpcServer.ts` is the single normalizer:
+The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `get_environment_info`, `interact_gui`, and `list_computer_use_artifacts` JSON-RPC tools accept explicit `ownerKind` + `ownerId` fields. On `screenshot_environment` / `record_environment` those fields are read only when the call also passes `proof: true`; a scratch capture files nothing, so it has no ownership to authorize. `resolveComputerUseOwners` in `apps/ade-cli/src/adeRpcServer.ts` is the single normalizer:
 
 - Canonical kinds: `lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
 - Friendly aliases: `chat` → `chat_session`, `pr` → `github_pr`. Any other value raises a `JsonRpcError(invalidParams)` with an "Unsupported proof ownerKind" message.
@@ -221,7 +241,7 @@ A good proof set is three to eight captures with captions a reviewer can read in
   image/video bytes do not. A connected desktop or phone streams a preview from
   the runtime that owns the project; the media is unavailable when that runtime
   cannot be reached.
-- **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it.
+- **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it, and no capture tool files on the agent's behalf — see [The explicit-only rule](#the-explicit-only-rule).
 
 Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.
 
@@ -256,7 +276,7 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
                           local or remote runtime RPC)
 ```
 
-The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path — both the `ade proof` CLI and any in-process call go through it. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
+The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path — both the `ade proof` CLI and any in-process call go through it. Its `ingest` is reachable from exactly two places: the `ingest_computer_use_artifacts` RPC tool, and the `proof: true` branch of `screenshot_environment` / `record_environment`. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
 - `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.

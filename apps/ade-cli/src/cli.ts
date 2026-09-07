@@ -2525,12 +2525,31 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
     $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
 
-  Input:
-    $ ade app-control click 120 420                Click screenshot coordinates
+  Observe and act (agent loop, same shape as "ade browser"):
+    $ ade app-control observe --map --text         Screenshot + numbered element map + handles
+    $ ade app-control observe --no-dom --text      Screenshot only, no element list
+    $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
+    $ ade app-control click --text-match "Save"    Click by visible label
     $ ade app-control click 120 420 --coords viewport
+    $ ade app-control hover --test-id row-3
+    $ ade app-control fill --selector "#name" --value "Ada"
+    $ ade app-control clear --selector "#name"
+    $ ade app-control type "hello" --text          Type into the focused element
+    $ ade app-control press --key Enter            Alias: key
     $ ade app-control scroll --x 120 --y 420 --delta-y 600
-    $ ade app-control key --key Enter
-    $ ade app-control type "hello" --text          Type text into the focused element
+    $ ade app-control wait --text-match "Saved" --timeout-ms 8000
+    $ ade app-control wait --load-state network-idle
+    $ ade app-control trace --limit 20 --text      Recent actions for this session
+    $ ade app-control proof --caption "Settings saved"  Observe and register a proof artifact
+
+  Windows and drivers:
+    $ ade app-control windows --text               Debuggable windows for the active session
+    $ ade app-control switch-window --target <id>  Drive a different window
+    $ ade app-control drivers --text               Driver availability (cdp, computer_use)
+
+  Every act command answers with a post-action observation. Add --no-observe to
+  skip it, or --fast to skip the settle delay. --session <id> guards a command
+  against a session that is no longer active.
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -2598,6 +2617,26 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser type --tab <tab-id> "hello"
     $ ade --socket browser key --tab <tab-id> Enter
     $ ade --socket browser scroll --tab <tab-id> --dy 700
+    $ ade --socket browser hover --tab <tab-id> --selector ".menu"
+    $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
+    $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
+    $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
+    $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
+    $ ade --socket browser emulate --tab <tab-id> --off
+    $ ade --socket browser open localhost:5173 --device ipad
+    $ ade --socket browser zoom --tab <tab-id> --factor 1.25
+    $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser find --tab <tab-id> "checkout"
+    $ ade --socket browser find-stop --tab <tab-id>
+    $ ade --socket browser devtools --tab <tab-id> --mode bottom
+    $ ade --socket browser devtools --tab <tab-id> --close
+    $ ade --socket browser network on --tab <tab-id>
+    $ ade --socket browser network --tab <tab-id> --failed --limit 20 --text
+    $ ade --socket browser network off --tab <tab-id>
+    $ ade --socket browser har --tab <tab-id>
+    $ ade --socket browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
+    $ ade --socket browser record stop --tab <tab-id>
     $ ade --socket browser proof --tab <tab-id> --caption "Verified"
     $ ade --socket browser reload --tab <tab-id>
     $ ade --socket browser back --tab <tab-id>
@@ -2636,7 +2675,21 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --diagnostics, --no-diagnostics
                          Include or skip console/network diagnostics in observations.
     --max-elements <n>   Cap DOM elements captured per observation (default 80).
-    --limit <n>          Trace entries to show for browser trace (default 20).
+    --limit <n>          Trace/network entries to show for browser trace or network (default 20/50).
+    --device <preset>    Emulation preset for browser emulate/open: desktop, iphone-17,
+                         iphone-17-pro, iphone-17-pro-max, ipad, pixel, responsive.
+    --width/--height <n> Custom emulation viewport for browser emulate.
+    --scale <n>          Device scale factor for browser emulate.
+    --factor <n>         Zoom factor for browser zoom (clamped 0.25-5).
+    --mode <dock>        DevTools dock mode for browser devtools: right, bottom, detach.
+    --filter <text>      Substring filter for browser network/har entries.
+    --failed             Only failed/4xx-5xx entries for browser network/har.
+    --to-selector, --to-text-match, --to-test-id, --to-element, --to-handle, --to-x, --to-y
+                         Drag destination for browser drag.
+    --option-value/--option-label/--option-index
+                         Option to pick for browser select-option.
+    --file <path>        Repeatable file path for browser upload.
+    --fps <30|60>        Frame rate for browser record start.
     --include-ended, --all
                          Include ended browser sessions in browser sessions output.
     --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
@@ -3012,6 +3065,17 @@ function readValue(args: string[], names: string[]): string | null {
     return value;
   }
   return null;
+}
+
+/** Repeatable option (`--file a --file b`), consumed like `readValue`. */
+function readRepeatedValues(args: string[], names: string[]): string[] {
+  const values: string[] = [];
+  for (;;) {
+    const value = readValue(args, names);
+    if (value == null) break;
+    values.push(value);
+  }
+  return values;
 }
 
 function readFlag(args: string[], names: string[]): boolean {
@@ -3579,6 +3643,72 @@ function readBrowserClickTargetArgs(args: string[]): JsonObject {
     ...(testId ? { testId } : {}),
     ...(elementIndex == null ? {} : { elementIndex }),
     ...(handle ? { handle } : {}),
+  };
+}
+
+function readAppControlSessionArgs(args: string[]): JsonObject {
+  const sessionId = readValue(args, [
+    "--session",
+    "--session-id",
+    "--app-control-session",
+  ]);
+  return { ...(sessionId ? { sessionId } : {}) };
+}
+
+function readAppControlObservationArgs(args: string[]): JsonObject {
+  const keepCount = readNumberOption(args, ["--keep", "--keep-count"]);
+  const includeDom = readFlag(args, ["--dom", "--include-dom", "--elements"]);
+  const skipDom = readFlag(args, ["--no-dom", "--no-elements"]);
+  const includeDiagnostics = readFlag(args, ["--diagnostics", "--include-diagnostics"]);
+  const skipDiagnostics = readFlag(args, ["--no-diagnostics", "--without-diagnostics"]);
+  const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
+  const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
+  return {
+    ...readAppControlSessionArgs(args),
+    ...(keepCount == null ? {} : { keepCount }),
+    ...(includeDom ? { includeDom: true } : {}),
+    ...(skipDom ? { includeDom: false } : {}),
+    ...(includeDiagnostics ? { includeDiagnostics: true } : {}),
+    ...(skipDiagnostics ? { includeDiagnostics: false } : {}),
+    ...(includeElementMap ? { includeElementMap: true } : {}),
+    ...(maxElements == null ? {} : { maxElements }),
+  };
+}
+
+function readAppControlAgentActionArgs(args: string[]): JsonObject {
+  const waitAfterMs = readNumberOption(args, ["--wait-after-ms", "--settle-ms"]);
+  const fast = readFlag(args, ["--fast"]);
+  return {
+    ...readAppControlObservationArgs(args),
+    observe: readFlag(args, ["--no-observe"]) ? false : undefined,
+    ...(waitAfterMs == null ? (fast ? { waitAfterMs: 0 } : {}) : { waitAfterMs }),
+  };
+}
+
+function readAppControlTraceArgs(args: string[]): JsonObject {
+  const limit = readNumberOption(args, ["--limit", "--entries"]);
+  return {
+    ...readAppControlSessionArgs(args),
+    ...(limit == null ? {} : { limit }),
+  };
+}
+
+function readBrowserDragDestinationArgs(args: string[]): JsonObject {
+  const toSelector = readValue(args, ["--to-selector", "--to-css"]);
+  const toText = readValue(args, ["--to-text-match", "--to-label", "--to-name"]);
+  const toHandle = readValue(args, ["--to-handle", "--to-ref"]);
+  const toTestId = readValue(args, ["--to-test-id", "--to-testid", "--to-data-testid"]);
+  const toElementIndex = readNumberOption(args, ["--to-element", "--to-element-index", "--to-index"]);
+  const toX = readNumberOption(args, ["--to-x"]);
+  const toY = readNumberOption(args, ["--to-y"]);
+  return {
+    ...(toSelector ? { toSelector } : {}),
+    ...(toText ? { toText } : {}),
+    ...(toTestId ? { toTestId } : {}),
+    ...(toHandle ? { toHandle } : {}),
+    ...(toElementIndex == null ? {} : { toElementIndex }),
+    ...(toX == null ? {} : { toX }),
+    ...(toY == null ? {} : { toY }),
   };
 }
 
@@ -9563,6 +9693,9 @@ function buildProofPlan(args: string[]): CliPlan {
           "screenshot_environment",
           collectGenericObjectArgs(args, {
             ...proofOwnerBase(),
+            // `ade proof capture` is the explicit proof interface; the bare
+            // tool is scratch agent vision and files nothing.
+            proof: true,
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
@@ -9580,6 +9713,9 @@ function buildProofPlan(args: string[]): CliPlan {
           "record_environment",
           collectGenericObjectArgs(args, {
             ...proofOwnerBase(),
+            // Same rule as `capture`: the proof command files, the tool alone
+            // does not.
+            proof: true,
             name:
               readValue(args, ["--name", "--title"]) ??
               readValue(args, ["--caption", "--description", "--desc"]),
@@ -10726,7 +10862,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
+  if (sub === "inspect" || sub === "hit-test") {
     return {
       kind: "execute",
       label: "App Control inspect point",
@@ -10771,6 +10907,16 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "click" || sub === "tap") {
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const hasTarget = Object.keys(targetArgs).length > 0;
+    const x = hasTarget ? readNumberOption(args, ["--x"]) : readCoordinate("--x", 0);
+    const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
+    if (!hasTarget && (x == null || y == null)) {
+      throw new CliUsageError(
+        "app-control click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
     return {
       kind: "execute",
       label: "App Control click",
@@ -10778,10 +10924,40 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "click",
+          "agentClick",
           collectGenericObjectArgs(args, {
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
+            ...actionArgs,
+            ...targetArgs,
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
+            button: readValue(args, ["--button"]),
+            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "hover") {
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const hasTarget = Object.keys(targetArgs).length > 0;
+    const x = hasTarget ? readNumberOption(args, ["--x"]) : readCoordinate("--x", 0);
+    const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
+    return {
+      kind: "execute",
+      label: "App Control hover",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentHover",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
@@ -10789,7 +10965,225 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "fill") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control fill requires --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
+    const explicitValue = readValue(args, ["--value"]);
+    const value = explicitValue ?? args.filter((arg) => !arg.startsWith("-")).join(" ");
+    if (explicitValue == null && !value.length) {
+      throw new CliUsageError("app-control fill requires a value.");
+    }
+    return {
+      kind: "execute",
+      label: "App Control fill",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentFill",
+          collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs, value }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "clear" ||
+    sub === "clear-field" ||
+    sub === "clear-input" ||
+    sub === "clear-value"
+  ) {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control clear requires --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "App Control clear",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentClear",
+          collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs }),
+        ),
+      ],
+    };
+  }
+  if (sub === "wait" || sub === "wait-for") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const url = readValue(args, ["--url"]);
+    const loadState =
+      readValue(args, ["--load-state", "--state"]) ??
+      (readFlag(args, ["--network-idle"]) ? "network-idle" : null);
+    if (!url && !loadState && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control wait requires --selector, --text-match, --test-id, --element, --handle, --url, or --load-state.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "App Control wait",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentWait",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(url ? { url } : {}),
+            ...(loadState ? { loadState } : {}),
+            timeoutMs: readNumberOption(args, ["--timeout-ms", "--timeout"]),
+            networkIdleMs: readNumberOption(args, ["--network-idle-ms", "--idle-ms"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "observe") {
+    return {
+      kind: "execute",
+      label: "App Control observe",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "observe",
+          collectGenericObjectArgs(args, readAppControlObservationArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "trace" || sub === "action-trace" || sub === "timeline") {
+    return {
+      kind: "execute",
+      label: "App Control trace",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "getTrace",
+          collectGenericObjectArgs(args, readAppControlTraceArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "windows" || sub === "list-windows") {
+    return {
+      kind: "execute",
+      label: "App Control windows",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "windows",
+          collectGenericObjectArgs(args, readAppControlSessionArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "switch-window" || sub === "switch") {
+    const sessionArgs = readAppControlSessionArgs(args);
+    const targetId = requireValue(
+      readValue(args, ["--target", "--target-id", "--window"]) ?? firstPositional(args),
+      "targetId",
+    );
+    return {
+      kind: "execute",
+      label: "App Control switch window",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "switchWindow",
+          collectGenericObjectArgs(args, { ...sessionArgs, targetId }),
+        ),
+      ],
+    };
+  }
+  if (sub === "drivers" || sub === "list-drivers") {
+    return {
+      kind: "execute",
+      label: "App Control drivers",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "listDrivers",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  }
+  if (sub === "proof" || sub === "promote") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const title =
+      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE App Control proof";
+    const ownerBase = readProofOwnerBase(args);
+    const observeArgs = collectGenericObjectArgs(args, {
+      ...readAppControlObservationArgs(args),
+      includeDom: false,
+    });
+    return {
+      kind: "execute",
+      label: "App Control proof",
+      steps: [
+        actionStep("observation", "app_control", "observe", observeArgs),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            // ade/actions/call answers with an {domain, action, result}
+            // envelope; the observation record lives under result.
+            const observation = unwrapActionEnvelope(values.observation);
+            const filePath = isRecord(observation)
+              ? asString(observation.filePath)
+              : null;
+            if (!filePath) {
+              throw new CliUsageError(
+                "App Control proof could not find an observation file path.",
+              );
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: "ade-app-control",
+                toolName: "app-control proof",
+                callerRoot: process.cwd(),
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    ...(caption ? { description: caption } : {}),
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
   if (sub === "scroll" || sub === "wheel") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const deltaX = readNumberOption(args, ["--delta-x", "--dx"]) ?? 0;
+    const deltaY = readNumberOption(args, ["--delta-y", "--dy"]) ?? 0;
+    if (deltaX === 0 && deltaY === 0) {
+      throw new CliUsageError("app-control scroll requires --delta-y or --delta-x.");
+    }
     return {
       kind: "execute",
       label: "App Control scroll",
@@ -10797,12 +11191,13 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "scroll",
+          "agentScroll",
           collectGenericObjectArgs(args, {
+            ...actionArgs,
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
-            deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
-            deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
+            deltaX,
+            deltaY,
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
@@ -10810,28 +11205,29 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "key" || sub === "dispatch-key") {
+  if (sub === "key" || sub === "press" || sub === "dispatch-key") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
     const key = readValue(args, ["--key"]) ?? firstPositional(args);
     return {
       kind: "execute",
-      label: "App Control key",
+      label: "App Control press",
       steps: [
         actionStep(
           "result",
           "app_control",
-          "dispatchKey",
+          "agentPress",
           collectGenericObjectArgs(args, {
-            type: readValue(args, ["--event-type", "--type"]) ?? "keyDown",
+            ...actionArgs,
+            ...targetArgs,
             key: requireValue(key, "key"),
-            code: readValue(args, ["--code"]),
-            text: readValue(args, ["--text"]),
-            modifiers: readNumberOption(args, ["--modifiers"]),
           }),
         ),
       ],
     };
   }
   if (sub === "type" || sub === "text") {
+    const actionArgs = readAppControlAgentActionArgs(args);
     return {
       kind: "execute",
       label: "App Control type",
@@ -10839,8 +11235,9 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "typeText",
+          "agentType",
           collectGenericObjectArgs(args, {
+            ...actionArgs,
             text: requireValue(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
@@ -10864,6 +11261,27 @@ function buildAppControlPlan(args: string[]): CliPlan {
 const BROWSER_SESSION_ACTION_MODES = new Set([
   "observe",
   "snapshot",
+  "hover",
+  "drag",
+  "select-option",
+  "choose",
+  "option",
+  "upload",
+  "upload-file",
+  "emulate",
+  "device",
+  "zoom",
+  "find",
+  "find-in-page",
+  "find-stop",
+  "stop-find",
+  "devtools",
+  "dev-tools",
+  "network",
+  "net",
+  "har",
+  "export-har",
+  "record",
   "click",
   "type",
   "type-text",
@@ -11033,6 +11451,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "open" || sub === "navigate" || sub === "go") {
+    // Read every option before the URL, which falls back to whatever tokens are
+    // left over; otherwise `--device ipad` would be swallowed into the URL.
+    const openDevice = readValue(args, ["--device", "--emulate", "--preset"]);
     const explicitUrl = readValue(args, ["--url"]);
     const tabId = readValue(args, ["--tab", "--tab-id"]);
     const activeTab = readFlag(args, [
@@ -11055,6 +11476,47 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
     const agentOwnedCall = Boolean(claimArgs.laneId || claimArgs.chatSessionId);
+    if (openDevice) {
+      // Navigate first, then apply emulation to whichever tab that resolved to.
+      return {
+        kind: "execute",
+        label: "browser open",
+        steps: [
+          actionStep("result", "built_in_browser", "navigate", {
+            url,
+            tabId,
+            newTab: newTab && !activeTab ? true : undefined,
+            activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
+            reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
+            openPanel: showPanel || (!noPanel && !agentOwnedCall),
+            ...claimArgs,
+            ...genericArgs,
+          }),
+          {
+            key: "emulation",
+            method: "ade/actions/call",
+            unwrapToolResult: true,
+            params: (values) => {
+              const status = unwrapActionEnvelope(values.result);
+              const resolvedTabId = tabId
+                ?? (isRecord(status) ? asString(status.activeTabId) : null);
+              return {
+                name: "run_ade_action",
+                arguments: {
+                  domain: "built_in_browser",
+                  action: "setEmulation",
+                  args: {
+                    ...(resolvedTabId ? { tabId: resolvedTabId } : {}),
+                    preset: openDevice,
+                    ...claimArgs,
+                  },
+                },
+              };
+            },
+          },
+        ],
+      };
+    }
     return {
       kind: "execute",
       label: "browser open",
@@ -11336,6 +11798,412 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  }
+  if (sub === "emulate" || sub === "device" || sub === "emulation") {
+    const off = readFlag(args, ["--off", "--reset", "--clear", "--no-device", "--desktop"]);
+    const device = readValue(args, ["--device", "--preset", "--emulate"]);
+    const width = readNumberOption(args, ["--width"]);
+    const height = readNumberOption(args, ["--height"]);
+    const scale = readNumberOption(args, ["--scale", "--device-scale-factor", "--dpr"]);
+    const mobile = readFlag(args, ["--mobile", "--touch"]);
+    const notMobile = readFlag(args, ["--no-mobile", "--no-touch"]);
+    const userAgent = readValue(args, ["--user-agent", "--ua"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const preset = off ? null : device ?? firstPositional(args) ?? null;
+    if (!off && !preset && width == null && height == null) {
+      throw new CliUsageError(
+        "browser emulate requires --device <preset>, --width/--height, or --off.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "browser emulate",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setEmulation",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            preset,
+            ...(width == null ? {} : { width }),
+            ...(height == null ? {} : { height }),
+            ...(scale == null ? {} : { deviceScaleFactor: scale }),
+            ...(mobile ? { mobile: true } : {}),
+            ...(notMobile ? { mobile: false } : {}),
+            ...(userAgent ? { userAgent } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "zoom") {
+    const reset = readFlag(args, ["--reset", "--off", "--default"]);
+    const factor = readNumberOption(args, ["--factor", "--zoom", "--level"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = reset || factor != null ? null : firstPositional(args);
+    const resolvedFactor = factor ?? (positional ? Number(positional) : null);
+    if (!reset && (resolvedFactor == null || !Number.isFinite(resolvedFactor))) {
+      throw new CliUsageError("browser zoom requires --factor <n> or --reset.");
+    }
+    return {
+      kind: "execute",
+      label: "browser zoom",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setZoom",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(reset ? { reset: true } : { factor: resolvedFactor }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "find-stop" || sub === "stop-find") {
+    const action = readValue(args, ["--action", "--selection"]);
+    return {
+      kind: "execute",
+      label: "browser find stop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "stopFindInPage",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(action ? { action } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "find" || sub === "find-in-page" || sub === "search-page") {
+    const explicitText = readValue(args, ["--text", "--query", "--find"]);
+    const matchCase = readFlag(args, ["--match-case", "--case-sensitive"]);
+    const backward = readFlag(args, ["--backward", "--previous", "--prev"]);
+    const findNext = readFlag(args, ["--next", "--find-next"]);
+    const timeoutMs = readNumberOption(args, ["--timeout-ms", "--timeout"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const text = explicitText ?? args.join(" ");
+    if (!text.trim()) throw new CliUsageError("browser find requires search text.");
+    return {
+      kind: "execute",
+      label: "browser find",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "findInPage",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            text,
+            ...(matchCase ? { matchCase: true } : {}),
+            ...(backward ? { forward: false } : {}),
+            ...(findNext ? { findNext: true } : {}),
+            ...(timeoutMs == null ? {} : { timeoutMs }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "devtools" || sub === "dev-tools" || sub === "inspector") {
+    const close = readFlag(args, ["--close", "--off", "--hide"]);
+    const open = readFlag(args, ["--open", "--on", "--show"]);
+    const mode = readValue(args, ["--mode", "--dock", "--position"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = (firstPositional(args) ?? "").toLowerCase();
+    const explicitClose = close || positional === "close" || positional === "off";
+    const explicitOpen = open || positional === "open" || positional === "on";
+    if (explicitClose && explicitOpen) {
+      throw new CliUsageError("browser devtools cannot both open and close.");
+    }
+    // Opening is the useful default; closing needs to be asked for.
+    const shouldOpen = !explicitClose;
+    return {
+      kind: "execute",
+      label: "browser devtools",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setDevTools",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            open: shouldOpen,
+            ...(mode ? { mode } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "network" || sub === "net" || sub === "requests") {
+    const enable = readFlag(args, ["--on", "--enable", "--start", "--record"]);
+    const disable = readFlag(args, ["--off", "--disable", "--stop"]);
+    const failedOnly = readFlag(args, ["--failed", "--errors", "--failures"]);
+    const all = readFlag(args, ["--all"]);
+    const limit = readNumberOption(args, ["--limit", "--entries"]);
+    const filter = readValue(args, ["--filter", "--match", "--grep"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = (firstPositional(args) ?? "").toLowerCase();
+    const turnOn = enable || positional === "on" || positional === "start" || positional === "enable";
+    const turnOff = disable || positional === "off" || positional === "stop" || positional === "disable";
+    if (turnOn || turnOff) {
+      return {
+        kind: "execute",
+        label: "browser network logging",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "setNetworkLogging",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              enabled: turnOn,
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser network",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getNetworkLog",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(limit == null ? {} : { limit }),
+            ...(filter ? { filter } : {}),
+            ...(failedOnly && !all ? { failedOnly: true } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "har" || sub === "export-har") {
+    const failedOnly = readFlag(args, ["--failed", "--errors"]);
+    const filter = readValue(args, ["--filter", "--match", "--grep"]);
+    return {
+      kind: "execute",
+      label: "browser har",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "exportHar",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(filter ? { filter } : {}),
+            ...(failedOnly ? { failedOnly: true } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "hover") {
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const hasCoordinates = x != null || y != null;
+    if (hasCoordinates && (x == null || y == null)) {
+      throw new CliUsageError("browser hover requires both --x and --y when using coordinates.");
+    }
+    if (!hasCoordinates && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser hover requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser hover",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "hover",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            ...targetArgs,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "drag" || sub === "drag-and-drop") {
+    const destination = readBrowserDragDestinationArgs(args);
+    const x = readNumberOption(args, ["--x", "--from-x"]);
+    const y = readNumberOption(args, ["--y", "--from-y"]);
+    const steps = readNumberOption(args, ["--steps"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const hasCoordinates = x != null || y != null;
+    if (hasCoordinates && (x == null || y == null)) {
+      throw new CliUsageError("browser drag requires both --x and --y when using source coordinates.");
+    }
+    if (!hasCoordinates && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser drag requires a source: --x/--y, --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    if (Object.keys(destination).length === 0) {
+      throw new CliUsageError("browser drag requires a destination: --to-x/--to-y, --to-selector, --to-text-match, --to-test-id, --to-element, or --to-handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser drag",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "drag",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            ...targetArgs,
+            ...destination,
+            ...(steps == null ? {} : { steps }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "select-option" || sub === "choose" || sub === "option") {
+    const value = readValue(args, ["--value", "--option-value"]);
+    // `--label` and `--index` already alias the element target flags, so the
+    // option selectors get their own unambiguous names.
+    const label = readValue(args, ["--option-label", "--option"]);
+    const index = readNumberOption(args, ["--option-index"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser select-option requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const positional = value == null && label == null && index == null ? firstPositional(args) : null;
+    if (value == null && label == null && index == null && !positional) {
+      throw new CliUsageError("browser select-option requires --value, --label, or --index.");
+    }
+    return {
+      kind: "execute",
+      label: "browser select option",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "selectOption",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(value != null ? { value } : {}),
+            ...(label != null ? { label } : {}),
+            ...(index != null ? { index } : {}),
+            ...(positional ? { value: positional } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "upload" || sub === "upload-file" || sub === "attach-file") {
+    const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--upload"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser upload requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const paths = explicitPaths.length ? explicitPaths : args.filter((entry) => !entry.startsWith("--"));
+    if (!paths.length) throw new CliUsageError("browser upload requires at least one file path.");
+    return {
+      kind: "execute",
+      label: "browser upload",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "uploadFile",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "record" || sub === "recording") {
+    const mode = (firstPositional(args) ?? "status").toLowerCase();
+    if (mode === "start" || mode === "begin") {
+      const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
+      const caption = readValue(args, ["--caption", "--description", "--desc"]);
+      return {
+        kind: "execute",
+        label: "browser record start",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "startRecording",
+            collectGenericObjectArgs(args, {
+              ...readBrowserOwnedTabTargetArgs(args),
+              ...(fps == null ? {} : { fps }),
+              ...(caption ? { caption } : {}),
+            }),
+          ),
+        ],
+      };
+    }
+    if (mode === "stop" || mode === "end" || mode === "finish") {
+      const ownerBase = readProofOwnerBase(args);
+      const title = readValue(args, ["--title", "--name"]) ?? "ADE browser recording";
+      return {
+        kind: "execute",
+        label: "browser record stop",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "stopRecording",
+            collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+          ),
+          {
+            key: "proof",
+            method: "ade/actions/call",
+            unwrapToolResult: true,
+            params: (values) => {
+              // A caption supplied at `record start` is the opt-in signal that
+              // this recording is reviewer-facing evidence. Without one the file
+              // stays scratch and nothing reaches the proof drawer.
+              const recording = unwrapActionEnvelope(values.result);
+              const caption = isRecord(recording) ? asString(recording.caption) : null;
+              const filePath = isRecord(recording) ? asString(recording.path) : null;
+              const shouldIngest = Boolean(caption && filePath);
+              return {
+                name: "ingest_computer_use_artifacts",
+                arguments: {
+                  backendStyle: "manual",
+                  backendName: "ade-browser",
+                  toolName: "browser record",
+                  callerRoot: process.cwd(),
+                  ...ownerBase,
+                  inputs: shouldIngest
+                    ? [
+                        {
+                          kind: "video_recording",
+                          title,
+                          description: caption,
+                          path: filePath,
+                        },
+                      ]
+                    : [],
+                },
+              };
+            },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unknown browser record command: ${mode}. Use start or stop.`);
   }
   if (sub === "trace" || sub === "action-trace" || sub === "timeline")
     return {
@@ -21413,6 +22281,24 @@ function formatAppControlStatus(value: unknown): string {
 
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  // This machine has no desktop attached, so there is no browser here to
+  // report on: the daemon handed the URL to a desktop that has this lane
+  // pinned, which opens it over a tunnel back to this machine's localhost.
+  if (status.status === "forwarded_to_desktop") {
+    const desktop = asString(status.desktopLabel);
+    const reason = asString(status.reason);
+    return renderKeyValues("ADE browser", [
+      ["url", status.url],
+      [
+        "opened",
+        status.acknowledged === true
+          ? `on ${desktop ?? "the attached desktop"} via tunnel`
+          : "no desktop is attached to this machine; open ADE Desktop with this lane pinned",
+      ],
+      ["request", status.requestId],
+      ["note", reason],
+    ]);
+  }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
   const ownerForTab = (tab: Record<string, unknown>): string => {
@@ -22526,7 +23412,11 @@ function inferFormatter(
     label === "browser scroll" ||
     label === "browser fill" ||
     label === "browser clear" ||
-    label === "browser wait"
+    label === "browser wait" ||
+    label === "browser hover" ||
+    label === "browser drag" ||
+    label === "browser select option" ||
+    label === "browser upload"
   )
     return "browser-observation";
   if (label === "browser trace") return "browser-trace";

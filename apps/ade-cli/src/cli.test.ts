@@ -7403,8 +7403,13 @@ describe("ADE CLI", () => {
         name: "Done",
         ownerKind: "chat",
         ownerId: "chat-1",
+        // Only a proof-named command files a drawer record; the bare tool is
+        // scratch agent vision.
+        proof: true,
       },
     });
+    expect((screenshot.steps[0]?.params as any)?.arguments?.proof).toBe(true);
+    expect((record.steps[0]?.params as any)?.arguments?.proof).toBe(true);
     expect(record.preferHeadless).toBe(true);
     expect(list.preferHeadless).toBeUndefined();
   });
@@ -11452,7 +11457,7 @@ describe("ADE CLI", () => {
     expect(click.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "click",
+        action: "agentClick",
         args: { x: 120, y: 420 },
       },
     });
@@ -11469,7 +11474,7 @@ describe("ADE CLI", () => {
     expect(type.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "typeText",
+        action: "agentType",
         args: { text: "hello" },
       },
     });
@@ -11489,7 +11494,7 @@ describe("ADE CLI", () => {
     expect(scroll.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "scroll",
+        action: "agentScroll",
         args: { x: 120, y: 420, deltaY: 600 },
       },
     });
@@ -11510,6 +11515,329 @@ describe("ADE CLI", () => {
       },
     });
   });
+
+  it("app-control agent actions mirror the browser observe/act contract", () => {
+    const observe = buildCliPlan([
+      "app-control",
+      "observe",
+      "--map",
+      "--session",
+      "session-9",
+    ]);
+    expect(observe.kind).toBe("execute");
+    if (observe.kind !== "execute") return;
+    expect(observe.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "observe",
+        args: { includeElementMap: true, sessionId: "session-9" },
+      },
+    });
+
+    const clickByHandle = buildCliPlan([
+      "app-control",
+      "click",
+      "--handle",
+      "obs-1:e:4",
+      "--fast",
+    ]);
+    expect(clickByHandle.kind).toBe("execute");
+    if (clickByHandle.kind !== "execute") return;
+    expect(clickByHandle.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentClick",
+        args: { handle: "obs-1:e:4", waitAfterMs: 0 },
+      },
+    });
+
+    const hover = buildCliPlan(["app-control", "hover", "--test-id", "row-3"]);
+    expect(hover.kind).toBe("execute");
+    if (hover.kind !== "execute") return;
+    expect(hover.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentHover",
+        args: { testId: "row-3" },
+      },
+    });
+
+    const fill = buildCliPlan([
+      "app-control",
+      "fill",
+      "--selector",
+      "#name",
+      "--value",
+      "Ada",
+    ]);
+    expect(fill.kind).toBe("execute");
+    if (fill.kind !== "execute") return;
+    expect(fill.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentFill",
+        args: { selector: "#name", value: "Ada" },
+      },
+    });
+
+    const clear = buildCliPlan(["app-control", "clear", "--selector", "#name"]);
+    expect(clear.kind).toBe("execute");
+    if (clear.kind !== "execute") return;
+    expect(clear.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "agentClear", args: { selector: "#name" } },
+    });
+
+    const press = buildCliPlan(["app-control", "press", "--key", "Enter"]);
+    expect(press.kind).toBe("execute");
+    if (press.kind !== "execute") return;
+    expect(press.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "agentPress", args: { key: "Enter" } },
+    });
+
+    const wait = buildCliPlan([
+      "app-control",
+      "wait",
+      "--text-match",
+      "Saved",
+      "--timeout-ms",
+      "8000",
+    ]);
+    expect(wait.kind).toBe("execute");
+    if (wait.kind !== "execute") return;
+    expect(wait.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentWait",
+        args: { text: "Saved", timeoutMs: 8000 },
+      },
+    });
+
+    const trace = buildCliPlan(["app-control", "trace", "--limit", "5"]);
+    expect(trace.kind).toBe("execute");
+    if (trace.kind !== "execute") return;
+    expect(trace.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "getTrace", args: { limit: 5 } },
+    });
+
+    const windows = buildCliPlan(["app-control", "windows"]);
+    expect(windows.kind).toBe("execute");
+    if (windows.kind !== "execute") return;
+    expect(windows.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "windows" },
+    });
+
+    const switchWindow = buildCliPlan([
+      "app-control",
+      "switch-window",
+      "--target",
+      "target-2",
+    ]);
+    expect(switchWindow.kind).toBe("execute");
+    if (switchWindow.kind !== "execute") return;
+    expect(switchWindow.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "switchWindow",
+        args: { targetId: "target-2" },
+      },
+    });
+
+    const drivers = buildCliPlan(["app-control", "drivers"]);
+    expect(drivers.kind).toBe("execute");
+    if (drivers.kind !== "execute") return;
+    expect(drivers.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "listDrivers" },
+    });
+
+    expect(() => buildCliPlan(["app-control", "fill", "--value", "Ada"])).toThrow(
+      /requires --selector/,
+    );
+    expect(() => buildCliPlan(["app-control", "wait"])).toThrow(/requires --selector/);
+  });
+
+  it("app-control proof observes and ingests under the ade-app-control backend", () => {
+    const plan = buildCliPlan([
+      "app-control",
+      "proof",
+      "--caption",
+      "Settings saved",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "observe",
+        args: { includeDom: false },
+      },
+    });
+    const ingest = plan.steps[1];
+    expect(ingest?.method).toBe("ade/actions/call");
+    const params = typeof ingest?.params === "function"
+      ? ingest.params({
+          observation: {
+            domain: "app_control",
+            action: "observe",
+            result: { filePath: "/repo/.ade/cache/app-control-observations/s/obs-1.png" },
+          },
+        })
+      : null;
+    expect(params).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendStyle: "manual",
+        backendName: "ade-app-control",
+        toolName: "app-control proof",
+        inputs: [
+          {
+            kind: "screenshot",
+            title: "Settings saved",
+            description: "Settings saved",
+            path: "/repo/.ade/cache/app-control-observations/s/obs-1.png",
+          },
+        ],
+      },
+    });
+  });
+
+  it("browser capability commands map to the new built-in browser actions", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments?.domain).toBe("built_in_browser");
+      return {
+        action: params?.arguments?.action,
+        ...(params?.arguments?.args ?? {}),
+      };
+    };
+
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--device", "iphone-17-pro"]))
+      .toMatchObject({ action: "setEmulation", tabId: "tab-1", preset: "iphone-17-pro" });
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--width", "1024", "--height", "768", "--scale", "2", "--mobile"]))
+      .toMatchObject({ action: "setEmulation", width: 1024, height: 768, deviceScaleFactor: 2, mobile: true });
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--off"]))
+      .toMatchObject({ action: "setEmulation", preset: null });
+    expect(() => buildCliPlan(["browser", "emulate", "--tab", "tab-1"]))
+      .toThrow(/--device <preset>, --width\/--height, or --off/);
+
+    expect(firstStepArgs(["browser", "zoom", "--tab", "tab-1", "--factor", "1.25"]))
+      .toMatchObject({ action: "setZoom", tabId: "tab-1", factor: 1.25 });
+    expect(firstStepArgs(["browser", "zoom", "--tab", "tab-1", "--reset"]))
+      .toMatchObject({ action: "setZoom", reset: true });
+    expect(() => buildCliPlan(["browser", "zoom", "--tab", "tab-1"]))
+      .toThrow(/--factor <n> or --reset/);
+
+    expect(firstStepArgs(["browser", "find", "--tab", "tab-1", "checkout flow"]))
+      .toMatchObject({ action: "findInPage", tabId: "tab-1", text: "checkout flow" });
+    expect(firstStepArgs(["browser", "find", "--tab", "tab-1", "--match-case", "--backward", "x"]))
+      .toMatchObject({ action: "findInPage", matchCase: true, forward: false });
+    expect(firstStepArgs(["browser", "find-stop", "--tab", "tab-1"]))
+      .toMatchObject({ action: "stopFindInPage", tabId: "tab-1" });
+
+    expect(firstStepArgs(["browser", "devtools", "--tab", "tab-1", "--mode", "bottom"]))
+      .toMatchObject({ action: "setDevTools", tabId: "tab-1", open: true, mode: "bottom" });
+    expect(firstStepArgs(["browser", "devtools", "--tab", "tab-1", "--close"]))
+      .toMatchObject({ action: "setDevTools", open: false });
+
+    expect(firstStepArgs(["browser", "network", "on", "--tab", "tab-1"]))
+      .toMatchObject({ action: "setNetworkLogging", tabId: "tab-1", enabled: true });
+    expect(firstStepArgs(["browser", "network", "off", "--tab", "tab-1"]))
+      .toMatchObject({ action: "setNetworkLogging", enabled: false });
+    expect(firstStepArgs(["browser", "network", "--tab", "tab-1", "--failed", "--limit", "20"]))
+      .toMatchObject({ action: "getNetworkLog", failedOnly: true, limit: 20 });
+    expect(firstStepArgs(["browser", "network", "--tab", "tab-1", "--all"]))
+      .toMatchObject({ action: "getNetworkLog" });
+    expect(firstStepArgs(["browser", "har", "--tab", "tab-1"]))
+      .toMatchObject({ action: "exportHar", tabId: "tab-1" });
+
+    expect(firstStepArgs(["browser", "hover", "--tab", "tab-1", "--selector", ".menu"]))
+      .toMatchObject({ action: "hover", tabId: "tab-1", selector: ".menu" });
+    expect(() => buildCliPlan(["browser", "hover", "--tab", "tab-1"]))
+      .toThrow(/--x\/--y, --selector/);
+
+    expect(firstStepArgs([
+      "browser", "drag", "--tab", "tab-1",
+      "--handle", "obs-1:e:2", "--to-selector", ".dropzone", "--steps", "12", "--fast",
+    ])).toMatchObject({
+      action: "drag",
+      handle: "obs-1:e:2",
+      toSelector: ".dropzone",
+      steps: 12,
+      waitAfterMs: 0,
+    });
+    expect(() => buildCliPlan(["browser", "drag", "--tab", "tab-1", "--selector", ".a"]))
+      .toThrow(/requires a destination/);
+
+    expect(firstStepArgs([
+      "browser", "select-option", "--tab", "tab-1", "--selector", "select#plan", "--value", "pro",
+    ])).toMatchObject({ action: "selectOption", selector: "select#plan", value: "pro" });
+    expect(() => buildCliPlan(["browser", "select-option", "--tab", "tab-1", "--selector", "select#plan"]))
+      .toThrow(/--value, --label, or --index/);
+
+    expect(firstStepArgs([
+      "browser", "upload", "--tab", "tab-1", "--selector", "input[type=file]", "--file", "/tmp/a.png",
+    ])).toMatchObject({ action: "uploadFile", paths: ["/tmp/a.png"] });
+    expect(() => buildCliPlan(["browser", "upload", "--tab", "tab-1", "--selector", "input"]))
+      .toThrow(/at least one file path/);
+
+    expect(firstStepArgs([
+      "browser", "record", "start", "--tab", "tab-1", "--fps", "60", "--caption", "Checkout",
+    ])).toMatchObject({ action: "startRecording", tabId: "tab-1", fps: 60, caption: "Checkout" });
+    const recordStop = buildCliPlan(["browser", "record", "stop", "--tab", "tab-1"]);
+    expect(recordStop.kind).toBe("execute");
+    if (recordStop.kind !== "execute") return;
+    expect(recordStop.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "stopRecording", args: { tabId: "tab-1" } },
+    });
+    // The proof step only ingests when `record start` was given a caption.
+    const proofStep = recordStop.steps[1];
+    expect(typeof proofStep?.params).toBe("function");
+    const withoutCaption = (proofStep!.params as (values: Record<string, unknown>) => {
+      arguments: { inputs: unknown[] };
+    })({ result: { domain: "built_in_browser", action: "stopRecording", result: { caption: null, path: "/tmp/a.webm" } } });
+    expect(withoutCaption.arguments.inputs).toEqual([]);
+    const withCaption = (proofStep!.params as (values: Record<string, unknown>) => {
+      arguments: { inputs: Array<Record<string, unknown>> };
+    })({ result: { domain: "built_in_browser", action: "stopRecording", result: { caption: "Checkout", path: "/tmp/a.webm" } } });
+    expect(withCaption.arguments.inputs).toEqual([
+      expect.objectContaining({ kind: "video_recording", path: "/tmp/a.webm", description: "Checkout" }),
+    ]);
+
+    expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
+      .toThrow(/Unknown browser record command/);
+  }));
+
+  it("browser open --device applies emulation after navigating", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plan = buildCliPlan(["browser", "open", "localhost:5173", "--device", "ipad", "--tab", "tab-9"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "navigate", args: { url: "localhost:5173", tabId: "tab-9" } },
+    });
+    const emulationParams = plan.steps[1]?.params as (values: Record<string, unknown>) => {
+      arguments: { domain: string; action: string; args: Record<string, unknown> };
+    };
+    expect(typeof emulationParams).toBe("function");
+    expect(emulationParams({})).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "setEmulation",
+        args: { tabId: "tab-9", preset: "ipad" },
+      },
+    });
+  }));
 
   it("browser commands map to built-in browser actions", () => withEnv({
     ADE_LANE_ID: undefined,

@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../../computerUse/computerUseArtifactBrokerService";
@@ -201,11 +202,19 @@ export function createWorkflowTools(
   }
 
   // ── capture_screenshot ──────────────────────────────────────────────
+  // The broker is still the gate for *exposing* this tool — it is present only
+  // when computer use is available — but the tool no longer writes through it.
+  // Proof is explicit: a screenshot the agent takes to look at the screen is
+  // not a reviewer-facing artifact, so the capture stays a scratch file and the
+  // agent promotes it deliberately with `ade proof ...` when it matters.
   if (computerUseArtifactBrokerService) {
     tools.captureScreenshot = tool({
       description:
-        "Capture a screenshot of the current screen. " +
-        "Useful for visual verification of UI changes or documenting work.",
+        "Capture a screenshot of the current screen and return the file path. " +
+        "Use this for your own visual verification. It does NOT create reviewer-facing proof: " +
+        "when a moment deserves evidence in the proof drawer, run " +
+        '`ade proof capture --caption "<what it proves>"`, or ' +
+        '`ade proof attach <path> --caption "<what it proves>"` to promote the file this tool returns.',
       inputSchema: z.object({
         title: z
           .string()
@@ -218,7 +227,7 @@ export function createWorkflowTools(
           .describe("Optional description of what the screenshot shows"),
       }),
       execute: async ({ title, description }) => {
-        let tmpDir: string | null = null;
+        let scratchDir: string | null = null;
         try {
           const capabilities = getLocalComputerUseCapabilities();
           if (!capabilities.screenshot.available) {
@@ -230,54 +239,44 @@ export function createWorkflowTools(
             };
           }
 
-          tmpDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ade-screenshot-"));
-          const tmpPath = path.join(tmpDir, `screenshot-${Date.now()}.png`);
+          // `mkdtemp` rather than a fixed directory: the OS temp root is shared
+          // on Linux, and this path is not cleaned up on success.
+          scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-screenshot-"));
+          const scratchPath = path.join(scratchDir, `screenshot-${Date.now()}.png`);
 
-          await execFileAsync(capabilities.screenshot.command ?? "screencapture", ["-x", tmpPath], {
+          await execFileAsync(capabilities.screenshot.command ?? "screencapture", ["-x", scratchPath], {
             timeout: 15_000,
           });
 
-          if (!fs.existsSync(tmpPath)) {
+          if (!fs.existsSync(scratchPath)) {
+            fs.rmSync(scratchDir, { recursive: true, force: true });
+            scratchDir = null;
             return { success: false, error: "Screenshot capture produced no file" };
           }
 
-          const result = computerUseArtifactBrokerService.ingest({
-            backend: {
-              name: "screencapture",
-              style: "local_fallback",
-              toolName: "captureScreenshot",
-            },
-            inputs: [
-              {
-                kind: "screenshot",
-                title: title ?? "Screenshot",
-                description: description ?? null,
-                path: tmpPath,
-                mimeType: "image/png",
-              },
-            ],
-            owners: [
-              { kind: "chat_session", id: sessionId, relation: "produced_by" },
-            ],
-          });
-
-          const artifact = result.artifacts[0];
+          // Kept on disk on purpose: deleting it here would throw the capture
+          // away, and the OS temp root is an allowed `ade proof attach` source.
+          scratchDir = null;
           return {
             success: true,
-            artifactId: artifact?.id ?? null,
-            uri: artifact?.uri ?? null,
-            title: artifact?.title ?? title,
+            proof: false,
+            path: scratchPath,
+            mimeType: "image/png",
+            title: title ?? "Screenshot",
+            description: description ?? null,
+            note:
+              "Scratch capture — nothing was filed in the proof drawer. Run "
+              + `\`ade proof attach ${scratchPath} --caption "…"\` when a reviewer should see it.`,
           };
         } catch (err) {
-          return formatToolError("Screenshot failed", err);
-        } finally {
-          try {
-            if (tmpDir) {
-              fs.rmSync(tmpDir, { recursive: true, force: true });
+          if (scratchDir) {
+            try {
+              fs.rmSync(scratchDir, { recursive: true, force: true });
+            } catch {
+              // Best-effort cleanup only.
             }
-          } catch {
-            // Best-effort cleanup only.
           }
+          return formatToolError("Screenshot failed", err);
         }
       },
     });
