@@ -49,6 +49,11 @@ import {
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
+import type {
+  WorkToolId,
+  WorkToolsLaneState,
+  WorkToolsObservationPreview,
+} from "../shared/types/workTools";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   DiagnosticReportPayload,
@@ -778,6 +783,8 @@ import type {
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserDevToolsResult,
   BuiltInBrowserEmulationResult,
+  BuiltInBrowserEndHandoffArgs,
+  BuiltInBrowserHandoffResult,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
@@ -794,6 +801,9 @@ import type {
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserPreviewStreamResult,
+  BuiltInBrowserStartPreviewStreamArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
@@ -3705,6 +3715,43 @@ function subscribeAppControlEvents(
     removeRemote();
     removeLocal();
   };
+}
+
+/**
+ * Preview-stream subscriptions this renderer holds.
+ *
+ * The service refcounts them, so an unpaired start leaves a `capturePage()`
+ * loop running for a card that no longer exists — which a renderer reload
+ * (dev HMR, a crash-recover) would otherwise do every time, because React
+ * cleanup never runs on an unload. `pagehide` is the one hook that does.
+ */
+const builtInBrowserPreviewSubscriptions = new Map<string, BuiltInBrowserProjectScopeArgs>();
+let builtInBrowserPreviewUnloadHooked = false;
+
+function trackBuiltInBrowserPreviewStream(
+  tabId: string,
+  args: BuiltInBrowserStartPreviewStreamArgs,
+): void {
+  if (!tabId) return;
+  builtInBrowserPreviewSubscriptions.set(tabId, {
+    ...(args.projectRoot == null ? {} : { projectRoot: args.projectRoot }),
+    ...(args.tabCollection == null ? {} : { tabCollection: args.tabCollection }),
+  });
+  if (builtInBrowserPreviewUnloadHooked) return;
+  builtInBrowserPreviewUnloadHooked = true;
+  window.addEventListener("pagehide", () => {
+    for (const [heldTabId, scope] of builtInBrowserPreviewSubscriptions) {
+      // Best-effort and deliberately not awaited: the page is going away, and
+      // the worst case is one loop that main tears down with the tab anyway.
+      void ipcRenderer.invoke(IPC.builtInBrowserStopPreviewStream, { ...scope, tabId: heldTabId })
+        .catch(() => {});
+    }
+    builtInBrowserPreviewSubscriptions.clear();
+  });
+}
+
+function untrackBuiltInBrowserPreviewStream(tabId: string): void {
+  builtInBrowserPreviewSubscriptions.delete(tabId);
 }
 
 function subscribeBuiltInBrowserEvents(
@@ -8552,6 +8599,21 @@ const adeBridge = {
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
           ),
+    /**
+     * Human hand-back. Routed like every other browser call, but the runtime
+     * side gates it to user clients — an agent must not be able to declare
+     * itself done with a sign-in the person is still in the middle of.
+     */
+    endHandoff: async (
+      args: BuiltInBrowserEndHandoffArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserHandoffResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserHandoffResult>(pin, "built_in_browser", "endHandoff", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserEndHandoff, args),
+          ),
     setEmulation: async (
       args: BuiltInBrowserSetEmulationArgs = {},
       pin?: OpenProjectBinding | null,
@@ -8640,6 +8702,33 @@ const adeBridge = {
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserStopRecording, args),
           ),
+    /**
+     * Live thumbnail frames for a tab, for surfaces that are not the browser
+     * panel. Deliberately local-only — no `callPinnedRuntimeAction` branch:
+     * the WebContentsView being previewed lives in THIS window's main process,
+     * and there is no agent tool behind this, so a pinned machine has nothing
+     * to answer with. Callers must pair start/stop; the service refcounts.
+     */
+    startPreviewStream: async (
+      args: BuiltInBrowserStartPreviewStreamArgs = {},
+    ): Promise<BuiltInBrowserPreviewStreamResult> => {
+      const result = await ipcRenderer.invoke(
+        IPC.builtInBrowserStartPreviewStream,
+        args,
+      ) as BuiltInBrowserPreviewStreamResult;
+      trackBuiltInBrowserPreviewStream(result.tabId, args);
+      return result;
+    },
+    stopPreviewStream: async (
+      args: BuiltInBrowserStopPreviewStreamArgs = {},
+    ): Promise<BuiltInBrowserPreviewStreamResult> => {
+      const result = await ipcRenderer.invoke(
+        IPC.builtInBrowserStopPreviewStream,
+        args,
+      ) as BuiltInBrowserPreviewStreamResult;
+      untrackBuiltInBrowserPreviewStream(result.tabId);
+      return result;
+    },
     onEvent: subscribeBuiltInBrowserEvents,
     onRemoteRequest: subscribeBuiltInBrowserRemoteRequests,
   },
@@ -10842,6 +10931,47 @@ const adeBridge = {
         { args: { state } },
         () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
+  },
+  /**
+   * Read-only Work tools-pane state, plus the one write the desktop owns.
+   *
+   * There is no local IPC fallback: the aggregator lives in the runtime daemon
+   * (it reads the App Control service and the desktop browser bridge), so with
+   * no runtime bound there is genuinely nothing to report and nowhere to
+   * publish. Both calls degrade to "unknown" rather than throwing, because this
+   * is a passive mirror — it must never break the pane it describes.
+   */
+  workTools: {
+    getLaneState: async (
+      laneId: string,
+    ): Promise<WorkToolsLaneState | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<WorkToolsLaneState>(
+        "work_tools",
+        "getLaneState",
+        { args: { laneId } },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
+    setActiveTool: async (
+      laneId: string,
+      tool: WorkToolId | null,
+    ): Promise<void> => {
+      await callProjectRuntimeActionIfBound(
+        "work_tools",
+        "setActiveTool",
+        { args: { laneId, tool } },
+      );
+    },
+    readObservationPreview: async (
+      observationPath: string,
+    ): Promise<WorkToolsObservationPreview | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<WorkToolsObservationPreview | null>(
+        "work_tools",
+        "readObservationPreview",
+        { args: { path: observationPath } },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
   },
   tests: {
     listSuites: async (): Promise<TestSuiteDefinition[]> => {

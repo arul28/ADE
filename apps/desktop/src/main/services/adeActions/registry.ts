@@ -866,6 +866,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
+  // Read-only for everyone except the desktop that owns the pane:
+  // `setActiveTool` is how a desktop renderer publishes which tool it has open
+  // so phones and the hosted web client can mirror it.
+  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview"],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -2288,6 +2292,10 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
           title: session?.title ?? "ADE session",
           message,
           laneId: session?.laneId ?? null,
+          // Only asks whose headline is the ask itself set these — today that is
+          // `ade browser handoff`, which pushes "Sign in for me" / the reason.
+          alertTitle: optionalNonEmptyString(record.alertTitle),
+          alertBody: optionalNonEmptyString(record.alertBody),
         });
       } catch (error) {
         runtime.logger.warn("session.attention_notification_failed", {
@@ -3175,6 +3183,12 @@ async function buildAiSettingsStatus(
       dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature),
     })),
   };
+}
+
+function optionalNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {
@@ -4318,6 +4332,7 @@ export function getAdeActionDomainServices(
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
     graph_state: toService(buildGraphStateDomainService(runtime)),
+    work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),
     app_control: toService(runtime.appControlService),

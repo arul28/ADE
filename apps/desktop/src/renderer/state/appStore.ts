@@ -204,6 +204,14 @@ export type WorkProjectViewState = {
    */
   workSidebarTool: WorkSidebarTab | null;
   workSidebarWidthPct: number;
+  /**
+   * Where the Work tab's floating live-preview card sits, as fractions of the
+   * chat column. Optional because it is only written once somebody drags the
+   * card: an absent value means "bottom-right", which is where it starts.
+   * Fractions rather than pixels so resizing the column keeps it in place
+   * instead of stranding it off the edge.
+   */
+  workLiveCardPosition?: { xPct: number; yPct: number } | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
@@ -291,6 +299,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarOpen: false,
     workSidebarTool: null,
     workSidebarWidthPct: 36,
+    workLiveCardPosition: null,
     laneSessionOrder: {},
     pinnedSessionIds: [],
     workPinnedLaneIds: [],
@@ -336,6 +345,15 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
   return null;
 }
 
+function normalizeWorkLiveCardPosition(value: unknown): { xPct: number; yPct: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { xPct?: unknown; yPct?: unknown };
+  const xPct = typeof candidate.xPct === "number" && Number.isFinite(candidate.xPct) ? candidate.xPct : null;
+  const yPct = typeof candidate.yPct === "number" && Number.isFinite(candidate.yPct) ? candidate.yPct : null;
+  if (xPct == null || yPct == null) return null;
+  return { xPct: Math.max(0, Math.min(1, xPct)), yPct: Math.max(0, Math.min(1, yPct)) };
+}
+
 function normalizeWorkSidebarWidthPct(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return 36;
@@ -376,6 +394,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTool: normalizeWorkSidebarTool(candidate.workSidebarTool),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
+    workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
     // Deduped: a hand-edited or half-written blob must not be able to render the

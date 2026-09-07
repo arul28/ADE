@@ -2002,6 +2002,14 @@ struct WorkChatSessionView: View {
   @ViewBuilder
   private func chatColumn(proxy: ScrollViewProxy) -> some View {
       VStack(spacing: 0) {
+        // Read-only summary of the Work tools pane running on the user's Mac.
+        // It hides itself when the brain cannot describe one, so a lane with no
+        // desktop attached costs nothing but a probe.
+        WorkToolsRow(laneId: session.laneId)
+          .padding(.horizontal, 12)
+          .padding(.top, 4)
+          .padding(.bottom, 2)
+
         transcriptScrollView(proxy: proxy)
           .overlay(alignment: .bottomLeading) {
             // Floats over the thread instead of consuming composer height, so

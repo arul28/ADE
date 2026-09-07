@@ -94,10 +94,10 @@ describe("createBuiltInBrowserPreviewStreams", () => {
   });
 
   it("skips a tick instead of queueing when the previous capture has not resolved", async () => {
-    let resolveCapture: ((frame: BuiltInBrowserPreviewCapture) => void) | null = null;
+    const pending: { resolve: ((frame: BuiltInBrowserPreviewCapture) => void) | null } = { resolve: null };
     const h = harness({
-      capture: () => new Promise((resolve) => {
-        resolveCapture = resolve;
+      capture: () => new Promise<BuiltInBrowserPreviewCapture | null>((resolve) => {
+        pending.resolve = resolve;
       }),
     });
     h.streams.start("tab-1");
@@ -110,7 +110,7 @@ describe("createBuiltInBrowserPreviewStreams", () => {
     expect(h.captureCalls).toHaveLength(1);
     expect(h.streams.snapshot()[0]?.skipped).toBe(2);
 
-    resolveCapture?.({ dataUrl: "data:image/jpeg;base64,x", width: 480, height: 300 });
+    pending.resolve?.({ dataUrl: "data:image/jpeg;base64,x", width: 480, height: 300 });
     await flush();
     expect(h.frames).toHaveLength(1);
 
@@ -175,16 +175,16 @@ describe("createBuiltInBrowserPreviewStreams", () => {
   });
 
   it("drops a frame whose subscribers all left while the capture was in flight", async () => {
-    let resolveCapture: ((frame: BuiltInBrowserPreviewCapture) => void) | null = null;
+    const pending: { resolve: ((frame: BuiltInBrowserPreviewCapture) => void) | null } = { resolve: null };
     const h = harness({
-      capture: () => new Promise((resolve) => {
-        resolveCapture = resolve;
+      capture: () => new Promise<BuiltInBrowserPreviewCapture | null>((resolve) => {
+        pending.resolve = resolve;
       }),
     });
     h.streams.start("tab-1");
     h.fire();
     h.streams.stop("tab-1");
-    resolveCapture?.({ dataUrl: "data:image/jpeg;base64,x", width: 480, height: 300 });
+    pending.resolve?.({ dataUrl: "data:image/jpeg;base64,x", width: 480, height: 300 });
     await flush();
     expect(h.frames).toHaveLength(0);
   });

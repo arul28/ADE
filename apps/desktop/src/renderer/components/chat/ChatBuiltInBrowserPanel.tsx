@@ -1,31 +1,79 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import {
   ArrowClockwise,
   ArrowLeft,
   ArrowRight,
   ArrowSquareOut,
+  Bug,
+  Camera,
+  CaretDown,
+  CaretLeft,
+  CaretRight,
   CursorClick,
+  DeviceMobile,
+  DotsThreeVertical,
+  Globe,
   ImageSquare,
+  LockSimple,
+  LockSimpleOpen,
+  MagnifyingGlass,
+  Hand,
+  Monitor,
   Paperclip,
   Play,
   Plus,
+  Pulse,
+  Robot,
   Selection,
   ShieldCheck,
+  SignIn,
   SpinnerGap,
   Stop,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
-import type { AgentChatFileRef, OpenProjectBinding } from "../../../shared/types";
+import type { AgentChatFileRef, BrowserLinkOpenMode, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserEmulationPreset,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserNetworkLoggingResult,
   BuiltInBrowserPermissionDecision,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRecordingStatus,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopRecordingResult,
   BuiltInBrowserTab,
+  BuiltInBrowserTabHandoff,
   BuiltInBrowserTabTargetArgs,
+  BuiltInBrowserZoomResult,
 } from "../../../shared/types/builtInBrowser";
+import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
+import {
+  BUILT_IN_BROWSER_RECORDING_FRAME_RATES,
+  browserTabLabel,
+  deviceMenuPresets,
+  emulationButtonLabel,
+  emulationSizeLabel,
+  findMatchLabel,
+  normalizeRecordingFps,
+  recordingPillLabel,
+  simulatorEmulationPreset,
+  stepZoomFactor,
+  urlLockKind,
+  zoomPercentLabel,
+  type BrowserFindState,
+  type BuiltInBrowserRecordingFrameRate,
+} from "./builtInBrowserToolbar";
+import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
+import { showToast } from "../app/toast/toastStore";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { formatBytes } from "../../lib/format";
 import { useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
@@ -171,6 +219,55 @@ type BuiltInBrowserApi = {
   selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
   selectCurrent: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
   clearSelection: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+  /**
+   * Human-only hand-back. Deliberately absent from the agent bridge: an agent
+   * gets its tab back when the person presses Hand back, the auto-offer is
+   * accepted, the tab closes, or the handoff times out — never on its own say-so.
+   */
+  endHandoff?: (
+    args?: BuiltInBrowserTabTargetArgs & { endedBy?: "human" | "auto-offer" },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<unknown>;
+  setEmulation?: (
+    args?: BuiltInBrowserTabTargetArgs & {
+      preset?: string | null;
+      width?: number | null;
+      height?: number | null;
+    },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserEmulationResult>;
+  setZoom?: (
+    args?: BuiltInBrowserTabTargetArgs & { factor?: number | null; reset?: boolean },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserZoomResult>;
+  findInPage?: (
+    args: BuiltInBrowserTabTargetArgs & { text: string; forward?: boolean; findNext?: boolean },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserFindInPageResult>;
+  stopFindInPage?: (
+    args?: BuiltInBrowserTabTargetArgs & { action?: "clearSelection" | "keepSelection" },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<unknown>;
+  setDevTools?: (
+    args: BuiltInBrowserTabTargetArgs & { open: boolean },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserDevToolsResult>;
+  setNetworkLogging?: (
+    args: BuiltInBrowserTabTargetArgs & { enabled: boolean; clear?: boolean },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserNetworkLoggingResult>;
+  exportHar?: (
+    args?: BuiltInBrowserTabTargetArgs & { failedOnly?: boolean },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserExportHarResult>;
+  startRecording?: (
+    args?: BuiltInBrowserTabTargetArgs & { fps?: number | null; caption?: string | null },
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserStartRecordingResult>;
+  stopRecording?: (
+    args?: BuiltInBrowserTabTargetArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<BuiltInBrowserStopRecordingResult>;
   onEvent: (
     cb: (event: BuiltInBrowserEventPayload) => void,
     pin?: OpenProjectBinding | null,
@@ -270,6 +367,34 @@ const STATUS_PILL_TONE: Record<StatusTone, string> = {
   muted: "border-white/[0.08] bg-white/[0.03] text-muted-fg/55",
   error: "border-rose-400/30 bg-rose-500/10 text-rose-200/85",
 };
+
+/** House reveal for bars that slide in under the toolbar. */
+const REVEAL_TRANSITION = { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
+/** The `layoutId` spring the tools rail uses for its sliding indicator. */
+const TAB_INDICATOR_SPRING = { type: "spring", stiffness: 520, damping: 38, mass: 0.7 } as const;
+const TAB_INDICATOR_LAYOUT_ID = "ade-browser-tab-indicator";
+/** Ports worth a one-shot probe for the empty state's "your dev server" chip. */
+const DEV_SERVER_PROBE_PORTS = [3000, 5173, 4321, 8080, 8000] as const;
+
+/** Shared control geometry, so the URL field and the menu buttons read as one row. */
+const TOOLBAR_CONTROL = "h-7 rounded-[7px] border text-[11px]";
+const TOOLBAR_IDLE = "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/90";
+const TOOLBAR_ON = "border-[color-mix(in_srgb,var(--color-accent)_32%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/92";
+const TOOLBAR_FOCUS = "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+const TOOLBAR_MOTION = "transition-colors duration-[120ms] ease-out disabled:cursor-not-allowed disabled:opacity-40";
+
+const MENU_CONTENT_CLASS = cn(
+  "z-[140] min-w-[228px] overflow-hidden rounded-[var(--radius-lg)] border border-white/[0.08]",
+  "bg-[var(--color-popup-bg,var(--color-card))] p-1 font-sans text-[11.5px] text-fg/82",
+  "shadow-[var(--shadow-popup,0_24px_64px_-24px_rgba(0,0,0,0.8))]",
+);
+const MENU_ITEM_CLASS = cn(
+  "flex cursor-pointer select-none items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 outline-none",
+  "transition-colors duration-[120ms] ease-out data-[highlighted]:bg-white/[0.07] data-[highlighted]:text-fg",
+  "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40",
+);
+const MENU_LABEL_CLASS = "px-2 pb-1 pt-1.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/60";
+const MENU_SEPARATOR_CLASS = "my-1 h-px bg-white/[0.06]";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -434,6 +559,33 @@ function normalizeTab(value: unknown): BuiltInBrowserTab | null {
     emulation: (isRecord(value.emulation) ? value.emulation : null) as BuiltInBrowserTab["emulation"],
     networkLogging: booleanField(value.networkLogging, false),
     recording: (isRecord(value.recording) ? value.recording : null) as BuiltInBrowserTab["recording"],
+    handoff: normalizeTabHandoff(value.handoff),
+  };
+}
+
+/**
+ * A tab's login handoff, or null.
+ *
+ * Parsed defensively rather than cast: this panel also runs against an older
+ * main process during a dev reload, where `handoff` is simply absent.
+ */
+function normalizeTabHandoff(value: unknown): BuiltInBrowserTabHandoff | null {
+  if (!isRecord(value)) return null;
+  const reason = stringField(value.reason);
+  const startedAt = stringField(value.startedAt);
+  if (!reason || !startedAt) return null;
+  const previousOwner = isRecord(value.previousOwner) ? value.previousOwner : {};
+  return {
+    reason,
+    startedAt,
+    expiresAt: stringField(value.expiresAt) ?? startedAt,
+    requestedByChatSessionId: stringField(value.requestedByChatSessionId),
+    requestedByLaneId: stringField(value.requestedByLaneId),
+    startedAtOrigin: stringField(value.startedAtOrigin),
+    previousOwner: {
+      laneId: stringField(previousOwner.laneId),
+      chatSessionId: stringField(previousOwner.chatSessionId),
+    },
   };
 }
 
@@ -538,6 +690,19 @@ function frameLabel(frame: BrowserFrame | null): string | null {
   return `${Math.round(frame.x)}, ${Math.round(frame.y)} · ${Math.round(frame.width)}×${Math.round(frame.height)}`;
 }
 
+/** Origin of a page URL, or null for `about:blank` and non-http schemes. */
+function browserUrlOrigin(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text === "about:blank") return null;
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 function shortSessionId(sessionId: string | null): string | null {
   if (!sessionId) return null;
   return sessionId.length <= 8 ? sessionId : `${sessionId.slice(0, 4)}…${sessionId.slice(-3)}`;
@@ -549,6 +714,9 @@ function shortOwnerId(value: string | null): string | null {
 }
 
 function browserTabOwnerLabel(tab: BuiltInBrowserTab): string | null {
+  // During a login handoff the tab is the human's, so the strip must not keep
+  // advertising an agent owner it has just been taken away from.
+  if (tab.handoff) return "you own this tab";
   const lane = shortOwnerId(tab.ownerLaneId);
   const chat = shortSessionId(tab.ownerChatSessionId);
   if (lane && chat) return `${lane} · ${chat}`;
@@ -851,6 +1019,26 @@ function BuiltInBrowserPanelView({
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileDiagnostics, setProfileDiagnostics] = useState<BuiltInBrowserProfileDiagnostics | null>(null);
   const [permissionDecisions, setPermissionDecisions] = useState<BuiltInBrowserPermissionDecision[]>([]);
+  const reduceMotion = useReducedMotion() ?? false;
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findText, setFindText] = useState("");
+  const [findState, setFindState] = useState<BrowserFindState | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
+  const [responsiveWidth, setResponsiveWidth] = useState("1024");
+  const [responsiveHeight, setResponsiveHeight] = useState("768");
+  const [linkMode, setLinkModeState] = useState<BrowserLinkOpenMode>(() => getLinkOpenMode());
+  const [recordingFps, setRecordingFps] = useState<BuiltInBrowserRecordingFrameRate>(30);
+  // Re-rendered once a second while recording so the REC pill's clock ticks.
+  const [recordingClock, setRecordingClock] = useState(() => Date.now());
+  const [importOpen, setImportOpen] = useState(false);
+  const [bootedSimulatorName, setBootedSimulatorName] = useState<string | null>(null);
+  const [detectedDevServer, setDetectedDevServer] = useState<string | null>(null);
+  const [tabStripFades, setTabStripFades] = useState<{ start: boolean; end: boolean }>({ start: false, end: false });
   // Which tabs are looking at the pinned machine, and through which forward.
   const [tabTunnels, setTabTunnels] = useState<TabTunnelMap>({});
   const tabTunnelsRef = useRef<TabTunnelMap>(tabTunnels);
@@ -984,6 +1172,34 @@ function BuiltInBrowserPanelView({
   const inspecting = Boolean(status?.inspecting);
   const selectionFrame = frameLabel(selectedItem?.frame ?? null);
   const sessionLabel = shortSessionId(sessionId);
+  const activeTab = useMemo(
+    () => browserTabs.find((tab) => tab.id === activeTabId) ?? null,
+    [activeTabId, browserTabs],
+  );
+  const handoff = activeTab?.handoff ?? null;
+  /**
+   * Origin the auto hand-back offer is currently suppressed for.
+   *
+   * "Keep control" must silence the offer only until the NEXT origin change —
+   * a sign-in that bounces through three identity-provider hosts would
+   * otherwise re-ask on every hop, and a permanent dismissal would lose the
+   * offer for the origin the human actually lands on.
+   */
+  const [handoffOfferSilencedOrigin, setHandoffOfferSilencedOrigin] = useState<string | null>(null);
+  const currentHandoffOrigin = useMemo(() => browserUrlOrigin(currentUrl), [currentUrl]);
+  const handoffLeftStartOrigin = Boolean(
+    handoff?.startedAtOrigin
+    && currentHandoffOrigin
+    && currentHandoffOrigin !== handoff.startedAtOrigin,
+  );
+  const showHandoffHandBackOffer = handoffLeftStartOrigin
+    && currentHandoffOrigin !== handoffOfferSilencedOrigin;
+  const emulation = activeTab?.emulation ?? null;
+  const zoomFactor = activeTab?.zoomFactor && activeTab.zoomFactor > 0 ? activeTab.zoomFactor : 1;
+  const devToolsOpen = Boolean(activeTab?.devToolsOpen);
+  const networkLogging = Boolean(activeTab?.networkLogging);
+  const recording: BuiltInBrowserRecordingStatus | null = activeTab?.recording ?? null;
+  const lockKind = urlLockKind(currentUrl);
   const captureImageDataUrl = captureBase?.dataUrl ?? captureBase?.screenshotDataUrl ?? null;
   const activeCaptureFrame = useMemo(() => (
     captureBase?.width && captureBase?.height && captureSelection
@@ -1326,6 +1542,17 @@ function BuiltInBrowserPanelView({
       ) {
         applyStatus(event);
       }
+      if (eventType === "found-in-page") {
+        setFindState({
+          activeMatchOrdinal: numberField(event.activeMatchOrdinal),
+          matches: numberField(event.matches),
+        });
+      }
+      if (eventType === "recording") {
+        // The recording event carries no status, and `tab.recording` is what the
+        // REC pill reads — so pull the tab state that just changed.
+        api.getStatus(browserScope, runtimePinRef.current).then(applyStatus).catch(() => {});
+      }
       const nextSelection =
         normalizeContextItem(event.item, statusRef.current)
         ?? normalizeContextItem(event.selection, statusRef.current)
@@ -1636,10 +1863,9 @@ function BuiltInBrowserPanelView({
     })();
   }, [apiAvailable, applyStatus, browserTabs.length, navigateRendererWebview, hasStatus, withBrowserScope]);
 
-  const handleNavigate = useCallback(
-    (event?: FormEvent<HTMLFormElement>) => {
-      event?.preventDefault();
-      const normalized = normalizeUrlForNavigation(urlInput);
+  const navigateToUrl = useCallback(
+    (raw: string) => {
+      const normalized = normalizeUrlForNavigation(raw);
       if (!normalized.ok) {
         setMessage({ tone: "error", text: normalized.reason });
         return;
@@ -1678,8 +1904,22 @@ function BuiltInBrowserPanelView({
         }
       });
     },
-    [activeTabId, applyStatus, navigateRendererWebview, prepareRemoteNavigation, refreshStatus, restoreLiveBrowserView, runBusy, urlInput, withBrowserScope],
+    [activeTabId, applyStatus, navigateRendererWebview, prepareRemoteNavigation, refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope],
   );
+
+  const handleNavigate = useCallback(
+    (event?: FormEvent<HTMLFormElement>) => {
+      event?.preventDefault();
+      navigateToUrl(urlInput);
+    },
+    [navigateToUrl, urlInput],
+  );
+
+  /** Empty-state chips: fill the URL field so the bar reflects what loaded. */
+  const handleSuggestion = useCallback((url: string) => {
+    setUrlInput(url);
+    navigateToUrl(url);
+  }, [navigateToUrl]);
 
   const handleNewTab = useCallback(() => {
     void runBusy("new-tab", async () => {
@@ -1730,6 +1970,27 @@ function BuiltInBrowserPanelView({
       await refreshStatus();
     });
   }, [refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
+
+  const handleHandBack = useCallback((endedBy: "human" | "auto-offer") => {
+    void runBusy("hand-back", async () => {
+      const api = requireBrowserApi();
+      if (!api.endHandoff) {
+        throw new Error("This ADE build does not support handing the browser back.");
+      }
+      await api.endHandoff(withBrowserScope({ endedBy }), runtimePinRef.current);
+      setHandoffOfferSilencedOrigin(null);
+      await refreshStatus();
+    });
+  }, [refreshStatus, runBusy, withBrowserScope]);
+
+  const handleKeepHandoffControl = useCallback(() => {
+    setHandoffOfferSilencedOrigin(currentHandoffOrigin);
+  }, [currentHandoffOrigin]);
+
+  // A new handoff always starts with a live offer, whatever the previous one silenced.
+  useEffect(() => {
+    if (!handoff) setHandoffOfferSilencedOrigin(null);
+  }, [handoff?.startedAt, handoff]);
 
   const handleBack = useCallback(() => {
     void runBusy("back", async () => {
@@ -2050,6 +2311,240 @@ function BuiltInBrowserPanelView({
     });
   }, [currentUrl]);
 
+  /* ── Device emulation ───────────────────────────────────────────────────── */
+
+  const applyEmulation = useCallback((
+    request: { preset?: string | null; width?: number | null; height?: number | null },
+    label: string,
+  ) => {
+    void runBusy("emulation", async () => {
+      const api = requireBrowserApi();
+      if (!api.setEmulation) throw new Error("This ADE build does not support browser device emulation.");
+      const result = await api.setEmulation(withBrowserScope(request), runtimePinRef.current);
+      applyStatus(result.status);
+      setMessage({ tone: "info", text: `Browser is emulating ${label}.` });
+    });
+  }, [applyStatus, runBusy, withBrowserScope]);
+
+  const handlePickPreset = useCallback((preset: BuiltInBrowserEmulationPreset) => {
+    applyEmulation({ preset: preset.id }, preset.label);
+  }, [applyEmulation]);
+
+  const handleEmulationOff = useCallback(() => {
+    void runBusy("emulation", async () => {
+      const api = requireBrowserApi();
+      if (!api.setEmulation) throw new Error("This ADE build does not support browser device emulation.");
+      const result = await api.setEmulation(withBrowserScope({ preset: "off" }), runtimePinRef.current);
+      applyStatus(result.status);
+    });
+  }, [applyStatus, runBusy, withBrowserScope]);
+
+  const handleApplyResponsive = useCallback(() => {
+    const width = Number.parseInt(responsiveWidth, 10);
+    const height = Number.parseInt(responsiveHeight, 10);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      setMessage({ tone: "error", text: "Enter a width and a height to size the browser." });
+      return;
+    }
+    setDeviceMenuOpen(false);
+    applyEmulation({ width, height }, `${width}×${height}`);
+  }, [applyEmulation, responsiveHeight, responsiveWidth]);
+
+  /* ── Zoom ───────────────────────────────────────────────────────────────── */
+
+  const applyZoom = useCallback((factor: number) => {
+    void runBusy("zoom", async () => {
+      const api = requireBrowserApi();
+      if (!api.setZoom) throw new Error("This ADE build does not support browser zoom.");
+      const result = await api.setZoom(withBrowserScope({ factor }), runtimePinRef.current);
+      applyStatus(result.status);
+    });
+  }, [applyStatus, runBusy, withBrowserScope]);
+
+  const handleZoomStep = useCallback((direction: 1 | -1) => {
+    applyZoom(stepZoomFactor(zoomFactor, direction));
+  }, [applyZoom, zoomFactor]);
+
+  const handleZoomReset = useCallback(() => applyZoom(1), [applyZoom]);
+
+  /* ── Find in page ───────────────────────────────────────────────────────── */
+
+  const runFind = useCallback((text: string, options?: { findNext?: boolean; forward?: boolean }) => {
+    const query = text.trim();
+    if (!query) {
+      setFindState(null);
+      return;
+    }
+    const api = getBrowserApi();
+    if (!api?.findInPage) {
+      setMessage({ tone: "error", text: "This ADE build does not support finding text in the page." });
+      return;
+    }
+    void api.findInPage(
+      withBrowserScope({
+        text: query,
+        findNext: options?.findNext ?? false,
+        forward: options?.forward ?? true,
+      }),
+      runtimePinRef.current,
+    )
+      .then((result) => {
+        setFindState({
+          activeMatchOrdinal: result.activeMatchOrdinal ?? null,
+          matches: result.matches ?? null,
+        });
+      })
+      .catch((error: unknown) => {
+        setMessage({ tone: "error", text: errorMessage(error) });
+      });
+  }, [withBrowserScope]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindState(null);
+    const api = getBrowserApi();
+    if (!api?.stopFindInPage) return;
+    void api.stopFindInPage(withBrowserScope({ action: "clearSelection" as const }), runtimePinRef.current)
+      .catch(() => {
+        // Nothing to clear is not worth a banner — the bar is already gone.
+      });
+  }, [withBrowserScope]);
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    // The bar animates in, so focus on the next frame rather than into a
+    // zero-height container.
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+
+  /* ── DevTools, network log ──────────────────────────────────────────────── */
+
+  const handleToggleDevTools = useCallback(() => {
+    void runBusy("devtools", async () => {
+      const api = requireBrowserApi();
+      if (!api.setDevTools) throw new Error("This ADE build does not support opening browser DevTools.");
+      const result = await api.setDevTools(withBrowserScope({ open: !devToolsOpen }), runtimePinRef.current);
+      applyStatus(result.status);
+    });
+  }, [applyStatus, devToolsOpen, runBusy, withBrowserScope]);
+
+  const handleToggleNetworkLogging = useCallback(() => {
+    void runBusy("network-log", async () => {
+      const api = requireBrowserApi();
+      if (!api.setNetworkLogging) throw new Error("This ADE build does not support browser network logging.");
+      const next = !networkLogging;
+      const result = await api.setNetworkLogging(
+        withBrowserScope({ enabled: next, ...(next ? { clear: true } : {}) }),
+        runtimePinRef.current,
+      );
+      applyStatus(result.status);
+      setMessage({
+        tone: "info",
+        text: next
+          ? "Recording every request on this tab. Export a HAR when you have what you need."
+          : "Stopped recording requests on this tab.",
+      });
+    });
+  }, [applyStatus, networkLogging, runBusy, withBrowserScope]);
+
+  const handleExportHar = useCallback(() => {
+    void runBusy("export-har", async () => {
+      const api = requireBrowserApi();
+      if (!api.exportHar) throw new Error("This ADE build does not support HAR export.");
+      const result = await api.exportHar(withBrowserScope({}), runtimePinRef.current);
+      showToast({
+        title: "HAR exported",
+        message: `${result.entryCount} ${result.entryCount === 1 ? "request" : "requests"} · ${result.relativePath ?? result.filePath}`,
+        tone: "success",
+        action: {
+          label: "Reveal",
+          onClick: () => {
+            void window.ade.app.revealPath(result.filePath).catch(() => {});
+          },
+        },
+      });
+    });
+  }, [runBusy, withBrowserScope]);
+
+  /* ── Recording ──────────────────────────────────────────────────────────── */
+
+  const handleStopRecording = useCallback(() => {
+    void runBusy("recording", async () => {
+      const api = requireBrowserApi();
+      if (!api.stopRecording) throw new Error("This ADE build does not support screen recording.");
+      const result = await api.stopRecording(withBrowserScope({}), runtimePinRef.current);
+      applyStatus(result.status);
+      showToast({
+        title: "Recording saved",
+        // A caption is what files the clip as proof, so say so rather than
+        // leaving the person to wonder whether it went anywhere.
+        message: result.caption
+          ? `Added to proof · ${result.relativePath ?? result.path}`
+          : (result.relativePath ?? result.path),
+        tone: "success",
+        action: {
+          label: "Reveal",
+          onClick: () => {
+            void window.ade.app.revealPath(result.path).catch(() => {});
+          },
+        },
+      });
+    });
+  }, [applyStatus, runBusy, withBrowserScope]);
+
+  const handleStartRecording = useCallback(() => {
+    void runBusy("recording", async () => {
+      const api = requireBrowserApi();
+      if (!api.startRecording) throw new Error("This ADE build does not support screen recording.");
+      const result = await api.startRecording(withBrowserScope({ fps: recordingFps }), runtimePinRef.current);
+      applyStatus(result.status);
+    });
+  }, [applyStatus, recordingFps, runBusy, withBrowserScope]);
+
+  /**
+   * One camera button: click captures, Shift-click records.
+   *
+   * Two buttons would imply two unrelated things; they are the same intent at
+   * two lengths, and the modifier is in the tooltip.
+   */
+  const handleCameraClick = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    if (event.shiftKey) {
+      if (recording) handleStopRecording();
+      else handleStartRecording();
+      return;
+    }
+    handleAttachScreenshot();
+  }, [handleAttachScreenshot, handleStartRecording, handleStopRecording, recording]);
+
+  /* ── Link routing ───────────────────────────────────────────────────────── */
+
+  const handleLinkModeChange = useCallback((next: BrowserLinkOpenMode) => {
+    const previous = linkMode;
+    setLinkModeState(next);
+    // Push it into the router now: the next click has to obey the choice that
+    // was just made, not the one the config reload eventually reports.
+    setLinkOpenMode(next);
+    void (async () => {
+      const config = window.ade?.projectConfig;
+      if (!config) throw new Error("This ADE build cannot save the link preference.");
+      const snapshot = await config.get();
+      await config.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          browser: { ...(snapshot.local.browser ?? {}), linkOpenMode: next },
+        },
+      });
+    })().catch((error: unknown) => {
+      setLinkModeState(previous);
+      setLinkOpenMode(previous);
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [linkMode]);
+
   const handleInsertSelectionDraft = useCallback(() => {
     if (!onInsertDraft || !selectedItem) return;
     const lines = [
@@ -2062,6 +2557,172 @@ function BuiltInBrowserPanelView({
     onInsertDraft(lines.join("\n"));
   }, [onInsertDraft, selectedItem]);
 
+  /* ── URL field ──────────────────────────────────────────────────────────── */
+
+  const handleUrlFocus = useCallback(() => {
+    setEditingUrl(true);
+    // Focusing the omnibox means "I am replacing this", so hand over the whole
+    // string rather than a caret in the middle of a hostname.
+    urlInputRef.current?.select();
+  }, []);
+
+  const handleUrlKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setUrlInput(currentUrl);
+    urlInputRef.current?.blur();
+  }, [currentUrl]);
+
+  /* ── Keyboard ───────────────────────────────────────────────────────────── */
+
+  const handlePanelKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape" && findOpen) {
+      event.preventDefault();
+      closeFind();
+      return;
+    }
+    const mod = event.metaKey || event.ctrlKey;
+    if (!mod) return;
+    const key = event.key.toLowerCase();
+    if (key === "f") {
+      event.preventDefault();
+      openFind();
+      return;
+    }
+    if (key === "=" || key === "+") {
+      event.preventDefault();
+      handleZoomStep(1);
+      return;
+    }
+    if (key === "-" || key === "_") {
+      event.preventDefault();
+      handleZoomStep(-1);
+      return;
+    }
+    if (key === "0") {
+      event.preventDefault();
+      handleZoomReset();
+    }
+  }, [closeFind, findOpen, handleZoomReset, handleZoomStep, openFind]);
+
+  /* ── Ambient reads ──────────────────────────────────────────────────────── */
+
+  const recordingStartedAt = recording?.startedAt ?? null;
+  useEffect(() => {
+    if (!recordingStartedAt) return undefined;
+    setRecordingClock(Date.now());
+    // `steps(1)` in spirit: one repaint a second, not one a frame.
+    const timer = window.setInterval(() => setRecordingClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [recordingStartedAt]);
+
+  useEffect(() => {
+    void refreshLinkOpenMode().then(() => setLinkModeState(getLinkOpenMode()));
+  }, []);
+
+  // Read once on mount and again whenever the device menu opens: a booted
+  // simulator is a fact about right now, and polling for it would cost every
+  // panel that never opens the menu.
+  useEffect(() => {
+    const simulator = window.ade?.iosSimulator;
+    if (!simulator?.getStatus) return undefined;
+    let cancelled = false;
+    void simulator.getStatus(runtimePinRef.current)
+      .then((simulatorStatus) => {
+        if (cancelled) return;
+        setBootedSimulatorName(simulatorStatus?.activeDevice?.name ?? null);
+      })
+      .catch(() => {
+        // No simulator tooling on this machine is not an error to report here.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceMenuOpen]);
+
+  // One pass over the usual dev-server ports, only while the panel is empty and
+  // only against this desktop's loopback (a remote pin's localhost is not ours).
+  useEffect(() => {
+    if (browserTabs.length > 0 || remotePin) return undefined;
+    const probePort = window.ade?.localhost?.probePort;
+    if (!probePort) return undefined;
+    let cancelled = false;
+    void (async () => {
+      for (const port of DEV_SERVER_PROBE_PORTS) {
+        if (cancelled) return;
+        const listening = await probePort(port).catch(() => false);
+        if (listening && !cancelled) {
+          setDetectedDevServer(`http://localhost:${port}`);
+          return;
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [browserTabs.length, remotePin]);
+
+  // Only offered when the booted device maps onto metrics ADE actually has.
+  const simulatorPreset = useMemo(
+    () => simulatorEmulationPreset(bootedSimulatorName),
+    [bootedSimulatorName],
+  );
+
+  const syncTabStripFades = useCallback(() => {
+    const strip = tabStripRef.current;
+    if (!strip) return;
+    const start = strip.scrollLeft > 2;
+    const end = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 2;
+    setTabStripFades((previous) => (
+      previous.start === start && previous.end === end ? previous : { start, end }
+    ));
+  }, []);
+
+  useEffect(() => {
+    syncTabStripFades();
+  }, [syncTabStripFades, tabIdsSignature]);
+
+  /**
+   * The empty state's chips.
+   *
+   * A detected dev server is offered first because it is the page you almost
+   * always wanted; `localhost:3000` stays as the honest guess when nothing was
+   * detected, and "Paste a link" is the escape hatch that costs no typing.
+   */
+  const emptyStateSuggestions = useMemo(() => {
+    const chips: Array<{ label: string; onSelect: () => void }> = [];
+    if (detectedDevServer) {
+      chips.push({
+        label: detectedDevServer.replace(/^https?:\/\//, ""),
+        onSelect: () => handleSuggestion(detectedDevServer),
+      });
+    }
+    if (detectedDevServer !== "http://localhost:3000") {
+      chips.push({
+        label: "localhost:3000",
+        onSelect: () => handleSuggestion("http://localhost:3000"),
+      });
+    }
+    chips.push({
+      label: "Paste a link",
+      onSelect: () => {
+        urlInputRef.current?.focus();
+        const readClipboard = window.ade?.app?.readClipboardText;
+        if (!readClipboard) return;
+        void readClipboard()
+          .then((text) => {
+            const trimmed = (text ?? "").trim();
+            if (trimmed) setUrlInput(trimmed);
+          })
+          .catch(() => {
+            // An unreadable clipboard just leaves the focused, empty field.
+          });
+      },
+    });
+    return chips;
+  }, [detectedDevServer, handleSuggestion]);
+
   const screenshotMeta = useMemo(() => {
     if (!lastScreenshot) return null;
     const size = lastScreenshot.width && lastScreenshot.height
@@ -2073,66 +2734,134 @@ function BuiltInBrowserPanelView({
   }, [lastScreenshot]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col font-sans text-[12px] text-fg/75">
+    <div
+      ref={panelRef}
+      onKeyDown={handlePanelKeyDown}
+      className="flex h-full min-h-0 flex-col font-sans text-[12px] text-fg/75"
+    >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
-        <div className="flex h-[20px] shrink-0 items-end gap-0 overflow-x-auto bg-white/[0.02] pl-1.5 pr-1">
-          {browserTabs.map((tab) => {
-            const active = tab.id === activeTabId;
-            // A tunneled tab falls back to the REMOTE origin, never the forward
-            // port, when the page has no title of its own.
-            const tabUrl = tunnelAwareUrl(tab.url, tabTunnels[tab.id] ?? null) || null;
-            const label = tab.title ?? tabUrl ?? "New tab";
-            const ownerLabel = browserTabOwnerLabel(tab);
-            return (
-              <div
-                key={tab.id}
-                className={cn(
-                  "group relative inline-flex h-[18px] max-w-[180px] min-w-[70px] shrink-0 items-center gap-1 px-2 text-[9px] transition-all",
-                  active
-                    ? "z-10 rounded-t-lg bg-[var(--color-bg)] text-fg/90"
-                    : "rounded-t-lg text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/75",
-                )}
-                title={[ownerLabel ? `Claimed by ${ownerLabel}` : null, tabUrl ?? label].filter(Boolean).join(" · ")}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!active) handleSwitchTab(tab.id);
-                  }}
-                  className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                  aria-current={active ? "page" : undefined}
-                >
-                  {tab.isLoading ? (
-                    <SpinnerGap size={10} className="shrink-0 animate-spin text-sky-300/70" />
-                  ) : (
-                    <span className={cn("h-1 w-1 shrink-0 rounded-full", active ? "bg-[var(--color-accent)]" : "bg-muted-fg/25")} />
+        <div className="relative flex h-[28px] shrink-0 items-center bg-white/[0.02]">
+          <div
+            ref={tabStripRef}
+            onScroll={syncTabStripFades}
+            role="tablist"
+            aria-label="ADE browser tabs"
+            className="scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-1.5"
+          >
+            {browserTabs.map((tab) => {
+              const active = tab.id === activeTabId;
+              // A tunneled tab falls back to the REMOTE origin, never the forward
+              // port, when the page has no title of its own.
+              const tabUrl = tunnelAwareUrl(tab.url, tabTunnels[tab.id] ?? null) || null;
+              const label = browserTabLabel(tab, tabUrl);
+              const ownerLabel = browserTabOwnerLabel(tab);
+              const ownerTitle = tab.handoff
+                ? `You own this tab until you hand it back · ${tab.handoff.reason}`
+                : ownerLabel
+                  ? `Agent holds this tab · ${ownerLabel}`
+                  : null;
+              return (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    "group/tab relative inline-flex h-[22px] max-w-[188px] min-w-[92px] shrink-0 items-center",
+                    "gap-1.5 rounded-[7px] px-2 text-[10.5px]",
+                    "transition-colors duration-[120ms] ease-out",
+                    active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
                   )}
-                  <span className="min-w-0 truncate leading-none">{label}</span>
-                  {ownerLabel ? (
-                    <span className="max-w-[68px] shrink-0 truncate rounded-sm border border-cyan-300/20 bg-cyan-400/10 px-1 leading-[12px] text-cyan-100/70">
-                      {ownerLabel}
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  aria-label="Close tab"
-                  className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-fg/40 opacity-0 transition-all hover:bg-white/[0.1] hover:text-fg/80 group-hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleCloseTab(tab.id);
-                  }}
+                  title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
                 >
-                  <X size={8} />
-                </button>
-              </div>
-            );
-          })}
+                  {active ? (
+                    reduceMotion ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
+                      />
+                    ) : (
+                      <motion.span
+                        aria-hidden="true"
+                        layoutId={TAB_INDICATOR_LAYOUT_ID}
+                        className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
+                        transition={TAB_INDICATOR_SPRING}
+                      />
+                    )
+                  ) : null}
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => {
+                      if (!active) handleSwitchTab(tab.id);
+                    }}
+                    className={cn(
+                      "relative inline-flex min-w-0 flex-1 items-center gap-1.5 text-left",
+                      TOOLBAR_FOCUS,
+                    )}
+                  >
+                    {tab.isLoading ? (
+                      <SpinnerGap size={11} className="shrink-0 animate-spin text-sky-300/75" />
+                    ) : (
+                      <Globe size={11} className={cn("shrink-0", active ? "text-fg/70" : "text-muted-fg/50")} />
+                    )}
+                    <span className="min-w-0 truncate leading-none">{label}</span>
+                    {tab.recording ? (
+                      <span
+                        aria-label="Recording"
+                        title="Recording this tab"
+                        className="h-[5px] w-[5px] shrink-0 rounded-full bg-rose-400 shadow-[0_0_0_2.5px_rgba(251,113,133,0.18)]"
+                      />
+                    ) : null}
+                    {ownerLabel ? (
+                      <Robot
+                        size={11}
+                        weight="duotone"
+                        aria-label={ownerTitle ?? undefined}
+                        className="shrink-0 text-cyan-200/70"
+                      />
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Close ${label}`}
+                    className={cn(
+                      "relative -mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
+                      "text-muted-fg/45 opacity-0 transition-colors duration-[120ms] ease-out",
+                      "hover:bg-white/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                      TOOLBAR_FOCUS,
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleCloseTab(tab.id);
+                    }}
+                  >
+                    <X size={9} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {tabStripFades.start ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 top-0 h-full w-5 bg-gradient-to-r from-[var(--color-bg)] to-transparent"
+            />
+          ) : null}
+          {tabStripFades.end ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute right-8 top-0 h-full w-5 bg-gradient-to-l from-[var(--color-bg)] to-transparent"
+            />
+          ) : null}
           <button
             type="button"
             disabled={Boolean(busy) || !apiAvailable}
             onClick={handleNewTab}
-            className="mb-px ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-fg/50 transition-colors hover:bg-white/[0.06] hover:text-fg/75 disabled:cursor-not-allowed disabled:opacity-45"
+            className={cn(
+              "mr-1.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px]",
+              "text-muted-fg/55 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+              "disabled:cursor-not-allowed disabled:opacity-45",
+              TOOLBAR_FOCUS,
+            )}
             title="New tab"
             aria-label="New tab"
           >
@@ -2172,21 +2901,13 @@ function BuiltInBrowserPanelView({
           </div>
         ) : null}
 
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.08] bg-white/[0.02] px-1.5 py-1">
-          {activeTabTunnel ? (
-            <span
-              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-sky-400/25 bg-sky-500/12 px-1.5 text-[10px] font-medium text-sky-100/85"
-              title={`Tunneled to port ${activeTabTunnel.tunnel.remotePort} on ${activeTabTunnel.tunnel.machineLabel}`}
-            >
-              {activeTabTunnel.tunnel.machineLabel}
-            </span>
-          ) : null}
-          <div className="inline-flex h-6 shrink-0 items-center overflow-hidden rounded border border-white/[0.08] bg-black/25">
+        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-white/[0.08] bg-white/[0.02] px-1.5">
+          <div className="inline-flex h-7 shrink-0 items-center overflow-hidden rounded-[7px] border border-white/[0.08] bg-black/25">
             <button
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !canGoBack}
               onClick={handleBack}
-              className="inline-flex h-full w-6 items-center justify-center text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className={cn("inline-flex h-full w-7 items-center justify-center text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
               title="Go back"
               aria-label="Go back"
             >
@@ -2196,7 +2917,7 @@ function BuiltInBrowserPanelView({
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !canGoForward}
               onClick={handleForward}
-              className="inline-flex h-full w-6 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
               title="Go forward"
               aria-label="Go forward"
             >
@@ -2206,7 +2927,7 @@ function BuiltInBrowserPanelView({
               type="button"
               disabled={Boolean(busy) || !apiAvailable}
               onClick={loading ? handleStop : handleReload}
-              className="inline-flex h-full w-6 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
               title={loading ? "Stop loading" : "Reload"}
               aria-label={loading ? "Stop loading" : "Reload"}
             >
@@ -2222,24 +2943,56 @@ function BuiltInBrowserPanelView({
 
           <form
             onSubmit={handleNavigate}
-            className="flex h-6 min-w-[180px] flex-1 items-center gap-1 rounded border border-white/[0.08] bg-black/24 pl-1.5 focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+            className={cn(
+              "flex min-w-[160px] flex-1 items-center gap-1.5 bg-black/25 pl-2",
+              TOOLBAR_CONTROL,
+              "border-white/[0.08] focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
+            )}
           >
+            {lockKind === "none" ? null : lockKind === "secure" ? (
+              <LockSimple
+                size={11}
+                weight="fill"
+                aria-label="Secure connection"
+                className="shrink-0 text-emerald-300/70"
+              />
+            ) : (
+              <LockSimpleOpen
+                size={11}
+                aria-label="Not a secure connection"
+                className="shrink-0 text-amber-300/70"
+              />
+            )}
+            {activeTabTunnel ? (
+              <span
+                className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-sky-400/25 bg-sky-500/12 px-1 text-[9.5px] font-medium text-sky-100/85"
+                title={`Tunneled to port ${activeTabTunnel.tunnel.remotePort} on ${activeTabTunnel.tunnel.machineLabel}`}
+              >
+                {activeTabTunnel.tunnel.machineLabel}
+              </span>
+            ) : null}
             <input
+              ref={urlInputRef}
               value={urlInput}
               onChange={(event) => setUrlInput(event.target.value)}
-              onFocus={() => setEditingUrl(true)}
+              onFocus={handleUrlFocus}
+              onKeyDown={handleUrlKeyDown}
               onBlur={() => {
                 setEditingUrl(false);
                 if (!urlInput.trim()) setUrlInput(currentUrl);
               }}
               placeholder="Enter URL or search"
               aria-label="ADE browser URL"
-              className="h-full min-w-0 flex-1 bg-transparent text-[11px] text-fg/82 outline-none placeholder:text-muted-fg/40"
+              className="h-full min-w-0 flex-1 bg-transparent text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/40"
             />
             <button
               type="submit"
               disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
-              className="inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+              className={cn(
+                "inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-[6px] border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 hover:bg-white/[0.06]",
+                TOOLBAR_MOTION,
+                TOOLBAR_FOCUS,
+              )}
               title="Open URL"
               aria-label="Open URL"
             >
@@ -2248,74 +3001,465 @@ function BuiltInBrowserPanelView({
             </button>
           </form>
 
+          {recording ? (
+            <button
+              type="button"
+              onClick={handleStopRecording}
+              disabled={busy === "recording"}
+              title="Stop recording"
+              aria-label={`Stop recording · ${recordingPillLabel(recording, recordingClock) ?? ""}`}
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1.5 px-2 font-mono text-[10px] font-medium",
+                TOOLBAR_CONTROL,
+                "border-rose-400/30 bg-rose-500/14 text-rose-100/90 hover:bg-rose-500/22",
+                TOOLBAR_MOTION,
+                TOOLBAR_FOCUS,
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className="h-[6px] w-[6px] rounded-full bg-rose-400 [animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none"
+              />
+              {`REC ${recordingPillLabel(recording, recordingClock) ?? ""}`}
+            </button>
+          ) : null}
+
+          <DropdownMenu.Root open={deviceMenuOpen} onOpenChange={setDeviceMenuOpen}>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                disabled={!apiAvailable}
+                title="Browser device preset"
+                aria-label={`Browser device preset — ${emulationButtonLabel(emulation)}`}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1 px-2 font-medium",
+                  TOOLBAR_CONTROL,
+                  emulation ? TOOLBAR_ON : TOOLBAR_IDLE,
+                  TOOLBAR_MOTION,
+                  TOOLBAR_FOCUS,
+                )}
+              >
+                {emulation?.mobile ? <DeviceMobile size={12} /> : <Monitor size={12} />}
+                <span className="max-w-[104px] truncate">{emulationButtonLabel(emulation)}</span>
+                <CaretDown size={9} className="shrink-0 opacity-60" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={6} className={MENU_CONTENT_CLASS}>
+                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Device</DropdownMenu.Label>
+                {deviceMenuPresets().map((preset) => (
+                  <DropdownMenu.Item
+                    key={preset.id}
+                    className={MENU_ITEM_CLASS}
+                    onSelect={() => handlePickPreset(preset)}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{preset.label}</span>
+                    <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">
+                      {emulationSizeLabel(preset)}
+                    </span>
+                  </DropdownMenu.Item>
+                ))}
+                {simulatorPreset ? (
+                  <>
+                    <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                    <DropdownMenu.Item
+                      className={MENU_ITEM_CLASS}
+                      onSelect={() => handlePickPreset(simulatorPreset)}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{`Booted simulator: ${bootedSimulatorName}`}</span>
+                      <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">
+                        {emulationSizeLabel(simulatorPreset)}
+                      </span>
+                    </DropdownMenu.Item>
+                  </>
+                ) : null}
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Responsive</DropdownMenu.Label>
+                <div
+                  className="flex items-center gap-1.5 px-2 pb-1.5"
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <input
+                    value={responsiveWidth}
+                    onChange={(event) => setResponsiveWidth(event.target.value)}
+                    inputMode="numeric"
+                    aria-label="Responsive width"
+                    className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+                  />
+                  <span aria-hidden="true" className="text-[10px] text-muted-fg/60">×</span>
+                  <input
+                    value={responsiveHeight}
+                    onChange={(event) => setResponsiveHeight(event.target.value)}
+                    inputMode="numeric"
+                    aria-label="Responsive height"
+                    className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyResponsive}
+                    className="ade-shell-control ml-auto inline-flex h-6 items-center px-2 text-[10px] font-medium"
+                  >
+                    Apply
+                  </button>
+                </div>
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleEmulationOff}>
+                  <span className="min-w-0 flex-1 truncate">Off</span>
+                  {emulation ? null : <span className="shrink-0 text-[9.5px] text-muted-fg/70">Current</span>}
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+
+          <button
+            type="button"
+            disabled={Boolean(busy) || !apiAvailable}
+            onClick={handleCameraClick}
+            className={cn(
+              "inline-flex w-7 shrink-0 items-center justify-center",
+              TOOLBAR_CONTROL,
+              captureBase || recording ? TOOLBAR_ON : TOOLBAR_IDLE,
+              TOOLBAR_MOTION,
+              TOOLBAR_FOCUS,
+            )}
+            title="Screenshot · Shift-click to record"
+            aria-label={captureBase ? "Cancel screenshot" : "Screenshot · Shift-click to record"}
+          >
+            {busy === "screenshot" || busy === "recording" ? (
+              <SpinnerGap size={13} className="animate-spin" />
+            ) : captureBase ? (
+              <ImageSquare size={13} />
+            ) : (
+              <Camera size={13} />
+            )}
+          </button>
+
           <button
             type="button"
             disabled={Boolean(busy) || !apiAvailable}
             onClick={handleInspectToggle}
             className={cn(
-              "inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-              inspecting
-                ? "border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/90 hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-                : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
+              "inline-flex shrink-0 items-center gap-1 px-2 font-medium",
+              TOOLBAR_CONTROL,
+              inspecting ? TOOLBAR_ON : TOOLBAR_IDLE,
+              TOOLBAR_MOTION,
+              TOOLBAR_FOCUS,
             )}
             title={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
           >
             {busy === "inspect-on" || busy === "inspect-off" ? <SpinnerGap size={12} className="animate-spin" /> : <CursorClick size={12} />}
             {inspecting ? "Inspecting" : "Inspect"}
           </button>
-          <button
-            type="button"
-            disabled={Boolean(busy) || !apiAvailable || !onAddContext}
-            onClick={handleAttachScreenshot}
-            className={cn(
-              "inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-              captureBase
-                ? "border-amber-300/25 bg-amber-500/12 text-amber-100/85 hover:bg-amber-500/18"
-                : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
-            )}
-            title={onAddContext ? "Drag a browser region into context" : "Context insertion is unavailable here"}
-          >
-            {busy === "screenshot" ? <SpinnerGap size={12} className="animate-spin" /> : <ImageSquare size={12} />}
-            {captureBase ? "Cancel screenshot" : "Screenshot"}
-          </button>
+
           {selectedItem ? (
             <button
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !onAddContext}
               onClick={handleAttachSelection}
-              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1 px-2 font-medium",
+                TOOLBAR_CONTROL,
+                TOOLBAR_IDLE,
+                TOOLBAR_MOTION,
+                TOOLBAR_FOCUS,
+              )}
               title="Insert the selected browser element as context"
             >
               {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <Selection size={12} />}
               Attach
             </button>
           ) : null}
-          <button
-            type="button"
-            disabled={!currentUrl}
-            onClick={handleOpenExternal}
-            className="inline-flex h-6 shrink-0 items-center justify-center gap-1 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-40"
-            title="Open current page in the system browser"
-          >
-            <ArrowSquareOut size={12} />
-            External
-          </button>
-          <button
-            type="button"
-            disabled={!apiAvailable || profileBusy}
-            onClick={handleToggleProfile}
-            className={cn(
-              "inline-flex h-6 shrink-0 items-center justify-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              profileOpen
-                ? "border-emerald-300/25 bg-emerald-500/12 text-emerald-100/85"
-                : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
-            )}
-            title="Global browser profile and remembered site permissions"
-          >
-            {profileBusy ? <SpinnerGap size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-            Profile
-          </button>
+
+          <DropdownMenu.Root open={overflowOpen} onOpenChange={setOverflowOpen}>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                disabled={!apiAvailable}
+                title="More browser options"
+                aria-label="More browser options"
+                className={cn(
+                  "inline-flex w-7 shrink-0 items-center justify-center",
+                  TOOLBAR_CONTROL,
+                  TOOLBAR_IDLE,
+                  TOOLBAR_MOTION,
+                  TOOLBAR_FOCUS,
+                )}
+              >
+                <DotsThreeVertical size={14} weight="bold" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={6} className={MENU_CONTENT_CLASS}>
+                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Zoom</DropdownMenu.Label>
+                <div className="flex items-center gap-1 px-2 pb-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleZoomStep(-1)}
+                    aria-label="Zoom out"
+                    className="ade-shell-control inline-flex h-6 w-6 items-center justify-center text-[12px] font-medium"
+                  >
+                    −
+                  </button>
+                  <span className="min-w-[46px] text-center font-mono text-[10.5px] text-fg/80">
+                    {zoomPercentLabel(zoomFactor)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleZoomStep(1)}
+                    aria-label="Zoom in"
+                    className="ade-shell-control inline-flex h-6 w-6 items-center justify-center text-[12px] font-medium"
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleZoomReset}
+                    className="ade-shell-control ml-auto inline-flex h-6 items-center px-2 text-[10px] font-medium"
+                    data-variant="ghost"
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => openFind()}>
+                  <MagnifyingGlass size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">Find on page</span>
+                  <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">⌘F</span>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleToggleDevTools}>
+                  <Bug size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">DevTools</span>
+                  <span className="shrink-0 text-[9.5px] text-muted-fg/70">{devToolsOpen ? "On" : "Off"}</span>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleToggleNetworkLogging}>
+                  <Pulse size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">Network log</span>
+                  <span className="shrink-0 text-[9.5px] text-muted-fg/70">{networkLogging ? "On" : "Off"}</span>
+                </DropdownMenu.Item>
+                {networkLogging ? (
+                  <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "pl-7")} onSelect={handleExportHar}>
+                    <span className="min-w-0 flex-1 truncate">Export HAR</span>
+                  </DropdownMenu.Item>
+                ) : null}
+
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Recording</DropdownMenu.Label>
+                <DropdownMenu.RadioGroup
+                  value={String(recordingFps)}
+                  onValueChange={(value) => setRecordingFps(normalizeRecordingFps(Number(value)))}
+                >
+                  {BUILT_IN_BROWSER_RECORDING_FRAME_RATES.map((fps) => (
+                    <DropdownMenu.RadioItem
+                      key={fps}
+                      value={String(fps)}
+                      className={MENU_ITEM_CLASS}
+                      onSelect={(event) => event.preventDefault()}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{`${fps} fps`}</span>
+                      {recordingFps === fps ? (
+                        <span className="shrink-0 text-[9.5px] text-[var(--color-accent)]">Selected</span>
+                      ) : null}
+                    </DropdownMenu.RadioItem>
+                  ))}
+                </DropdownMenu.RadioGroup>
+
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Links</DropdownMenu.Label>
+                <DropdownMenu.RadioGroup
+                  value={linkMode}
+                  onValueChange={(value) => handleLinkModeChange(value === "external" ? "external" : "in-app")}
+                >
+                  <DropdownMenu.RadioItem value="in-app" className={MENU_ITEM_CLASS}>
+                    <span className="min-w-0 flex-1 truncate">In ADE</span>
+                    {linkMode === "in-app" ? (
+                      <span className="shrink-0 text-[9.5px] text-[var(--color-accent)]">Selected</span>
+                    ) : null}
+                  </DropdownMenu.RadioItem>
+                  <DropdownMenu.RadioItem value="external" className={MENU_ITEM_CLASS}>
+                    <span className="min-w-0 flex-1 truncate">System browser</span>
+                    {linkMode === "external" ? (
+                      <span className="shrink-0 text-[9.5px] text-[var(--color-accent)]">Selected</span>
+                    ) : null}
+                  </DropdownMenu.RadioItem>
+                </DropdownMenu.RadioGroup>
+                <p className="px-2 pb-1.5 pt-0.5 text-[9.5px] leading-[13px] text-muted-fg/70">
+                  ⌘-click always opens outside.
+                </p>
+
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleToggleProfile}>
+                  <ShieldCheck size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">Profile…</span>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => setImportOpen(true)}>
+                  <SignIn size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">Import logins…</span>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  className={MENU_ITEM_CLASS}
+                  disabled={!currentUrl}
+                  onSelect={handleOpenExternal}
+                >
+                  <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">Open in system browser</span>
+                </DropdownMenu.Item>
+                {selectedItem ? (
+                  <>
+                    <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                    <DropdownMenu.Label className={MENU_LABEL_CLASS}>Selection</DropdownMenu.Label>
+                    {onInsertDraft ? (
+                      <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleInsertSelectionDraft}>
+                        <span className="min-w-0 flex-1 truncate">Insert into the message</span>
+                      </DropdownMenu.Item>
+                    ) : null}
+                    <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleClearSelection}>
+                      <span className="min-w-0 flex-1 truncate">Clear selection</span>
+                      {selectionFrame ? (
+                        <span className="shrink-0 font-mono text-[9px] text-muted-fg/60">{selectionFrame}</span>
+                      ) : null}
+                    </DropdownMenu.Item>
+                  </>
+                ) : null}
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
         </div>
+
+        <AnimatePresence initial={false}>
+          {findOpen ? (
+            <motion.div
+              key="ade-browser-find"
+              initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+              transition={REVEAL_TRANSITION}
+              className="shrink-0 overflow-hidden border-b border-white/[0.08] bg-white/[0.015]"
+            >
+              <form
+                role="search"
+                aria-label="Find in this page"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  runFind(findText, { findNext: true, forward: true });
+                }}
+                className="flex items-center gap-1.5 px-1.5 py-1.5"
+              >
+                <MagnifyingGlass size={12} className="shrink-0 text-muted-fg/55" />
+                <input
+                  ref={findInputRef}
+                  value={findText}
+                  onChange={(event) => {
+                    setFindText(event.target.value);
+                    runFind(event.target.value);
+                  }}
+                  placeholder="Find on page"
+                  aria-label="Find on page"
+                  className="h-6 min-w-0 flex-1 bg-transparent text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/40"
+                />
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="shrink-0 font-mono text-[10px] text-muted-fg/75"
+                >
+                  {findMatchLabel(findState) ?? ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => runFind(findText, { findNext: true, forward: false })}
+                  disabled={!findText.trim()}
+                  title="Previous match"
+                  aria-label="Previous match"
+                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+                >
+                  <CaretLeft size={11} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runFind(findText, { findNext: true, forward: true })}
+                  disabled={!findText.trim()}
+                  title="Next match"
+                  aria-label="Next match"
+                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+                >
+                  <CaretRight size={11} />
+                </button>
+                <button
+                  type="button"
+                  onClick={closeFind}
+                  title="Close find bar"
+                  aria-label="Close find bar"
+                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+                >
+                  <X size={11} />
+                </button>
+              </form>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        {/*
+          Login handoff bar. The one place the pane speaks for the agent rather
+          than about it: the agent said out loud that it cannot sign in, so this
+          asks the person directly and hands the tab straight back when they are
+          done. Amber, not red — a handoff is a request, not a failure.
+        */}
+        <AnimatePresence initial={false}>
+          {handoff ? (
+            <motion.div
+              key="ade-browser-handoff"
+              data-testid="browser-handoff-bar"
+              initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+              transition={REVEAL_TRANSITION}
+              className="shrink-0 overflow-hidden border-b border-amber-300/16 bg-amber-500/[0.075]"
+            >
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-amber-100/85"
+              >
+                {showHandoffHandBackOffer ? (
+                  <>
+                    <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
+                    <span className="min-w-0 break-words">Signed in?</span>
+                    <button
+                      type="button"
+                      onClick={() => handleHandBack("auto-offer")}
+                      disabled={busy === "hand-back"}
+                      className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      Hand back now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleKeepHandoffControl}
+                      className="shrink-0 rounded border border-white/[0.08] px-1.5 py-0.5 text-[10px] font-medium text-amber-100/70 hover:bg-white/[0.06]"
+                    >
+                      Keep control
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
+                    <span className="min-w-0 break-words">
+                      Agent needs you to sign in · &ldquo;{handoff.reason}&rdquo;
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleHandBack("human")}
+                      disabled={busy === "hand-back"}
+                      className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      Hand back
+                    </button>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
         {message ? (
           <div
@@ -2468,21 +3612,65 @@ function BuiltInBrowserPanelView({
               ) : null}
             </div>
           ) : !currentUrl ? (
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-muted-fg/55">
-              <ArrowSquareOut size={24} className="text-sky-100/25" />
-              <div className="text-[12px] font-medium text-fg/70">
-                {apiAvailable ? "Open a page in ADE browser" : "ADE browser unavailable"}
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-5 text-center"
+            >
+              <Globe size={26} weight="duotone" className="text-[var(--color-accent)]/35" />
+              <div className="text-[12.5px] font-medium text-fg/80">
+                {apiAvailable ? "Open a page" : "ADE browser unavailable"}
               </div>
-              <div className="max-w-[360px] text-[11px] leading-5 text-muted-fg/55">
-                {apiAvailable
-                  ? "Links from chat and terminal output open here as tabs."
-                  : "This renderer does not expose window.ade.builtInBrowser."}
-              </div>
-            </div>
+              {apiAvailable ? (
+                <>
+                  <div
+                    role="group"
+                    aria-label="Suggested pages"
+                    className="flex flex-wrap items-center justify-center gap-1.5"
+                  >
+                    {emptyStateSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion.label}
+                        type="button"
+                        onClick={suggestion.onSelect}
+                        className={cn(
+                          "inline-flex h-6 items-center gap-1.5 rounded-full border border-white/[0.09] bg-card/60 px-2.5",
+                          "text-[10.5px] font-medium text-fg/78",
+                          "transition-colors duration-[120ms] ease-out hover:border-white/[0.18] hover:bg-card",
+                          TOOLBAR_FOCUS,
+                        )}
+                      >
+                        {suggestion.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="max-w-[340px] text-[10.5px] leading-[15px] text-muted-fg/70">
+                    Agents open pages here with <span className="font-mono text-fg/65">ade browser open</span>.
+                  </div>
+                </>
+              ) : (
+                <div className="max-w-[340px] text-[11px] leading-5 text-muted-fg/60">
+                  This renderer does not expose window.ade.builtInBrowser.
+                </div>
+              )}
+            </motion.div>
           ) : null}
         </div>
 
       </div>
+      <BrowserLoginImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={() => {
+          if (profileOpen) {
+            void refreshProfileSecurity().catch(() => {
+              // The dialog already reported what landed; a stale panel is not
+              // worth a second error.
+            });
+          }
+        }}
+      />
     </div>
   );
 }

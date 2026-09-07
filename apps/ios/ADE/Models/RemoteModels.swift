@@ -6118,3 +6118,64 @@ struct MobileUsageQuotaSnapshot: Codable, Equatable {
   /// Codex spending cap hit — surfaced from the desktop UsageSnapshot.
   var spendControlReached: Bool?
 }
+
+// MARK: - Work tools (read-only mirror of the desktop's tools pane)
+
+/// One browser tab as the desktop reports it.
+///
+/// Everything here is descriptive. The phone cannot open, close, or navigate a
+/// tab — the browser is a `WebContentsView` inside ADE Desktop — so this model
+/// deliberately carries no identifiers the phone could act on beyond `id`,
+/// which exists only to keep `ForEach` stable across refreshes.
+struct WorkToolsBrowserTab: Codable, Identifiable, Equatable {
+  var id: String
+  var title: String?
+  var url: String?
+  var ownerChatSessionId: String?
+  var recording: Bool
+  var active: Bool
+  /// Why the agent handed this tab to a person on the desktop. Read-only here:
+  /// the sign-in has to happen in the real browser, so the phone can only say
+  /// that the lane is waiting on it.
+  var handoffReason: String?
+}
+
+/// A screenshot the desktop already wrote to disk. `path` is opaque: it is
+/// handed straight back to `workTools.readObservationPreview`, which is the
+/// only thing allowed to turn it into bytes.
+struct WorkToolsObservation: Codable, Equatable {
+  var path: String
+  var capturedAt: String
+  var caption: String?
+}
+
+struct WorkToolsBrowserState: Codable, Equatable {
+  var activeTabId: String?
+  var tabs: [WorkToolsBrowserTab]
+  var latestObservation: WorkToolsObservation?
+}
+
+struct WorkToolsAppControlState: Codable, Equatable {
+  var appName: String
+  var status: String
+  var driver: String
+  var latestObservation: WorkToolsObservation?
+}
+
+struct WorkToolsLaneState: Codable, Equatable {
+  var laneId: String
+  /// Which pane the desktop has open. Nil when no desktop has published one.
+  var activeTool: String?
+  var activeToolUpdatedAt: String?
+  /// Nil when no desktop is attached to the machine — see `browserUnavailable`.
+  var browser: WorkToolsBrowserState?
+  var browserUnavailable: String?
+  var appControl: WorkToolsAppControlState?
+  var capturedAt: String
+}
+
+struct WorkToolsObservationPreview: Codable, Equatable {
+  var dataUrl: String
+  var mimeType: String
+  var byteLength: Int
+}

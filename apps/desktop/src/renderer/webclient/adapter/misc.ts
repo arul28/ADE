@@ -30,6 +30,7 @@ export type MiscNamespaces = {
   layout: AdeNamespace<"layout">;
   tilingTree: AdeNamespace<"tilingTree">;
   graphState: AdeNamespace<"graphState">;
+  workTools: AdeNamespace<"workTools">;
   rebase: AdeNamespace<"rebase">;
   history: AdeNamespace<"history">;
   cto: NonNullable<Window["ade"]["cto"]>;
@@ -614,6 +615,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     layout: localNamespaces.layout as AdeNamespace<"layout">,
     tilingTree: localNamespaces.tilingTree as AdeNamespace<"tilingTree">,
     graphState: localNamespaces.graphState as AdeNamespace<"graphState">,
+    workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
     cto: createCtoNamespace(call, localState),
@@ -640,6 +642,25 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
+}
+
+/**
+ * Read-only Work tools-pane mirror for the hosted web client.
+ *
+ * The browser and App Control panes cannot run here — they need a
+ * `WebContentsView` and a CDP connection to a local app — so the web client
+ * shows what the desktop is doing instead of pretending to offer it.
+ * `setActiveTool` is a deliberate no-op: publishing an active tool is the
+ * privilege of the surface that actually has one open, and a web tab echoing
+ * its own picker would overwrite the desktop's truth on every phone.
+ */
+function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
+  return {
+    getLaneState: (laneId: string) => call("workTools.getLaneState", { laneId }, null),
+    setActiveTool: async () => {},
+    readObservationPreview: (observationPath: string) =>
+      call("workTools.readObservationPreview", { path: observationPath }, null),
+  } as AdeNamespace<"workTools">;
 }
 
 function createZoomNamespace(infra: AdapterInfra): Record<string, unknown> {

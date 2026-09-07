@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -70,5 +70,63 @@ export function useWorkSidebarTool(laneId: string | null): {
     [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState],
   );
 
+  usePublishActiveWorkTool(laneId, tool);
+
   return { tool, setTool };
+}
+
+/**
+ * How long a tool must stay picked before the phone hears about it.
+ *
+ * Flicking through the picker is one gesture, not six state changes, and every
+ * publish costs a runtime round trip plus a fan-out event to every pinned
+ * client. The trailing edge wins, so what lands is always the tool the user
+ * stopped on.
+ */
+export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
+
+/**
+ * Tells the runtime which tool this lane's pane is showing, so iOS and the
+ * hosted web client can mirror it read-only.
+ *
+ * The renderer is the only thing that knows this — it is view state, not
+ * runtime state — so it has to be pushed rather than read. The brain holds it
+ * in memory only, which is why the effect re-publishes whenever the runtime
+ * binding or runtime status changes: a brain that restarted has forgotten, and
+ * a phone looking at a stale "Browser active" would be lying about a pane that
+ * is no longer open.
+ *
+ * Failures are swallowed on purpose. This is a mirror for other devices; a
+ * runtime that cannot take the publish must not disturb the pane it describes.
+ */
+function usePublishActiveWorkTool(laneId: string | null, tool: WorkSidebarTab | null): void {
+  const latest = useRef<{ laneId: string | null; tool: WorkSidebarTab | null }>({ laneId, tool });
+  latest.current = { laneId, tool };
+  // Incremented by binding/status changes so a reconnect re-publishes through
+  // the same debounced effect instead of duplicating the call.
+  const [republishToken, setRepublishToken] = useState(0);
+
+  useEffect(() => {
+    const app = window.ade?.app;
+    const bump = () => setRepublishToken((token) => token + 1);
+    const disposers = [
+      app?.onProjectBindingChanged?.(bump),
+      app?.onRuntimeStatusChanged?.(bump),
+    ];
+    return () => {
+      for (const dispose of disposers) dispose?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!laneId) return;
+    const publish = window.ade?.workTools?.setActiveTool;
+    if (!publish) return;
+    const timer = window.setTimeout(() => {
+      const current = latest.current;
+      if (!current.laneId) return;
+      void publish(current.laneId, current.tool).catch(() => {});
+    }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [laneId, tool, republishToken]);
 }

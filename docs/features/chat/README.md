@@ -185,6 +185,61 @@ Explicit session metadata regeneration is a user-invoked, one-shot call through 
 - ADE never converts persistent cookies into session cookies or recreates expired/logout-cleared credentials. A clean restart restores tab URLs only; Chromium and each site remain authoritative for cookie expiry and logout semantics.
 - HTTP Basic/Digest and proxy authentication use a separate local, sandboxed modal. Entered values go directly to Electron's authentication callback and are never written to ADE storage or logs. Client-certificate requests always require an explicit human choice; cancellation returns no certificate rather than silently selecting the first one.
 
+## The Work tools pane on iOS and the hosted web client
+
+The Work tools pane runs on the desktop. The browser owns a `WebContentsView`,
+App Control owns a CDP socket to a local process, and the iOS panel owns a
+capture stream — none of which exists on a phone or in a browser tab. iOS and
+the hosted web client therefore get a **read-only mirror** of the pane, never a
+control surface.
+
+The mirror is aggregated per lane by
+`apps/ade-cli/src/services/workTools/workToolsStateService.ts`, which pulls from
+three different owners:
+
+- `activeTool` is **published by the desktop renderer**. Which tool is open is
+  renderer view state, so nothing else can know it. `useWorkSidebarTool`
+  debounces changes by 250 ms and calls the `work_tools.setActiveTool` runtime
+  action, re-publishing whenever the project binding or runtime status changes
+  so a restarted brain relearns it. It is held **in memory only** — deliberately
+  not a cr-sqlite table, because a replicated row would outlive the desktop that
+  meant it and turn an ephemeral view preference into permanent per-device state.
+- `browser` is **proxied from the desktop bridge** (`built_in_browser.getStatus`
+  over `desktop-bridge.sock`). With no desktop attached to the machine there is
+  no browser to describe: the state reports `browser: null` with
+  `browserUnavailable: "desktop_not_attached"`, which clients render as absence,
+  not as an error.
+- `appControl` is **read in-process** from the daemon's own App Control service,
+  so it survives a desktop that has quit.
+
+Frames never travel with the state. Observations are already on disk under
+`.ade/cache/browser-observations` and `.ade/cache/app-control-observations`; the
+state carries the newest one's path, and a client fetches the bytes separately
+through `workTools.readObservationPreview`, which resolves the path inside those
+two roots only, rejects non-image extensions, and caps a preview at 10 MiB. A
+routine poll or a `work_tools_state_changed` event therefore never carries an
+image.
+
+Surfaces:
+
+| Surface | Action / entry point | Behaviour |
+| --- | --- | --- |
+| Desktop | `work_tools.setActiveTool`, `work_tools.getLaneState` runtime actions via `window.ade.workTools` | Owns the pane; publishes the active tool. |
+| Hosted web | `workTools.getLaneState` / `workTools.readObservationPreview` remote commands | `WorkToolReadOnlyView` replaces the browser and App Control panels. `isReadOnlyWorkTool` in `workTools.tsx` is the capability gate; `setActiveTool` is a no-op so a web tab cannot overwrite the desktop's truth. The iOS Simulator tool stays unavailable — its pane is a live video stream with nothing describable to mirror. |
+| iOS | same two remote commands, gated on `SyncService.supportsWorkToolsState` | `WorkToolsRow` shows "Tools · Browser active · 3 tabs ›" above the chat transcript and opens `WorkToolsSheet`: active-tool card with the last frame, then the tab list, then App Control. Pull to refresh; a 3 s poll runs only while the sheet is open. |
+
+Both remote commands are `viewerAllowed` and live in
+`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a brain that predates them —
+or a chat-only runtime that never builds the aggregator — omits them and the
+phone simply hides the row instead of flipping the host into `limited` mode.
+
+Neither iOS nor web polls on a schedule of its own beyond the open sheet or the
+visible pane: there is no generic named-event channel from the brain to either
+client (the web client's only push is cr-sqlite changesets, and this state is
+not table-backed), so `work_tools_state_changed` is emitted on the runtime event
+stream for the surfaces that already receive it, and the two read-only clients
+poll while they are looking.
+
 ## Where the chat service runs
 
 The chat service is constructed once per project, inside whichever

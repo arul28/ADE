@@ -9,6 +9,13 @@ import type {
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { boundMachineLanePrs, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
+import {
+  EMPTY_WORK_TOOL_ERRORS,
+  pruneWorkToolBrowserErrors,
+  reduceWorkToolBrowserErrors,
+  workToolBrowserErrorCount,
+  type WorkToolErrorsByTab,
+} from "./workToolErrors";
 import { workToolAvailability, type WorkToolContext } from "./workTools";
 
 /**
@@ -24,11 +31,29 @@ export type WorkToolStatus = {
   line: string | null;
   /** Something of this tool's is live right now — a shell, a held tab, a booted sim. */
   live: boolean;
+  /**
+   * Countable errors this tool is currently showing — console errors and failed
+   * requests for the browser's active tab. Turns the activity dot red and adds
+   * "· 3 errors" to the picker card. Optional because most tools count nothing;
+   * absent and zero mean the same thing, which is not the same as `errored`.
+   */
+  errorCount?: number;
+  /**
+   * The tool is in an error STATE with no countable tally — a crashed App
+   * Control session, say. Same red dot, no "N errors" suffix, because inventing
+   * a count for "it died" would be a lie.
+   */
+  errored?: boolean;
 };
 
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
 
-const IDLE: WorkToolStatus = { line: null, live: false };
+const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: false };
+
+/** True when a tool's dot should read as a problem rather than as activity. */
+export function workToolHasError(status: WorkToolStatus | undefined): boolean {
+  return Boolean(status && (status.errored === true || (status.errorCount ?? 0) > 0));
+}
 
 /** How long the picker is allowed to show skeleton lines before committing. */
 const STATUS_SETTLE_MS = 300;
@@ -52,8 +77,9 @@ function shortHost(url: string | null): string | null {
 export function browserStatusLine(
   status: BuiltInBrowserStatus | null,
   laneId: string | null,
+  errorCount = 0,
 ): WorkToolStatus {
-  if (!status || status.tabs.length === 0) return { line: "No tabs", live: false };
+  if (!status || status.tabs.length === 0) return { line: "No tabs", live: false, errorCount: 0, errored: false };
   const activeTab = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0];
   const held = status.tabs.some((tab) => tab.ownerLaneId != null)
     || status.ownerLaneId != null;
@@ -62,30 +88,36 @@ export function browserStatusLine(
   const label = shortHost(activeTab?.url ?? status.url)
     ?? activeTab?.title
     ?? pluralize(status.tabs.length, "tab", "tabs");
-  const suffix = heldHere
+  // A login handoff outranks every ownership suffix: while it is open the agent
+  // explicitly does NOT hold the tab, and telling the person otherwise is the
+  // one thing that would stop them from signing in.
+  const handedOff = status.tabs.some((tab) => tab.handoff != null);
+  const suffix = handedOff
+    ? " · you own this tab"
+    : heldHere
     ? " · agent holds tab"
     : held
       ? " · held by another lane"
       : status.tabs.length > 1
         ? ` · ${pluralize(status.tabs.length, "tab", "tabs")}`
         : "";
-  return { line: `${label}${suffix}`, live: true };
+  return { line: `${label}${suffix}`, live: true, errorCount, errored: false };
 }
 
 export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   if (!lane?.status) return IDLE;
   const { ahead, behind, dirty, rebaseInProgress } = lane.status;
-  if (rebaseInProgress) return { line: "Rebase in progress", live: true };
+  if (rebaseInProgress) return { line: "Rebase in progress", live: true, errorCount: 0, errored: false };
   const parts: string[] = [];
   if (ahead > 0) parts.push(`${ahead} ahead`);
   if (behind > 0) parts.push(`${behind} behind`);
   parts.push(dirty ? "uncommitted changes" : "clean");
-  return { line: parts.join(" · "), live: dirty || ahead > 0 };
+  return { line: parts.join(" · "), live: dirty || ahead > 0, errorCount: 0, errored: false };
 }
 
 export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolStatus {
   const pr = prs?.[0];
-  if (!pr) return { line: "No PR", live: false };
+  if (!pr) return { line: "No PR", live: false, errorCount: 0, errored: false };
   const checks = pr.checksStatus;
   const detail = checks === "pending"
     ? "checks running"
@@ -94,29 +126,41 @@ export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolSta
       : checks === "passing"
         ? "checks passing"
         : pr.state;
-  return { line: `#${pr.githubPrNumber} · ${detail}`, live: checks === "pending" };
+  return {
+    line: `#${pr.githubPrNumber} · ${detail}`,
+    live: checks === "pending",
+    errorCount: 0,
+    errored: checks === "failing",
+  };
 }
 
 export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
-  if (!session) return { line: "Not booted", live: false };
+  if (!session) return { line: "Not booted", live: false, errorCount: 0, errored: false };
   const device = session.deviceName?.trim() || "Simulator";
-  return { line: `${device} booted`, live: true };
+  return { line: `${device} booted`, live: true, errorCount: 0, errored: false };
 }
 
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
-  if (!session) return { line: "No app attached", live: false };
+  if (!session) return { line: "No app attached", live: false, errorCount: 0, errored: false };
   const label = session.label?.trim() || "App";
-  return { line: `${label} attached`, live: session.status !== "stopped" && session.status !== "exited" };
+  return {
+    line: `${label} attached`,
+    live: session.status !== "stopped" && session.status !== "exited",
+    errorCount: 0,
+    // App Control has no pushed console/network tally today, so its red dot is
+    // driven by the one error state its session reports.
+    errored: session.status === "failed",
+  };
 }
 
 export function terminalStatusLine(
   titles: readonly string[] | null,
 ): WorkToolStatus {
   if (titles == null) return IDLE;
-  if (titles.length === 0) return { line: "No shells", live: false };
+  if (titles.length === 0) return { line: "No shells", live: false, errorCount: 0, errored: false };
   const named = titles.filter((title) => title.trim().length > 0).slice(0, 2);
   const suffix = named.length > 0 ? ` · ${named.join(", ")}` : "";
-  return { line: `${pluralize(titles.length, "shell", "shells")}${suffix}`, live: true };
+  return { line: `${pluralize(titles.length, "shell", "shells")}${suffix}`, live: true, errorCount: 0, errored: false };
 }
 
 /**
@@ -167,6 +211,7 @@ export function useWorkToolStatuses(args: {
   } = args;
 
   const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
+  const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
@@ -196,6 +241,7 @@ export function useWorkToolStatuses(args: {
   useEffect(() => {
     if (!enabled || offline || !canReadBrowser) {
       setBrowserStatus(null);
+      setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
       return undefined;
     }
     const browser = window.ade?.builtInBrowser;
@@ -210,8 +256,18 @@ export function useWorkToolStatuses(args: {
         if (!cancelled) setBrowserStatus(null);
       });
     const unsubscribe = browser.onEvent((event) => {
+      // The error tally is pushed by the service on change and zeroed on a
+      // main-frame navigation, so the badge clears itself without a poll.
+      if (event.type === "diagnostics") {
+        setBrowserErrors((current) => reduceWorkToolBrowserErrors(current, event));
+        return;
+      }
       const next = (event as { status?: BuiltInBrowserStatus }).status;
-      if (next) setBrowserStatus(next);
+      if (next) {
+        setBrowserStatus(next);
+        // A closed tab must not keep a dot red for a page nobody can reach.
+        setBrowserErrors((current) => pruneWorkToolBrowserErrors(current, next));
+      }
     }, runtimePinRef.current);
     return () => {
       cancelled = true;
@@ -307,7 +363,9 @@ export function useWorkToolStatuses(args: {
 
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles),
-    browser: offline ? IDLE : browserStatusLine(browserStatus, laneId),
+    browser: offline
+      ? IDLE
+      : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
     // No cheap changed-file count exists today; the card shows its blurb rather
     // than paying for a git read the pane would then have to keep fresh.
@@ -325,6 +383,7 @@ export function useWorkToolStatuses(args: {
       : IDLE,
   }), [
     appControlSession,
+    browserErrors,
     browserStatus,
     iosSession,
     lane,

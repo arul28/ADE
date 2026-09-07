@@ -11701,6 +11701,66 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("browser handoff raises the same hand `chat ask` does, then blocks on hand back", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const stepArgs = (
+      plan: ReturnType<typeof buildCliPlan>,
+      index: number,
+    ): { domain?: string; action?: string; args?: Record<string, unknown> } => {
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[index]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      return params?.arguments ?? {};
+    };
+
+    const plan = buildCliPlan([
+      "browser", "handoff", "--tab", "tab-1", "--reason", "sign in to staging",
+    ]);
+    if (plan.kind !== "execute") throw new Error("expected execute plan");
+    expect(plan.steps).toHaveLength(3);
+    expect(stepArgs(plan, 0)).toMatchObject({
+      domain: "built_in_browser",
+      action: "startHandoff",
+      args: { tabId: "tab-1", reason: "sign in to staging", timeoutMs: 900_000 },
+    });
+    // The hand-raise is the SAME action `ade chat ask` issues, so the Work row
+    // and the phone push come from one path, not two.
+    expect(stepArgs(plan, 1)).toMatchObject({
+      domain: "session",
+      action: "requestSessionAttention",
+      args: {
+        message: "Sign in for me: sign in to staging",
+        alertTitle: "Sign in for me",
+        alertBody: "sign in to staging",
+      },
+    });
+    expect(stepArgs(plan, 2)).toMatchObject({
+      domain: "built_in_browser",
+      action: "waitForHandoff",
+      args: { tabId: "tab-1" },
+    });
+    // The transport must outlive the wait it is there to perform.
+    expect(plan.minTimeoutMs).toBeGreaterThan(900_000);
+
+    const bounded = buildCliPlan([
+      "browser", "handoff", "--browser-session", "bs-1", "--timeout", "5m", "--reason", "solve the CAPTCHA",
+    ]);
+    expect(stepArgs(bounded, 0).args).toMatchObject({ sessionId: "bs-1", timeoutMs: 300_000 });
+
+    const noWait = buildCliPlan(["browser", "handoff", "--tab", "tab-1", "--no-wait", "--reason", "corp SSO"]);
+    if (noWait.kind !== "execute") throw new Error("expected execute plan");
+    expect(noWait.steps).toHaveLength(2);
+    expect(noWait.minTimeoutMs).toBeUndefined();
+
+    // Free text works without quoting, and a reasonless handoff is refused.
+    expect(stepArgs(buildCliPlan(["browser", "handoff", "--tab", "tab-1", "sign", "in"]), 0).args)
+      .toMatchObject({ reason: "sign in" });
+    expect(() => buildCliPlan(["browser", "handoff", "--tab", "tab-1"])).toThrow(/reason/);
+  }));
+
   it("browser capability commands map to the new built-in browser actions", () => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,

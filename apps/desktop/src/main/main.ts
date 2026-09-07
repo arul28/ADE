@@ -334,6 +334,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
@@ -1649,6 +1650,22 @@ app.whenReady().then(async () => {
       }
       broadcast(IPC.builtInBrowserEvent, payload);
     },
+    onHandoff: createBuiltInBrowserHandoffSessionListener({
+      getLogger: () => getActiveContext().logger,
+      // A chat session belongs to exactly one project context, and a handoff can
+      // outlive whichever project happens to be active — so find the context
+      // that actually owns the row instead of assuming the foreground one.
+      resolveServices: (chatSessionId) => {
+        for (const ctx of projectContexts.values()) {
+          if (!ctx.sessionService?.get(chatSessionId)) continue;
+          return {
+            sessionService: ctx.sessionService,
+            agentChatService: ctx.agentChatService,
+          };
+        }
+        return { sessionService: null, agentChatService: null };
+      },
+    }),
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy

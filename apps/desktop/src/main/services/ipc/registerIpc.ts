@@ -229,7 +229,9 @@ import type {
   BuiltInBrowserSetEmulationArgs,
   BuiltInBrowserSetNetworkLoggingArgs,
   BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartPreviewStreamArgs,
   BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -3027,6 +3029,34 @@ export function registerIpc({
       ...parseBuiltInBrowserTabTargetRecord(record, channel),
       ...(filter ? { filter } : {}),
       ...(optionalBoolean(record.failedOnly) === undefined ? {} : { failedOnly: optionalBoolean(record.failedOnly) }),
+    };
+  };
+
+  const parseBuiltInBrowserStartPreviewStreamArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserStartPreviewStreamArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
+      ...(tabId ? { tabId } : {}),
+      ...(record.fps == null ? {} : { fps: builtInBrowserNumber(record, "fps", channel, { min: 1, max: 24 }) }),
+      ...(record.maxWidth == null
+        ? {}
+        : { maxWidth: builtInBrowserNumber(record, "maxWidth", channel, { min: 80, max: 1_280 }) }),
+    };
+  };
+
+  const parseBuiltInBrowserStopPreviewStreamArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserStopPreviewStreamArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
+      ...(tabId ? { tabId } : {}),
     };
   };
 
@@ -9453,6 +9483,20 @@ export function registerIpc({
     return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
   });
 
+  ipcMain.handle(IPC.builtInBrowserEndHandoff, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserEndHandoff, { windowMs: 10_000, max: 30 });
+    const record = isRecord(arg) ? arg : {};
+    return ensureBuiltInBrowser().endHandoff(
+      {
+        ...parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserEndHandoff),
+        // Only the two human-initiated endings are reachable from a renderer;
+        // `tab-closed` and `timeout` are the service's own to record.
+        endedBy: record.endedBy === "auto-offer" ? "auto-offer" : "human",
+      },
+      win,
+    );
+  });
+
   ipcMain.handle(IPC.builtInBrowserSetEmulation, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetEmulation, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().setEmulation(
@@ -9517,6 +9561,25 @@ export function registerIpc({
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().stopRecording(
       parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStopRecording),
+      win,
+    );
+  });
+
+  // Preview streams are refcounted in the service, so the rate limit only has
+  // to stop a wedged renderer from thrashing subscribe/unsubscribe — a card
+  // subscribes once per mount, not per frame.
+  ipcMain.handle(IPC.builtInBrowserStartPreviewStream, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartPreviewStream, { windowMs: 60_000, max: 120 });
+    return ensureBuiltInBrowser().startPreviewStream(
+      parseBuiltInBrowserStartPreviewStreamArgs(arg, IPC.builtInBrowserStartPreviewStream),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopPreviewStream, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopPreviewStream, { windowMs: 60_000, max: 120 });
+    return ensureBuiltInBrowser().stopPreviewStream(
+      parseBuiltInBrowserStopPreviewStreamArgs(arg, IPC.builtInBrowserStopPreviewStream),
       win,
     );
   });

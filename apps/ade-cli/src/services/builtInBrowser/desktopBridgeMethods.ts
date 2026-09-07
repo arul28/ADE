@@ -44,6 +44,12 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "getStatus",
   "requestOriginAccess",
   "claim",
+  "startHandoff",
+  // `endHandoff` is on the bridge only so the desktop renderer's own `Hand back`
+  // can reach a locally-pinned runtime. `adeRpcServer` gates it to user clients,
+  // so an agent cannot end a sign-in the human is still in the middle of.
+  "endHandoff",
+  "waitForHandoff",
   "startSession",
   "listSessions",
   "endSession",

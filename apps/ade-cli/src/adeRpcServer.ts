@@ -4003,6 +4003,22 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
+    } else if (domain === "built_in_browser" && action === "endHandoff") {
+      // Hand-back is the human's move, not the agent's. The desktop renderer
+      // reaches this through a locally-pinned runtime when the user presses
+      // `Hand back`; an agent asking for it would be ending the sign-in it
+      // itself asked a person to perform, so it is refused outright rather than
+      // scoped. `startHandoff` / `waitForHandoff` stay on the normal path.
+      if (!isUserClient) {
+        builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
+      );
     } else if (domain === "built_in_browser") {
       scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
         session,

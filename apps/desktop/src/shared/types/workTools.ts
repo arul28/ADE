@@ -11,6 +11,12 @@
  * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`.
  */
 
+/**
+ * Mirrors the renderer's `WorkSidebarTab`. It cannot import that union (this
+ * file is also compiled into the daemon, which has no renderer), but drift is
+ * not silent: `useWorkSidebarTool` passes a `WorkSidebarTab` straight into
+ * `setActiveTool`, so a tab added there and not here fails to compile.
+ */
 export const WORK_TOOL_IDS = [
   "terminal",
   "git",
@@ -18,6 +24,7 @@ export const WORK_TOOL_IDS = [
   "ios",
   "app-control",
   "browser",
+  "pr",
 ] as const;
 
 export type WorkToolId = (typeof WORK_TOOL_IDS)[number];
@@ -49,6 +56,13 @@ export type WorkToolsBrowserTab = {
   /** True while this tab is capturing a video recording. */
   recording: boolean;
   active: boolean;
+  /**
+   * Set while the agent has handed this tab to a human to sign in on the
+   * desktop. Read-only everywhere this state travels: the phone cannot hand a
+   * tab back any more than it can click one, but it must be able to explain why
+   * the lane looks stalled.
+   */
+  handoffReason: string | null;
 };
 
 /**

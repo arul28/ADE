@@ -3,7 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type {
+  AppControlActionTraceEntry,
   AppControlContextItem,
+  AppControlDriversResult,
+  AppControlObservation,
   AppControlSession,
   AppControlSnapshot,
   AppControlStatus,
@@ -119,12 +122,97 @@ const contextItem: AppControlContextItem = {
   selectedAt: "2026-05-12T00:00:03.000Z",
 };
 
+const OBSERVATION_ID = "obs-1717000000000-8b0c1a2d";
+
+const observation: AppControlObservation = {
+  id: OBSERVATION_ID,
+  sessionId: connectedSession.id,
+  cdpTargetId: "target-1",
+  url: "http://localhost:5173",
+  title: "ADE renderer",
+  capturedAt: "2026-05-12T00:00:04.000Z",
+  width: 100,
+  height: 80,
+  mimeType: "image/png",
+  filePath: "/repo/.ade/cache/app-control-observations/session/obs.png",
+  relativePath: ".ade/cache/app-control-observations/session/obs.png",
+  dom: {
+    url: "http://localhost:5173",
+    title: "ADE renderer",
+    capturedAt: "2026-05-12T00:00:04.000Z",
+    viewport: { x: 0, y: 0, width: 100, height: 80 },
+    scroll: { x: 0, y: 0 },
+    elementCount: 1,
+    elements: [{
+      index: 1,
+      handle: `${OBSERVATION_ID}:e:1`,
+      tagName: "button",
+      role: "button",
+      label: "Sign in",
+      text: null,
+      value: null,
+      placeholder: null,
+      selector: "button.sign-in",
+      testId: null,
+      href: null,
+      disabled: false,
+      frame: { x: 10, y: 20, width: 40, height: 16 },
+      center: { x: 30, y: 28 },
+    }],
+  },
+  diagnostics: {
+    capturedAt: "2026-05-12T00:00:04.000Z",
+    pendingRequestCount: 0,
+    console: [
+      { level: "error", message: "boom", sourceId: null, line: null, column: null, timestamp: "2026-05-12T00:00:04.000Z" },
+    ],
+    network: [
+      { url: "/api", method: "GET", resourceType: "fetch", statusCode: 500, error: null, startedAt: null, endedAt: "2026-05-12T00:00:04.000Z", durationMs: 12 },
+    ],
+  },
+  laneId: "lane-1",
+  chatSessionId: "chat-1",
+  cleanup: { keepCount: 3, keptCount: 1, deletedCount: 0 },
+};
+
+const traceEntry: AppControlActionTraceEntry = {
+  id: "trace-1",
+  sessionId: connectedSession.id,
+  cdpTargetId: "target-1",
+  action: "click",
+  status: "ok",
+  startedAt: "2026-05-12T00:00:05.000Z",
+  endedAt: "2026-05-12T00:00:06.200Z",
+  durationMs: 1_200,
+  before: { url: null, title: null },
+  after: { url: null, title: null },
+  target: { handle: `${OBSERVATION_ID}:e:1` },
+  observationId: OBSERVATION_ID,
+  error: null,
+};
+
+const drivers: AppControlDriversResult = {
+  platform: "darwin",
+  activeDriver: "cdp",
+  drivers: [
+    { driver: "cdp", status: "available", reason: null, implemented: true },
+    {
+      driver: "computer_use",
+      status: "unavailable",
+      reason: "The computer-use App Control driver is not implemented in this build.",
+      implemented: false,
+    },
+  ],
+};
+
 function installAdeMock({
   status = idleStatus,
   targetList = [],
+  traceEntries = [] as AppControlActionTraceEntry[],
 }: {
   status?: AppControlStatus;
   targetList?: AppControlTarget[];
+  traceEntries?: AppControlActionTraceEntry[];
 } = {}) {
   const api = {
     appControl: {
@@ -133,16 +221,37 @@ function installAdeMock({
       listTargets: vi.fn().mockResolvedValue(targetList),
       onEvent: vi.fn(() => () => {}),
       attachToTarget: vi.fn().mockResolvedValue(connectedSession),
+      switchWindow: vi.fn().mockResolvedValue({
+        sessionId: connectedSession.id,
+        activeTargetId: "target-2",
+        windows: targetList,
+      }),
       launchInTerminal: vi.fn(),
       connect: vi.fn(),
       stop: vi.fn(),
       focusWindow: vi.fn().mockResolvedValue({ ok: true }),
       minimizeWindow: vi.fn().mockResolvedValue({ ok: true }),
+      screenshot: vi.fn().mockResolvedValue({
+        sessionId: connectedSession.id,
+        cdpTargetId: "target-1",
+        capturedAt: "2026-05-12T00:00:02.000Z",
+        width: 100,
+        height: 80,
+        dataUrl: transparentPngDataUrl,
+      }),
       click: vi.fn().mockResolvedValue(undefined),
       typeText: vi.fn().mockResolvedValue(undefined),
       scroll: vi.fn().mockResolvedValue(undefined),
       inspectPoint: vi.fn().mockResolvedValue({ item: contextItem, source: "cdp", snapshot: selectedSnapshot }),
       selectPoint: vi.fn().mockResolvedValue({ item: contextItem, source: "cdp", snapshot: selectedSnapshot }),
+      listDrivers: vi.fn().mockResolvedValue(drivers),
+      observe: vi.fn().mockResolvedValue(observation),
+      getTrace: vi.fn().mockResolvedValue({ sessionId: connectedSession.id, entries: traceEntries }),
+      windows: vi.fn().mockResolvedValue({
+        sessionId: connectedSession.id,
+        activeTargetId: "target-1",
+        windows: targetList,
+      }),
     },
     agentChat: {
       saveTempAttachment: vi.fn().mockResolvedValue({ path: ".ade/artifacts/app-control-selection.png" }),
@@ -150,6 +259,31 @@ function installAdeMock({
   };
   (window as any).ade = api;
   return api;
+}
+
+/** Open the "…" toolbar menu and return once its items are on screen. */
+async function openOverflow(): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: "App Control actions" }));
+  await screen.findByRole("menu", { name: "App Control actions" });
+}
+
+async function openAppPicker(): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: "App Control launch target" }));
+  await screen.findByRole("menu", { name: "App Control launch target" });
+}
+
+function stubImageBounds(image: HTMLImageElement): void {
+  image.getBoundingClientRect = () => ({
+    x: 0,
+    y: 0,
+    left: 0,
+    top: 0,
+    right: 100,
+    bottom: 80,
+    width: 100,
+    height: 80,
+    toJSON: () => ({}),
+  });
 }
 
 describe("ChatAppControlPanel", () => {
@@ -162,7 +296,7 @@ describe("ChatAppControlPanel", () => {
     delete (window as any).ade;
   });
 
-  it("inserts the CDP help draft", async () => {
+  it("offers the launch target picker with no session, and inserts the CDP help draft", async () => {
     installAdeMock();
     const onInsertDraft = vi.fn();
 
@@ -175,9 +309,41 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
+    // The empty state is the launchpad, not a dead end.
+    expect(await screen.findByRole("button", { name: "Pick an app to drive" })).toBeTruthy();
+    expect(screen.getByText("No app attached")).toBeTruthy();
+    expect(screen.getByText(/ade app-control launch/)).toBeTruthy();
+
+    await openAppPicker();
     fireEvent.click(screen.getByText("Help wire CDP"));
 
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE App Control."));
+  });
+
+  it("launches from the picker and remembers the command as a recent", async () => {
+    const api = installAdeMock();
+    api.appControl.launchInTerminal.mockResolvedValue({ ...connectedSession, status: "starting" });
+
+    render(
+      <ChatAppControlPanel sessionId="chat-launch" laneId="lane-1" projectRoot="/repo" />,
+    );
+
+    await openAppPicker();
+    fireEvent.change(screen.getByLabelText("App Control launch command"), {
+      target: { value: "pnpm dev" },
+    });
+    fireEvent.click(screen.getByLabelText("Launch App Control command"));
+
+    await waitFor(() => {
+      expect(api.appControl.launchInTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ command: "pnpm dev", projectRoot: "/repo" }),
+        null,
+      );
+    });
+
+    await openAppPicker();
+    expect(await screen.findByText("Recent")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "pnpm dev" })).toBeTruthy();
   });
 
   it("drives connected-session controls without launching or sending input", async () => {
@@ -193,23 +359,32 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByTitle("Show the launch terminal"));
+    // The toolbar names the app and says it is attached.
+    expect(await screen.findByText("ADE Test")).toBeTruthy();
+    expect(screen.getByText("attached")).toBeTruthy();
+
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Reveal terminal" }));
     expect(onShowTerminal).toHaveBeenCalledWith({
       terminalId: "terminal-1",
       ptyId: "pty-1",
       label: "ADE Test",
     });
 
-    fireEvent.click(screen.getByTitle("Show the controlled app window"));
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Show app window" }));
     await waitFor(() => {
       expect(api.appControl.focusWindow).toHaveBeenCalled();
     });
-    fireEvent.click(screen.getByLabelText("Minimize controlled app window"));
+
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Minimize app window" }));
     await waitFor(() => {
       expect(api.appControl.minimizeWindow).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByTitle("Re-capture screenshot and DOM snapshot"));
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refresh snapshot" }));
     expect(await screen.findByText("Snapshot refreshed.")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Dismiss"));
     await waitFor(() => {
@@ -217,25 +392,60 @@ describe("ChatAppControlPanel", () => {
     });
 
     fireEvent.click(screen.getByText("Inspect"));
-    expect(screen.getByText("Inspect mode inserts clicked element context")).toBeTruthy();
+    expect(screen.getByText("Click an element to insert its source context.")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Control"));
-    expect(screen.getByText("Click the screenshot to drive the app, or type into the focused element below.")).toBeTruthy();
-
     const typeInput = screen.getByLabelText("Text to type into the focused app element") as HTMLInputElement;
     fireEvent.change(typeInput, { target: { value: "hello from fixture" } });
     expect(typeInput.value).toBe("hello from fixture");
     expect(api.appControl.typeText).not.toHaveBeenCalled();
 
-    const targetSelect = await screen.findByLabelText("Switch the controlled window") as HTMLSelectElement;
-    fireEvent.change(targetSelect, { target: { value: "target-2" } });
+    // Multi-window: a segmented switcher, and switching goes through
+    // switchWindow so the stale trace is dropped with the old document.
+    const switcher = await screen.findByRole("group", { name: "Controlled window" });
+    expect(switcher).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Switch to Settings"));
     await waitFor(() => {
-      expect(api.appControl.attachToTarget).toHaveBeenCalledWith({ targetId: "target-2" }, null);
+      expect(api.appControl.switchWindow).toHaveBeenCalledWith({ targetId: "target-2" }, null);
     });
+  });
 
-    const targetRefreshCalls = api.appControl.listTargets.mock.calls.length;
-    fireEvent.click(screen.getByTitle("Re-scan controlled app windows"));
-    expect(api.appControl.listTargets.mock.calls.length).toBeGreaterThan(targetRefreshCalls);
+  it("names the driver and explains why computer use is unavailable", async () => {
+    installAdeMock({ status: connectedStatus, targetList: targets });
+
+    render(
+      <ChatAppControlPanel sessionId="chat-drivers" laneId="lane-1" projectRoot="/repo" />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "App Control driver" }));
+    const computerUse = await screen.findByRole("menuitemcheckbox", { name: "Computer use" });
+    expect((computerUse as HTMLButtonElement).disabled).toBe(true);
+    expect(computerUse.getAttribute("title"))
+      .toBe("The computer-use App Control driver is not implemented in this build.");
+    expect((screen.getByRole("menuitemcheckbox", { name: "CDP" })).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("shows the remote machine when App Control runs on another runtime", async () => {
+    installAdeMock({ status: connectedStatus });
+
+    render(
+      <ChatAppControlPanel
+        sessionId="chat-remote"
+        laneId="lane-1"
+        projectRoot="/repo"
+        runtimePin={{
+          kind: "remote",
+          key: "remote:1",
+          targetId: "target",
+          runtimeName: "studio-mini",
+          projectId: "p1",
+          rootPath: "/repo",
+          displayName: "ADE",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("remote: studio-mini")).toBeTruthy();
   });
 
   it("keeps another-lane connected session read-only", async () => {
@@ -250,17 +460,20 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    const targetSelect = await screen.findByLabelText("Switch the controlled window") as HTMLSelectElement;
-    expect(targetSelect.disabled).toBe(true);
-    expect(screen.queryByLabelText("Stop App Control session")).toBeNull();
-    expect((screen.getByTitle("Re-capture screenshot and DOM snapshot") as HTMLButtonElement).disabled).toBe(true);
+    const switchButton = await screen.findByLabelText("Switch to Settings") as HTMLButtonElement;
+    expect(switchButton.disabled).toBe(true);
+
+    await openOverflow();
+    expect((screen.getByRole("menuitem", { name: "Refresh snapshot" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
 
     const typeInput = screen.getByLabelText("Text to type into the focused app element") as HTMLInputElement;
     fireEvent.change(typeInput, { target: { value: "wrong lane" } });
     expect((screen.getByLabelText("Type into focused app element") as HTMLButtonElement).disabled).toBe(true);
 
     expect(api.appControl.stop).not.toHaveBeenCalled();
-    expect(api.appControl.attachToTarget).not.toHaveBeenCalled();
+    expect(api.appControl.switchWindow).not.toHaveBeenCalled();
     expect(api.appControl.typeText).not.toHaveBeenCalled();
     expect(api.appControl.click).not.toHaveBeenCalled();
   });
@@ -278,19 +491,8 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByTitle("Re-capture screenshot and DOM snapshot"));
     const image = await screen.findByAltText("Electron app screenshot") as HTMLImageElement;
-    image.getBoundingClientRect = () => ({
-      x: 0,
-      y: 0,
-      left: 0,
-      top: 0,
-      right: 100,
-      bottom: 80,
-      width: 100,
-      height: 80,
-      toJSON: () => ({}),
-    });
+    stubImageBounds(image);
 
     fireEvent.click(screen.getByText("Inspect"));
     fireEvent.mouseMove(image, { clientX: 15, clientY: 15 });
@@ -321,7 +523,7 @@ describe("ChatAppControlPanel", () => {
       id: "context-1",
       sourceFile: "src/App.tsx",
     }));
-    expect(await screen.findByText("Inserted Run context")).toBeTruthy();
+    expect(await screen.findByText("Inserted Run context.")).toBeTruthy();
 
     const selectCallsBeforeReattach = api.appControl.selectPoint.mock.calls.length;
     fireEvent.click(screen.getByText("Re-attach"));
@@ -352,19 +554,8 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByTitle("Re-capture screenshot and DOM snapshot"));
     const image = await screen.findByAltText("Electron app screenshot") as HTMLImageElement;
-    image.getBoundingClientRect = () => ({
-      x: 0,
-      y: 0,
-      left: 0,
-      top: 0,
-      right: 100,
-      bottom: 80,
-      width: 100,
-      height: 80,
-      toJSON: () => ({}),
-    });
+    stubImageBounds(image);
     fireEvent.click(screen.getByText("Inspect"));
     fireEvent.click(image, { clientX: 60, clientY: 60 });
 
@@ -374,5 +565,125 @@ describe("ChatAppControlPanel", () => {
       }));
     });
     expect(api.agentChat.saveTempAttachment).not.toHaveBeenCalled();
+  });
+
+  it("attaches a full screenshot to the chat from the overflow menu", async () => {
+    const api = installAdeMock({ status: connectedStatus });
+    const onAddAttachment = vi.fn();
+
+    render(
+      <ChatAppControlPanel
+        sessionId="chat-shot"
+        laneId="lane-1"
+        projectRoot="/repo"
+        onAddAttachment={onAddAttachment}
+      />,
+    );
+
+    await screen.findByAltText("Electron app screenshot");
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Screenshot to chat" }));
+
+    await waitFor(() => {
+      expect(api.appControl.screenshot).toHaveBeenCalled();
+    });
+    expect(onAddAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      path: ".ade/artifacts/app-control-selection.png",
+    }));
+  });
+
+  it("paints the observe map on request and hands a handle to the chat", async () => {
+    const api = installAdeMock({ status: connectedStatus });
+    const onAddContext = vi.fn();
+
+    render(
+      <ChatAppControlPanel
+        sessionId="chat-observe"
+        laneId="lane-1"
+        projectRoot="/repo"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    await screen.findByAltText("Electron app screenshot");
+    // Never on a timer: observe writes a record and prunes older ones.
+    expect(api.appControl.observe).not.toHaveBeenCalled();
+
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Observe with map" }));
+
+    const badge = await screen.findByLabelText(`Element 1, Sign in. Copy handle ${OBSERVATION_ID}:e:1.`);
+    // No `maxElements`: the panel takes the service default so its badge
+    // numbers match the ones `ade app-control observe` reports. Indices are
+    // assigned after the bound, so a smaller bound would renumber elements.
+    expect(api.appControl.observe).toHaveBeenCalledWith(
+      { includeDom: true, includeDiagnostics: true, includeDataUrl: false },
+      null,
+    );
+    expect(badge.textContent).toBe("①");
+
+    fireEvent.click(badge);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to chat" }));
+
+    expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+      id: `${OBSERVATION_ID}:e:1`,
+      componentId: "Sign in",
+      metadata: expect.objectContaining({ handle: `${OBSERVATION_ID}:e:1`, elementIndex: 1 }),
+    }));
+
+    // Diagnostics from the same observation land in the status row.
+    expect(await screen.findByTitle("1 console error in the last observation")).toBeTruthy();
+    expect(screen.getByTitle("1 failed request in the last observation")).toBeTruthy();
+
+    // Toggling off removes the map without another observe round trip.
+    await openOverflow();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Hide observe map" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-control-observe-map")).toBeNull();
+    });
+    expect(api.appControl.observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("summarises the last agent action and opens the trace drawer", async () => {
+    const api = installAdeMock({ status: connectedStatus, traceEntries: [traceEntry] });
+
+    render(
+      <ChatAppControlPanel sessionId="chat-trace" laneId="lane-1" projectRoot="/repo" />,
+    );
+
+    await waitFor(() => {
+      expect(api.appControl.getTrace).toHaveBeenCalledWith({ limit: 20 }, null);
+    });
+    expect(await screen.findByText("last: click ① · 1.2s")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show action trace" }));
+    const drawer = await screen.findByTestId("app-control-trace-drawer");
+    expect(drawer.textContent).toContain("click");
+    expect(drawer.textContent).toContain("1.2s");
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide action trace" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-control-trace-drawer")).toBeNull();
+    });
+  });
+
+  it("marks failed trace rows and says so on the status line", async () => {
+    installAdeMock({
+      status: connectedStatus,
+      traceEntries: [{
+        ...traceEntry,
+        status: "error",
+        error: "No matching App Control element was found.",
+      }],
+    });
+
+    render(
+      <ChatAppControlPanel sessionId="chat-trace-failed" laneId="lane-1" projectRoot="/repo" />,
+    );
+
+    expect(await screen.findByText("last: click ① · 1.2s · failed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show action trace" }));
+    const row = await screen.findByTitle("No matching App Control element was found.");
+    expect(row.textContent).toContain("failed");
   });
 });

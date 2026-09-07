@@ -5,6 +5,7 @@ import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
+import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -1421,10 +1422,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
         <div
           ref={workContentPaneRef}
-          className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+          className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
           style={{ flexGrow: 100 - work.workSidebarWidthPct }}
         >
           {workViewArea}
+          {/*
+            One card per Work page, floating over the chat column. It shows the
+            screen tool you are NOT looking at, so its notion of "active" is the
+            tools pane's tool — and a closed pane means no tool is active, so
+            anything may show.
+          */}
+          <WorkLiveCornerCard
+            active={active}
+            laneId={activeLaneId}
+            activeTool={workSidebarVisible ? workSidebarTool : null}
+            runtimePin={activeWorkSessionRuntimePin}
+            onPick={setWorkSidebarTool}
+          />
         </div>
         {/* Resize handle stays a row-level sibling so its width math is correct. */}
         {workSidebarVisible ? (

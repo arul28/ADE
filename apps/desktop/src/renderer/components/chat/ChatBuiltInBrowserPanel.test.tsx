@@ -132,6 +132,88 @@ function installBrowserApi() {
     selectPoint: vi.fn(),
     selectCurrent: vi.fn(),
     clearSelection: vi.fn().mockResolvedValue(undefined),
+    setEmulation: vi.fn().mockResolvedValue({
+      tabId: "tab-1",
+      emulation: null,
+      presets: [],
+      status: browserStatus,
+    }),
+    setZoom: vi.fn().mockResolvedValue({ tabId: "tab-1", zoomFactor: 1.1, status: browserStatus }),
+    findInPage: vi.fn().mockResolvedValue({
+      tabId: "tab-1",
+      text: "widget",
+      requestId: 1,
+      activeMatchOrdinal: 1,
+      matches: 12,
+      finalUpdate: false,
+      status: browserStatus,
+    }),
+    stopFindInPage: vi.fn().mockResolvedValue({ tabId: "tab-1", stopped: true, status: browserStatus }),
+    setDevTools: vi.fn().mockResolvedValue({
+      tabId: "tab-1",
+      devToolsOpen: true,
+      mode: "right",
+      status: browserStatus,
+    }),
+    setNetworkLogging: vi.fn().mockResolvedValue({
+      tabId: "tab-1",
+      enabled: true,
+      entryCount: 0,
+      status: browserStatus,
+    }),
+    exportHar: vi.fn(),
+    startRecording: vi.fn(),
+    stopRecording: vi.fn().mockResolvedValue({
+      tabId: "tab-1",
+      path: "/tmp/ade/browser-recording-1.mp4",
+      relativePath: ".ade/artifacts/browser-recording-1.mp4",
+      durationMs: 42_000,
+      fps: 60,
+      frameCount: 2520,
+      format: "mp4",
+      mimeType: "video/mp4",
+      caption: null,
+      manifestPath: null,
+      status: browserStatus,
+    }),
+    loginImport: {
+      capabilities: vi.fn(),
+      listSources: vi.fn().mockResolvedValue({
+        platform: "darwin",
+        sources: [
+          {
+            id: "chrome:default",
+            browserId: "chrome",
+            browserName: "Chrome",
+            engine: "chromium",
+            profileId: "Default",
+            profileName: "Default",
+            status: "ready",
+            reason: null,
+            settingsPaneUrl: null,
+          },
+          {
+            id: "safari:main",
+            browserId: "safari",
+            browserName: "Safari",
+            engine: "safari",
+            profileId: "main",
+            profileName: "Main",
+            status: "needs_full_disk_access",
+            reason: "Let ADE read Safari's cookies by granting Full Disk Access.",
+            settingsPaneUrl: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+          },
+        ],
+        capabilities: { platform: "darwin", anySupported: true, browsers: [] },
+      }),
+      listDomains: vi.fn().mockResolvedValue({
+        ok: true,
+        sourceId: "chrome:default",
+        domains: [{ domain: "github.com", cookieCount: 12, expiredCount: 0, sessionCookieCount: 2 }],
+        unreadableCount: 0,
+      }),
+      import: vi.fn(),
+    },
     onEvent: vi.fn((listener: (event: unknown) => void) => {
       eventListener = listener;
       return () => {
@@ -170,6 +252,34 @@ function installBrowserApi() {
       },
       app: {
         openExternal: vi.fn(),
+        revealPath: vi.fn().mockResolvedValue(undefined),
+        readClipboardText: vi.fn().mockResolvedValue(""),
+      },
+      projectConfig: {
+        get: vi.fn().mockResolvedValue({
+          shared: {},
+          local: {},
+          effective: { browser: { linkOpenMode: "in-app" } },
+        }),
+        save: vi.fn().mockResolvedValue(undefined),
+      },
+      iosSimulator: {
+        getStatus: vi.fn().mockResolvedValue({
+          platform: "darwin",
+          supported: true,
+          tools: [],
+          activeDevice: {
+            udid: "sim-1",
+            name: "iPhone 17 Pro",
+            runtime: "iOS 19.0",
+            state: "Booted",
+            isAvailable: true,
+          },
+          activeSession: null,
+        }),
+      },
+      localhost: {
+        probePort: vi.fn().mockResolvedValue(false),
       },
     },
   });
@@ -179,9 +289,29 @@ function installBrowserApi() {
   };
 }
 
+/** Radix opens menus on pointerdown, and jsdom has none of the pointer plumbing. */
+function installRadixDomShims(): void {
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.hasPointerCapture = vi.fn(() => false);
+  proto.setPointerCapture = vi.fn();
+  proto.releasePointerCapture = vi.fn();
+  proto.scrollIntoView = vi.fn();
+}
+
+/**
+ * Open a Radix dropdown by its trigger's accessible name.
+ *
+ * Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
+ * `button === 0` guard on pointerdown never passes there.
+ */
+async function openMenu(label: string): Promise<void> {
+  fireEvent.keyDown(await screen.findByLabelText(label), { key: "Enter" });
+}
+
 beforeEach(() => {
   nextFrameId = 0;
   nextFrameNow = 0;
+  installRadixDomShims();
   vi.stubGlobal("ResizeObserver", MockResizeObserver);
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     const id = ++nextFrameId;
@@ -225,7 +355,8 @@ describe("ChatBuiltInBrowserPanel", () => {
     const { api } = installBrowserApi();
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
 
-    fireEvent.click(await screen.findByText("Profile"));
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Profile…"));
 
     expect(await screen.findByText("Global authenticated profile")).toBeTruthy();
     expect(await screen.findByText(/4 cookies · 3 persistent · 1 session/)).toBeTruthy();
@@ -629,16 +760,16 @@ describe("ChatBuiltInBrowserPanel", () => {
     const onAddContext = vi.fn();
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
 
-    fireEvent.click(await screen.findByText("Screenshot"));
+    fireEvent.click(await screen.findByLabelText("Screenshot · Shift-click to record"));
 
     await waitFor(() => expect(api.captureScreenshot).toHaveBeenCalled());
     expect(await screen.findByText("Drag a browser region to attach the screenshot crop and nearby page context.")).toBeTruthy();
-    expect(screen.getByText("Cancel screenshot")).toBeTruthy();
+    expect(await screen.findByLabelText("Cancel screenshot")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Cancel screenshot"));
+    fireEvent.click(screen.getByLabelText("Cancel screenshot"));
 
     expect(await screen.findByText("Browser screenshot capture cancelled.")).toBeTruthy();
-    expect(screen.getByText("Screenshot")).toBeTruthy();
+    expect(await screen.findByLabelText("Screenshot · Shift-click to record")).toBeTruthy();
     expect(onAddContext).not.toHaveBeenCalled();
   });
 
@@ -674,5 +805,221 @@ describe("ChatBuiltInBrowserPanel", () => {
       id: "browser-selection-1",
       selector: "button.submit",
     }));
+  });
+
+  it("applies a device preset from the device menu", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("Browser device preset — Desktop");
+    fireEvent.click(await screen.findByText("iPhone 17 Pro"));
+
+    await waitFor(() => {
+      expect(api.setEmulation).toHaveBeenCalledWith(
+        expect.objectContaining({ preset: "iphone-17-pro" }),
+        null,
+      );
+    });
+  });
+
+  it("offers the booted simulator only when its device maps onto known metrics", async () => {
+    installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("Browser device preset — Desktop");
+
+    expect(await screen.findByText("Booted simulator: iPhone 17 Pro")).toBeTruthy();
+  });
+
+  it("shows find counts from found-in-page events and stops the find on close", async () => {
+    const { api, emit } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Find on page"));
+
+    const findInput = await screen.findByLabelText("Find on page");
+    fireEvent.change(findInput, { target: { value: "widget" } });
+
+    await waitFor(() => expect(api.findInPage).toHaveBeenCalled());
+
+    emit({
+      type: "found-in-page",
+      tabId: "tab-1",
+      requestId: 1,
+      activeMatchOrdinal: 3,
+      matches: 12,
+      finalUpdate: true,
+      foundAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(await screen.findByText("3 of 12")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Close find bar"));
+
+    await waitFor(() => {
+      expect(api.stopFindInPage).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "clearSelection" }),
+        null,
+      );
+    });
+  });
+
+  it("shows a REC pill from the tab state and stops the recording when it is clicked", async () => {
+    const { api } = installBrowserApi();
+    const recordingStatus = {
+      ...browserStatus,
+      tabs: [{
+        ...browserStatus.tabs[0],
+        recording: { startedAt: new Date(Date.now() - 42_000).toISOString(), fps: 60 },
+      }],
+    };
+    api.getStatus.mockResolvedValue(recordingStatus);
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    const pill = await screen.findByTitle("Stop recording");
+    expect(pill.textContent).toContain("REC 0:42");
+    expect(pill.textContent).toContain("60 fps");
+
+    fireEvent.click(pill);
+
+    await waitFor(() => expect(api.stopRecording).toHaveBeenCalled());
+  });
+
+  it("starts a recording at the chosen frame rate on Shift-click", async () => {
+    const { api } = installBrowserApi();
+    api.startRecording.mockResolvedValue({
+      tabId: "tab-1",
+      recording: { startedAt: "2026-09-07T00:00:00.000Z", fps: 60 },
+      status: browserStatus,
+    });
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("60 fps"));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    fireEvent.click(
+      await screen.findByLabelText("Screenshot · Shift-click to record"),
+      { shiftKey: true },
+    );
+
+    await waitFor(() => {
+      expect(api.startRecording).toHaveBeenCalledWith(
+        expect.objectContaining({ fps: 60 }),
+        null,
+      );
+    });
+  });
+
+  it("lists import sources and explains the ones it cannot read", async () => {
+    installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Import logins…"));
+
+    expect(await screen.findByText("Chrome")).toBeTruthy();
+    expect(screen.getByText("Safari")).toBeTruthy();
+    expect(
+      screen.getByText("Let ADE read Safari's cookies by granting Full Disk Access."),
+    ).toBeTruthy();
+    // A blocked source offers the fix, never a dead "Choose".
+    expect(screen.getByText("Open System Settings")).toBeTruthy();
+  });
+
+  it("writes browser.linkOpenMode when the link mode is changed", async () => {
+    installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("System browser"));
+
+    await waitFor(() => {
+      expect(window.ade.projectConfig.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          local: expect.objectContaining({
+            browser: expect.objectContaining({ linkOpenMode: "external" }),
+          }),
+        }),
+      );
+    });
+  });
+  describe("login handoff bar", () => {
+    const HANDOFF = {
+      reason: "sign in to staging",
+      startedAt: "2026-05-12T00:00:00.000Z",
+      expiresAt: "2026-05-12T00:15:00.000Z",
+      requestedByChatSessionId: "chat-1",
+      requestedByLaneId: "lane-1",
+      startedAtOrigin: "https://login.example.test",
+      previousOwner: { laneId: "lane-1", chatSessionId: "chat-1" },
+    };
+
+    function handoffStatus(url: string) {
+      return {
+        ...browserStatus,
+        url,
+        tabs: [{ ...browserStatus.tabs[0], url, handoff: HANDOFF }],
+      };
+    }
+
+    it("asks the human to sign in and hands the tab back when they say so", async () => {
+      const { api } = installBrowserApi();
+      const status = handoffStatus("https://login.example.test/");
+      api.getStatus.mockResolvedValue(status);
+      const endHandoff = vi.fn().mockResolvedValue({ tabId: "tab-1", handoff: null, status });
+      Object.assign(api, { endHandoff });
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      expect(await screen.findByText(/Agent needs you to sign in/)).toBeTruthy();
+      expect(screen.getByText(/sign in to staging/)).toBeTruthy();
+
+      fireEvent.click(screen.getByText("Hand back"));
+
+      await waitFor(() => {
+        expect(endHandoff.mock.calls[0]?.[0]).toMatchObject({ endedBy: "human" });
+      });
+    });
+
+    it("offers hand-back once the tab leaves the origin it was handed over on", async () => {
+      const { api } = installBrowserApi();
+      // The person has been carried through the identity provider and landed
+      // somewhere else — that, not a timer, is the signal they are probably done.
+      const status = handoffStatus("https://app.example.test/dashboard");
+      api.getStatus.mockResolvedValue(status);
+      const endHandoff = vi.fn().mockResolvedValue({ tabId: "tab-1", handoff: null, status });
+      Object.assign(api, { endHandoff });
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      expect(await screen.findByText("Signed in?")).toBeTruthy();
+
+      fireEvent.click(screen.getByText("Keep control"));
+
+      // Silenced for THIS origin only, and the bar stays up: the tab is still theirs.
+      await waitFor(() => {
+        expect(screen.queryByText("Signed in?")).toBeNull();
+      });
+      expect(screen.getByText(/Agent needs you to sign in/)).toBeTruthy();
+      expect(endHandoff).not.toHaveBeenCalled();
+    });
+
+    it("shows no bar at all when nothing is handed off", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+      expect(screen.queryByTestId("browser-handoff-bar")).toBeNull();
+    });
   });
 });

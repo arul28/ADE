@@ -289,6 +289,36 @@ describe("isAllowedAdeAction", () => {
   });
 });
 
+describe("work_tools runtime action domain", () => {
+  it("exposes the lane tool-state reads plus the desktop's one publish", () => {
+    expect(isAllowedAdeAction("work_tools", "getLaneState")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "setActiveTool")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "readObservationPreview")).toBe(true);
+    // The pane itself is never driven through this domain — the browser and
+    // App Control keep their own allowlists for that.
+    expect(isAllowedAdeAction("work_tools", "click")).toBe(false);
+    expect(isAllowedAdeAction("work_tools", "navigate")).toBe(false);
+  });
+
+  it("binds the domain to the runtime's aggregator, and reports nothing without one", () => {
+    const workToolsStateService = {
+      getLaneState: async () => ({ laneId: "lane-1" }),
+      setActiveTool: () => ({ ok: true }),
+      readObservationPreview: async () => null,
+    };
+    const services = getAdeActionDomainServices({ workToolsStateService } as never);
+    expect(listAllowedAdeActionNames(
+      "work_tools",
+      services.work_tools as Record<string, unknown>,
+    )).toEqual(["getLaneState", "readObservationPreview", "setActiveTool"]);
+
+    // A chat-only runtime builds no aggregator; the domain must be absent
+    // rather than present-and-throwing.
+    const without = getAdeActionDomainServices({} as never);
+    expect(without.work_tools ?? null).toBeNull();
+  });
+});
+
 describe("getAdeActionDomainServices feature gates", () => {
   it("keeps Automations domains available in packaged builds by default", () => {
     withEnv(
@@ -1955,6 +1985,10 @@ describe("runtime session actions", () => {
       title: "Fix auth race",
       message: "Which account should I use?",
       laneId: "lane-1",
+      // A plain `chat ask` overrides neither alert line; only asks whose subject
+      // is the ask itself (browser login handoff) set these.
+      alertTitle: null,
+      alertBody: null,
     });
 
     expect(sessionActions.setSessionStatusNote({ sessionId: "session-1", note: "" }))

@@ -712,6 +712,37 @@ Tabs:
   reach port N on <machine>" bar with Allow once / Always for this lane.
   See `docs/features/remote-runtime/README.md`.
 
+  **Login handoff.** An agent that hits a page it cannot get past — a login
+  form, a CAPTCHA, an HTTP-auth or client-certificate prompt — calls
+  `ade browser handoff --tab <id> --reason "..."`. `startHandoff` in
+  `builtInBrowserService.ts` suspends the tab's agent lease into
+  `handoff.previousOwner`, clears the agent navigation guard so the person is
+  not blocked mid-redirect, marks the tab human-owned, and reveals the pane
+  through the usual `open-request` event. While `tab.handoff` is set every
+  agent-identified call on that tab throws
+  `BuiltInBrowserHandoffActiveError` (`handoff_active`); calls with no agent
+  identity — the pane's own toolbar — pass through untouched. The pane shows
+  an amber bar with the reason and a `Hand back` button, and swaps to
+  "Signed in? / Hand back now / Keep control" once the tab leaves the origin
+  it was handed over on; `Keep control` silences that offer until the next
+  origin change. Hand-back is human-only: `endHandoff` is exposed on IPC and,
+  for locally-pinned chats, on the runtime bridge gated to user clients in
+  `adeRpcServer.ts` — there is no agent path to it. The handoff also ends on
+  tab close and on its own timeout (default 15 minutes), and each ending
+  restores the suspended lease with a fresh TTL and writes a `handoff-end`
+  trace entry carrying `endedBy` and `durationMs` next to the `handoff-start`
+  entry carrying the reason, so a trace or recording explains the gap.
+  `builtInBrowserHandoffSession.ts` is the chat-side half, wired from
+  `main.ts`: it raises the requesting session's hand with the same
+  `requestAttention` state `ade chat ask` produces, clears it on every ending
+  (including ones no CLI is waiting on), and emits a terminal `ade_card`
+  reading "Handed back to the agent". The CLI additionally issues
+  `session.requestSessionAttention` so the phone push goes out through the
+  existing hand-raise path, with `alertTitle: "Sign in for me"` and the reason
+  as the body, then blocks on `waitForHandoff` unless `--no-wait` was passed.
+  iOS surfaces the same state read-only in the Tools sheet via
+  `WorkToolsBrowserTab.handoffReason`.
+
 The sidebar picks a single insertion target per active Work session via
 `WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
 Work session is chat-typed, a draft composer (`kind: "draft"`, carrying

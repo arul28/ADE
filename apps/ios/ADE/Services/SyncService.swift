@@ -13988,6 +13988,48 @@ final class SyncService: ObservableObject {
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
+  // MARK: - Work tools (read-only)
+
+  /// Whether this brain can describe the desktop's Work tools pane at all.
+  ///
+  /// Optional on purpose: a brain that predates the feature, or a chat-only
+  /// runtime that never built the aggregator, simply omits the action. The
+  /// phone hides the Tools row rather than offering a disclosure that opens
+  /// onto an error.
+  var supportsWorkToolsState: Bool {
+    supportsRemoteAction("workTools.getLaneState")
+  }
+
+  /// What the desktop currently has open in this lane's tools pane.
+  func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Project-scoped, resolved from the active project binding: a lane only
+    // exists inside the project the phone is already looking at.
+    return try decode(
+      try await sendCommand(
+        action: "workTools.getLaneState",
+        args: ["laneId": trimmed]
+      ),
+      as: WorkToolsLaneState.self
+    )
+  }
+
+  /// Bytes for one observation, fetched by the path the state handed us.
+  ///
+  /// Frames are never pushed with the state: a tools-pane refresh that carried
+  /// a screenshot would put a megabyte on the wire every few seconds for a
+  /// picture nobody may be looking at.
+  func readWorkToolsObservationPreview(path: String) async throws -> WorkToolsObservationPreview? {
+    let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let result = try await sendCommand(
+      action: "workTools.readObservationPreview",
+      args: ["path": trimmed]
+    )
+    guard result is [String: Any] else { return nil }
+    return try? decode(result, as: WorkToolsObservationPreview.self)
+  }
+
   func createPullRequest(
     laneId: String,
     title: String,

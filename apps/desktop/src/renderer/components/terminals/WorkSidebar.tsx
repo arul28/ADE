@@ -42,7 +42,8 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
-import { isAvailableWorkSidebarTab, type WorkToolContext } from "./workTools";
+import { isAvailableWorkSidebarTab, isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
+import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -444,6 +445,16 @@ export function WorkSidebar({
           emptyMessage="Create a terminal to work alongside this session."
         />
       );
+    }
+
+    // A surface that cannot drive the tool shows what the desktop is doing with
+    // it instead. Checked before the native panels so neither one mounts a
+    // stubbed namespace it would only fail against.
+    if (
+      (effectiveTool === "browser" || effectiveTool === "app-control")
+      && isReadOnlyWorkTool(effectiveTool, toolContext)
+    ) {
+      return <WorkToolReadOnlyView tool={effectiveTool} laneId={laneId} />;
     }
 
     if (effectiveTool === "browser") {

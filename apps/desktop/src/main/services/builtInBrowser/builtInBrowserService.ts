@@ -24,8 +24,15 @@ import type {
   BuiltInBrowserDomSnapshot,
   BuiltInBrowserElementSnapshot,
   BuiltInBrowserElementTargetArgs,
+  BuiltInBrowserEndHandoffArgs,
   BuiltInBrowserEndSessionArgs,
   BuiltInBrowserEventPayload,
+  BuiltInBrowserHandoffEndedBy,
+  BuiltInBrowserHandoffResult,
+  BuiltInBrowserHandoffWaitResult,
+  BuiltInBrowserStartHandoffArgs,
+  BuiltInBrowserTabHandoff,
+  BuiltInBrowserWaitForHandoffArgs,
   BuiltInBrowserFrame,
   BuiltInBrowserListSessionsArgs,
   BuiltInBrowserNavigateArgs,
@@ -35,6 +42,7 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
+  BuiltInBrowserPreviewStreamResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -74,21 +82,29 @@ import type {
   BuiltInBrowserSetEmulationArgs,
   BuiltInBrowserSetNetworkLoggingArgs,
   BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartPreviewStreamArgs,
   BuiltInBrowserStartRecordingArgs,
   BuiltInBrowserStartRecordingResult,
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserStopRecordingArgs,
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserUploadFileArgs,
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
+import { BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import {
   BUILT_IN_BROWSER_PARTITION,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import {
+  BuiltInBrowserHandoffActiveError,
+  handoffOrigin,
+  normalizeHandoffTimeoutMs,
+} from "./builtInBrowserHandoff";
 import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
 import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
@@ -119,6 +135,7 @@ import {
   builtInBrowserEmulationMetrics,
   resolveBuiltInBrowserEmulation,
 } from "../../../shared/builtInBrowserEmulation";
+import { createBuiltInBrowserPreviewStreams } from "./builtInBrowserPreviewStream";
 import {
   createBuiltInBrowserRecordingSession,
   createDisplayMediaRecorderFactory,
@@ -268,6 +285,13 @@ type BrowserTabState = {
     laneId: string | null;
     chatSessionId: string | null;
   } | null;
+  /**
+   * Set while a human holds this tab at an agent's request (login, CAPTCHA,
+   * HTTP auth, client cert). The agent lease is moved into
+   * `handoff.previousOwner` and restored on hand-back, so a handoff cannot
+   * silently donate the tab to whichever agent claims it next.
+   */
+  handoff: BrowserTabHandoffState | null;
   zoomFactor: number;
   emulation: BuiltInBrowserEmulationState | null;
   devToolsMode: BuiltInBrowserDevToolsMode | null;
@@ -275,10 +299,51 @@ type BrowserTabState = {
   networkLog: BuiltInBrowserNetworkLogStore;
   networkLogPending: Map<string, BuiltInBrowserNetworkLogEntry>;
   recording: BuiltInBrowserRecordingSession | null;
+  /**
+   * Error tallies since this tab's last main-frame navigation, which is what
+   * the Work tools pane's red activity dot reports. Kept as counters rather
+   * than derived from the diagnostic buffers because those are capped rolling
+   * windows — a page that logs 200 errors would otherwise report the last 50.
+   */
+  consoleErrorCount: number;
+  failedRequestCount: number;
   /** CDP owners that must keep the debugger attached between actions. */
   debuggerHolds: Set<"network">;
   cdpListener: DebuggerMessageListener | null;
   findRequestId: number | null;
+};
+
+/**
+ * Side-channel for the parts of a login handoff that are not the browser's job:
+ * raising the requesting chat's hand, sending the phone push, clearing both on
+ * hand-back, and writing the "Handed back to the agent" line into the chat.
+ *
+ * Injected rather than imported so the browser service keeps no dependency on
+ * the session/chat stack — and so a headless test can assert the flip without
+ * standing one up.
+ */
+export type BuiltInBrowserHandoffListener = (event: BuiltInBrowserHandoffLifecycleEvent) => void;
+
+export type BuiltInBrowserHandoffLifecycleEvent =
+  | {
+      kind: "started";
+      tabId: string;
+      handoff: BuiltInBrowserTabHandoff;
+    }
+  | {
+      kind: "ended";
+      tabId: string;
+      handoff: BuiltInBrowserTabHandoff;
+      endedBy: BuiltInBrowserHandoffEndedBy;
+      durationMs: number;
+    };
+
+type BrowserTabHandoffState = BuiltInBrowserTabHandoff & {
+  startedAtMs: number;
+  /** Auto hand-back timer; cleared on every exit path so it cannot outlive the tab. */
+  timer: ReturnType<typeof setTimeout> | null;
+  /** Resolved by whichever path ends the handoff, so `waitForHandoff` can block. */
+  waiters: Set<(outcome: { endedBy: BuiltInBrowserHandoffEndedBy; durationMs: number }) => void>;
 };
 
 type BrowserPendingNetworkRequest = {
@@ -386,6 +451,13 @@ export function createBuiltInBrowserService(args: {
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
+  /**
+   * Login-handoff side effects that belong to the chat stack, not the browser:
+   * raising and clearing the requesting session's hand, the phone push, and the
+   * "Handed back to the agent" transcript line. See
+   * {@link BuiltInBrowserHandoffListener}.
+   */
+  onHandoff?: BuiltInBrowserHandoffListener | null;
   /** Test seam for the hidden renderer that encodes tab recordings. */
   createRecordingWindow?: (() => CaptureWindowLike) | null;
   /** Test seam that replaces the whole recorder (skips Electron entirely). */
@@ -471,6 +543,7 @@ export function createBuiltInBrowserService(args: {
       agentAccessController,
       networkRouter,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
+      onHandoff: args.onHandoff ?? null,
       createRecordingWindow: args.createRecordingWindow ?? null,
       createTabRecorder: args.createTabRecorder ?? null,
     });
@@ -591,6 +664,7 @@ export function createBuiltInBrowserService(args: {
         agentAccessController,
         networkRouter,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
+        onHandoff: args.onHandoff ?? null,
         createRecordingWindow: args.createRecordingWindow ?? null,
         createTabRecorder: args.createTabRecorder ?? null,
       });
@@ -644,6 +718,7 @@ export function createBuiltInBrowserService(args: {
           agentAccessController,
           networkRouter,
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
+          onHandoff: args.onHandoff ?? null,
         });
         fallbackServices.set("personal", fallbackService);
       }
@@ -753,6 +828,19 @@ export function createBuiltInBrowserService(args: {
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
+    },
+    startHandoff(input: BuiltInBrowserStartHandoffArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserHandoffResult {
+      return serviceForInput(input, sourceWindow).startHandoff(input);
+    },
+    /** Human-only: reachable from the renderer's `Hand back`, never from the agent bridge. */
+    endHandoff(input: BuiltInBrowserEndHandoffArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserHandoffResult {
+      return serviceForInput(input, sourceWindow).endHandoff(input);
+    },
+    waitForHandoff(
+      input: BuiltInBrowserWaitForHandoffArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserHandoffWaitResult> {
+      return serviceForInput(input, sourceWindow).waitForHandoff(input);
     },
     startSession(input: BuiltInBrowserStartSessionArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserSessionResult {
       return serviceForInput(input, sourceWindow).startSession(input);
@@ -953,6 +1041,18 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserStopRecordingResult> {
       return serviceForInput(input, sourceWindow).stopRecording(input);
     },
+    startPreviewStream(
+      input: BuiltInBrowserStartPreviewStreamArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): BuiltInBrowserPreviewStreamResult {
+      return serviceForInput(input, sourceWindow).startPreviewStream(input);
+    },
+    stopPreviewStream(
+      input: BuiltInBrowserStopPreviewStreamArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): BuiltInBrowserPreviewStreamResult {
+      return serviceForInput(input, sourceWindow).stopPreviewStream(input);
+    },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {
         if (!win.isDestroyed()) {
@@ -987,6 +1087,7 @@ function createBuiltInBrowserWindowService(args: {
   agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
   waitForProfileMigration: () => Promise<void>;
+  onHandoff?: BuiltInBrowserHandoffListener | null;
   /** Test seam for the hidden recording renderer. */
   createRecordingWindow?: (() => CaptureWindowLike) | null;
   /** Test seam that replaces the whole recorder (skips Electron entirely). */
@@ -1261,6 +1362,11 @@ function createBuiltInBrowserWindowService(args: {
     input: BuiltInBrowserClaimArgs = {},
   ): boolean => {
     if (!tab || tab.webContents.isDestroyed()) return false;
+    // A handed-off tab belongs to the human until they hand it back. Read paths
+    // that opportunistically renew a lease (status, session listing) must not
+    // quietly re-issue one here, or the pane would flip back to "agent owns
+    // this tab" while the human is still typing their password into it.
+    if (tab.handoff) return false;
     const laneId = stringOrNull(input.laneId);
     const chatSessionId = stringOrNull(input.chatSessionId);
     if (!laneId && !chatSessionId) return false;
@@ -1335,11 +1441,28 @@ function createBuiltInBrowserWindowService(args: {
     tab.agentNavigationGuard = null;
   };
 
+  /**
+   * Refuse agent traffic aimed at a handed-off tab.
+   *
+   * Scoped to callers that identify as an agent: the same service methods back
+   * the renderer's own toolbar, and the human must stay free to navigate,
+   * reload and close the tab they were just handed.
+   */
+  const assertHandoffAllowsAgentAction = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId"> = {},
+  ): void => {
+    if (!tab.handoff) return;
+    if (!stringOrNull(input.laneId) && !stringOrNull(input.chatSessionId)) return;
+    throw new BuiltInBrowserHandoffActiveError(tab.id, tab.handoff.reason);
+  };
+
   const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
   ): Promise<void> => {
     await args.waitForProfileMigration();
+    assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
     await args.agentAccessController.requireUrlAccess(
       tab.webContents.getURL(),
@@ -1365,6 +1488,7 @@ function createBuiltInBrowserWindowService(args: {
     reason: string,
   ): Promise<void> => {
     await args.waitForProfileMigration();
+    assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
     await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason);
     claimTabOwnerFromInput(tab, input);
@@ -1385,10 +1509,17 @@ function createBuiltInBrowserWindowService(args: {
   ): boolean => {
     const laneId = stringOrNull(input.laneId);
     const chatSessionId = stringOrNull(input.chatSessionId);
+    // A handed-off tab is still the agent's tab — just held by a human for the
+    // moment — so match on the lease waiting to be restored. Without this the
+    // requesting agent could not even see the tab in `browser status` while it
+    // waits, and `browser open` would silently start a second tab, stranding
+    // the sign-in the person just completed.
+    const ownerLaneId = tab.ownerLaneId ?? tab.handoff?.previousOwner.laneId ?? null;
+    const ownerChatSessionId = tab.ownerChatSessionId ?? tab.handoff?.previousOwner.chatSessionId ?? null;
     if (chatSessionId) {
-      return tab.ownerChatSessionId === chatSessionId && (!laneId || !tab.ownerLaneId || tab.ownerLaneId === laneId);
+      return ownerChatSessionId === chatSessionId && (!laneId || !ownerLaneId || ownerLaneId === laneId);
     }
-    if (laneId) return tab.ownerLaneId === laneId && !tab.ownerChatSessionId;
+    if (laneId) return ownerLaneId === laneId && !ownerChatSessionId;
     return false;
   };
 
@@ -1437,11 +1568,40 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
+  /**
+   * Publishes the tab's error tally.
+   *
+   * Emitted on change only, and only from the two paths that can move it, so
+   * the Work pane's red dot is push-driven: nothing polls `observe` to find out
+   * whether a page is broken.
+   */
+  const emitTabDiagnostics = (tab: BrowserTabState): void => {
+    emit({
+      type: "diagnostics",
+      tabId: tab.id,
+      consoleErrorCount: tab.consoleErrorCount,
+      failedRequestCount: tab.failedRequestCount,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  /** A navigation is a fresh page, so its predecessor's errors stop counting. */
+  const resetTabDiagnosticCounts = (tab: BrowserTabState): void => {
+    if (tab.consoleErrorCount === 0 && tab.failedRequestCount === 0) return;
+    tab.consoleErrorCount = 0;
+    tab.failedRequestCount = 0;
+    emitTabDiagnostics(tab);
+  };
+
   const pushConsoleDiagnostic = (
     tab: BrowserTabState,
     diagnostic: BuiltInBrowserDiagnostics["console"][number],
   ): void => {
     tab.consoleDiagnostics = [...tab.consoleDiagnostics, diagnostic].slice(-MAX_BROWSER_CONSOLE_DIAGNOSTICS);
+    if (diagnostic.level === "error") {
+      tab.consoleErrorCount += 1;
+      emitTabDiagnostics(tab);
+    }
     notifyTabActivity(tab);
   };
 
@@ -1450,6 +1610,12 @@ function createBuiltInBrowserWindowService(args: {
     diagnostic: BuiltInBrowserDiagnostics["network"][number],
   ): void => {
     tab.networkDiagnostics = [...tab.networkDiagnostics, diagnostic].slice(-MAX_BROWSER_NETWORK_DIAGNOSTICS);
+    // A transport failure or a 4xx/5xx both read as "this page is broken" to
+    // the person glancing at the corner card; a 304 or a 200 does not.
+    if (diagnostic.error != null || (diagnostic.statusCode != null && diagnostic.statusCode >= 400)) {
+      tab.failedRequestCount += 1;
+      emitTabDiagnostics(tab);
+    }
     notifyTabActivity(tab);
   };
 
@@ -1553,6 +1719,11 @@ function createBuiltInBrowserWindowService(args: {
       error: extra.error == null ? null : errorMessage(extra.error),
     };
     tab.actionTrace = [...tab.actionTrace, entry].slice(-MAX_BROWSER_TRACE_ENTRIES);
+    // Pushed as well as buffered: surfaces that caption "what the agent just
+    // did" (the Work tab's corner card) would otherwise have to poll `getTrace`
+    // on a timer to notice. Agent actions are human-paced, so this is a handful
+    // of events per minute, not a stream.
+    emit({ type: "trace", tabId: tab.id, entry });
     return entry;
   };
 
@@ -1761,6 +1932,7 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("did-navigate", () => {
       const tab = tabForWebContents(wc);
       notifyTabActivity(tab);
+      if (tab) resetTabDiagnosticCounts(tab);
       if (tab?.id === lastSelectedTabId) {
         clearSelectionInternal();
       }
@@ -1884,6 +2056,7 @@ function createBuiltInBrowserWindowService(args: {
       ownerClaimedAt: null,
       ownerLeaseExpiresAt: null,
       agentNavigationGuard: null,
+      handoff: null,
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
       emulation: null,
       devToolsMode: null,
@@ -1891,6 +2064,8 @@ function createBuiltInBrowserWindowService(args: {
       networkLog: createBuiltInBrowserNetworkLog(),
       networkLogPending: new Map(),
       recording: null,
+      consoleErrorCount: 0,
+      failedRequestCount: 0,
       debuggerHolds: new Set(),
       cdpListener: null,
       findRequestId: null,
@@ -2204,6 +2379,7 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before requesting origin access.");
+    assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
     const result = await args.agentAccessController.authorizeUrl(
       tab.webContents.getURL(),
@@ -2223,9 +2399,207 @@ function createBuiltInBrowserWindowService(args: {
     const tabId = stringOrNull(input.tabId);
     const tab = tabId ? tabById(tabId) : activeTab();
     if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab) assertHandoffAllowsAgentAction(tab, input);
     if (tab) prepareAgentReadTab(tab, input);
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
+  }
+
+  /* ── Login handoff ─────────────────────────────────────────────────────── */
+
+  const notifyHandoffListener = (event: BuiltInBrowserHandoffLifecycleEvent): void => {
+    try {
+      args.onHandoff?.(event);
+    } catch (error) {
+      // The hand-raise is a courtesy on top of the ownership flip. If the chat
+      // side throws, the browser must still be in the human's hands.
+      logger()?.warn("built_in_browser.handoff_listener_failed", {
+        kind: event.kind,
+        tabId: event.tabId,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * Close an open handoff and put the tab back in the agent's hands.
+   *
+   * Every exit path funnels through here — the human's `Hand back`, the auto
+   * hand-back offer, the timeout timer, and tab close — so the lease restore,
+   * the trace entry, the event, and the waiter wake-up cannot drift apart.
+   */
+  const endHandoffInternal = (
+    tab: BrowserTabState,
+    endedBy: BuiltInBrowserHandoffEndedBy,
+  ): { handoff: BuiltInBrowserTabHandoff; durationMs: number } | null => {
+    const handoff = tab.handoff;
+    if (!handoff) return null;
+    if (handoff.timer) clearTimeout(handoff.timer);
+    const snapshot = handoffSnapshot(handoff)!;
+    const durationMs = Math.max(0, Date.now() - handoff.startedAtMs);
+    tab.handoff = null;
+    // Re-issue the suspended lease to the same owner with a fresh TTL. Restoring
+    // the ORIGINAL expiry would hand back a tab whose lease had already lapsed
+    // during the sign-in the agent itself asked for.
+    if (handoff.previousOwner.laneId || handoff.previousOwner.chatSessionId) {
+      tab.ownerLaneId = handoff.previousOwner.laneId;
+      tab.ownerChatSessionId = handoff.previousOwner.chatSessionId;
+      tab.ownerClaimedAt = new Date().toISOString();
+      tab.ownerLeaseExpiresAt = new Date(Date.now() + normalizeLeaseTtlMs(null)).toISOString();
+    }
+    const traceDraft = beginActionTrace(tab, "handoff-end", {
+      reason: handoff.reason,
+      endedBy,
+      durationMs,
+    });
+    finishActionTrace(tab, traceDraft, "ok");
+    const endedAt = new Date().toISOString();
+    emit({ type: "handoff-ended", tabId: tab.id, handoff: snapshot, endedBy, durationMs, endedAt });
+    const waiters = [...handoff.waiters];
+    handoff.waiters.clear();
+    for (const notify of waiters) notify({ endedBy, durationMs });
+    notifyHandoffListener({ kind: "ended", tabId: tab.id, handoff: snapshot, endedBy, durationMs });
+    logger()?.info("built_in_browser.handoff_ended", {
+      tabId: tab.id,
+      endedBy,
+      durationMs,
+    });
+    return { handoff: snapshot, durationMs };
+  };
+
+  /** Tab teardown path: a closed or crashed tab can never be handed back. */
+  const endHandoffForClosedTab = (tab: BrowserTabState): void => {
+    if (!tab.handoff) return;
+    endHandoffInternal(tab, "tab-closed");
+    emitStatus();
+  };
+
+  function startHandoff(input: BuiltInBrowserStartHandoffArgs): BuiltInBrowserHandoffResult {
+    const reason = stringOrNull(input.reason);
+    if (!reason) {
+      throw new Error("A login handoff needs a --reason so the human knows what to sign in to.");
+    }
+    const tab = targetTabFromInput(input, "No active browser tab. Open the page that needs a sign-in first.");
+    if (tab.handoff) {
+      // Idempotent for the requester (a retried CLI call), refused for anyone
+      // else so two agents cannot queue behind one human.
+      const requester = stringOrNull(input.chatSessionId);
+      if (requester && requester === tab.handoff.requestedByChatSessionId) {
+        return {
+          tabId: tab.id,
+          handoff: handoffSnapshot(tab.handoff),
+          status: scopeStatusForInput(getStatus(), input),
+        };
+      }
+      throw new BuiltInBrowserHandoffActiveError(tab.id, tab.handoff.reason);
+    }
+    assertTabLeaseAvailable(tab, input);
+    const timeoutMs = normalizeHandoffTimeoutMs(input.timeoutMs);
+    const startedAtMs = Date.now();
+    const currentUrl = tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL());
+    const handoff: BrowserTabHandoffState = {
+      reason,
+      startedAt: new Date(startedAtMs).toISOString(),
+      expiresAt: new Date(startedAtMs + timeoutMs).toISOString(),
+      requestedByChatSessionId: stringOrNull(input.chatSessionId),
+      requestedByLaneId: stringOrNull(input.laneId),
+      startedAtOrigin: handoffOrigin(currentUrl),
+      previousOwner: {
+        laneId: tab.ownerLaneId ?? stringOrNull(input.laneId),
+        chatSessionId: tab.ownerChatSessionId ?? stringOrNull(input.chatSessionId),
+      },
+      startedAtMs,
+      timer: null,
+      waiters: new Set(),
+    };
+    tab.handoff = handoff;
+    // Suspend the lease rather than leave it in place: the pane's owner text has
+    // to read "you own this tab", and a lapsed-lease sweep must not hand the tab
+    // to a different agent while the human is mid-login.
+    tab.ownerLaneId = null;
+    tab.ownerChatSessionId = null;
+    tab.ownerClaimedAt = null;
+    tab.ownerLeaseExpiresAt = null;
+    // The navigation guard exists to keep an agent on the origin it was granted.
+    // The human is about to be redirected through an identity provider, so it
+    // would block exactly the sign-in the agent asked for.
+    tab.agentNavigationGuard = null;
+    handoff.timer = setTimeout(() => {
+      if (tab.handoff !== handoff) return;
+      endHandoffInternal(tab, "timeout");
+      emitStatus();
+    }, timeoutMs);
+    handoff.timer.unref?.();
+
+    const traceDraft = beginActionTrace(tab, "handoff-start", { reason, timeoutMs });
+    finishActionTrace(tab, traceDraft, "ok", { sessionId: sessionFromInput(input)?.id ?? null });
+    const snapshot = handoffSnapshot(handoff)!;
+    emit({ type: "handoff-started", tabId: tab.id, handoff: snapshot, startedAt: handoff.startedAt });
+    // Reveal the pane through the same open-request the renderer already honours
+    // only when the window is on the Work tab — a handoff must not yank a user
+    // out of the tab they are actually looking at.
+    requestOpenPanel({ tabId: tab.id });
+    emitStatus();
+    notifyHandoffListener({ kind: "started", tabId: tab.id, handoff: snapshot });
+    logger()?.info("built_in_browser.handoff_started", {
+      tabId: tab.id,
+      chatSessionId: snapshot.requestedByChatSessionId,
+      laneId: snapshot.requestedByLaneId,
+      timeoutMs,
+    });
+    return { tabId: tab.id, handoff: snapshot, status: scopeStatusForInput(getStatus(), input) };
+  }
+
+  function endHandoff(input: BuiltInBrowserEndHandoffArgs = {}): BuiltInBrowserHandoffResult {
+    const tab = targetTabFromInput(input, "No active browser tab to hand back.");
+    const endedBy: BuiltInBrowserHandoffEndedBy = input.endedBy === "auto-offer" ? "auto-offer" : "human";
+    const result = endHandoffInternal(tab, endedBy);
+    if (result) emitStatus();
+    return {
+      tabId: tab.id,
+      handoff: result?.handoff ?? null,
+      status: scopeStatusForInput(getStatus(), input),
+    };
+  }
+
+  /**
+   * Block until the tab's handoff ends. This is what makes `ade browser handoff`
+   * naturally pause the agent's next step instead of leaving it to poll status.
+   */
+  async function waitForHandoff(
+    input: BuiltInBrowserWaitForHandoffArgs = {},
+  ): Promise<BuiltInBrowserHandoffWaitResult> {
+    const tab = targetTabFromInput(input, "No active browser tab to wait on.");
+    const handoff = tab.handoff;
+    if (!handoff) {
+      return { tabId: tab.id, ended: true, endedBy: null, durationMs: null, handoff: null };
+    }
+    const snapshot = handoffSnapshot(handoff)!;
+    const remainingMs = Math.max(1_000, Date.parse(handoff.expiresAt) - Date.now());
+    const waitMs = typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
+      ? Math.max(1_000, Math.floor(input.timeoutMs))
+      : remainingMs + 5_000;
+    const outcome = await new Promise<{ endedBy: BuiltInBrowserHandoffEndedBy; durationMs: number } | null>(
+      (resolve) => {
+        const notify = (result: { endedBy: BuiltInBrowserHandoffEndedBy; durationMs: number }): void => {
+          clearTimeout(timer);
+          resolve(result);
+        };
+        const timer = setTimeout(() => {
+          handoff.waiters.delete(notify);
+          resolve(null);
+        }, waitMs);
+        timer.unref?.();
+        handoff.waiters.add(notify);
+      },
+    );
+    return {
+      tabId: tab.id,
+      ended: Boolean(outcome),
+      endedBy: outcome?.endedBy ?? null,
+      durationMs: outcome?.durationMs ?? null,
+      handoff: outcome ? null : snapshot,
+    };
   }
 
   function startSession(input: BuiltInBrowserStartSessionArgs = {}): BuiltInBrowserSessionResult {
@@ -2451,6 +2825,7 @@ function createBuiltInBrowserWindowService(args: {
       existingTab = reusableOwnedTab;
     }
     const leaseTarget = createNewTab ? null : existingTab ?? activeTab();
+    if (leaseTarget) assertHandoffAllowsAgentAction(leaseTarget, input);
     if (leaseTarget) assertTabLeaseAvailable(leaseTarget, input);
     await args.agentAccessController.requireUrlAccess(
       targetUrl,
@@ -2557,6 +2932,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      previewStreams.stopTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
       endSessionsForTab(removed.id);
@@ -2958,6 +3334,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const teardownTabCapabilities = (tab: BrowserTabState): void => {
+    // A tab that is going away can never be handed back, so close the handoff
+    // here — the single choke point for close, crash-prune and dispose — rather
+    // than leaving the chat's hand raised against a tab that no longer exists.
+    endHandoffForClosedTab(tab);
     if (tab.recording) {
       tab.recording.abort();
       tab.recording = null;
@@ -3569,6 +3949,79 @@ function createBuiltInBrowserWindowService(args: {
     return response.result?.value;
   };
 
+  /* ── Live preview stream ───────────────────────────────────────────────── */
+
+  /**
+   * Refcounted `capturePage()` loops, one per watched tab.
+   *
+   * Only ever running while a surface has asked for it — the Work tab's corner
+   * card is the one caller today — and paused whenever the hosting window is
+   * hidden or minimised, so an ADE in the background pays nothing for a page it
+   * cannot show anybody.
+   */
+  const previewStreams = createBuiltInBrowserPreviewStreams({
+    capture: async (tabId, maxWidth) => {
+      const tab = tabById(tabId);
+      if (!tab || tab.webContents.isDestroyed()) return null;
+      const image = await tab.webContents.capturePage(undefined, { stayHidden: true });
+      if (image.isEmpty()) return null;
+      const size = image.getSize();
+      // Downscale in main, not in the renderer: shipping a full-resolution
+      // bitmap over IPC 12 times a second is the expensive part, and the card
+      // is ~260px wide.
+      const scaled = size.width > maxWidth ? image.resize({ width: maxWidth, quality: "good" }) : image;
+      const scaledSize = scaled.getSize();
+      return {
+        dataUrl: `data:image/jpeg;base64,${scaled.toJPEG(BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY).toString("base64")}`,
+        width: scaledSize.width,
+        height: scaledSize.height,
+      };
+    },
+    emit: (frame) => {
+      emit({
+        type: "preview-frame",
+        tabId: frame.tabId,
+        dataUrl: frame.dataUrl,
+        width: frame.width,
+        height: frame.height,
+        capturedAt: frame.capturedAt,
+      });
+    },
+    isTabAlive: (tabId) => {
+      const tab = tabById(tabId);
+      return Boolean(tab && !tab.webContents.isDestroyed());
+    },
+    // Not `visible` (the panel's own bounds flag): the card wants frames from a
+    // tab the panel is NOT showing. What matters is whether this ADE window is
+    // on screen at all.
+    isVisible: () => Boolean(win && !win.isDestroyed() && win.isVisible() && !win.isMinimized()),
+    onError: (tabId, error) => {
+      logger()?.debug("built_in_browser.preview_frame_failed", {
+        tabId,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+
+  function startPreviewStream(
+    input: BuiltInBrowserStartPreviewStreamArgs = {},
+  ): BuiltInBrowserPreviewStreamResult {
+    const tab = targetTabFromInput(input, "No active browser tab to preview.");
+    return previewStreams.start(tab.id, { fps: input.fps, maxWidth: input.maxWidth });
+  }
+
+  function stopPreviewStream(
+    input: BuiltInBrowserStopPreviewStreamArgs = {},
+  ): BuiltInBrowserPreviewStreamResult {
+    // Deliberately tolerant: a card unmounting after its tab closed must not
+    // throw on the way out, so an unknown tab id just reports zero subscribers.
+    const tabId = stringOrNull(input.tabId) ?? activeTabId;
+    if (!tabId) {
+      return { tabId: "", fps: 0, maxWidth: 0, subscribers: 0 };
+    }
+    return previewStreams.stop(tabId);
+  }
+
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
   const recordingDirectory = (tab: BrowserTabState, recordingId: string): string =>
@@ -3802,6 +4255,7 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
+    previewStreams.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
     unsubscribeNetworkObserver = null;
@@ -4517,6 +4971,9 @@ function createBuiltInBrowserWindowService(args: {
     getStatusForInput,
     requestOriginAccess,
     claim,
+    startHandoff,
+    endHandoff,
+    waitForHandoff,
     startSession,
     listSessions,
     endSession,
@@ -4560,6 +5017,8 @@ function createBuiltInBrowserWindowService(args: {
     uploadFile,
     startRecording,
     stopRecording,
+    startPreviewStream,
+    stopPreviewStream,
     dispose,
   };
 }
@@ -4604,6 +5063,21 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     recording: tab.recording
       ? { startedAt: tab.recording.startedAt, fps: tab.recording.fps }
       : null,
+    handoff: handoffSnapshot(tab.handoff),
+  };
+}
+
+/** Strip the runtime-only timer/waiter fields before the state crosses a wire. */
+function handoffSnapshot(handoff: BrowserTabHandoffState | null): BuiltInBrowserTabHandoff | null {
+  if (!handoff) return null;
+  return {
+    reason: handoff.reason,
+    startedAt: handoff.startedAt,
+    expiresAt: handoff.expiresAt,
+    requestedByChatSessionId: handoff.requestedByChatSessionId,
+    requestedByLaneId: handoff.requestedByLaneId,
+    startedAtOrigin: handoff.startedAtOrigin,
+    previousOwner: { ...handoff.previousOwner },
   };
 }
 
@@ -4804,6 +5278,14 @@ function actionTargetForTrace(action: string, input: Record<string, unknown>): R
   if (action === "fill") {
     const fillValue = typeof input.value === "string" ? input.value : (typeof input.text === "string" ? input.text : null);
     if (fillValue != null) target.valueLength = fillValue.length;
+  }
+  // A login handoff is the one gap in a trace where the agent did nothing at
+  // all, so the entries have to explain themselves: why the human was asked,
+  // and how the tab came back.
+  if (action === "handoff-start" || action === "handoff-end") {
+    copyString("reason");
+    copyString("endedBy");
+    copyNumber("durationMs");
   }
   return Object.keys(target).length ? target : null;
 }

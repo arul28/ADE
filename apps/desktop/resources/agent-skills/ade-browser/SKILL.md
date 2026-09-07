@@ -110,6 +110,46 @@ ade --socket browser select-current --text
 ade --socket browser clear-selection --text
 ```
 
+## Login handoff: when you cannot get past the page
+
+Some pages are not yours to get past. A login form you have no credentials for,
+a CAPTCHA, an HTTP-auth or proxy-auth prompt, a client-certificate picker — none
+of these can be solved by more clicking, and trying anyway burns the human's
+time and sometimes locks the account. Say so and hand the tab over:
+
+```bash
+ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
+ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+```
+
+What happens when you call it:
+
+- The tab becomes the human's. Your lease is suspended and restored, unchanged,
+  when they hand it back — so the session you were building is not lost.
+- The Work row raises its hand with "Sign in for me: `<reason>`" and a push goes
+  to their phone, exactly as if you had run `ade chat ask`.
+- The Browser pane reveals an amber bar with your reason and a `Hand back`
+  button. When the tab leaves the origin it was handed over on, the bar offers
+  `Hand back now` — most people take it there.
+- **The command blocks until they hand back** (default 15 minutes, `--timeout`).
+  That is the point: your next step waits without you writing a poll loop. It
+  prints how the handoff ended (`human`, `auto-offer`, `tab-closed`, `timeout`).
+
+Rules:
+
+- **You never hand the tab back yourself.** There is no agent command for it.
+  The handoff ends when the human presses `Hand back`, when the tab closes, or
+  when the timeout expires.
+- **While a handoff is open, every action on that tab fails with
+  `handoff_active`.** That is not a transient error — do not retry it, and do
+  not open a second tab to work around it, because the sign-in the human is
+  doing lives in the tab you were given. Wait.
+- Give a `--reason` a person can act on without reading your transcript:
+  "sign in to the staging admin panel", not "auth needed".
+- Use `--no-wait` only when you genuinely have unrelated work to do meanwhile;
+  the hand-raise still clears on hand-back either way.
+
 ## Gotchas
 
 - Default agent workflow for browser tasks: run `ade --socket browser tabs --text`; reuse a tab/session already owned by your current `ADE_CHAT_SESSION_ID`. Plain `ade --socket browser open <url> --text` reuses your owned tab and only creates one when none exists, without revealing the Browser panel; use `--panel` only when the user should see it and `--new-tab` only when the task truly needs another tab. Then run `ade --socket browser session start --tab <tab-id> --text` and use `--browser-session <session-id>` for repeated actions.

@@ -2101,6 +2101,11 @@ export type SyncRemoteCommandAction =
   | "modelPicker.toggleFavorite"
   | "modelPicker.getRecents"
   | "modelPicker.pushRecent"
+  // Read-only mirror of the desktop's Work tools pane. There is no setter here
+  // on purpose: iOS and the hosted web client observe the browser / App Control
+  // panes, they never drive them.
+  | "workTools.getLaneState"
+  | "workTools.readObservationPreview"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

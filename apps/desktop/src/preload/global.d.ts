@@ -704,6 +704,8 @@ import type {
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserDevToolsResult,
   BuiltInBrowserEmulationResult,
+  BuiltInBrowserEndHandoffArgs,
+  BuiltInBrowserHandoffResult,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
@@ -720,6 +722,9 @@ import type {
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserPreviewStreamResult,
+  BuiltInBrowserStartPreviewStreamArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
@@ -790,6 +795,11 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  WorkToolId,
+  WorkToolsLaneState,
+  WorkToolsObservationPreview,
+} from "../shared/types/workTools";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -2514,6 +2524,11 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        /** Human hand-back of a login handoff; gated to user clients in the runtime. */
+        endHandoff: (
+          args?: BuiltInBrowserEndHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserHandoffResult>;
         setEmulation: (
           args?: BuiltInBrowserSetEmulationArgs,
           pin?: OpenProjectBinding | null,
@@ -2554,6 +2569,17 @@ declare global {
           args?: BuiltInBrowserStopRecordingArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStopRecordingResult>;
+        /**
+         * Refcounted live thumbnail frames, delivered as `preview-frame` on
+         * `onEvent`. Local-only by design: the previewed view belongs to this
+         * window's main process, so there is no `pin` parameter.
+         */
+        startPreviewStream: (
+          args?: BuiltInBrowserStartPreviewStreamArgs,
+        ) => Promise<BuiltInBrowserPreviewStreamResult>;
+        stopPreviewStream: (
+          args?: BuiltInBrowserStopPreviewStreamArgs,
+        ) => Promise<BuiltInBrowserPreviewStreamResult>;
         onEvent: (
           cb: (ev: BuiltInBrowserEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -3303,6 +3329,14 @@ declare global {
       graphState: {
         get: (projectId: string) => Promise<GraphPersistedState | null>;
         set: (projectId: string, state: GraphPersistedState) => Promise<void>;
+      };
+      /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
+      workTools: {
+        getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
+        setActiveTool: (laneId: string, tool: WorkToolId | null) => Promise<void>;
+        readObservationPreview: (
+          observationPath: string,
+        ) => Promise<WorkToolsObservationPreview | null>;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;

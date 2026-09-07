@@ -6,7 +6,11 @@ import {
   workToolAvailability,
   type WorkToolContext,
 } from "./workTools";
-import type { WorkToolStatusMap } from "./useWorkToolStatuses";
+import { workToolHasError, type WorkToolStatusMap } from "./useWorkToolStatuses";
+import { workToolErrorSuffix } from "./workToolErrors";
+
+/** Matches the header's error dot, so one red means one thing across the pane. */
+const ERROR_COLOR = "#f87171";
 
 /**
  * The tools pane's front page: every tool ADE can open beside this session, what
@@ -45,8 +49,12 @@ export function WorkToolPicker({
           const reasonId = `${reasonIdPrefix}-${definition.id}`;
           // Unavailable tools say why instead of showing a status they cannot
           // have; available tools with nothing measured fall back to the blurb.
+          const errored = availability.available && workToolHasError(status);
+          // Appended to whatever the tool was already saying rather than
+          // replacing it: "localhost:3000 · 3 errors" tells you both what is
+          // open and that it is unhappy.
           const line = availability.available
-            ? status?.line ?? definition.blurb
+            ? `${status?.line ?? definition.blurb}${workToolErrorSuffix(status?.errorCount ?? 0)}`
             : availability.reason;
           const showSkeleton = loading && availability.available && status?.line == null;
           const Icon = definition.icon;
@@ -84,9 +92,10 @@ export function WorkToolPicker({
                   {definition.label}
                 </span>
                 <WorkToolStatusGlyph
-                  live={Boolean(availability.available && status?.live)}
-                  color={definition.color}
+                  live={Boolean(availability.available && (status?.live || errored))}
+                  color={errored ? ERROR_COLOR : definition.color}
                   disabled={!availability.available}
+                  errored={errored}
                 />
               </span>
               {showSkeleton ? (
@@ -119,15 +128,18 @@ function WorkToolStatusGlyph({
   live,
   color,
   disabled,
+  errored = false,
 }: {
   live: boolean;
   color: string;
   disabled: boolean;
+  errored?: boolean;
 }) {
   if (disabled) return null;
   return (
     <span
       aria-hidden="true"
+      data-tool-glyph-state={errored ? "error" : live ? "live" : "idle"}
       className="h-[5px] w-[5px] shrink-0 rounded-full"
       style={
         live

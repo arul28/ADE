@@ -2589,6 +2589,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser close --tab <tab-id>
     $ ade --socket browser actions --text          List built_in_browser actions
 
+  Login handoff (you cannot sign in; a person must):
+    $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
+    $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+    $ ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+  Blocks until the person presses Hand back (default 15m), so your next step
+  naturally waits. It raises the Work row's hand and pushes to their phone.
+  While the handoff is open every agent action on that tab fails with
+  handoff_active — do not retry, wait. You never hand the tab back yourself.
+
   Agent sessions:
     $ ade --socket browser session start --tab <tab-id> --text
     $ ade --socket browser sessions --text
@@ -11317,6 +11326,75 @@ function isBrowserSessionActionMode(value: string): boolean {
   return BROWSER_SESSION_ACTION_MODES.has(value);
 }
 
+const DEFAULT_BROWSER_HANDOFF_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * `ade browser handoff` — the agent says out loud that it cannot get past this
+ * page and hands the tab to the human.
+ *
+ * Three steps, in this order, because each one only makes sense once the
+ * previous has landed:
+ *
+ * 1. `startHandoff` flips the tab to human ownership in the desktop and reveals
+ *    the pane. Nothing is asked of the person until the tab is actually theirs.
+ * 2. `session.requestSessionAttention` — the SAME call `ade chat ask` makes, so
+ *    the Work row raises its hand and the phone push goes out through the one
+ *    existing hand-raise path rather than a second notification channel.
+ * 3. `waitForHandoff` blocks until they press `Hand back` (or the handoff times
+ *    out), which is what makes the agent's next step naturally wait. `--no-wait`
+ *    drops this step; the desktop still clears the hand-raise on hand-back, so
+ *    the row does not stay raised just because nobody was blocked on it.
+ */
+function buildBrowserHandoffPlan(args: string[]): CliPlan {
+  const explicitReason = readValue(args, ["--reason", "--text", "--message", "--why"]);
+  const noWait = readFlag(args, ["--no-wait", "--nowait", "--async"]);
+  const timeoutValue = readValue(args, ["--timeout", "--for"]);
+  // Read both spellings unconditionally: an unconsumed flag would fall through
+  // into the free-text reason below and end up quoted back at the human.
+  const timeoutMsValue = readNumberOption(args, ["--timeout-ms"]);
+  const timeoutMs = timeoutValue
+    ? parseSnoozeDurationMs(timeoutValue)
+    : timeoutMsValue ?? DEFAULT_BROWSER_HANDOFF_TIMEOUT_MS;
+  const target = readBrowserTabTargetArgs(args);
+  // Everything left over after the flags is the reason, so
+  // `ade browser handoff sign in to staging` works without quoting.
+  const reason = requireValue(
+    (explicitReason ?? collectGenericObjectArgs(args).reason ?? args.join(" ")) as string | null,
+    "reason",
+  ).trim();
+  if (!reason) {
+    throw new CliUsageError(
+      "browser handoff requires --reason so the person knows what they are being asked to sign in to.",
+    );
+  }
+  const startArgs: JsonObject = { ...target, reason, timeoutMs };
+  const steps = [
+    actionStep("handoff", "built_in_browser", "startHandoff", startArgs),
+    actionStep("attention", "session", "requestSessionAttention", {
+      message: `Sign in for me: ${reason}`,
+      // The phone alert's subject is the ask, not the session, so it reads
+      // "Sign in for me" / "<reason>" instead of "<chat> needs you".
+      alertTitle: "Sign in for me",
+      alertBody: reason,
+    }),
+  ];
+  if (!noWait) {
+    steps.push(
+      actionStep("result", "built_in_browser", "waitForHandoff", { ...target, timeoutMs }),
+    );
+  }
+  return {
+    kind: "execute",
+    label: "browser handoff",
+    steps,
+    // The blocking wait is the point of the command; the transport must outlive it.
+    minTimeoutMs: noWait ? undefined : timeoutMs + 30_000,
+    progressNotice: noWait
+      ? undefined
+      : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
+  };
+}
+
 function buildBrowserPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
@@ -11408,6 +11486,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
       return buildBrowserPlan([mode, "--browser-session", sessionId, ...args]);
     }
     throw new CliUsageError(`Unknown browser session command: ${mode}`);
+  }
+  if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
+    return buildBrowserHandoffPlan(args);
   }
   if (sub === "claim") {
     const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");

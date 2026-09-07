@@ -31,6 +31,8 @@ import {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 3_000;
+/** Ceiling for a login handoff wait; matches the service's own handoff cap. */
+const MAX_HANDOFF_WAIT_MS = 2 * 60 * 60_000;
 
 async function raceWithTimeout<T>(
   operation: Promise<T>,
@@ -192,11 +194,12 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       applyRuntimeScope: !isBuiltInBrowserActorCapabilityMethod(method),
     });
     const c = await ensureClient();
+    const timeoutMs = bridgeCallTimeoutMs(method, requestParams);
     try {
       return await raceWithTimeout(
         c.request(`built_in_browser.${method}`, requestParams),
-        REQUEST_TIMEOUT_MS,
-        `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
+        timeoutMs,
+        `Desktop browser bridge call ${method} timed out after ${timeoutMs}ms.`,
       );
     } catch (error) {
       // Drop the connection on any error so the next call reconnects.
@@ -227,6 +230,25 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       return Reflect.get(target, property, receiver);
     },
   }) as BuiltInBrowserDesktopBridgeClient;
+}
+
+/**
+ * How long one bridge call may take.
+ *
+ * Everything the browser does is a page interaction and fits the flat budget —
+ * except `waitForHandoff`, which is *supposed* to sit there while a human signs
+ * in. Its budget is the handoff window the caller asked for plus slack, so the
+ * transport cannot report a timeout for a handoff that is still open.
+ */
+function bridgeCallTimeoutMs(method: string, params: unknown): number {
+  if (method !== "waitForHandoff") return REQUEST_TIMEOUT_MS;
+  const requested = params && typeof params === "object" && !Array.isArray(params)
+    ? (params as { timeoutMs?: unknown }).timeoutMs
+    : null;
+  const window = typeof requested === "number" && Number.isFinite(requested)
+    ? Math.floor(requested)
+    : MAX_HANDOFF_WAIT_MS;
+  return Math.min(MAX_HANDOFF_WAIT_MS, Math.max(REQUEST_TIMEOUT_MS, window)) + REQUEST_TIMEOUT_MS;
 }
 
 export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {

@@ -125,10 +125,27 @@ const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
  */
 const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "ios", "app-control"]);
 
+/**
+ * Tools the web client cannot DRIVE but can WATCH.
+ *
+ * The browser and App Control both leave a describable trail on the machine —
+ * a tab list, an attached app, a screenshot — so the hosted client shows that
+ * read-only rather than a dead "Desktop app only" card. The iOS simulator is
+ * absent from this set because there is nothing equivalent to report: its pane
+ * is a live video stream and nothing else.
+ */
+const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"]);
+
+/** True when this surface may only observe the tool, never operate it. */
+export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
+  return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
+}
+
 export function workToolAvailability(
   id: WorkSidebarTab,
   context: WorkToolContext,
 ): WorkToolAvailability {
+  if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (LOCAL_ONLY_TOOL_IDS.has(id)) {
     if (context.isWebClient) return { available: false, reason: "Desktop app only" };
     if (context.isRemoteProject) return { available: false, reason: "Runs on this computer only" };

@@ -55,7 +55,77 @@ export type BuiltInBrowserTab = {
   emulation: BuiltInBrowserEmulationState | null;
   networkLogging: boolean;
   recording: BuiltInBrowserRecordingStatus | null;
+  /**
+   * Non-null while a human holds this tab because an agent asked them to sign
+   * in (or clear a CAPTCHA / HTTP auth / client-cert prompt) for it. Surfaces
+   * feature-detect this field: when it is set the tab is human-owned, every
+   * agent action on it fails with `handoff_active`, and the header owner text
+   * reads "you own this tab".
+   */
+  handoff: BuiltInBrowserTabHandoff | null;
 };
+
+/** Why a login handoff ended — carried on the `handoff-end` trace entry. */
+export type BuiltInBrowserHandoffEndedBy = "human" | "auto-offer" | "tab-closed" | "timeout";
+
+export type BuiltInBrowserTabHandoff = {
+  /** Human-readable justification the agent supplied, e.g. "sign in to staging". */
+  reason: string;
+  startedAt: string;
+  /** When the service auto-hands the tab back if the human never does. */
+  expiresAt: string;
+  requestedByChatSessionId: string | null;
+  requestedByLaneId: string | null;
+  /**
+   * Origin the tab was on when the handoff started. The renderer offers
+   * "Signed in? Hand back now" as soon as the tab leaves it.
+   */
+  startedAtOrigin: string | null;
+  /** The lease to re-issue on hand-back. */
+  previousOwner: {
+    laneId: string | null;
+    chatSessionId: string | null;
+  };
+};
+
+export type BuiltInBrowserStartHandoffArgs = BuiltInBrowserTabTargetArgs & {
+  /** Required. Shown in the amber bar, the push body, and the trace entry. */
+  reason: string;
+  /** Auto hand-back deadline. Defaults to 15 minutes; clamped to 1 min–2 h. */
+  timeoutMs?: number | null;
+};
+
+export type BuiltInBrowserEndHandoffArgs = BuiltInBrowserTabTargetArgs & {
+  /** Defaults to `"human"`. Only the service itself passes the other values. */
+  endedBy?: BuiltInBrowserHandoffEndedBy | null;
+};
+
+export type BuiltInBrowserWaitForHandoffArgs = BuiltInBrowserTabTargetArgs & {
+  /** How long to block. Defaults to the tab's remaining handoff window. */
+  timeoutMs?: number | null;
+};
+
+export type BuiltInBrowserHandoffResult = {
+  tabId: string;
+  handoff: BuiltInBrowserTabHandoff | null;
+  status: BuiltInBrowserStatus;
+};
+
+export type BuiltInBrowserHandoffWaitResult = {
+  tabId: string;
+  /** False when the wait itself timed out while the handoff was still open. */
+  ended: boolean;
+  endedBy: BuiltInBrowserHandoffEndedBy | null;
+  durationMs: number | null;
+  handoff: BuiltInBrowserTabHandoff | null;
+};
+
+/**
+ * Error code every agent-facing browser action returns while a login handoff is
+ * open on the target tab. Typed rather than a bare message so an agent can
+ * branch on it instead of pattern-matching prose.
+ */
+export const BUILT_IN_BROWSER_HANDOFF_ACTIVE_CODE = "handoff_active";
 
 export type BuiltInBrowserSession = {
   id: string;
@@ -472,6 +542,25 @@ export type BuiltInBrowserEventPayload =
    * surfaces can caption "what just happened" without polling `getTrace`.
    */
   | { type: "trace"; tabId: string; entry: BuiltInBrowserActionTraceEntry }
+  /**
+   * A login handoff opened: the agent asked the human to take this tab. The
+   * pane reveals an amber bar and the tab is human-owned until `handoff-ended`.
+   */
+  | {
+      type: "handoff-started";
+      tabId: string;
+      handoff: BuiltInBrowserTabHandoff;
+      startedAt: string;
+    }
+  | {
+      type: "handoff-ended";
+      tabId: string;
+      /** The handoff that just closed, for surfaces that missed the start. */
+      handoff: BuiltInBrowserTabHandoff;
+      endedBy: BuiltInBrowserHandoffEndedBy;
+      durationMs: number;
+      endedAt: string;
+    }
   /**
    * The tab's error tally changed — a console error, or a request that failed
    * or came back 4xx/5xx. Counts are since the tab's last main-frame

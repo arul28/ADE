@@ -171,6 +171,11 @@ import {
   createRemoteBrowserForwarder,
   withRemoteBrowserForwarding,
 } from "./services/builtInBrowser/remoteBrowserForwarder";
+import {
+  createWorkToolsStateService,
+  type WorkToolsStateService,
+} from "./services/workTools/workToolsStateService";
+import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -343,6 +348,8 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  /** Read-only Work tools-pane state for iOS and the hosted web client. */
+  workToolsStateService?: WorkToolsStateService | null;
   configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
@@ -1375,6 +1382,23 @@ export async function createAdeRuntime(args: {
       builtInBrowserBridge?.dispose();
     });
 
+    // Read-only view of the Work tools pane for iOS and the hosted web client.
+    // Built here because it is the first point where BOTH of its sources exist:
+    // the in-process App Control service and the desktop browser bridge.
+    const workToolsStateService = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: builtInBrowserBridge
+        ? () => builtInBrowserBridge.getStatus()
+        : null,
+      getAppControlStatus: appControlService
+        ? () => appControlService.getStatus()
+        : null,
+      onStateChanged: (laneId) =>
+        pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
+      logger,
+    });
+    teardown.push(() => workToolsStateService.dispose());
+
     const headlessLinearServices = createHeadlessLinearServices({
       projectRoot,
       adeDir: paths.adeDir,
@@ -2167,6 +2191,7 @@ export async function createAdeRuntime(args: {
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
+        workToolsStateService,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
@@ -2328,6 +2353,7 @@ export async function createAdeRuntime(args: {
       iosSimulatorService,
       appControlService,
       builtInBrowserService: builtInBrowserBridge,
+      workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
         if (!builtInBrowserBridge) return false;
         const verified = await verifyBuiltInBrowserDesktopBridgeAuth({

@@ -3,7 +3,11 @@ import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { WORK_TOOL_DEFINITIONS, workToolAvailability, type WorkToolContext } from "./workTools";
-import type { WorkToolStatusMap } from "./useWorkToolStatuses";
+import { workToolHasError, type WorkToolStatusMap } from "./useWorkToolStatuses";
+import { workToolErrorSuffix } from "./workToolErrors";
+
+/** One red for every error dot in the pane, so "broken" reads the same everywhere. */
+const ERROR_COLOR = "#f87171";
 
 /** Shared-element id linking a tool's activity dot to its header icon halo. */
 function toolMarkerLayoutId(tool: WorkSidebarTab): string {
@@ -48,10 +52,13 @@ export function WorkToolHeader({
   // Only tools that are (a) not the one on screen, (b) usable here, and (c)
   // actually doing something. A dot for an idle tool would be noise; a dot for
   // an unavailable one would be a lie.
+  // An erroring tool earns a dot even when it is not "live": a crashed App
+  // Control session or a page full of console errors is exactly the thing you
+  // want to be told about while looking at something else.
   const activityTools = WORK_TOOL_DEFINITIONS.filter((entry) => (
     entry.id !== tool
     && workToolAvailability(entry.id, context).available
-    && statuses[entry.id]?.live === true
+    && (statuses[entry.id]?.live === true || workToolHasError(statuses[entry.id]))
   ));
 
   return (
@@ -111,7 +118,11 @@ export function WorkToolHeader({
         >
           {activityTools.map((entry) => {
             const status = statuses[entry.id];
-            const label = status?.line ? `${entry.label} — ${status.line}` : entry.label;
+            const errored = workToolHasError(status);
+            const dotColor = errored ? ERROR_COLOR : entry.color;
+            const suffix = errored ? workToolErrorSuffix(status?.errorCount ?? 0) : "";
+            const detail = status?.line ? `${status.line}${suffix}` : suffix.replace(/^ · /, "");
+            const label = detail ? `${entry.label} — ${detail}` : entry.label;
             return (
               <button
                 key={entry.id}
@@ -129,15 +140,17 @@ export function WorkToolHeader({
                 {reduceMotion ? (
                   <span
                     aria-hidden="true"
+                    data-tool-dot-state={errored ? "error" : "live"}
                     className="h-[6px] w-[6px] rounded-full"
-                    style={{ background: entry.color }}
+                    style={{ background: dotColor }}
                   />
                 ) : (
                   <motion.span
                     aria-hidden="true"
                     layoutId={toolMarkerLayoutId(entry.id)}
+                    data-tool-dot-state={errored ? "error" : "live"}
                     className="h-[6px] w-[6px] rounded-full"
-                    style={{ background: entry.color }}
+                    style={{ background: dotColor }}
                     initial={{ scale: 0.4, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     transition={{ duration: 0.24, ease: OVERSHOOT }}

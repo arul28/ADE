@@ -4,6 +4,7 @@ import {
   useId,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { CaretDown, Check } from "@phosphor-icons/react";
@@ -31,6 +32,8 @@ export function AppControlMenu({
   showCaret = true,
   triggerClassName,
   menuClassName,
+  open: controlledOpen,
+  onOpenChange,
   children,
 }: {
   triggerLabel?: ReactNode;
@@ -42,9 +45,20 @@ export function AppControlMenu({
   showCaret?: boolean;
   triggerClassName?: string;
   menuClassName?: string;
+  /** Optional controlled mode, so another affordance can open this menu. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: (close: () => void) => ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = useCallback((next: boolean | ((value: boolean) => boolean)) => {
+    setUncontrolledOpen((value) => {
+      const resolved = typeof next === "function" ? next(controlledOpen ?? value) : next;
+      onOpenChange?.(resolved);
+      return resolved;
+    });
+  }, [controlledOpen, onOpenChange]);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
@@ -53,7 +67,7 @@ export function AppControlMenu({
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
     if (restoreFocus) triggerRef.current?.focus();
-  }, []);
+  }, [setOpen]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -72,11 +86,11 @@ export function AppControlMenu({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [close, open]);
+  }, [close, open, setOpen]);
 
   // Arrow keys walk the menu; anything focusable inside (including the inline
   // forms) participates, so a keyboard user never has to reach for the mouse.
-  const onMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+  const onMenuKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const container = event.currentTarget;
     const focusables = Array.from(
@@ -167,32 +181,37 @@ export function AppControlMenuItem({
   onSelect: () => void;
 }) {
   const reasonId = useId();
+  // The reason lives OUTSIDE the button on purpose: text inside a control is
+  // part of its accessible name, and "Stop No session to stop." is a worse
+  // label than "Stop" with a description.
   return (
-    <button
-      type="button"
-      role={checked == null ? "menuitem" : "menuitemcheckbox"}
-      aria-checked={checked == null ? undefined : checked}
-      aria-describedby={disabled && disabledReason ? reasonId : undefined}
-      disabled={disabled}
-      title={disabled ? disabledReason ?? undefined : hint ?? undefined}
-      onClick={onSelect}
-      className={cn(
-        "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[11.5px]",
-        "transition-colors duration-[120ms] ease-out",
-        "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-        tone === "danger"
-          ? "text-rose-200/85 hover:bg-rose-500/12"
-          : "text-fg/85 hover:bg-white/[0.06]",
-        disabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
-      )}
-    >
-      {icon ? <span className="shrink-0 text-muted-fg/75">{icon}</span> : null}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {checked ? <Check size={11} weight="bold" className="shrink-0 text-[var(--color-accent)]" /> : null}
+    <>
+      <button
+        type="button"
+        role={checked == null ? "menuitem" : "menuitemcheckbox"}
+        aria-checked={checked == null ? undefined : checked}
+        aria-describedby={disabled && disabledReason ? reasonId : undefined}
+        disabled={disabled}
+        title={disabled ? disabledReason ?? undefined : hint ?? undefined}
+        onClick={onSelect}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[11.5px]",
+          "transition-colors duration-[120ms] ease-out",
+          "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+          tone === "danger"
+            ? "text-rose-200/85 hover:bg-rose-500/12"
+            : "text-fg/85 hover:bg-white/[0.06]",
+          disabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
+        )}
+      >
+        {icon ? <span className="shrink-0 text-muted-fg/75">{icon}</span> : null}
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {checked ? <Check size={11} weight="bold" className="shrink-0 text-[var(--color-accent)]" /> : null}
+      </button>
       {disabled && disabledReason ? (
         <span id={reasonId} className="sr-only">{disabledReason}</span>
       ) : null}
-    </button>
+    </>
   );
 }
 

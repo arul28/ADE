@@ -2,21 +2,27 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   ArrowClockwise,
   ArrowSquareOut,
+  Camera,
+  Crosshair,
   Desktop,
   Keyboard,
-  Link,
+  ListChecks,
   Minus,
-  Play,
   SpinnerGap,
+  Stack,
   Stop,
   Terminal,
   WarningCircle,
-  Wrench,
 } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
+  AppControlActionTraceEntry,
   AppControlContextItem,
+  AppControlDriver,
+  AppControlDriversResult,
   AppControlElement,
+  AppControlElementSnapshot,
+  AppControlObservation,
   AppControlSession,
   AppControlSnapshot,
   AppControlStatus,
@@ -25,6 +31,23 @@ import type {
 } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { AppControlMenuItem, AppControlMenuLabel } from "./AppControlMenu";
+import {
+  AppControlAgentCursor,
+  AppControlObserveOverlay,
+  type AgentCursorState,
+} from "./AppControlOverlays";
+import { AppControlStatusRow, AppControlTraceDrawer } from "./AppControlTraceDrawer";
+import { AppControlToolbar, type AppControlLaunchRecent, type AppControlStatusTone } from "./AppControlToolbar";
+import {
+  CURSOR_TRACE_ACTIONS,
+  countConsoleErrors,
+  countNetworkFailures,
+  elementSummary,
+  formatLastActionLine,
+  formatTraceRow,
+  traceCursorPoint,
+} from "./appControlTrace";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -64,7 +87,12 @@ type PanelUiState = {
   launchCwd: string;
   cdpPort: string;
   mode: AppControlMode;
+  recents: AppControlLaunchRecent[];
 };
+
+const MAX_RECENT_LAUNCHES = 5;
+/** How long the agent cursor lingers after the action that summoned it. */
+const AGENT_CURSOR_LINGER_MS = 1_400;
 
 const appControlPanelUiStateByKey = new Map<string, PanelUiState>();
 
@@ -83,6 +111,20 @@ function panelUiStateKey(
     : `lane:${machine}:${laneId ?? "project"}:${projectRoot ?? "unknown"}`;
 }
 
+function normalizeRecents(value: unknown): AppControlLaunchRecent[] {
+  if (!Array.isArray(value)) return [];
+  const out: AppControlLaunchRecent[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const command = (entry as { command?: unknown }).command;
+    if (typeof command !== "string" || command.trim().length === 0) continue;
+    const cwd = (entry as { cwd?: unknown }).cwd;
+    out.push({ command: command.trim(), cwd: typeof cwd === "string" && cwd ? cwd : null });
+    if (out.length >= MAX_RECENT_LAUNCHES) break;
+  }
+  return out;
+}
+
 function readPanelUiState(key: string): PanelUiState {
   const cached = appControlPanelUiStateByKey.get(key);
   if (cached) return cached;
@@ -95,6 +137,7 @@ function readPanelUiState(key: string): PanelUiState {
         launchCwd: typeof parsed.launchCwd === "string" ? parsed.launchCwd : "",
         cdpPort: typeof parsed.cdpPort === "string" ? parsed.cdpPort : "",
         mode: parsed.mode === "inspect" ? "inspect" as const : "control" as const,
+        recents: normalizeRecents(parsed.recents),
       };
       appControlPanelUiStateByKey.set(key, state);
       return state;
@@ -102,7 +145,7 @@ function readPanelUiState(key: string): PanelUiState {
   } catch {
     // Best-effort panel state only.
   }
-  return { launchCommand: "", launchCwd: "", cdpPort: "", mode: "control" };
+  return { launchCommand: "", launchCwd: "", cdpPort: "", mode: "control", recents: [] };
 }
 
 function writePanelUiState(key: string, state: PanelUiState): void {
@@ -199,8 +242,7 @@ function elementSubLabel(element: AppControlElement): string | null {
   return null;
 }
 
-type StatusTone = "idle" | "active" | "warn" | "muted" | "error";
-type StatusInfo = { label: string; detail: string; tone: StatusTone };
+type StatusInfo = { label: string; word: string; detail: string; tone: AppControlStatusTone };
 
 function shortId(value: string | null | undefined): string | null {
   return value ? value.slice(0, 8) : null;
@@ -208,7 +250,7 @@ function shortId(value: string | null | undefined): string | null {
 
 function statusInfo(session: AppControlSession | null): StatusInfo {
   if (!session) {
-    return { label: "Idle", detail: "No active session", tone: "idle" };
+    return { label: "Idle", word: "no app", detail: "No active session", tone: "idle" };
   }
   const terminal = shortId(session.terminalSessionId);
   const waitingForCdp = session.cdpPort && !session.cdpEndpoint
@@ -222,48 +264,49 @@ function statusInfo(session: AppControlSession | null): StatusInfo {
     case "connected":
       return {
         label: "Connected",
+        word: "attached",
         detail: session.cdpPort ? `${session.label} on CDP port ${session.cdpPort}` : session.label,
         tone: "active",
       };
     case "starting":
-      return { label: "Starting", detail: `${session.label} is starting${suffix ? ` · ${suffix}` : ""}`, tone: "warn" };
+      return {
+        label: "Starting",
+        word: "launching",
+        detail: `${session.label} is starting${suffix ? ` · ${suffix}` : ""}`,
+        tone: "warn",
+      };
     case "running":
       if (lostConnection) {
         return {
           label: "Disconnected",
+          word: "disconnected",
           detail: session.lastError ?? `${session.label} stopped responding. The app may have quit while the launch terminal is still running.`,
           tone: "error",
         };
       }
-      return { label: "Running", detail: `${session.label} is running${suffix ? ` · ${suffix}` : " in the terminal"}`, tone: "warn" };
+      return {
+        label: "Running",
+        word: "launching",
+        detail: `${session.label} is running${suffix ? ` · ${suffix}` : " in the terminal"}`,
+        tone: "warn",
+      };
     case "stopping":
-      return { label: "Stopping", detail: `${session.label} is stopping`, tone: "warn" };
+      return { label: "Stopping", word: "stopping", detail: `${session.label} is stopping`, tone: "warn" };
     case "exited":
-      return { label: "Exited", detail: `${session.label} has exited`, tone: "muted" };
+      return { label: "Exited", word: "exited", detail: `${session.label} has exited`, tone: "muted" };
     case "stopped":
-      return { label: "Stopped", detail: `${session.label} stopped`, tone: "muted" };
+      return { label: "Stopped", word: "stopped", detail: `${session.label} stopped`, tone: "muted" };
     case "failed":
-      return { label: "Failed", detail: session.lastError ?? `${session.label} failed`, tone: "error" };
+      return { label: "Failed", word: "failed", detail: session.lastError ?? `${session.label} failed`, tone: "error" };
     default:
-      return { label: session.status, detail: session.label, tone: "muted" };
+      return { label: session.status, word: session.status, detail: session.label, tone: "muted" };
   }
 }
 
-const STATUS_PILL_TONE: Record<StatusTone, string> = {
-  idle: "border-white/[0.08] bg-white/[0.03] text-muted-fg/65",
-  active: "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/85",
-  warn: "border-amber-400/25 bg-amber-500/10 text-amber-100/85",
-  muted: "border-white/[0.08] bg-white/[0.03] text-muted-fg/55",
-  error: "border-rose-400/30 bg-rose-500/10 text-rose-200/85",
-};
-
-const STATUS_DOT_TONE: Record<StatusTone, string> = {
-  idle: "bg-muted-fg/45",
-  active: "bg-emerald-300",
-  warn: "bg-amber-300",
-  muted: "bg-muted-fg/40",
-  error: "bg-rose-300",
-};
+function remoteMachineLabel(pin: OpenProjectBinding | null | undefined): string | null {
+  if (!pin || pin.kind !== "remote") return null;
+  return pin.runtimeName || pin.hostname || pin.displayName || "remote machine";
+}
 
 export function ChatAppControlPanel({
   sessionId,
@@ -288,11 +331,13 @@ export function ChatAppControlPanel({
   const [launchCommand, setLaunchCommand] = useState(initialUiState.launchCommand);
   const [launchCwd, setLaunchCwd] = useState(initialUiState.launchCwd);
   const [cdpPort, setCdpPort] = useState(initialUiState.cdpPort);
+  const [recents, setRecents] = useState<AppControlLaunchRecent[]>(initialUiState.recents);
   const [snapshot, setSnapshot] = useState<AppControlSnapshot | null>(null);
   const [targets, setTargets] = useState<AppControlTarget[]>([]);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const [liveFrameActive, setLiveFrameActive] = useState(false);
   const [liveFrameInitialSrc, setLiveFrameInitialSrc] = useState<string | null>(null);
+  const [staleFrameSrc, setStaleFrameSrc] = useState<string | null>(null);
   const liveFrameDimsRef = useRef<LiveFrameDims | null>(null);
   const liveFrameActiveRef = useRef(false);
   const liveFrameSrcRef = useRef<string | null>(null);
@@ -322,6 +367,21 @@ export function ChatAppControlPanel({
   const [message, setMessage] = useState<Message | null>(null);
   const uiHydrationKeyRef = useRef<string | null>(uiStateKey);
 
+  // Agent action model — the observe map, the trace ledger and the cursor.
+  const [drivers, setDrivers] = useState<AppControlDriversResult | null>(null);
+  const [observation, setObservation] = useState<AppControlObservation | null>(null);
+  const [observeMapOn, setObserveMapOn] = useState(false);
+  const [activeHandle, setActiveHandle] = useState<string | null>(null);
+  const [copiedHandle, setCopiedHandle] = useState<string | null>(null);
+  const [traceEntries, setTraceEntries] = useState<AppControlActionTraceEntry[]>([]);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [agentCursor, setAgentCursor] = useState<AgentCursorState | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const lastTraceIdRef = useRef<string | null>(null);
+  const cursorTraceIdRef = useRef<string | null>(null);
+  const observationElementsRef = useRef<AppControlElementSnapshot[]>([]);
+
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
   const controlsDisabled = Boolean(controlDisabledReason);
@@ -337,6 +397,8 @@ export function ChatAppControlPanel({
   const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession && !controlsDisabled;
   const canStop = hasActiveSession && !controlsDisabled;
   const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected && !controlsDisabled;
+  const remoteLabel = remoteMachineLabel(runtimePin);
+  const activeDriver: AppControlDriver = activeSession?.driver ?? drivers?.activeDriver ?? "cdp";
 
   useEffect(() => {
     activeTargetIdRef.current = activeSession?.cdpTargetId ?? null;
@@ -349,6 +411,7 @@ export function ChatAppControlPanel({
     setLaunchCwd(saved.launchCwd);
     setCdpPort(saved.cdpPort);
     setMode(saved.mode);
+    setRecents(saved.recents);
   }, [uiStateKey]);
 
   useEffect(() => {
@@ -356,8 +419,8 @@ export function ChatAppControlPanel({
       uiHydrationKeyRef.current = null;
       return;
     }
-    writePanelUiState(uiStateKey, { launchCommand, launchCwd, cdpPort, mode });
-  }, [cdpPort, launchCommand, launchCwd, mode, uiStateKey]);
+    writePanelUiState(uiStateKey, { launchCommand, launchCwd, cdpPort, mode, recents });
+  }, [cdpPort, launchCommand, launchCwd, mode, recents, uiStateKey]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -373,6 +436,15 @@ export function ChatAppControlPanel({
     const timer = window.setInterval(() => setFrameHealthTick((value) => value + 1), 2_000);
     return () => window.clearInterval(timer);
   }, [liveFrameActive]);
+
+  // Relative times in the drawer only need to be roughly right, and a 1s tick
+  // would repaint the whole list for no one's benefit.
+  useEffect(() => {
+    if (!traceOpen) return undefined;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [traceOpen]);
 
   const getDisplayedMetrics = useCallback((): LiveFrameDims | null => {
     if (liveFrameActive) {
@@ -496,6 +568,18 @@ export function ChatAppControlPanel({
   }, [controlPulse]);
 
   useEffect(() => {
+    if (!agentCursor) return undefined;
+    const timer = window.setTimeout(() => setAgentCursor(null), AGENT_CURSOR_LINGER_MS);
+    return () => window.clearTimeout(timer);
+  }, [agentCursor]);
+
+  useEffect(() => {
+    if (!copiedHandle) return undefined;
+    const timer = window.setTimeout(() => setCopiedHandle(null), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [copiedHandle]);
+
+  useEffect(() => {
     return () => {
       if (hoverInspectTimerRef.current != null) {
         window.clearTimeout(hoverInspectTimerRef.current);
@@ -549,9 +633,38 @@ export function ChatAppControlPanel({
     return nextSnapshot;
   }, [projectRoot]);
 
+  // Trace is pulled, never pushed: the service bumps `session.lastTraceEntryId`
+  // on every agent action, so a session-updated event with a new id is the
+  // signal to re-read. No timer — an idle app costs nothing.
+  const refreshTrace = useCallback(async () => {
+    try {
+      const result = await window.ade.appControl.getTrace({ limit: 20 }, runtimePinRef.current);
+      setTraceEntries(result.entries);
+      const latest = result.entries[result.entries.length - 1] ?? null;
+      if (!latest || latest.id === cursorTraceIdRef.current) return;
+      cursorTraceIdRef.current = latest.id;
+      if (!CURSOR_TRACE_ACTIONS.has(latest.action)) return;
+      const point = traceCursorPoint(latest, observationElementsRef.current);
+      if (!point) return;
+      setAgentCursor({
+        nonce: Date.now(),
+        x: point.x,
+        y: point.y,
+        action: latest.action,
+        failed: latest.status === "error",
+      });
+    } catch {
+      // A trace read races session changes ("… is not the active session") and
+      // is unavailable without a project runtime. Neither is worth a banner.
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     function resetSessionState(): void {
+      // Keep the last painted frame around so a dropped session can show it
+      // dimmed behind Reconnect instead of blanking to an empty pane.
+      setStaleFrameSrc(liveFrameSrcRef.current);
       setSnapshot(null);
       setSelectedElement(null);
       setSelectedPoint(null);
@@ -559,6 +672,10 @@ export function ChatAppControlPanel({
       setHoverElement(null);
       setLiveFrameActive(false);
       setLiveFrameInitialSrc(null);
+      setObservation(null);
+      setObserveMapOn(false);
+      setActiveHandle(null);
+      observationElementsRef.current = [];
       liveFrameDimsRef.current = null;
       liveFrameLastAtRef.current = null;
       liveFrameSrcRef.current = null;
@@ -575,6 +692,11 @@ export function ChatAppControlPanel({
         const nextTargetId = event.session?.cdpTargetId ?? null;
         activeTargetIdRef.current = nextTargetId;
         setStatus((current) => (current ? { ...current, activeSession: event.session } : current));
+        const nextTraceId = event.session?.lastTraceEntryId ?? null;
+        if (nextTraceId && nextTraceId !== lastTraceIdRef.current) {
+          lastTraceIdRef.current = nextTraceId;
+          void refreshTrace();
+        }
         const nextStatus = event.session?.status ?? null;
         if (nextStatus === "connected") {
           if (previousTargetId !== nextTargetId) {
@@ -603,6 +725,9 @@ export function ChatAppControlPanel({
       if (event.type === "session-stopped") {
         void refreshStatus().catch(() => {});
         resetSessionState();
+        setTraceEntries([]);
+        lastTraceIdRef.current = null;
+        cursorTraceIdRef.current = null;
       }
       if (event.type === "frame") {
         if (event.frame.cdpTargetId !== activeTargetIdRef.current) return;
@@ -642,6 +767,7 @@ export function ChatAppControlPanel({
         setLiveFrameActive((current) => {
           if (current) return current;
           liveFrameActiveRef.current = true;
+          setStaleFrameSrc(null);
           return true;
         });
       }
@@ -659,7 +785,7 @@ export function ChatAppControlPanel({
       }
       scrollPendingRef.current = null;
     };
-  }, [refreshSnapshot, refreshStatus]);
+  }, [refreshSnapshot, refreshStatus, refreshTrace]);
 
   // Refresh the list of CDP targets while the session is connected so the
   // user can switch to a freshly-opened window without restarting App Control.
@@ -680,6 +806,29 @@ export function ChatAppControlPanel({
     };
   }, [refreshTargets, status?.activeSession?.status, status?.activeSession?.id]);
 
+  // Driver capabilities are static per machine, so this reads once per session
+  // rather than on a timer.
+  useEffect(() => {
+    if (!sessionConnected) return undefined;
+    let cancelled = false;
+    void window.ade.appControl.listDrivers(runtimePinRef.current)
+      .then((result) => {
+        if (!cancelled) setDrivers(result);
+      })
+      .catch(() => {
+        if (!cancelled) setDrivers(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionConnected, activeSession?.id]);
+
+  // Pick up any actions an agent took before this panel mounted.
+  useEffect(() => {
+    if (!sessionConnected) return;
+    void refreshTrace();
+  }, [refreshTrace, sessionConnected, activeSession?.id]);
+
   useEffect(() => {
     if (!attachmentAck) return undefined;
     const timer = window.setTimeout(() => setAttachmentAck(null), 4_000);
@@ -698,13 +847,20 @@ export function ChatAppControlPanel({
     }
   }, []);
 
+  const rememberLaunch = useCallback((command: string, cwd: string | null) => {
+    setRecents((current) => {
+      const next = [{ command, cwd }, ...current.filter((entry) => entry.command !== command)];
+      return next.slice(0, MAX_RECENT_LAUNCHES);
+    });
+  }, []);
+
   const launchSelected = useCallback(
-    () =>
+    (commandOverride?: string, cwdOverride?: string | null) =>
       runBusy("launch", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        const command = launchCommand.trim();
+        const command = (commandOverride ?? launchCommand).trim();
         if (!command) throw new Error("Enter a launch command.");
-        const cwd = launchCwd.trim();
+        const cwd = (cwdOverride === undefined ? launchCwd : cwdOverride ?? "").trim();
         const launched = await window.ade.appControl.launchInTerminal({
           projectRoot,
           laneId,
@@ -713,6 +869,7 @@ export function ChatAppControlPanel({
           chatSessionId: sessionId,
           force: true,
         }, runtimePinRef.current);
+        rememberLaunch(command, cwd.length ? cwd : null);
         const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
         setStatus({ ...nextStatus, activeSession: launched });
         setMode("control");
@@ -733,7 +890,7 @@ export function ChatAppControlPanel({
           setMessage({ tone: "info", text: `Started ${launched.label} in the terminal.${cdpHint}` });
         }
       }),
-    [controlsDisabled, controlsDisabledMessage, laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, runBusy, sessionId],
+    [controlsDisabled, controlsDisabledMessage, laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, rememberLaunch, runBusy, sessionId],
   );
 
   const attachToTargetId = useCallback(
@@ -742,14 +899,29 @@ export function ChatAppControlPanel({
         setMessage({ tone: "error", text: controlsDisabledMessage });
         return undefined;
       }
-      // Optimistically reflect the user's pick in the dropdown so it doesn't
+      // Optimistically reflect the user's pick in the switcher so it doesn't
       // appear to "snap back" while the new screencast spins up.
       setPendingTargetId(targetId);
       return runBusy("attach", async () => {
         try {
-          const session = await window.ade.appControl.attachToTarget({ targetId }, runtimePinRef.current);
-          setStatus((current) => (current ? { ...current, activeSession: session } : current));
-          await refreshTargets();
+          // `switchWindow` also clears the service-side trace, because handles
+          // minted against the previous document stop resolving. Fall back to
+          // the older attach path when it is not reachable.
+          try {
+            const result = await window.ade.appControl.switchWindow({ targetId }, runtimePinRef.current);
+            setTargets(result.windows);
+          } catch {
+            const session = await window.ade.appControl.attachToTarget({ targetId }, runtimePinRef.current);
+            setStatus((current) => (current ? { ...current, activeSession: session } : current));
+            await refreshTargets();
+          }
+          setTraceEntries([]);
+          setObservation(null);
+          setObserveMapOn(false);
+          setActiveHandle(null);
+          observationElementsRef.current = [];
+          cursorTraceIdRef.current = null;
+          setAgentCursor(null);
         } finally {
           setPendingTargetId((current) => (current === targetId ? null : current));
         }
@@ -778,6 +950,27 @@ export function ChatAppControlPanel({
         setMessage({ tone: "info", text: `Connected to ${connected.label}.` });
       }),
     [cdpPort, controlsDisabled, controlsDisabledMessage, laneId, projectRoot, refreshSnapshot, runBusy, sessionId],
+  );
+
+  const reconnect = useCallback(
+    () =>
+      runBusy("reconnect", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
+        const port = activeSession?.cdpPort ?? Number(cdpPort);
+        if (Number.isFinite(port) && Number(port) > 0) {
+          const connected = await window.ade.appControl.connect({
+            projectRoot,
+            laneId,
+            cdpPort: Number(port),
+            chatSessionId: sessionId,
+            force: true,
+          }, runtimePinRef.current);
+          setStatus((current) => (current ? { ...current, activeSession: connected } : current));
+        }
+        await refreshStatus();
+        await refreshSnapshot();
+      }),
+    [activeSession?.cdpPort, cdpPort, controlsDisabled, controlsDisabledMessage, laneId, projectRoot, refreshSnapshot, refreshStatus, runBusy, sessionId],
   );
 
   const stopSession = useCallback(
@@ -812,6 +1005,49 @@ export function ChatAppControlPanel({
         await window.ade.appControl.minimizeWindow(runtimePinRef.current);
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
+  );
+
+  /**
+   * Capture an observation and paint its handles over the frame.
+   *
+   * Explicitly user-driven: `observe` writes an observation record, prunes
+   * older ones, and bumps `session.lastObservationId`, so polling it would
+   * churn disk and invalidate handles an agent is mid-loop on.
+   */
+  const runObserve = useCallback(
+    () =>
+      runBusy("observe", async () => {
+        // `maxElements` is deliberately NOT set: element indices are assigned
+        // AFTER the bound is applied, so a 60-element observation numbers the
+        // same element differently than the service default of 80 that
+        // `ade app-control observe` gets. The badge you read on screen has to
+        // be the badge an agent is talking about, so take the same default.
+        const result = await window.ade.appControl.observe({
+          includeDom: true,
+          includeDiagnostics: true,
+          includeDataUrl: false,
+        }, runtimePinRef.current);
+        setObservation(result);
+        observationElementsRef.current = result.dom?.elements ?? [];
+        setObserveMapOn(true);
+        setActiveHandle(null);
+      }),
+    [runBusy],
+  );
+
+  const screenshotToChat = useCallback(
+    () =>
+      runBusy("screenshot", async () => {
+        if (!onAddAttachment) throw new Error("Attachments are not available in this panel.");
+        const shot = await window.ade.appControl.screenshot(runtimePinRef.current);
+        const { path } = await window.ade.agentChat.saveTempAttachment({
+          data: stripDataUrlPrefix(shot.dataUrl),
+          filename: "app-control-screenshot.png",
+        }, ...(runtimePin ? [runtimePin] as const : []));
+        onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
+        setMessage({ tone: "info", text: "Attached a screenshot to the chat." });
+      }),
+    [onAddAttachment, runBusy, runtimePin],
   );
 
   const attachSelection = useCallback(
@@ -890,6 +1126,46 @@ export function ChatAppControlPanel({
     [controlsDisabled, controlsDisabledMessage, onAddAttachment, onAddContext, projectRoot, runtimePin, screenshotBlank, snapshot],
   );
 
+  /** Hand an observed element's stable handle to the chat, not a coordinate. */
+  const addHandleToChat = useCallback(
+    (element: AppControlElementSnapshot) => {
+      const handle = element.handle;
+      if (!handle || !onAddContext) return;
+      const summary = elementSummary(element) ?? `element ${element.index}`;
+      onAddContext({
+        kind: "app_control_element",
+        id: handle,
+        appKind: activeSession?.appKind ?? "electron",
+        sessionId: activeSession?.id ?? null,
+        provider: "cdp",
+        componentId: summary,
+        sourceFile: null,
+        sourceLine: null,
+        frame: element.frame,
+        metadata: {
+          handle,
+          elementIndex: element.index,
+          observationId: observation?.id ?? null,
+          role: element.role,
+          tagName: element.tagName,
+          selector: element.selector,
+          testId: element.testId,
+          summary,
+        },
+        selectedAt: new Date().toISOString(),
+      });
+      setMessage({ tone: "info", text: `Added ${handle} (${summary}) to the chat.` });
+    },
+    [activeSession?.appKind, activeSession?.id, observation?.id, onAddContext],
+  );
+
+  const copyHandle = useCallback((handle: string) => {
+    setActiveHandle((current) => (current === handle ? null : handle));
+    void navigator.clipboard?.writeText?.(handle)
+      .then(() => setCopiedHandle(handle))
+      .catch(() => {});
+  }, []);
+
   const handleImageClick = useCallback(
     (event: MouseEvent<HTMLImageElement>) => {
       event.preventDefault();
@@ -917,7 +1193,7 @@ export function ChatAppControlPanel({
       // Fire-and-forget: do NOT block on the CDP round-trip and do NOT refresh
       // the snapshot. The screencast is live, so the rendered image already
       // updates on its own; gating busy/disabled state through every click
-      // makes the dropdown and Stop button flash and feel locked.
+      // makes the picker and Stop button flash and feel locked.
       window.ade.appControl
         .click({ x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, runtimePinRef.current)
         .catch((error) => {
@@ -994,206 +1270,200 @@ export function ChatAppControlPanel({
     : null;
   const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > 4_000;
   const focusElement = hoverElement ?? selectedElement;
+  const metrics = getDisplayedMetrics();
+  const overlayViewport = metrics
+    ? { viewportWidth: metrics.viewportWidth, viewportHeight: metrics.viewportHeight }
+    : null;
+  const observedElements = useMemo(() => observation?.dom?.elements ?? [], [observation]);
+  const traceRows = useMemo(
+    () => traceEntries.map((entry) => formatTraceRow(entry, nowMs, observedElements)).reverse(),
+    [nowMs, observedElements, traceEntries],
+  );
+  const lastActionLine = formatLastActionLine(
+    traceEntries[traceEntries.length - 1] ?? null,
+    nowMs,
+    observedElements,
+  );
+  const hasFrame = Boolean(screenshot || liveFrameActive);
+  const launching = hasActiveSession && !sessionConnected;
+  const showDisconnected = !hasFrame && !launching && Boolean(staleFrameSrc);
+
+  const renderOverflow = useCallback((close: () => void) => (
+    <>
+      <AppControlMenuLabel>Observe</AppControlMenuLabel>
+      <AppControlMenuItem
+        icon={<Crosshair size={11} />}
+        label={observeMapOn ? "Hide observe map" : "Observe with map"}
+        checked={observeMapOn}
+        disabled={!sessionConnected || Boolean(busy)}
+        disabledReason={sessionConnected ? undefined : "Attach an app first."}
+        onSelect={() => {
+          if (observeMapOn) {
+            setObserveMapOn(false);
+            setActiveHandle(null);
+          } else {
+            void runObserve();
+          }
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<ListChecks size={11} />}
+        label={traceOpen ? "Hide trace" : "Trace"}
+        checked={traceOpen}
+        onSelect={() => {
+          setTraceOpen((value) => !value);
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<ArrowClockwise size={11} />}
+        label="Refresh snapshot"
+        hint="Re-capture screenshot and DOM snapshot"
+        disabled={Boolean(busy) || !sessionConnected || controlsDisabled}
+        onSelect={() => {
+          void runBusy("snapshot", async () => {
+            await refreshSnapshot();
+            setMessage({ tone: "info", text: "Snapshot refreshed." });
+          });
+          close();
+        }}
+      />
+
+      {targets.length > 1 ? (
+        <>
+          <AppControlMenuLabel>Windows</AppControlMenuLabel>
+          {targets.map((target) => (
+            <AppControlMenuItem
+              key={target.id}
+              label={(target.title ?? target.url ?? target.id).trim() || target.id}
+              checked={(pendingTargetId ?? targets.find((entry) => entry.active)?.id ?? "") === target.id}
+              disabled={controlsDisabled || Boolean(busy)}
+              onSelect={() => {
+                void attachToTargetId(target.id);
+                close();
+              }}
+            />
+          ))}
+        </>
+      ) : null}
+
+      <AppControlMenuLabel>Send to chat</AppControlMenuLabel>
+      <AppControlMenuItem
+        icon={<Camera size={11} />}
+        label="Screenshot to chat"
+        disabled={!sessionConnected || !onAddAttachment || Boolean(busy)}
+        disabledReason={onAddAttachment ? "Attach an app first." : "Attachments are not available in this panel."}
+        onSelect={() => {
+          void screenshotToChat();
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<Crosshair size={11} />}
+        label="Insert as context"
+        hint="Switch to Inspect and click an element"
+        disabled={!sessionConnected || !onAddContext || controlsDisabled}
+        disabledReason={onAddContext ? "Attach an app first." : "Context insertion is not available in this panel."}
+        onSelect={() => {
+          setMode("inspect");
+          if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
+          close();
+        }}
+      />
+
+      <AppControlMenuLabel>Session</AppControlMenuLabel>
+      <AppControlMenuItem
+        icon={<Terminal size={11} />}
+        label="Reveal terminal"
+        disabled={!activeSession?.terminalSessionId || !activeSession?.terminalPtyId || !onShowTerminal}
+        disabledReason="This session has no launch terminal."
+        onSelect={() => {
+          if (activeSession?.terminalSessionId && activeSession.terminalPtyId) {
+            onShowTerminal?.({
+              terminalId: activeSession.terminalSessionId,
+              ptyId: activeSession.terminalPtyId,
+              label: activeSession.label,
+            });
+          }
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<ArrowSquareOut size={11} />}
+        label="Show app window"
+        disabled={!sessionConnected || Boolean(busy) || controlsDisabled}
+        onSelect={() => {
+          void focusWindow();
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<Minus size={11} />}
+        label="Minimize app window"
+        disabled={!sessionConnected || Boolean(busy) || controlsDisabled}
+        onSelect={() => {
+          void minimizeWindow();
+          close();
+        }}
+      />
+      <AppControlMenuItem
+        icon={<Stop size={11} weight="fill" />}
+        label="Stop"
+        tone="danger"
+        disabled={!canStop || Boolean(busy)}
+        disabledReason="No session to stop."
+        onSelect={() => {
+          void stopSession();
+          close();
+        }}
+      />
+    </>
+  ), [
+    activeSession, attachSelection, attachToTargetId, busy, canStop, controlsDisabled, focusWindow,
+    minimizeWindow, observeMapOn, onAddAttachment, onAddContext, onShowTerminal, pendingTargetId,
+    refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected, stopSession,
+    targets, traceOpen,
+  ]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1 font-sans text-[11px] text-fg/75">
-      {/* Top row: launch input + Run, or running command + Stop/Terminal */}
-      {!hasActiveSession ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-1">
-          <input
-            value={launchCommand}
-            onChange={(event) => {
-              setLaunchCommand(event.target.value);
-              if (launchCwd) setLaunchCwd("");
-            }}
-            placeholder='Launch command, e.g. "pnpm dev"'
-            aria-label="App Control launch command"
-            className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && canLaunch) void launchSelected();
-            }}
-          />
-          <button
-            type="button"
-            disabled={Boolean(busy) || !canLaunch}
-            onClick={launchSelected}
-            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded border border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] px-2 text-[10px] font-medium text-fg/90 transition-colors hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-45"
-            title="Launch command in the terminal"
-            aria-label="Launch App Control command"
-          >
-            {busy === "launch" ? <SpinnerGap size={13} className="animate-spin" /> : <Play size={12} weight="fill" />}
-            Run
-          </button>
-        </div>
-      ) : (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-2.5 py-1.5">
-          <span
-            className={cn(
-              "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[10px] font-medium uppercase tracking-wide",
-              STATUS_PILL_TONE[sessionStatus.tone],
-            )}
-          >
-            <span
-              className={cn(
-                "h-1.5 w-1.5 rounded-full",
-                STATUS_DOT_TONE[sessionStatus.tone],
-                sessionStatus.tone === "warn" || sessionStatus.tone === "active" ? "animate-pulse" : null,
-              )}
-            />
-            {sessionStatus.label}
-          </span>
-          <div className="min-w-0 flex-1 truncate text-[11px] text-fg/72" title={sessionStatus.detail}>
-            {activeSession?.label ?? sessionStatus.detail}
-          </div>
-          {activeSession?.terminalSessionId && activeSession.terminalPtyId && onShowTerminal ? (
-            <button
-              type="button"
-              onClick={() => {
-                onShowTerminal({
-                  terminalId: activeSession.terminalSessionId!,
-                  ptyId: activeSession.terminalPtyId!,
-                  label: activeSession.label,
-                });
-              }}
-              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
-              title="Show the launch terminal"
-            >
-              <Terminal size={11} />
-              Terminal
-            </button>
-          ) : null}
-          {sessionConnected ? (
-            <>
-              <button
-                type="button"
-                disabled={Boolean(busy) || controlsDisabled}
-                onClick={focusWindow}
-                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-                title="Show the controlled app window"
-                aria-label="Show controlled app window"
-              >
-                {busy === "focus-window" ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowSquareOut size={11} />}
-                Show
-              </button>
-              <button
-                type="button"
-                disabled={Boolean(busy) || controlsDisabled}
-                onClick={minimizeWindow}
-                className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-                title="Minimize the controlled app window"
-                aria-label="Minimize controlled app window"
-              >
-                {busy === "minimize-window" ? <SpinnerGap size={12} className="animate-spin" /> : <Minus size={11} />}
-              </button>
-            </>
-          ) : null}
-          {canStop ? (
-            <button
-              type="button"
-              disabled={Boolean(busy)}
-              onClick={stopSession}
-              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-rose-400/22 bg-rose-500/10 px-2 text-[10px] font-medium text-rose-100/85 transition-colors hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Stop the active session"
-              aria-label="Stop App Control session"
-            >
-              {busy === "stop" ? <SpinnerGap size={12} className="animate-spin" /> : <Stop size={11} weight="fill" />}
-              Stop
-            </button>
-          ) : null}
-        </div>
-      )}
-
-      {/* Compact CDP attach row */}
-      {!hasActiveSession ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-1">
-          <span className="font-sans text-[9px] uppercase tracking-wide text-muted-fg/50">Or attach</span>
-          <input
-            value={cdpPort}
-            onChange={(event) => setCdpPort(event.target.value)}
-            placeholder="CDP port"
-            aria-label="CDP port"
-            inputMode="numeric"
-            disabled={controlsDisabled}
-            className="w-[80px] shrink-0 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && cdpPort.trim()) void connectPort();
-            }}
-          />
-          <button
-            type="button"
-            disabled={Boolean(busy) || !cdpPort.trim() || controlsDisabled}
-            onClick={connectPort}
-            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
-            title="Connect to a running Electron app via CDP"
-          >
-            {busy === "connect" ? <SpinnerGap size={11} className="animate-spin" /> : <Link size={11} />}
-            Connect
-          </button>
-          {onInsertDraft ? (
-            <button
-              type="button"
-              onClick={requestDebugHelp}
-              className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:text-fg/85"
-              title="Insert a draft asking the agent to wire CDP debug flags into this app"
-            >
-              <Wrench size={11} />
-              Help wire CDP
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {sessionConnected && targets.length > 0 ? (
-        <div className="flex shrink-0 items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5">
-          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-fg/55">
-            Window
-          </span>
-          <select
-            value={pendingTargetId ?? targets.find((target) => target.active)?.id ?? ""}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (!value) return;
-              void attachToTargetId(value);
-            }}
-            className="min-w-0 flex-1 rounded-md border border-white/[0.06] bg-black/30 px-2 py-1 text-[11px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
-            aria-label="Switch the controlled window"
-            disabled={Boolean(busy) || targets.length < 2 || controlsDisabled}
-          >
-            {targets.map((target) => {
-              const baseTitle = (target.title ?? "").trim();
-              const url = (target.url ?? "").trim();
-              const urlLabel = url ? url.replace(/^https?:\/\//, "").replace(/^file:\/\//, "") : "";
-              // Don't number windows positionally — `/json/list` order isn't
-              // stable across polls, so a "Window N" label would point at a
-              // different underlying target between refreshes. Prefer URL +
-              // a short id suffix (always unique per target).
-              const idSuffix = target.id.length > 6 ? `…${target.id.slice(-6)}` : target.id;
-              const label = [baseTitle || null, urlLabel || null, idSuffix]
-                .filter((part): part is string => Boolean(part && part.length > 0))
-                .join(" · ")
-                .slice(0, 130);
-              return (
-                <option key={target.id} value={target.id}>
-                  {target.active ? "● " : ""}{label}
-                </option>
-              );
-            })}
-          </select>
-          <button
-            type="button"
-            onClick={() => void refreshTargets()}
-            disabled={controlsDisabled}
-            className="inline-flex h-6 shrink-0 items-center justify-center rounded border border-white/[0.06] bg-white/[0.02] px-1.5 text-[10px] text-muted-fg/65 hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-            title="Re-scan controlled app windows"
-          >
-            {targets.length}
-          </button>
-        </div>
-      ) : null}
+    <div className="flex h-full min-h-0 flex-col font-sans text-[11px] text-fg/75">
+      <AppControlToolbar
+        appLabel={activeSession?.label ?? "Pick an app"}
+        hasSession={hasActiveSession}
+        recents={recents}
+        launchCommand={launchCommand}
+        onLaunchCommandChange={(value) => {
+          setLaunchCommand(value);
+          if (launchCwd) setLaunchCwd("");
+        }}
+        onLaunch={(command, cwd) => void launchSelected(command, cwd)}
+        canLaunch={canLaunch}
+        launching={busy === "launch"}
+        cdpPort={cdpPort}
+        onCdpPortChange={setCdpPort}
+        onConnect={() => void connectPort()}
+        connecting={busy === "connect"}
+        onHelpWireCdp={onInsertDraft ? requestDebugHelp : null}
+        drivers={drivers}
+        activeDriver={activeDriver}
+        statusWord={sessionStatus.word}
+        statusTone={sessionStatus.tone}
+        statusDetail={sessionStatus.detail}
+        remoteLabel={remoteLabel}
+        windows={targets}
+        activeWindowId={pendingTargetId ?? targets.find((target) => target.active)?.id ?? null}
+        onSwitchWindow={(targetId) => void attachToTargetId(targetId)}
+        switching={busy === "attach"}
+        controlsDisabled={controlsDisabled}
+        pickerOpen={pickerOpen}
+        onPickerOpenChange={setPickerOpen}
+        renderOverflow={renderOverflow}
+      />
 
       {waitingForCdp && activeSession?.cdpPort ? (
         <div
-          className="flex shrink-0 items-start gap-2 rounded-md border border-amber-400/20 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-100/85"
+          className="flex shrink-0 items-start gap-2 border-b border-amber-400/20 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-100/85"
           role="status"
         >
           <WarningCircle size={12} className="mt-0.5 shrink-0" />
@@ -1206,7 +1476,7 @@ export function ChatAppControlPanel({
       {message ? (
         <div
           className={cn(
-            "flex shrink-0 items-start gap-2 rounded-md border px-2.5 py-1.5 text-[11px]",
+            "flex shrink-0 items-start gap-2 border-b px-2.5 py-1.5 text-[11px]",
             message.tone === "error"
               ? "border-rose-400/22 bg-rose-500/10 text-rose-100/85"
               : "border-sky-400/18 bg-sky-500/8 text-sky-100/80",
@@ -1226,69 +1496,51 @@ export function ChatAppControlPanel({
         </div>
       ) : null}
 
-      {/* Snapshot surface */}
-      <div className="relative flex min-h-[240px] min-w-0 flex-1 flex-col overflow-hidden rounded border border-white/[0.08] bg-white/[0.02]">
-        <div className="absolute left-2 top-2 z-10 flex flex-col items-start gap-1">
-          <button
-            type="button"
-            disabled={Boolean(busy) || !sessionConnected || controlsDisabled}
-            onClick={() =>
-              void runBusy("snapshot", async () => {
-                await refreshSnapshot();
-                setMessage({ tone: "info", text: "Snapshot refreshed." });
-              })
-            }
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-black/55 px-2 text-[10px] font-medium text-fg/72 backdrop-blur transition-colors hover:bg-black/70 disabled:cursor-not-allowed disabled:opacity-45"
-            title="Re-capture screenshot and DOM snapshot"
-          >
-            {busy === "snapshot" ? (
-              <SpinnerGap size={11} className="animate-spin" />
-            ) : (
-              <ArrowClockwise size={11} />
-            )}
-            Snapshot
-          </button>
+      {/* Body — the live frame fills it, everything else is an overlay. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-black/20">
+        {hasActiveSession ? (
           <div
-            className={cn(
-              "inline-flex items-center rounded-md border border-white/[0.08] bg-black/55 p-0.5 backdrop-blur",
-              !hasActiveSession ? "opacity-45" : null,
-            )}
+            className="absolute left-2 top-2 z-10 inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 p-0.5 backdrop-blur"
+            role="group"
             aria-label="App Control mode"
           >
             {(["control", "inspect"] as const).map((nextMode) => (
               <button
                 key={nextMode}
                 type="button"
-                disabled={!hasActiveSession || controlsDisabled}
+                disabled={controlsDisabled}
+                aria-pressed={mode === nextMode}
                 onClick={() => setMode(nextMode)}
                 className={cn(
-                  "h-6 rounded-[3px] px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
+                  "h-[20px] rounded-[3px] px-2 text-[10px] font-medium transition-colors duration-[120ms] ease-out",
+                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                  "disabled:cursor-not-allowed disabled:opacity-45",
                   mode === nextMode
-                    ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90 shadow-sm"
-                    : "text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+                    ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90"
+                    : "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg/85",
                 )}
               >
                 {nextMode === "control" ? "Control" : "Inspect"}
               </button>
             ))}
           </div>
-        </div>
+        ) : null}
 
         {snapshot?.url ? (
           <div
-            className="absolute right-2 top-2 z-10 max-w-[60%] truncate rounded-md border border-white/[0.08] bg-black/55 px-2 py-1 text-[10px] text-muted-fg/65 backdrop-blur"
+            className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
             title={snapshot.url}
           >
             {snapshot.title ?? snapshot.url}
           </div>
         ) : null}
         {liveFrameStale ? (
-          <div className="absolute right-2 top-9 z-10 rounded-md border border-amber-300/20 bg-amber-500/12 px-2 py-1 text-[10px] font-medium text-amber-100/85 backdrop-blur">
+          <div className="absolute right-2 top-9 z-10 rounded-[var(--radius-sm)] border border-amber-300/20 bg-amber-500/12 px-2 py-1 text-[10px] font-medium text-amber-100/85 backdrop-blur">
             Stream stale
           </div>
         ) : null}
 
-        {screenshot || liveFrameActive ? (
+        {hasFrame ? (
           <div className="relative flex h-full min-h-0 w-full items-center justify-center overflow-auto p-2">
             <div className="relative max-h-full">
               <img
@@ -1346,8 +1598,26 @@ export function ChatAppControlPanel({
                   </div>
                 </div>
               ) : null}
+
+              {/* Observe map — numbered handles an agent can quote back. */}
+              {observeMapOn && overlayViewport && !screenshotBlank ? (
+                <AppControlObserveOverlay
+                  elements={observedElements}
+                  viewport={overlayViewport}
+                  activeHandle={activeHandle}
+                  copiedHandle={copiedHandle}
+                  onSelectHandle={copyHandle}
+                  onAddToChat={onAddContext ? addHandleToChat : null}
+                />
+              ) : null}
+
+              {/* Agent cursor — where the last agent action actually landed. */}
+              {overlayViewport && !screenshotBlank ? (
+                <AppControlAgentCursor cursor={agentCursor} viewport={overlayViewport} />
+              ) : null}
+
               {/* Inspect-only: persistent outline for the attached/selected element */}
-              {mode === "inspect" && selectedElement && (screenshot || liveFrameActive) && !screenshotBlank ? (() => {
+              {mode === "inspect" && selectedElement && !screenshotBlank ? (() => {
                 const style = overlayStyleForElement(selectedElement);
                 if (!style) return null;
                 return (
@@ -1359,7 +1629,7 @@ export function ChatAppControlPanel({
                 );
               })() : null}
               {/* Inspect-only: hover affordance to telegraph what's selectable */}
-              {mode === "inspect" && hoverElement && (screenshot || liveFrameActive) && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
+              {mode === "inspect" && hoverElement && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
                 const style = overlayStyleForElement(hoverElement);
                 if (!style) return null;
                 return (
@@ -1371,19 +1641,15 @@ export function ChatAppControlPanel({
                 );
               })() : null}
               {/* Inspect-only: coordinate marker when no element matched */}
-              {mode === "inspect" && selectedPoint && (screenshot || liveFrameActive) && !screenshotBlank && !selectedElement ? (() => {
-                const metrics = getDisplayedMetrics();
-                if (!metrics) return null;
-                return (
-                  <div
-                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
-                    style={{
-                      left: `${(selectedPoint.x / metrics.viewportWidth) * 100}%`,
-                      top: `${(selectedPoint.y / metrics.viewportHeight) * 100}%`,
-                    }}
-                  />
-                );
-              })() : null}
+              {mode === "inspect" && selectedPoint && !screenshotBlank && !selectedElement && metrics ? (
+                <div
+                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
+                  style={{
+                    left: `${(selectedPoint.x / metrics.viewportWidth) * 100}%`,
+                    top: `${(selectedPoint.y / metrics.viewportHeight) * 100}%`,
+                  }}
+                />
+              ) : null}
               {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
               {mode === "control" && controlPulse && !screenshotBlank ? (
                 <div
@@ -1397,144 +1663,188 @@ export function ChatAppControlPanel({
               ) : null}
             </div>
           </div>
+        ) : launching ? (
+          <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4" role="status">
+            <div className="ade-tool-skeleton h-[132px] w-full max-w-[320px] rounded-[var(--radius-lg)]" aria-hidden="true" />
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-fg">
+              <SpinnerGap size={12} className="animate-spin" />
+              {sessionStatus.detail}
+            </div>
+          </div>
+        ) : showDisconnected ? (
+          <div className="relative flex h-full min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+            <img
+              src={staleFrameSrc ?? undefined}
+              alt="Last frame before the app disconnected"
+              draggable={false}
+              className="block max-h-[60vh] max-w-full rounded-sm object-contain opacity-25 grayscale"
+            />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+              <div className="text-[12px] font-medium text-fg/85">The app stopped responding</div>
+              <div className="max-w-[300px] text-[11px] leading-[16px] text-muted-fg">
+                {sessionStatus.detail}
+              </div>
+              <button
+                type="button"
+                disabled={Boolean(busy) || controlsDisabled}
+                onClick={() => void reconnect()}
+                className={cn(
+                  "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
+                  "border border-white/[0.12] bg-white/[0.05] text-fg/85",
+                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.1]",
+                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                  "disabled:cursor-not-allowed disabled:opacity-45",
+                )}
+              >
+                {busy === "reconnect" ? <SpinnerGap size={11} className="animate-spin" /> : <ArrowClockwise size={11} />}
+                Reconnect
+              </button>
+            </div>
+          </div>
         ) : (
-          <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center text-muted-fg/55">
-            <Desktop size={28} className="text-muted-fg/30" />
-            <div className="text-[12px] font-medium text-fg/70">
-              {sessionConnected ? "Capture a snapshot to begin" : "No app session yet"}
+          <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2.5 px-5 text-center">
+            <Desktop size={26} weight="duotone" className="text-muted-fg/35" />
+            <div className="text-[12px] font-medium text-fg/85">
+              {sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
             </div>
-            <div className="max-w-[360px] text-[11px] leading-5 text-muted-fg/55">
+            <div className="max-w-[320px] text-[11px] leading-[16px] text-muted-fg">
               {sessionConnected
-                ? "Click Snapshot to capture the current screen and DOM."
-                : "Run a launch command above, or attach to a running app via its CDP port."}
+                ? "Refresh the snapshot to capture the current screen and DOM."
+                : "Launch it from here, or attach to a running app by its CDP port."}
             </div>
+            {!sessionConnected ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(true)}
+                  className={cn(
+                    "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
+                    "border border-[color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
+                    "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-fg/90",
+                    "transition-colors duration-[120ms] ease-out hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
+                    "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                  )}
+                >
+                  <Stack size={11} weight="duotone" />
+                  Pick an app to drive
+                </button>
+                <div className="max-w-[320px] text-[10.5px] leading-[15px] text-muted-fg/65">
+                  Agents reach the same session with{" "}
+                  <span className="font-mono text-muted-fg">ade app-control launch</span>.
+                </div>
+              </>
+            ) : null}
           </div>
         )}
       </div>
 
-      {/* Selection details + actions */}
-      <div className="flex shrink-0 flex-col gap-1">
-        <div className="min-w-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-1">
-          {mode === "control" ? (
-            screenshotBlank ? (
-              <div className="text-[11px] text-amber-100/80">
-                Screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
-              </div>
-            ) : (
-              <div className="text-[11px] text-muted-fg/55">
-                {sessionConnected
-                  ? "Click the screenshot to drive the app, or type into the focused element below."
-                  : "Launch or connect to start controlling the app."}
-              </div>
-            )
-          ) : focusElement ? (
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-1.5">
-                <span className="truncate text-[11px] font-medium text-fg/85" title={elementLabel(focusElement)}>
-                  {elementLabel(focusElement)}
+      {/* Control-mode keyboard input — the one action the frame can't express. */}
+      {mode === "control" && hasActiveSession ? (
+        <div className="flex h-[28px] shrink-0 items-center gap-1 border-t border-white/[0.08] pl-2 focus-within:bg-white/[0.02]">
+          <Keyboard size={10} className="shrink-0 text-muted-fg/55" />
+          <input
+            value={typeText}
+            onChange={(event) => setTypeText(event.target.value)}
+            placeholder="Type into focused element"
+            aria-label="Text to type into the focused app element"
+            className="h-full min-w-0 flex-1 bg-transparent text-[10.5px] text-fg/85 outline-none placeholder:text-muted-fg/45"
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void typeIntoApp();
+            }}
+          />
+          <button
+            type="button"
+            disabled={Boolean(busy) || !canType}
+            onClick={typeIntoApp}
+            className={cn(
+              "inline-flex h-full shrink-0 items-center justify-center border-l border-white/[0.06] px-2 text-[10.5px] font-medium",
+              "text-fg/80 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
+              "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+              "disabled:cursor-not-allowed disabled:opacity-45",
+            )}
+            title="Send keystrokes to the focused element"
+            aria-label="Type into focused app element"
+          >
+            {busy === "type" ? <SpinnerGap size={12} className="animate-spin" /> : "Type"}
+          </button>
+        </div>
+      ) : null}
+
+      {/* Inspect-mode detail — what the last click attached. */}
+      {mode === "inspect" ? (
+        <div className="flex min-h-[28px] shrink-0 items-center gap-2 border-t border-white/[0.08] px-2">
+          {focusElement ? (
+            <>
+              <span className="min-w-0 truncate text-[11px] font-medium text-fg/85" title={elementLabel(focusElement)}>
+                {elementLabel(focusElement)}
+              </span>
+              {elementSubLabel(focusElement) ? (
+                <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.03] px-1 font-mono text-[9px] uppercase tracking-wide text-muted-fg">
+                  {elementSubLabel(focusElement)}
                 </span>
-                {elementSubLabel(focusElement) ? (
-                  <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.03] px-1 py-0 font-mono text-[9px] uppercase tracking-wide text-muted-fg/60">
-                    {elementSubLabel(focusElement)}
-                  </span>
-                ) : null}
-                {hoverElement && hoverElement.id !== selectedElement?.id ? (
-                  <span className="ml-auto shrink-0 text-[10px] text-muted-fg/45">hovering</span>
-                ) : attachmentAck ? (
-                  <span className="ml-auto shrink-0 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/85">
-                    Attached
-                  </span>
-                ) : selectedElement?.id === focusElement.id ? (
-                  <span className="ml-auto shrink-0 text-[10px] text-sky-200/70">selected</span>
-                ) : null}
-              </div>
-              {focusElement.selector ? (
-                <div className="truncate font-mono text-[10px] text-muted-fg/55" title={focusElement.selector}>
-                  {focusElement.selector}
-                </div>
               ) : null}
               {selectedContextItem?.sourceFile ? (
-                <div
-                  className="truncate font-mono text-[10px] text-sky-100/65"
+                <span
+                  className="min-w-0 truncate font-mono text-[9.5px] text-sky-100/65"
                   title={`${selectedContextItem.sourceFile}${selectedContextItem.sourceLine ? `:${selectedContextItem.sourceLine}` : ""}`}
                 >
                   {selectedContextItem.sourceFile}
                   {selectedContextItem.sourceLine ? `:${selectedContextItem.sourceLine}` : ""}
-                </div>
+                </span>
               ) : null}
-              <div className="text-[10px] text-muted-fg/45">
-                {Math.round(focusElement.pixelFrame.x)}, {Math.round(focusElement.pixelFrame.y)} · {Math.round(focusElement.pixelFrame.width)}×{Math.round(focusElement.pixelFrame.height)}
-                {focusElement.testId ? <span className="ml-2">testId={focusElement.testId}</span> : null}
-              </div>
-            </div>
-          ) : selectedPoint ? (
-            <div className="text-[11px] text-fg/70">
-              Coordinate {selectedPoint.x}, {selectedPoint.y} attached
-            </div>
-          ) : screenshotBlank ? (
-            <div className="text-[11px] text-amber-100/80">
-              Screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
-            </div>
+              {hoverElement && hoverElement.id !== selectedElement?.id ? (
+                <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">hovering</span>
+              ) : attachmentAck ? (
+                <span className="ml-auto shrink-0 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-1.5 text-[9px] font-medium text-emerald-100/85">
+                  Attached
+                </span>
+              ) : null}
+            </>
           ) : (
-            <div className="text-[11px] text-muted-fg/55">
-              {sessionConnected
-                ? "Click an element to insert its source context."
-                : "Launch or connect to inspect elements."}
-            </div>
+            <span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-fg">
+              {attachmentAck
+                ? `Inserted ${attachmentAck} context`
+                : sessionConnected
+                  ? "Click an element to insert its source context."
+                  : "Launch or connect to inspect elements."}
+            </span>
           )}
+          <button
+            type="button"
+            disabled={Boolean(busy) || screenshotBlank || !selectedPoint || !sessionConnected || controlsDisabled}
+            onClick={() => {
+              if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
+            }}
+            className={cn(
+              "ml-auto inline-flex h-[20px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[10.5px] font-medium",
+              "text-muted-fg transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+              "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+              "disabled:cursor-not-allowed disabled:opacity-45",
+            )}
+            title="Attach the selected element again"
+          >
+            {busy === "select" ? <SpinnerGap size={11} className="animate-spin" /> : <ArrowClockwise size={11} />}
+            Re-attach
+          </button>
         </div>
+      ) : null}
 
-        {mode === "control" ? (
-          <div className="flex min-w-0 flex-1 items-center gap-1 rounded border border-white/[0.08] bg-black/20 pl-1.5 focus-within:border-sky-300/30">
-            <Keyboard size={10} className="shrink-0 text-muted-fg/55" />
-            <input
-              value={typeText}
-              onChange={(event) => setTypeText(event.target.value)}
-              placeholder="Type into focused element"
-              aria-label="Text to type into the focused app element"
-              className="h-7 min-w-0 flex-1 bg-transparent text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40"
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void typeIntoApp();
-              }}
-            />
-            <button
-              type="button"
-              disabled={Boolean(busy) || !canType}
-              onClick={typeIntoApp}
-              className="inline-flex h-7 shrink-0 items-center justify-center rounded-r border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
-              title="Send keystrokes to the focused element"
-              aria-label="Type into focused app element"
-            >
-              {busy === "type" ? <SpinnerGap size={12} className="animate-spin" /> : "Type"}
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <div
-              className={cn(
-                "inline-flex h-8 shrink-0 items-center rounded-md border px-2 text-[10px] font-medium",
-                attachmentAck
-                  ? "border-emerald-300/25 bg-emerald-500/10 text-emerald-100/85"
-                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/60",
-              )}
-            >
-              {attachmentAck ? `Inserted ${attachmentAck} context` : "Inspect mode inserts clicked element context"}
-            </div>
-            <button
-              type="button"
-              disabled={Boolean(busy) || screenshotBlank || !selectedPoint || !sessionConnected || controlsDisabled}
-              onClick={() => {
-                if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
-              }}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
-              title="Attach the selected element again"
-            >
-              {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowClockwise size={12} />}
-              Re-attach
-            </button>
-          </div>
-        )}
-      </div>
+      <AppControlTraceDrawer
+        open={traceOpen}
+        rows={traceRows}
+        onClose={() => setTraceOpen(false)}
+      />
+
+      <AppControlStatusRow
+        lastLine={lastActionLine}
+        hint={sessionConnected ? "No agent actions on this app yet." : "No app attached."}
+        consoleErrors={countConsoleErrors(observation?.diagnostics)}
+        networkFailures={countNetworkFailures(observation?.diagnostics)}
+        diagnosticsKnown={Boolean(observation?.diagnostics)}
+        traceCount={traceEntries.length}
+        traceOpen={traceOpen}
+        onToggleTrace={() => setTraceOpen((value) => !value)}
+      />
     </div>
   );
 }

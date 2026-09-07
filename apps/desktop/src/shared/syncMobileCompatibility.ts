@@ -64,6 +64,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.listPromptStashes",
   "chat.createPromptStash",
   "chat.deletePromptStash",
+  // Read-only Work tools pane (active tool, browser tabs, App Control, latest
+  // frame). Optional because the phone hides the Tools row entirely when the
+  // brain does not advertise it — an older brain must not be flipped to
+  // "limited" over a disclosure row, and a chat-only runtime never builds the
+  // aggregator at all.
+  "workTools.getLaneState",
+  "workTools.readObservationPreview",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

@@ -457,6 +457,8 @@ export const IPC = {
   builtInBrowserSelectPoint: "ade.builtInBrowser.selectPoint",
   builtInBrowserSelectCurrent: "ade.builtInBrowser.selectCurrent",
   builtInBrowserClearSelection: "ade.builtInBrowser.clearSelection",
+  /** Human-only hand-back. Never exposed on the agent-facing desktop bridge. */
+  builtInBrowserEndHandoff: "ade.builtInBrowser.endHandoff",
   builtInBrowserSetEmulation: "ade.builtInBrowser.setEmulation",
   builtInBrowserSetZoom: "ade.builtInBrowser.setZoom",
   builtInBrowserFindInPage: "ade.builtInBrowser.findInPage",
@@ -467,6 +469,8 @@ export const IPC = {
   builtInBrowserExportHar: "ade.builtInBrowser.exportHar",
   builtInBrowserStartRecording: "ade.builtInBrowser.startRecording",
   builtInBrowserStopRecording: "ade.builtInBrowser.stopRecording",
+  builtInBrowserStartPreviewStream: "ade.builtInBrowser.startPreviewStream",
+  builtInBrowserStopPreviewStream: "ade.builtInBrowser.stopPreviewStream",
   builtInBrowserEvent: "ade.builtInBrowser.event",
   ptyCreate: "ade.pty.create",
   ptyResumeSession: "ade.pty.resumeSession",
