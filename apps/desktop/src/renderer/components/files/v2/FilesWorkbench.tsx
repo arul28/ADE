@@ -65,7 +65,7 @@ import {
 } from "./filesOpenRequests";
 import { LaneMachineMarker } from "../../terminals/LaneMachineMarker";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { modifierKeyLabel, revealLabel } from "../../../lib/platform";
+import { revealLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
@@ -1496,13 +1496,9 @@ export function FilesWorkbench({
         <div className="min-h-0 min-w-0">
           {openCount === 0 ? (
             <WarmEmptyState
-              workspaceName={workspace?.name ?? null}
-              branch={branch}
-              dirtyCount={dirtyTabIds.size}
               recents={visibleRecentFiles}
               onOpen={(path) => void openFile(path, { preview: false })}
               onSearch={() => setOverlay({ kind: "search" })}
-              modifierKey={modifierKeyLabel}
             />
           ) : (
           <EditorGroups

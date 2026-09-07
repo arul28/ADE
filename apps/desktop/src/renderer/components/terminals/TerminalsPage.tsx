@@ -70,6 +70,12 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { clearSessionWokeMarker, renameSession } from "./sessionLifecycleActions";
+import {
+  clampWorkSidebarWidthPct,
+  MAX_WORK_SIDEBAR_WIDTH_PCT,
+  MIN_WORK_SIDEBAR_WIDTH_PCT,
+  nextWorkSidebarWidthPctForKey,
+} from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
@@ -88,8 +94,6 @@ const TERMINALS_TILING_TREE: PaneSplit = {
   ],
 };
 
-const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
-const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
 
@@ -110,10 +114,6 @@ type SessionMutationOptions<T> = {
  * it at mousedown instead of carrying one.
  */
 const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
-
-function clampWorkSidebarWidthPct(widthPct: number): number {
-  return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
-}
 
 function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   window.dispatchEvent(new Event(
@@ -1306,18 +1306,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (totalWidth <= 0) return;
     const startX = event.clientX;
     const startWidthPct = work.workSidebarWidthPct;
-    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct);
+    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct, totalWidth);
     let animationFrame: number | null = null;
     const sidebarPane = container.querySelector<HTMLElement>(`[${WORK_SIDEBAR_PANE_ATTR}]`);
     const applyWidth = (widthPct: number) => {
-      const nextWidthPct = clampWorkSidebarWidthPct(widthPct);
+      // Clamped against the REAL container width, not just the 26-55% range:
+      // 26% of a narrow window is a pane too small for its own header.
+      const nextWidthPct = clampWorkSidebarWidthPct(widthPct, totalWidth);
       pendingWidthPct = nextWidthPct;
       const contentPane = workContentPaneRef.current;
       if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
       if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
     };
     const scheduleWidth = (widthPct: number) => {
-      pendingWidthPct = clampWorkSidebarWidthPct(widthPct);
+      pendingWidthPct = clampWorkSidebarWidthPct(widthPct, totalWidth);
       if (animationFrame != null) return;
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
@@ -1348,6 +1350,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, [work, workSidebarTool]);
+
+  /**
+   * The same drag, from the keyboard.
+   *
+   * A `role="separator"` with a value is a real ARIA widget: it has to be
+   * focusable and it has to move. Without this the pane's width was reachable
+   * only by mouse, which is the one input a resize handle must not require.
+   */
+  const handleWorkSidebarResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const containerWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? null;
+    const next = nextWorkSidebarWidthPctForKey(event.key, work.workSidebarWidthPct, containerWidth);
+    if (next == null) return;
+    event.preventDefault();
+    if (next === work.workSidebarWidthPct) return;
+    work.setWorkSidebarWidthPct(next);
+  }, [work]);
 
   const workViewArea = useMemo(
     () => (
@@ -1457,8 +1475,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           <div
             role="separator"
             aria-orientation="vertical"
+            aria-label="Resize tools pane"
+            aria-valuenow={Math.round(work.workSidebarWidthPct)}
+            aria-valuemin={MIN_WORK_SIDEBAR_WIDTH_PCT}
+            aria-valuemax={MAX_WORK_SIDEBAR_WIDTH_PCT}
+            aria-valuetext={`Tools pane ${Math.round(work.workSidebarWidthPct)}% of the window`}
+            tabIndex={0}
             onMouseDown={handleWorkSidebarResizeMouseDown}
-            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+            onKeyDown={handleWorkSidebarResizeKeyDown}
+            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 focus-visible:bg-[var(--color-accent)]/45 focus-visible:outline-none active:bg-[var(--color-accent)]/40"
           />
         ) : null}
         <AnimatePresence initial={false}>
@@ -1469,7 +1494,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               key="work-tools-sidebar"
               {...{ [WORK_SIDEBAR_PANE_ATTR]: "" }}
               className="min-h-0 min-w-0 basis-0 overflow-hidden"
-              style={{ maxWidth: "55%" }}
+              // 55% is the taste ceiling; the `max()` keeps the pane's own
+              // 280px floor reachable in a window too narrow for both, which is
+              // the case where the ceiling would otherwise clip its close button.
+              style={{ maxWidth: "max(55%, 280px)" }}
               initial={{ flexGrow: 0 }}
               animate={{ flexGrow: work.workSidebarWidthPct }}
               exit={{ flexGrow: 0 }}
@@ -1512,6 +1540,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       contextTarget,
       contextDisabledReason,
       handleWorkSidebarResizeMouseDown,
+      handleWorkSidebarResizeKeyDown,
       closeWorkSidebar,
       sortedLanes,
       setWorkSidebarTool,

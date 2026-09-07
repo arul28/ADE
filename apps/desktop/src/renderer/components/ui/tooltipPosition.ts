@@ -44,7 +44,9 @@ export type TooltipPositionInput = {
   pad?: number;
 };
 
-const DEFAULT_GAP = 8;
+/** Trigger → tooltip. Small enough to read as attached to the control. */
+const DEFAULT_GAP = 6;
+/** Tooltip → window edge. Never zero: a tooltip flush to the glass reads clipped. */
 const DEFAULT_PAD = 8;
 
 const OPPOSITE: Record<TooltipSide, TooltipSide> = {

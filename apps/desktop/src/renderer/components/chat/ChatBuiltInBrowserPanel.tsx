@@ -60,6 +60,7 @@ import type {
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
 import {
   BUILT_IN_BROWSER_RECORDING_FRAME_RATES,
+  activeEmulationPresetId,
   browserLetterboxFrame,
   browserTabLabel,
   browserToolbarLayout,
@@ -67,8 +68,8 @@ import {
   clipboardUrlCandidate,
   deviceMenuPresets,
   devServerChipLabel,
-  emulationButtonLabel,
   emulationCaption,
+  emulationDisplayLabel,
   emulationSizeLabel,
   findErrorMessage,
   findMatchLabel,
@@ -122,6 +123,8 @@ type BrowserFrame = {
 
 type BrowserBounds = BrowserFrame & {
   visible: boolean;
+  /** The letterbox fit factor, forwarded to CDP's device-metrics `scale`. */
+  scale: number;
 };
 
 type CaptureMediaBounds = {
@@ -667,6 +670,28 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
     };
   }
   const rawTabs = Array.isArray(value.tabs) ? value.tabs.map(normalizeTab).filter((tab): tab is BrowserTab => Boolean(tab)) : previous?.tabs ?? [];
+  // Only when the payload actually says "zero tabs": a partial update that
+  // omits `tabs` entirely is silence, not a claim that they all closed.
+  if (Array.isArray(value.tabs) && rawTabs.length === 0) {
+    // No tabs is a real state, not a gap in the payload: carrying the closed
+    // tab's URL forward left a green padlock and a live-looking omnibox over a
+    // browser that has nothing open.
+    return {
+      ...value,
+      supported: booleanField(value.supported, previous?.supported ?? true),
+      visible: booleanField(value.visible, previous?.visible ?? false),
+      activeTabId: null,
+      tabs: [],
+      url: null,
+      title: null,
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      inspecting: false,
+      selectedItem: null,
+      lastError: stringField(value.lastError) ?? stringField(value.error) ?? previous?.lastError ?? null,
+    };
+  }
   const activeTabId = stringField(value.activeTabId) ?? previous?.activeTabId ?? rawTabs[0]?.id ?? null;
   const activeTab = rawTabs.find((tab) => tab.id === activeTabId) ?? rawTabs[0] ?? null;
   return {
@@ -675,8 +700,16 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
     visible: booleanField(value.visible, previous?.visible ?? false),
     activeTabId,
     tabs: rawTabs,
-    url: stringField(value.url) ?? activeTab?.url ?? previous?.url ?? null,
-    title: stringField(value.title) ?? activeTab?.title ?? previous?.title ?? null,
+    /*
+      The active tab's own URL, never the last one we happened to see.
+
+      A new tab has no URL, and falling through to `previous` handed the empty
+      launchpad the address of the tab before it — which then wore a green
+      padlock over a field with nothing in it. `previous` is only a fallback for
+      not knowing which tab is active at all.
+    */
+    url: stringField(value.url) ?? (activeTab ? activeTab.url : previous?.url ?? null),
+    title: stringField(value.title) ?? (activeTab ? activeTab.title : previous?.title ?? null),
     canGoBack: booleanField(value.canGoBack, activeTab?.canGoBack ?? previous?.canGoBack ?? false),
     canGoForward: booleanField(value.canGoForward, activeTab?.canGoForward ?? previous?.canGoForward ?? false),
     loading: booleanField(value.loading, booleanField(value.isLoading, activeTab?.isLoading ?? previous?.loading ?? false)),
@@ -755,7 +788,8 @@ function boundsEqual(a: BrowserBounds | null, b: BrowserBounds): boolean {
     && a.y === b.y
     && a.width === b.width
     && a.height === b.height
-    && a.visible === b.visible,
+    && a.visible === b.visible
+    && a.scale === b.scale,
   );
 }
 
@@ -771,7 +805,7 @@ function boundsEqual(a: BrowserBounds | null, b: BrowserBounds): boolean {
 function measureNativeBrowserBounds(
   element: HTMLElement,
   container?: HTMLElement | null,
-): BrowserBounds {
+): Omit<BrowserBounds, "scale"> {
   const rect = element.getBoundingClientRect();
   let zoomFactor = 1;
   try {
@@ -1082,6 +1116,8 @@ function BuiltInBrowserPanelView({
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const tabStripRef = useRef<HTMLDivElement | null>(null);
+  /** The row whose measured width decides what the toolbar can afford. */
+  const toolbarRowRef = useRef<HTMLDivElement | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState("");
   const [findState, setFindState] = useState<BrowserFindState | null>(null);
@@ -1098,6 +1134,8 @@ function BuiltInBrowserPanelView({
   const [importOpen, setImportOpen] = useState(false);
   const [bootedSimulatorName, setBootedSimulatorName] = useState<string | null>(null);
   const [devServers, setDevServers] = useState<BrowserDevServer[]>([]);
+  /** The service answered, and had nothing — so the port probe still runs. */
+  const [discoveryEmpty, setDiscoveryEmpty] = useState(false);
   const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
   const [failedFavicons, setFailedFavicons] = useState<Record<string, true>>({});
   const [tabStripFades, setTabStripFades] = useState<{ start: boolean; end: boolean }>({ start: false, end: false });
@@ -1116,7 +1154,9 @@ function BuiltInBrowserPanelView({
   const underlaySnapshotRef = useRef<{ dataUrl: string; capturedAt: number } | null>(null);
   const underlayCaptureRef = useRef<Promise<void> | null>(null);
   const underlayFadeTimerRef = useRef<number | null>(null);
-  const [viewFrame, setViewFrame] = useState<BrowserViewFrame>({ left: 1, top: 1, width: 0, height: 0 });
+  const [viewFrame, setViewFrame] = useState<BrowserViewFrame>({ left: 1, top: 1, width: 0, height: 0, scale: 1 });
+  /** Read by `reportBounds`, which runs outside this render's closure. */
+  const viewScaleRef = useRef(1);
   // Which tabs are looking at the pinned machine, and through which forward.
   const [tabTunnels, setTabTunnels] = useState<TabTunnelMap>({});
   const tabTunnelsRef = useRef<TabTunnelMap>(tabTunnels);
@@ -1245,13 +1285,23 @@ function BuiltInBrowserPanelView({
   const currentUrl = tunnelAwareUrl(status?.url ?? "", activeTabTunnel);
   const canGoBack = Boolean(status?.canGoBack);
   const canGoForward = Boolean(status?.canGoForward);
-  const loading = Boolean(status?.loading);
   const inspecting = Boolean(status?.inspecting);
+  /** Nothing open: the chrome has to stop describing a page that is gone. */
+  const hasTab = browserTabs.length > 0;
   const selectionFrame = frameLabel(selectedItem?.frame ?? null);
   const activeTab = useMemo(
     () => browserTabs.find((tab) => tab.id === activeTabId) ?? null,
     [activeTabId, browserTabs],
   );
+  /**
+   * Loading, from whichever half of the payload knows.
+   *
+   * `status.loading` is only set by main processes that send a top-level flag;
+   * the per-tab `isLoading` is what `did-start-loading` actually updates, and
+   * reading only the first left the progress bar dead on every real navigation
+   * while the tab pill's own spinner span.
+   */
+  const loading = Boolean(status?.loading || activeTab?.isLoading);
   const handoff = activeTab?.handoff ?? null;
   /**
    * Origin the auto hand-back offer is currently suppressed for.
@@ -1275,7 +1325,9 @@ function BuiltInBrowserPanelView({
   const devToolsOpen = Boolean(activeTab?.devToolsOpen);
   const networkLogging = Boolean(activeTab?.networkLogging);
   const recording: BuiltInBrowserRecordingStatus | null = activeTab?.recording ?? null;
-  const lockKind = urlLockKind(currentUrl);
+  // A padlock over an empty omnibox is a claim about a connection that does
+  // not exist, so the lock belongs to the tab, not to the last string we saw.
+  const lockKind = hasTab ? urlLockKind(currentUrl) : "none";
   const captureImageDataUrl = captureBase?.dataUrl ?? captureBase?.screenshotDataUrl ?? null;
   const activeCaptureFrame = useMemo(() => (
     captureBase?.width && captureBase?.height && captureSelection
@@ -1318,6 +1370,12 @@ function BuiltInBrowserPanelView({
       setTabTunnels((prev) => reconcileTabTunnels(prev, normalized.tabs));
     }
     if (!editingUrlRef.current) {
+      // Nothing open means nothing to show: the field goes back to its
+      // placeholder rather than holding the address of a tab that is gone.
+      if (normalized.tabs.length === 0) {
+        setUrlInput("");
+        return;
+      }
       // Never show the ephemeral forward port: the human asked for the remote
       // origin, and that is the URL they can copy, share, or retype.
       const activeId = normalized.activeTabId;
@@ -1392,7 +1450,7 @@ function BuiltInBrowserPanelView({
     const element = browserViewportRef.current ?? surface;
     if (!api || !element) return;
     if (shouldUseRendererBrowserWebviews(api)) {
-      const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
+      const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false, scale: 1 };
       if (boundsEqual(latestBoundsRef.current, hidden)) return;
       latestBoundsRef.current = hidden;
       api.setBounds(withBrowserScope(hidden), runtimePinRef.current).catch((error: unknown) => {
@@ -1403,6 +1461,10 @@ function BuiltInBrowserPanelView({
     const measured = measureNativeBrowserBounds(element, element === surface ? panelRef.current : surface);
     const next: BrowserBounds = {
       ...measured,
+      // How much the letterbox had to shrink to fit. Main turns this into CDP's
+      // device-metrics `scale`, so a device larger than the pane is drawn
+      // smaller rather than cropped at the pane's edge.
+      scale: viewScaleRef.current,
       visible: visibleOverride ?? (
         !browserInputSuppressedRef.current
         && !browserOverlayOccludedRef.current
@@ -1432,6 +1494,7 @@ function BuiltInBrowserPanelView({
       width: last?.width ?? 0,
       height: last?.height ?? 0,
       visible: false,
+      scale: last?.scale ?? 1,
     };
     latestBoundsRef.current = hidden;
     await api.stopInspect(browserScope, runtimePinRef.current).catch(() => {});
@@ -2470,7 +2533,13 @@ function BuiltInBrowserPanelView({
   /* ── Device emulation ───────────────────────────────────────────────────── */
 
   const applyEmulation = useCallback((
-    request: { preset?: string | null; width?: number | null; height?: number | null },
+    request: {
+      preset?: string | null;
+      width?: number | null;
+      height?: number | null;
+      mobile?: boolean | null;
+      deviceScaleFactor?: number | null;
+    },
     label: string,
   ) => {
     void runBusy("emulation", async () => {
@@ -2495,15 +2564,41 @@ function BuiltInBrowserPanelView({
     });
   }, [applyStatus, runBusy, withBrowserScope]);
 
-  /** Portrait ↔ landscape: the same device, turned over. */
+  /**
+   * Portrait ↔ landscape: the same device, turned over.
+   *
+   * The preset id rides along with the swapped size so the service keeps the
+   * device's DPR, touch and mobile user agent — rotating used to fall back to
+   * the desktop "responsive" base, which quietly turned an iPhone into a
+   * 852-wide desktop and served the wrong breakpoint.
+   */
   const handleRotateEmulation = useCallback(() => {
     const current = statusRef.current?.tabs.find((tab) => tab.id === statusRef.current?.activeTabId)?.emulation;
     if (!current?.width || !current.height) return;
+    const rotated = { width: current.height, height: current.width };
+    const presetId = activeEmulationPresetId(current);
     applyEmulation(
-      { width: current.height, height: current.width },
-      `${current.height}×${current.width}`,
+      {
+        ...rotated,
+        preset: presetId === "responsive" || presetId === "desktop" ? null : presetId,
+        mobile: current.mobile,
+        deviceScaleFactor: current.deviceScaleFactor || null,
+      },
+      emulationDisplayLabel({ ...current, ...rotated, presetId: "responsive" }),
     );
   }, [applyEmulation]);
+
+  /** One value for the whole device menu, so exactly one row is ever checked. */
+  const activePresetId = useMemo(() => activeEmulationPresetId(emulation), [emulation]);
+
+  const handleDeviceMenuValue = useCallback((value: string) => {
+    if (value === "desktop") {
+      handleEmulationOff();
+      return;
+    }
+    const preset = deviceMenuPresets().find((candidate) => candidate.id === value);
+    if (preset) handlePickPreset(preset);
+  }, [handleEmulationOff, handlePickPreset]);
 
   const handleApplyResponsive = useCallback(() => {
     const width = Number.parseInt(responsiveWidth, 10);
@@ -2605,6 +2700,9 @@ function BuiltInBrowserPanelView({
     setFindOpen(false);
     setFindState(null);
     setFindError(null);
+    // Hand the keyboard back to the page: the bar is gone, so a caret still
+    // sitting in a removed input would swallow the next keystroke.
+    findInputRef.current?.blur();
     const api = getBrowserApi();
     if (!api?.stopFindInPage) return;
     void api.stopFindInPage(withBrowserScope({ action: "clearSelection" as const }), runtimePinRef.current)
@@ -2866,21 +2964,34 @@ function BuiltInBrowserPanelView({
     let cancelled = false;
     void Promise.resolve(api.getDevServers(browserScope, runtimePinRef.current))
       .then((value) => {
-        if (!cancelled) setDevServers(normalizeDevServers(value));
+        if (cancelled) return;
+        const discovered = normalizeDevServers(value);
+        setDevServers(discovered);
+        setDiscoveryEmpty(discovered.length === 0);
       })
       .catch(() => {
-        // No detector is not an error; the launchpad just offers fewer chips.
+        // No detector is not an error; the port probe below covers it.
+        if (!cancelled) setDiscoveryEmpty(true);
       });
     return () => {
       cancelled = true;
     };
   }, [browserScope, remotePin]);
 
-  // Fallback for an older main process: one pass over the usual ports, only
-  // against this desktop's loopback (a remote pin's localhost is not ours).
+  /*
+    The port probe, as a fallback rather than an alternative.
+
+    `getDevServers` only knows the servers ADE's own PTYs started, so a `npm run
+    dev` the human launched in iTerm before opening ADE made the launchpad claim
+    there was nothing to open while :5173 was serving. An empty answer is now
+    treated the same as no answer at all: probe the usual ports, and label what
+    comes back "localhost:5173" — the honest thing to say about a port nobody
+    can name a command for.
+  */
   useEffect(() => {
     const api = getBrowserApi();
-    if (api?.getDevServers || remotePin) return undefined;
+    if (api?.getDevServers && !discoveryEmpty) return undefined;
+    if (remotePin) return undefined;
     const probePort = window.ade?.localhost?.probePort;
     if (!probePort) return undefined;
     let cancelled = false;
@@ -2900,7 +3011,7 @@ function BuiltInBrowserPanelView({
     return () => {
       cancelled = true;
     };
-  }, [remotePin]);
+  }, [discoveryEmpty, remotePin]);
 
   // Only offered when the booted device maps onto metrics ADE actually has.
   const simulatorPreset = useMemo(
@@ -2954,10 +3065,18 @@ function BuiltInBrowserPanelView({
 
   /* ── Layout ─────────────────────────────────────────────────────────────── */
 
-  // Toolbar density follows the pane, not a media query: this panel is a pane
-  // inside a window, and the window is not what got narrow.
+  /*
+    Toolbar density follows the row's own measured width, not a media query and
+    not a pair of hardcoded pane widths: this panel is a pane inside a window,
+    the window is not what got narrow, and the thresholds that used to decide
+    this were wrong by ~80px in the middle of the range — the omnibox collapsed
+    to nothing at ~420 while every button stayed.
+
+    Observing the row is safe from feedback: its width comes from the pane, and
+    nothing the layout removes can change it.
+  */
   useLayoutEffect(() => {
-    const element = panelRef.current;
+    const element = toolbarRowRef.current ?? panelRef.current;
     if (!element) return undefined;
     const measure = () => {
       const width = element.getBoundingClientRect().width;
@@ -2970,7 +3089,13 @@ function BuiltInBrowserPanelView({
     return () => observer.disconnect();
   }, []);
 
-  const toolbar = useMemo(() => browserToolbarLayout(paneWidth), [paneWidth]);
+  const deviceLabel = useMemo(() => emulationDisplayLabel(emulation), [emulation]);
+  const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
+    hasSelection: Boolean(selectedItem),
+    recording: Boolean(recording),
+    deviceLabel,
+    urlFocused: editingUrl,
+  }), [deviceLabel, editingUrl, paneWidth, recording, selectedItem]);
   const urlDisplay = useMemo(() => splitUrlForDisplay(currentUrl), [currentUrl]);
   // Only while the field shows exactly what is loaded: mid-edit the person's
   // own text is the truth, and dimming half of it would be a lie.
@@ -2991,11 +3116,18 @@ function BuiltInBrowserPanelView({
     const measure = () => {
       const rect = stage.getBoundingClientRect();
       const next = browserLetterboxFrame(rect, emulationSize);
+      if (viewScaleRef.current !== next.scale) {
+        viewScaleRef.current = next.scale;
+        // A fit factor that changed mid-drag has to reach main in the same
+        // gesture, or the page is drawn at the previous pane's scale.
+        reportBounds(undefined, { force: true });
+      }
       setViewFrame((previous) => (
         previous.left === next.left
         && previous.top === next.top
         && previous.width === next.width
         && previous.height === next.height
+        && previous.scale === next.scale
           ? previous
           : next
       ));
@@ -3005,7 +3137,7 @@ function BuiltInBrowserPanelView({
     const observer = new ResizeObserver(measure);
     observer.observe(stage);
     return () => observer.disconnect();
-  }, [emulationSize]);
+  }, [emulationSize, reportBounds]);
 
   /* ── Launchpad ──────────────────────────────────────────────────────────── */
 
@@ -3089,15 +3221,15 @@ function BuiltInBrowserPanelView({
    * be the same list — and the same "Off" row — as the one at 900px.
    */
   const deviceMenuItems = (
-    <>
+    <DropdownMenu.RadioGroup value={activePresetId} onValueChange={handleDeviceMenuValue}>
       <DropdownMenu.Label className={MENU_LABEL_CLASS}>Device</DropdownMenu.Label>
       {deviceMenuPresets().map((preset) => {
-        const current = emulation?.presetId === preset.id;
+        const current = activePresetId === preset.id;
         return (
-          <DropdownMenu.Item
+          <DropdownMenu.RadioItem
             key={preset.id}
+            value={preset.id}
             className={MENU_ITEM_CLASS}
-            onSelect={() => handlePickPreset(preset)}
           >
             <Check
               size={11}
@@ -3109,7 +3241,7 @@ function BuiltInBrowserPanelView({
             <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">
               {emulationSizeLabel(preset)}
             </span>
-          </DropdownMenu.Item>
+          </DropdownMenu.RadioItem>
         );
       })}
       {simulatorPreset ? (
@@ -3127,7 +3259,24 @@ function BuiltInBrowserPanelView({
         </>
       ) : null}
       <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-      <DropdownMenu.Label className={MENU_LABEL_CLASS}>Responsive</DropdownMenu.Label>
+      {/*
+        Responsive is a row of this list too, so a custom size — and a rotated
+        preset, which the service also calls responsive — has something checked
+        rather than a menu that claims nothing is on.
+      */}
+      <DropdownMenu.Label className={cn(MENU_LABEL_CLASS, "flex items-center gap-1.5")}>
+        <Check
+          size={11}
+          weight="bold"
+          aria-hidden="true"
+          data-testid="browser-device-responsive-check"
+          className={cn(
+            "shrink-0 text-[var(--color-accent)]",
+            activePresetId === "responsive" ? "opacity-100" : "opacity-0",
+          )}
+        />
+        Responsive
+      </DropdownMenu.Label>
       <div
         className="flex items-center gap-1.5 px-2 pb-1.5"
         onKeyDown={(event) => event.stopPropagation()}
@@ -3157,12 +3306,7 @@ function BuiltInBrowserPanelView({
       </div>
       <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
       {/* "Off" is a choice in the same list, so it carries the same check mark. */}
-      <DropdownMenu.Item
-        className={MENU_ITEM_CLASS}
-        onSelect={handleEmulationOff}
-        aria-checked={!emulation}
-        role="menuitemradio"
-      >
+      <DropdownMenu.RadioItem value="desktop" className={MENU_ITEM_CLASS}>
         <Check
           size={11}
           weight="bold"
@@ -3171,18 +3315,19 @@ function BuiltInBrowserPanelView({
         />
         <span className="min-w-0 flex-1 truncate">Off</span>
         <span className="shrink-0 text-[9.5px] text-muted-fg/70">Full width</span>
-      </DropdownMenu.Item>
-    </>
+      </DropdownMenu.RadioItem>
+    </DropdownMenu.RadioGroup>
   );
 
   return (
     <div
       ref={panelRef}
+      data-testid="browser-panel"
       onKeyDown={handlePanelKeyDown}
-      className="flex h-full min-h-0 flex-col font-sans text-[12px] text-fg/75"
+      className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
-        <div className="relative flex h-[28px] shrink-0 select-none items-center bg-white/[0.02]">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
+        <div className="relative flex h-[28px] min-w-0 shrink-0 select-none items-center overflow-hidden bg-white/[0.02]">
           <div
             ref={tabStripRef}
             onScroll={syncTabStripFades}
@@ -3329,7 +3474,7 @@ function BuiltInBrowserPanelView({
         {pendingApproval ? (
           <div
             role="alert"
-            className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90"
+            className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 overflow-hidden border-b border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90"
           >
             <span className="min-w-0 flex-1">
               {`Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`}
@@ -3358,11 +3503,15 @@ function BuiltInBrowserPanelView({
           </div>
         ) : null}
 
-        <div className="flex h-9 shrink-0 select-none items-center gap-1 border-b border-white/[0.08] bg-white/[0.02] px-1.5">
+        <div
+          ref={toolbarRowRef}
+          data-testid="browser-toolbar-row"
+          className="flex h-9 min-w-0 shrink-0 select-none items-center gap-1 overflow-hidden border-b border-white/[0.08] bg-white/[0.02] px-1.5"
+        >
           <div className="inline-flex h-7 shrink-0 items-center overflow-hidden rounded-[7px] border border-white/[0.08] bg-black/25">
             <button
               type="button"
-              disabled={Boolean(busy) || !apiAvailable || !canGoBack}
+              disabled={Boolean(busy) || !apiAvailable || !hasTab || !canGoBack}
               onClick={handleBack}
               className={cn("inline-flex h-full w-7 items-center justify-center text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
               title="Go back"
@@ -3373,7 +3522,7 @@ function BuiltInBrowserPanelView({
             {toolbar.showForward ? (
               <button
                 type="button"
-                disabled={Boolean(busy) || !apiAvailable || !canGoForward}
+                disabled={Boolean(busy) || !apiAvailable || !hasTab || !canGoForward}
                 onClick={handleForward}
                 className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
                 title="Go forward"
@@ -3384,7 +3533,7 @@ function BuiltInBrowserPanelView({
             ) : null}
             <button
               type="button"
-              disabled={Boolean(busy) || !apiAvailable}
+              disabled={Boolean(busy) || !apiAvailable || !hasTab}
               onClick={loading ? handleStop : handleReload}
               className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
               title={loading ? "Stop loading" : "Reload"}
@@ -3441,10 +3590,13 @@ function BuiltInBrowserPanelView({
                   setEditingUrl(false);
                   if (!urlInput.trim()) setUrlInput(currentUrl);
                 }}
-                placeholder="Enter URL or search"
+                placeholder="Search or enter address"
                 aria-label="ADE browser URL"
+                // Always `flex: 1 1 0` with no intrinsic floor: the field is the
+                // one control on this row that is allowed to take what is left,
+                // and the row above has already made sure that is enough.
                 className={cn(
-                  "h-full min-w-0 flex-1 truncate bg-transparent pr-2 text-[11px] outline-none placeholder:text-muted-fg/40",
+                  "h-full w-0 min-w-0 flex-1 basis-0 truncate bg-transparent pr-2 text-[11px] outline-none placeholder:text-muted-fg/40",
                   showUrlOverlay ? "text-transparent caret-fg/80" : "text-fg/85",
                 )}
               />
@@ -3465,32 +3617,28 @@ function BuiltInBrowserPanelView({
                 </span>
               ) : null}
             </span>
-            {toolbar.showOpenButton ? (
+            {/*
+              The submit affordance is a hint, never the mechanism: Enter has
+              always opened what is typed. So it shrinks to a bare ▶ in a narrow
+              pane and steps out of the way entirely while the field is focused,
+              where it would otherwise be eating the width of the thing the
+              person is typing into.
+            */}
+            {toolbar.openAffordance === "none" ? null : (
               <button
                 type="submit"
+                data-testid="browser-url-submit"
                 disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
                 className={cn(
-                  "inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-[6px] border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 hover:bg-white/[0.06]",
+                  "inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-[6px] border-l border-white/[0.06] text-fg/75 hover:bg-white/[0.06]",
+                  toolbar.openAffordance === "label" ? "px-1.5 text-[10px] font-medium" : "w-7",
                   TOOLBAR_MOTION,
                   TOOLBAR_FOCUS,
                 )}
                 aria-label="Open URL"
               >
                 {busy === "navigate" ? <SpinnerGap size={12} className="animate-spin" /> : <Play size={12} weight="fill" />}
-                Open
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
-                className={cn(
-                  "inline-flex h-full w-7 shrink-0 items-center justify-center rounded-r-[6px] border-l border-white/[0.06] text-fg/75 hover:bg-white/[0.06]",
-                  TOOLBAR_MOTION,
-                  TOOLBAR_FOCUS,
-                )}
-                aria-label="Open URL"
-              >
-                {busy === "navigate" ? <SpinnerGap size={12} className="animate-spin" /> : <Play size={12} weight="fill" />}
+                {toolbar.openAffordance === "label" ? "Open" : null}
               </button>
             )}
           </form>
@@ -3523,8 +3671,8 @@ function BuiltInBrowserPanelView({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
-                  disabled={!apiAvailable}
-                  aria-label={`Browser device preset — ${emulationButtonLabel(emulation)}`}
+                  disabled={!apiAvailable || !hasTab}
+                  aria-label={`Browser device preset — ${deviceLabel}`}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1 font-medium",
                     toolbar.showLabels ? "px-2" : "w-7 justify-center",
@@ -3537,7 +3685,7 @@ function BuiltInBrowserPanelView({
                   {emulation?.mobile ? <DeviceMobile size={12} /> : <Monitor size={12} />}
                   {toolbar.showLabels ? (
                     <>
-                      <span className="max-w-[104px] truncate">{emulationButtonLabel(emulation)}</span>
+                      <span className="max-w-[104px] truncate">{deviceLabel}</span>
                       <CaretDown size={9} className="shrink-0 opacity-60" />
                     </>
                   ) : null}
@@ -3559,7 +3707,7 @@ function BuiltInBrowserPanelView({
           {toolbar.showCamera ? (
             <button
               type="button"
-              disabled={Boolean(busy) || !apiAvailable}
+              disabled={Boolean(busy) || !apiAvailable || !hasTab}
               onClick={handleCameraClick}
               className={cn(
                 "inline-flex w-7 shrink-0 items-center justify-center",
@@ -3584,7 +3732,7 @@ function BuiltInBrowserPanelView({
           {toolbar.showInspect ? (
             <button
               type="button"
-              disabled={Boolean(busy) || !apiAvailable}
+              disabled={Boolean(busy) || !apiAvailable || !hasTab}
               onClick={handleInspectToggle}
               className={cn(
                 "inline-flex shrink-0 items-center gap-1 font-medium",
@@ -3602,7 +3750,7 @@ function BuiltInBrowserPanelView({
             </button>
           ) : null}
 
-          {selectedItem && toolbar.showLabels ? (
+          {selectedItem && toolbar.showAttach ? (
             <button
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !onAddContext}
@@ -3703,7 +3851,7 @@ function BuiltInBrowserPanelView({
                           )}
                           <span className="min-w-0 flex-1 truncate">Device</span>
                           <span className="shrink-0 text-[9.5px] text-muted-fg/70">
-                            {emulationButtonLabel(emulation)}
+                            {deviceLabel}
                           </span>
                         </DropdownMenu.SubTrigger>
                         <DropdownMenu.Portal>
@@ -3897,6 +4045,15 @@ function BuiltInBrowserPanelView({
               animate={{ height: "auto", opacity: 1 }}
               exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
               transition={REVEAL_TRANSITION}
+              /*
+                Escape belongs to whichever thing is on top. The find bar claims
+                it here so the pane's own capture-phase handler — which closes
+                the entire tool — skips anything inside a declared scope; the
+                input also stops the event itself, so the bar is safe in a shell
+                that has not learned the attribute yet.
+              */
+              data-ade-escape-scope="find"
+              data-testid="browser-find-bar"
               className="shrink-0 overflow-hidden border-b border-white/[0.08] bg-white/[0.015]"
             >
               <form
@@ -3906,7 +4063,7 @@ function BuiltInBrowserPanelView({
                   event.preventDefault();
                   findStep(findText, true);
                 }}
-                className="flex select-none items-center gap-1.5 px-1.5 py-1.5"
+                className="flex min-w-0 select-none items-center gap-1.5 overflow-hidden px-1.5 py-1.5"
               >
                 <MagnifyingGlass size={12} className="shrink-0 text-muted-fg/55" />
                 <input
@@ -3915,6 +4072,17 @@ function BuiltInBrowserPanelView({
                   onChange={(event) => {
                     setFindText(event.target.value);
                     queueFind(event.target.value);
+                  }}
+                  onKeyDownCapture={(event) => {
+                    if (event.key !== "Escape") return;
+                    // Escape closes the bar and nothing else. It used to reach
+                    // the pane's handler and take the whole Browser tool down
+                    // with it, which is a very expensive way to dismiss a
+                    // six-character input.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.nativeEvent.stopImmediatePropagation();
+                    closeFind();
                   }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
@@ -3990,7 +4158,7 @@ function BuiltInBrowserPanelView({
               <div
                 role="status"
                 aria-live="polite"
-                className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-amber-100/85"
+                className="flex min-w-0 items-center gap-2 overflow-hidden px-2.5 py-1.5 text-[11px] text-amber-100/85"
               >
                 {showHandoffHandBackOffer ? (
                   <>
@@ -4298,8 +4466,11 @@ function BuiltInBrowserPanelView({
           */}
           {letterboxed ? (
             <div className="flex h-[26px] shrink-0 select-none items-center justify-center gap-2 border-t border-white/[0.06] bg-white/[0.015]">
-              <span className="font-mono text-[10px] tracking-[0.02em] text-muted-fg/75">
-                {emulationCaption(emulation)}
+              <span
+                data-testid="browser-emulation-caption"
+                className="font-mono text-[10px] tracking-[0.02em] text-muted-fg/75"
+              >
+                {emulationCaption(emulation, viewFrame.scale)}
               </span>
               <button
                 type="button"

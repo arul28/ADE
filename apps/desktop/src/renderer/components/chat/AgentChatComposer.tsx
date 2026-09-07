@@ -107,6 +107,7 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
+import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequestDetail";
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
@@ -538,6 +539,33 @@ export type ParallelComposerControlSlot = {
   onCursorModeChange: (modeId: string) => void;
   onCursorConfigChange: (configId: string, value: string | boolean) => void;
 };
+
+/**
+ * The command (or path) an approval is about, under the card's prose.
+ *
+ * Renders nothing when the prose already spells it out — a card that says
+ * "Run command: npm test" does not need "npm test" again underneath.
+ */
+function PendingApprovalDetail({
+  request,
+  description,
+}: {
+  request: PendingInputRequest;
+  description: string | null;
+}) {
+  const detail = approvalRequestDetail(request);
+  if (approvalDetailIsRedundant(detail, description) || !detail) return null;
+  return (
+    <div className="mb-2 overflow-hidden rounded-[var(--chat-radius-md,8px)] border border-white/[0.07] bg-black/25">
+      <div className="border-b border-white/[0.05] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-widest text-fg/35">
+        {detail.kind === "command" ? "Command" : "Path"}
+      </div>
+      <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/80">
+        {detail.text}
+      </pre>
+    </div>
+  );
+}
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
   if (!pendingInput) return null;
@@ -5288,6 +5316,14 @@ export function AgentChatComposer({
                 <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
                   {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
                 </div>
+                {/* The card's prose can be a policy's reason ("This command
+                    requires approval"), which names no command. You cannot
+                    approve what you cannot read, so the argument itself is
+                    shown verbatim — scrollable, never truncated. */}
+                <PendingApprovalDetail
+                  request={pendingInput}
+                  description={pendingInput.description ?? pendingInput.questions[0]?.question ?? null}
+                />
                 <div className="flex flex-wrap items-center gap-1.5">
                   {isMcpElicitation && mcpElicitationUrl ? (
                     <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>

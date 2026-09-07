@@ -2198,7 +2198,7 @@ button:active, [role="button"]:active {
   align-items: center;
   gap: 6px;
   width: max-content;
-  max-width: min(260px, calc(100vw - 24px));
+  max-width: min(240px, calc(100vw - 24px));
   padding: 4px 8px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: var(--radius-sm, 6px);

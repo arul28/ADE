@@ -768,6 +768,7 @@ import type {
   BrowserLoginImportResult,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
@@ -8573,9 +8574,12 @@ const adeBridge = {
     captureScreenshot: async (
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<BuiltInBrowserScreenshot> =>
+    ): Promise<BuiltInBrowserScreenshotResult> =>
+      // A pinned runtime answers on the agent contract (no tab = a rejected
+      // request), so its success is tagged here to keep one shape for callers.
       isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserScreenshot>(pin, "built_in_browser", "captureScreenshot", { args })
+            .then((screenshot) => ({ ok: true, ...screenshot }) as BuiltInBrowserScreenshotResult)
         : ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,

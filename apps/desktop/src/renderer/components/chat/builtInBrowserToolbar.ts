@@ -4,6 +4,7 @@ import {
 } from "../../../shared/builtInBrowserEmulation";
 import type {
   BuiltInBrowserEmulationPreset,
+  BuiltInBrowserEmulationPresetId,
   BuiltInBrowserEmulationState,
   BuiltInBrowserRecordingStatus,
 } from "../../../shared/types/builtInBrowser";
@@ -71,6 +72,58 @@ export function emulationButtonLabel(
   if (!emulation) return "Desktop";
   const label = emulation.label?.trim();
   return label && label.length > 0 ? label : "Desktop";
+}
+
+type EmulationSize = { width?: number | null; height?: number | null };
+
+/** The preset whose metrics these are, in either orientation. */
+function matchEmulationPreset(
+  emulation: EmulationSize | null | undefined,
+): { preset: BuiltInBrowserEmulationPreset; rotated: boolean } | null {
+  const width = emulation?.width && emulation.width > 0 ? Math.round(emulation.width) : null;
+  const height = emulation?.height && emulation.height > 0 ? Math.round(emulation.height) : null;
+  if (width == null || height == null) return null;
+  for (const preset of deviceMenuPresets()) {
+    if (preset.width === width && preset.height === height) return { preset, rotated: false };
+    if (preset.width === height && preset.height === width) return { preset, rotated: true };
+  }
+  return null;
+}
+
+/**
+ * Which row of the device menu is the current one.
+ *
+ * Derived from the metrics, not only from `presetId`, because rotating a preset
+ * goes through the custom width/height path and comes back labelled
+ * `responsive` — the human still has an iPhone 17 on screen and the menu has to
+ * agree with them. A genuinely custom size is `responsive`, which is a row of
+ * that menu too, so it is checkable rather than nothing being checked.
+ */
+export function activeEmulationPresetId(
+  emulation: BuiltInBrowserEmulationState | null | undefined,
+): BuiltInBrowserEmulationPresetId {
+  if (!emulation) return "desktop";
+  if (emulation.presetId && emulation.presetId !== "responsive" && emulation.presetId !== "desktop") {
+    return emulation.presetId;
+  }
+  return matchEmulationPreset(emulation)?.preset.id ?? "responsive";
+}
+
+/**
+ * The device name a human would use for what is on screen.
+ *
+ * A rotated preset arrives back from the service as `852×393` — true, and
+ * useless: the pill stops saying which device it is at exactly the moment you
+ * are checking a device. Rotation is an orientation of the same phone, so it
+ * reads as one.
+ */
+export function emulationDisplayLabel(
+  emulation: BuiltInBrowserEmulationState | null | undefined,
+): string {
+  if (!emulation) return "Desktop";
+  const matched = matchEmulationPreset(emulation);
+  if (matched) return matched.rotated ? `${matched.preset.label} · landscape` : matched.preset.label;
+  return emulationButtonLabel(emulation);
 }
 
 /** `390 × 844`, or null for the presets that carry no metrics (Desktop). */
@@ -206,68 +259,219 @@ export function browserTabLabel(
 
 /* ── Responsive toolbar ───────────────────────────────────────────────────── */
 
-/** Below this the toolbar drops every text label and goes icon-only. */
-export const BROWSER_TOOLBAR_COMPACT_WIDTH = 420;
-/** Below this only `← ⟳ [URL] ⋮` survives; everything else moves to overflow. */
-export const BROWSER_TOOLBAR_MINIMAL_WIDTH = 360;
+/**
+ * The narrowest a URL field is still a URL field.
+ *
+ * Below this it stops being able to show a host, so the row must give up a
+ * control instead: an omnibox squeezed to nothing is a browser you cannot
+ * steer, and every other button on the row is a convenience by comparison.
+ */
+export const BROWSER_TOOLBAR_URL_MIN_WIDTH = 140;
 
-export type BrowserToolbarDensity = "full" | "compact" | "minimal";
+/** Above this the field can afford the word "Open" next to the ▶ glyph. */
+export const BROWSER_TOOLBAR_OPEN_LABEL_MIN_WIDTH = 520;
+
+/**
+ * What each control costs the row, in CSS px, at its laid-out size.
+ *
+ * These are the widths the toolbar's own classes produce: `w-7` icon buttons
+ * are 28, the nav group is three of them inside one border, `gap-1` is 4 and
+ * the row's `px-1.5` is 6 a side. They live here rather than being measured per
+ * control because the decision has to be made in the same frame as the resize —
+ * measuring children that are about to be removed is how a layout starts
+ * oscillating.
+ */
+export type BrowserToolbarControlWidths = {
+  /** Back + forward + reload in one bordered group. */
+  nav: number;
+  /** Back + reload, once forward has been dropped. */
+  navNoForward: number;
+  device: number;
+  deviceIcon: number;
+  camera: number;
+  inspect: number;
+  inspectIcon: number;
+  attach: number;
+  recording: number;
+  overflow: number;
+  gap: number;
+  padding: number;
+  /** The padlock and its gap, always reserved so the row cannot jump on load. */
+  urlLock: number;
+  /** The omnibox's own left padding. */
+  urlPadding: number;
+  openLabel: number;
+  openIcon: number;
+};
+
+export const BROWSER_TOOLBAR_CONTROL_WIDTHS: BrowserToolbarControlWidths = {
+  nav: 86,
+  navNoForward: 58,
+  device: 90,
+  deviceIcon: 28,
+  camera: 28,
+  inspect: 72,
+  inspectIcon: 28,
+  attach: 70,
+  recording: 96,
+  overflow: 28,
+  gap: 4,
+  padding: 12,
+  urlLock: 17,
+  urlPadding: 8,
+  openLabel: 60,
+  openIcon: 34,
+};
+
+/**
+ * What the device button costs with `label` on it.
+ *
+ * "Desktop" and "iPhone 17 Pro Max · landscape" are not the same button, and
+ * the row that decides what fits has to price the one it is actually going to
+ * render. Clamped at the button's own `max-w-[104px]` truncation.
+ */
+export function estimateDeviceButtonWidth(label: string | null | undefined): number {
+  const text = (label ?? "").trim();
+  const textWidth = Math.min(104, Math.max(28, Math.round(text.length * 6.4)));
+  // icon 12 + gap 4 + text + caret 9 + gap 4 + px-2 padding 16.
+  return textWidth + 45;
+}
+
+export type BrowserToolbarDensity = "full" | "compact" | "tight" | "minimal";
+
+/** How the URL field offers to submit: with a word, a glyph, or not at all. */
+export type BrowserToolbarOpenAffordance = "label" | "icon" | "none";
 
 export type BrowserToolbarLayout = {
   density: BrowserToolbarDensity;
-  /** Text next to an icon: the device name, "Inspect", "Open". */
+  /** Text next to an icon: the device name, "Inspect". */
   showLabels: boolean;
   showForward: boolean;
   showDevice: boolean;
   showCamera: boolean;
   showInspect: boolean;
-  /** The URL field's trailing "Open" submit button. Enter always works. */
-  showOpenButton: boolean;
+  showAttach: boolean;
+  openAffordance: BrowserToolbarOpenAffordance;
+  /** What the URL field is left with once everything above is placed. */
+  urlWidth: number;
 };
 
+export type BrowserToolbarLayoutOptions = {
+  /** A selection is attached, so the row would like an "Attach" button. */
+  hasSelection?: boolean;
+  /** A recording is running; its pill is state, not a convenience, so it stays. */
+  recording?: boolean;
+  /** The device button's rendered label, which decides how wide it is. */
+  deviceLabel?: string | null;
+  /** The omnibox is focused: Enter submits, so the ▶ affordance steps aside. */
+  urlFocused?: boolean;
+  urlMinWidth?: number;
+  widths?: Partial<BrowserToolbarControlWidths>;
+};
+
+type BrowserToolbarStep = Pick<
+  BrowserToolbarLayout,
+  "density" | "showLabels" | "showForward" | "showDevice" | "showCamera" | "showInspect" | "showAttach"
+>;
+
 /**
- * How much toolbar fits in `width`.
+ * The order things are given up in.
  *
- * A pane dragged to 300px used to keep every control at its natural width and
- * push the overflow button off-screen, which is worse than hiding things: the
- * one control that could still reach them was the one that disappeared. So the
- * row sheds labels first, then whole controls into the overflow menu, and the
- * menu button is the last thing standing.
+ * Labels first (an icon still says what it does), then Inspect, then the
+ * camera, then the device button — each into the ⋮ menu, which is why the ⋮ is
+ * never in this list. Forward goes last of all: it is the only one whose
+ * absence loses a capability the menu does not carry.
  */
-export function browserToolbarLayout(width: number | null | undefined): BrowserToolbarLayout {
-  const value = typeof width === "number" && Number.isFinite(width) && width > 0
-    ? width
-    : Number.POSITIVE_INFINITY;
-  if (value < BROWSER_TOOLBAR_MINIMAL_WIDTH) {
-    return {
-      density: "minimal",
-      showLabels: false,
-      showForward: false,
-      showDevice: false,
-      showCamera: false,
-      showInspect: false,
-      showOpenButton: false,
-    };
-  }
-  if (value < BROWSER_TOOLBAR_COMPACT_WIDTH) {
-    return {
-      density: "compact",
-      showLabels: false,
-      showForward: true,
-      showDevice: true,
-      showCamera: true,
-      showInspect: true,
-      showOpenButton: false,
-    };
-  }
+const BROWSER_TOOLBAR_STEPS: readonly BrowserToolbarStep[] = [
+  { density: "full", showLabels: true, showForward: true, showDevice: true, showCamera: true, showInspect: true, showAttach: true },
+  { density: "full", showLabels: true, showForward: true, showDevice: true, showCamera: true, showInspect: true, showAttach: false },
+  { density: "compact", showLabels: false, showForward: true, showDevice: true, showCamera: true, showInspect: true, showAttach: false },
+  { density: "compact", showLabels: false, showForward: true, showDevice: true, showCamera: true, showInspect: false, showAttach: false },
+  { density: "tight", showLabels: false, showForward: true, showDevice: true, showCamera: false, showInspect: false, showAttach: false },
+  { density: "tight", showLabels: false, showForward: true, showDevice: false, showCamera: false, showInspect: false, showAttach: false },
+  { density: "minimal", showLabels: false, showForward: false, showDevice: false, showCamera: false, showInspect: false, showAttach: false },
+];
+
+/**
+ * How much toolbar fits in `width`, measured rather than guessed.
+ *
+ * The old version keyed off two hardcoded pane widths, and at ~420px every
+ * control was still "allowed" — nav 86 + device 90 + camera 28 + inspect 72 +
+ * ⋮ 28 + gaps left 84px for a field that also had to hold a lock and the word
+ * "Open", so the input collapsed to zero and the omnibox vanished. Now the row
+ * prices what it is about to render and sheds controls, in the order above,
+ * until the field clears `urlMinWidth`.
+ */
+export function browserToolbarLayout(
+  width: number | null | undefined,
+  options: BrowserToolbarLayoutOptions = {},
+): BrowserToolbarLayout {
+  const widths = { ...BROWSER_TOOLBAR_CONTROL_WIDTHS, ...options.widths };
+  const urlMin = options.urlMinWidth ?? BROWSER_TOOLBAR_URL_MIN_WIDTH;
+  const measured = typeof width === "number" && Number.isFinite(width) && width > 0 ? width : null;
+  const deviceWidth = options.deviceLabel != null
+    ? estimateDeviceButtonWidth(options.deviceLabel)
+    : widths.device;
+  const naturalAffordance: BrowserToolbarOpenAffordance = options.urlFocused
+    ? "none"
+    : measured == null || measured >= BROWSER_TOOLBAR_OPEN_LABEL_MIN_WIDTH
+      ? "label"
+      : "icon";
+
+  const price = (step: BrowserToolbarStep, openAffordance: BrowserToolbarOpenAffordance) => {
+    const showAttach = step.showAttach && Boolean(options.hasSelection);
+    let controls = 0;
+    // nav + omnibox + ⋮ are always on the row.
+    let items = 3;
+    controls += step.showForward ? widths.nav : widths.navNoForward;
+    controls += widths.overflow;
+    // What the omnibox spends on itself before the text field gets any: the
+    // padlock, its own padding, and whatever the submit affordance costs. The
+    // field's share is what is left of that, which is the number that has to
+    // clear the minimum — pricing the omnibox as a whole is what left a 101px
+    // field inside a "comfortable" 180px box.
+    controls += widths.urlPadding + widths.urlLock;
+    if (openAffordance === "label") controls += widths.openLabel;
+    else if (openAffordance === "icon") controls += widths.openIcon;
+    if (options.recording) {
+      controls += widths.recording;
+      items += 1;
+    }
+    if (step.showDevice) {
+      controls += step.showLabels ? deviceWidth : widths.deviceIcon;
+      items += 1;
+    }
+    if (step.showCamera) {
+      controls += widths.camera;
+      items += 1;
+    }
+    if (step.showInspect) {
+      controls += step.showLabels ? widths.inspect : widths.inspectIcon;
+      items += 1;
+    }
+    if (showAttach) {
+      controls += widths.attach;
+      items += 1;
+    }
+    const consumed = widths.padding + controls + widths.gap * (items - 1);
+    const urlWidth = measured == null ? Number.POSITIVE_INFINITY : measured - consumed;
+    return { step, showAttach, openAffordance, urlWidth };
+  };
+
+  // The ▶ is the last thing to go, after every control has already moved into
+  // the ⋮ menu: it is only ever a hint that Enter works, and at the width where
+  // it is the difference it is cheaper to lose than the field it sits in.
+  const priced = [
+    ...BROWSER_TOOLBAR_STEPS.map((step) => price(step, naturalAffordance)),
+    price(BROWSER_TOOLBAR_STEPS[BROWSER_TOOLBAR_STEPS.length - 1], "none"),
+  ];
+
+  const chosen = priced.find((entry) => entry.urlWidth >= urlMin) ?? priced[priced.length - 1];
   return {
-    density: "full",
-    showLabels: true,
-    showForward: true,
-    showDevice: true,
-    showCamera: true,
-    showInspect: true,
-    showOpenButton: true,
+    ...chosen.step,
+    showAttach: chosen.showAttach,
+    openAffordance: chosen.openAffordance,
+    urlWidth: Number.isFinite(chosen.urlWidth) ? Math.max(0, Math.round(chosen.urlWidth)) : urlMin,
   };
 }
 
@@ -278,6 +482,15 @@ export type BrowserViewFrame = {
   top: number;
   width: number;
   height: number;
+  /**
+   * 1 when the device fits the stage, else how much of it the frame shows.
+   *
+   * A landscape phone in a 578px pane cannot be honoured at 1:1, and the old
+   * behaviour — clamp width, keep height — cropped the page at the pane's right
+   * edge with nothing on screen admitting it. The frame is shrunk on both axes
+   * instead, so the whole device is visible and the caption can say `fit 82%`.
+   */
+  scale: number;
 };
 
 export type BrowserViewBox = {
@@ -292,9 +505,8 @@ export type BrowserViewBox = {
  *
  * With no emulation it fills the stage inset by the host's hairline, so the
  * rounded frame masks the (rectangular) native view. With a CSS size it is that
- * size exactly, centred — and clamped to the stage, because a 393×852 phone in
- * a 300px pane cannot be honoured and painting past the pane is the bug this
- * whole pass exists to fix.
+ * size exactly, centred — until the device is bigger than the stage, when the
+ * whole frame is scaled down uniformly rather than cropped on one axis.
  */
 export function browserLetterboxFrame(
   stage: { width: number; height: number },
@@ -306,15 +518,18 @@ export function browserLetterboxFrame(
   const cssWidth = emulation?.width && emulation.width > 0 ? Math.round(emulation.width) : null;
   const cssHeight = emulation?.height && emulation.height > 0 ? Math.round(emulation.height) : null;
   if (cssWidth == null || cssHeight == null) {
-    return { left: inset, top: inset, width: availableWidth, height: availableHeight };
+    return { left: inset, top: inset, width: availableWidth, height: availableHeight, scale: 1 };
   }
-  const width = Math.min(cssWidth, availableWidth);
-  const height = Math.min(cssHeight, availableHeight);
+  const scale = Math.min(1, availableWidth / cssWidth, availableHeight / cssHeight);
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 0;
+  const width = Math.min(availableWidth, Math.round(cssWidth * safeScale));
+  const height = Math.min(availableHeight, Math.round(cssHeight * safeScale));
   return {
     left: inset + Math.floor((availableWidth - width) / 2),
     top: inset + Math.floor((availableHeight - height) / 2),
     width,
     height,
+    scale: safeScale,
   };
 }
 
@@ -341,12 +556,22 @@ export function clampBrowserViewBounds(
   };
 }
 
-/** The mono caption under a letterboxed view: `393 × 852`. */
+/**
+ * The mono caption under a letterboxed view: `393 × 852`, and `393 × 852 · fit
+ * 82%` when the pane was too small to show the device at 1:1.
+ *
+ * The numbers are always the CSS pixels the page is laid out at — the fit is
+ * about this pane, not about the device, so it is an aside rather than a
+ * different size.
+ */
 export function emulationCaption(
   emulation: { width?: number | null; height?: number | null } | null | undefined,
+  scale?: number | null,
 ): string | null {
   if (!emulation?.width || !emulation.height) return null;
-  return `${Math.round(emulation.width)} × ${Math.round(emulation.height)}`;
+  const size = `${Math.round(emulation.width)} × ${Math.round(emulation.height)}`;
+  if (typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0 || scale >= 0.995) return size;
+  return `${size} · fit ${Math.round(scale * 100)}%`;
 }
 
 /* ── Find errors ──────────────────────────────────────────────────────────── */

@@ -216,6 +216,7 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
@@ -812,6 +813,7 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
+import { isBuiltInBrowserNoTabError } from "../builtInBrowser/builtInBrowserService";
 import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
@@ -2764,6 +2766,9 @@ export function registerIpc({
       width: builtInBrowserNumber(record, "width", channel, { min: 0, max: 100_000 }),
       height: builtInBrowserNumber(record, "height", channel, { min: 0, max: 100_000 }),
       visible: visibleValue as boolean,
+      ...(record.scale === undefined || record.scale === null
+        ? {}
+        : { scale: builtInBrowserNumber(record, "scale", channel, { min: 0.05, max: 1 }) }),
     };
   };
 
@@ -9476,7 +9481,21 @@ export function registerIpc({
 
   ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
-    return ensureBuiltInBrowser().captureScreenshot(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserCaptureScreenshot), win);
+    // A renderer that polls the pane races tab closure by construction, so an
+    // empty pane answers with a typed result rather than throwing an IPC error
+    // on every tick. Every other failure still propagates.
+    try {
+      const screenshot = await ensureBuiltInBrowser().captureScreenshot(
+        parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserCaptureScreenshot),
+        win,
+      );
+      return { ok: true, ...screenshot } satisfies BuiltInBrowserScreenshotResult;
+    } catch (error) {
+      if (isBuiltInBrowserNoTabError(error)) {
+        return { ok: false, reason: "no_tab" } satisfies BuiltInBrowserScreenshotResult;
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {

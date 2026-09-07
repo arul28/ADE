@@ -109,6 +109,24 @@ describe("WorkLiveCornerCard", () => {
     ));
   });
 
+  it("never starts a browser feed for a pane with no tab", async () => {
+    // A browser whose last tab just closed still reports status, and the card
+    // still comes up for it. Asking that pane for frames is asking it to
+    // capture nothing, which is where the screenshot path used to throw on
+    // every tick.
+    renderCard();
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({
+      type: "status",
+      status: { ...BROWSER_STATUS, activeTabId: null, tabs: [] },
+    });
+
+    // Give the feed effect every chance to fire before asserting it did not.
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    expect(startPreviewStream).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+  });
+
   it("hands the pane back to the tool when the thumbnail is clicked", async () => {
     const { onPick } = renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));

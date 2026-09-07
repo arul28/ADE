@@ -1953,7 +1953,11 @@ export function CommandPalette({
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
+                // Same overlay language as the app's dialogs (LaneDialogShell,
+                // the import browser): dim, then a light blur. `blur-2xl` over
+                // the whole window read as a different app taking over — and it
+                // is a full-window backdrop filter per frame of the fade.
+                className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

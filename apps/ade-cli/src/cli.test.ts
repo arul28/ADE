@@ -121,6 +121,32 @@ async function waitForDetachedProcessExit(
   await waitUntilGone(Date.now() + 2_000);
 }
 
+/**
+ * `withEnv` restores the environment as soon as `run` RETURNS, so an async
+ * callback would have its env pulled out from under it before the awaited work
+ * ever starts. Anything that reads process.env asynchronously needs this one.
+ */
+async function withEnvAsync<T>(
+  updates: Record<string, string | undefined>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    previous.set(key, process.env[key]);
+    const value = updates[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
   for (const key of Object.keys(updates)) {
@@ -4823,6 +4849,174 @@ describe("ADE CLI", () => {
     } finally {
       stop?.();
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("carries the resolved projectId on desktop-socket action calls", async () => {
+    // Regression: when the machine-runtime handshake fails (build-hash skew,
+    // a role the daemon will not serve) the CLI falls back to the desktop
+    // socket — which on a modern brain is the SAME multi-project runtime.
+    // A bare pass-through there made every `ade/actions/call` fail with
+    // "requires params.projectId", which is what an ADE-launched agent hit
+    // when it ran `ade --socket browser status`.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-desktop-socket-project-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const seen: Array<{ method: string; params: any }> = [];
+    // A runtime that answers but will not serve this caller's role: the CLI
+    // rejects it WITHOUT trying to spawn a replacement (spawning is gated on
+    // `--socket` not being required), which is the fallback shape we want.
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        seen.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          return { projectId: "project-42", rootPath: request.params?.rootPath };
+        }
+        if (request.method === "ade/actions/call") {
+          const projectId = request.params?.projectId;
+          if (typeof projectId !== "string" || !projectId.trim()) {
+            throw new Error("Method ade/actions/call requires params.projectId.");
+          }
+          return {
+            domain: "built_in_browser",
+            action: "getStatus",
+            result: { visible: true, tabs: [] },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      // A bare `--socket` is exactly what the failing agent used: it demands a
+      // socket without naming one, so the override is empty and the
+      // machine-runtime branch is the one that gets tried first.
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "status", "--json"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.output)).toMatchObject({ visible: true, tabs: [] });
+      const actionCalls = seen.filter((entry) => entry.method === "ade/actions/call");
+      expect(actionCalls).toHaveLength(1);
+      expect(actionCalls[0]?.params?.projectId).toBe("project-42");
+      expect(seen.some((entry) => entry.method === "projects.add")).toBe(true);
+      // Machine-scoped methods must stay unscoped, exactly as on runtime-socket.
+      const initialize = seen.find((entry) => entry.method === "ade/initialize");
+      expect(initialize?.params?.projectId).toBeUndefined();
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS; the temp dir is
+        // disposable either way.
+      }
+    }
+  });
+
+  posixIt("stays a bare pass-through on a desktop socket with no project registry", async () => {
+    // A genuinely legacy single-project desktop socket has no `projects.add`.
+    // Failing to register must not fail the command.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-desktop-socket-legacy-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const seen: Array<{ method: string; params: any }> = [];
+    // A runtime that answers but will not serve this caller's role: the CLI
+    // rejects it WITHOUT trying to spawn a replacement (spawning is gated on
+    // `--socket` not being required), which is the fallback shape we want.
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        seen.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          throw new Error("Method not found: projects.add");
+        }
+        if (request.method === "ade/actions/call") {
+          return {
+            domain: "built_in_browser",
+            action: "getStatus",
+            result: { visible: false, tabs: [] },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "status", "--json"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const actionCalls = seen.filter((entry) => entry.method === "ade/actions/call");
+      expect(actionCalls).toHaveLength(1);
+      expect(actionCalls[0]?.params?.projectId).toBeUndefined();
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS; the temp dir is
+        // disposable either way.
+      }
     }
   });
 

@@ -689,6 +689,7 @@ import type {
   AppControlWindowsResult,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
@@ -2513,7 +2514,7 @@ declare global {
         captureScreenshot: (
           args?: BuiltInBrowserTabTargetArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<BuiltInBrowserScreenshot>;
+        ) => Promise<BuiltInBrowserScreenshotResult>;
         selectPoint: (
           args: BuiltInBrowserSelectPointArgs,
           pin?: OpenProjectBinding | null,

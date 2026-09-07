@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import {
@@ -35,11 +35,46 @@ const browserStatus = {
   hasSelection: false,
 };
 
+/**
+ * A ResizeObserver the test can actually resize.
+ *
+ * The toolbar decides what it can afford from its own measured width, so a
+ * stub that never fires would test every layout at "unmeasured" — which is the
+ * one width that was never broken.
+ */
+const resizeObservers: MockResizeObserver[] = [];
+
 class MockResizeObserver {
-  constructor(_callback: ResizeObserverCallback) {}
-  observe = vi.fn();
+  callback: ResizeObserverCallback;
+  targets: Element[] = [];
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    resizeObservers.push(this);
+  }
+  observe = (target: Element) => {
+    this.targets.push(target);
+  };
   unobserve = vi.fn();
-  disconnect = vi.fn();
+  disconnect = () => {
+    const index = resizeObservers.indexOf(this);
+    if (index >= 0) resizeObservers.splice(index, 1);
+  };
+}
+
+/** Drag the pane to `width` and let the toolbar re-decide. */
+function setToolbarWidth(width: number): void {
+  const row = screen.getByTestId("browser-toolbar-row");
+  Object.defineProperty(row, "getBoundingClientRect", {
+    configurable: true,
+    value: () => makeRect(0, 0, width, 36),
+  });
+  act(() => {
+    for (const observer of [...resizeObservers]) {
+      if (observer.targets.includes(row)) {
+        observer.callback([], observer as unknown as ResizeObserver);
+      }
+    }
+  });
 }
 
 let nextFrameId = 0;
@@ -87,6 +122,11 @@ const REMOTE_PIN = {
   rootPath: "/remote/repo-a",
   displayName: "repo-a",
 } as const;
+
+/** The mounted status, with the fields a test needs to vary. */
+function statusWith(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { ...browserStatus, ...overrides };
+}
 
 function installBrowserApi() {
   let eventListener: ((event: unknown) => void) | null = null;
@@ -317,6 +357,7 @@ async function openMenu(label: string): Promise<void> {
 }
 
 beforeEach(() => {
+  resizeObservers.length = 0;
   nextFrameId = 0;
   nextFrameNow = 0;
   installRadixDomShims();
@@ -1258,6 +1299,342 @@ describe("ChatBuiltInBrowserPanel", () => {
       await waitFor(() => {
         expect(screen.queryByTestId("browser-underlay")).toBeNull();
       });
+    });
+  });
+
+  describe("narrow panes", () => {
+    it("never squeezes the URL field out of the toolbar", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      // 420px is where the old fixed thresholds left every control in place and
+      // the omnibox at zero width.
+      setToolbarWidth(420);
+      expect(screen.getByLabelText("ADE browser URL")).toBeTruthy();
+      expect(screen.getByLabelText("Browser device preset — Desktop")).toBeTruthy();
+      // Icon-only from here down: the labels are what paid for the field.
+      expect(screen.queryByText("Inspect")).toBeNull();
+      expect(screen.queryByText("Open")).toBeNull();
+
+      setToolbarWidth(300);
+      expect(screen.getByLabelText("ADE browser URL")).toBeTruthy();
+      expect(screen.getByLabelText("More browser options")).toBeTruthy();
+      expect(screen.getByLabelText("Go back")).toBeTruthy();
+      // Everything shed is still reachable, which is the whole point of ⋮.
+      expect(screen.queryByLabelText("Browser device preset — Desktop")).toBeNull();
+      expect(screen.queryByLabelText("Select an element in the ADE browser")).toBeNull();
+    });
+
+    it("hands the width back as the pane widens again", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      setToolbarWidth(300);
+      expect(screen.queryByLabelText("Browser device preset — Desktop")).toBeNull();
+
+      setToolbarWidth(760);
+      expect(screen.getByLabelText("Browser device preset — Desktop")).toBeTruthy();
+      expect(screen.getByText("Inspect")).toBeTruthy();
+      expect(screen.getByText("Open")).toBeTruthy();
+    });
+
+    it("steps the Open affordance aside while the omnibox is focused", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      setToolbarWidth(760);
+
+      expect(screen.getByTestId("browser-url-submit")).toBeTruthy();
+
+      fireEvent.focus(screen.getByLabelText("ADE browser URL"));
+      expect(screen.queryByTestId("browser-url-submit")).toBeNull();
+
+      fireEvent.blur(screen.getByLabelText("ADE browser URL"));
+      expect(screen.getByTestId("browser-url-submit")).toBeTruthy();
+    });
+  });
+
+  describe("find bar", () => {
+    it("keeps Escape to itself instead of closing the whole tool", async () => {
+      const { api } = installBrowserApi();
+      const onKeyDown = vi.fn();
+      render(
+        <div onKeyDown={onKeyDown}>
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </div>,
+      );
+      await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+
+      fireEvent.keyDown(screen.getByLabelText("ADE browser URL").closest("div")!, {
+        key: "f",
+        metaKey: true,
+      });
+      const bar = await screen.findByTestId("browser-find-bar");
+      // The contract the pane's capture-phase handler reads.
+      expect(bar.getAttribute("data-ade-escape-scope")).toBe("find");
+
+      onKeyDown.mockClear();
+      fireEvent.keyDown(screen.getByLabelText("Find on page"), { key: "Escape" });
+
+      await waitFor(() => expect(screen.queryByTestId("browser-find-bar")).toBeNull());
+      // Nothing above the panel ever sees it, so nothing above the panel acts.
+      expect(onKeyDown).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("device menu", () => {
+    it("checks the preset that is actually applied", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      emit({
+        type: "status",
+        status: {
+          ...browserStatus,
+          tabs: [{
+            ...browserStatus.tabs[0],
+            emulation: {
+              presetId: "iphone-17",
+              label: "iPhone 17",
+              width: 393,
+              height: 852,
+              deviceScaleFactor: 3,
+              mobile: true,
+              hasTouch: true,
+              userAgent: "iphone",
+            },
+          }],
+        },
+      });
+
+      await screen.findByLabelText("Browser device preset — iPhone 17");
+      await openMenu("Browser device preset — iPhone 17");
+
+      const checked = (await screen.findAllByRole("menuitemradio"))
+        .filter((item) => item.getAttribute("aria-checked") === "true");
+      expect(checked).toHaveLength(1);
+      expect(checked[0].textContent).toContain("iPhone 17");
+    });
+
+    it("still names the device, and keeps it checked, after a rotation", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      // What the service sends back after a rotate: a custom size, called
+      // responsive, whose numbers are an iPhone 17 lying on its side.
+      emit({
+        type: "status",
+        status: {
+          ...browserStatus,
+          tabs: [{
+            ...browserStatus.tabs[0],
+            emulation: {
+              presetId: "responsive",
+              label: "852×393",
+              width: 852,
+              height: 393,
+              deviceScaleFactor: 3,
+              mobile: true,
+              hasTouch: true,
+              userAgent: "iphone",
+            },
+          }],
+        },
+      });
+
+      expect(await screen.findByText("iPhone 17 · landscape")).toBeTruthy();
+      expect(screen.getByTestId("browser-emulation-caption").textContent).toContain("852 × 393");
+
+      await openMenu("Browser device preset — iPhone 17 · landscape");
+      const checked = (await screen.findAllByRole("menuitemradio"))
+        .filter((item) => item.getAttribute("aria-checked") === "true");
+      expect(checked).toHaveLength(1);
+      expect(checked[0].textContent).toContain("iPhone 17");
+    });
+
+    it("rotates with the preset attached so the device keeps its own metrics", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      emit({
+        type: "status",
+        status: {
+          ...browserStatus,
+          tabs: [{
+            ...browserStatus.tabs[0],
+            emulation: {
+              presetId: "iphone-17",
+              label: "iPhone 17",
+              width: 393,
+              height: 852,
+              deviceScaleFactor: 3,
+              mobile: true,
+              hasTouch: true,
+              userAgent: "iphone",
+            },
+          }],
+        },
+      });
+
+      fireEvent.click(await screen.findByLabelText("Rotate the emulated device"));
+
+      await waitFor(() => {
+        expect(api.setEmulation).toHaveBeenCalledWith(
+          expect.objectContaining({
+            width: 852,
+            height: 393,
+            preset: "iphone-17",
+            mobile: true,
+            deviceScaleFactor: 3,
+          }),
+          null,
+        );
+      });
+    });
+  });
+
+  describe("letterbox", () => {
+    it("tells main how far it had to shrink the device to fit", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({ scale: 1 }), null);
+      });
+
+      emit({
+        type: "status",
+        status: statusWith({
+          tabs: [{
+            ...browserStatus.tabs[0],
+            emulation: {
+              presetId: "iphone-17",
+              label: "iPhone 17",
+              width: 393,
+              height: 852,
+              deviceScaleFactor: 3,
+              mobile: true,
+              hasTouch: true,
+              userAgent: "iphone",
+            },
+          }],
+        }),
+      });
+
+      // The stage is 640×360 here, so an 852-tall phone cannot be shown at 1:1.
+      // Main needs the factor, or it draws the page at full size into a view
+      // that is too small and crops it.
+      await waitFor(() => {
+        const scales = api.setBounds.mock.calls.map(([args]: [{ scale?: number }]) => args.scale);
+        expect(scales.some((scale) => scale != null && scale < 1)).toBe(true);
+      });
+      expect(await screen.findByTestId("browser-emulation-caption")).toHaveProperty(
+        "textContent",
+        expect.stringContaining("fit "),
+      );
+    });
+  });
+
+  describe("no tabs", () => {
+    it("stops describing the page that was closed", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
+      await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
+
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+
+      await waitFor(() => expect(urlInput.value).toBe(""));
+      expect(urlInput.getAttribute("placeholder")).toBe("Search or enter address");
+      // No page, so no claim about its connection and nothing to act on.
+      expect(screen.queryByLabelText("Secure connection")).toBeNull();
+      expect(screen.getByLabelText("Go back")).toHaveProperty("disabled", true);
+      expect(screen.getByLabelText("Reload")).toHaveProperty("disabled", true);
+      expect(screen.getByLabelText("Screenshot · Shift-click to record")).toHaveProperty("disabled", true);
+      expect(screen.getByLabelText("Select an element in the ADE browser")).toHaveProperty("disabled", true);
+      expect(screen.getByLabelText("Browser device preset — Desktop")).toHaveProperty("disabled", true);
+      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+    });
+  });
+
+  describe("load progress", () => {
+    it("shows a bar while the tab is loading, from the per-tab flag", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      expect(screen.queryByTestId("browser-load-progress")).toBeNull();
+
+      // `did-start-loading` updates the tab, not a top-level flag — reading
+      // only the latter is why the bar never appeared.
+      emit({
+        type: "status",
+        status: statusWith({ tabs: [{ ...browserStatus.tabs[0], isLoading: true }] }),
+      });
+
+      expect(await screen.findByTestId("browser-load-progress")).toBeTruthy();
+      expect(screen.getByLabelText("Stop loading")).toBeTruthy();
+    });
+  });
+
+  describe("launchpad", () => {
+    it("does not wear the previous tab's padlock on a blank new tab", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
+      await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
+      expect(screen.getByLabelText("Secure connection")).toBeTruthy();
+
+      emit({
+        type: "status",
+        status: statusWith({
+          activeTabId: "tab-2",
+          url: null,
+          tabs: [
+            browserStatus.tabs[0],
+            { id: "tab-2", url: null, title: null, isLaunchpad: true, isLoading: false },
+          ],
+        }),
+      });
+
+      await waitFor(() => expect(urlInput.value).toBe(""));
+      // The address bar is empty, so there is no connection to make a claim about.
+      expect(screen.queryByLabelText("Secure connection")).toBeNull();
+      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+    });
+
+    it("probes the usual ports when discovery comes back empty", async () => {
+      const { api, emit } = installBrowserApi();
+      api.getDevServers.mockResolvedValue([]);
+      (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
+        .ade.localhost.probePort.mockImplementation(async (port: number) => port === 5173);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      // Wait for the mounted status before replacing it, or the initial read
+      // lands afterwards and puts the tab back.
+      await screen.findByRole("tab");
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+
+      await screen.findByTestId("browser-launchpad");
+      // A dev server the human started outside ADE has no command to name it,
+      // so it says what it honestly is.
+      expect(await screen.findByText("localhost:5173")).toBeTruthy();
+    });
+
+    it("prefers the command that opened the port when discovery knows it", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      // Wait for the mounted status before replacing it, or the initial read
+      // lands afterwards and puts the tab back.
+      await screen.findByRole("tab");
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+
+      await screen.findByTestId("browser-launchpad");
+      expect(await screen.findByText("npm run dev · :5173")).toBeTruthy();
     });
   });
 });

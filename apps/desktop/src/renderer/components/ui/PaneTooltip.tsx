@@ -24,11 +24,25 @@ import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from 
 
 const HOVER_DELAY_MS = 500;
 
+/**
+ * True when anything inside the trigger is cut off by its own box.
+ *
+ * `scrollWidth > clientWidth` is the browser's own answer to "did this
+ * truncate", so it stays correct at every pane width without a resize
+ * observer. Read once per hover, over the handful of nodes a piece of pane
+ * chrome contains.
+ */
+function containsClippedText(root: HTMLElement): boolean {
+  const nodes = [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))];
+  return nodes.some((node) => node.scrollWidth > node.clientWidth + 1);
+}
+
 export function PaneTooltip({
   label,
   shortcut,
   side = "bottom",
   disabled = false,
+  onlyWhenClipped = false,
   children,
   className,
   style,
@@ -40,6 +54,15 @@ export function PaneTooltip({
   side?: TooltipSide;
   /** Skips the tooltip entirely — used when a control has no useful label yet. */
   disabled?: boolean;
+  /**
+   * Only show when the trigger's own text is truncated.
+   *
+   * For chrome that already displays the whole string — a picker card reading
+   * "Terminal / No shells" — a tooltip repeating it is a panel that appears
+   * over the NEXT row and tells you nothing. With this on, the tooltip is
+   * exactly what it claims to be: the rest of a line you cannot finish reading.
+   */
+  onlyWhenClipped?: boolean;
   children: React.ReactNode;
   /** Applied to the inline wrapper that owns the hover/focus handlers. */
   className?: string;
@@ -69,20 +92,29 @@ export function PaneTooltip({
     setPlacement(null);
   }, [clearTimer]);
 
+  // Read at show time, not at hover time: the trigger may have been re-laid out
+  // (or the pane resized) between the pointer arriving and the delay elapsing.
+  const hasSomethingToAdd = useCallback(() => {
+    if (disabled || !label) return false;
+    if (!onlyWhenClipped) return true;
+    const wrapper = wrapperRef.current;
+    return wrapper ? containsClippedText(wrapper) : true;
+  }, [disabled, label, onlyWhenClipped]);
+
   const showAfterDelay = useCallback(() => {
     if (disabled || !label) return;
     clearTimer();
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
-      setVisible(true);
+      if (hasSomethingToAdd()) setVisible(true);
     }, HOVER_DELAY_MS);
-  }, [clearTimer, disabled, label]);
+  }, [clearTimer, disabled, hasSomethingToAdd, label]);
 
   const showNow = useCallback(() => {
-    if (disabled || !label) return;
+    if (!hasSomethingToAdd()) return;
     clearTimer();
     setVisible(true);
-  }, [clearTimer, disabled, label]);
+  }, [clearTimer, hasSomethingToAdd]);
 
   useEffect(() => clearTimer, [clearTimer]);
 

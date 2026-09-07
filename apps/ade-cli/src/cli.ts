@@ -16663,6 +16663,33 @@ function withProjectId(
   };
 }
 
+/**
+ * The desktop socket is not always the legacy single-project server it was
+ * named for. When the machine-runtime branch cannot be used — a build-hash
+ * mismatch, a role the daemon will not serve, a socket that only the fallback
+ * path knows about — we land here talking to a multi-project runtime, which
+ * rejects every project-scoped method with "requires params.projectId".
+ * Resolve the project the same way the runtime branch does so the fallback
+ * carries an identity instead of failing on every `ade/actions/call`.
+ *
+ * Best effort by design: a genuinely legacy desktop socket has no
+ * `projects.add`, and there we must stay a bare pass-through.
+ */
+async function resolveDesktopSocketProjectId(
+  connection: CliConnection,
+  projectRoot: string,
+): Promise<string | null> {
+  try {
+    const registered = await connection.request(
+      "projects.add",
+      automaticProjectRegistrationParams(projectRoot),
+    );
+    return isRecord(registered) ? asString(registered.projectId) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function createConnection(
   options: GlobalOptions,
   args: { autoRegisterProject?: boolean; machineRuntimeOnly?: boolean } = {},
@@ -16739,15 +16766,28 @@ async function createConnection(
         legacySocketPath,
         options.timeoutMs,
       );
+      let activeProjectId: string | null = null;
       const connection: CliConnection = {
         mode: "desktop-socket",
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
         socketPath: legacySocketPath,
-        request: (method, params) => socketClient.request(method, params),
+        request: (method, params) =>
+          socketClient.request(
+            method,
+            activeProjectId && !isMachineRuntimeScopedMethod(method)
+              ? withProjectId(params, activeProjectId)
+              : params,
+          ),
         close: () => socketClient.close(),
       };
       await initializeConnection(connection, options);
+      if (autoRegisterProject) {
+        activeProjectId = await resolveDesktopSocketProjectId(
+          connection,
+          roots.projectRoot,
+        );
+      }
       return connection;
     } catch (error) {
       if (options.requireSocket) throw error;

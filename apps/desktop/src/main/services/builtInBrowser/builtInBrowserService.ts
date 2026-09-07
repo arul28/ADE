@@ -325,6 +325,13 @@ type BrowserTabState = {
   debuggerHolds: Set<BrowserDebuggerHoldOwner>;
   cdpListener: DebuggerMessageListener | null;
   findRequestId: number | null;
+  /**
+   * In-flight `findInPage` waiters for this tab, each able to re-target itself
+   * at a newer request id. Chromium discards a delayed short-query find when
+   * the next one arrives, so without this the superseded waiter waits out its
+   * full timeout on a request that will never be answered.
+   */
+  findWaiters: Set<(requestId: number) => void>;
 };
 
 /**
@@ -465,6 +472,27 @@ function collectionForProjectRoot(
     key: `project-${key}`,
     projectRoot: normalized,
   };
+}
+
+/**
+ * "The pane has no tab open" — a state, not a fault.
+ *
+ * Thrown so the IPC boundary can answer a trusted renderer with a typed
+ * `{ ok: false, reason: "no_tab" }` instead of an exception, while an agent
+ * still sees a failed request.
+ */
+export class BuiltInBrowserNoTabError extends Error {
+  readonly reason = "no_tab" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "BuiltInBrowserNoTabError";
+  }
+}
+
+export function isBuiltInBrowserNoTabError(error: unknown): boolean {
+  return error instanceof BuiltInBrowserNoTabError
+    || (error instanceof Error && error.name === "BuiltInBrowserNoTabError");
 }
 
 export function createBuiltInBrowserService(args: {
@@ -1235,6 +1263,15 @@ function createBuiltInBrowserWindowService(args: {
   let activeTabId: string | null = null;
   let bounds: BuiltInBrowserFrame = { x: 0, y: 0, width: 0, height: 0 };
   let visible = false;
+  /**
+   * How much the pane shrank the emulated device to fit (1 = no shrink).
+   *
+   * Owned by the renderer's letterbox math and delivered with bounds, because
+   * it changes on every pane resize. It only matters while a device preset is
+   * active; with no emulation Chromium is already laying out at the native
+   * view's own size.
+   */
+  let emulationViewScale = 1;
   let inspecting = false;
   let debuggerAttachedForInspect = false;
   let debuggerMessageListener: DebuggerMessageListener | null = null;
@@ -1483,7 +1520,7 @@ function createBuiltInBrowserWindowService(args: {
     const ownedTab = reusableOwnedTabForInput(input);
     if (ownedTab) return ownedTab;
     const tab = activeTab();
-    if (!tab) throw new Error(emptyMessage);
+    if (!tab) throw new BuiltInBrowserNoTabError(emptyMessage);
     return tab;
   };
 
@@ -2229,6 +2266,7 @@ function createBuiltInBrowserWindowService(args: {
       debuggerHolds: new Set(),
       cdpListener: null,
       findRequestId: null,
+      findWaiters: new Set(),
     };
   };
 
@@ -2884,16 +2922,30 @@ function createBuiltInBrowserWindowService(args: {
       height: normalizeDimension(nextBounds.height),
     };
     const nextVisible = nextBounds.visible && normalized.width > 0 && normalized.height > 0;
+    const nextScale = clampEmulationViewScale(
+      typeof nextBounds.scale === "number" ? nextBounds.scale : 1,
+    );
+    const scaleChanged = nextScale !== emulationViewScale;
     const unchanged = (
       normalized.x === bounds.x
       && normalized.y === bounds.y
       && normalized.width === bounds.width
       && normalized.height === bounds.height
       && nextVisible === visible
+      && !scaleChanged
     );
     if (unchanged) return scopeStatusForInput(getStatus(), nextBounds);
     bounds = normalized;
     visible = nextVisible;
+    emulationViewScale = nextScale;
+    // A resize changes the fit factor, and the fit factor is part of the
+    // override. Only emulating tabs care; everything else is already laid out
+    // at the view's own size.
+    if (scaleChanged) {
+      for (const tab of tabs) {
+        if (tab.emulation) reapplyTabEmulation(tab);
+      }
+    }
     // Showing the pane must not conjure a tab: closing the last tab is how a
     // person says "I'm done", and re-opening one behind their back is what made
     // the browser reappear on google.com every time. Zero tabs is a valid state
@@ -3526,6 +3578,10 @@ function createBuiltInBrowserWindowService(args: {
    * site keeps serving its desktop breakpoint. All five commands together are
    * what "iPhone 17" means.
    */
+  const clampEmulationViewScale = (value: number): number => (
+    Number.isFinite(value) && value > 0 ? Math.min(1, Math.max(0.05, value)) : 1
+  );
+
   const sendEmulationCommands = async (
     wc: WebContents,
     next: BuiltInBrowserEmulationState | null,
@@ -3553,6 +3609,11 @@ function createBuiltInBrowserWindowService(args: {
       height: metrics.height,
       deviceScaleFactor: metrics.deviceScaleFactor,
       mobile: metrics.mobile,
+      // Without `scale`, a device wider than the pane lays out at its own
+      // width and is CROPPED by the narrower native view. With it the page
+      // still reports the device's width and Chromium draws it smaller, which
+      // is what the pane's letterbox already assumed.
+      scale: clampEmulationViewScale(emulationViewScale),
       screenWidth: metrics.width,
       screenHeight: metrics.height,
       positionX: 0,
@@ -3716,10 +3777,15 @@ function createBuiltInBrowserWindowService(args: {
           finish();
           resolve(found);
         };
+        function adoptRequestId(nextRequestId: number): void {
+          if (settled) return;
+          requestId = nextRequestId;
+        }
         function finish(): void {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          tab.findWaiters.delete(adoptRequestId);
           try {
             (wc as unknown as { off: (event: string, fn: unknown) => void }).off?.("found-in-page", listener);
           } catch {
@@ -3728,11 +3794,41 @@ function createBuiltInBrowserWindowService(args: {
         }
         try {
           wc.on("found-in-page", listener as never);
+          // Electron's `findNext` is NOT "advance to the next match" — it is
+          // assigned straight onto Chromium's `FindOptions::new_session`
+          // (`dict.Get("findNext", &options->new_session)`), so `true` STARTS
+          // a session and `false` continues one. Electron's own docs invert
+          // this. Chromium then drops a continuation that has no live session
+          // (`FindRequestManager::FindInternal` → `AdvanceQueue` and return)
+          // without ever sending anything to the renderer: the request id
+          // comes back, no `found-in-page` is emitted, and the caller sat
+          // there until the 5s timeout. Verified live on Electron 41 — this
+          // path answers in ~3ms, the old one never answered at all.
+          //
+          // So every find we issue starts a session. Blink resumes from the
+          // document's current selection, which is what makes a repeat search
+          // advance; clearing the selection first is therefore what "new
+          // search" means (first match), and leaving it is "find next".
+          if (input.findNext !== true) {
+            try {
+              wc.stopFindInPage("clearSelection");
+            } catch {
+              // A tab with no live find session throws nothing useful here.
+            }
+          }
           requestId = wc.findInPage(text, {
             forward: input.forward !== false,
-            findNext: input.findNext === true,
+            findNext: true,
             matchCase: input.matchCase === true,
           });
+          // Chromium delays a new session for a query under 4 characters by
+          // 400ms, and a second find inside that window RESETS the delayed
+          // task — the earlier request id is discarded and never answered.
+          // A find bar being typed into hits this constantly, so an in-flight
+          // waiter follows the request that superseded it rather than waiting
+          // out its own timeout on a request Chromium threw away.
+          for (const adopt of tab.findWaiters) adopt(requestId);
+          tab.findWaiters.add(adoptRequestId);
           tab.findRequestId = requestId;
           // Replay a result that raced ahead of the request id. Read through a
           // callback so TypeScript does not narrow away the listener's write.

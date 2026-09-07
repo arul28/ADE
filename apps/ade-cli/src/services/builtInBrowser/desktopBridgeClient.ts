@@ -175,6 +175,10 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   ): Record<string, unknown> => {
     const bridgeAuthToken = args.getAuthToken()?.trim() ?? "";
     if (!bridgeAuthToken) {
+      logger.warn("built_in_browser_bridge.auth_token_missing", {
+        socketPath,
+        projectRoot,
+      });
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
     // Capability issuance carries the scope of the chat being launched, which

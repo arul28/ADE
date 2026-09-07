@@ -53,6 +53,36 @@ describe("computeTooltipPosition", () => {
     expect(placement.x + 150).toBeLessThanOrEqual(VIEWPORT.width);
   });
 
+  it("flips a bottom tooltip up when the trigger sits on the window's bottom edge", () => {
+    // A picker card on the last row: "bottom" would put the tooltip below the
+    // window, and shifting it up would land it on top of the card.
+    const card = trigger({ top: 742, left: 300, width: 160, height: 48 });
+    const tooltip = { width: 200, height: 30 };
+    const placement = computeTooltipPosition({
+      preferredSide: "bottom",
+      trigger: card,
+      tooltip,
+      viewport: VIEWPORT,
+    });
+    expect(placement.side).toBe("top");
+    expect(placement.y + tooltip.height).toBeLessThanOrEqual(card.top);
+    expect(rectsOverlap({ x: placement.x, y: placement.y, ...tooltip }, card)).toBe(false);
+  });
+
+  it("shifts a right-edge tooltip inward and keeps an 8px margin", () => {
+    // The pane's ✕ against the right edge of the window.
+    const closeButton = trigger({ top: 40, left: 972, width: 28, height: 28 });
+    const tooltip = { width: 180, height: 26 };
+    const placement = computeTooltipPosition({
+      preferredSide: "bottom",
+      trigger: closeButton,
+      tooltip,
+      viewport: VIEWPORT,
+    });
+    expect(placement.x).toBeGreaterThanOrEqual(8);
+    expect(placement.x + tooltip.width).toBeLessThanOrEqual(VIEWPORT.width - 8);
+  });
+
   it("never overlaps the control it describes, on any side", () => {
     const box = trigger({ top: 300, left: 480, width: 40, height: 24 });
     const tooltip = { width: 160, height: 28 };

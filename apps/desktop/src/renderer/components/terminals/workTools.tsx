@@ -37,7 +37,10 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Terminal",
     icon: Terminal,
     color: "#c4b5fd",
-    blurb: "Shells attached to this session",
+    // Shown only while the tool has no measured line — so it has to fit the
+    // same one-line slot the status does ("Shells attached to this session"
+    // truncated to "Shells attache…" at two columns).
+    blurb: "Attach a shell",
   },
   {
     id: "browser",

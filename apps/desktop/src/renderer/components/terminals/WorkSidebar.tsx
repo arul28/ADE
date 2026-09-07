@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
+import { ArrowsClockwise, Play, Terminal as TerminalIcon, WarningCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   AgentChatFileRef,
@@ -34,6 +42,7 @@ import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
+import { showToast } from "../app/toast/toastStore";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
@@ -62,6 +71,33 @@ const MODAL_LAYER_SELECTOR =
 
 function aModalLayerIsOpen(): boolean {
   return document.querySelector(MODAL_LAYER_SELECTOR) != null;
+}
+
+/**
+ * A subtree that has already promised Escape to something else.
+ *
+ * The browser panel's find bar is the first: Escape there closes the find bar,
+ * and if the pane also acted you would lose the find bar AND the browser in one
+ * keystroke. Any tool can opt out the same way by putting this attribute on the
+ * element that owns the key.
+ */
+const ESCAPE_SCOPE_ATTR = "data-ade-escape-scope";
+
+/**
+ * True when the keystroke belongs to something inside the pane rather than to
+ * the pane itself: a tool that claimed Escape, a menu or dialog portalled into
+ * the pane, or a text field with something in it (where Escape is "clear this",
+ * not "leave"). An EMPTY field is not a claim — Escape in a blank URL bar
+ * should still get you back to the tools.
+ */
+function escapeIsClaimedInside(target: Element): boolean {
+  if (target.closest(`[${ESCAPE_SCOPE_ATTR}]`)) return true;
+  if (target.closest(MODAL_LAYER_SELECTOR)) return true;
+  const field = target.closest<HTMLElement>("input, textarea, [contenteditable='true']");
+  if (!field) return false;
+  if (field.isContentEditable) return (field.textContent ?? "").length > 0;
+  const value = (field as HTMLInputElement | HTMLTextAreaElement).value ?? "";
+  return value.length > 0;
 }
 
 /** See `ChatPrPane.onRegisterRefresh`. */
@@ -154,13 +190,63 @@ function WarningBanner({ message }: { message: string }) {
   );
 }
 
-function TerminalPanelEmpty({ message }: { message: string }) {
+/**
+ * The pane's empty state, in the terminal drawer's own language.
+ *
+ * A bare sentence centred in 600px of black reads as a failure — that is what
+ * "Continue this OpenCode CLI session before opening an attached terminal." was
+ * doing here while the drawer three lines below had a proper icon, headline and
+ * button. Same anatomy in both places: a duotone glyph, a headline you can act
+ * on, one line of explanation, then whatever actions exist.
+ */
+function WorkToolEmptyState({
+  title,
+  message,
+  actions,
+  hint,
+}: {
+  title: string;
+  message: string;
+  actions?: ReactNode;
+  hint?: ReactNode;
+}) {
   return (
-    <div className="flex h-full items-center justify-center px-4 text-center text-[12px] leading-5 text-muted-fg">
-      {message}
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
+      <TerminalIcon size={22} weight="duotone" className="text-fg/25" />
+      <div className="flex flex-col gap-1">
+        <p className="font-sans text-[13px] font-semibold text-fg/80">{title}</p>
+        <p className="max-w-[240px] font-sans text-[11.5px] leading-[17px] text-muted-fg">{message}</p>
+      </div>
+      {actions}
+      {hint}
     </div>
   );
 }
+
+/** The one line that tells you these shells are also an agent surface. */
+function TerminalCliHint() {
+  return (
+    <p className="font-sans text-[11px] leading-4 text-muted-fg/65">
+      Agents read and drive these shells with{" "}
+      <code className="rounded bg-white/[0.05] px-1 py-px font-mono text-[10.5px] text-fg/70">ade terminal</code>
+    </p>
+  );
+}
+
+const TERMINAL_EMPTY_PRIMARY_CLASS = cn(
+  "inline-flex h-8 items-center gap-2 rounded-md border border-violet-400/24 bg-violet-500/[0.10] px-3",
+  "font-sans text-[12px] font-medium text-fg/88 transition-colors",
+  "hover:border-violet-400/40 hover:bg-violet-500/[0.16] hover:text-fg",
+  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  "disabled:cursor-default disabled:opacity-45",
+);
+
+const TERMINAL_EMPTY_SECONDARY_CLASS = cn(
+  "inline-flex h-8 items-center rounded-md border border-white/[0.10] px-3 font-sans text-[12px]",
+  "font-medium text-muted-fg transition-colors hover:border-white/20 hover:text-fg",
+  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  "disabled:cursor-default disabled:opacity-45",
+);
 
 export function WorkSidebar({
   active = true,
@@ -431,6 +517,28 @@ export function WorkSidebar({
       },
     );
   }, [insertContext]);
+  // Resuming from here is the same call the Work row's Resume makes; the pane
+  // owns it because the pane is where you notice the session is gone.
+  const [resumingSession, setResumingSession] = useState(false);
+  const resumeEndedSession = useCallback(() => {
+    const session = activeSession;
+    if (!session || resumingSession) return;
+    setResumingSession(true);
+    const args = { sessionId: session.id, cols: 100, rows: 30 };
+    const request = runtimePin
+      ? window.ade.pty.resumeSession(args, runtimePin)
+      : window.ade.pty.resumeSession(args);
+    void request
+      .catch((error: unknown) => {
+        showToast({
+          title: "Resume failed",
+          message: error instanceof Error ? error.message : String(error),
+          tone: "error",
+        });
+      })
+      .finally(() => setResumingSession(false));
+  }, [activeSession, resumingSession, runtimePin]);
+
   const insertDraft = useCallback((text: string) => {
     withContextTarget("Open a chat, draft, or agent CLI session in this lane before inserting draft text.", (target) => {
       if (target.kind === "chat" || target.kind === "draft") {
@@ -445,19 +553,65 @@ export function WorkSidebar({
     if (!active || !effectiveTool) return null;
     if (effectiveTool === "terminal") {
       if (!laneId) {
-        return <TerminalPanelEmpty message="Select a lane or open a Work session to attach terminals." />;
+        return (
+          <WorkToolEmptyState
+            title="No lane selected"
+            message="Pick a lane or open a Work session and its shells appear here."
+          />
+        );
       }
       if (!terminalOwnerSessionId) {
-        const message = activeSession?.status && activeSession.status !== "running"
-          // `formatToolTypeLabel` already ends in "session" for the CLI tools
-          // ("OpenCode CLI session"), so appending another produced "…CLI
-          // session session before opening…".
-          ? `Continue this ${formatToolTypeLabel(activeSession.toolType)} before opening an attached terminal.`
-          : "Open a chat or running agent CLI session to attach terminals.";
-        return <TerminalPanelEmpty message={message} />;
+        // An ENDED session is the common case here — you left a CLI running,
+        // it finished, and the pane still has to be useful. It gets the one
+        // action that makes shells possible again instead of a sentence
+        // telling you to go and find that action yourself.
+        const endedSession = activeSession?.status && activeSession.status !== "running"
+          ? activeSession
+          : null;
+        if (endedSession) {
+          return (
+            <WorkToolEmptyState
+              title="This session has ended"
+              // `formatToolTypeLabel` already ends in "session" for the CLI
+              // tools ("OpenCode CLI session"), so no second "session" here.
+              message={`Resume this ${formatToolTypeLabel(endedSession.toolType)} to attach shells to it again.`}
+              actions={(
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resumeEndedSession}
+                    disabled={resumingSession}
+                    className={TERMINAL_EMPTY_PRIMARY_CLASS}
+                  >
+                    <Play size={13} weight="fill" />
+                    <span>{resumingSession ? "Resuming…" : "Resume session"}</span>
+                  </button>
+                  {/* `onClose`, not `closePane`: this branch only renders for
+                      the terminal tool, where there is no browser view to park. */}
+                  <button type="button" onClick={onClose} className={TERMINAL_EMPTY_SECONDARY_CLASS}>
+                    Close
+                  </button>
+                </div>
+              )}
+              hint={<TerminalCliHint />}
+            />
+          );
+        }
+        return (
+          <WorkToolEmptyState
+            title="Start a shell in this lane"
+            message="Shells attach to a chat or a running agent CLI session. Open one and they land here."
+            hint={<TerminalCliHint />}
+          />
+        );
       }
       if (pinnedMachineOffline) {
-        return <TerminalPanelEmpty message={`${pinnedMachineName} is offline.`} />;
+        return (
+          <WorkToolEmptyState
+            title={`${pinnedMachineName} is offline`}
+            message="Its shells are still there. They come back when the machine answers again."
+          />
+        );
       }
       return (
         <ChatTerminalDrawer
@@ -513,7 +667,12 @@ export function WorkSidebar({
 
     if (effectiveTool === "git") {
       if (pinnedMachineOffline) {
-        return <TerminalPanelEmpty message={`${pinnedMachineName} is offline.`} />;
+        return (
+          <WorkToolEmptyState
+            title={`${pinnedMachineName} is offline`}
+            message="Git for this lane lives on that machine, so there is nothing to read from here yet."
+          />
+        );
       }
       const hasDiffSelection = Boolean(selectedPath || selectedCommit);
       return (
@@ -651,6 +810,8 @@ export function WorkSidebar({
     activeSession,
     onClose,
     pinnedMachineName,
+    resumeEndedSession,
+    resumingSession,
     pinnedMachineOffline,
     runtimePin,
     terminalOwnerSessionId,
@@ -681,21 +842,27 @@ export function WorkSidebar({
   // "Back to tools" tooltip says so wherever a terminal is on screen.
   const terminalPickerBinding = `Shift+${pickerBinding}`;
   const handleKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    if (!effectiveTool) return;
     const target = event.target as Node | null;
     // Capture phase, so this runs before xterm's own key handling — but only
     // for keys pressed inside this pane, and never while a modal layer is up.
     if (!target || !sidebarRef.current?.contains(target)) return;
     if (aModalLayerIsOpen()) return;
-    const insideTerminal = target instanceof Element
-      ? target.closest(".xterm") != null
-      : (target.parentElement?.closest(".xterm") ?? null) != null;
+    const targetElement = target instanceof Element ? target : target.parentElement;
+    if (targetElement && escapeIsClaimedInside(targetElement)) return;
+    const insideTerminal = targetElement?.closest(".xterm") != null;
     const binding = insideTerminal ? terminalPickerBinding : pickerBinding;
     if (!eventMatchesBinding(event.nativeEvent, binding)) return;
     event.preventDefault();
     event.stopPropagation();
+    // At the picker there is nothing to go back to, so Escape means "dismiss".
+    // Without this the pane was a keyboard trap: the only way out of the front
+    // page was the mouse.
+    if (!effectiveTool) {
+      closePane();
+      return;
+    }
     selectTool(null);
-  }, [effectiveTool, pickerBinding, selectTool, terminalPickerBinding]);
+  }, [closePane, effectiveTool, pickerBinding, selectTool, terminalPickerBinding]);
 
   // Browser: the page you are on. Terminal: how many shells. Git: the branch.
   // One compact fact, so the header answers "which one of these am I looking
@@ -715,7 +882,12 @@ export function WorkSidebar({
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
-      className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85"
+      // `min-w-0` + `overflow-hidden`, never a pixel `min-width`: a minimum on
+      // the pane makes it wider than the column flexbox gave it, and the
+      // overflow is then clipped by the window — which is how the ✕ and the
+      // browser's ⋮ ended up unreachable. The drag is what enforces 280px
+      // (`clampWorkSidebarWidthPct`); the pane itself just never escapes.
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85"
     >
       {effectiveTool ? (
         <WorkToolHeader

@@ -124,10 +124,13 @@ describe("WorkToolPicker", () => {
     expect(stateOf("Pull request")).toBe("error");
     expect(stateOf("Git")).toBe("idle");
 
-    // Non-idle dots announce what their colour means; an idle dot says nothing,
-    // because "nothing is happening" is not news worth a screen-reader stop.
-    expect(screen.getByLabelText("Needs you")).toBeTruthy();
-    expect(screen.getByLabelText("Errors")).toBeTruthy();
+    // EVERY dot announces what its colour means, idle included: a 6px dot with
+    // no accessible name is a decoration, and "nothing is happening" is still
+    // the answer to "what is this tool doing".
+    expect(screen.getByLabelText("Browser · needs you")).toBeTruthy();
+    expect(screen.getByLabelText("Pull request · errors")).toBeTruthy();
+    expect(screen.getByLabelText("Git · idle")).toBeTruthy();
+    expect(screen.getByLabelText("Terminal · live")).toBeTruthy();
   });
 
   it("keeps every status on one line and finishes the last row", () => {
@@ -191,6 +194,8 @@ describe("WorkToolPicker", () => {
     );
 
     expect(screen.getByText(/Esc returns here/)).toBeTruthy();
-    expect(screen.getByText(/Tools:/)).toBeTruthy();
+    // No dangling colon: the footer is a signpost, not a truncated sentence.
+    expect(screen.getByText(/Tools$/)).toBeTruthy();
+    expect(screen.queryByText(/Tools:/)).toBeNull();
   });
 });

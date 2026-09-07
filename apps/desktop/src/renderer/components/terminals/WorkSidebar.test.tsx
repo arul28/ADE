@@ -330,6 +330,7 @@ function installAdeMock(options: {
   browserStatus?: BuiltInBrowserStatus | null;
 } = {}) {
   const terminalWrite = vi.fn().mockResolvedValue({ ok: true });
+  const resumeSession = vi.fn().mockResolvedValue({ ok: true });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -350,9 +351,12 @@ function installAdeMock(options: {
       terminal: {
         write: terminalWrite,
       },
+      pty: {
+        resumeSession,
+      },
     },
   });
-  return { terminalWrite };
+  return { terminalWrite, resumeSession };
 }
 
 function renderSidebar(args: {
@@ -371,7 +375,7 @@ function renderSidebar(args: {
         active
         laneId={args.laneId ?? "lane-1"}
         lanes={args.lanes ?? [lane]}
-        activeSession={args.activeSession ?? activeSession}
+        activeSession={args.activeSession === undefined ? activeSession : args.activeSession}
         tool={args.tab}
         onToolChange={args.onTabChange ?? vi.fn()}
         onClose={vi.fn()}
@@ -456,14 +460,32 @@ describe("WorkSidebar context targets", () => {
     expect(screen.getByTestId("chat-terminal-drawer").getAttribute("data-chat-session-id")).toBe("chat-1");
   });
 
-  it("explains why ended CLI sessions cannot open attached terminals", () => {
+  it("offers an ended CLI session the one action that brings its shells back", async () => {
+    const { resumeSession } = installAdeMock();
     renderSidebar({
       tab: "terminal",
       activeSession: { ...activeSession, status: "completed" },
       contextTarget: null,
     });
 
-    expect(screen.getByText(/Continue this .* session before opening an attached terminal\./)).toBeTruthy();
+    // The whole empty state, not the bare sentence it used to be: a headline
+    // you can act on, the reason, an action, and the CLI hint.
+    expect(screen.getByText("This session has ended")).toBeTruthy();
+    expect(screen.getByText(/Resume this .* to attach shells to it again\./)).toBeTruthy();
+    expect(screen.getByText("ade terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume session/ }));
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: activeSession.id }),
+    ));
+  });
+
+  it("keeps a lane with no owning session on the same warm empty state", () => {
+    installAdeMock();
+    renderSidebar({ tab: "terminal", activeSession: null, contextTarget: null });
+
+    expect(screen.getByText("Start a shell in this lane")).toBeTruthy();
+    expect(screen.getByText("ade terminal")).toBeTruthy();
   });
 
   it("writes formatted context to active PTY targets instead of dispatching chat events", async () => {
@@ -655,7 +677,7 @@ describe("WorkSidebar context targets", () => {
     renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
 
     const dot = await screen.findByRole("button", {
-      name: "Switch to iOS Simulator — iPhone 17 Pro booted",
+      name: "Switch to iOS Simulator — iPhone 17 Pro",
     });
     fireEvent.click(dot);
     expect(onTabChange).toHaveBeenCalledWith("ios");
@@ -822,7 +844,9 @@ describe("WorkSidebar live tool status", () => {
 
     live.startShell("zsh");
 
-    await waitFor(() => expect(screen.getByText("1 shell · zsh")).toBeTruthy());
+    // The count is the whole line: shell titles are unbounded and truncated the
+    // status at pane widths people actually use.
+    await waitFor(() => expect(screen.getByText("1 shell")).toBeTruthy());
     expect(live.list).toHaveBeenCalledTimes(2);
     // Same <aside> node: the status is live, not the product of a remount.
     expect(container.querySelector("aside")).toBe(paneBefore);
@@ -889,6 +913,68 @@ describe("WorkSidebar pane chrome", () => {
 
     fireEvent.keyDown(textarea, { key: "Escape", shiftKey: true });
     expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves Escape to a tool that claimed it", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // The browser's find bar marks itself: its Escape closes the find bar, and
+    // the pane must not also take you back to the picker on the same keystroke.
+    const findBar = document.createElement("div");
+    findBar.setAttribute("data-ade-escape-scope", "browser-find");
+    const input = document.createElement("input");
+    findBar.appendChild(input);
+    container.querySelector("aside")!.appendChild(findBar);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  it("leaves Escape to a text field that has something to clear, but not to an empty one", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const field = document.createElement("input");
+    field.value = "localhost:3000";
+    container.querySelector("aside")!.appendChild(field);
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    // An empty field has nothing to clear, so Escape is the pane's again.
+    field.value = "";
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("closes the pane on Escape at the picker, where there is nothing to go back to", () => {
+    const onClose = vi.fn();
+    const { container } = render(
+      <MemoryRouter>
+        <WorkSidebar
+          active
+          laneId="lane-1"
+          lanes={[lane]}
+          activeSession={activeSession}
+          tool={null}
+          onToolChange={vi.fn()}
+          onClose={onClose}
+          contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+          contextDisabledReason={null}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.keyDown(container.querySelector("aside")!.querySelector("div")!, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("stands down while a modal layer owns Escape", () => {

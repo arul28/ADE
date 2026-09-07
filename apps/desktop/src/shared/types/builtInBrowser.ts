@@ -9,6 +9,17 @@ export type BuiltInBrowserFrame = {
 
 export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
   visible: boolean;
+  /**
+   * How much the pane had to shrink the emulated device to fit, in (0, 1].
+   *
+   * The fit factor is a fact about the pane's CURRENT size, so it changes on
+   * every drag rather than only when a preset is picked — which is why it
+   * rides with bounds instead of with the emulation state. Main forwards it as
+   * CDP's `scale` on `Emulation.setDeviceMetricsOverride`, so the page still
+   * lays out at the device's own width and is drawn smaller, instead of being
+   * cropped by a narrower native view.
+   */
+  scale?: number;
 } & BuiltInBrowserProjectScopeArgs;
 
 export type BuiltInBrowserProjectScopeArgs = {
@@ -479,6 +490,18 @@ export type BuiltInBrowserScreenshot = {
   height: number;
   dataUrl: string;
 };
+
+/**
+ * What the trusted renderer gets back from a screenshot request.
+ *
+ * "There is no tab" is an ordinary state of the browser pane, not a failure:
+ * a card polling a browser whose last tab was just closed would otherwise turn
+ * a normal race into a thrown IPC error on every tick. Agents still get the
+ * throw — for them a screenshot of nothing IS a failed request.
+ */
+export type BuiltInBrowserScreenshotResult =
+  | ({ ok: true } & BuiltInBrowserScreenshot)
+  | { ok: false; reason: "no_tab" };
 
 export type BuiltInBrowserContextItem = {
   kind: "built_in_browser_element" | "built_in_browser_capture";

@@ -129,7 +129,7 @@ export function WorkToolHeader({
             {/* The header is 36px of a pane that can be 280px wide, so this is
                 the line most likely to be cut. The tooltip is where the rest
                 of it lives. */}
-            <PaneTooltip label={contextLabel} side="bottom" className="min-w-0 flex-1">
+            <PaneTooltip label={contextLabel} side="bottom" onlyWhenClipped className="min-w-0 flex-1">
               <span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-fg">
                 {contextLabel}
               </span>

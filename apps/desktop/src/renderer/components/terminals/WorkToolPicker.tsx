@@ -27,7 +27,8 @@ import { workToolErrorSuffix } from "./workToolErrors";
  */
 const CARD_MIN_TRACK_PX = 154;
 
-const PALETTE_HINT = isMac ? "⌘K → Tools:" : "Ctrl+K → Tools:";
+/** No trailing colon: the footer is a signpost, not the start of a sentence. */
+const PALETTE_HINT = isMac ? "⌘K → Tools" : "Ctrl+K → Tools";
 
 /**
  * The tools pane's front page: every tool ADE can open beside this session, what
@@ -90,10 +91,13 @@ export function WorkToolPicker({
           return (
             <PaneTooltip
               key={definition.id}
-              // The card truncates its status to one line, so the tooltip is the
-              // only place the whole of a long one can be read.
+              // Only when the card actually cut something off. A tooltip that
+              // repeats a line you can already read is a panel over the NEXT
+              // card for no reason; a tooltip over a truncated one is the rest
+              // of the sentence.
               label={`${definition.label} — ${line}`}
               side="bottom"
+              onlyWhenClipped
               disabled={showSkeleton}
               className="min-w-0"
               style={spansRow ? { gridColumn: "1 / -1" } : undefined}
@@ -157,7 +161,7 @@ export function WorkToolPicker({
                   )}
                 </span>
                 {availability.available ? (
-                  <WorkToolStatusDot state={dotState} color={definition.color} />
+                  <WorkToolStatusDot state={dotState} color={definition.color} tool={definition.label} />
                 ) : null}
               </button>
             </PaneTooltip>
@@ -185,14 +189,17 @@ export function WorkToolPicker({
  * only the one word the colour carries — and adds nothing at all when idle,
  * which is the absence of news.
  */
-function WorkToolStatusDot({ state, color }: { state: WorkToolDotState; color: string }) {
+function WorkToolStatusDot({ state, color, tool }: { state: WorkToolDotState; color: string; tool: string }) {
   const resolved = workToolDotColor(state, color);
   const isQuiet = state === "idle";
   return (
     <span
-      {...(isQuiet
-        ? { "aria-hidden": true }
-        : { role: "img", "aria-label": WORK_TOOL_DOT_LABELS[state] })}
+      role="img"
+      // Named even when idle. A 6px dot with no accessible name is a decoration
+      // to a screen reader, so "Terminal · idle" — the absence of news — was
+      // simply missing rather than quiet. The card's own tooltip carries the
+      // full status line for sighted hover; this is the same fact, spoken.
+      aria-label={`${tool} · ${WORK_TOOL_DOT_LABELS[state]}`}
       data-tool-glyph-state={state}
       className="absolute right-3 top-3 h-[6px] w-[6px] shrink-0 rounded-full"
       style={
@@ -205,8 +212,8 @@ function WorkToolStatusDot({ state, color }: { state: WorkToolDotState; color: s
 }
 
 const WORK_TOOL_DOT_LABELS: Record<WorkToolDotState, string> = {
-  idle: "Idle",
-  live: "Live",
-  attention: "Needs you",
-  error: "Errors",
+  idle: "idle",
+  live: "live",
+  attention: "needs you",
+  error: "errors",
 };

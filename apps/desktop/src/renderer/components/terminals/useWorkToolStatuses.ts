@@ -127,33 +127,39 @@ export function browserStatusLine(
     || status.ownerLaneId != null;
   const heldHere = laneId != null
     && (status.ownerLaneId === laneId || status.tabs.some((tab) => tab.ownerLaneId === laneId));
-  const label = shortHost(activeTab?.url ?? status.url)
-    ?? activeTab?.title
-    ?? pluralize(status.tabs.length, "tab", "tabs");
+  // With more than one tab the COUNT is the fact ("3 tabs"); the URL of
+  // whichever one happens to be active is already in the header above, and a
+  // path long enough to be interesting is exactly the thing that truncated the
+  // ownership word off the end of this line.
+  const label = status.tabs.length > 1
+    ? pluralize(status.tabs.length, "tab", "tabs")
+    : shortHost(activeTab?.url ?? status.url)
+      ?? activeTab?.title
+      ?? pluralize(status.tabs.length, "tab", "tabs");
   // A login handoff outranks every ownership suffix: while it is open the agent
   // explicitly does NOT hold the tab, and telling the person otherwise is the
   // one thing that would stop them from signing in.
   const handedOff = status.tabs.some((tab) => tab.handoff != null);
   const suffix = handedOff
-    ? " · you own this tab"
+    ? " · you"
     : heldHere
-    ? " · agent holds tab"
+    ? " · agent"
     : held
-      ? " · held by another lane"
-      : status.tabs.length > 1
-        ? ` · ${pluralize(status.tabs.length, "tab", "tabs")}`
-        : "";
+      ? " · other lane"
+      : "";
   return { line: `${label}${suffix}`, live: true, errorCount, errored: false, attention: handedOff };
 }
 
 export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   if (!lane?.status) return IDLE;
   const { ahead, behind, dirty, rebaseInProgress } = lane.status;
-  if (rebaseInProgress) return { line: "Rebase in progress", live: true, errorCount: 0, errored: false };
+  if (rebaseInProgress) return { line: "Rebasing", live: true, errorCount: 0, errored: false };
   const parts: string[] = [];
   if (ahead > 0) parts.push(`${ahead} ahead`);
   if (behind > 0) parts.push(`${behind} behind`);
-  parts.push(dirty ? "uncommitted changes" : "clean");
+  // "dirty" rather than "uncommitted changes": this is a status slot, not a
+  // sentence, and at two columns the sentence became "3 ahead · uncommitt…".
+  parts.push(dirty ? "dirty" : "clean");
   return { line: parts.join(" · "), live: dirty || ahead > 0, errorCount: 0, errored: false };
 }
 
@@ -162,11 +168,11 @@ export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolSta
   if (!pr) return { line: "No PR", live: false, errorCount: 0, errored: false };
   const checks = pr.checksStatus;
   const detail = checks === "pending"
-    ? "checks running"
+    ? "checks"
     : checks === "failing"
-      ? "checks failing"
+      ? "failing"
       : checks === "passing"
-        ? "checks passing"
+        ? "passing"
         : pr.state;
   return {
     line: `#${pr.githubPrNumber} · ${detail}`,
@@ -178,15 +184,17 @@ export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolSta
 
 export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
   if (!session) return { line: "Not booted", live: false, errorCount: 0, errored: false };
+  // The dot already says "booted"; the words are for the device name, which is
+  // the part that is long ("iPhone 17 Pro Max") and the part you asked for.
   const device = session.deviceName?.trim() || "Simulator";
-  return { line: `${device} booted`, live: true, errorCount: 0, errored: false };
+  return { line: device, live: true, errorCount: 0, errored: false };
 }
 
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
-  if (!session) return { line: "No app attached", live: false, errorCount: 0, errored: false };
+  if (!session) return { line: "No app", live: false, errorCount: 0, errored: false };
   const label = session.label?.trim() || "App";
   return {
-    line: `${label} attached`,
+    line: label,
     live: session.status !== "stopped" && session.status !== "exited",
     errorCount: 0,
     // App Control has no pushed console/network tally today, so its red dot is
@@ -200,9 +208,10 @@ export function terminalStatusLine(
 ): WorkToolStatus {
   if (titles == null) return IDLE;
   if (titles.length === 0) return { line: "No shells", live: false, errorCount: 0, errored: false };
-  const named = titles.filter((title) => title.trim().length > 0).slice(0, 2);
-  const suffix = named.length > 0 ? ` · ${named.join(", ")}` : "";
-  return { line: `${pluralize(titles.length, "shell", "shells")}${suffix}`, live: true, errorCount: 0, errored: false };
+  // Shell titles are unbounded ("npm run dev -w apps/desktop"), and appending
+  // even one of them turned this into "Shells attache…" at 526px. The count is
+  // the whole status; the tab strip below names them.
+  return { line: pluralize(titles.length, "shell", "shells"), live: true, errorCount: 0, errored: false };
 }
 
 /**
@@ -428,7 +437,7 @@ export function useWorkToolStatuses(args: {
     // BOOLEAN, not a tally, and a real count means a git read the pane would
     // then have to keep fresh. So the card states what it does rather than
     // padding the slot with the marketing blurb.
-    files: { line: "Browse worktree", live: false, errorCount: 0, errored: false },
+    files: { line: "Lane worktree", live: false, errorCount: 0, errored: false },
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
     // Machine-scoped, like every other PR render path: lane ids are not unique

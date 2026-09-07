@@ -522,15 +522,63 @@ describe("built-in browser find in page", () => {
     const result = await service.findInPage({ tabId, text: "checkout", matchCase: true });
 
     expect(result).toMatchObject({ matches: 3, activeMatchOrdinal: 1, finalUpdate: true, text: "checkout" });
+    // A new search clears any live session and is then issued as a
+    // continuation: Chromium never answers a new-session find on a
+    // WebContentsView in Electron 41, and a cleared session still reports the
+    // first match and the whole-document count.
+    expect(fakes.webContentsInstances[0]?.stopFindCalls).toEqual(["clearSelection"]);
     expect(fakes.webContentsInstances[0]?.findCalls[0]).toMatchObject({
       text: "checkout",
-      options: { forward: true, matchCase: true, findNext: false },
+      options: { forward: true, matchCase: true, findNext: true },
     });
     const found = collector.events.find((event) => event.type === "found-in-page");
     expect(found).toMatchObject({ type: "found-in-page", tabId, matches: 3 });
 
     await service.stopFindInPage({ tabId });
-    expect(fakes.webContentsInstances[0]?.stopFindCalls).toEqual(["clearSelection"]);
+    expect(fakes.webContentsInstances[0]?.stopFindCalls).toEqual([
+      "clearSelection",
+      "clearSelection",
+    ]);
+  });
+
+  it("answers a new search on an Electron build that only replies to continuations", async () => {
+    // Live behaviour on Electron 41 / Chromium 146: `findInPage` with
+    // `findNext: false` returns a request id and then NOTHING is ever
+    // emitted, which timed the caller out after 5s on a page whose counts
+    // were already correct. Only a continuation find replies.
+    const { service, tabId, collector } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    wc.findInPage = ((text: string, options?: Record<string, unknown>): number => {
+      wc.findCalls.push({ text, options });
+      const requestId = wc.findCalls.length;
+      if (options?.findNext !== true) return requestId;
+      // Real Electron returns the id synchronously AND may emit before the
+      // caller has stored it, so emit on the same tick.
+      wc.emit("found-in-page", {}, {
+        requestId,
+        activeMatchOrdinal: 1,
+        matches: 4,
+        finalUpdate: true,
+        selectionArea: {},
+      });
+      return requestId;
+    }) as typeof wc.findInPage;
+
+    const result = await service.findInPage({ tabId, text: "checkout", timeoutMs: 400 });
+    expect(result).toMatchObject({ matches: 4, activeMatchOrdinal: 1, finalUpdate: true });
+    expect(wc.stopFindCalls).toEqual(["clearSelection"]);
+    expect(wc.findCalls).toHaveLength(1);
+    expect(collector.events.filter((event) => event.type === "found-in-page")).toHaveLength(1);
+  });
+
+  it("keeps a caller's findNext on its own session instead of restarting it", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    const result = await service.findInPage({ tabId, text: "checkout", findNext: true });
+    expect(result).toMatchObject({ matches: 3 });
+    // No clear: restarting the session would send the user back to match 1.
+    expect(wc.stopFindCalls).toEqual([]);
+    expect(wc.findCalls[0]?.options).toMatchObject({ findNext: true });
   });
 
   it("requires search text", async () => {

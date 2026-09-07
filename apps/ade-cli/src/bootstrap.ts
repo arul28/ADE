@@ -2355,12 +2355,22 @@ export async function createAdeRuntime(args: {
       builtInBrowserService: builtInBrowserBridge,
       workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
-        if (!builtInBrowserBridge) return false;
+        if (!builtInBrowserBridge) {
+          logger.warn("built_in_browser_bridge.runtime_auth_no_bridge", {
+            socketPath: builtInBrowserBridgeSocketPath,
+          });
+          return false;
+        }
         const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
           socketPath: builtInBrowserBridgeSocketPath,
           authToken,
         });
         if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
+        logger.info("built_in_browser_bridge.runtime_auth_configured", {
+          socketPath: builtInBrowserBridgeSocketPath,
+          projectRoot,
+          verified,
+        });
         return verified;
       },
       eventBuffer,

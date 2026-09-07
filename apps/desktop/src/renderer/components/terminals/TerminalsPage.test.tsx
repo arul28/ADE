@@ -2010,6 +2010,37 @@ describe("TerminalsPage chat session activation", () => {
     confirmSpy.mockRestore();
   });
 
+  it("gives the tools-pane splitter a keyboard, not just a mouse", () => {
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarWidthPct: 36,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    const separator = screen.getByRole("separator", { name: "Resize tools pane" });
+    expect(separator.getAttribute("tabindex")).toBe("0");
+    expect(separator.getAttribute("aria-valuenow")).toBe("36");
+    expect(separator.getAttribute("aria-valuemin")).toBe("26");
+    expect(separator.getAttribute("aria-valuemax")).toBe("55");
+
+    // The separator moves, so ArrowLeft widens the pane on its right.
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(38);
+
+    fireEvent.keyDown(separator, { key: "Home" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(26);
+
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(55);
+  });
+
   it("recovers a collapsed sessions list from a thin left rail", () => {
     workMocks.currentWork = {
       ...workMocks.baseWork,
