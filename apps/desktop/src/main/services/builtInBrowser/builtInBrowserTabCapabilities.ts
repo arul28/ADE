@@ -1093,9 +1093,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tabId) {
       return { tabId: "", fps: 0, maxWidth: 0, subscribers: 0 };
     }
-    const result = previewStreams.stop(tabId);
-    // Only the last one out unparks the view; a second watcher is still looking.
-    if (result.subscribers === 0) deps.onPreviewWatchersChanged?.(tabId);
+    const { hadStream, ...result } = previewStreams.stop(tabId);
+    // Only the last one out unparks the view; a second watcher is still
+    // looking, and an unpaired stop was never watching anything at all.
+    if (hadStream && result.subscribers === 0) deps.onPreviewWatchersChanged?.(tabId);
     return result;
   }
 

@@ -1022,13 +1022,20 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
  *
  * The view has to stay attached and visible to keep a compositor surface (a
  * detached or hidden `WebContentsView` captures nothing at all), so it is parked
- * this far past the right edge of the window's content rect, where the window
- * clips it away. The size floors only apply to a panel that was never opened —
- * a zero-sized view would capture an empty image.
+ * this far past the bottom-right corner of the union of every display, where no
+ * window on any screen can reach it. The size floors only apply to a panel that
+ * was never opened — a zero-sized view would capture an empty image.
  */
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
+
+/**
+ * How long window/display geometry has to settle before parked views are
+ * repositioned. A live resize drag fires continuously; recomputing on every
+ * frame would `setBounds` a dozen views per tick for no visible benefit.
+ */
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS = 50;
 
 export type BuiltInBrowserStartPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
   /** Defaults to the collection's active tab. */

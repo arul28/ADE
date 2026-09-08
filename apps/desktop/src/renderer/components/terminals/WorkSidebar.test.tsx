@@ -1040,6 +1040,72 @@ describe("WorkSidebar pane chrome", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("stands down entirely once the Work route is not the one on screen", () => {
+    // `TerminalsPage` is mounted unconditionally and hidden with CSS when the
+    // user is on Lanes or Settings, so `active` is the ONLY thing that tells
+    // this pane it is off screen. Ungated, its document listeners closed the
+    // tool behind the user's back and moved focus into an `opacity: 0`,
+    // `pointer-events: none` subtree on a route they were not on.
+    const onToolChange = vi.fn();
+    const tree = (active: boolean) => withFeeds(null, (
+      <WorkSidebar
+        active={active}
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        onToolChange={onToolChange}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    ));
+    const { container, rerender } = render(tree(true));
+
+    // Commit the pointer to the pane, then leave the route by keyboard — which
+    // is exactly the sequence that leaves `paneHasPointerRef` stale.
+    fireEvent.pointerDown(container.querySelector("aside")!);
+    rerender(tree(false));
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+
+    // And it re-arms when the user comes back — but only after a fresh click,
+    // because the pointer commitment was reset on the way out.
+    rerender(tree(true));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+    fireEvent.pointerDown(container.querySelector("aside")!);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps plain Escape with the terminal even when the keystroke lands on <body>", () => {
+    // xterm drops focus to <body> on a reconnect or a dispose. With no target
+    // to walk up from, the <body> path used to apply the plain-Escape binding
+    // and take a keystroke the terminal was owed.
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const xterm = document.createElement("div");
+    xterm.className = "xterm";
+    const textarea = document.createElement("textarea");
+    xterm.appendChild(textarea);
+    container.querySelector("aside")!.appendChild(xterm);
+
+    fireEvent.pointerDown(textarea);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    // Shift+Escape is the terminal's way out, and it still works from <body>.
+    fireEvent.keyDown(document.body, { key: "Escape", shiftKey: true });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
   it("stands down while a modal layer owns Escape", () => {
     const onTabChange = vi.fn();
     const dialog = document.createElement("div");

@@ -79,7 +79,16 @@ export type BuiltInBrowserPreviewStreams = {
     tabId: string,
     options?: { fps?: number | null; maxWidth?: number | null },
   ) => BuiltInBrowserPreviewStreamResult;
-  stop: (tabId: string) => BuiltInBrowserPreviewStreamResult;
+  /**
+   * Drops one subscriber.
+   *
+   * `hadStream` separates "the last watcher just left" from "there was never a
+   * stream here" — both report `subscribers: 0`, but only the first is a state
+   * change the service needs to act on. An unpaired stop (a card unmounting
+   * after its tab closed) is tolerated by design, and must not cost a full
+   * re-attach sweep over every tab.
+   */
+  stop: (tabId: string) => BuiltInBrowserPreviewStreamResult & { hadStream: boolean };
   /** Tears a tab's loop down regardless of subscriber count (tab closed/destroyed). */
   stopTab: (tabId: string) => void;
   /** Whether anybody is watching this tab right now. */
@@ -200,15 +209,16 @@ export function createBuiltInBrowserPreviewStreams(
           fps: normalizeBuiltInBrowserPreviewFps(null),
           maxWidth: normalizeBuiltInBrowserPreviewMaxWidth(null),
           subscribers: 0,
+          hadStream: false,
         };
       }
       state.subscribers = Math.max(0, state.subscribers - 1);
       if (state.subscribers === 0) {
         const snapshot = result(state);
         stopTab(tabId);
-        return snapshot;
+        return { ...snapshot, hadStream: true };
       }
-      return result(state);
+      return { ...result(state), hadStream: true };
     },
 
     stopTab,

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -20,6 +21,39 @@ import {
 
 /** The house overshoot curve — same one `ade-popover-in` uses in index.css. */
 const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
+
+/** The gap the menu keeps between its own bottom and its clipping edge. */
+const MENU_EDGE_GUTTER_PX = 8;
+
+/** Below this a scrolling menu is worse than a clipped one, so it stops shrinking. */
+const MENU_MIN_HEIGHT_PX = 160;
+
+/** `top-[calc(100%+4px)]` — kept here so the measurement matches the class. */
+const MENU_TRIGGER_OFFSET_PX = 4;
+
+/**
+ * The edge that actually cuts this menu off.
+ *
+ * The menu is anchored inside the pane rather than portalled (so it cannot
+ * float over another tool's live frame), and the Work tools pane is
+ * `overflow-hidden` — so the viewport, which is what a `vh` max-height
+ * measures against, is the wrong ruler entirely. On a short pane the last item
+ * was clipped with no scrollbar to say it was there. The first clipping
+ * ancestor is the honest one.
+ */
+function clipBottomFor(node: HTMLElement | null): number {
+  const view = node?.ownerDocument?.defaultView ?? (typeof window === "undefined" ? null : window);
+  const viewportBottom = view?.innerHeight ?? 0;
+  if (!node || !view) return viewportBottom;
+  for (let current = node.parentElement; current; current = current.parentElement) {
+    const style = view.getComputedStyle(current);
+    if (style.overflowY !== "visible" || style.overflowX !== "visible") {
+      const bottom = current.getBoundingClientRect().bottom;
+      return Math.min(bottom, viewportBottom || bottom);
+    }
+  }
+  return viewportBottom;
+}
 
 /**
  * A small dropdown for the App Control toolbar.
@@ -81,6 +115,27 @@ export function AppControlMenu({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
   const reduceMotion = useReducedMotion() ?? false;
+  const [maxHeightPx, setMaxHeightPx] = useState<number | null>(null);
+
+  // Measured, not declared: the space below the trigger inside the pane is the
+  // only thing that decides whether this menu has to scroll.
+  useLayoutEffect(() => {
+    if (!open) {
+      setMaxHeightPx(null);
+      return undefined;
+    }
+    const measure = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const top = trigger.getBoundingClientRect().bottom + MENU_TRIGGER_OFFSET_PX;
+      const available = clipBottomFor(wrapperRef.current) - top - MENU_EDGE_GUTTER_PX;
+      setMaxHeightPx(Math.max(MENU_MIN_HEIGHT_PX, Math.round(available)));
+    };
+    measure();
+    const view = wrapperRef.current?.ownerDocument?.defaultView ?? window;
+    view.addEventListener("resize", measure);
+    return () => view.removeEventListener("resize", measure);
+  }, [open]);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -163,7 +218,12 @@ export function AppControlMenu({
             animate={reduceMotion ? { opacity: 1 } : { opacity: 1, scaleY: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scaleY: 0.97 }}
             transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: OVERSHOOT }}
-            style={{ transformOrigin: "top" }}
+            style={{
+              transformOrigin: "top",
+              // Beats the token's viewport-based ceiling, which stays as the
+              // fallback for the frame before the first measurement lands.
+              ...(maxHeightPx == null ? null : { maxHeight: `${maxHeightPx}px` }),
+            }}
             className={cn(
               MENU_SURFACE_CLASS,
               // Positioning and sizing are this menu's own: it is anchored

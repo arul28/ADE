@@ -125,4 +125,30 @@ describe("beginWorkSidebarSplitterDrag", () => {
     end();
     expect(document.body.style.pointerEvents).toBe("");
   });
+
+  it("is idempotent, so every exit path can call it", () => {
+    // The drag ends it from mouseup, unmount, window blur, `pointercancel` and
+    // Escape, and several of those fire for one drag. A stuck
+    // `pointer-events: none` on the body kills every click in the renderer with
+    // no in-app way back, so over-calling has to be free.
+    const end = beginWorkSidebarSplitterDrag(null);
+    end();
+    end();
+    end();
+    expect(document.body.style.pointerEvents).toBe("");
+    expect(document.documentElement.style.cursor).toBe("");
+  });
+
+  it("a spent disposer cannot undo a later drag", () => {
+    // The real hazard of a non-idempotent disposer: an unmount cleanup firing
+    // after a new drag has started would restore the OLD snapshot over the new
+    // drag's isolation and leave the body hit-testable mid-drag.
+    const first = beginWorkSidebarSplitterDrag(null);
+    first();
+    const second = beginWorkSidebarSplitterDrag(null);
+    first();
+    expect(document.body.style.pointerEvents).toBe("none");
+    second();
+    expect(document.body.style.pointerEvents).toBe("");
+  });
 });

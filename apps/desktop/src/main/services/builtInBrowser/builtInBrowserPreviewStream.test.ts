@@ -229,6 +229,20 @@ describe("createBuiltInBrowserPreviewStreams", () => {
     expect(h.streams.stop("tab-9").subscribers).toBe(0);
   });
 
+  it("separates 'the last watcher left' from 'there was never a stream'", () => {
+    // Both report `subscribers: 0`. Only the first is a state change, and the
+    // service turns that into a full re-attach sweep over every tab — which an
+    // unpaired stop (a card unmounting after its tab closed, which the API
+    // tolerates by design) must not be able to trigger.
+    const h = harness();
+    expect(h.streams.stop("tab-9").hadStream).toBe(false);
+    h.streams.start("tab-1");
+    h.streams.start("tab-1");
+    expect(h.streams.stop("tab-1")).toMatchObject({ subscribers: 1, hadStream: true });
+    expect(h.streams.stop("tab-1")).toMatchObject({ subscribers: 0, hadStream: true });
+    expect(h.streams.stop("tab-1")).toMatchObject({ subscribers: 0, hadStream: false });
+  });
+
   it("dispose() clears every loop and refuses new subscriptions", () => {
     const h = harness();
     h.streams.start("tab-1");

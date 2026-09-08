@@ -240,6 +240,7 @@ import type {
   BuiltInBrowserStartPreviewStreamArgs,
   BuiltInBrowserStartRecordingArgs,
   BuiltInBrowserStopPreviewStreamArgs,
+  BuiltInBrowserStatus,
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserTabArgs,
@@ -820,6 +821,7 @@ import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import { isBuiltInBrowserNoTabError } from "../builtInBrowser/builtInBrowserService";
+import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
@@ -2601,6 +2603,47 @@ export function registerIpc({
       throw new Error("Built-in browser service is not available.");
     }
     return builtInBrowserService;
+  };
+
+  /**
+   * A status for an error path, which must not be able to fail itself.
+   *
+   * `getStatus` resolves a project collection and throws when no window on this
+   * machine holds that project — a perfectly reasonable error for a read, and a
+   * useless one for a handler whose whole job is to answer "there was nothing
+   * to stop" without an exception.
+   */
+  const safeBuiltInBrowserStatus = (
+    input: BuiltInBrowserTabTargetArgs,
+    win: BrowserWindow | null,
+  ): BuiltInBrowserStatus => {
+    try {
+      return ensureBuiltInBrowser().getStatus(input, win);
+    } catch {
+      return {
+        attached: false,
+        partition: BUILT_IN_BROWSER_PARTITION,
+        storageProfileKey: "global",
+        collectionKey: "",
+        collectionProjectRoot: input.projectRoot ?? null,
+        persistentProfile: true,
+        visible: false,
+        bounds: { x: 0, y: 0, width: 0, height: 0 },
+        activeTabId: null,
+        tabs: [],
+        url: null,
+        title: null,
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        isInspecting: false,
+        hasSelection: false,
+        ownerLaneId: null,
+        ownerChatSessionId: null,
+        ownerClaimedAt: null,
+        ownerLeaseExpiresAt: null,
+      };
+    }
   };
 
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
@@ -9271,7 +9314,11 @@ export function registerIpc({
         return {
           tabId: "",
           stopped: false,
-          status: ensureBuiltInBrowser().getStatus(input, win),
+          // Deliberately guarded: `getStatus` routes through the project
+          // collection and throws its own error when no window holds that
+          // project — swapping a benign "there was no tab" for a different IPC
+          // rejection is exactly what this catch exists to avoid.
+          status: safeBuiltInBrowserStatus(input, win),
         } satisfies BuiltInBrowserStopFindInPageResult;
       }
       throw error;

@@ -601,10 +601,18 @@ export function WorkSidebar({
    * Shared by the pane's own capture handler and the `<body>` fallback below,
    * so the two can never disagree about what counts as a claim.
    */
-  const applyPickerBinding = useCallback((event: KeyboardEvent, targetElement: Element | null) => {
+  const applyPickerBinding = useCallback((
+    event: KeyboardEvent,
+    targetElement: Element | null,
+    options?: { insideTerminal?: boolean },
+  ) => {
     if (aModalLayerIsOpen()) return;
     if (targetElement && escapeIsClaimedInside(targetElement)) return;
-    const insideTerminal = targetElement?.closest(".xterm") != null;
+    // With no target there is nothing to walk up from, so the caller supplies
+    // what it knew at pointer-down instead.
+    const insideTerminal = targetElement
+      ? targetElement.closest(".xterm") != null
+      : options?.insideTerminal === true;
     const binding = insideTerminal ? terminalPickerBinding : pickerBinding;
     if (!eventMatchesBinding(event, binding)) return;
     event.preventDefault();
@@ -638,29 +646,51 @@ export function WorkSidebar({
    * the keyboard back immediately.
    */
   const paneHasPointerRef = useRef(false);
+  /**
+   * …and whether that pointer-down landed inside a terminal.
+   *
+   * The `<body>` path has no target to inspect, so without this it would apply
+   * the plain-Escape binding to a keystroke that belongs to an xterm whose
+   * focus has since dropped to `<body>` (a reconnect, a dispose) — handing the
+   * pane an Escape the terminal was owed. Remembered at pointer-down, which is
+   * the same moment the pane decides the keyboard is its.
+   */
+  const paneTerminalHasPointerRef = useRef(false);
   useEffect(() => {
+    // `TerminalsPage` stays mounted off-route (hidden with CSS, not unmounted),
+    // so an ungated document listener here would arm the pane's Escape while
+    // the user is on Lanes or Settings — closing a tool behind their back and
+    // moving focus into a `pointer-events: none`, `z-index: -1` subtree.
+    if (!active) {
+      paneHasPointerRef.current = false;
+      paneTerminalHasPointerRef.current = false;
+      return undefined;
+    }
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
-      paneHasPointerRef.current = target instanceof Node
-        ? Boolean(sidebarRef.current?.contains(target))
-        : false;
+      const node = target instanceof Node ? target : null;
+      paneHasPointerRef.current = Boolean(node && sidebarRef.current?.contains(node));
+      const element = node instanceof Element ? node : node?.parentElement ?? null;
+      paneTerminalHasPointerRef.current = paneHasPointerRef.current
+        && element?.closest(".xterm") != null;
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, []);
+  }, [active]);
 
   // Only ever for keystrokes that landed on `<body>`: anything with a real
   // focus target is handled by the pane's own capture handler above (or belongs
   // to whatever does have focus), so there is no double handling.
   useEffect(() => {
+    if (!active) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target !== document.body) return;
       if (!paneHasPointerRef.current) return;
-      applyPickerBinding(event, null);
+      applyPickerBinding(event, null, { insideTerminal: paneTerminalHasPointerRef.current });
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [applyPickerBinding]);
+  }, [active, applyPickerBinding]);
 
   // Browser: the page you are on. Terminal: how many shells. Git: the branch.
   // One compact fact, so the header answers "which one of these am I looking

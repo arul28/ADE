@@ -110,12 +110,19 @@ export function nextWorkSidebarWidthPctForKey(
  * none` on the body no element can become a selection anchor, while the
  * document-level `mousemove`/`mouseup` listeners the drag runs on still fire.
  *
- * The cursor goes on `<html>` for the same reason — the body is no longer a hit
- * target, so a cursor declared on it would not be consulted.
+ * The cursor goes on `<html>` as well as on `<body>`: the body is no longer a
+ * hit target, so on its own it can be skipped when the cursor is resolved, and
+ * `<html>` is the ancestor that is always consulted.
  *
  * Every property is restored to the exact inline value it had, so a drag that
  * starts while something else has parked a cursor there leaves it as it found
  * it.
+ *
+ * The disposer is IDEMPOTENT. A dead `pointer-events: none` on `<body>` kills
+ * every click, hover and focus in the renderer with no in-app way back, so the
+ * drag calls it from every exit it can name — mouseup, unmount, window blur,
+ * `pointercancel`, Escape — and several of those can fire for the same drag.
+ * A second call must not restore stale values over a later drag's isolation.
  */
 export function beginWorkSidebarSplitterDrag(handle: HTMLElement | null): () => void {
   const doc = handle?.ownerDocument ?? (typeof document === "undefined" ? null : document);
@@ -136,7 +143,10 @@ export function beginWorkSidebarSplitterDrag(handle: HTMLElement | null): () => 
   // The handle is the one element still under the pointer conceptually; a
   // double-click on it must not select the pane's chrome either.
   if (handle) handle.style.userSelect = "none";
+  let done = false;
   return () => {
+    if (done) return;
+    done = true;
     root.style.cursor = previous.rootCursor;
     body.style.cursor = previous.bodyCursor;
     body.style.userSelect = previous.bodyUserSelect;

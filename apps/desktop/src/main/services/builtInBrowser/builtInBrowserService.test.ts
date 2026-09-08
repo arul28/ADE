@@ -154,11 +154,50 @@ const fakes = vi.hoisted(() => {
     setBackgroundColor = (color: string): void => {
       this.backgroundColor = color;
     };
-    setBounds = (_rect: unknown): void => undefined;
-    setVisible = (_visible: boolean): void => undefined;
+    boundsCalls: { x: number; y: number; width: number; height: number }[] = [];
+    visibleCalls: boolean[] = [];
+    setBounds = (rect: { x: number; y: number; width: number; height: number }): void => {
+      this.boundsCalls.push({ ...rect });
+    };
+    setVisible = (visible: boolean): void => {
+      this.visibleCalls.push(visible);
+    };
   }
 
   // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
+  /**
+   * A `screen` that a test can reshape and fire events from — the two things
+   * the parked-preview geometry depends on and neither of which a static stub
+   * can express.
+   */
+  const screenListeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  let displays: { bounds: { x: number; y: number; width: number; height: number } }[] = [
+    { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+  ];
+  const fakeScreen = {
+    getCursorScreenPoint: vi.fn(() => ({ x: 0, y: 0 })),
+    getAllDisplays: () => displays,
+    setDisplays: (next: { bounds: { x: number; y: number; width: number; height: number } }[]): void => {
+      displays = next;
+    },
+    on: (event: string, handler: (...args: unknown[]) => void): void => {
+      screenListeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void): void => {
+      const index = screenListeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) screenListeners.splice(index, 1);
+    },
+    emit: (event: string): void => {
+      for (const entry of [...screenListeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string): number => screenListeners.filter((entry) => entry.event === event).length,
+    clearListeners: (): void => {
+      screenListeners.length = 0;
+    },
+  };
+
   const debuggerInstances: FakeDebugger[] = [];
   const webContentsInstances: FakeWebContents[] = [];
   const webContentsViewInstances: FakeWebContentsView[] = [];
@@ -285,6 +324,7 @@ const fakes = vi.hoisted(() => {
   };
 
   return {
+    fakeScreen,
     WebContentsView: TrackedFakeWebContentsView,
     WebContents: TrackedFakeWebContents,
     debuggerInstances,
@@ -292,9 +332,7 @@ const fakes = vi.hoisted(() => {
     webContentsViewInstances,
     partitionCalls,
     openExternal: vi.fn(async (_url: string) => undefined),
-    screen: {
-      getCursorScreenPoint: vi.fn(() => ({ x: 0, y: 0 })),
-    },
+    screen: fakeScreen,
     beforeSendHeadersHandlers,
     beforeRequestHandlers,
     requestCompletedHandlers,
@@ -458,10 +496,46 @@ function fakeBrowserWindow() {
   const children: unknown[] = [];
   const addChildViewCalls: unknown[] = [];
   const removeChildViewCalls: unknown[] = [];
+  // Real listener bookkeeping, not `vi.fn()`: the service now registers window
+  // geometry watchers whose whole job is to fire, and a spy cannot be fired.
+  const listeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  const hostListeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  const webContents = {
+    isDestroyed: () => false,
+    focusCalls: 0,
+    focus() {
+      webContents.focusCalls += 1;
+    },
+    on: (event: string, handler: (...args: unknown[]) => void) => {
+      hostListeners.push({ event, handler });
+    },
+    once: (event: string, handler: (...args: unknown[]) => void) => {
+      hostListeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+      const index = hostListeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) hostListeners.splice(index, 1);
+    },
+    emit: (event: string) => {
+      for (const entry of [...hostListeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string) => hostListeners.filter((entry) => entry.event === event).length,
+  };
+  let contentBounds = { x: 0, y: 0, width: 1280, height: 720 };
   return {
     id: fakeWindowId++,
     isDestroyed: () => false,
-    getContentBounds: () => ({ x: 0, y: 0, width: 1280, height: 720 }),
+    // The preview loop pauses on a window nobody can see, which is what keeps
+    // a stream a test forgot to stop from capturing against these stubs.
+    isVisible: () => false,
+    isMinimized: () => false,
+    getContentBounds: () => contentBounds,
+    setContentBounds: (next: { x: number; y: number; width: number; height: number }) => {
+      contentBounds = next;
+    },
+    webContents,
     addChildViewCalls,
     removeChildViewCalls,
     contentView: {
@@ -476,8 +550,22 @@ function fakeBrowserWindow() {
         if (index >= 0) children.splice(index, 1);
       },
     },
-    once: vi.fn(),
-    removeListener: vi.fn(),
+    on: (event: string, handler: (...args: unknown[]) => void) => {
+      listeners.push({ event, handler });
+    },
+    once: (event: string, handler: (...args: unknown[]) => void) => {
+      listeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+      const index = listeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+    emit: (event: string) => {
+      for (const entry of [...listeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string) => listeners.filter((entry) => entry.event === event).length,
   };
 }
 
@@ -553,6 +641,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.permissionPrompt.mockClear();
     fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    // `screen` is a process singleton, so a service from an earlier test that
+    // was never detached leaves its watchers behind.
+    fakes.fakeScreen.clearListeners();
   });
 
   it("getStatus returns sane defaults before any window or tab is attached", () => {
@@ -743,6 +835,155 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     // nobody is previewing costs nothing.
     service.stopPreviewStream({ tabId });
     expect(win.contentView.children).toHaveLength(0);
+  });
+
+  /**
+   * A helper for the parking tests: a service with one tab that has been shown
+   * in the panel at `panel`, then hidden with a live preview watcher.
+   */
+  const parkedTabFixture = async (
+    collectorArg: ReturnType<typeof captureStatusEvents>,
+    panel: { width: number; height: number } | null,
+  ) => {
+    const service = createBuiltInBrowserService({ onEvent: collectorArg.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    if (panel) {
+      await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+    }
+    const tabId = service.getStatus().activeTabId!;
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    return { service, win, view, tabId };
+  };
+
+  it("parks a previewed view past every display, not just past this window", async () => {
+    // The blocker: the park point was `contentWidth + 64`, computed once. A
+    // window that later widened past it painted a live page over the ADE UI.
+    fakes.fakeScreen.setDisplays([
+      { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+      { bounds: { x: 1280, y: 0, width: 1920, height: 1080 } },
+    ]);
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked.x).toBe(1280 + 1920 + 64);
+    expect(parked.y).toBe(1080 + 64);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("re-parks on window geometry events while a tab is parked", async () => {
+    const { service, win, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const beforeCalls = view.boundsCalls.length;
+
+    // Maximise onto a display that did not exist when the park was computed.
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 3840, height: 2160 } }]);
+    win.setContentBounds({ x: 0, y: 0, width: 3840, height: 2160 });
+    vi.useFakeTimers();
+    try {
+      win.emit("maximize");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(view.boundsCalls.length).toBeGreaterThan(beforeCalls);
+    const reparked = view.boundsCalls.at(-1)!;
+    // The whole point: outside the new content rect, in both axes.
+    expect(reparked.x).toBeGreaterThanOrEqual(3840);
+    expect(reparked.y).toBeGreaterThanOrEqual(2160);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("re-parks when a display is added or its metrics change", async () => {
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const beforeCalls = view.boundsCalls.length;
+
+    fakes.fakeScreen.setDisplays([
+      { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+      { bounds: { x: 1280, y: 0, width: 2560, height: 1440 } },
+    ]);
+    vi.useFakeTimers();
+    try {
+      fakes.fakeScreen.emit("display-added");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(view.boundsCalls.length).toBeGreaterThan(beforeCalls);
+    expect(view.boundsCalls.at(-1)!.x).toBeGreaterThanOrEqual(1280 + 2560);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("drops its geometry watchers when it lets go of the window", async () => {
+    const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.listenerCount("resize")).toBe(1);
+    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(1);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+
+    expect(win.listenerCount("resize")).toBe(0);
+    expect(win.listenerCount("maximize")).toBe(0);
+    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(0);
+    expect(fakes.fakeScreen.listenerCount("display-added")).toBe(0);
+  });
+
+  it("hands the keyboard back to the window exactly once when an attended tab is parked", async () => {
+    // The parked branch neither detaches nor hides the view, and those were the
+    // two operations that used to release the page's keyboard focus.
+    const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.webContents.focusCalls).toBe(1);
+
+    // Idempotent re-park passes must not keep stealing focus back.
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    expect(win.webContents.focusCalls).toBe(1);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("keeps the size the panel last showed a parked tab at", async () => {
+    // Parking used to floor every hidden tab at 960x600, firing a real window
+    // resize inside the page each way round.
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
+    service.stopPreviewStream({ tabId });
+
+    // A tab the panel never showed has no rect to reuse, so the floor applies.
+    const fresh = await parkedTabFixture(collector, null);
+    expect(fresh.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
+    fresh.service.stopPreviewStream({ tabId: fresh.tabId });
+  });
+
+  it("does not sweep every view for an unpaired preview stop", async () => {
+    // `stop` reports zero subscribers both when the last watcher leaves and
+    // when there was no stream at all; only the first is a state change.
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    service.stopPreviewStream({ tabId });
+    const afterUnpark = view.visibleCalls.length;
+
+    service.stopPreviewStream({ tabId });
+    service.stopPreviewStream({ tabId });
+
+    expect(view.visibleCalls).toHaveLength(afterUnpark);
+  });
+
+  it("releases preview subscriptions when the host renderer goes away", async () => {
+    // The preload's `pagehide` hook covers reloads and navigations but not a
+    // crash, and a leaked subscriber now pins a composited page off-screen.
+    const { win, view } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.contentView.children).toHaveLength(1);
+
+    win.webContents.emit("render-process-gone");
+
+    expect(win.contentView.children).toHaveLength(0);
+    expect(view.visibleCalls.at(-1)).toBe(false);
   });
 
   it("keeps a visible browser view attached to its owner window when another ADE window focuses", async () => {

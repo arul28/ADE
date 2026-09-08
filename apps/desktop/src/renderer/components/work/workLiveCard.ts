@@ -333,7 +333,7 @@ const WORK_LIVE_ACTION_CAPTIONS: Readonly<Record<string, string>> = {
   "handoff-end": "Handed back",
 };
 
-/** `setNetworkLogging` → `Set network logging`; `handoff-end` → `Handoff end`. */
+/** `setGeolocation` → `Set geolocation`; `handoff-pause` → `Handoff pause`. */
 function sentenceCaseAction(action: string): string {
   const words = action
     .replace(/[_-]+/g, " ")

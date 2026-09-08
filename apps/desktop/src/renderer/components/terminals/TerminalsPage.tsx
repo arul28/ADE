@@ -1301,10 +1301,28 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
     });
   }, [work]);
+  /**
+   * Teardown for a splitter drag that is currently in flight.
+   *
+   * The drag installs document listeners AND `pointer-events: none` on
+   * `<body>`; if the mouseup that normally ends it never arrives — the page
+   * unmounts mid-drag, the window loses focus to an OS drag or a screen
+   * capture, the pointer is cancelled — the whole renderer is left unclickable
+   * with no in-app way out. Held in a ref so every one of those paths can end
+   * it, and idempotent so they can all fire.
+   */
+  const workSidebarDragEndRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    workSidebarDragEndRef.current?.();
+    workSidebarDragEndRef.current = null;
+  }, []);
   const handleWorkSidebarResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     const container = event.currentTarget.parentElement;
     if (!container) return;
+    // A second mousedown while a drag is somehow still live: end the old one
+    // first, so its isolation cannot outlive it.
+    workSidebarDragEndRef.current?.();
     const totalWidth = container.getBoundingClientRect().width;
     if (totalWidth <= 0) return;
     const startX = event.clientX;
@@ -1334,22 +1352,49 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       scheduleWidth(startWidthPct + deltaPct);
     };
     const endDragIsolation = beginWorkSidebarSplitterDrag(event.currentTarget);
-    const onUp = () => {
+    let finished = false;
+    /**
+     * The one exit. `commit` persists where the drag ended; `cancel` puts the
+     * pane back where it started, which is what Escape means everywhere else.
+     */
+    const finishDrag = (mode: "commit" | "cancel") => {
+      if (finished) return;
+      finished = true;
       if (animationFrame != null) {
         window.cancelAnimationFrame(animationFrame);
         animationFrame = null;
       }
-      applyWidth(pendingWidthPct);
+      applyWidth(mode === "cancel" ? startWidthPct : pendingWidthPct);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("pointercancel", onPointerCancel);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", onBlur);
       endDragIsolation();
+      if (workSidebarDragEndRef.current === cancelDrag) workSidebarDragEndRef.current = null;
       if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
-      work.setWorkSidebarWidthPct(pendingWidthPct);
+      work.setWorkSidebarWidthPct(mode === "cancel" ? startWidthPct : pendingWidthPct);
     };
+    const onUp = () => finishDrag("commit");
+    // Losing the pointer or the window is not a width the user chose, so those
+    // paths keep whatever the pane already shows rather than reverting it.
+    const onPointerCancel = () => finishDrag("commit");
+    const onBlur = () => finishDrag("commit");
+    const cancelDrag = () => finishDrag("cancel");
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key !== "Escape") return;
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      cancelDrag();
+    };
+    workSidebarDragEndRef.current = cancelDrag;
     if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
     applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    document.addEventListener("pointercancel", onPointerCancel);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", onBlur);
   }, [work, workSidebarTool]);
 
   /**

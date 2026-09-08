@@ -98,6 +98,7 @@ import {
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
@@ -322,6 +323,17 @@ export type BrowserTabState = {
    * full timeout on a request that will never be answered.
    */
   findWaiters: Set<(requestId: number) => void>;
+  /**
+   * The last non-empty rect this tab was actually shown at in the panel.
+   *
+   * Parking a previewed tab has to give it a size, and the panel's live bounds
+   * are already zero by then (`hideBuiltInBrowserView` sends `0×0` on the way
+   * out). Reusing the size the page was last laid out at means a hide/show
+   * round trip does not resize the page's viewport behind the user's back —
+   * responsive breakpoints, `ResizeObserver`s and scroll anchoring all stay put.
+   * `null` only until the panel has shown this tab once.
+   */
+  lastPanelRect: Electron.Rectangle | null;
 };
 
 /**
@@ -483,18 +495,29 @@ function collectionForProjectRoot(
 }
 
 /**
- * "The pane has no tab open" — a state, not a fault.
+ * "The tab this asks for is not there" — a state, not a fault.
  *
  * Thrown so the IPC boundary can answer a trusted renderer with a typed
  * `{ ok: false, reason: "no_tab" }` instead of an exception, while an agent
  * still sees a failed request.
+ *
+ * Covers BOTH shapes of the same race: the pane has no tab at all, and the
+ * caller named a tab that has since closed. A renderer that passes an explicit
+ * `tabId` on its unmount path — which is the honest thing for it to do, since
+ * its own tab may no longer be the active one — hits the second, and treating
+ * that as a hard error is what put "Error occurred in handler" in the log every
+ * time somebody closed the Browser tool.
  */
 export class BuiltInBrowserNoTabError extends Error {
   readonly reason = "no_tab" as const;
 
-  constructor(message: string) {
+  /** The tab that was asked for, when one was named. */
+  readonly tabId: string | null;
+
+  constructor(message: string, tabId: string | null = null) {
     super(message);
     this.name = "BuiltInBrowserNoTabError";
+    this.tabId = tabId;
   }
 }
 
@@ -1442,6 +1465,37 @@ function createBuiltInBrowserWindowService(args: {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
   /**
+   * Geometry watchers, live only while a window is attached.
+   *
+   * A parked preview view is positioned once, in window-relative coordinates.
+   * Every one of these events can change what "outside the window" means —
+   * a resize or a maximise grows the content rect, a move or a display change
+   * moves it relative to the screens — so the park point is recomputed after
+   * each of them. Debounced, because `resize` fires per frame during a drag.
+   */
+  let winGeometryListener: (() => void) | null = null;
+  let screenGeometryListener: (() => void) | null = null;
+  let geometryDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The host renderer going away, so preview subscriptions it owned can be
+   * released. Nothing else releases them: the preload's `pagehide` hook covers
+   * reloads and navigations but not a crash, and a leaked subscriber now keeps
+   * a tab attached, visible and composited at full size forever.
+   */
+  let hostWebContents: WebContents | null = null;
+  let hostRendererGoneListener: (() => void) | null = null;
+
+  /**
+   * Tabs currently sitting off-screen for a preview watcher.
+   *
+   * Only used to spot the attended → parked EDGE: the view keeps keyboard focus
+   * when it stops being the attended one (nothing detaches it any more), so the
+   * host window has to be handed the keyboard back exactly once. Doing it on
+   * every idempotent re-attach pass would steal focus from whatever the user
+   * moved to afterwards.
+   */
+  const parkedTabIds = new Set<string>();
+  /**
    * "Is anybody previewing this tab?", answered by the capability module.
    *
    * A holder rather than a direct call because `tabCapabilities` is built at the
@@ -1566,6 +1620,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const removeTabViewFromWindow = (tab: BrowserTabState): void => {
+    parkedTabIds.delete(tab.id);
     if (!win || win.isDestroyed()) return;
     if (!tab.view) return;
     try {
@@ -1653,7 +1708,9 @@ function createBuiltInBrowserWindowService(args: {
     const nextTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
     if (nextTabs.length !== tabs.length) {
       for (const tab of tabs) {
-        if (!nextTabs.includes(tab)) teardownTabCapabilities(tab);
+        if (nextTabs.includes(tab)) continue;
+        parkedTabIds.delete(tab.id);
+        teardownTabCapabilities(tab);
       }
       tabs = nextTabs;
     }
@@ -1704,7 +1761,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     if (tabId) {
       const tab = tabById(tabId);
-      if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+      if (!tab) throw new BuiltInBrowserNoTabError(`Browser tab not found: ${tabId}`, tabId);
       return tab;
     }
     const ownedTab = reusableOwnedTabForInput(input);
@@ -2590,6 +2647,7 @@ function createBuiltInBrowserWindowService(args: {
       cdpListener: null,
       findRequestId: null,
       findWaiters: new Set(),
+      lastPanelRect: null,
     };
   };
 
@@ -2665,21 +2723,67 @@ function createBuiltInBrowserWindowService(args: {
    * tab's corner card, whose whole job is to picture a browser the panel is NOT
    * showing.
    *
-   * Parking it one window-width to the right keeps the view attached and
-   * visible — so Chromium keeps compositing it — while the window's own content
-   * rect clips it away completely. Only tabs with a live preview subscriber pay
-   * for this; everything else is still detached outright.
+   * Parking it past every display keeps the view attached and visible — so
+   * Chromium keeps compositing it — while nothing on any screen can intersect
+   * it. Only tabs with a live preview subscriber pay for this; everything else
+   * is still detached outright.
+   *
+   * The park point is deliberately NOT "one window-width to the right". Child
+   * view bounds are window-relative and are written once, at the moment of the
+   * park; a window that later widens, maximises or moves to a bigger display
+   * would otherwise grow over a stale park point and paint a live page on top
+   * of the ADE UI. Anchoring past the union of every display's bounds — in both
+   * axes — means no window on any screen can reach it, whatever it does next.
+   * `attachViewsToCurrentWindow` is re-run on geometry changes as well, so the
+   * two defences are independent.
    */
-  const parkedPreviewRect = (panelRect: Electron.Rectangle): Electron.Rectangle => {
-    const contentWidth = win && !win.isDestroyed() ? win.getContentBounds().width : 0;
+  const displayUnionBottomRight = (): { right: number; bottom: number } => {
+    let right = 0;
+    let bottom = 0;
+    try {
+      for (const display of screen.getAllDisplays?.() ?? []) {
+        const rect = display?.bounds;
+        if (!rect) continue;
+        if (Number.isFinite(rect.x) && Number.isFinite(rect.width)) {
+          right = Math.max(right, rect.x + rect.width);
+        }
+        if (Number.isFinite(rect.y) && Number.isFinite(rect.height)) {
+          bottom = Math.max(bottom, rect.y + rect.height);
+        }
+      }
+    } catch {
+      // `screen` is unavailable before `app.ready`; the window's own bounds
+      // below are still a correct (if less paranoid) anchor.
+    }
+    return { right, bottom };
+  };
+
+  const parkedPreviewRect = (tab: BrowserTabState): Electron.Rectangle => {
+    const content = win && !win.isDestroyed()
+      ? win.getContentBounds()
+      : { x: 0, y: 0, width: 0, height: 0 };
+    const union = displayUnionBottomRight();
+    const right = Math.max(union.right, content.x + Math.max(0, content.width));
+    const bottom = Math.max(union.bottom, content.y + Math.max(0, content.height));
+    // Window-relative, because `WebContentsView.setBounds` is.
+    const panelRect = tab.lastPanelRect;
     return {
-      x: Math.max(0, contentWidth) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      y: 0,
-      // A panel that was never opened has zero bounds, and a zero-sized view
-      // captures nothing; the floor is what makes the first preview paint.
-      width: Math.max(panelRect.width, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH),
-      height: Math.max(panelRect.height, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT),
+      x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      // A tab the panel never showed has no rect to reuse, and a zero-sized
+      // view captures nothing; the floor is what makes that first preview paint.
+      width: Math.max(panelRect?.width ?? 0, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH),
+      height: Math.max(panelRect?.height ?? 0, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT),
     };
+  };
+
+  const returnFocusToHostWindow = (): void => {
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents?.focus?.();
+    } catch {
+      // A window mid-teardown has nothing to focus; not worth a log line.
+    }
   };
 
   const attachViewsToCurrentWindow = (): void => {
@@ -2695,23 +2799,33 @@ function createBuiltInBrowserWindowService(args: {
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
         if (hasPreviewWatchers(tab.id)) {
-          if (!win.contentView.children.includes(tab.view)) {
-            win.contentView.addChildView(tab.view);
-          }
-          tab.view.setBounds(parkedPreviewRect(electronRect));
+          const wasAttached = win.contentView.children.includes(tab.view);
+          const wasParked = parkedTabIds.has(tab.id);
+          if (!wasAttached) win.contentView.addChildView(tab.view);
+          tab.view.setBounds(parkedPreviewRect(tab));
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
           // it stays muted like any other background tab.
           applyTabLifecycle(tab, false);
+          parkedTabIds.add(tab.id);
+          // Attended → parked, once. The page was on screen and may well have
+          // had the caret; without this the next keystroke goes to a page the
+          // user cannot see.
+          if (wasAttached && !wasParked) returnFocusToHostWindow();
           continue;
         }
+        parkedTabIds.delete(tab.id);
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
         continue;
       }
+      parkedTabIds.delete(tab.id);
       if (!win.contentView.children.includes(tab.view)) {
         win.contentView.addChildView(tab.view);
+      }
+      if (electronRect.width > 0 && electronRect.height > 0) {
+        tab.lastPanelRect = { ...electronRect };
       }
       tab.view.setBounds(electronRect);
       tab.view.setVisible(true);
@@ -2818,6 +2932,159 @@ function createBuiltInBrowserWindowService(args: {
     browserSessionConfigured = true;
   };
 
+  /**
+   * Window events that can invalidate a parked view's position, and the screen
+   * events that can do the same without the window moving at all (a display
+   * resolution change, a monitor being plugged in or unplugged).
+   */
+  const WINDOW_GEOMETRY_EVENTS = [
+    "resize",
+    "move",
+    "enter-full-screen",
+    "leave-full-screen",
+    "maximize",
+    "unmaximize",
+  ] as const;
+  const SCREEN_GEOMETRY_EVENTS = [
+    "display-metrics-changed",
+    "display-added",
+    "display-removed",
+  ] as const;
+
+  /**
+   * `BrowserWindow` and `screen` overload `on`/`removeListener` per event name,
+   * so a loop over a union of names cannot pick an overload. Registration is
+   * uniform here — one nullary handler for every event — so the emitter is
+   * addressed through its plain EventEmitter shape.
+   */
+  type GeometryEmitter = {
+    on?: (event: string, listener: () => void) => unknown;
+    removeListener?: (event: string, listener: () => void) => unknown;
+  };
+  const asGeometryEmitter = (value: unknown): GeometryEmitter => value as GeometryEmitter;
+
+  /** Is any tab currently sitting off-screen for a preview watcher? */
+  const hasParkedTab = (): boolean => tabs.some((tab) => (
+    tab.view != null
+    && !tab.webContents.isDestroyed()
+    && !(visible && tab.id === activeTabId)
+    && hasPreviewWatchers(tab.id)
+  ));
+
+  const clearGeometryDebounce = (): void => {
+    if (geometryDebounceTimer == null) return;
+    clearTimeout(geometryDebounceTimer);
+    geometryDebounceTimer = null;
+  };
+
+  const scheduleParkedViewRecheck = (): void => {
+    clearGeometryDebounce();
+    geometryDebounceTimer = setTimeout(() => {
+      geometryDebounceTimer = null;
+      if (!win || win.isDestroyed()) return;
+      // Only parked views are position-sensitive here; the attended view is
+      // repositioned by the renderer's own ResizeObserver, which is still
+      // mounted whenever there is one.
+      if (!hasParkedTab()) return;
+      attachViewsToCurrentWindow();
+    }, BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS);
+    geometryDebounceTimer.unref?.();
+  };
+
+  /**
+   * Release every preview subscription this window owned.
+   *
+   * `hasPreviewWatchers` is what decides whether a tab stays parked, so a
+   * subscriber that outlived its renderer does not just leak a timer — it
+   * pins a composited page off-screen for the rest of the session.
+   */
+  const stopPreviewStreamsForWindow = (): void => {
+    let stoppedAny = false;
+    for (const tab of tabs) {
+      if (!hasPreviewWatchers(tab.id)) continue;
+      tabCapabilities.stopPreviewStreamsForTab(tab.id);
+      stoppedAny = true;
+    }
+    if (!stoppedAny) return;
+    logger()?.debug("built_in_browser.preview_streams_released_for_window", {
+      windowId: win && !win.isDestroyed() ? win.id : null,
+    });
+    // `stopPreviewStreamsForTab` drops the loop without going through the
+    // refcount, so nothing else would unpark the views it was keeping alive.
+    attachViewsToCurrentWindow();
+  };
+
+  const unregisterWindowWatchers = (): void => {
+    clearGeometryDebounce();
+    if (win && !win.isDestroyed() && winGeometryListener) {
+      const emitter = asGeometryEmitter(win);
+      for (const event of WINDOW_GEOMETRY_EVENTS) {
+        try {
+          emitter.removeListener?.(event, winGeometryListener);
+        } catch {
+          // ignore teardown races
+        }
+      }
+    }
+    winGeometryListener = null;
+    if (screenGeometryListener) {
+      const screenEmitter = asGeometryEmitter(screen);
+      for (const event of SCREEN_GEOMETRY_EVENTS) {
+        try {
+          screenEmitter.removeListener?.(event, screenGeometryListener);
+        } catch {
+          // ignore teardown races
+        }
+      }
+      screenGeometryListener = null;
+    }
+    if (hostWebContents && hostRendererGoneListener) {
+      try {
+        if (!hostWebContents.isDestroyed()) {
+          hostWebContents.removeListener("render-process-gone", hostRendererGoneListener);
+          hostWebContents.removeListener("destroyed", hostRendererGoneListener);
+        }
+      } catch {
+        // ignore teardown races
+      }
+    }
+    hostWebContents = null;
+    hostRendererGoneListener = null;
+  };
+
+  const registerWindowWatchers = (nextWin: BrowserWindow): void => {
+    unregisterWindowWatchers();
+    winGeometryListener = () => scheduleParkedViewRecheck();
+    const windowEmitter = asGeometryEmitter(nextWin);
+    for (const event of WINDOW_GEOMETRY_EVENTS) {
+      try {
+        windowEmitter.on?.(event, winGeometryListener);
+      } catch {
+        // A platform without one of these events is not a failure.
+      }
+    }
+    screenGeometryListener = () => scheduleParkedViewRecheck();
+    const screenEmitter = asGeometryEmitter(screen);
+    for (const event of SCREEN_GEOMETRY_EVENTS) {
+      try {
+        screenEmitter.on?.(event, screenGeometryListener);
+      } catch {
+        // `screen` is unavailable before `app.ready`.
+      }
+    }
+    const wc = nextWin.webContents ?? null;
+    if (!wc || wc.isDestroyed?.()) return;
+    hostWebContents = wc;
+    hostRendererGoneListener = () => stopPreviewStreamsForWindow();
+    try {
+      wc.on("render-process-gone", hostRendererGoneListener);
+      wc.once("destroyed", hostRendererGoneListener);
+    } catch {
+      hostWebContents = null;
+      hostRendererGoneListener = null;
+    }
+  };
+
   const attachToWindow = (nextWin: BrowserWindow): void => {
     if (win === nextWin) {
       attachViewsToCurrentWindow();
@@ -2828,15 +3095,18 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
+    unregisterWindowWatchers();
     removeTabViewsFromWindow();
 
     win = nextWin;
     winClosedListener = () => {
+      unregisterWindowWatchers();
       win = null;
       winClosedListener = null;
       emitStatus();
     };
     win.once("closed", winClosedListener);
+    registerWindowWatchers(nextWin);
     attachViewsToCurrentWindow();
     emitStatus();
   };
@@ -2846,6 +3116,7 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
+    unregisterWindowWatchers();
     removeTabViewsFromWindow();
     win = null;
     visible = false;
@@ -3521,6 +3792,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      parkedTabIds.delete(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
@@ -4043,6 +4315,7 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
+    unregisterWindowWatchers();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
