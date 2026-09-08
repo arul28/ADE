@@ -1,7 +1,7 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Star, Lightning } from "@phosphor-icons/react";
-import { formatPiProviderLabel, modelSupportsFastMode, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import { formatPiProviderLabel, modelSupportsFastMode, usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { ModelRowLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
@@ -77,7 +77,7 @@ const REASONING_LABELS: Record<string, string> = {
 
 function reasoningChipLabel(effort: string | null, model?: ModelDescriptor): string {
   if (!effort) return "Off";
-  if (effort === "low" && /^gpt-5\.6-(?:sol|terra|luna)$/i.test(model?.providerModelId ?? "")) return "Light";
+  if (effort === "low" && usesCodexNamedEffortLabels(model?.providerModelId)) return "Light";
   return REASONING_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 

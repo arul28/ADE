@@ -625,6 +625,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listScheduledWork",
     "getScheduledWorkState",
     "listClaudePlugins",
+    "listCodexPlugins",
     "listClaudeSessions",
     "listSessions",
     "listSubagents",

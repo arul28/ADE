@@ -228,6 +228,29 @@ describe("SessionCard orchestration identity", () => {
     expect(screen.getAllByText("Needs you")).toHaveLength(1);
   });
 
+  it("keeps Working with a question pip for Codex steering", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    render(
+      <SessionCard
+        session={makeSession({
+          status: "running",
+          runtimeState: "running",
+          steeringInput: true,
+          lastActivityAt: "2026-07-09T11:59:46.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Needs you")).toBeNull();
+    expect(screen.getByTestId("session-status-label").textContent).toContain("Working");
+    expect(screen.getByTestId("session-steering-pip").getAttribute("aria-label")).toBe("has a question");
+  });
+
   it("does not infer Needs you from a CLI runtime marker", () => {
     render(
       <SessionCard

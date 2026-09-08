@@ -21,7 +21,7 @@ The clients of that brain are equal:
 The primary unit of work inside any project is a **lane**: an isolated git worktree with its own agent and terminal sessions. Many lanes run concurrently — each with its own chat, sessions, and PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
 
 Layered on top, all owned by the brain:
-- **Agents** — lane-bound chat, machine-owned personal chat, plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware; Codex defaults to GPT-5.6 Sol with Terra/Luna beside it.
+- **Agents** — lane-bound chat, machine-owned personal chat, plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware; Codex defaults to GPT-6 Astra with GPT-5.6 Sol/Terra/Luna beside it.
 - **Automations** — rule-based background workflows triggered by events, cron, webhooks.
 - **Computer use** — direct, signed Codex Computer Use MCP wiring on macOS plus the provider-neutral proof broker for intentional screenshots, videos, traces, and verification artifacts.
 - **ADE browser** — built-in browser with one persistent human-authenticated profile per ADE installation/channel; independent project/window/personal tab collections; durable tab URLs, permissions, and normal Chromium site state; human-gated origin access; capability-bound tab/session ownership; hidden-tab agent actions; diagnostics, traces, and explicit proof promotion.

@@ -201,6 +201,10 @@ vi.mock("node:child_process", () => ({
             };
           } else if (payload.method === "skills/list") {
             result = { skills: [] };
+          } else if (payload.method === "plugin/list") {
+            result = { marketplaces: [] };
+          } else if (payload.method === "plugin/reconcile") {
+            result = {};
           } else if (payload.method === "account/rateLimits/read") {
             result = { rateLimits: { remaining: 10, limit: 100, resetAt: null } };
           } else if (payload.method === "thread/queue/add") {
@@ -9291,6 +9295,36 @@ describe("createAgentChatService", () => {
       expect(startParams?.effort).toBeUndefined();
       expect(startParams?.reasoningEffort).toBeUndefined();
       expect(startParams?.reasoning_effort).toBeUndefined();
+    });
+
+    it("routes new Codex chats to GPT-6 Astra with its low default", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "",
+      });
+
+      expect(session).toMatchObject({
+        model: "gpt-6-astra",
+        modelId: "openai/gpt-6-astra",
+        reasoningEffort: "low",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Reply only OK." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      expect(threadStart?.params).toMatchObject({
+        model: "gpt-6-astra",
+        config: { model_reasoning_effort: "low" },
+      });
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect(turnStart?.params).toMatchObject({
+        model: "gpt-6-astra",
+        effort: "low",
+      });
     });
 
     it("routes new Codex chats to GPT-5.6 Sol with its low default", async () => {
@@ -29307,7 +29341,7 @@ describe("createAgentChatService", () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
-    it("pins GPT-5.6 ordering/defaults in filtered and provider-omitted catalogs", async () => {
+    it("pins GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
       mockState.codexResponseOverrides.set("model/list", {
         data: [
           {
@@ -29319,6 +29353,19 @@ describe("createAgentChatService", () => {
               { reasoningEffort: "low", description: "Low" },
               { reasoningEffort: "medium", description: "Medium" },
             ],
+          },
+          {
+            id: "gpt-6-astra",
+            displayName: "GPT-6-Astra",
+            defaultReasoningEffort: "low",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "low", description: "Low" },
+              { reasoningEffort: "medium", description: "Medium" },
+              { reasoningEffort: "high", description: "High" },
+              { reasoningEffort: "xhigh", description: "Extra high" },
+              { reasoningEffort: "max", description: "Max" },
+            ],
+            additionalSpeedTiers: ["fast"],
           },
           {
             id: "gpt-5.6-luna",
@@ -29367,7 +29414,8 @@ describe("createAgentChatService", () => {
 
       const models = await service.getAvailableModels({ provider: "codex" });
 
-      expect(models.slice(0, 4).map((model) => model.id)).toEqual([
+      expect(models.slice(0, 5).map((model) => model.id)).toEqual([
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -29382,21 +29430,25 @@ describe("createAgentChatService", () => {
           expect.objectContaining({ effort: "high" }),
           expect.objectContaining({ effort: "xhigh" }),
           expect.objectContaining({ effort: "max" }),
-          expect.objectContaining({ effort: "ultra" }),
         ],
         serviceTiers: ["fast"],
       });
-      expect(models[1]).toMatchObject({ isDefault: false, defaultReasoningEffort: "medium" });
-      expect(models[2]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).not.toContain("ultra");
+      expect(models[1]).toMatchObject({ isDefault: false, defaultReasoningEffort: "low" });
+      expect(models[1]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+        "low", "medium", "high", "xhigh", "max", "ultra",
+      ]);
+      expect(models[2]?.isDefault).toBe(false);
+      expect(models[3]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
         "low", "medium", "high", "xhigh", "max",
       ]);
-      expect(models[3]?.isDefault).toBe(false);
+      expect(models[4]?.isDefault).toBe(false);
 
       const aggregate = await service.getAvailableModels({});
-      const codexIds = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+      const codexIds = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
       const aggregatedCodexModels = aggregate.filter((model) => codexIds.has(model.id));
       expect(aggregate.length).toBeGreaterThan(0);
-      expect(aggregatedCodexModels).toEqual(models.slice(0, 4));
+      expect(aggregatedCodexModels).toEqual(models.slice(0, 5));
     });
 
     it("returns an array for claude provider", async () => {
@@ -32518,6 +32570,13 @@ describe("createAgentChatService", () => {
       // The postcondition every caller relies on: the turn is over and the card
       // is still waiting on the user.
       expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      expect(readPersistedChatState(session.id).steeringInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        awaitingInput: true,
+      });
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        steeringInput: true,
+      });
       return { service, session, events, approvalEvent };
     };
 
@@ -45486,6 +45545,438 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
         answers: {},
       },
     });
+  });
+
+  it("keeps Codex isBlocking:false as live steering instead of awaiting you", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Keep going while I answer.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "steering-request-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-steer-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        isBlocking: false,
+        questions: [{
+          id: "steer",
+          header: "Steer",
+          question: "Want a tighter plan?",
+          isOther: true,
+          options: [{ label: "Yes" }, { label: "No" }],
+        }],
+      },
+    });
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "codex-steer-1",
+    );
+    expect((approvalEvent.event.detail as { request?: { blocking?: boolean } } | undefined)?.request?.blocking)
+      .toBe(false);
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Keep coding; I'll answer in the card.",
+    }, { awaitDispatch: true, routeActiveToSteer: true });
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBeUndefined();
+    expect(summary?.pendingInputItemId).toBeUndefined();
+    expect(summary?.steeringInput).toBe(true);
+    expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+    expect(readPersistedChatState(session.id).steeringInput).toBeUndefined();
+  });
+
+  it("points pendingInputItemId at a blocking Codex request when a steering card is already live", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Keep going.",
+    }, { awaitDispatch: true });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "steer-then-block-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-steer-first",
+        isBlocking: false,
+        questions: [{ id: "steer", question: "Want more tests?", options: [{ label: "Yes" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-steer-first",
+    );
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "steer-then-block-2",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-block-second",
+        questions: [{ id: "block", question: "Approve this command?", options: [{ label: "Allow" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-block-second",
+    );
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBe(true);
+    expect(summary?.pendingInputItemId).toBe("codex-block-second");
+    expect(summary?.steeringInput).toBe(true);
+  });
+
+  it("still blocks Codex requestUserInput when isBlocking is omitted", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Ask before coding.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "blocking-request-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-block-1",
+        questions: [{
+          id: "plan",
+          header: "Plan",
+          question: "Which plan?",
+          options: [{ label: "A" }],
+        }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "codex-block-1",
+    );
+
+    await expect(service.sendMessage({
+      sessionId: session.id,
+      text: "Treat this as the answer.",
+    })).rejects.toThrow("Answer or decline the pending request before sending another message.");
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBe(true);
+    expect(summary?.pendingInputItemId).toBe("codex-block-1");
+    expect(summary?.steeringInput).toBeUndefined();
+  });
+
+  it("cancels a Codex steering card when the turn completes", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Keep going.",
+    }, { awaitDispatch: true });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "steering-request-done",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-steer-done",
+        isBlocking: false,
+        questions: [{ id: "steer", question: "Want more tests?", options: [{ label: "Yes" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-steer-done",
+    );
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "codex-steer-done",
+    );
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.steeringInput).not.toBe(true);
+    expect(summary?.awaitingInput).not.toBe(true);
+  });
+
+  it("enables Codex update_plan on every thread/start", async () => {
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Plan then patch.",
+    }, { awaitDispatch: true });
+    const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+    expect(startPayload?.params).toMatchObject({
+      config: { tools: { update_plan: { enabled: true } } },
+    });
+  });
+
+  it("emits the Codex 50% five-hour plan notice from used_percent, not remaining/limit", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Keep working.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "account/rateLimits/updated",
+      params: { remaining: 10, limit: 100 },
+    });
+    await Promise.resolve();
+    expect(events.some((event) =>
+      event.event.type === "system_notice"
+      && event.event.message === "Approaching Codex plan limit"
+    )).toBe(false);
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "account/rateLimits/updated",
+      params: { rateLimits: { primary: { used_percent: 50 }, secondary: { used_percent: 10 } } },
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.noticeKind === "rate_limit"
+        && event.event.status === "allowed_warning"
+        && event.event.message === "Approaching Codex plan limit"
+      )).toBe(true);
+    });
+  });
+
+  it("emits Computer Use status only on macOS and folds MCP live events into the working row", async () => {
+    const originalPlatform = process.platform;
+    const events: AgentChatEventEnvelope[] = [];
+    try {
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep working.",
+      }, { awaitDispatch: true });
+
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      mockState.emitCodexPayload({
+        method: "mcpServer/startupStatus/updated",
+        params: { serverName: "computer_use", status: "ok" },
+      });
+      await Promise.resolve();
+      expect(events.some((event) =>
+        event.event.type === "tool_call" && event.event.tool === "computer_use"
+      )).toBe(false);
+
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockState.emitCodexPayload({
+        method: "mcpServer/startupStatus/updated",
+        params: { serverName: "computer_use", status: "ok" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "tool_call"
+          && event.event.tool === "computer_use"
+          && (event.event.args as { status?: string } | undefined)?.status === "ready"
+        )).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "mcp-stream-1",
+        method: "mcpServer/event/stream/start",
+        params: { serverName: "docs" },
+      });
+      mockState.emitCodexPayload({
+        method: "mcpServer/event/resource/updated",
+        params: { serverName: "docs", message: "file changed" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "tool_call"
+          && event.event.tool === "mcp_event"
+          && (event.event.args as { event?: string } | undefined)?.event === "file changed"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.id === "mcp-stream-1" && payload.result && typeof payload.result === "object"
+      )).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("lists installed Codex plugins from a live runtime without toggling them", async () => {
+    mockState.codexResponseOverrides.set("plugin/list", () => ({
+      marketplaces: [{
+        name: "openai-bundled",
+        plugins: [{
+          id: "bundled.docs",
+          name: "docs",
+          enabled: true,
+          installed: true,
+          source: { type: "local" },
+          installPolicy: "INSTALLED_BY_DEFAULT",
+        }],
+      }],
+    }));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+    await expect(service.listCodexPlugins({})).resolves.toEqual([
+      expect.objectContaining({
+        id: "bundled.docs",
+        name: "docs",
+        enabled: true,
+        origin: "bundled",
+      }),
+    ]);
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "plugin/reconcile")).toBe(true);
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "plugin/list")).toBe(true);
+  });
+
+  it("lists Codex plugins from the requested lane when sessionId is omitted", async () => {
+    mockState.codexResponseOverrides.set("plugin/list", () => ({
+      marketplaces: [{
+        name: "openai-bundled",
+        plugins: [{
+          id: "bundled.docs",
+          name: "docs",
+          enabled: true,
+          installed: true,
+          source: { type: "local" },
+          installPolicy: "INSTALLED_BY_DEFAULT",
+        }],
+      }],
+    }));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+    await expect(service.listCodexPlugins({ laneId: "lane-missing" })).resolves.toEqual([]);
+    await expect(service.listCodexPlugins({ laneId: "lane-1" })).resolves.toEqual([
+      expect.objectContaining({ id: "bundled.docs", origin: "bundled" }),
+    ]);
+  });
+
+  it("fails open on Codex plugin method-not-found and surfaces other plugin errors", async () => {
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+
+    mockState.codexResponseOverrides.set("plugin/list", {
+      error: { code: -32601, message: "Method not found" },
+    });
+    await expect(service.listCodexPlugins({ sessionId: session.id })).resolves.toEqual([]);
+
+    mockState.codexResponseOverrides.set("plugin/list", {
+      error: { code: -32000, message: "auth failed" },
+    });
+    await expect(service.listCodexPlugins({ sessionId: session.id })).rejects.toThrow(/auth failed/);
+  });
+
+  it("clears Codex modelId when the runtime reports an unregistered thread model", async () => {
+    mockState.codexResponseOverrides.set("thread/start", () => ({
+      thread: { id: "thread-unknown-model", model: "gpt-unknown-preview" },
+    }));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.model).toBe("gpt-unknown-preview");
+    expect(summary?.modelId).toBeUndefined();
   });
 
   it("returns a failed Cursor Task transcript by call id when no agent id exists", async () => {

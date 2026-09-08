@@ -441,8 +441,8 @@ describe("commands", () => {
     expect(paletteCommands("/mcp", [], { provider: "codex" })).not.toContainEqual(
       expect.objectContaining({ name: "/mcp" }),
     );
-    expect(paletteCommands("/plugin", [], { provider: "codex" })).not.toContainEqual(
-      expect.objectContaining({ name: "/plugin" }),
+    expect(paletteCommands("/plugin", [], { provider: "codex" })).toContainEqual(
+      expect.objectContaining({ name: "/plugin", argumentHint: undefined }),
     );
     expect(paletteCommands("/context", [], { provider: "claude" })).toContainEqual(
       expect.objectContaining({ name: "/context" }),
@@ -454,7 +454,7 @@ describe("commands", () => {
       expect.objectContaining({ name: "/mcp" }),
     );
     expect(paletteCommands("/plugin", [], { provider: "claude" })).toContainEqual(
-      expect.objectContaining({ name: "/plugin" }),
+      expect.objectContaining({ name: "/plugin", argumentHint: "[reload|native args]" }),
     );
   });
 

@@ -851,7 +851,7 @@ regain duplicate visible failures after restart.
   that retires such a card is an explicit `pending_input_resolved` — which is
   why every Codex turn-ending path has to emit one. On runtime death the receipt
   is deliberately *withheld* for a plan approval
-  (`preserveRecoverablePlanApprovals`) so `respondToInput` can rebuild the card
+  (`planApprovals: "preserve-cards"`) so `respondToInput` can rebuild the card
   from the transcript; withholding it for anything else strands the composer.
   See [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
 - **Claude idle turns close on an SDK event, never on a timer.** An idle turn is

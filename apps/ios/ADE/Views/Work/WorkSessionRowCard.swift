@@ -200,6 +200,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   // (needs_you / failed) re-renders even when the display status is unchanged.
   let runtimeState: String
   let pendingInputItemId: String?
+  let steeringInput: Bool
   let exitCode: Int?
   let isArchived: Bool
   let isMuted: Bool
@@ -280,6 +281,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.wokeReason = session.wokeReason
     self.runtimeState = session.runtimeState
     self.pendingInputItemId = session.pendingInputItemId
+    self.steeringInput = workCombineSteeringInput(
+      session: session.steeringInput,
+      chatSummary: chatSummary?.steeringInput
+    )
     self.exitCode = session.exitCode
     self.isArchived = isArchived
     self.isMuted = isMuted
@@ -750,7 +755,8 @@ struct WorkSessionRow: View, Equatable {
         // already looking at the row. Passing the phase rather than a trigger
         // keeps the decision in the leaf, which is the only view that knows
         // whether it was on screen for the transition.
-        needsYou: renderSignature.canonicalPhase == .needsYou
+        needsYou: renderSignature.canonicalPhase == .needsYou,
+        steeringInput: renderSignature.steeringInput
       )
     } else {
       HStack(spacing: 4) {
@@ -849,6 +855,9 @@ struct WorkSessionRow: View, Equatable {
     var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
     if let statusLabel = renderSignature.statusLabel {
       parts.append(statusLabel)
+    }
+    if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
+      parts.append("has a question")
     }
     if renderSignature.isSubagent {
       parts.append("subagent")
@@ -1009,6 +1018,8 @@ struct WorkSessionRowStatusSlot: View {
   /// The row is asking for a human right now. Only a TRANSITION into this state
   /// pulses; the steady state does nothing.
   var needsYou: Bool = false
+  /// Live Codex steering pip. Shown only while the slot is the working glyph.
+  var steeringInput: Bool = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pulsing = false
@@ -1029,6 +1040,11 @@ struct WorkSessionRowStatusSlot: View {
       } else {
         Text(label)
           .font(.caption2.weight(.semibold))
+      }
+      if steeringInput, glyph == .working {
+        Text("?")
+          .font(.caption2.weight(.semibold))
+          .accessibilityLabel("has a question")
       }
     }
     .foregroundStyle(activityToneColor(tone))

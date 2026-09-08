@@ -34,6 +34,7 @@ import {
   resolveModelSlug,
   selectSupportedReasoningEffort,
   normalizeAnthropicRuntimeAlias,
+  usesCodexNamedEffortLabels,
 } from "./modelRegistry";
 import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
@@ -245,6 +246,7 @@ describe("modelRegistry", () => {
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-5.6-sol");
+    expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6-astra");
     expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();
@@ -273,6 +275,7 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
+      "openai/gpt-6-astra",
       "openai/gpt-5.6-sol",
       "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
@@ -287,7 +290,24 @@ describe("modelRegistry", () => {
     // API-key OpenAI models are now discovered dynamically through OpenCode,
     // so the static registry yields no hits for api-key auth alone.
     expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.6-sol");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6-astra");
+  });
+
+  it("exposes GPT-6 Astra as the Codex flagship with the API effort ladder", () => {
+    expect(getModelById("openai/gpt-6-astra")).toMatchObject({
+      displayName: "GPT-6 Astra",
+      providerModelId: "gpt-6-astra",
+      contextWindow: 1_050_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "low",
+      serviceTiers: ["fast"],
+    });
+    expect(resolveModelAlias("astra")?.id).toBe("openai/gpt-6-astra");
+    expect(getRuntimeModelRefForDescriptor(getModelById("openai/gpt-6-astra")!, "codex")).toBe("gpt-6-astra");
+    expect(usesCodexNamedEffortLabels("gpt-6-astra")).toBe(true);
+    expect(usesCodexNamedEffortLabels("openai/gpt-6-astra")).toBe(true);
+    expect(usesCodexNamedEffortLabels("gpt-5.6-sol")).toBe(true);
+    expect(usesCodexNamedEffortLabels("gpt-5.5")).toBe(false);
   });
 
   it("exposes the exact GPT-5.6 Codex effort ladders and defaults", () => {

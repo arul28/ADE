@@ -205,6 +205,7 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     .filter { !$0.isEmpty }
   let fastRefs: Set<String> = [
+    "astra", "gpt-6-astra", "openai/gpt-6-astra",
     "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol",
     "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra",
     "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna",

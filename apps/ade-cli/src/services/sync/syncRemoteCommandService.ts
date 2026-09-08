@@ -1847,6 +1847,7 @@ function projectChatOntoSession(
           orchestrationTag: chat.orchestrationTag,
         }
       : {}),
+    ...(chat.steeringInput ? { steeringInput: true } : {}),
   };
   if (chat.awaitingInput) {
     return {

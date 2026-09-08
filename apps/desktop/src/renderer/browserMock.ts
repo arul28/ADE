@@ -149,7 +149,7 @@ function browserMockPlatform(): string {
 }
 
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6-astra";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
@@ -5020,6 +5020,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEvent: noop,
       slashCommands: resolvedArg([]),
       listClaudePlugins: resolvedArg([]),
+      listCodexPlugins: resolvedArg([]),
       reloadClaudePlugins: resolvedArg({
         plugins: [],
         commands: [],

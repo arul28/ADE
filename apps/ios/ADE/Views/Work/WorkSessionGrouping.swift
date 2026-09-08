@@ -376,6 +376,7 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.runtimeState)
     hasher.combine(session.chatIdleSinceAt)
     hasher.combine(session.pendingInputItemId)
+    hasher.combine(session.steeringInput)
     hasher.combine(session.chatSessionId)
     hasher.combine(session.archivedAt)
     hasher.combine(session.settledAt)
@@ -399,6 +400,7 @@ private func workRootSessionPresentationRenderSignature(
       hasher.combine(summary.status)
       hasher.combine(summary.idleSinceAt)
       hasher.combine(summary.endedAt)
+      hasher.combine(summary.steeringInput)
     }
   }
   hasher.combine(displaySessions.map(\.id))

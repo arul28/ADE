@@ -107,7 +107,7 @@ type LaunchDraft = {
 };
 
 const DEFAULT_REVIEW_LAUNCH_MODEL = getDefaultModelDescriptor("codex");
-const DEFAULT_REVIEW_LAUNCH_MODEL_ID = DEFAULT_REVIEW_LAUNCH_MODEL?.id ?? "openai/gpt-5.6-sol";
+const DEFAULT_REVIEW_LAUNCH_MODEL_ID = DEFAULT_REVIEW_LAUNCH_MODEL?.id ?? "openai/gpt-6-astra";
 const DEFAULT_REVIEW_REASONING_EFFORT = DEFAULT_REVIEW_LAUNCH_MODEL?.defaultReasoningEffort ?? "low";
 
 type NormalizedRun = Omit<ReviewRun, "createdAt" | "startedAt" | "updatedAt"> & {

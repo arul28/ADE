@@ -75,6 +75,11 @@ const TOOL_META: Record<string, ToolMeta> = {
   exec_command: { label: "Shell", icon: Terminal, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "codex", sourceTone: "warning", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
   apply_patch: { label: "Patch", icon: Scissors, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "codex", sourceTone: "success" },
   update_plan: { label: "Plan", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "codex", sourceTone: "accent" },
+  computer_use: { label: "Computer Use", icon: Cpu, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "codex", sourceTone: "info", getTarget: a => {
+    const status = String(a.status ?? "").trim();
+    return status ? `· ${status}` : null;
+  } },
+  mcp_event: { label: "MCP", icon: Globe, badgeCls: "border-indigo-400/25 bg-indigo-400/12 text-indigo-200", category: "web", sourceTone: "accent", getTarget: a => [a.server, a.event].filter((value) => typeof value === "string" && value.trim()).join(" · ") || null },
   readFile: { label: "Read", icon: FileCode, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "read", sourceTone: "info", getTarget: a => String(a.path ?? a.file_path ?? "") || null },
   grep: { label: "Search", icon: MagnifyingGlass, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "read", sourceTone: "info", getTarget: a => String(a.pattern ?? "") || null },
   glob: { label: "Find Files", icon: FolderOpen, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "read", sourceTone: "info", getTarget: a => String(a.pattern ?? "") || null },

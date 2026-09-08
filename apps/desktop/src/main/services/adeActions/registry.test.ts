@@ -205,7 +205,7 @@ describe("isAllowedAdeAction", () => {
       "getParallelLaunchState", "getSessionCapabilities", "getSessionSummary",
       "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
-      "listClaudeOutputStyles", "listClaudePlugins", "listClaudeSessions",
+      "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
       "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",

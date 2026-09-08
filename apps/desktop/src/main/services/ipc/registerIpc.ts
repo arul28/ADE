@@ -416,6 +416,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
+  AgentChatCodexPlugin,
+  AgentChatCodexPluginsArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
@@ -8329,6 +8331,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudePlugins(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListCodexPlugins, async (_event, arg: AgentChatCodexPluginsArgs = {}): Promise<AgentChatCodexPlugin[]> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.listCodexPlugins(arg);
   });
 
   ipcMain.handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {

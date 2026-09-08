@@ -129,6 +129,7 @@ export function SessionStatusSlot({
           futureAt={session.nextWakeAt}
           timestampLabel={timestampLabel}
           compact={compact}
+          steeringInput={session.steeringInput === true}
         />
       </span>
 

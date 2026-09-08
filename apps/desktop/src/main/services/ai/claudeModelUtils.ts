@@ -16,7 +16,7 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
  */
 export function resolveCodexCliModel(model: string | null | undefined): string {
   const raw = String(model ?? "").trim();
-  if (!raw.length) return getDefaultModelDescriptor("codex")?.providerModelId ?? "gpt-5.6-sol";
+  if (!raw.length) return getDefaultModelDescriptor("codex")?.providerModelId ?? "gpt-6-astra";
 
   const descriptor = getModelById(raw) ?? resolveModelAlias(raw);
   if (descriptor?.isCliWrapped && descriptor.family === "openai") {

@@ -63,6 +63,7 @@ import {
   supportsActiveTurnDispatchMode,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { isSteeringPendingRequest } from "../../../shared/pendingInputAnswers";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
@@ -211,6 +212,7 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
+import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -4794,7 +4796,12 @@ export function AgentChatPane({
   const selectedPendingInputs = composerSessionId
     ? (resolvedPendingInputsBySession[composerSessionId] ?? [])
     : [];
-  const pendingInput = selectedPendingInputs[0] ?? null;
+  const steeringPendingInput = selectedPendingInputs.find((entry) =>
+    isSteeringPendingRequest(entry.request),
+  ) ?? null;
+  const pendingInput = selectedPendingInputs.find((entry) =>
+    !isSteeringPendingRequest(entry.request),
+  ) ?? null;
   const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
     isOrchestrationPlanApprovalRequest(entry.request),
   ) ?? null;
@@ -11565,11 +11572,9 @@ export function AgentChatPane({
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
   ) => {
-    if (!selectedSessionId) return;
-    const request = resolvedPendingInputsBySession[selectedSessionId]?.[0];
-    if (!request) return;
-    await handleApproval(request.itemId, decision, responseText, answers);
-  }, [handleApproval, resolvedPendingInputsBySession, selectedSessionId]);
+    if (!selectedSessionId || !pendingInput) return;
+    await handleApproval(pendingInput.itemId, decision, responseText, answers);
+  }, [handleApproval, pendingInput, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -13045,7 +13050,9 @@ export function AgentChatPane({
             {sessions.map((session) => {
               const title = chatSessionTitle(session);
               const isActive = session.sessionId === selectedSessionId;
-              const sessionNeedsInput = Boolean(resolvedPendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
+              const sessionNeedsInput = (resolvedPendingInputsBySession[session.sessionId] ?? [])
+                .some((entry) => !isSteeringPendingRequest(entry.request))
+                || session.awaitingInput === true;
               const isRunning = !sessionNeedsInput && turnActiveBySession[session.sessionId] === true;
               const sessionReadyForPrompt = !sessionNeedsInput && !isRunning && session.status === "idle";
               const sessionIndicatorStatus = sessionNeedsInput || sessionReadyForPrompt
@@ -13804,6 +13811,28 @@ export function AgentChatPane({
       {authStickyBar}
       <LaneBranchDriftStrip laneId={laneId} />
       {takeoverBanner}
+      {steeringPendingInput ? (
+        <div
+          data-testid="codex-steering-question"
+          className={cn(
+            layoutVariant === "grid-tile"
+              ? "mx-auto w-full max-w-[var(--chat-column,52rem)]"
+              : "mx-3 max-w-[var(--chat-column,52rem)]",
+          )}
+        >
+          <AskQuestionComposer
+            key={steeringPendingInput.itemId}
+            request={steeringPendingInput.request}
+            responding={respondingApprovalIds.has(steeringPendingInput.itemId)}
+            onSubmit={(answers) => {
+              void handleApproval(steeringPendingInput.itemId, "accept", null, answers);
+            }}
+            onDecline={() => {
+              void handleApproval(steeringPendingInput.itemId, "decline");
+            }}
+          />
+        </div>
+      ) : null}
       {composerElement}
     </div>
   );

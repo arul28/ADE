@@ -66,7 +66,7 @@ subagents, computer use). The pane derives all visible state from the
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
 | `ChatWorkLogBlock.tsx` | Work-log presentation. The transcript no longer renders `work_log_group` rows, so the exports that matter there are `ChatToolActivityDetails` (the expandable tool-call list on the working indicator and the done divider) and `ChatTurnFilesChangedSummary` — one collapsed `N files changed +A −D` row at the turn's done divider, aggregated from the whole turn's `file_change`/write-tool entries and deduped by path. Expanding shows lane-relative paths (absolute path in the tooltip) that open in the Files tab, per-file diff expansion drawn from the entry payload, and a **Review in Files** action that opens the Files tab for the lane — it is not a revert; revert stays on the checkpoint-backed `turn_diff_summary` panel, which also suppresses this fallback when the turn moved HEAD. Because it reads only work-log entries it works for every runtime and for turns with no git checkpoint. The whole `ChatWorkLogBlock` component survives for the Settings chat-appearance preview: it accepts `animate` so completed groups render a static glyph while in-flight ones pulse, and prefers `waiting` over `working` when any entry is `interrupted`. Web-search work-log rows render provider action details (`query` / `queries`, `title`, `url`, `snippet`) as compact result chips; URL chips route through `openUrlInAdeBrowser()`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
-| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, capped previews, note row, keyboard-first answering, A/B compare, minimize). See [Pending input card](#pending-input-card). |
+| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, capped previews, note row, keyboard-first answering, A/B compare, minimize). Codex `isBlocking: false` steering uses the same card **above** the still-open composer with header `{Provider} has a question`. See [Pending input card](#pending-input-card). |
 | `QuestionReceipts.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
 | `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. It also owns `isQuestionKind(kind)` — "is the agent asking you something, or asking you to allow something" — which `isAskQuestionRequest` now delegates to, and which the push publisher imports so the split is decided once. Anything unrecognised, including a kind from a newer runtime and the absent kind of an older event, is an approval: the safer of the two words to be wrong with. |
 | `chatMarkdown.tsx` | The shared agent-markdown renderer (`ChatMarkdown`, `buildChatMarkdownComponents`, `SAFE_PREVIEW_SCHEMA`) used by plan cards, question-option previews, and other non-transcript surfaces. Links route through `ChatMarkdownAnchor`: a resolvable workspace path becomes a button that opens through the chat workspace-path context (the Work tools-pane Files panel when the file is in this chat's own lane on this machine, the Files tab otherwise), a real URL opens in the in-app browser, and anything that is neither (including a bare `file:` href) renders as inert text. A file path must never reach the browser opener — `normalizeBrowserUrlInput` turns `laneService.ts` into `https://laneService.ts` and navigates the built-in browser to a garbage host. `SAFE_PREVIEW_SCHEMA` allows the `file:` protocol and single-letter drive "schemes" (both cases) on `href` because `rehypeSanitize` runs before `urlTransform` and would otherwise strip a Windows `C:\repo\x.ts` before it could be linkified; `javascript:` / `data:` / `vbscript:` stay blocked. `chatMarkdownUrlTransform` decodes the percent-encoded link destination before the drive check, since the markdown pipeline delivers `C:%5Crepo%5Cx.ts`. |
@@ -842,9 +842,14 @@ that could not work without it.
   / rich editor are disabled, attachment, slash-command, and edit
   affordances are gated, the placeholder switches to a "resolve the
   pending request above" hint, and Enter is a no-op (Escape cancels
-  the request). The same gate runs server-side: `agentChatService`
+  the request). Codex `item/tool/requestUserInput` with `isBlocking:
+  false` is the exception: it is live steering, not a gate. The card
+  sits above the still-open composer (`data-testid="codex-steering-question"`),
+  the session row stays Working with a `?` pip, and `sendMessage` is
+  allowed. Missing `isBlocking` still blocks (`unwrap_or(true)` in Codex
+  0.153.4). The same gate runs server-side: `agentChatService`
   refuses `sendMessage`, queued steers, and `dispatchSteer` while a
-  live pending input exists, throwing
+  live **blocking** pending input exists, throwing
   `"Answer or decline the pending request before sending another
   message."`. `AgentChatPane.submit` mirrors the message into the
   composer's error banner so a fast double-Enter doesn't silently
@@ -1716,6 +1721,15 @@ renders whatever is present:
   tool).
 - **Codex** — full via the app-server `item/tool/requestUserInput`
   payload (header, multiSelect, isSecret, per-option description/preview).
+  `isBlocking: false` is non-blocking Astra steering: header
+  `{Provider} has a question`, composer stays open, list/tile stay
+  Working with a question pip, and the card dies on Stop or
+  `turn/completed` with a `pending_input_resolved` cancel receipt.
+  It does not set `awaitingInput` or `pendingInputItemId`. Missing
+  `isBlocking` is blocking. Empty-prompt TUI keys still submit the
+  steering card (`pendingApprovalOwnsQuestionKeys`); typed send stays
+  ungated (`pendingApprovalCapturesPrompt`). Thread start/resume always send
+  `config.tools.update_plan.enabled = true`.
 - **Cursor** — full via `normalizeCursorControlQuestions` (incl.
   `defaultAssumption`, `impact`, `isSecret`).
 - **OpenCode** — `header`, `multiSelect` (from `multiple`),

@@ -8,6 +8,8 @@ import {
   latestPendingApproval,
   movePendingQuestionFocus,
   movePendingQuestionOption,
+  pendingApprovalCapturesPrompt,
+  pendingApprovalOwnsQuestionKeys,
   pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
@@ -323,6 +325,49 @@ describe("pendingInput", () => {
     }));
   });
 
+  it("prefers a blocking Codex waiter over a later steering card", () => {
+    const blocking: PendingInputRequest = {
+      ...baseRequest,
+      requestId: "req-block",
+      itemId: "item-block",
+    };
+    const steering: PendingInputRequest = {
+      ...baseRequest,
+      requestId: "req-steer",
+      itemId: "item-steer",
+      blocking: false,
+    };
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "approval_request",
+          itemId: "item-block",
+          kind: "tool_call",
+          description: "Approve this command?",
+          detail: { request: blocking },
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "approval_request",
+          itemId: "item-steer",
+          kind: "tool_call",
+          description: "Want more tests?",
+          detail: { request: steering },
+        },
+      },
+    ];
+    const approval = latestPendingApproval(events);
+    expect(approval).toEqual(expect.objectContaining({ itemId: "item-block" }));
+    expect(pendingApprovalCapturesPrompt(approval)).toBe(true);
+  });
+
   it("tracks arrow-key selection across multi-question input", () => {
     const request: PendingInputRequest = {
       ...baseRequest,
@@ -505,5 +550,33 @@ describe("pendingInput", () => {
     expect(pendingQuestionSelectionValue(baseRequest, selected)).toBe("manual");
     expect(selected.answers).toEqual({});
     expect(selected.pendingDigitSelection).toBeNull();
+  });
+});
+
+describe("pendingApprovalCapturesPrompt", () => {
+  it("leaves the composer free for non-blocking Codex steering", () => {
+    expect(pendingApprovalCapturesPrompt(questionApproval({ ...baseRequest, blocking: false }))).toBe(false);
+    expect(pendingApprovalCapturesPrompt(questionApproval())).toBe(true);
+    expect(pendingApprovalCapturesPrompt({
+      itemId: "item-approval",
+      description: "Allow edit",
+      highStakes: false,
+      mode: "approval",
+    })).toBe(true);
+    expect(pendingApprovalCapturesPrompt(null)).toBe(false);
+  });
+});
+
+describe("pendingApprovalOwnsQuestionKeys", () => {
+  it("keeps empty-prompt keys on non-blocking Codex steering cards", () => {
+    expect(pendingApprovalOwnsQuestionKeys(questionApproval({ ...baseRequest, blocking: false }))).toBe(true);
+    expect(pendingApprovalOwnsQuestionKeys(questionApproval())).toBe(true);
+    expect(pendingApprovalOwnsQuestionKeys({
+      itemId: "item-approval",
+      description: "Allow edit",
+      highStakes: false,
+      mode: "approval",
+    })).toBe(false);
+    expect(pendingApprovalOwnsQuestionKeys(null)).toBe(false);
   });
 });

@@ -3532,12 +3532,12 @@ the stats and shows update guidance.
   Sonnet 5, Haiku 4.5, Opus 4.8) and legacy Sonnet 4.6 /
   Fable 5 / Opus 4.7 selections normalize forward instead of appearing as
   rows, while the generic `opus` alias resolves to Opus 5. The OpenAI picker
-  always promotes GPT-5.6 Sol, Terra, Luna in that
-  order even when a host returns another order; Sol is the fallback default
+  always promotes GPT-6 Astra, then GPT-5.6 Sol, Terra, Luna in that
+  order even when a host returns another order; Astra is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
   tiers/defaults in their original order and falls back to Light / Medium /
-  High / Extra High / Max / Ultra on Sol/Terra and through Max on Luna
-  (`low` for Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
+  High / Extra High / Max on Astra/Luna and through Ultra on Sol/Terra
+  (`low` for Astra/Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to
   `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /
@@ -3564,7 +3564,10 @@ the stats and shows update guidance.
   and `AttentionItem.itemId`, which is the value the AppIntents-backed
   Approve / Deny / Reply buttons need to address a specific approval —
   the phone can decide an awaiting-input row at the source instead of
-  forcing the user to open the session.
+  forcing the user to open the session. Live-only `steeringInput` is the
+  Codex `isBlocking: false` exception: iOS keeps the tile Working with a
+  `?` pip, does not lock the composer, and must not treat that field as
+  `pendingInputItemId` / Needs you. It is omitted by older hosts.
 - **Account device ownership is epoch-ordered.** `AccountService` persists a
   positive JavaScript-safe `ownershipEpoch` in the App Group and includes it on
   every authenticated account device PUT/DELETE. A direct account switch is
