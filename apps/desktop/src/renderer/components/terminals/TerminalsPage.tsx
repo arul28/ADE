@@ -1373,7 +1373,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       endDragIsolation();
       if (workSidebarDragEndRef.current === cancelDrag) workSidebarDragEndRef.current = null;
       if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
-      work.setWorkSidebarWidthPct(mode === "cancel" ? startWidthPct : pendingWidthPct);
+      // Commit only. The drag never wrote intermediate values to the store —
+      // `applyWidth` only touches inline `flexGrow` — so on cancel the store
+      // already holds the width the user is going back to. Writing it again
+      // would re-run persistence and cross-window sync for a gesture that was
+      // explicitly abandoned, and would stamp the mousedown snapshot over any
+      // width that changed from another source mid-drag.
+      if (mode === "commit") work.setWorkSidebarWidthPct(pendingWidthPct);
     };
     const onUp = () => finishDrag("commit");
     // Losing the pointer or the window is not a width the user chose, so those

@@ -2064,6 +2064,47 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(55);
   });
 
+  it("puts the pane back on Escape without writing the abandoned drag to the store", () => {
+    // The drag only ever touches inline `flexGrow`, so on cancel the store
+    // already holds the width being restored. Writing it again re-ran
+    // persistence and cross-window sync for a gesture the user abandoned — and
+    // stamped the mousedown snapshot over any width that changed mid-drag.
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarWidthPct: 36,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    const separator = screen.getByRole("separator", { name: "Resize tools pane" });
+    // jsdom lays nothing out, and a zero-width container refuses the drag.
+    vi.spyOn(separator.parentElement!, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 0, width: 1000, height: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const sidebarPane = separator.parentElement!.querySelector<HTMLElement>("[data-work-sidebar-pane]")!;
+
+    fireEvent.mouseDown(separator, { clientX: 600 });
+    expect(sidebarPane.style.flexGrow).toBe("36");
+
+    // Drag left: the separator moves, so the pane on its right widens.
+    fireEvent.mouseMove(document, { clientX: 500 });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(sidebarPane.style.flexGrow).toBe("36");
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
+
+    // A drag that ENDS normally still persists where it was let go.
+    fireEvent.mouseDown(separator, { clientX: 600 });
+    fireEvent.mouseUp(document);
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(36);
+  });
+
   it("recovers a collapsed sessions list from a thin left rail", () => {
     workMocks.currentWork = {
       ...workMocks.baseWork,

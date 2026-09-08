@@ -64,6 +64,16 @@ export type BuiltInBrowserPreviewStreamDeps = {
 type StreamState = {
   tabId: string;
   subscribers: number;
+  /**
+   * Subscriber counts split by owner — the renderer's `webContents` id.
+   *
+   * A bare count cannot answer "whose subscription is this", so a renderer
+   * crash had to force-drop the whole loop, taking a healthy renderer's live
+   * card down with it (frozen frame forever, and its eventual `stop` arriving
+   * unpaired). Keyed release makes a crash release only what that renderer
+   * held. Sums to `subscribers`.
+   */
+  owners: Map<string, number>;
   /** Fastest rate any subscriber asked for; a slow watcher never throttles a fast one. */
   fps: number;
   /** Widest frame any subscriber asked for, for the same reason. */
@@ -77,7 +87,7 @@ type StreamState = {
 export type BuiltInBrowserPreviewStreams = {
   start: (
     tabId: string,
-    options?: { fps?: number | null; maxWidth?: number | null },
+    options?: { fps?: number | null; maxWidth?: number | null; owner?: string | null },
   ) => BuiltInBrowserPreviewStreamResult;
   /**
    * Drops one subscriber.
@@ -88,9 +98,20 @@ export type BuiltInBrowserPreviewStreams = {
    * after its tab closed) is tolerated by design, and must not cost a full
    * re-attach sweep over every tab.
    */
-  stop: (tabId: string) => BuiltInBrowserPreviewStreamResult & { hadStream: boolean };
+  stop: (
+    tabId: string,
+    owner?: string | null,
+  ) => BuiltInBrowserPreviewStreamResult & { hadStream: boolean };
   /** Tears a tab's loop down regardless of subscriber count (tab closed/destroyed). */
   stopTab: (tabId: string) => void;
+  /**
+   * Drops every subscription one owner holds, across all tabs — the renderer
+   * that opened them is gone.
+   *
+   * `ended` is the tab whose last watcher this was, which is the only case the
+   * service has to act on (unpark the view).
+   */
+  stopOwner: (owner: string) => { tabId: string; subscribers: number; ended: boolean }[];
   /** Whether anybody is watching this tab right now. */
   hasWatchers: (tabId: string) => boolean;
   dispose: () => void;
@@ -106,6 +127,39 @@ export function createBuiltInBrowserPreviewStreams(
   const clearLoopTimer = deps.clearLoopTimer ?? ((handle) => clearInterval(handle));
   const streams = new Map<string, StreamState>();
   let disposed = false;
+
+  /** One bucket for every subscription that arrived without an owner (CLI, tests). */
+  const UNATTRIBUTED_OWNER = "";
+  const ownerKey = (owner: string | null | undefined): string =>
+    typeof owner === "string" && owner.length > 0 ? owner : UNATTRIBUTED_OWNER;
+
+  const claimOwner = (state: StreamState, owner: string | null | undefined): void => {
+    const key = ownerKey(owner);
+    state.owners.set(key, (state.owners.get(key) ?? 0) + 1);
+  };
+
+  /**
+   * Gives one subscription back for `owner`.
+   *
+   * Falls back to any owner still holding one when the key is unknown, so a
+   * mismatched start/stop pair can never leave `owners` disagreeing with
+   * `subscribers` — which would make a later `stopOwner` over- or under-release.
+   */
+  const releaseOwner = (state: StreamState, owner: string | null | undefined): void => {
+    const key = ownerKey(owner);
+    const held = state.owners.get(key) ?? 0;
+    if (held > 0) {
+      if (held === 1) state.owners.delete(key);
+      else state.owners.set(key, held - 1);
+      return;
+    }
+    for (const [other, count] of state.owners) {
+      if (count <= 0) continue;
+      if (count === 1) state.owners.delete(other);
+      else state.owners.set(other, count - 1);
+      return;
+    }
+  };
 
   const clearTimer = (state: StreamState): void => {
     if (state.timer == null) return;
@@ -179,6 +233,7 @@ export function createBuiltInBrowserPreviewStreams(
       const existing = streams.get(tabId);
       if (existing) {
         existing.subscribers += 1;
+        claimOwner(existing, options.owner);
         const nextFps = Math.max(existing.fps, fps);
         const nextWidth = Math.max(existing.maxWidth, maxWidth);
         const rearm = nextFps !== existing.fps;
@@ -190,6 +245,7 @@ export function createBuiltInBrowserPreviewStreams(
       const state: StreamState = {
         tabId,
         subscribers: 1,
+        owners: new Map([[ownerKey(options.owner), 1]]),
         fps,
         maxWidth,
         timer: null,
@@ -201,7 +257,7 @@ export function createBuiltInBrowserPreviewStreams(
       return result(state);
     },
 
-    stop(tabId) {
+    stop(tabId, owner) {
       const state = streams.get(tabId);
       if (!state) {
         return {
@@ -213,6 +269,7 @@ export function createBuiltInBrowserPreviewStreams(
         };
       }
       state.subscribers = Math.max(0, state.subscribers - 1);
+      releaseOwner(state, owner);
       if (state.subscribers === 0) {
         const snapshot = result(state);
         stopTab(tabId);
@@ -222,6 +279,21 @@ export function createBuiltInBrowserPreviewStreams(
     },
 
     stopTab,
+
+    stopOwner(owner) {
+      const key = ownerKey(owner);
+      const released: { tabId: string; subscribers: number; ended: boolean }[] = [];
+      for (const state of [...streams.values()]) {
+        const held = state.owners.get(key) ?? 0;
+        if (held <= 0) continue;
+        state.owners.delete(key);
+        state.subscribers = Math.max(0, state.subscribers - held);
+        const ended = state.subscribers === 0;
+        if (ended) stopTab(state.tabId);
+        released.push({ tabId: state.tabId, subscribers: state.subscribers, ended });
+      }
+      return released;
+    },
 
     hasWatchers(tabId) {
       const state = streams.get(tabId);

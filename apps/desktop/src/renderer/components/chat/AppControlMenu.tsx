@@ -15,6 +15,7 @@ import {
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
   MENU_SCROLL_CLASS,
+  MENU_MAX_HEIGHT_PX,
   MENU_SURFACE_CLASS,
   MENU_WIDTH_CLASS,
 } from "../ui/paneMenuTokens";
@@ -129,7 +130,10 @@ export function AppControlMenu({
       if (!trigger) return;
       const top = trigger.getBoundingClientRect().bottom + MENU_TRIGGER_OFFSET_PX;
       const available = clipBottomFor(wrapperRef.current) - top - MENU_EDGE_GUTTER_PX;
-      setMaxHeightPx(Math.max(MENU_MIN_HEIGHT_PX, Math.round(available)));
+      // Clamped both ways: the measurement is a safety valve for a SHORT pane,
+      // not a licence to outgrow the design ceiling on a tall one.
+      const clamped = Math.min(Math.max(available, MENU_MIN_HEIGHT_PX), MENU_MAX_HEIGHT_PX);
+      setMaxHeightPx(Math.round(clamped));
     };
     measure();
     const view = wrapperRef.current?.ownerDocument?.defaultView ?? window;
@@ -221,7 +225,9 @@ export function AppControlMenu({
             style={{
               transformOrigin: "top",
               // Beats the token's viewport-based ceiling, which stays as the
-              // fallback for the frame before the first measurement lands.
+              // fallback for the frame before the first measurement lands. The
+              // measurement is clamped to `MENU_MAX_HEIGHT_PX`, so this only
+              // ever makes the menu shorter than the class would.
               ...(maxHeightPx == null ? null : { maxHeight: `${maxHeightPx}px` }),
             }}
             className={cn(

@@ -1075,9 +1075,17 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
 
   function startPreviewStream(
     input: BuiltInBrowserStartPreviewStreamArgs = {},
+    owner?: string | null,
   ): BuiltInBrowserPreviewStreamResult {
     const tab = targetTabFromInput(input, "No active browser tab to preview.");
-    const result = previewStreams.start(tab.id, { fps: input.fps, maxWidth: input.maxWidth });
+    const result = previewStreams.start(tab.id, {
+      fps: input.fps,
+      maxWidth: input.maxWidth,
+      // Main-derived (the requesting `webContents` id), never renderer-supplied:
+      // it is what lets a crash release this renderer's subscriptions and only
+      // this renderer's.
+      owner,
+    });
     // Before the first tick, not after: the service parks the view so the very
     // first capture has a surface to read.
     if (result.subscribers === 1) deps.onPreviewWatchersChanged?.(tab.id);
@@ -1086,6 +1094,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
 
   function stopPreviewStream(
     input: BuiltInBrowserStopPreviewStreamArgs = {},
+    owner?: string | null,
   ): BuiltInBrowserPreviewStreamResult {
     // Deliberately tolerant: a card unmounting after its tab closed must not
     // throw on the way out, so an unknown tab id just reports zero subscribers.
@@ -1093,7 +1102,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tabId) {
       return { tabId: "", fps: 0, maxWidth: 0, subscribers: 0 };
     }
-    const { hadStream, ...result } = previewStreams.stop(tabId);
+    const { hadStream, ...result } = previewStreams.stop(tabId, owner);
     // Only the last one out unparks the view; a second watcher is still
     // looking, and an unpaired stop was never watching anything at all.
     if (hadStream && result.subscribers === 0) deps.onPreviewWatchersChanged?.(tabId);
@@ -1319,6 +1328,15 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     stopPreviewStreamsForTab: (tabId: string): void => {
       previewStreams.stopTab(tabId);
     },
+    /**
+     * Drops every preview subscription one renderer holds, and reports the tabs
+     * whose last watcher that was.
+     *
+     * Owner-scoped rather than a sweep: a crashed renderer must not take down a
+     * card another, healthy renderer is still watching.
+     */
+    stopPreviewStreamsForOwner: (owner: string): string[] =>
+      previewStreams.stopOwner(owner).filter((entry) => entry.ended).map((entry) => entry.tabId),
     /**
      * Whether a preview stream is watching this tab.
      *

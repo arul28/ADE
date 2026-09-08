@@ -524,6 +524,7 @@ function fakeBrowserWindow() {
     listenerCount: (event: string) => hostListeners.filter((entry) => entry.event === event).length,
   };
   let contentBounds = { x: 0, y: 0, width: 1280, height: 720 };
+  let focused = true;
   return {
     id: fakeWindowId++,
     isDestroyed: () => false,
@@ -531,6 +532,12 @@ function fakeBrowserWindow() {
     // a stream a test forgot to stop from capturing against these stubs.
     isVisible: () => false,
     isMinimized: () => false,
+    // Focused by default: handing the keyboard back is guarded on it, and the
+    // sequences these tests drive are all ones the user just clicked through.
+    isFocused: () => focused,
+    setFocused: (next: boolean): void => {
+      focused = next;
+    },
     getContentBounds: () => contentBounds,
     setContentBounds: (next: { x: number; y: number; width: number; height: number }) => {
       contentBounds = next;
@@ -922,8 +929,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("drops its geometry watchers when it lets go of the window", async () => {
-    const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const { service, view, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     expect(win.listenerCount("resize")).toBe(1);
+    // One PROCESS-wide screen subscription, fanned out — not one per service.
     expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(1);
 
     service.stopPreviewStream({ tabId });
@@ -931,13 +939,67 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(win.listenerCount("resize")).toBe(0);
     expect(win.listenerCount("maximize")).toBe(0);
-    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(0);
-    expect(fakes.fakeScreen.listenerCount("display-added")).toBe(0);
+    // The shared listener may still be armed for another live service, so the
+    // contract is behavioural: a disposed service takes no more rechecks.
+    const afterDispose = view.boundsCalls.length;
+    vi.useFakeTimers();
+    try {
+      fakes.fakeScreen.emit("display-metrics-changed");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(view.boundsCalls).toHaveLength(afterDispose);
+  });
+
+  it("registers the screen listeners once per process, not once per window service", async () => {
+    // `screen` is a singleton but services are keyed per (window, collection),
+    // so three listeners each tripped Node's MaxListenersExceededWarning at
+    // eleven live services — 33 registrations for one question.
+    const services = Array.from({ length: 12 }, () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+      return service;
+    });
+
+    for (const event of ["display-metrics-changed", "display-added", "display-removed"]) {
+      expect(fakes.fakeScreen.listenerCount(event)).toBe(1);
+    }
+
+    // Ref-counted, so a service letting go never leaves the others unwatched:
+    // the count is still exactly one, not zero and not twelve.
+    services[0].dispose();
+    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(1);
+    for (const service of services) service.dispose();
+  });
+
+  it("does not touch window focus on the ordering the product actually drives", async () => {
+    // The corner card only previews the tool you are NOT looking at, so the
+    // panel always hides FIRST and the stream starts after — there is no
+    // attended tab to take the keyboard from. `parkedTabFixture` drives the
+    // opposite order deliberately, to exercise the branch; this pins the real
+    // one, which must never call `focus()` at all.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+    const tabId = service.getStatus().activeTabId!;
+
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    service.startPreviewStream({ tabId });
+
+    expect(win.webContents.focusCalls).toBe(0);
+    service.stopPreviewStream({ tabId });
+    service.dispose();
   });
 
   it("hands the keyboard back to the window exactly once when an attended tab is parked", async () => {
     // The parked branch neither detaches nor hides the view, and those were the
-    // two operations that used to release the page's keyboard focus.
+    // two operations that used to release the page's keyboard focus. Reachable
+    // only in the window between the panel hiding and the card's stop landing —
+    // kept because the guard has to hold if a second `startPreviewStream`
+    // caller (mobile, CLI, Mosaic) is ever added.
     const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     expect(win.webContents.focusCalls).toBe(1);
 
@@ -948,12 +1010,38 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.stopPreviewStream({ tabId });
   });
 
+  it("leaves a background window alone rather than raising it to return focus", async () => {
+    // `WebContents.focus()` activates the owner window, so an unguarded call
+    // would yank ADE to the front from behind whatever the user is using.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+    const tabId = service.getStatus().activeTabId!;
+
+    win.setFocused(false);
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+
+    expect(win.webContents.focusCalls).toBe(0);
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
   it("keeps the size the panel last showed a parked tab at", async () => {
     // Parking used to floor every hidden tab at 960x600, firing a real window
     // resize inside the page each way round.
     const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
     expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
     service.stopPreviewStream({ tabId });
+
+    // The case that matters: the Work pane is clamped to 26-55% of the window,
+    // so EVERY realistic pane is narrower than the 960px floor. Flooring here
+    // is what fired a real `window` resize inside the page each way round.
+    const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
+    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 480, height: 640 });
+    narrow.service.stopPreviewStream({ tabId: narrow.tabId });
 
     // A tab the panel never showed has no rect to reuse, so the floor applies.
     const fresh = await parkedTabFixture(collector, null);

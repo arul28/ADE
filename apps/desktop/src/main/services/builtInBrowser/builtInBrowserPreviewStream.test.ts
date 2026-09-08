@@ -253,6 +253,61 @@ describe("createBuiltInBrowserPreviewStreams", () => {
     expect(() => h.streams.start("tab-1")).toThrow(/disposed/i);
   });
 
+  it("releases only the crashed renderer's subscriptions, not a healthy one's", () => {
+    // Two renderers watching the same tab used to share one bare count, so the
+    // crash path force-dropped the loop and froze the survivor's card forever.
+    const h = harness();
+    h.streams.start("tab-1", { owner: "wc-1" });
+    h.streams.start("tab-1", { owner: "wc-2" });
+    h.streams.start("tab-2", { owner: "wc-1" });
+
+    const released = h.streams.stopOwner("wc-1");
+
+    // tab-1 keeps running for wc-2; tab-2 was wc-1's alone and ends.
+    expect(h.streams.hasWatchers("tab-1")).toBe(true);
+    expect(h.streams.snapshot()).toEqual([
+      expect.objectContaining({ tabId: "tab-1", subscribers: 1 }),
+    ]);
+    expect(released).toEqual([
+      { tabId: "tab-1", subscribers: 1, ended: false },
+      { tabId: "tab-2", subscribers: 0, ended: true },
+    ]);
+
+    // And the survivor's own stop is still the one that ends its stream.
+    expect(h.streams.stop("tab-1", "wc-2")).toMatchObject({ subscribers: 0, hadStream: true });
+    h.streams.dispose();
+  });
+
+  it("counts a renderer's repeat subscriptions and releases all of them at once", () => {
+    const h = harness();
+    h.streams.start("tab-1", { owner: "wc-1" });
+    h.streams.start("tab-1", { owner: "wc-1" });
+    h.streams.start("tab-1", { owner: "wc-2" });
+
+    expect(h.streams.stopOwner("wc-1")).toEqual([
+      { tabId: "tab-1", subscribers: 1, ended: false },
+    ]);
+    // An owner that never subscribed releases nothing at all.
+    expect(h.streams.stopOwner("wc-9")).toEqual([]);
+    expect(h.streams.hasWatchers("tab-1")).toBe(true);
+    h.streams.dispose();
+  });
+
+  it("keeps owner counts consistent when a stop names an owner that never started", () => {
+    // Otherwise the mismatched pair would leave `owners` disagreeing with
+    // `subscribers`, and a later crash would over-release.
+    const h = harness();
+    h.streams.start("tab-1", { owner: "wc-1" });
+    h.streams.start("tab-1", { owner: "wc-1" });
+
+    expect(h.streams.stop("tab-1", "wc-stale")).toMatchObject({ subscribers: 1 });
+    expect(h.streams.stopOwner("wc-1")).toEqual([
+      { tabId: "tab-1", subscribers: 0, ended: true },
+    ]);
+    expect(h.streams.hasWatchers("tab-1")).toBe(false);
+    h.streams.dispose();
+  });
+
   it("emits a capturedAt timestamp with each frame", async () => {
     const emit = vi.fn();
     const streams = createBuiltInBrowserPreviewStreams({

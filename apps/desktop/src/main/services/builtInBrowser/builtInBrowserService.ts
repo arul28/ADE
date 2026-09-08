@@ -328,10 +328,12 @@ export type BrowserTabState = {
    *
    * Parking a previewed tab has to give it a size, and the panel's live bounds
    * are already zero by then (`hideBuiltInBrowserView` sends `0×0` on the way
-   * out). Reusing the size the page was last laid out at means a hide/show
-   * round trip does not resize the page's viewport behind the user's back —
-   * responsive breakpoints, `ResizeObserver`s and scroll anchoring all stay put.
-   * `null` only until the panel has shown this tab once.
+   * out). Reusing the size the page was last laid out at — exactly, with no
+   * minimum applied on top — means a hide/show round trip does not resize the
+   * page's viewport behind the user's back: responsive breakpoints,
+   * `ResizeObserver`s and scroll anchoring all stay put. `null` only until the
+   * panel has shown this tab once, and only then does the parked-preview floor
+   * apply.
    */
   lastPanelRect: Electron.Rectangle | null;
 };
@@ -511,17 +513,24 @@ function collectionForProjectRoot(
 export class BuiltInBrowserNoTabError extends Error {
   readonly reason = "no_tab" as const;
 
-  /** The tab that was asked for, when one was named. */
+  /**
+   * The tab that was asked for, when one was named.
+   *
+   * Read by the IPC boundary: the softened `{ ok: false, reason: "no_tab" }`
+   * answers say nothing on their own, so the tab id is what makes the debug
+   * line tell you *which* tab lost the race — and it is appended to the
+   * message here so the same fact survives anywhere the raw error is logged.
+   */
   readonly tabId: string | null;
 
   constructor(message: string, tabId: string | null = null) {
-    super(message);
+    super(tabId ? `${message}: ${tabId}` : message);
     this.name = "BuiltInBrowserNoTabError";
     this.tabId = tabId;
   }
 }
 
-export function isBuiltInBrowserNoTabError(error: unknown): boolean {
+export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrowserNoTabError {
   return error instanceof BuiltInBrowserNoTabError
     || (error instanceof Error && error.name === "BuiltInBrowserNoTabError");
 }
@@ -1410,17 +1419,25 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserStopRecordingResult> {
       return serviceForInput(input, sourceWindow).stopRecording(input);
     },
+    /**
+     * `owner` identifies the renderer holding the subscription (its
+     * `webContents` id), so a crash releases its subscriptions and nobody
+     * else's. Derived in main at the IPC boundary — never taken from `input`,
+     * which a renderer controls.
+     */
     startPreviewStream(
       input: BuiltInBrowserStartPreviewStreamArgs = {},
       sourceWindow?: BrowserWindow | null,
+      owner?: string | null,
     ): BuiltInBrowserPreviewStreamResult {
-      return serviceForInput(input, sourceWindow).startPreviewStream(input);
+      return serviceForInput(input, sourceWindow).startPreviewStream(input, owner);
     },
     stopPreviewStream(
       input: BuiltInBrowserStopPreviewStreamArgs = {},
       sourceWindow?: BrowserWindow | null,
+      owner?: string | null,
     ): BuiltInBrowserPreviewStreamResult {
-      return serviceForInput(input, sourceWindow).stopPreviewStream(input);
+      return serviceForInput(input, sourceWindow).stopPreviewStream(input, owner);
     },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {
@@ -1442,6 +1459,86 @@ export function createBuiltInBrowserService(args: {
       fallbackServices.clear();
       activeWindowId = null;
     },
+  };
+}
+
+/**
+ * `BrowserWindow` and `screen` overload `on`/`removeListener` per event name,
+ * so a loop over a union of names cannot pick an overload. Registration is
+ * uniform — one nullary handler for every event — so the emitter is addressed
+ * through its plain EventEmitter shape.
+ */
+type GeometryEmitter = {
+  on?: (event: string, listener: () => void) => unknown;
+  removeListener?: (event: string, listener: () => void) => unknown;
+};
+
+const asGeometryEmitter = (value: unknown): GeometryEmitter => value as GeometryEmitter;
+
+/**
+ * Screen events that can invalidate a parked view's position without the window
+ * moving at all (a display resolution change, a monitor plugged in or pulled).
+ */
+const SCREEN_GEOMETRY_EVENTS = [
+  "display-metrics-changed",
+  "display-added",
+  "display-removed",
+] as const;
+
+/**
+ * One `screen` subscription for the whole process, fanned out to the live
+ * window services.
+ *
+ * `screen` is a process singleton but browser services are keyed per
+ * `(window, project collection)`, so registering three listeners per service
+ * put a session with a handful of project collections over Node's default
+ * `MaxListenersExceededWarning` threshold at eleven live services — 33
+ * listeners for what is one question ("did the displays change?") asked of one
+ * emitter. Ref-counted: the subscription exists only while somebody is
+ * watching, and the last watcher out takes it down.
+ */
+const screenGeometryWatchers = new Set<() => void>();
+
+const fanOutScreenGeometry = (): void => {
+  // Copied, because a watcher is free to release itself from inside its own
+  // recheck (a service disposing on a display change).
+  for (const watcher of [...screenGeometryWatchers]) {
+    try {
+      watcher();
+    } catch {
+      // One window's recheck failing must not cost the others theirs.
+    }
+  }
+};
+
+function addScreenGeometryWatcher(watcher: () => void): () => void {
+  screenGeometryWatchers.add(watcher);
+  const emitter = asGeometryEmitter(screen);
+  for (const event of SCREEN_GEOMETRY_EVENTS) {
+    try {
+      // Remove-then-add: idempotent, so the process holds exactly one listener
+      // per event however many services are live, and re-arms if the emitter
+      // was cleared out from under us.
+      emitter.removeListener?.(event, fanOutScreenGeometry);
+      emitter.on?.(event, fanOutScreenGeometry);
+    } catch {
+      // `screen` is unavailable before `app.ready`; the caller falls back to
+      // window-bounds anchoring, which is the pre-change behaviour.
+    }
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    screenGeometryWatchers.delete(watcher);
+    if (screenGeometryWatchers.size > 0) return;
+    for (const event of SCREEN_GEOMETRY_EVENTS) {
+      try {
+        asGeometryEmitter(screen).removeListener?.(event, fanOutScreenGeometry);
+      } catch {
+        // ignore teardown races
+      }
+    }
   };
 }
 
@@ -1474,7 +1571,8 @@ function createBuiltInBrowserWindowService(args: {
    * each of them. Debounced, because `resize` fires per frame during a drag.
    */
   let winGeometryListener: (() => void) | null = null;
-  let screenGeometryListener: (() => void) | null = null;
+  /** This service's share of the process-wide `screen` subscription. */
+  let releaseScreenGeometryWatcher: (() => void) | null = null;
   let geometryDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * The host renderer going away, so preview subscriptions it owned can be
@@ -1483,6 +1581,14 @@ function createBuiltInBrowserWindowService(args: {
    * a tab attached, visible and composited at full size forever.
    */
   let hostWebContents: WebContents | null = null;
+  /**
+   * The host renderer's `webContents` id, snapshotted at registration.
+   *
+   * Reading `.id` off a destroyed `webContents` is not safe, and the crash path
+   * is exactly when it is needed — it is the owner key the preview streams were
+   * subscribed under.
+   */
+  let hostWebContentsId: number | null = null;
   let hostRendererGoneListener: (() => void) | null = null;
 
   /**
@@ -1761,7 +1867,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     if (tabId) {
       const tab = tabById(tabId);
-      if (!tab) throw new BuiltInBrowserNoTabError(`Browser tab not found: ${tabId}`, tabId);
+      if (!tab) throw new BuiltInBrowserNoTabError("Browser tab not found", tabId);
       return tab;
     }
     const ownedTab = reusableOwnedTabForInput(input);
@@ -2770,15 +2876,25 @@ function createBuiltInBrowserWindowService(args: {
     return {
       x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      // A tab the panel never showed has no rect to reuse, and a zero-sized
-      // view captures nothing; the floor is what makes that first preview paint.
-      width: Math.max(panelRect?.width ?? 0, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH),
-      height: Math.max(panelRect?.height ?? 0, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT),
+      // A remembered rect is used AS IS — not floored — because the whole point
+      // is that parking must not resize the page. The Work pane is clamped to
+      // 26–55% of the window, so every realistic pane is narrower than the
+      // floor; applying it on top would fire a real `window` resize inside the
+      // page on the way out and another on the way back. The floor is only the
+      // fallback for a tab the panel never showed: it has no rect to reuse, and
+      // a zero-sized view captures nothing.
+      width: panelRect ? panelRect.width : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: panelRect ? panelRect.height : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
     };
   };
 
   const returnFocusToHostWindow = (): void => {
     if (!win || win.isDestroyed()) return;
+    // `WebContents.focus()` is not a DOM-only operation: Electron activates the
+    // owner window with it on every platform. Handing the keyboard back is only
+    // ever meant for a window the user is already in, so a window that is not
+    // the foreground one is left alone rather than raised from the background.
+    if (!win.isFocused?.()) return;
     try {
       win.webContents?.focus?.();
     } catch {
@@ -2933,9 +3049,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   /**
-   * Window events that can invalidate a parked view's position, and the screen
-   * events that can do the same without the window moving at all (a display
-   * resolution change, a monitor being plugged in or unplugged).
+   * Window events that can invalidate a parked view's position. The screen
+   * events that do the same without the window moving at all live on the
+   * process-wide `screen` registry above, because `screen` is a singleton and
+   * these services are not.
    */
   const WINDOW_GEOMETRY_EVENTS = [
     "resize",
@@ -2945,23 +3062,6 @@ function createBuiltInBrowserWindowService(args: {
     "maximize",
     "unmaximize",
   ] as const;
-  const SCREEN_GEOMETRY_EVENTS = [
-    "display-metrics-changed",
-    "display-added",
-    "display-removed",
-  ] as const;
-
-  /**
-   * `BrowserWindow` and `screen` overload `on`/`removeListener` per event name,
-   * so a loop over a union of names cannot pick an overload. Registration is
-   * uniform here — one nullary handler for every event — so the emitter is
-   * addressed through its plain EventEmitter shape.
-   */
-  type GeometryEmitter = {
-    on?: (event: string, listener: () => void) => unknown;
-    removeListener?: (event: string, listener: () => void) => unknown;
-  };
-  const asGeometryEmitter = (value: unknown): GeometryEmitter => value as GeometryEmitter;
 
   /** Is any tab currently sitting off-screen for a preview watcher? */
   const hasParkedTab = (): boolean => tabs.some((tab) => (
@@ -2999,15 +3099,25 @@ function createBuiltInBrowserWindowService(args: {
    * pins a composited page off-screen for the rest of the session.
    */
   const stopPreviewStreamsForWindow = (): void => {
+    // Owner-scoped: the gone renderer's own subscriptions and no others. A
+    // second consumer (another window, the CLI) watching the same tab keeps its
+    // card alive. `hostWebContentsId` is snapshotted at registration because
+    // reading `.id` off a destroyed `webContents` is not safe.
+    const owner = hostWebContentsId == null ? null : String(hostWebContentsId);
     let stoppedAny = false;
-    for (const tab of tabs) {
-      if (!hasPreviewWatchers(tab.id)) continue;
-      tabCapabilities.stopPreviewStreamsForTab(tab.id);
-      stoppedAny = true;
+    if (owner) {
+      stoppedAny = tabCapabilities.stopPreviewStreamsForOwner(owner).length > 0;
+    } else {
+      for (const tab of tabs) {
+        if (!hasPreviewWatchers(tab.id)) continue;
+        tabCapabilities.stopPreviewStreamsForTab(tab.id);
+        stoppedAny = true;
+      }
     }
     if (!stoppedAny) return;
     logger()?.debug("built_in_browser.preview_streams_released_for_window", {
       windowId: win && !win.isDestroyed() ? win.id : null,
+      owner,
     });
     // `stopPreviewStreamsForTab` drops the loop without going through the
     // refcount, so nothing else would unpark the views it was keeping alive.
@@ -3027,17 +3137,8 @@ function createBuiltInBrowserWindowService(args: {
       }
     }
     winGeometryListener = null;
-    if (screenGeometryListener) {
-      const screenEmitter = asGeometryEmitter(screen);
-      for (const event of SCREEN_GEOMETRY_EVENTS) {
-        try {
-          screenEmitter.removeListener?.(event, screenGeometryListener);
-        } catch {
-          // ignore teardown races
-        }
-      }
-      screenGeometryListener = null;
-    }
+    releaseScreenGeometryWatcher?.();
+    releaseScreenGeometryWatcher = null;
     if (hostWebContents && hostRendererGoneListener) {
       try {
         if (!hostWebContents.isDestroyed()) {
@@ -3049,6 +3150,7 @@ function createBuiltInBrowserWindowService(args: {
       }
     }
     hostWebContents = null;
+    hostWebContentsId = null;
     hostRendererGoneListener = null;
   };
 
@@ -3063,24 +3165,18 @@ function createBuiltInBrowserWindowService(args: {
         // A platform without one of these events is not a failure.
       }
     }
-    screenGeometryListener = () => scheduleParkedViewRecheck();
-    const screenEmitter = asGeometryEmitter(screen);
-    for (const event of SCREEN_GEOMETRY_EVENTS) {
-      try {
-        screenEmitter.on?.(event, screenGeometryListener);
-      } catch {
-        // `screen` is unavailable before `app.ready`.
-      }
-    }
+    releaseScreenGeometryWatcher = addScreenGeometryWatcher(() => scheduleParkedViewRecheck());
     const wc = nextWin.webContents ?? null;
     if (!wc || wc.isDestroyed?.()) return;
     hostWebContents = wc;
+    hostWebContentsId = typeof wc.id === "number" ? wc.id : null;
     hostRendererGoneListener = () => stopPreviewStreamsForWindow();
     try {
       wc.on("render-process-gone", hostRendererGoneListener);
       wc.once("destroyed", hostRendererGoneListener);
     } catch {
       hostWebContents = null;
+      hostWebContentsId = null;
       hostRendererGoneListener = null;
     }
   };

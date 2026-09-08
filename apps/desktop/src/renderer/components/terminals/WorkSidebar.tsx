@@ -628,13 +628,19 @@ export function WorkSidebar({
   }, [closePane, effectiveTool, pickerBinding, selectTool, terminalPickerBinding]);
 
   const handleKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    // Same stand-down as the two document listeners below: `TerminalsPage` is
+    // hidden with CSS rather than unmounted, so focus left on a pane button
+    // when the route changes by keyboard would otherwise keep this handler
+    // armed off-route — closing a tool behind the user's back and pulling focus
+    // into a `pointer-events: none`, `z-index: -1` subtree.
+    if (!active) return;
     const target = event.target as Node | null;
     // Capture phase, so this runs before xterm's own key handling — but only
     // for keys pressed inside this pane, and never while a modal layer is up.
     if (!target || !sidebarRef.current?.contains(target)) return;
     const targetElement = target instanceof Element ? target : target.parentElement;
     applyPickerBinding(event.nativeEvent, targetElement);
-  }, [applyPickerBinding]);
+  }, [active, applyPickerBinding]);
 
   /**
    * Which surface the pointer last committed to.

@@ -48,6 +48,16 @@ export const MENU_SCROLL_CLASS = cn(
   "max-h-[min(70vh,480px)] overflow-y-auto overflow-x-hidden overscroll-contain",
 );
 
+/**
+ * The design ceiling in `MENU_SCROLL_CLASS`, as a number.
+ *
+ * A menu that measures its own room (App Control's, which is anchored inside
+ * the pane) writes an inline `maxHeight`, and inline style beats the class — so
+ * without clamping to this it would grow past the ceiling on a tall window
+ * instead of scrolling. Exported so the class and the measurement cannot drift.
+ */
+export const MENU_MAX_HEIGHT_PX = 480;
+
 /** The portalled variant: the surface plus the browser menu's own sizing. */
 export const MENU_CONTENT_CLASS = cn(
   MENU_SURFACE_CLASS,

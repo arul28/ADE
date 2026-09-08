@@ -9248,6 +9248,9 @@ export function registerIpc({
       return { ok: true, ...screenshot } satisfies BuiltInBrowserScreenshotResult;
     } catch (error) {
       if (isBuiltInBrowserNoTabError(error)) {
+        // Softened to a typed result, so the tab that lost the race is the only
+        // thing left worth recording.
+        getCtx().logger.debug("built_in_browser.screenshot_no_tab", { tabId: error.tabId });
         return { ok: false, reason: "no_tab" } satisfies BuiltInBrowserScreenshotResult;
       }
       throw error;
@@ -9311,6 +9314,7 @@ export function registerIpc({
       return await ensureBuiltInBrowser().stopFindInPage(input, win);
     } catch (error) {
       if (isBuiltInBrowserNoTabError(error)) {
+        getCtx().logger.debug("built_in_browser.stop_find_no_tab", { tabId: error.tabId });
         return {
           tabId: "",
           stopped: false,
@@ -9375,6 +9379,10 @@ export function registerIpc({
     return ensureBuiltInBrowser().startPreviewStream(
       parseBuiltInBrowserStartPreviewStreamArgs(arg, IPC.builtInBrowserStartPreviewStream),
       win,
+      // The subscription's owner, taken from the sender rather than the payload
+      // so a renderer cannot release another renderer's cards by claiming its
+      // id. A crash then drops exactly this renderer's streams.
+      String(event.sender.id),
     );
   });
 
@@ -9383,6 +9391,7 @@ export function registerIpc({
     return ensureBuiltInBrowser().stopPreviewStream(
       parseBuiltInBrowserStopPreviewStreamArgs(arg, IPC.builtInBrowserStopPreviewStream),
       win,
+      String(event.sender.id),
     );
   });
 

@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { AppControlMenu, AppControlMenuItem } from "./AppControlMenu";
+import { MENU_MAX_HEIGHT_PX } from "../ui/paneMenuTokens";
 
 /**
  * The pane clips this menu, not the viewport.
@@ -58,6 +59,18 @@ describe("AppControlMenu", () => {
     fireEvent.click(screen.getByLabelText("Tools"));
     // Below the floor a scrolling menu is worse than a clipped one.
     expect(screen.getByRole("menu").style.maxHeight).toBe("160px");
+  });
+
+  it("never grows past the design ceiling on a tall pane", () => {
+    // The measurement is a safety valve for a SHORT pane. Inline style beats
+    // the class, so unclamped it let App Control's variable-length menu render
+    // ~4x taller than `max-h-[min(70vh,480px)]` on a tall display — a design
+    // change nobody asked for.
+    stubLayout({ triggerBottom: 40, paneBottom: 2_000 });
+    renderMenu();
+
+    fireEvent.click(screen.getByLabelText("Tools"));
+    expect(screen.getByRole("menu").style.maxHeight).toBe(`${MENU_MAX_HEIGHT_PX}px`);
   });
 
   it("re-measures when the window changes size", () => {

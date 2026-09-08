@@ -1070,11 +1070,22 @@ describe("WorkSidebar pane chrome", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onToolChange).not.toHaveBeenCalled();
 
+    // The pane's OWN capture handler is the sibling path, and it needs no stale
+    // pointer at all: leaving the route by keyboard (⌘2, the palette) with
+    // focus still on a pane button sends the next Escape straight to it.
+    const paneButton = container.querySelector("aside")!.querySelector("button")!;
+    fireEvent.keyDown(paneButton, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+
     // And it re-arms when the user comes back — but only after a fresh click,
     // because the pointer commitment was reset on the way out.
     rerender(tree(true));
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onToolChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(container.querySelector("aside")!.querySelector("button")!, { key: "Escape" });
+    expect(onToolChange).toHaveBeenCalledWith(null);
+    onToolChange.mockClear();
+
     fireEvent.pointerDown(container.querySelector("aside")!);
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onToolChange).toHaveBeenCalledWith(null);
