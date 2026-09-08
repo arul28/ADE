@@ -16,11 +16,19 @@ ade proof status --text
 ade proof list --text
 ade proof capture --caption "Checkout confirmation visible" --text
 ade proof record --seconds 20 --caption "Retry flow recovers" --text
-ade proof attach /tmp/run/checkout.png --caption "Checkout completes" --text
+ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade --socket browser proof --tab <tab-id> --caption "Verified" --text
 ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
 ade help proof
 ```
+
+## Where the file may live
+
+`attach`/`ingest` only import from these roots: the project root, the lane
+worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir
+(`$TMPDIR`, which on macOS resolves under `/var/folders` — plain `/tmp` is
+**not** allowed), and `~/.agent-browser`. Run the command from inside the lane
+worktree; a shell cwd outside it is rejected.
 
 ## What counts as proof — and what does not
 

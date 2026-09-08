@@ -2413,7 +2413,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
-    $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -2421,7 +2421,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
+
+  Where proof files may live
+
+  Attach/ingest only import from these roots: the project root, the lane
+  worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp dir
+  (\`$TMPDIR\`, which on macOS is under /var/folders — plain \`/tmp\` is NOT
+  allowed), and ~/.agent-browser. Run the command from inside the lane
+  worktree; a shell cwd outside it is rejected.
 `,
   "ios-sim": `${ADE_BANNER}
   iOS Simulator

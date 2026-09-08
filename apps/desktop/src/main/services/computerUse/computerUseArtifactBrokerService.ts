@@ -130,6 +130,21 @@ function isAllowedExternalArtifactSource(
 }
 
 /**
+ * Agents hit this rejection with a plausible-looking path (`/tmp/proof.png` on
+ * macOS is the classic one, because the OS temp dir is under `/var/folders`).
+ * Listing the roots in the message is what lets them re-run against a legal
+ * path instead of guessing.
+ */
+function outsideImportRootsError(absolutePath: string, roots: string[]): Error {
+  const unique = Array.from(new Set(roots.map((root) => root.trim()).filter(Boolean)));
+  return new Error(
+    `Artifact path is outside allowed import roots: ${absolutePath}. `
+    + `Allowed roots: ${unique.join(", ")}. `
+    + `Copy the file into one of them (the OS temp dir is $TMPDIR, not /tmp, on macOS) and retry.`,
+  );
+}
+
+/**
  * Paths an agent may read but must never be able to copy into the artifact
  * store — artifacts are previewed in the renderer and synced to paired phones,
  * so promoting a secrets blob into one is an exfiltration path.
@@ -465,8 +480,9 @@ export function createComputerUseArtifactBrokerService(args: {
       } catch {
         // Fall through to external import handling.
       }
-      if (!isAllowedExternalArtifactSource(absolutePath, [...allowedImportRoots, ...requestImportRoots])) {
-        throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
+      const importRoots = [...allowedImportRoots, ...requestImportRoots];
+      if (!isAllowedExternalArtifactSource(absolutePath, importRoots)) {
+        throw outsideImportRootsError(absolutePath, importRoots);
       }
       const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
@@ -1180,9 +1196,10 @@ export function createComputerUseArtifactBrokerService(args: {
       }
       const sourcePath = source.path;
       const artifactLaneRoots = resolveArtifactLaneRoots(record);
-      if (!isAllowedExternalArtifactSource(sourcePath, [...allowedImportRoots, ...artifactLaneRoots])
+      const recoveryImportRoots = [...allowedImportRoots, ...artifactLaneRoots];
+      if (!isAllowedExternalArtifactSource(sourcePath, recoveryImportRoots)
         || isDeniedArtifactSource(sourcePath, deniedImportRoots)) {
-        throw new Error(`Artifact path is outside allowed import roots: ${sourcePath}`);
+        throw outsideImportRootsError(sourcePath, recoveryImportRoots);
       }
       // Recovery re-imports bytes from a surviving lane worktree, so it is an
       // import like any other and gets the same file-type gate.

@@ -94,8 +94,15 @@ The CLI infers the proof kind from the file extension:
 Example:
 
 ```
-ade proof attach /tmp/playwright-run/checkout-success.png --caption "checkout flow completes on Firefox"
+ade proof attach "$TMPDIR/checkout-success.png" --caption "checkout flow completes on Firefox"
 ```
+
+Imports are restricted to a fixed set of roots: the project root, the lane
+worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir
+(`os.tmpdir()` / `$TMPDIR`, which on macOS lives under `/var/folders` — plain
+`/tmp` is **not** an allowed root), and `~/.agent-browser`. Run the command from
+inside the lane worktree; a shell cwd outside it is rejected with
+`callerRoot must be inside the server-authorized lane worktree`.
 
 The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
 

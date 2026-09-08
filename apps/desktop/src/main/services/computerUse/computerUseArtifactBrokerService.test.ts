@@ -161,22 +161,37 @@ describe("computerUseArtifactBrokerService", () => {
 
     const blockedPath = path.join(process.cwd(), `.ade-broker-blocked-${Date.now()}.txt`);
     fs.writeFileSync(blockedPath, "secret", "utf8");
-    try {
-      expect(() =>
-        broker.ingest({
-          backend: {
-            name: "agent-browser",
+    const attempt = () =>
+      broker.ingest({
+        backend: {
+          name: "agent-browser",
+        },
+        callerRoot: path.dirname(blockedPath),
+        inputs: [
+          {
+            kind: "console_logs",
+            title: "Blocked import",
+            path: blockedPath,
           },
-          callerRoot: path.dirname(blockedPath),
-          inputs: [
-            {
-              kind: "console_logs",
-              title: "Blocked import",
-              path: blockedPath,
-            },
-          ],
-        }),
-      ).toThrow(/outside allowed import roots/);
+        ],
+      });
+    try {
+      expect(attempt).toThrow(/outside allowed import roots/);
+
+      // The message has to name the legal roots: an agent that hands us
+      // `/tmp/proof.png` on macOS cannot otherwise tell that the OS temp dir
+      // is `$TMPDIR` under /var/folders and that /tmp is not a root.
+      let message = "";
+      try {
+        attempt();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("Allowed roots:");
+      expect(message).toContain(projectRoot);
+      expect(message).toContain(os.tmpdir());
+      expect(message).toContain(path.join(os.homedir(), ".agent-browser"));
+      expect(message).toContain("$TMPDIR");
     } finally {
       fs.rmSync(blockedPath, { force: true });
     }
