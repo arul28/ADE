@@ -368,6 +368,7 @@ describe("ChatAppControlPanel", () => {
         laneId="lane-1"
         projectRoot="/repo"
         onShowTerminal={onShowTerminal}
+        onAddContext={vi.fn()}
       />,
     );
 
@@ -762,5 +763,32 @@ describe("ChatAppControlPanel", () => {
 
     expect(await screen.findByText("The app stopped responding")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Reconnect/ })).toBeTruthy();
+  });
+
+  /**
+   * A shell session has nowhere to send an element or a screenshot. Inspect
+   * mode and the whole "Send to chat" group exist only to produce an insert,
+   * so they are removed rather than shown disabled — and nothing narrates the
+   * absence.
+   */
+  it("drops Inspect and Send to chat with no context host, and explains nothing", async () => {
+    installAdeMock({ status: connectedStatus, targetList: targets });
+
+    render(
+      <ChatAppControlPanel sessionId={null} laneId="lane-1" projectRoot="/repo" />,
+    );
+
+    expect(await screen.findByText("ADE Test")).toBeTruthy();
+
+    // The mode toggle asks a question with one answer, so it is not asked.
+    expect(screen.queryByRole("group", { name: "App Control mode" })).toBeNull();
+    expect(screen.queryByText("Inspect")).toBeNull();
+    expect(screen.queryByText("Click an element to insert its source context.")).toBeNull();
+
+    await openOverflow();
+    expect(screen.getByRole("menuitem", { name: "Show app window" })).toBeTruthy();
+    expect(screen.queryByText("Send to chat")).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Screenshot to chat/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Insert as context/ })).toBeNull();
   });
 });

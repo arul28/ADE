@@ -185,6 +185,12 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
         socketPath,
         projectRoot,
       });
+      // Reached only once a desktop has answered on the bridge socket (see the
+      // `ensureClient()` ordering in `callBridge`), so "there is a desktop, it
+      // just has not handed over its token" is the true diagnosis here and
+      // restarting it is the real fix. A machine with NO desktop never gets
+      // this far: it fails earlier with `DesktopBridgeUnavailableError`, which
+      // is the class `remoteBrowserForwarder` forwards on.
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
     // The two capability-lifecycle methods must not be rewritten to the
@@ -203,10 +209,20 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   };
 
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
+    // Connect BEFORE reading the auth token. Whether a desktop is attached to
+    // this machine is decided by the bridge socket, never by the token: the
+    // token is only ever set by a desktop that already attached, so a headless
+    // runtime and an attached-but-unauthenticated desktop are indistinguishable
+    // from the token alone. Checking the token first made a headless machine
+    // throw a plain Error, and `remoteBrowserForwarder` — which only forwards
+    // on `DesktopBridgeUnavailableError` — never fired, so `ade browser open`
+    // on a machine reachable from a pinned desktop failed instead of
+    // forwarding. `ensureClient()` raises the right class for that case, and
+    // the connection it makes here is cached and reused by the real call below.
+    const c = await ensureClient();
     const requestParams = authenticatedParams(params, {
       applyRuntimeScope: !isBuiltInBrowserUnscopedBridgeMethod(method),
     });
-    const c = await ensureClient();
     const timeoutMs = bridgeCallTimeoutMs(method, requestParams);
     try {
       return await raceWithTimeout(

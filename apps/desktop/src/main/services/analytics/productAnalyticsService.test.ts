@@ -1615,7 +1615,7 @@ describe("product analytics producers", () => {
       })).toEqual({ feature: "work", action: "tool_opened", outcome, source: "renderer_route" });
     }
 
-    // An eighth tool has to be registered here deliberately, and nothing that
+    // A seventh tool has to be registered here deliberately, and nothing that
     // identifies the work — a lane, a project, a tab — can ride along.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",

@@ -1657,7 +1657,8 @@ The previous control-plane model — `ComputerUsePolicy` (`off`/`auto`/`enabled`
 `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the ingest boundary. It accepts `ComputerUseArtifactInput[]` (path, remote URI, inline text, inline JSON), materializes on-disk sources into the project artifacts dir via `secureCopyFromDescriptor` (uses `O_NOFOLLOW` + atomic rename to resist symlink tricks), writes the canonical `computer_use_artifacts` row, and links to one or more owners (`lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`).
 
 Allowed import roots include `.ade/artifacts`, `.ade/cache`, `.ade/tmp`,
-managed lane worktrees, the project root, `os.tmpdir()`, `~/.agent-browser`,
+managed lane worktrees, the project root, both temp conventions (`os.tmpdir()`
+and, on posix, `/tmp` with its realpath), `~/.agent-browser`,
 and narrowly injected runtime-owned scratch roots. `.ade/secrets` is always
 denied, both allow and deny checks use real paths, and an extension allow-list
 rejects project-local secrets/database/key material even though the project root

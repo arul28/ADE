@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import {
   AppWindow,
-  DotsThreeVertical,
+  DotsThree,
   Link as LinkIcon,
   Play,
   SpinnerGap,
@@ -13,6 +13,7 @@ import type {
   AppControlTarget,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { CHROME_GHOST, CHROME_ICON_SIZE, CHROME_ROW_CLASS } from "./browser/browserChrome";
 import { AppControlMenu, AppControlMenuItem, AppControlMenuLabel } from "./AppControlMenu";
 
 export type AppControlStatusTone = "idle" | "active" | "warn" | "muted" | "error";
@@ -42,7 +43,7 @@ export type AppControlLaunchRecent = { command: string; cwd: string | null };
  * narrow enough to leave the 280px pane room for the status and the ⋯ menu —
  * and expressed in px for the reason in the comment at its use site.
  */
-export const APP_PICKER_WIDTH_CLASS = "h-[24px] min-w-[120px] max-w-[240px]";
+export const APP_PICKER_WIDTH_CLASS = "h-7 min-w-[120px] max-w-[240px]";
 
 function windowSegmentLabel(target: AppControlTarget): string {
   const title = (target.title ?? "").trim();
@@ -53,7 +54,7 @@ function windowSegmentLabel(target: AppControlTarget): string {
 }
 
 /**
- * The App Control top bar — the same 36px shell the browser toolbar uses.
+ * The App Control top bar — the same 40px ghost row the browser chrome uses.
  *
  * Reading left to right it answers the four questions this pane exists for:
  * which app am I driving, how am I driving it, is it actually attached, and
@@ -122,19 +123,22 @@ export function AppControlToolbar({
   const driverRows = drivers?.drivers ?? [];
 
   return (
-    <div className="flex min-h-[36px] shrink-0 items-center gap-1 border-b border-white/[0.08] px-1.5">
+    <div className={cn(
+      "relative flex shrink-0 items-center gap-1 border-b border-white/[0.07] px-2",
+      CHROME_ROW_CLASS,
+    )}>
       {/* App picker — the launch target, and everything that changes it. */}
       <AppControlMenu
         ariaLabel="App Control launch target"
         triggerTitle={hasSession ? statusDetail : "Pick an app to drive"}
-        triggerIcon={<AppWindow size={12} weight="duotone" className="shrink-0 text-muted-fg/75" />}
+        triggerIcon={<AppWindow size={14} weight="duotone" className="shrink-0 text-muted-fg/75" />}
         triggerLabel={appLabel}
         // Fixed px, never a percentage: the trigger's own width is what sizes
         // its (content-sized, shrink-0) wrapper, so a `%` max-width resolved
         // against itself and collapsed "Playground" down to "P". The budget is
         // an exported constant so it can be stated once rather than asserted as
         // a substring of a `class` attribute.
-        triggerClassName={APP_PICKER_WIDTH_CLASS}
+        triggerClassName={cn(APP_PICKER_WIDTH_CLASS, "rounded-[7px] px-1.5 text-[12px]")}
         menuClassName="w-[268px]"
         open={pickerOpen}
         onOpenChange={onPickerOpenChange}
@@ -266,8 +270,7 @@ export function AppControlToolbar({
         triggerTitle={`Driving with ${DRIVER_LABEL[activeDriver]}`}
         triggerLabel={DRIVER_LABEL[activeDriver]}
         triggerClassName={cn(
-          "h-[20px] rounded-full border border-white/[0.1] bg-white/[0.03] px-1.5",
-          "text-[9.5px] uppercase tracking-[0.06em] text-muted-fg",
+          "h-7 rounded-[7px] px-1.5 text-[11px] text-muted-fg hover:bg-white/[0.06]",
         )}
         showCaret={false}
         menuClassName="w-[236px]"
@@ -302,7 +305,7 @@ export function AppControlToolbar({
 
       {/* Status. One dot and one word — the detail lives in the tooltip. */}
       <span
-        className="inline-flex min-w-0 shrink items-center gap-1.5 px-0.5 text-[10.5px] text-muted-fg"
+        className="inline-flex min-w-0 shrink items-center gap-1.5 px-1 text-[11px] text-muted-fg"
         title={statusDetail}
         role="status"
       >
@@ -320,8 +323,8 @@ export function AppControlToolbar({
       {remoteLabel ? (
         <span
           className={cn(
-            "inline-flex h-[18px] shrink-0 items-center rounded-full border border-white/[0.1]",
-            "bg-white/[0.03] px-1.5 text-[9.5px] text-muted-fg",
+            "inline-flex h-5 shrink-0 items-center rounded-full bg-white/[0.06] px-2",
+            "text-[10px] font-medium text-fg/70",
           )}
           title={`App Control runs on ${remoteLabel}`}
         >
@@ -334,7 +337,7 @@ export function AppControlToolbar({
           <div
             role="group"
             aria-label="Controlled window"
-            className="inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.08] bg-white/[0.02] p-[1px]"
+            className="inline-flex h-6 items-center rounded-md bg-white/[0.05] p-[2px]"
           >
             {segments.map((target) => {
               const label = windowSegmentLabel(target);
@@ -349,13 +352,11 @@ export function AppControlToolbar({
                   title={label}
                   onClick={() => onSwitchWindow(target.id)}
                   className={cn(
-                    "inline-flex h-[18px] max-w-[76px] items-center rounded-[3px] px-1.5 text-[10px]",
+                    "inline-flex h-5 max-w-[76px] items-center rounded-[4px] px-1.5 text-[10.5px]",
                     "transition-colors duration-[120ms] ease-out",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                     "disabled:cursor-not-allowed disabled:opacity-45",
-                    selected
-                      ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90"
-                      : "text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85",
+                    selected ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/70 hover:text-fg/85",
                   )}
                 >
                   <span className="truncate">{label}</span>
@@ -369,7 +370,7 @@ export function AppControlToolbar({
                 showCaret={false}
                 align="end"
                 disabled={controlsDisabled || switching}
-                triggerClassName="h-[18px] rounded-[3px] px-1.5 text-[10px] text-muted-fg/70"
+                triggerClassName="h-5 rounded-[4px] px-1.5 text-[10.5px] text-muted-fg/70"
                 menuClassName="w-[236px]"
               >
                 {(close) => (
@@ -395,10 +396,10 @@ export function AppControlToolbar({
 
         <AppControlMenu
           ariaLabel="App Control actions"
-          triggerIcon={<DotsThreeVertical size={14} weight="bold" />}
+          triggerIcon={<DotsThree size={CHROME_ICON_SIZE} weight="bold" />}
           showCaret={false}
           align="end"
-          triggerClassName="h-[24px] w-[24px] justify-center px-0"
+          triggerClassName={cn(CHROME_GHOST, "justify-center px-0")}
         >
           {renderOverflow}
         </AppControlMenu>

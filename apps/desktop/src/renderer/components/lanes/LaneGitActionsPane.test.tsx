@@ -206,6 +206,8 @@ describe("LaneGitActionsPane rescue action", () => {
         stashPop: vi.fn(async () => ({ operationId: "stash-pop", preHeadSha: "abc", postHeadSha: "abc" })),
         stashDrop: vi.fn(async () => ({ operationId: "stash-drop", preHeadSha: "abc", postHeadSha: "abc" })),
         stashClear: vi.fn(async () => ({ operationId: "stash-clear", preHeadSha: "abc", postHeadSha: "abc" })),
+        push: vi.fn(async () => ({ operationId: "git-push", preHeadSha: "abc", postHeadSha: "abc" })),
+        sync: vi.fn(async () => ({ operationId: "git-sync", preHeadSha: "abc", postHeadSha: "abc" })),
         getSyncStatus: vi.fn(async () => mockSyncStatus),
         getConflictState: vi.fn(async () => mockConflictState),
       },
@@ -246,6 +248,38 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
   }
+
+  it("spends the pane variant's chrome row on the same push and pull actions", async () => {
+    const user = userEvent.setup();
+    renderPane({ variant: "pane" });
+
+    // The uppercase status header is replaced by one row: the branch, how far
+    // it has drifted, and ghost glyphs for what you do about it.
+    const chrome = await screen.findByTestId("git-pane-chrome");
+    expect(chrome.textContent).toContain("feature/parent");
+    expect(screen.queryByText("DIRTY")).toBeNull();
+
+    await user.click(screen.getByTestId("git-pane-push"));
+    await waitFor(() => expect(window.ade.git.push).toHaveBeenCalledWith(
+      { laneId: "lane-1", forceWithLease: false },
+      null,
+    ));
+
+    await user.click(screen.getByTestId("git-pane-pull"));
+    await waitFor(() => expect(window.ade.git.sync).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-1" }),
+      null,
+    ));
+  });
+
+  it("keeps the Lanes tab on its own labelled toolbar", async () => {
+    renderPane();
+    await screen.findByTestId("action-toolbar");
+    // The page variant is untouched: no pane chrome, and the status header the
+    // wide surface has room for is still there.
+    expect(screen.queryByTestId("git-pane-chrome")).toBeNull();
+    expect(screen.getByText("DIRTY")).toBeTruthy();
+  });
 
   it("does not start Git Actions effects while inactive", async () => {
     renderPane({ active: false });

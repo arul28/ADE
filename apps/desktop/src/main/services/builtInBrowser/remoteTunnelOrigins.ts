@@ -60,6 +60,25 @@ export function lookupRemoteTunnelOrigin(
   return normalized ? originsByLocal.get(normalized) ?? null : null;
 }
 
+/**
+ * Drop every origin recorded for a machine whose forwards have been torn down.
+ *
+ * Without this the map outlived the tunnel it described. A local port freed by
+ * a closed transport is immediately re-assignable by the OS, so a stale entry
+ * could claim that `http://127.0.0.1:52413` is still Mac Studio's port 4567
+ * long after some unrelated local server took that port — and the agent-origin
+ * approval a human granted for the tunnel would be inherited by that page.
+ * Called from the connection pool's port-forward teardown, which is the single
+ * point both explicit disconnects and transport evictions pass through.
+ */
+export function forgetRemoteTunnelOrigins(machineKeyValue: string): void {
+  const machineKey = machineKeyValue.trim();
+  if (!machineKey) return;
+  for (const [origin, entry] of [...originsByLocal.entries()]) {
+    if (entry.machineKey === machineKey) originsByLocal.delete(origin);
+  }
+}
+
 /** Test-only: forwards live for the lifetime of the process otherwise. */
 export function resetRemoteTunnelOrigins(): void {
   originsByLocal.clear();

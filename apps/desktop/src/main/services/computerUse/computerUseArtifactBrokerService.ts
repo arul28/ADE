@@ -130,17 +130,18 @@ function isAllowedExternalArtifactSource(
 }
 
 /**
- * Agents hit this rejection with a plausible-looking path (`/tmp/proof.png` on
- * macOS is the classic one, because the OS temp dir is under `/var/folders`).
- * Listing the roots in the message is what lets them re-run against a legal
- * path instead of guessing.
+ * Agents hit this rejection with a plausible-looking path, so the message has
+ * to name the legal roots — an agent that only sees "outside allowed import
+ * roots" re-runs the same command with the same path. Both temp conventions
+ * (`$TMPDIR` and `/tmp`) are roots now, so the remaining common cause is a file
+ * written somewhere else entirely, e.g. `~/Desktop`.
  */
 function outsideImportRootsError(absolutePath: string, roots: string[]): Error {
   const unique = Array.from(new Set(roots.map((root) => root.trim()).filter(Boolean)));
   return new Error(
     `Artifact path is outside allowed import roots: ${absolutePath}. `
     + `Allowed roots: ${unique.join(", ")}. `
-    + `Copy the file into one of them (the OS temp dir is $TMPDIR, not /tmp, on macOS) and retry.`,
+    + `Copy the file into one of them (the OS temp dir $TMPDIR and /tmp both qualify) and retry.`,
   );
 }
 
@@ -301,6 +302,49 @@ const IMPORTABLE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set([
   "log", "txt", "md",
 ]);
 
+/**
+ * Temp directories a caller may legitimately stage proof in.
+ *
+ * `os.tmpdir()` is the only temp dir the platform advertises, but on macOS it
+ * is a per-user `/var/folders/...` path while every agent, shell script, and
+ * habit reaches for `/tmp`. Rejecting `/tmp` there produced silent-looking
+ * failures — the agent wrote a real screenshot to a real directory and got
+ * "outside allowed import roots" back — so the conventional temp dir is a root
+ * too. It is no weaker a trust boundary than `os.tmpdir()`: both are
+ * world-writable scratch space, and the extension allow-list plus the
+ * `.ade/secrets` deny-list still decide what may actually be copied in.
+ *
+ * `/tmp` is a symlink to `/private/tmp` on macOS, so its realpath is added as
+ * well: the allow check realpaths the candidate file, and a root that is itself
+ * a symlink would never match once both sides are resolved.
+ *
+ * Windows has no `/tmp`; `%TEMP%`/`%TMP%` *are* `os.tmpdir()`, so there is
+ * nothing to add and nothing to widen.
+ */
+export function resolveTempImportRoots(
+  deps: {
+    platform?: NodeJS.Platform;
+    tmpdir?: () => string;
+    realpath?: (candidate: string) => string;
+  } = {},
+): string[] {
+  const platform = deps.platform ?? process.platform;
+  const tmpdir = deps.tmpdir ?? (() => os.tmpdir());
+  const realpath = deps.realpath ?? ((candidate: string) => fs.realpathSync(candidate));
+  const roots = [path.resolve(tmpdir())];
+  if (platform !== "win32") {
+    const conventional = "/tmp";
+    roots.push(conventional);
+    try {
+      roots.push(path.resolve(realpath(conventional)));
+    } catch {
+      // No /tmp on this host (or it is not resolvable) — the literal root stays
+      // listed so the error message still names what an agent will have typed.
+    }
+  }
+  return Array.from(new Set(roots.filter(Boolean)));
+}
+
 /** Extension of an import candidate, lowercased and without the dot. */
 function importExtension(absolutePath: string): string {
   return path.extname(absolutePath).replace(/^\./, "").trim().toLowerCase();
@@ -358,7 +402,7 @@ export function createComputerUseArtifactBrokerService(args: {
     // worktree can be relocated outside `projectRoot`.
     layout.worktreesDir,
     projectRoot,
-    os.tmpdir(),
+    ...resolveTempImportRoots(),
     path.join(os.homedir(), ".agent-browser"),
     ...(args.additionalAllowedImportRoots ?? [])
       .map((root) => root.trim())

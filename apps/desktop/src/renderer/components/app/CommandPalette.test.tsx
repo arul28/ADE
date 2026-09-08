@@ -1711,13 +1711,15 @@ describe("CommandPalette", () => {
         }),
       ).not.toContain("Tools: iOS Simulator");
 
-      // A remote project's work happens on the other machine.
+      // A remote project's work happens on the other machine — except the
+      // browser, which is this desktop's window reaching that machine's
+      // localhost through a port-forward.
       const remote = titlesFor({
         isRemoteProject: true,
         supportsIosSimulator: true,
         isWebClient: false,
       });
-      expect(remote).not.toContain("Tools: Browser");
+      expect(remote).toContain("Tools: Browser");
       expect(remote).not.toContain("Tools: iOS Simulator");
       expect(remote).not.toContain("Tools: App Control");
       expect(remote).not.toContain("Tools: Pull request");

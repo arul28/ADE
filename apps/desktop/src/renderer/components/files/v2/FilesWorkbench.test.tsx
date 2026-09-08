@@ -50,11 +50,13 @@ vi.mock("../../../state/appStore", () => ({
 vi.mock("../FilesExplorer", () => ({
   FilesExplorer: ({
     tree,
+    expanded,
     onOpenFile,
     onToggleDirectory,
     onLoadMoreChildren,
   }: {
     tree: Array<{ path: string; children?: Array<unknown>; loadMoreOffset?: number | null }>;
+    expanded: Set<string>;
     onOpenFile: (path: string) => void;
     onToggleDirectory: (path: string, isExpanded: boolean, hasLoadedChildren: boolean) => void;
     onLoadMoreChildren?: (path: string, offset: number) => void;
@@ -62,6 +64,7 @@ vi.mock("../FilesExplorer", () => ({
     const bigdir = tree.find((node) => node.path === "bigdir");
     return (
       <div>
+        <div data-testid="explorer-expanded">{[...expanded].sort().join(",")}</div>
         <button type="button" data-testid="open-file" onClick={() => onOpenFile("src/a.ts")}>
           Open file
         </button>
@@ -404,6 +407,31 @@ describe("FilesWorkbench", () => {
     expect(window.ade.files.readFile).not.toHaveBeenCalledWith(
       expect.objectContaining({ path: "docs/features" }),
     );
+  });
+
+  it("gives the embedded pane a breadcrumb that reveals a directory in the tree", async () => {
+    render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+
+    // Nothing open: the row still says where you are rather than sitting blank.
+    expect(screen.getByTestId("files-pane-chrome")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(screen.getByTestId("files-breadcrumb-a.ts")).toBeTruthy());
+
+    // The file crumb is the end of the trail, not a button that does nothing.
+    expect(screen.getByTestId("files-breadcrumb-a.ts")).toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByTestId("files-breadcrumb-src"));
+    await waitFor(() => expect(screen.getByTestId("explorer-expanded").textContent).toContain("src"));
+  });
+
+  it("keeps the full Files tab free of the pane's chrome row", async () => {
+    render(<FilesWorkbench active />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+    // The tab has the workspace picker and the status bar; a breadcrumb here
+    // would be a third place saying the same thing.
+    expect(screen.queryByTestId("files-pane-chrome")).toBeNull();
   });
 
   it("does not replay a tools-pane request into the next panel that mounts", async () => {

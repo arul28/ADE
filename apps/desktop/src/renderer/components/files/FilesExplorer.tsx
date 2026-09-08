@@ -16,7 +16,7 @@ import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon } from "./filePresentation";
 
-const ROW_HEIGHT = 26;
+const ROW_HEIGHT = 28;
 
 type InlineRenameRequest = {
   path: string;
@@ -281,9 +281,16 @@ export function FilesExplorer({
 
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, borderRadius: 8 }}>
+      {/*
+        Hidden in the Work tools pane: the pane's own 40px chrome row already
+        carries the breadcrumb and a search that opens the same panel, so this
+        was a second search field 40px under the first one. New file / New
+        folder stay reachable on the tree's context menu.
+      */}
       <div
         className="flex shrink-0 items-center"
         style={{
+          display: compact ? "none" : "flex",
           gap: compact ? 4 : 6,
           padding: compact ? "6px 8px" : "8px 10px",
           borderBottom: `1px solid ${COLORS.border}`,
@@ -506,14 +513,14 @@ export function FilesExplorer({
                         ? <ChevronDown size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />
                         : <ChevronRight size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />}
                       {isExpanded
-                        ? <FolderOpen size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
-                        : <Folder size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
+                        ? <FolderOpen size={16} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
+                        : <Folder size={16} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
                     </>
                   ) : (
                     <>
                       <span style={{ width: 12, flexShrink: 0 }} />
                       {FileIcon
-                        ? <FileIcon size={14} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
+                        ? <FileIcon size={16} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
                         : null}
                     </>
                   )}

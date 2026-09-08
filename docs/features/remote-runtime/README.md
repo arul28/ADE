@@ -645,7 +645,18 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     currently stands for (`remoteTunnelOrigins`), so one tunnel's approval
     cannot be inherited by the next forward handed the same local port.
 
-    A remote pin also subscribes to `builtInBrowser.onRemoteRequest`. A machine
+    Because the browser is this desktop's, the Browser tool is **available on
+    remote lanes** — `workToolAvailability` gates only the iOS simulator and App
+    Control on `isRemoteProject`. "Remote" here means the pin *or*, for a chat
+    the Work router leaves unpinned, the tab's own binding: a chat on a remote
+    project tab's own runtime has no pin, and `ChatBuiltInBrowserPanel` falls
+    back to `projectBinding` so those lanes still tunnel.
+
+    A remote pin also subscribes to `builtInBrowser.onRemoteRequest`. That
+    subscription takes the pinned runtime's stream, and when the pin IS the
+    window's active binding it falls back to the shared remote pump's fanout
+    rather than opening a second stream — the pinned-pump helper returns null
+    there, and without the fanout the subscription was a silent no-op. A machine
     running only `ade serve` has no browser at all, so `ade browser open <url>`
     there emits a `built_in_browser_remote_request` runtime event and returns
     `{ status: "forwarded_to_desktop", requestId }` instead of failing at the

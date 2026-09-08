@@ -642,7 +642,6 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   ios: "iOS Simulator",
   "app-control": "App Control",
   browser: "Browser",
-  pr: "PR",
 };
 
 export function workToolLabel(toolId: string | null | undefined): string | null {

@@ -1486,16 +1486,44 @@ function isValidPreviewTargetPort(value: unknown): value is number {
 }
 
 /**
- * One loopback forward per (machine, remote port), memoized for the life of the
- * window.
+ * De-dupe of concurrent loopback-forward requests per (machine, remote port).
  *
- * Main already dedupes forwards inside `SyncPortForwardClient`, but a browser
- * navigation is on the interaction path: without this, every keystroke-driven
- * reload paid an IPC round trip to rediscover a listener it already had. The
- * promise (not the resolved value) is cached so two concurrent navigations to
- * the same port share one in-flight request.
+ * Only the IN-FLIGHT request is shared. The resolved forward used to be
+ * memoized for the life of the window, and that cache had no invalidation: a
+ * forward's local listener does not outlive its transport (the paired
+ * `SyncPortForwardClient` disposes on close; SSH forwards are closed by the
+ * pool), so after a disconnect the next navigation was handed a dead port and
+ * the page failed with `ERR_CONNECTION_REFUSED`. Worse, the OS re-assigns those
+ * ephemeral ports, so a cached entry could name a port some unrelated local
+ * server had since taken — a local page rendered under a remote origin badge.
+ *
+ * Asking main every time is the validation: `RemoteConnectionPool
+ * .ensurePortForward` answers from its own map in constant time and rebuilds a
+ * listener that is no longer listening, so the answer is always live. What is
+ * still worth keeping is the concurrency win the original cache also bought —
+ * two navigations to the same port share one request instead of racing to
+ * create two forwards.
  */
 const remoteLoopbackForwards = new Map<string, Promise<RemoteRuntimePortForward>>();
+
+/**
+ * Main says this machine's forwards are gone (disconnect, or the transport
+ * dropped). Any request still in flight was issued against the connection that
+ * just died, so it must not be handed to a later caller.
+ */
+function forgetRemoteLoopbackForwards(targetId: string): void {
+  const prefix = `${targetId}:`;
+  for (const key of [...remoteLoopbackForwards.keys()]) {
+    if (key.startsWith(prefix)) remoteLoopbackForwards.delete(key);
+  }
+}
+
+ipcRenderer.on(IPC.remoteRuntimePortForwardsInvalidated, (_event, payload) => {
+  const targetId = typeof (payload as { targetId?: unknown } | null)?.targetId === "string"
+    ? (payload as { targetId: string }).targetId.trim()
+    : "";
+  if (targetId) forgetRemoteLoopbackForwards(targetId);
+});
 
 function ensureRemoteLoopbackForward(
   binding: Extract<OpenProjectBinding, { kind: "remote" }>,
@@ -1508,11 +1536,12 @@ function ensureRemoteLoopbackForward(
   const pending = (ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
     id: binding.targetId,
     request: { remoteHost: "127.0.0.1", remotePort, label },
-  }) as Promise<RemoteRuntimePortForward>).catch((error: unknown) => {
-    // A failed forward must not be cached: the machine may simply have been
-    // mid-reconnect, and the next navigation should try again.
+  }) as Promise<RemoteRuntimePortForward>).finally(() => {
+    // Settled either way, the entry stops being a de-dupe target: a failure
+    // must not be cached (the machine may have been mid-reconnect), and a
+    // success must not be reused, because only main can say whether the
+    // listener is still there.
     if (remoteLoopbackForwards.get(key) === pending) remoteLoopbackForwards.delete(key);
-    throw error;
   });
   remoteLoopbackForwards.set(key, pending);
   return pending;
@@ -2211,6 +2240,9 @@ const remoteIosSimulatorEventCallbacks = new Set<
 const remoteAppControlEventCallbacks = new Set<
   (payload: AppControlEventPayload) => void
 >();
+const remoteBuiltInBrowserRemoteRequestCallbacks = new Set<
+  (payload: BuiltInBrowserRemoteRequest) => void
+>();
 const remoteOrchestrationEventCallbacks = new Set<
   (payload: OrchestrationEventPayload) => void
 >();
@@ -2384,6 +2416,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteComputerUseEventCallbacks.size > 0 ||
     remoteIosSimulatorEventCallbacks.size > 0 ||
     remoteAppControlEventCallbacks.size > 0 ||
+    remoteBuiltInBrowserRemoteRequestCallbacks.size > 0 ||
     remoteOrchestrationEventCallbacks.size > 0 ||
     remotePrAiResolutionEventCallbacks.size > 0
   );
@@ -2888,6 +2921,23 @@ function dispatchRemoteRuntimeEventPayload(
         cb(appControlEvent);
       } catch (error) {
         console.error("preload remote App Control listener failed", error);
+      }
+    }
+  }
+
+  const builtInBrowserRemoteRequest = toWrappedEvent<BuiltInBrowserRemoteRequest>(
+    payload,
+    BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+  );
+  if (builtInBrowserRemoteRequest) {
+    for (const cb of [...remoteBuiltInBrowserRemoteRequestCallbacks]) {
+      try {
+        cb(builtInBrowserRemoteRequest);
+      } catch (error) {
+        console.error(
+          "preload remote built-in browser request listener failed",
+          error,
+        );
       }
     }
   }
@@ -3487,6 +3537,16 @@ function subscribeRemoteAppControlEvents(
   };
 }
 
+function subscribeRemoteBuiltInBrowserRemoteRequests(
+  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+): () => void {
+  remoteBuiltInBrowserRemoteRequestCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteBuiltInBrowserRemoteRequestCallbacks.delete(cb);
+  };
+}
+
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
   pin?: OpenProjectBinding | null,
@@ -3799,7 +3859,18 @@ function subscribeBuiltInBrowserRemoteRequests(
     cb,
     "built-in browser remote request",
   );
-  return removePinned ?? (() => {});
+  if (removePinned) return removePinned;
+  /*
+    The pin IS the window's active binding — a remote project tab reading its
+    own runtime, which is the common case, not an edge one.
+
+    `subscribePinnedProjectRuntimeEvents` returns null there rather than open a
+    second stream against a runtime the shared pump already polls. Every sibling
+    domain then falls back to its remote fanout; this one had no fanout to fall
+    back to and returned a no-op, so `ade browser open` on the pinned machine
+    was published and never heard by the one desktop that could satisfy it.
+  */
+  return subscribeRemoteBuiltInBrowserRemoteRequests(cb);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

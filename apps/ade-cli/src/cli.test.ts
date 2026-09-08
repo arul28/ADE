@@ -7643,42 +7643,224 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("passes the caller cwd when ingesting proof directly", () => {
-    const plan = buildCliPlan([
-      "proof",
-      "ingest",
-      "--input-json",
-      JSON.stringify({
-        backendStyle: "external_cli",
-        backendName: "agent-browser",
-        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
-      }),
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") throw new Error("Expected proof ingest to produce an execute plan");
+  describe("proof callerRoot derivation", () => {
+    const laneEnvKeys = ["ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const;
+    const previous = new Map<string, string | undefined>();
 
-    expect(plan.steps[0]?.params).toMatchObject({
-      name: "ingest_computer_use_artifacts",
-      arguments: {
-        callerRoot: process.cwd(),
-        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
-      },
+    beforeEach(() => {
+      for (const key of laneEnvKeys) {
+        previous.set(key, process.env[key]);
+        delete process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of laneEnvKeys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it("passes the caller cwd when ingesting proof with no lane env", () => {
+      const plan = buildCliPlan([
+        "proof",
+        "ingest",
+        "--input-json",
+        JSON.stringify({
+          backendStyle: "external_cli",
+          backendName: "agent-browser",
+          inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+        }),
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof ingest to produce an execute plan");
+
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          callerRoot: process.cwd(),
+          callerRootSource: "cwd",
+          inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+        },
+      });
+    });
+
+    it("resolves a relative proof attach path against the caller's cwd", () => {
+      // The agent's cwd is its lane worktree; the runtime storing the artifact
+      // runs at the project root. Resolving here is what stops the runtime from
+      // having to guess which tree a bare "shots/proof.png" belongs to.
+      const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBe(process.cwd());
+      expect((args.inputs as Array<{ path: string }>)[0]?.path).toBe(
+        path.resolve(process.cwd(), "shots/proof.png"),
+      );
+    });
+
+    it("prefers the lane worktree in ADE_WORKSPACE_ROOT over the shell cwd", () => {
+      // A coordinator can spawn `ade proof attach` from a shell parked outside
+      // the lane worktree while still carrying the lane's env. Sending the cwd
+      // there is what got six attaches rejected as an unauthorized callerRoot.
+      process.env.ADE_WORKSPACE_ROOT = "/repo/.ade/worktrees/lane-9";
+      const plan = buildCliPlan(["proof", "attach", "/tmp/shot.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBe(path.resolve("/repo/.ade/worktrees/lane-9"));
+      expect(args.callerRootSource).toBe("env ADE_WORKSPACE_ROOT");
+    });
+
+    it("lets the runtime resolve the worktree when only ADE_LANE_ID is set", () => {
+      // Only the runtime can map a lane id to a worktree path, so omitting
+      // callerRoot is the env-derived answer — not a silent fallback to cwd,
+      // which is the path that was never authorized.
+      process.env.ADE_LANE_ID = "lane-9";
+      const plan = buildCliPlan(["proof", "attach", "/tmp/shot.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBeUndefined();
+      expect(args.callerRootSource).toBe(
+        "env ADE_LANE_ID=lane-9 (runtime-resolved lane worktree)",
+      );
     });
   });
 
-  it("resolves a relative proof attach path against the caller's cwd", () => {
-    // The agent's cwd is its lane worktree; the runtime storing the artifact
-    // runs at the project root. Resolving here is what stops the runtime from
-    // having to guess which tree a bare "shots/proof.png" belongs to.
-    const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+  describe("proof filing confirmation", () => {
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const textOpts = () => ({
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    });
+    const ingestResult = {
+      artifacts: [
+        {
+          id: "artifact-1",
+          kind: "screenshot",
+          title: "roots check",
+          uri: ".ade/artifacts/computer-use/artifact-1.png",
+          laneId: "lane-9",
+        },
+      ],
+      links: [
+        { artifactId: "artifact-1", ownerKind: "lane", ownerId: "lane-9" },
+        {
+          artifactId: "artifact-1",
+          ownerKind: "chat_session",
+          ownerId: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071",
+        },
+      ],
+    };
 
-    const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
-    expect(args.callerRoot).toBe(process.cwd());
-    expect((args.inputs as Array<{ path: string }>)[0]?.path).toBe(
-      path.resolve(process.cwd(), "shots/proof.png"),
-    );
+    it("verifies the record by re-reading it and ends with the confirmation line", () => {
+      const plan = expectExecutePlan(
+        buildCliPlan(["proof", "attach", "/tmp/shot.png", "--caption", "roots check"]),
+      );
+      expect(plan.proofFiling).toEqual({ command: "proof attach", verify: true });
+      expect(plan.steps[1]?.params).toMatchObject({
+        name: "list_computer_use_artifacts",
+      });
+
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: ingestResult,
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      });
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output.trimEnd().split("\n").at(-1)).toBe(
+        "Attached 1 artifact to lane lane-9 / chat 8f3c2a11 (roots check)",
+      );
+    });
+
+    it("fails when the filed artifact cannot be read back", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      // The word "failed" is load-bearing: a caller grepping stderr for it is
+      // the whole reason an empty drawer went unnoticed for six attaches.
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: ingestResult, verify: { artifacts: [] } },
+        }),
+      ).toThrow(/proof attach failed — the runtime reported artifact-1/);
+    });
+
+    it("fails when the runtime files nothing at all", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "capture", "--caption", "x"]));
+      expect(plan.proofFiling).toEqual({ command: "proof capture", verify: true });
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: {
+            result: { proof: false, artifacts: [], links: [], note: "Scratch capture" },
+          },
+        }),
+      ).toThrow(/proof capture failed — the runtime filed no proof record: Scratch capture/);
+    });
+
+    it("skips the re-read only when --no-verify is passed", () => {
+      const plan = expectExecutePlan(
+        buildCliPlan(["proof", "attach", "/tmp/shot.png", "--no-verify"]),
+      );
+      expect(plan.proofFiling).toEqual({ command: "proof attach", verify: false });
+      expect(plan.steps).toHaveLength(1);
+      const summarized = summarizeExecution({ plan, connection, values: { result: ingestResult } });
+      expect(formatOutput(summarized, textOpts(), inferFormatter(plan))).toContain(
+        "verified: skipped (--no-verify)",
+      );
+    });
+
+    it("headers proof list with the owner scope it listed", () => {
+      const listPlan = expectExecutePlan(buildCliPlan(["proof", "list"]));
+      const output = formatOutput(
+        {
+          scope: {
+            projectWide: false,
+            owners: [
+              { kind: "lane", id: "lane-9" },
+              { kind: "chat_session", id: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071" },
+            ],
+          },
+          artifacts: [
+            {
+              id: "artifact-1",
+              kind: "screenshot",
+              createdAt: "2026-09-08T10:00:00.000Z",
+              title: "roots check",
+              uri: ".ade/artifacts/computer-use/artifact-1.png",
+              links: [
+                { ownerKind: "lane", ownerId: "lane-9" },
+                { ownerKind: "chat_session", ownerId: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071" },
+              ],
+            },
+          ],
+        },
+        textOpts(),
+        inferFormatter(listPlan),
+      );
+      expect(output).toContain("Proof for lane lane-9 · chat 8f3c2a11: 1 artifact");
+      expect(output).toContain("owner");
+      expect(output).toContain("lane lane-9 · chat 8f3c2a11");
+    });
   });
 
   it("maps proof rm and prune --broken to the delete actions", () => {

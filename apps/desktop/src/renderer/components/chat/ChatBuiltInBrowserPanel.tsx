@@ -4,7 +4,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { useReducedMotion } from "motion/react";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import type { AgentChatFileRef, BrowserLinkOpenMode, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
@@ -34,12 +34,19 @@ import {
   type BrowserViewFrame,
 } from "./browser/browserViewGeometry";
 import {
-  devServerChipLabel,
+  devServerRowLabels,
+  devServerThumbLabel,
   mergeDevServer,
   normalizeDevServer,
   normalizeDevServers,
   type BrowserDevServer,
 } from "./browser/browserDevServers";
+import {
+  forgetBrowserRecentUrl,
+  readBrowserRecentUrls,
+  rememberBrowserRecentUrl,
+  type BrowserRecentUrl,
+} from "./browser/browserRecentUrls";
 import {
   browserUrlOrigin,
   clipboardUrlCandidate,
@@ -76,7 +83,7 @@ import { BrowserFindBar } from "./browser/BrowserFindBar";
 import { BrowserHandoffBar } from "./browser/BrowserHandoffBar";
 import { BrowserOverflowMenu } from "./browser/BrowserOverflowMenu";
 import { BrowserProfilePanel } from "./browser/BrowserProfilePanel";
-import { BrowserStage } from "./browser/BrowserStage";
+import { BrowserStage, type BrowserLaunchpadGroup } from "./browser/BrowserStage";
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
 import {
@@ -240,9 +247,34 @@ export function ChatBuiltInBrowserPanel({
   const projectRoot = projectRootOverride === undefined
     ? chatScope.rootPath
     : projectRootOverride;
-  // Every pin-aware `builtInBrowser.*` call below reads this.
-  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
-  runtimePinRef.current = runtimePin;
+  /**
+   * The machine this pane's work happens on, when that is not this computer.
+   *
+   * `runtimePin` is null for a chat on the tab's OWN runtime — the Work pane's
+   * router deliberately keeps that on the unpinned fast path. On a remote
+   * project tab that runtime is another machine, so "unpinned" there still means
+   * "the URLs in this pane are that machine's". Without this fallback a remote
+   * project tab got a browser with no tunnel: `http://localhost:3000` loaded
+   * THIS computer's port 3000, and `ade browser open` over there was published
+   * to a desktop that never subscribed.
+   */
+  /*
+    The lint rule below wants the CHAT's scope, which is right nearly everywhere
+    and wrong here: the paragraph above is the argument for reading the project
+    tab's binding on purpose. An unpinned pane in a remote project tab has no
+    chat scope to ask, and answering "this computer" is the bug being fixed.
+  */
+  // eslint-disable-next-line no-restricted-syntax -- see the paragraph above: the project tab's machine IS this pane's machine when the pane has no pin.
+  const activeProjectBinding = useAppStore((state) => state.projectBinding);
+  const remotePin = runtimePin
+    ? (runtimePin.kind === "remote" ? runtimePin : null)
+    : (activeProjectBinding?.kind === "remote" ? activeProjectBinding : null);
+  // Every pin-aware `builtInBrowser.*` call below reads this. A remote pin and
+  // no pin route identically (the browser is always this window's), so
+  // substituting the tab's own remote binding only adds URL localization.
+  const browserRuntimePin = runtimePin ?? remotePin;
+  const runtimePinRef = useRef<OpenProjectBinding | null>(browserRuntimePin);
+  runtimePinRef.current = browserRuntimePin;
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   /** The stage the letterboxed view is centred in (surface minus the caption). */
   const browserStageRef = useRef<HTMLDivElement | null>(null);
@@ -282,6 +314,15 @@ export function ChatBuiltInBrowserPanel({
   const reduceMotion = useReducedMotion() ?? false;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const urlInputRef = useRef<HTMLInputElement | null>(null);
+  /*
+    The launchpad has an address field of its own.
+
+    It is the first thing in the empty state's column, so it — not the 40px
+    chrome row above it — is where the caret belongs when a tab has nowhere to
+    be. Both write the same `urlInput`, so whichever one is on screen IS the
+    omnibox; only the focus target differs.
+  */
+  const launchpadInputRef = useRef<HTMLInputElement | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const tabStripRef = useRef<HTMLDivElement | null>(null);
   /** The row whose measured width decides what the toolbar can afford. */
@@ -305,6 +346,7 @@ export function ChatBuiltInBrowserPanel({
   /** The service answered, and had nothing — so the port probe still runs. */
   const [discoveryEmpty, setDiscoveryEmpty] = useState(false);
   const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
+  const [recentUrls, setRecentUrls] = useState<BrowserRecentUrl[]>([]);
   const [failedFavicons, setFailedFavicons] = useState<Record<string, true>>({});
   const [tabStripFades, setTabStripFades] = useState<{ start: boolean; end: boolean }>({ start: false, end: false });
   const [paneWidth, setPaneWidth] = useState<number | null>(null);
@@ -321,7 +363,6 @@ export function ChatBuiltInBrowserPanel({
   // Approvals answered "Allow once" live only as long as this pane does; the
   // "Always" set is persisted per lane alongside the rest of its view state.
   const sessionApprovedTunnelsRef = useRef<ReadonlySet<string>>(new Set<string>());
-  const remotePin = runtimePin?.kind === "remote" ? runtimePin : null;
   const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
     () => (projectRootOverride === null
       ? { tabCollection: "personal" }
@@ -963,6 +1004,17 @@ export function ChatBuiltInBrowserPanel({
         }
         await api.navigate(withBrowserScope({ url: nextUrl }), runtimePinRef.current);
         setUrlInput(nextUrl);
+        /*
+          Submitting is the end of typing.
+
+          The page is a native view the compositor paints over this renderer, so
+          clicking into it never fires `blur` on the omnibox — without this the
+          field stayed "being edited" forever and the submit arrow sat in the
+          chrome row over a page nobody was addressing.
+        */
+        setEditingUrl(false);
+        urlInputRef.current?.blur();
+        launchpadInputRef.current?.blur();
         // Before the refresh: see `rememberTabTunnel`.
         if (prepared.tunnel) {
           rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
@@ -1701,13 +1753,15 @@ export function ChatBuiltInBrowserPanel({
    * two lengths, and the modifier is in the tooltip.
    */
   const handleCameraClick = useCallback((event: MouseEvent<HTMLButtonElement>) => {
-    if (event.shiftKey) {
+    // With nowhere to send a capture the modifier is meaningless: the button is
+    // record-only, and the toolbar draws it as one.
+    if (event.shiftKey || !onAddContext) {
       if (recording) handleStopRecording();
       else handleStartRecording();
       return;
     }
     handleAttachScreenshot();
-  }, [handleAttachScreenshot, handleStartRecording, handleStopRecording, recording]);
+  }, [handleAttachScreenshot, handleStartRecording, handleStopRecording, onAddContext, recording]);
 
   /* ── Link routing ───────────────────────────────────────────────────────── */
 
@@ -1752,8 +1806,12 @@ export function ChatBuiltInBrowserPanel({
   const handleUrlFocus = useCallback(() => {
     setEditingUrl(true);
     // Focusing the omnibox means "I am replacing this", so hand over the whole
-    // string rather than a caret in the middle of a hostname.
-    urlInputRef.current?.select();
+    // string rather than a caret in the middle of a hostname. Either field can
+    // be the one in focus — the launchpad has its own — so this asks the
+    // document rather than assuming the chrome row's.
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement) active.select();
+    else urlInputRef.current?.select();
   }, []);
 
   const handleUrlKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
@@ -1761,7 +1819,7 @@ export function ChatBuiltInBrowserPanel({
     event.preventDefault();
     event.stopPropagation();
     setUrlInput(currentUrl);
-    urlInputRef.current?.blur();
+    event.currentTarget.blur();
   }, [currentUrl]);
 
   /**
@@ -1960,34 +2018,101 @@ export function ChatBuiltInBrowserPanel({
   }, [syncTabStripFades, tabIdsSignature]);
 
   /**
-   * The launchpad's chips.
+   * Where this pane's recents are filed.
+   *
+   * The same split the tab collections use: a project's browser and the
+   * personal one are different browsers, and offering a work lane's pages in
+   * the personal pane would be a leak dressed up as a convenience.
+   */
+  const recentScope = projectRootOverride === null ? "personal" : projectRoot ?? null;
+
+  useEffect(() => {
+    setRecentUrls(readBrowserRecentUrls(recentScope));
+  }, [recentScope]);
+
+  /*
+    A page counts as visited once it has settled, not when it starts loading:
+    a redirect chain would otherwise file three rows for one destination.
+  */
+  const settledTitle = activeTab?.title ?? null;
+  useEffect(() => {
+    if (loading || !currentUrl) return;
+    setRecentUrls(rememberBrowserRecentUrl(recentScope, {
+      url: currentUrl,
+      title: settledTitle?.trim() ? settledTitle.trim() : null,
+      visitedAt: Date.now(),
+    }));
+  }, [currentUrl, loading, recentScope, settledTitle]);
+
+  const handleForgetRecent = useCallback((url: string) => {
+    setRecentUrls(forgetBrowserRecentUrl(recentScope, url));
+  }, [recentScope]);
+
+  /**
+   * The launchpad's groups.
    *
    * Real dev servers first, because that is the page you almost always wanted,
-   * then "Paste a link" — but only when the clipboard actually holds a URL, so
-   * the chip never promises something it cannot deliver.
+   * then the pages this browser has actually been on. "Paste a link" appears
+   * only when the clipboard holds a URL, so it never promises something it
+   * cannot deliver.
    */
-  const launchpadChips = useMemo(() => {
-    const chips: Array<{ key: string; label: string; hint: string | null; icon: "server" | "clipboard"; onSelect: () => void }> = [];
-    for (const server of devServers) {
-      chips.push({
-        key: server.url,
-        label: devServerChipLabel(server),
-        hint: null,
-        icon: "server",
-        onSelect: () => handleSuggestion(server.url),
-      });
-    }
+  const launchpadGroups = useMemo<BrowserLaunchpadGroup[]>(() => {
+    const groups: BrowserLaunchpadGroup[] = [];
     if (clipboardUrl) {
-      chips.push({
+      groups.push({
         key: "clipboard",
-        label: "Paste a link",
-        hint: splitBrowserUrlForDisplay(clipboardUrl)?.host ?? null,
-        icon: "clipboard",
-        onSelect: () => handleSuggestion(clipboardUrl),
+        label: "Clipboard",
+        icon: "history",
+        rows: [{
+          key: "clipboard",
+          title: "Paste a link",
+          subtitle: splitBrowserUrlForDisplay(clipboardUrl)?.host ?? clipboardUrl,
+          thumbLabel: null,
+          live: false,
+          icon: "clipboard",
+          onSelect: () => handleSuggestion(clipboardUrl),
+        }],
       });
     }
-    return chips;
-  }, [clipboardUrl, devServers, handleSuggestion]);
+    if (devServers.length > 0) {
+      groups.push({
+        key: "local",
+        label: "Local servers",
+        icon: "server",
+        rows: devServers.map((server) => {
+          const labels = devServerRowLabels(server);
+          return {
+            key: server.url,
+            title: labels.title,
+            subtitle: labels.subtitle,
+            thumbLabel: devServerThumbLabel(server),
+            // Everything in this group came from a listening port.
+            live: true,
+            icon: "server" as const,
+            onSelect: () => handleSuggestion(server.url),
+          };
+        }),
+      });
+    }
+    if (recentUrls.length > 0) {
+      groups.push({
+        key: "recent",
+        label: "Recently used",
+        icon: "history",
+        rows: recentUrls.map((entry) => ({
+          key: entry.url,
+          title: entry.title ?? splitBrowserUrlForDisplay(entry.url)?.host ?? entry.url,
+          subtitle: entry.url,
+          thumbLabel: null,
+          live: false,
+          icon: "history" as const,
+          onSelect: () => handleSuggestion(entry.url),
+          onForget: () => handleForgetRecent(entry.url),
+        })),
+      });
+    }
+    return groups;
+  }, [clipboardUrl, devServers, handleForgetRecent, handleSuggestion, recentUrls]);
 
   /* ── Layout ─────────────────────────────────────────────────────────────── */
 
@@ -2021,12 +2146,29 @@ export function ChatBuiltInBrowserPanel({
   // did not. The layout only ever reads them as booleans.
   const isRecording = Boolean(recording);
   const hasSelection = Boolean(selectedItem);
+  // Whether this host can receive an inserted element or capture at all. A
+  // shell session cannot: there is no chat, draft or agent CLI behind the pane,
+  // so Inspect, Attach and "screenshot to chat" are not shown here rather than
+  // shown broken.
+  const canAttachContext = Boolean(onAddContext);
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
     hasSelection,
+    canAttachContext,
     recording: isRecording,
-    deviceLabel,
-    urlFocused: editingUrl,
-  }), [deviceLabel, editingUrl, hasSelection, isRecording, paneWidth]);
+  }), [canAttachContext, hasSelection, isRecording, paneWidth]);
+  /**
+   * `status != null` matters: before the first status lands the panel knows
+   * nothing, and flashing the launchpad there would both blink the surface and
+   * steal focus into the URL field — which then holds an empty string against
+   * the page that turns out to be loaded.
+   */
+  const showLaunchpad = Boolean(
+    apiAvailable
+    && status != null
+    && !captureBase
+    && (browserTabs.length === 0 || activeTab?.isLaunchpad || !currentUrl),
+  );
+
   const urlDisplay = useMemo(() => splitBrowserUrlForDisplay(currentUrl), [currentUrl]);
   // Only while the field shows exactly what is loaded: mid-edit the person's
   // own text is the truth, and dimming half of it would be a lie.
@@ -2042,6 +2184,9 @@ export function ChatBuiltInBrowserPanel({
     tunnel: activeTabTunnel,
     display: urlDisplay,
     showOverlay: showUrlOverlay,
+    // The launchpad has the field you are actually typing into while it is up,
+    // so the chrome row must not sprout a second submit arrow beside it.
+    editing: editingUrl && !showLaunchpad,
     onChange: setUrlInput,
     onFocus: handleUrlFocus,
     onKeyDown: handleUrlKeyDown,
@@ -2050,7 +2195,9 @@ export function ChatBuiltInBrowserPanel({
   }), [
     activeTabTunnel,
     currentUrl,
+    editingUrl,
     handleNavigate,
+    showLaunchpad,
     handleUrlEndEdit,
     handleUrlFocus,
     handleUrlKeyDown,
@@ -2059,6 +2206,15 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
+  const launchpadField = useMemo(() => ({
+    inputRef: launchpadInputRef,
+    value: urlInput,
+    onChange: setUrlInput,
+    onFocus: handleUrlFocus,
+    onKeyDown: handleUrlKeyDown,
+    onSubmit: handleNavigate,
+    onEndEdit: handleUrlEndEdit,
+  }), [handleNavigate, handleUrlEndEdit, handleUrlFocus, handleUrlKeyDown, urlInput]);
   const emulationWidth = emulation?.width && emulation.width > 0 ? emulation.width : null;
   const emulationHeight = emulation?.height && emulation.height > 0 ? emulation.height : null;
   const emulationSize = useMemo(
@@ -2100,19 +2256,6 @@ export function ChatBuiltInBrowserPanel({
 
   /* ── Launchpad ──────────────────────────────────────────────────────────── */
 
-  /**
-   * `status != null` matters: before the first status lands the panel knows
-   * nothing, and flashing the launchpad there would both blink the surface and
-   * steal focus into the URL field — which then holds an empty string against
-   * the page that turns out to be loaded.
-   */
-  const showLaunchpad = Boolean(
-    apiAvailable
-    && status != null
-    && !captureBase
-    && (browserTabs.length === 0 || activeTab?.isLaunchpad || !currentUrl),
-  );
-
   useEffect(() => {
     launchpadVisibleRef.current = showLaunchpad;
     reportBounds(undefined, { force: true });
@@ -2138,10 +2281,13 @@ export function ChatBuiltInBrowserPanel({
     };
   }, [showLaunchpad]);
 
-  // A new tab is a question, so the caret starts where the answer goes.
+  // A new tab is a question, so the caret starts where the answer goes — which
+  // is the launchpad's own field when the launchpad is what you are looking at.
   useEffect(() => {
     if (!showLaunchpad) return undefined;
-    const frame = window.requestAnimationFrame(() => urlInputRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      (launchpadInputRef.current ?? urlInputRef.current)?.focus();
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [showLaunchpad, activeTabId]);
 
@@ -2292,6 +2438,7 @@ export function ChatBuiltInBrowserPanel({
     toolbar,
     busy,
     apiAvailable,
+    canAttachContext,
     inspecting,
     onInspectToggle: handleInspectToggle,
     emulation,
@@ -2299,7 +2446,6 @@ export function ChatBuiltInBrowserPanel({
     deviceMenuItems,
     selection: {
       has: hasSelection,
-      canAdd: Boolean(onAddContext),
       onAttach: handleAttachSelection,
     },
   };
@@ -2332,29 +2478,29 @@ export function ChatBuiltInBrowserPanel({
         {pendingApproval ? (
           <div
             role="alert"
-            className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 overflow-hidden border-b border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90"
+            className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-amber-300/15 bg-amber-500/10 px-2.5 text-[11.5px] text-amber-100/90"
           >
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 flex-1 truncate">
               {`Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`}
             </span>
             <button
               type="button"
               onClick={() => pendingApproval.decide("once")}
-              className="inline-flex h-5 shrink-0 items-center rounded border border-amber-300/30 bg-amber-500/15 px-1.5 font-medium transition-colors hover:bg-amber-500/25"
+              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
             >
               Allow once
             </button>
             <button
               type="button"
               onClick={() => pendingApproval.decide("always")}
-              className="inline-flex h-5 shrink-0 items-center rounded border border-amber-300/30 bg-amber-500/15 px-1.5 font-medium transition-colors hover:bg-amber-500/25"
+              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
             >
               Always for this lane
             </button>
             <button
               type="button"
               onClick={() => pendingApproval.decide("deny")}
-              className="inline-flex h-5 shrink-0 items-center rounded border border-white/[0.12] px-1.5 font-medium text-fg/70 transition-colors hover:bg-white/[0.06]"
+              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-100/65 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]"
             >
               Deny
             </button>
@@ -2380,6 +2526,9 @@ export function ChatBuiltInBrowserPanel({
           onDeviceMenuOpenChange={setDeviceMenuOpen}
           hasCaptureBase={Boolean(captureBase)}
           onCameraClick={handleCameraClick}
+          onOpenExternal={handleOpenExternal}
+          progressPhase={progressPhase}
+          reduceMotion={reduceMotion}
           overflow={(
             <BrowserOverflowMenu
               open={overflowOpen}
@@ -2390,6 +2539,7 @@ export function ChatBuiltInBrowserPanel({
               onZoomReset={handleZoomReset}
               onAttachScreenshot={handleAttachScreenshot}
               onOpenFind={openFind}
+              onNewTab={handleNewTab}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
               networkLogging={networkLogging}
@@ -2410,31 +2560,6 @@ export function ChatBuiltInBrowserPanel({
             />
           )}
         />
-
-        {/*
-          Determinate-feeling progress: it races out, waits at 90%, then snaps
-          shut on did-finish-load. A page that is still loading should look like
-          progress, not like a spinner that might mean anything.
-        */}
-        <div className="relative h-[2px] shrink-0 overflow-hidden" aria-hidden="true">
-          <AnimatePresence initial={false}>
-            {progressPhase === "idle" ? null : (
-              <motion.div
-                key="ade-browser-progress"
-                data-testid="browser-load-progress"
-                className="h-full w-full origin-left bg-[var(--color-accent)] shadow-[0_0_6px_1px_color-mix(in_srgb,var(--color-accent)_45%,transparent)]"
-                initial={reduceMotion ? { scaleX: 1, opacity: 1 } : { scaleX: 0.04, opacity: 1 }}
-                animate={progressPhase === "loading"
-                  ? { scaleX: reduceMotion ? 1 : 0.9, opacity: 1 }
-                  : { scaleX: 1, opacity: 0 }}
-                exit={{ opacity: 0 }}
-                transition={progressPhase === "loading"
-                  ? { duration: reduceMotion ? 0 : 5.3, ease: [0.1, 0.5, 0.2, 1] }
-                  : { scaleX: { duration: 0.15 }, opacity: { duration: 0.2, delay: 0.15 } }}
-              />
-            )}
-          </AnimatePresence>
-        </div>
 
         <BrowserFindBar
           open={findOpen}
@@ -2461,10 +2586,8 @@ export function ChatBuiltInBrowserPanel({
         {message ? (
           <div
             className={cn(
-              "flex shrink-0 items-start gap-2 border-b px-2.5 py-1.5 text-[11px]",
-              message.tone === "error"
-                ? "border-rose-400/18 bg-rose-500/10 text-rose-100/85"
-                : "border-sky-400/14 bg-sky-500/8 text-sky-100/80",
+              "flex shrink-0 items-start gap-2 border-b border-white/[0.07] px-2.5 py-1.5 text-[11.5px]",
+              message.tone === "error" ? "text-rose-200/85" : "text-fg/75",
             )}
             role={message.tone === "error" ? "alert" : "status"}
           >
@@ -2512,7 +2635,8 @@ export function ChatBuiltInBrowserPanel({
           onCapturePointerCancel={cancelBrowserCapture}
           showLaunchpad={showLaunchpad}
           apiAvailable={apiAvailable}
-          launchpadChips={launchpadChips}
+          launchpadField={launchpadField}
+          launchpadGroups={launchpadGroups}
           letterboxed={letterboxed}
           emulation={emulation}
           busy={busy}

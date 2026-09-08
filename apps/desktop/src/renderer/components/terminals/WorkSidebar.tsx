@@ -7,7 +7,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowsClockwise } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   AppControlContextItem,
@@ -35,18 +34,12 @@ import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings"
 import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
-import { cn } from "../ui/cn";
-import { PaneTooltip } from "../ui/PaneTooltip";
 import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import { isAvailableWorkSidebarTab, workToolContextLabel } from "./workTools";
-import {
-  WORK_TOOL_COMPONENTS,
-  type PrRefreshAction,
-  type WorkToolPanelProps,
-} from "./workToolPanels";
+import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -92,8 +85,6 @@ function escapeIsClaimedInside(target: Element): boolean {
   const value = (field as HTMLInputElement | HTMLTextAreaElement).value ?? "";
   return value.length > 0;
 }
-
-/** See `ChatPrPane.onRegisterRefresh`. */
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
@@ -320,18 +311,15 @@ export function WorkSidebar({
     }
     return null;
   }
-  const toolAttributionReason = resolveToolAttributionReason();
+  // Lane attribution only. "This session cannot receive inserted context" is
+  // not a warning — it is a capability the panels simply do not offer here, so
+  // they drop the controls that depend on it rather than narrating the absence
+  // in a banner above controls you can still see.
+  const warningReason = resolveToolAttributionReason();
   const contextDisabledReason = targetDisabledReason;
-  const warningReason = toolAttributionReason ?? contextDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
-  // The PR tool's refresh, surrendered by `ChatPrPane` when it renders without
-  // its own title bar. Held here so the shell header can place it.
-  const [prRefreshAction, setPrRefreshAction] = useState<PrRefreshAction | null>(null);
-  useEffect(() => {
-    if (effectiveTool !== "pr") setPrRefreshAction(null);
-  }, [effectiveTool]);
 
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };
@@ -512,7 +500,6 @@ export function WorkSidebar({
     onAddIosContext: addIosContext,
     onInsertDraft: insertDraft,
     onResumeEndedSession: resumeEndedSession,
-    onRegisterPrRefresh: setPrRefreshAction,
     onToolChange,
     onClose,
   }), [
@@ -732,24 +719,6 @@ export function WorkSidebar({
           context={toolContext}
           contextLabel={headerContextLabel}
           statuses={statuses}
-          contextAction={effectiveTool === "pr" && prRefreshAction ? (
-            <PaneTooltip label={prRefreshAction.syncing ? "Syncing PR status…" : "Refresh pull request"} side="bottom">
-              <button
-                type="button"
-                onClick={prRefreshAction.run}
-                disabled={prRefreshAction.syncing}
-                aria-label="Refresh pull request"
-                className={cn(
-                  "inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-fg/70",
-                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
-                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                  "disabled:pointer-events-none disabled:opacity-45",
-                )}
-              >
-                <ArrowsClockwise size={12} weight="bold" className={cn(prRefreshAction.syncing && "animate-spin")} />
-              </button>
-            </PaneTooltip>
-          ) : null}
           // Reads the real binding rather than a hard-coded "Esc", so a
           // rebound `work.tools.picker` never advertises the wrong key.
           backShortcut={effectiveTool === "terminal" ? terminalPickerBinding : pickerBinding}
@@ -782,7 +751,6 @@ export function WorkSidebar({
                 context={toolContext}
                 statuses={statuses}
                 loading={statusesLoading}
-                pickerShortcut={pickerBinding}
                 onPick={selectTool}
               />
             )}

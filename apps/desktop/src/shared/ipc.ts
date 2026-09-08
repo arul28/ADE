@@ -152,6 +152,16 @@ export const IPC = {
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
+  /**
+   * Main → renderer: every loopback forward for this machine is gone.
+   *
+   * A forward's local listener dies with the transport that carried it, and
+   * the OS is free to hand that port number straight back out, so anything
+   * holding a `localPort` for the target must forget it now rather than
+   * discover it by loading a dead — or worse, unrelated — page.
+   */
+  remoteRuntimePortForwardsInvalidated:
+    "ade.remoteRuntime.portForwardsInvalidated",
   remoteRuntimeAttachmentUploadCapability: "ade.remoteRuntime.attachmentUploadCapability",
   remoteRuntimeUploadChatAttachment: "ade.remoteRuntime.uploadChatAttachment",
   remoteRuntimeStreamEvents: "ade.remoteRuntime.streamEvents",

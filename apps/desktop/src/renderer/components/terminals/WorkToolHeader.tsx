@@ -1,10 +1,8 @@
-import type { ReactNode } from "react";
 import { SquaresFour, X } from "@phosphor-icons/react";
 import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
-import { OVERSHOOT_EASE } from "../../lib/motion";
 import {
   WORK_TOOL_DEFINITIONS,
   workToolAvailability,
@@ -19,35 +17,30 @@ import {
   type WorkToolStatusMap,
 } from "./useWorkToolStatuses";
 
-/** Shared-element id linking a tool's activity dot to its header icon halo. */
-function toolMarkerLayoutId(tool: WorkSidebarTab): string {
-  return `work-tool-marker:${tool}`;
-}
-
-const OVERSHOOT = OVERSHOOT_EASE;
-
-const CLOSE_BUTTON_CLASS = cn(
-  "ade-shell-control inline-flex h-full w-9 shrink-0 items-center justify-center self-stretch rounded-none",
-  "border-l border-white/[0.08] text-muted-fg/70 transition-colors duration-[120ms] hover:bg-white/[0.04] hover:text-fg",
+const CONTROL_CLASS = cn(
+  "ade-shell-control inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-[6px] px-1.5",
+  "border-0 text-[12px] font-medium text-muted-fg",
+  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
 );
 
 /**
  * The tools pane header while a tool is open.
  *
- * Three jobs in 36px: get back to the picker, say what you are looking at, and
- * — the part the old tab rail did badly — keep the tools you are NOT looking at
- * visible. A running shell, a tab an agent is holding, a booted simulator each
- * get a dot on the right; clicking one switches to it, and the dot flies into
- * the header icon on the way (a shared `layoutId`), so the switch reads as the
- * same object moving rather than two unrelated repaints.
+ * Three jobs in 36px, and nothing else: get back to the picker, say what you
+ * are looking at, and — the part the old tab rail did badly — keep the tools
+ * you are NOT looking at reachable. A running shell, a tab an agent is holding,
+ * a booted simulator each get a 6px dot on the right that switches to it.
+ *
+ * Everything decorative is gone: no tinted halo behind the icon, no dividing
+ * rules between the three groups, no colour on the glyph. One hairline along
+ * the bottom is the only line in the bar.
  */
 export function WorkToolHeader({
   tool,
   context,
   contextLabel,
   statuses,
-  contextAction,
   backShortcut,
   onShowPicker,
   onPick,
@@ -58,12 +51,6 @@ export function WorkToolHeader({
   /** Compact "what am I looking at" string — a tab title, a shell count, a branch. */
   contextLabel: string | null;
   statuses: WorkToolStatusMap;
-  /**
-   * One small control belonging to the tool on screen, rendered just before the
-   * activity dots. Exists so a panel mounted `chromeless` (the PR pane) can
-   * surrender its own title bar without losing its one action.
-   */
-  contextAction?: ReactNode;
   /** Key-cap shown in the "Back to tools" tooltip; the terminal's differs. */
   backShortcut?: string;
   onShowPicker: () => void;
@@ -95,53 +82,34 @@ export function WorkToolHeader({
   const Icon = definition.icon;
 
   return (
-    <div className="ade-pane-chrome flex min-h-[36px] shrink-0 items-stretch border-b border-white/[0.08]">
+    <div className="ade-pane-chrome ade-tool-pane-rule flex min-h-[36px] shrink-0 items-center gap-2 px-2">
       <PaneTooltip label="Back to tools" shortcut={backShortcut} side="bottom">
         <button
           type="button"
           onClick={onShowPicker}
           aria-label="Back to tools"
-          className={cn(
-            "ade-shell-control inline-flex h-full shrink-0 items-center gap-1.5 self-stretch rounded-none border-0 border-r",
-            "border-white/[0.08] px-2.5 text-[11px] font-medium text-muted-fg/85",
-            "transition-colors duration-[120ms] ease-out hover:bg-white/[0.04] hover:text-fg",
-            "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-          )}
+          className={CONTROL_CLASS}
           data-variant="ghost"
         >
-          <SquaresFour size={13} weight="bold" />
+          <SquaresFour size={16} weight="regular" />
           <span>Tools</span>
         </button>
       </PaneTooltip>
 
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5">
-        <span className="relative inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-          {reduceMotion ? (
-            <span
-              aria-hidden="true"
-              className="absolute inset-0 rounded-full"
-              style={{ background: `color-mix(in srgb, ${definition.color} 16%, transparent)` }}
-            />
-          ) : (
-            <motion.span
-              aria-hidden="true"
-              layoutId={toolMarkerLayoutId(definition.id)}
-              className="absolute inset-0 rounded-full"
-              style={{ background: `color-mix(in srgb, ${definition.color} 16%, transparent)` }}
-              transition={{ duration: 0.24, ease: OVERSHOOT }}
-            />
-          )}
-          <Icon size={13} weight="duotone" style={{ color: definition.color }} className="relative" />
-        </span>
-        <span className="shrink-0 truncate text-[11.5px] font-medium text-fg">{definition.label}</span>
+      {/* Centred, so the pane's title sits on the pane's axis rather than
+          wherever the left button happened to end. `min-w-0` + `flex-1` is
+          what lets the context line be the thing that truncates at 280px. */}
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+        <Icon size={16} weight="regular" aria-hidden="true" className="shrink-0 text-muted-fg" />
+        <span className="shrink-0 truncate text-[13px] font-medium text-fg">{definition.label}</span>
         {contextLabel ? (
           <>
-            <span aria-hidden="true" className="shrink-0 text-[10px] text-muted-fg/45">·</span>
+            <span aria-hidden="true" className="shrink-0 text-[12px] text-muted-fg/45">·</span>
             {/* The header is 36px of a pane that can be 280px wide, so this is
                 the line most likely to be cut. The tooltip is where the rest
                 of it lives. */}
-            <PaneTooltip label={contextLabel} side="bottom" onlyWhenClipped className="min-w-0 flex-1">
-              <span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-fg">
+            <PaneTooltip label={contextLabel} side="bottom" onlyWhenClipped className="min-w-0">
+              <span className="min-w-0 truncate text-[12px] text-muted-fg">
                 {contextLabel}
               </span>
             </PaneTooltip>
@@ -149,13 +117,9 @@ export function WorkToolHeader({
         ) : null}
       </div>
 
-      {contextAction ? (
-        <div className="flex shrink-0 items-center pr-0.5">{contextAction}</div>
-      ) : null}
-
       {activityTools.length > 0 ? (
         <div
-          className="flex shrink-0 items-center gap-1 pr-1.5"
+          className="flex shrink-0 items-center gap-1"
           role="group"
           aria-label="Other active tools"
         >
@@ -183,7 +147,7 @@ export function WorkToolHeader({
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   )}
                 >
-                  <ActivityDot state={dotState} color={dotColor} reduceMotion={reduceMotion} tool={entry.id} />
+                  <ActivityDot state={dotState} color={dotColor} reduceMotion={reduceMotion} />
                 </button>
               </PaneTooltip>
             );
@@ -191,32 +155,30 @@ export function WorkToolHeader({
         </div>
       ) : null}
 
-      <PaneTooltip label="Close Tools sidebar" side="left" className="self-stretch">
+      <PaneTooltip label="Close Tools sidebar" side="left">
         <button
           type="button"
-          className={CLOSE_BUTTON_CLASS}
+          className={cn(CONTROL_CLASS, "w-6 px-0")}
           data-variant="ghost"
           onClick={onClose}
           aria-label="Close Tools sidebar"
         >
-          <X size={13} />
+          <X size={14} />
         </button>
       </PaneTooltip>
     </div>
   );
 }
 
-/** 6px, state-coloured, and the shared-element half of the switch animation. */
+/** 6px, state-coloured: red is broken, amber needs you, the tool's hue is live. */
 function ActivityDot({
   state,
   color,
   reduceMotion,
-  tool,
 }: {
   state: WorkToolDotState;
   color: string;
   reduceMotion: boolean;
-  tool: WorkSidebarTab;
 }) {
   if (reduceMotion) {
     return (
@@ -231,34 +193,35 @@ function ActivityDot({
   return (
     <motion.span
       aria-hidden="true"
-      layoutId={toolMarkerLayoutId(tool)}
       data-tool-dot-state={state}
       className="h-[6px] w-[6px] rounded-full"
       style={{ background: color }}
       initial={{ scale: 0.4, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
-      transition={{ duration: 0.24, ease: OVERSHOOT }}
+      transition={{ duration: 0.16, ease: "easeOut" }}
     />
   );
 }
 
-/** The header shown on the picker page — no tool to name, nothing to switch to. */
+/**
+ * The header shown on the picker page.
+ *
+ * Deliberately empty but for the ✕: the page underneath already carries the
+ * word "Tools" as its title, and a bar that repeats it is the second heading
+ * on a page with one thing to say.
+ */
 export function WorkToolPickerHeader({ onClose }: { onClose: () => void }) {
   return (
-    <div className="ade-pane-chrome flex min-h-[36px] shrink-0 items-stretch border-b border-white/[0.08]">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 px-3">
-        <SquaresFour size={13} weight="bold" className="shrink-0 text-muted-fg/70" />
-        <span className="truncate text-[11.5px] font-medium text-fg">Tools</span>
-      </div>
-      <PaneTooltip label="Close Tools sidebar" side="left" className="self-stretch">
+    <div className="ade-pane-chrome ade-tool-pane-rule flex min-h-[36px] shrink-0 items-center justify-end px-2">
+      <PaneTooltip label="Close Tools sidebar" side="left">
         <button
           type="button"
-          className={CLOSE_BUTTON_CLASS}
+          className={cn(CONTROL_CLASS, "w-6 px-0")}
           data-variant="ghost"
           onClick={onClose}
           aria-label="Close Tools sidebar"
         >
-          <X size={13} />
+          <X size={14} />
         </button>
       </PaneTooltip>
     </div>

@@ -19,6 +19,7 @@ import {
   FORWARD_DATA_CHUNK_BYTES,
   normalizeChannelId,
   PEER_BACKPRESSURE_BYTES,
+  RPC_CHANNEL_BACKPRESSURE_BYTES,
   RPC_DATA_CHUNK_BYTES,
 } from "./syncProtocol";
 
@@ -118,6 +119,8 @@ export type SyncPairedChannelServiceArgs<TPeer extends object> = {
   getBufferedAmount: (peer: TPeer) => number;
   createRpcHandler?: SyncRuntimeRpcHandlerFactory;
   peerBackpressureBytes?: number;
+  /** Overrides `RPC_CHANNEL_BACKPRESSURE_BYTES`; must stay under the host's required-send ceiling. */
+  rpcBackpressureBytes?: number;
   forwardPendingBytes?: number;
   backpressurePollMs?: number;
   forwardConnectTimeoutMs?: number;
@@ -149,6 +152,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
   const peerBackpressureBytes = Math.max(
     1,
     Math.floor(args.peerBackpressureBytes ?? PEER_BACKPRESSURE_BYTES),
+  );
+  const rpcBackpressureBytes = Math.max(
+    1,
+    Math.floor(args.rpcBackpressureBytes ?? RPC_CHANNEL_BACKPRESSURE_BYTES),
   );
   const forwardPendingBytes = Math.max(
     1,
@@ -362,6 +369,22 @@ export function createSyncPairedChannelService<TPeer extends object>(
       },
       write(data) {
         const bytes = Buffer.from(data, "utf8");
+        // `rpc_data` is a *required* send: the host will not drop it, it will
+        // buffer it and then close the entire peer connection once the socket
+        // passes the required-send ceiling. So a runtime that produces faster
+        // than the link drains does not degrade one channel, it takes down
+        // chat, changesets and phone sync with it — which is exactly what a
+        // remote-bound desktop saw every ten seconds. Refuse at the door
+        // instead: if the peer is already backpressured, this channel is the
+        // thing that is over budget, so close the channel and let the client
+        // reopen. `fwd_data` has had this gate all along (see
+        // `handleForwardSocketData`); the RPC writer was the one path without
+        // it.
+        if (args.getBufferedAmount(peer) >= rpcBackpressureBytes) {
+          closeRpc(peer, channelId, "Runtime RPC channel fell behind the sync connection.", true);
+          closePeerForwards(peer, "Runtime RPC channel fell behind the sync connection.", true);
+          return;
+        }
         for (let offset = 0; offset < bytes.byteLength; offset += RPC_DATA_CHUNK_BYTES) {
           const chunk = bytes.subarray(
             offset,

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import {
@@ -16,6 +16,7 @@ import {
 import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
 import { makeBuiltInBrowserStatus, makeBuiltInBrowserTab } from "./__fixtures__/builtInBrowserStatus";
 import { dismissToast, getToasts } from "../app/toast/toastStore";
+import { useAppStore } from "../../state/appStore";
 
 const browserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus();
 
@@ -386,6 +387,7 @@ afterEach(() => {
   frameTimers.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  useAppStore.setState({ projectBinding: null } as never);
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -445,8 +447,9 @@ describe("ChatBuiltInBrowserPanel", () => {
     const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
     fireEvent.focus(urlInput);
     fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
-    fireEvent.blur(urlInput);
+    // The arrow appears inside the field while there is something typed.
     fireEvent.click(screen.getByLabelText("Open URL"));
+    fireEvent.blur(urlInput);
 
     await waitFor(() => {
       // The ORIGINAL loopback URL crosses the bridge; preload localizes it onto
@@ -483,8 +486,8 @@ describe("ChatBuiltInBrowserPanel", () => {
     const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
     fireEvent.focus(urlInput);
     fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
-    fireEvent.blur(urlInput);
     fireEvent.click(screen.getByLabelText("Open URL"));
+    fireEvent.blur(urlInput);
 
     // The pill is the tab admitting it is looking at another machine; from here
     // `currentUrl` is the remote origin while `status.url` is the forward.
@@ -494,11 +497,49 @@ describe("ChatBuiltInBrowserPanel", () => {
     await waitFor(() => expect(urlInput.value).toBe("http://localhost:3000/app"));
 
     await openMenu("More browser options");
-    fireEvent.click(await screen.findByText("Open this page in system browser"));
+    fireEvent.click(await screen.findByText("Open in system browser"));
 
     // Handing over the DISPLAY url would load THIS machine's port 3000 — a
     // different project's dev server — under the belief it is the same page.
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith("http://127.0.0.1:52413/app"));
+  });
+
+  it("treats an unpinned chat on a remote project tab as running on that machine", async () => {
+    // The Work pane's router leaves a chat on the tab's OWN runtime unpinned.
+    // On a remote project tab that runtime is another machine, so the pane must
+    // still tunnel and still listen for that machine's forwarded opens — this
+    // is the common shape of a remote lane, not an exotic one.
+    useAppStore.setState({ projectBinding: REMOTE_PIN } as never);
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+    expect(api.onRemoteRequest).toHaveBeenCalledWith(expect.any(Function), REMOTE_PIN);
+
+    api.emitRemoteRequest({
+      requestId: "bbr-9",
+      url: "http://localhost:4321/docs",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    fireEvent.click(await screen.findByText("Allow once"));
+
+    await waitFor(() => {
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://localhost:4321/docs" }),
+        REMOTE_PIN,
+      );
+    });
+    await waitFor(() => {
+      expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "bbr-9", accepted: true }),
+        REMOTE_PIN,
+      );
+    });
   });
 
   it("asks for a human grant before an agent's forwarded open reaches a new port", async () => {
@@ -902,7 +943,8 @@ describe("ChatBuiltInBrowserPanel", () => {
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
 
     const attachButton = await screen.findByTitle("Insert the selected browser element as context");
-    expect(attachButton.textContent).toContain("Attach");
+    // Icon-only: no text chips on the chrome row, so the name is the label.
+    expect(attachButton.getAttribute("aria-label")).toBe("Attach the selected browser element");
     fireEvent.click(attachButton);
 
     await waitFor(() => {
@@ -1030,7 +1072,7 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     emit({ type: "status", status: statusWith({ activeTabId: null, tabs: [], url: null }) });
     // The pane's own empty state is the proof the status landed.
-    await screen.findByText("Open a page");
+    await screen.findByTestId("browser-launchpad");
 
     api.stopFindInPage.mockClear();
     view.unmount();
@@ -1119,11 +1161,14 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
 
-    const pill = await screen.findByTitle("Stop recording");
-    expect(pill.textContent).toContain("REC 0:42");
-    expect(pill.textContent).toContain("60 fps");
+    // No REC chip: the camera turns red, wears a pulsing dot, and stops the
+    // recording when clicked. The clock lives in its accessible name.
+    const camera = await screen.findByTitle("Stop recording");
+    expect(camera.getAttribute("aria-label")).toContain("0:42");
+    expect(camera.getAttribute("aria-label")).toContain("60 fps");
+    expect(screen.getByTestId("browser-recording-dot")).toBeTruthy();
 
-    fireEvent.click(pill);
+    fireEvent.click(camera);
 
     await waitFor(() => expect(api.stopRecording).toHaveBeenCalled());
   });
@@ -1157,7 +1202,7 @@ describe("ChatBuiltInBrowserPanel", () => {
   it("stays quiet when the recording was stopped on purpose", async () => {
     const { api, emit } = installBrowserApi();
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-    await screen.findByRole("tab");
+    await screen.findByTestId("browser-toolbar-row");
 
     emit({ type: "recording", tabId: "tab-1", recording: null, frameCount: 120 });
 
@@ -1173,7 +1218,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       status: browserStatus,
     });
 
-    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
 
     await openMenu("More browser options");
     fireEvent.click(await screen.findByText("60 fps"));
@@ -1346,10 +1391,12 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
 
-      const chip = await screen.findByText("npm run dev · :5173");
+      // The port is the row's title; the command that opened it is the detail.
+      const row = await screen.findByText("npm run dev");
+      expect(screen.getByText("localhost:5173")).toBeTruthy();
       expect(screen.queryByText("localhost:3000")).toBeNull();
 
-      fireEvent.click(chip);
+      fireEvent.click(row);
 
       await waitFor(() => {
         expect(api.navigate).toHaveBeenCalledWith(
@@ -1381,7 +1428,9 @@ describe("ChatBuiltInBrowserPanel", () => {
       api.getStatus.mockResolvedValue(EMPTY_STATUS);
 
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-      fireEvent.click(await screen.findByLabelText("New tab"));
+      // The strip hides itself below two tabs, so `+` lives in ⋯ as well.
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("New tab"));
 
       await waitFor(() => {
         expect(api.createTab).toHaveBeenCalledWith(
@@ -1456,6 +1505,48 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
     });
 
+    it("groups the launchpad into local servers and recently used", async () => {
+      const { api, emit } = installBrowserApi();
+
+      // A page that settled is what fills "Recently used"; the launchpad then
+      // has somewhere to send you even on a machine serving no ports.
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
+
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+      emit({ type: "status", status: EMPTY_STATUS });
+      await screen.findByTestId("browser-launchpad");
+
+      const local = await screen.findByRole("region", { name: "Local servers" });
+      expect(within(local).getByText("localhost:5173")).toBeTruthy();
+      expect(within(local).getAllByLabelText("Listening").length).toBeGreaterThan(0);
+
+      const recent = await screen.findByRole("region", { name: "Recently used" });
+      expect(within(recent).getByText("https://example.test/")).toBeTruthy();
+
+      // The launchpad's own field is where the caret goes, not the 40px row.
+      expect(document.activeElement)
+        .toBe(screen.getByLabelText("Open a page in the ADE browser"));
+    });
+
+    it("hides the local-servers group when this machine is serving nothing", async () => {
+      const { api } = installBrowserApi();
+      api.getStatus.mockResolvedValue(EMPTY_STATUS);
+      api.getDevServers.mockResolvedValue({ servers: [] });
+      (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
+        .ade.localhost.probePort.mockResolvedValue(false);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-launchpad");
+
+      // An empty group with a heading is worse than no group: it is a promise
+      // the pane cannot keep, rendered at full contrast.
+      await waitFor(() => expect(screen.queryByText("localhost:5173")).toBeNull());
+      expect(screen.queryByRole("region", { name: "Local servers" })).toBeNull();
+    });
+
     it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
       const { api } = installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
@@ -1478,8 +1569,11 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       // Wait for the mounted status before replacing it, or the initial read
-      // lands afterwards and puts the tab back.
-      await screen.findByRole("tab");
+      // lands afterwards and puts the tab back. One tab hides the strip, so
+      // the omnibox is what says the status arrived.
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
 
       await screen.findByTestId("browser-launchpad");
@@ -1492,12 +1586,16 @@ describe("ChatBuiltInBrowserPanel", () => {
       const { emit } = installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       // Wait for the mounted status before replacing it, or the initial read
-      // lands afterwards and puts the tab back.
-      await screen.findByRole("tab");
+      // lands afterwards and puts the tab back. One tab hides the strip, so
+      // the omnibox is what says the status arrived.
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
 
       await screen.findByTestId("browser-launchpad");
-      expect(await screen.findByText("npm run dev · :5173")).toBeTruthy();
+      expect(await screen.findByText("npm run dev")).toBeTruthy();
+      expect(screen.getByText("localhost:5173")).toBeTruthy();
     });
   });
 
@@ -1646,7 +1744,7 @@ describe("ChatBuiltInBrowserPanel", () => {
   describe("narrow panes", () => {
     it("never squeezes the URL field out of the toolbar", async () => {
       installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
       await screen.findByTestId("browser-toolbar-row");
 
       // 420px is where the old fixed thresholds left every control in place and
@@ -1691,12 +1789,12 @@ describe("ChatBuiltInBrowserPanel", () => {
           },
         },
       });
-      await screen.findByText("Attach");
+      await screen.findByLabelText("Attach the selected browser element");
 
       // Attach is the FIRST control the row sheds, and re-attaching an
       // already-attached selection has no other entry point.
       setToolbarWidth(300);
-      expect(screen.queryByText("Attach")).toBeNull();
+      expect(screen.queryByLabelText("Attach the selected browser element")).toBeNull();
 
       await openMenu("More browser options");
       fireEvent.click(await screen.findByText("Attach selection"));
@@ -1706,7 +1804,7 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     it("hands the width back as the pane widens again", async () => {
       installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
       await screen.findByTestId("browser-toolbar-row");
 
       setToolbarWidth(300);
@@ -1714,23 +1812,44 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       setToolbarWidth(760);
       expect(screen.getByLabelText("Browser device preset — Desktop")).toBeTruthy();
-      expect(screen.getByText("Inspect")).toBeTruthy();
-      expect(screen.getByText("Open")).toBeTruthy();
+      expect(screen.getByLabelText("Select an element in the ADE browser")).toBeTruthy();
+      expect(screen.getByLabelText("Open this page in the system browser")).toBeTruthy();
     });
 
-    it("steps the Open affordance aside while the omnibox is focused", async () => {
+    it("shows the submit arrow only while there is something typed to submit", async () => {
       installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       setToolbarWidth(760);
+      const urlInput = screen.getByLabelText("ADE browser URL");
 
-      expect(screen.getByTestId("browser-url-submit")).toBeTruthy();
-
-      fireEvent.focus(screen.getByLabelText("ADE browser URL"));
+      // At rest the address is a label for where you are, not a form.
       expect(screen.queryByTestId("browser-url-submit")).toBeNull();
 
-      fireEvent.blur(screen.getByLabelText("ADE browser URL"));
+      fireEvent.focus(urlInput);
+      fireEvent.change(urlInput, { target: { value: "example.com" } });
       expect(screen.getByTestId("browser-url-submit")).toBeTruthy();
+
+      fireEvent.blur(urlInput);
+      expect(screen.queryByTestId("browser-url-submit")).toBeNull();
+    });
+
+    it("stops editing when the address is submitted, not when the field blurs", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      setToolbarWidth(760);
+      const urlInput = screen.getByLabelText("ADE browser URL");
+
+      fireEvent.focus(urlInput);
+      fireEvent.change(urlInput, { target: { value: "example.com" } });
+      fireEvent.click(screen.getByTestId("browser-url-submit"));
+      await waitFor(() => expect(api.navigate).toHaveBeenCalled());
+
+      // The page is a native view the compositor paints over this renderer, so
+      // clicking into it never fires `blur` here. Without ending the edit on
+      // submit the arrow sat in the row over a page nobody was addressing.
+      await waitFor(() => expect(screen.queryByTestId("browser-url-submit")).toBeNull());
     });
   });
 
@@ -1796,7 +1915,10 @@ describe("ChatBuiltInBrowserPanel", () => {
         },
       });
 
-      expect(await screen.findByText("iPhone 17 · landscape")).toBeTruthy();
+      // Icon-only with a dot: the name is the accessible label, and the dot is
+      // the only thing on the row that says a preset is applied at all.
+      expect(await screen.findByLabelText("Browser device preset — iPhone 17 · landscape")).toBeTruthy();
+      expect(screen.getByTestId("browser-device-active-dot")).toBeTruthy();
       expect(screen.getByTestId("browser-emulation-caption").textContent).toContain("852 × 393");
 
       await openMenu("Browser device preset — iPhone 17 · landscape");
@@ -1892,7 +2014,7 @@ describe("ChatBuiltInBrowserPanel", () => {
   describe("no tabs", () => {
     it("stops describing the page that was closed", async () => {
       const { emit } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
 
       const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
       await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
@@ -1900,7 +2022,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
 
       await waitFor(() => expect(urlInput.value).toBe(""));
-      expect(urlInput.getAttribute("placeholder")).toBe("Search or enter address");
+      expect(urlInput.getAttribute("placeholder")).toBe("Search or enter URL");
       // No page, so no claim about its connection and nothing to act on.
       expect(screen.queryByLabelText("Secure connection")).toBeNull();
       expect(screen.getByLabelText("Go back")).toHaveProperty("disabled", true);
@@ -1940,6 +2062,30 @@ describe("ChatBuiltInBrowserPanel", () => {
    * switches the tab.
    */
   describe("tab strip accessibility", () => {
+    it("draws no strip at all for a single tab", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      // One tab is not a choice, and the tool header above already names the
+      // page — so 28px of furniture restating it is 28px of the page gone.
+      expect(screen.queryByRole("tablist")).toBeNull();
+      expect(screen.queryByRole("tab")).toBeNull();
+
+      const twoTabs = statusWith({
+        activeTabId: "tab-1",
+        tabs: [
+          { ...browserStatus.tabs[0], id: "tab-1" },
+          makeBuiltInBrowserTab({ id: "tab-2", url: "https://second.test/", title: "Second" }),
+        ],
+      });
+      api.getStatus.mockResolvedValue(twoTabs);
+      emit({ type: "status", status: twoTabs });
+
+      expect(await screen.findByRole("tablist")).toBeTruthy();
+      expect(await screen.findAllByRole("tab")).toHaveLength(2);
+    });
+
     it("is a tablist with roving focus, not a row of buttons", async () => {
       const { api, emit } = installBrowserApi();
       const twoTabs = statusWith({
@@ -1977,6 +2123,72 @@ describe("ChatBuiltInBrowserPanel", () => {
       // Home jumps to the end of the strip rather than scrolling the pane.
       fireEvent.keyDown(screen.getAllByRole("tab")[1]!, { key: "Home" });
       expect(document.activeElement).toBe(screen.getAllByRole("tab")[0]);
+    });
+  });
+
+  /**
+   * A shell session has no chat, draft or agent CLI behind the pane, so
+   * `onAddContext` is absent. Everything that ends in an insert is REMOVED —
+   * not disabled with a tooltip, because there is no state here that will ever
+   * change into one.
+   */
+  describe("no context host (shell session)", () => {
+    it("drops Inspect, Attach and the region capture, and explains nothing", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId={null} />);
+      await screen.findByTestId("browser-toolbar-row");
+      setToolbarWidth(760);
+
+      emit({
+        type: "status",
+        status: {
+          ...statusWith({ hasSelection: true }),
+          selectedItem: {
+            id: "sel-1",
+            kind: "built_in_browser_element",
+            url: "https://example.test/",
+            title: "Example",
+            selector: "#cta",
+            text: "Buy",
+            frame: null,
+            metadata: {},
+            selectedAt: "2026-09-07T00:00:00.000Z",
+          },
+        },
+      });
+
+      // Nothing on the row…
+      expect(screen.queryByLabelText("Select an element in the ADE browser")).toBeNull();
+      expect(screen.queryByText("Inspect")).toBeNull();
+      expect(screen.queryByText("Attach")).toBeNull();
+      // …and nothing hiding in the ⋮ menu either, which is where a shed
+      // control normally reappears.
+      await openMenu("More browser options");
+      expect(await screen.findByText("Find on page")).toBeTruthy();
+      expect(screen.queryByText("Inspect an element")).toBeNull();
+      expect(screen.queryByText("Attach selection")).toBeNull();
+      expect(screen.queryByText("Screenshot a region")).toBeNull();
+
+      // No banner talking about what this session cannot do.
+      expect(screen.queryByText(/context/i)).toBeNull();
+    });
+
+    it("leaves the camera as the one thing it can still do: record", async () => {
+      const { api } = installBrowserApi();
+      api.startRecording.mockResolvedValue({
+        tabId: "tab-1",
+        recording: { startedAt: "2026-09-07T00:00:00.000Z", fps: 30 },
+        status: browserStatus,
+      });
+      render(<ChatBuiltInBrowserPanel sessionId={null} />);
+      await screen.findByTestId("browser-toolbar-row");
+      setToolbarWidth(760);
+
+      // A plain click, because there is no capture for the modifier to
+      // distinguish it from.
+      fireEvent.click(await screen.findByLabelText("Record the browser"));
+      await waitFor(() => expect(api.startRecording).toHaveBeenCalled());
+      expect(api.captureScreenshot).not.toHaveBeenCalled();
     });
   });
 });

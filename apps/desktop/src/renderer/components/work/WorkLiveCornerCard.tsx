@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { AnimatePresence, motion, useMotionValue, useReducedMotion } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useDragControls,
+  useMotionValue,
+  useReducedMotion,
+} from "motion/react";
 import { X } from "@phosphor-icons/react";
 import type {
   AppControlEventPayload,
@@ -29,8 +35,6 @@ import {
   type IosSimulatorPreviewLease,
 } from "./iosSimulatorPreviewStream";
 import {
-  WORK_LIVE_CARD_ASPECT,
-  WORK_LIVE_CARD_WIDTH,
   clampWorkLiveCardRect,
   commitWorkLiveCardDismissal,
   commitWorkLiveScrubFrame,
@@ -44,6 +48,7 @@ import {
   workLiveCardFits,
   workLiveCardPositionFromRect,
   workLiveCardRect,
+  workLiveCardSize,
   workLivePreviewMaxWidth,
   workLiveScrubFrameKey,
   workLiveScrubIndex,
@@ -59,7 +64,7 @@ import {
  *
  * The Work tab has exactly one pane for a screen tool, so the moment an agent
  * starts driving a browser while you read its diff, the thing you most want to
- * see is the thing you just navigated away from. This is that: a 260px live
+ * see is the thing you just navigated away from. This is that: a 320px live
  * thumbnail of the most recently active screen tool that is NOT the one on
  * screen, parked in the corner of the chat column, one click away from taking
  * the pane back.
@@ -70,14 +75,15 @@ import {
  * it paints frames straight onto an `<img>`/`<video>` ref inside one rAF, so a
  * 12fps feed causes zero React renders; and it stops every feed the instant it
  * stops being shown.
+ *
+ * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
+ * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
+ * on hover and doubles as the drag handle. The picture is the whole card, so
+ * every pixel of chrome is a pixel of preview you do not get.
  */
 
-/** 16:10 media, plus a header, a caption row and the scrub strip. */
-const MEDIA_HEIGHT = Math.round(WORK_LIVE_CARD_WIDTH / WORK_LIVE_CARD_ASPECT);
-const HEADER_HEIGHT = 24;
-const FOOTER_HEIGHT = 22;
-const TIMELINE_HEIGHT = 2;
-const CARD_HEIGHT = MEDIA_HEIGHT + HEADER_HEIGHT + FOOTER_HEIGHT + TIMELINE_HEIGHT;
+/** The scrub strip OVERLAYS the media's bottom edge; it never adds height. */
+const SCRUB_STRIP_HEIGHT = 2;
 /** How often a frame-rate feed is allowed to move the "most recent tool" clock. */
 const ACTIVITY_COMMIT_MS = 500;
 /** t3's mini-player entry, in ADE's emphasized curve. */
@@ -411,7 +417,11 @@ export function WorkLiveCornerCard({
   );
   dismissalsRef.current = dismissals;
 
-  const fits = workLiveCardFits(hostSize, bottomReserve);
+  // Per tool, because the aspect is: a phone in a 16:10 frame is two black
+  // columns with a sliver of app between them.
+  const cardSize = useMemo(() => workLiveCardSize(tool), [tool]);
+
+  const fits = workLiveCardFits(hostSize, bottomReserve, cardSize);
   const visible = active && tool != null && fits;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
@@ -460,19 +470,23 @@ export function WorkLiveCornerCard({
   const rect = useMemo(() => workLiveCardRect({
     host: hostSize,
     position,
-    cardHeight: CARD_HEIGHT,
+    cardHeight: cardSize.height,
+    cardWidth: cardSize.width,
     bottomReserve,
-  }), [bottomReserve, hostSize, position]);
+  }), [bottomReserve, cardSize, hostSize, position]);
 
   const dragConstraints = useMemo(() => workLiveCardDragConstraints({
     host: hostSize,
     origin: rect,
-    cardHeight: CARD_HEIGHT,
+    cardHeight: cardSize.height,
+    cardWidth: cardSize.width,
     bottomReserve,
-  }), [bottomReserve, hostSize, rect]);
+  }), [bottomReserve, cardSize, hostSize, rect]);
 
   const dragX = useMotionValue(0);
   const dragY = useMotionValue(0);
+  /** The pill is the drag handle, so the gesture is started by hand. */
+  const dragControls = useDragControls();
 
   const commitDrag = useCallback(() => {
     const offsetX = dragX.get();
@@ -487,18 +501,30 @@ export function WorkLiveCornerCard({
       host: hostSize,
       left: rect.left + offsetX,
       top: rect.top + offsetY,
-      cardHeight: CARD_HEIGHT,
+      cardHeight: cardSize.height,
+      cardWidth: cardSize.width,
       bottomReserve,
     });
     const next = workLiveCardPositionFromRect({
       host: hostSize,
       left: clamped.left,
       top: clamped.top,
-      cardHeight: CARD_HEIGHT,
+      cardHeight: cardSize.height,
+      cardWidth: cardSize.width,
     });
     if (projectStateKey) setWorkViewState(projectStateKey, { workLiveCardPosition: next });
     else setLocalPosition(next);
-  }, [bottomReserve, dragX, dragY, hostSize, projectStateKey, rect.left, rect.top, setWorkViewState]);
+  }, [
+    bottomReserve,
+    cardSize,
+    dragX,
+    dragY,
+    hostSize,
+    projectStateKey,
+    rect.left,
+    rect.top,
+    setWorkViewState,
+  ]);
 
   /* ── Feed start/stop for the SELECTED tool ─────────────────────────────── */
 
@@ -674,6 +700,18 @@ export function WorkLiveCornerCard({
 
   const Icon = definition?.icon ?? null;
   const hue = definition?.color ?? "var(--color-accent)";
+  /**
+   * The whole of the resting chrome, as one colour.
+   *
+   * An 8px dot cannot spell "recording" or "waiting for you", so it does the
+   * only thing that size affords: red beats amber beats the tool's own hue,
+   * worst news first. The words for it arrive with the pill.
+   */
+  const statusColor = recording
+    ? "var(--color-error)"
+    : handoff
+      ? "var(--color-warning)"
+      : hue;
   // The highlighted slot follows the frame the pointer holds, so an eviction
   // moves the highlight with the picture instead of leaving it behind.
   const scrubbedIndex = scrubbedFrame ? scrubBuffer.indexOf(scrubbedFrame) : -1;
@@ -692,10 +730,22 @@ export function WorkLiveCornerCard({
             key={tool}
             aria-label={`${definition.label} live preview`}
             drag
+            // The pill is the handle, so the card itself listens for nothing:
+            // dragging from the picture would fight the scrubber, which is the
+            // same gesture across the same pixels.
+            dragListener={false}
+            dragControls={dragControls}
             dragMomentum={false}
             dragElastic={0}
             dragConstraints={dragConstraints}
-            style={{ x: dragX, y: dragY, left: rect.left, top: rect.top, width: WORK_LIVE_CARD_WIDTH }}
+            style={{
+              x: dragX,
+              y: dragY,
+              left: rect.left,
+              top: rect.top,
+              width: cardSize.width,
+              height: cardSize.height,
+            }}
             onDragStart={() => {
               draggingRef.current = true;
               suppressClickRef.current = true;
@@ -717,86 +767,33 @@ export function WorkLiveCornerCard({
             transition={reduceMotion ? { duration: 0 } : ENTER}
             data-work-live-card={tool}
             className={cn(
-              "pointer-events-auto absolute cursor-pointer overflow-hidden rounded-[var(--radius-md)]",
-              "border border-white/[0.08] bg-[var(--chat-glass-bg)] shadow-[var(--shadow-card)]",
-              "backdrop-blur-[var(--blur-popup)] transition-shadow duration-[120ms] ease-out",
-              "hover:shadow-[var(--shadow-card-hover)] active:cursor-grabbing",
+              "group pointer-events-auto absolute cursor-pointer overflow-hidden",
+              "rounded-[var(--radius-lg)] bg-[var(--color-surface)] shadow-[var(--shadow-float)]",
+              "transition-shadow duration-[120ms] ease-out motion-reduce:transition-none",
+              "hover:shadow-[var(--shadow-card-hover)]",
             )}
+            onPointerEnter={() => setHovering(true)}
             onPointerMove={handlePointerMove}
             onPointerLeave={handlePointerLeave}
             onClick={handleCardClick}
           >
-            <header
-              className="flex items-center gap-1.5 px-2"
-              style={{ height: HEADER_HEIGHT }}
-            >
-              {Icon ? <Icon size={12} weight="duotone" style={{ color: definition.color }} /> : null}
-              <span className="min-w-0 truncate text-[11px] font-medium text-fg">
-                {definition.label}
-                {ownerLabel ? <span className="text-muted-fg"> · {ownerLabel}</span> : null}
-              </span>
-              {recording ? (
-                <motion.span
-                  title="Recording"
-                  animate={reduceMotion ? undefined : { opacity: [1, 1, 0.3, 0.3] }}
-                  transition={reduceMotion
-                    ? undefined
-                    : { duration: 1.2, times: [0, 0.5, 0.5, 1], repeat: Infinity, ease: "linear" }}
-                  className={cn(
-                    "shrink-0 rounded-full bg-red-500/15 px-1.5 text-[9px] font-semibold uppercase",
-                    "tracking-[0.6px] text-red-300",
-                  )}
-                >
-                  REC
-                </motion.span>
-              ) : null}
-              {handoff ? (
-                <span
-                  title={handoff.detail ?? undefined}
-                  className={cn(
-                    "shrink-0 truncate rounded-full bg-amber-400/15 px-1.5 text-[9px] font-medium",
-                    "text-amber-200",
-                  )}
-                >
-                  {handoff.label}
-                </span>
-              ) : null}
-              <span className="flex-1" />
-              <button
-                type="button"
-                data-live-card-inert=""
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleDismiss();
-                }}
-                title="Hide until the next activity"
-                aria-label={`Hide the ${definition.label} preview`}
-                className={cn(
-                  "-mr-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-fg/70",
-                  "transition-colors duration-[120ms] hover:bg-white/[0.08] hover:text-fg",
-                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                )}
-              >
-                <X size={10} weight="bold" />
-              </button>
-            </header>
-
+            {/* The picture is the card. Everything else floats over it. */}
             <button
               type="button"
               data-live-card-inert=""
               onClick={activate}
               aria-label={`Open ${definition.label} in the tools pane`}
               className={cn(
-                "relative block w-full cursor-pointer overflow-hidden border-0 p-0",
-                "bg-[var(--pane-bg)]",
-                "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                "absolute inset-0 block h-full w-full cursor-pointer border-0 bg-transparent p-0",
+                "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--color-accent)]",
               )}
-              style={{ height: MEDIA_HEIGHT }}
             >
               {/*
                 `contain`, never `cover`: a 16:10 crop of a 3:2 page slices a
                 button in half and calls it a preview. Letterboxed against the
-                pane colour is the honest shape of the thing being previewed.
+                pane colour is the honest shape of the thing being previewed —
+                and the frame itself already carries the tool's aspect, so
+                there is little left to letterbox.
               */}
               {tool === "ios" ? (
                 <video
@@ -819,45 +816,148 @@ export function WorkLiveCornerCard({
                 aria-hidden="true"
                 src={BLANK_FRAME}
                 className={cn(
-                  "pointer-events-none absolute inset-0 h-full w-full bg-[var(--pane-bg)] object-contain",
-                  "transition-opacity duration-[120ms] ease-out",
+                  "pointer-events-none absolute inset-0 h-full w-full bg-[var(--color-surface)] object-contain",
+                  "transition-opacity duration-[120ms] ease-out motion-reduce:transition-none",
                 )}
                 style={{ opacity: scrubbedFrame?.dataUrl ? 1 : 0 }}
               />
             </button>
 
-            <footer
-              className="flex items-center gap-1.5 px-2"
-              style={{ height: FOOTER_HEIGHT }}
+            {/*
+              The hairline, drawn OVER the media rather than as a border under
+              it: a full-bleed frame paints its own pixels into the rounded
+              corners otherwise, and the card loses its edge against the chat.
+            */}
+            <span
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-0 rounded-[inherit]",
+                "shadow-[inset_0_0_0_1px_var(--chat-glass-border)]",
+              )}
+            />
+
+            {/* The ten slots, oldest on the left. Hovering the card scrubs it. */}
+            {hovering && scrubbable ? (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 bottom-0 flex items-stretch gap-[1px] px-1"
+                style={{ height: SCRUB_STRIP_HEIGHT }}
+              >
+                {scrubBuffer.map((frame, index) => (
+                  <span
+                    key={`${frame.id ?? frame.at}-${index}`}
+                    className="flex-1 rounded-full transition-colors duration-[120ms] motion-reduce:transition-none"
+                    style={{
+                      background: index === timelineIndex
+                        ? hue
+                        : "color-mix(in srgb, var(--color-fg) 24%, transparent)",
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            {/*
+              At rest: one 8px dot. It is the whole chrome, and it is enough —
+              the card's job is to show you the screen, and a title bar over a
+              320px picture spends a tenth of it saying what the picture
+              already says.
+            */}
+            <span
+              aria-hidden="true"
+              data-live-card-status={recording ? "recording" : handoff ? "handoff" : "idle"}
+              title={recording ? "Recording" : handoff?.detail ?? undefined}
+              className={cn(
+                "pointer-events-none absolute right-2 top-2 h-2 w-2 rounded-full",
+                "shadow-[0_0_0_1px_rgba(0,0,0,0.45)]",
+                "transition-opacity duration-[120ms] ease-out motion-reduce:transition-none",
+                "group-hover:opacity-0 group-focus-within:opacity-0",
+                recording ? "[animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none" : null,
+              )}
+              style={{ background: statusColor }}
+            />
+
+            {/*
+              …and on hover, in its place: the 32px pill. It is also the drag
+              handle, so the thing you reach for to move the card is the thing
+              that appears when you reach for the card.
+            */}
+            <div
+              data-live-card-pill=""
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                dragControls.start(event);
+              }}
+              className={cn(
+                "absolute inset-x-2 top-2 flex h-8 items-center gap-2 rounded-[10px] px-2",
+                "border border-[var(--chat-glass-border)] bg-[var(--chat-glass-bg)]",
+                "backdrop-blur-[var(--blur-popup)] shadow-[var(--shadow-popup)]",
+                "cursor-grab active:cursor-grabbing",
+                "pointer-events-none opacity-0 transition-opacity duration-[120ms] ease-out",
+                "group-hover:pointer-events-auto group-hover:opacity-100",
+                "group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+                "motion-reduce:transition-none",
+              )}
             >
-              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg" title={caption ?? undefined}>
+              {Icon ? (
+                <Icon size={14} weight="duotone" className="shrink-0" style={{ color: hue }} />
+              ) : null}
+              <span className="shrink-0 truncate text-[11px] font-medium text-fg">
+                {definition.label}
+                {ownerLabel ? <span className="text-muted-fg"> · {ownerLabel}</span> : null}
+              </span>
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] text-muted-fg"
+                title={caption ?? undefined}
+              >
                 {caption ?? " "}
               </span>
-              {hovering && !scrubbable ? (
+              {handoff ? (
+                <span
+                  title={handoff.detail ?? undefined}
+                  className={cn(
+                    "shrink-0 truncate rounded-full bg-amber-400/15 px-1.5 text-[9px] font-medium",
+                    "text-amber-200",
+                  )}
+                >
+                  {handoff.label}
+                </span>
+              ) : null}
+              {recording ? (
+                <span
+                  title="Recording"
+                  aria-hidden="true"
+                  className={cn(
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                    "[animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none",
+                  )}
+                  style={{ background: "var(--color-error)" }}
+                />
+              ) : null}
+              {!scrubbedFrame && !recording && !handoff ? (
                 <span className="shrink-0 text-[9.5px] font-medium tracking-[0.2px] text-muted-fg/70">
                   Live
                 </span>
               ) : null}
-            </footer>
-
-            {/* The ten slots, oldest on the left. Hovering the card scrubs it. */}
-            <div
-              data-live-card-inert=""
-              aria-hidden="true"
-              className="flex w-full items-stretch gap-[1px] px-2"
-              style={{ height: TIMELINE_HEIGHT }}
-            >
-              {scrubbable
-                ? scrubBuffer.map((frame, index) => (
-                  <span
-                    key={`${frame.id ?? frame.at}-${index}`}
-                    className="flex-1 rounded-full transition-colors duration-[120ms]"
-                    style={{
-                      background: index === timelineIndex ? hue : "rgba(255,255,255,0.14)",
-                    }}
-                  />
-                ))
-                : null}
+              <button
+                type="button"
+                data-live-card-inert=""
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleDismiss();
+                }}
+                title="Hide until the next activity"
+                aria-label={`Hide the ${definition.label} preview`}
+                className={cn(
+                  "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
+                  "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
+                  "hover:bg-white/[0.08] hover:text-fg",
+                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                )}
+              >
+                <X size={11} weight="bold" />
+              </button>
             </div>
           </motion.section>
         ) : null}

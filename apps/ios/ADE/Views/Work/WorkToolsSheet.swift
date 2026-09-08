@@ -29,6 +29,14 @@ struct WorkToolsSheet: View {
   @State private var frame: UIImage?
   @State private var loadedFramePath: String?
 
+  #if DEBUG
+  /// Fixture seam for previews and simulator screenshots. When set, `refresh`
+  /// installs this instead of asking the sync socket, so the sheet renders its
+  /// populated state with no desktop, no pairing, and no network.
+  var previewState: WorkToolsLaneState?
+  var previewFrame: UIImage?
+  #endif
+
   var body: some View {
     NavigationStack {
       Group {
@@ -226,6 +234,15 @@ struct WorkToolsSheet: View {
   }
 
   private func refresh() async {
+    #if DEBUG
+    if let previewState {
+      state = previewState
+      frame = previewFrame
+      loadedFramePath = previewFrame == nil ? nil : latestObservation?.path
+      loaded = true
+      return
+    }
+    #endif
     // Same gate the row uses. The sheet is only reachable from a row that has
     // already checked this, but a reconnect to an older brain can drop the
     // action while the sheet is open — and a 3s timer must not keep putting an

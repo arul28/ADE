@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
-import type { BuiltInBrowserStatus } from "../../../shared/types";
+import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types";
 import {
   makeBuiltInBrowserStatus,
   makeBuiltInBrowserTab,
@@ -291,9 +291,12 @@ describe("WorkLiveCornerCard placement", () => {
       },
     });
     const { card } = await showCard();
-    // 900-wide host, 260-wide card: half of the 640px of travel.
-    expect(card.style.left).toBe("320px");
-    expect(card.style.top).toBe(`${0.25 * (600 - 211)}px`);
+    // 900-wide host, 320-wide card: half of the 580px of travel. The browser's
+    // card is 320×200, so the vertical span is 600 - 200.
+    expect(card.style.left).toBe("290px");
+    expect(card.style.top).toBe(`${0.25 * (600 - 200)}px`);
+    expect(card.style.width).toBe("320px");
+    expect(card.style.height).toBe("200px");
   });
 
   it("clamps a stored position that would hang outside the column", async () => {
@@ -390,7 +393,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     card.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 260, bottom: 211, width: 260, height: 211,
+      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
       toJSON: () => ({}),
     });
 
@@ -399,7 +402,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(await screen.findByTitle(/Clicked 'Sign in'/)).toBeTruthy();
 
     // Right edge is the newest.
-    scrubTo(card, 260);
+    scrubTo(card, 320);
     expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     fireEvent.pointerLeave(card);
@@ -411,7 +414,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
     card.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 260, bottom: 211, width: 260, height: 211,
+      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
       toJSON: () => ({}),
     });
     scrubTo(card, 130);
@@ -422,12 +425,114 @@ describe("WorkLiveCornerCard scrubbing", () => {
   it("activates the tool when the card's chrome is clicked, but not its ×", async () => {
     seedProject();
     const { card, onPick } = await showCard();
-    fireEvent.click(card.querySelector("header") as HTMLElement);
+    fireEvent.click(card.querySelector("[data-live-card-pill]") as HTMLElement);
     expect(onPick).toHaveBeenCalledWith("browser");
 
     onPick.mockClear();
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("keeps the scrub strip out of the layout until the pointer is on the card", async () => {
+    // The strip overlays the media's bottom 2px. Reserving a row for it would
+    // shrink the picture by 1% for a control that is invisible 99% of the time.
+    seedProject();
+    const { card } = await showCard();
+    emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
+    emitBrowserEvent(traceEvent("trace-2", "fill", "Email"));
+    await screen.findByTitle(/Typed 'Email'/);
+
+    const strip = () => card.querySelector<HTMLElement>("[aria-hidden='true'].absolute.bottom-0");
+    expect(strip()).toBeNull();
+
+    card.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
+      toJSON: () => ({}),
+    });
+    scrubTo(card, 160);
+    await waitFor(() => expect(strip()).not.toBeNull());
+    expect(strip()?.style.height).toBe("2px");
+
+    fireEvent.pointerLeave(card);
+    await waitFor(() => expect(strip()).toBeNull());
+  });
+});
+
+describe("WorkLiveCornerCard chrome", () => {
+  /** The 8px resting dot: the only chrome the card shows until you hover it. */
+  function restDot(card: HTMLElement): HTMLElement | null {
+    return card.querySelector<HTMLElement>("[data-live-card-status]");
+  }
+
+  async function showTab(overrides: Partial<BuiltInBrowserTab>) {
+    seedProject();
+    const status = makeBuiltInBrowserStatus({
+      visible: false,
+      activeTabId: "tab-1",
+      tabs: [
+        makeBuiltInBrowserTab({
+          id: "tab-1",
+          url: "https://example.test/login",
+          title: "Sign in",
+          ownerChatSessionId: "chat-1",
+          ...overrides,
+        }),
+      ],
+    });
+    renderCard();
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status });
+    return screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+  }
+
+  it("rests as a dot and keeps every control in the hover pill", async () => {
+    seedProject();
+    const { card } = await showCard();
+
+    const dot = restDot(card);
+    expect(dot?.dataset.liveCardStatus).toBe("idle");
+    // Hidden by hover rather than by a render, so a 12fps feed costs nothing.
+    expect(dot?.className).toContain("group-hover:opacity-0");
+    expect(dot?.className).toContain("h-2");
+
+    // The × lives in the pill and nowhere else.
+    const pill = card.querySelector("[data-live-card-pill]");
+    expect(pill?.contains(screen.getByLabelText("Hide the Browser preview"))).toBe(true);
+    expect(pill?.className).toContain("h-8");
+    expect(pill?.className).toContain("group-hover:opacity-100");
+    // The pill is the drag handle; the picture underneath is not.
+    expect(pill?.className).toContain("cursor-grab");
+    // …and it carries the name and the last-action caption.
+    expect(pill?.textContent).toContain("Browser");
+    expect(pill?.textContent).toContain("Sign in");
+  });
+
+  it("turns the dot red while the tab is recording", async () => {
+    const card = await showTab({ recording: { startedAt: new Date().toISOString(), fps: 30 } });
+    const dot = restDot(card);
+    expect(dot?.dataset.liveCardStatus).toBe("recording");
+    // Red is the one state the dot must survive a reduced-motion setting for.
+    expect(dot?.className).toContain("ade-status-pulse");
+    expect(dot?.className).toContain("motion-reduce:animate-none");
+  });
+
+  it("turns the dot amber while a handoff waits, and names it in the pill", async () => {
+    const card = await showTab({
+      handoff: {
+        reason: "Sign in to staging",
+        startedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        requestedByChatSessionId: null,
+        requestedByLaneId: null,
+        startedAtOrigin: null,
+        previousOwner: { laneId: null, chatSessionId: null },
+      },
+    });
+    expect(restDot(card)?.dataset.liveCardStatus).toBe("handoff");
+    // The dot can only say "amber"; the reason itself waits in the pill.
+    expect(restDot(card)?.title).toBe("Sign in to staging");
+    const chip = card.querySelector("[data-live-card-pill] [title='Sign in to staging']");
+    expect(chip?.textContent).toBe("Needs you");
   });
 });
 

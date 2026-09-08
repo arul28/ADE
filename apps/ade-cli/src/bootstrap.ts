@@ -97,6 +97,7 @@ import { createAiIntegrationService } from "../../desktop/src/main/services/ai/a
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
+import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
@@ -181,7 +182,7 @@ import { createPushRegistrationStore } from "./services/push/pushRegistrationSto
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
+import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import {
   createAutomationService,
@@ -1183,6 +1184,10 @@ export async function createAdeRuntime(args: {
     // pattern as desktop main. Without this bridge, paired phones only ever
     // receive terminal snapshots, never live terminal_data push.
     let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
+    const syncStatusEventPublisher = createSyncStatusEventPublisher<SyncRoleSnapshot>({
+      emit: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+    });
+    teardown.push(() => syncStatusEventPublisher.dispose());
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
     // The capability registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in
@@ -2207,8 +2212,13 @@ export async function createAdeRuntime(args: {
         getModelPickerStore: () => getSharedModelPickerStore(db),
         cloudRelayStore,
         syncTunnelClientService,
+        // Coalesced, not queued. A reconnect storm reports hundreds of status
+        // transitions a second and each one is a full snapshot; pushing them
+        // straight onto the event buffer is what buffered `rpc_data` past the
+        // host's required-send ceiling and closed the paired transport. See
+        // `syncStatusEventPublisher`.
         onStatusChanged: (snapshot) => {
-          pushEvent("runtime", { type: "sync-status", snapshot });
+          syncStatusEventPublisher.publish(snapshot);
         },
       });
       syncServiceForPtyEvents = syncService;

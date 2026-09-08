@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   WORK_LIVE_CARD_INSET,
+  WORK_LIVE_CARD_LANDSCAPE_SIZE,
+  WORK_LIVE_CARD_MAX_SIZE,
+  WORK_LIVE_CARD_MIN_HEIGHT,
+  WORK_LIVE_CARD_MIN_WIDTH,
+  WORK_LIVE_CARD_PORTRAIT_SIZE,
   WORK_LIVE_CARD_WIDTH,
   WORK_LIVE_SCRUB_BUFFER_SIZE,
+  workLiveCardSize,
   commitWorkLiveScrubFrame,
   formatWorkLiveActionCaption,
   workLiveActionVerb,
@@ -420,13 +426,42 @@ describe("workLiveCardFits", () => {
   });
 
   it("counts the composer's height, which the card sits above", () => {
-    // 300px of column with a 150px composer leaves 150px for a 211px card:
+    // 300px of column with a 150px composer leaves 150px for a 320px card:
     // `fits` used to say yes, `workLiveCardTravel`'s `Math.max` then gave up
     // and parked the card on top of the composer it was measured to avoid.
     expect(workLiveCardFits({ width: 400, height: 300 }, 150)).toBe(false);
-    expect(workLiveCardFits({ width: 400, height: 420 }, 150)).toBe(true);
+    expect(workLiveCardFits({ width: 400, height: 520 }, 150)).toBe(true);
     // A negative reserve is not a bonus.
-    expect(workLiveCardFits({ width: 400, height: 260 }, -100)).toBe(true);
+    expect(workLiveCardFits({ width: 400, height: 344 }, -100)).toBe(true);
+  });
+
+  it("measures the box actually being placed, not the tallest one", () => {
+    // A 320×200 browser card fits a column that a 320×320 simulator card does
+    // not. Asking with the envelope rather than the card is how a browser
+    // preview used to vanish from a perfectly adequate column.
+    const shortColumn = { width: 400, height: 280 };
+    expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_LANDSCAPE_SIZE)).toBe(true);
+    expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_PORTRAIT_SIZE)).toBe(false);
+    expect(workLiveCardFits(shortColumn)).toBe(false);
+  });
+});
+
+describe("workLiveCardSize", () => {
+  it("gives every tool the aspect its pixels have, inside a 320 envelope", () => {
+    expect(workLiveCardSize("browser")).toEqual({ width: 320, height: 200 });
+    expect(workLiveCardSize("app-control")).toEqual({ width: 320, height: 200 });
+    // Only the simulator is a phone.
+    expect(workLiveCardSize("ios")).toEqual({ width: 240, height: 320 });
+    expect(workLiveCardSize(null)).toEqual(WORK_LIVE_CARD_LANDSCAPE_SIZE);
+  });
+
+  it("never leaves the 320 envelope, nor drops under the 240×150 floor", () => {
+    for (const size of [WORK_LIVE_CARD_LANDSCAPE_SIZE, WORK_LIVE_CARD_PORTRAIT_SIZE]) {
+      expect(size.width).toBeLessThanOrEqual(WORK_LIVE_CARD_MAX_SIZE);
+      expect(size.height).toBeLessThanOrEqual(WORK_LIVE_CARD_MAX_SIZE);
+      expect(size.width).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_WIDTH);
+      expect(size.height).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_HEIGHT);
+    }
   });
 });
 

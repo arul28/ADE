@@ -24,6 +24,13 @@ export type BrowserChromeShared = {
   /** Which action is in flight, so every control can disable itself. */
   busy: string | null;
   apiAvailable: boolean;
+  /**
+   * This host has somewhere to put a browser element or a screenshot — a chat,
+   * a draft, or an agent CLI session. False in a shell session, where Inspect,
+   * Attach and "screenshot to chat" have no destination at all, so they are not
+   * rendered rather than rendered disabled.
+   */
+  canAttachContext: boolean;
   inspecting: boolean;
   onInspectToggle: () => void;
   emulation: BuiltInBrowserEmulationState | null;
@@ -33,18 +40,70 @@ export type BrowserChromeShared = {
   /** The element the person picked in the page, and what may be done with it. */
   selection: {
     has: boolean;
-    canAdd: boolean;
     onAttach: () => void;
   };
 };
 
 
-/** Shared control geometry, so the URL field and the menu buttons read as one row. */
-export const TOOLBAR_CONTROL = "h-7 rounded-[7px] border text-[11px]";
-export const TOOLBAR_IDLE = "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/90";
-export const TOOLBAR_ON = "border-[color-mix(in_srgb,var(--color-accent)_32%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/92";
+/**
+ * The chrome row's height, and the one control size inside it.
+ *
+ * Every reference browser worth copying — Cursor, Arc, Zen — draws its chrome
+ * as one 40px row of borderless glyphs over the window's own background. The
+ * boxed, bordered, filled controls this pane used to ship are what made it read
+ * as a form rather than as a browser.
+ */
+export const CHROME_ROW_CLASS = "h-10";
+/** 16px, the size every glyph on the row is drawn at. */
+export const CHROME_ICON_SIZE = 16;
+
+/**
+ * A control on the chrome row: 28px square, no border, no fill at rest.
+ *
+ * The row is quiet until you point at it. Hover is the only fill, and a
+ * disabled control fades rather than growing a different box.
+ */
+export const CHROME_GHOST = [
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px]",
+  "text-muted-fg/80 hover:bg-white/[0.06] hover:text-fg",
+].join(" ");
+
+/**
+ * "On" is a colour, never a chip.
+ *
+ * Inspect armed, an emulation preset applied, pop-out available — all of them
+ * used to grow a tinted, bordered box that shouted at the same volume as the
+ * page. State belongs in the glyph.
+ */
+export const CHROME_GHOST_ON = "text-[var(--color-accent)] hover:text-[var(--color-accent)]";
+/** Recording is the one destructive-coloured state on the row. */
+export const CHROME_GHOST_REC = "text-rose-300 hover:text-rose-200";
+
 export const TOOLBAR_FOCUS = "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
 export const TOOLBAR_MOTION = "transition-colors duration-[120ms] ease-out disabled:cursor-not-allowed disabled:opacity-40";
+
+/**
+ * The dot that says a toggle is on, without a word.
+ *
+ * 6px, bottom-right of the glyph it belongs to: the device button wears one
+ * when a preset is applied, the camera wears a pulsing one while recording.
+ */
+export const CHROME_STATE_DOT = "pointer-events-none absolute bottom-[3px] right-[3px] h-[6px] w-[6px] rounded-full";
+
+/**
+ * Turn off the app-wide `input:focus` halo.
+ *
+ * `index.css` paints every focused input with a 2px accent halo, which is the
+ * right default for a form. Here the RING BELONGS TO THE WRAPPER — the address
+ * field is borderless until its box lights up — so without this the field wears
+ * two rings at once: a square inner halo inside a rounded outer one.
+ */
+export const CHROME_FIELD_NO_HALO = "focus:shadow-none! focus-visible:shadow-none!";
+
+/** Every strip under the chrome row — find, handoff, approval — is this tall. */
+export const CHROME_BAR_CLASS = "h-8";
+/** The hairline that separates one strip from the next. */
+export const CHROME_HAIRLINE = "border-white/[0.07]";
 
 /*
   The menu vocabulary is app-wide, not the browser's.

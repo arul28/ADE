@@ -600,23 +600,24 @@ paints over the chat column and the window edge while you drag.
 The pane is a **picker page plus one active tool** — there is no tab
 strip and no multi-instance. The picker is a two-column grid of cards,
 one per tool, in the order Terminal, Browser, Git, Files, iOS
-Simulator, App Control, Pull request
+Simulator, App Control
 (`WorkToolPicker.tsx`, catalogue in `workTools.ts`). Each card carries
 the tool's icon, its name, one live status line, and a right-side dot
 that is filled when the tool has something running. Status comes only
 from reads the pane already makes — the `builtInBrowser` / `iosSimulator`
 / `appControl` status subscriptions, `terminal.list` taken once when the
-pane becomes visible, the lane's git status, and `useLanePrsByLaneId` —
-so nothing here polls. A tool with no cheap status (Files) shows what it
-is for instead of a fabricated line. Lines hold a stepped-shimmer
+pane becomes visible, and the lane's git status — so nothing here polls.
+The status slot is for facts only: a tool with nothing measured leaves it
+empty rather than filling it with a description of itself. Lines hold a
+stepped-shimmer
 skeleton for at most 300 ms while those reads settle
 (`useWorkToolStatuses.ts`).
 
 A tool that cannot run in this context renders as a **disabled card with
 the reason as its status line** rather than disappearing: "Runs on this
 computer only" (browser / iOS / App Control on a remote project), "Desktop
-app only" (the same three in the hosted web client), "macOS only" (iOS off
-a Mac), "Open the PRs tab for remote projects". Availability is decided by
+app only" (the same three in the hosted web client), and "macOS only" (iOS
+off a Mac). Availability is decided by
 capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.

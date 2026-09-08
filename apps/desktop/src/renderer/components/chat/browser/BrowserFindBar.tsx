@@ -12,7 +12,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { findMatchLabel, type BrowserFindState } from "./browserToolbarLabels";
 import { revealTransition } from "../../../lib/motion";
 import { cn } from "../../ui/cn";
-import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
+import { CHROME_BAR_CLASS, CHROME_FIELD_NO_HALO, CHROME_HAIRLINE, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
 
 export type BrowserFindBarProps = {
   open: boolean;
@@ -57,7 +57,7 @@ export function BrowserFindBar({
           */
           data-ade-escape-scope="find"
           data-testid="browser-find-bar"
-          className="shrink-0 overflow-hidden border-b border-white/[0.08] bg-white/[0.015]"
+          className={cn("shrink-0 overflow-hidden border-b", CHROME_HAIRLINE)}
         >
           <form
             role="search"
@@ -66,9 +66,9 @@ export function BrowserFindBar({
               event.preventDefault();
               findStep(findText, true);
             }}
-            className="flex min-w-0 select-none items-center gap-1.5 overflow-hidden px-1.5 py-1.5"
+            className={cn("flex min-w-0 select-none items-center gap-2 overflow-hidden px-2", CHROME_BAR_CLASS)}
           >
-            <MagnifyingGlass size={12} className="shrink-0 text-muted-fg/55" />
+            <MagnifyingGlass size={13} className="shrink-0 text-muted-fg/55" />
             <input
               ref={inputRef}
               value={findText}
@@ -95,14 +95,17 @@ export function BrowserFindBar({
               }}
               placeholder="Find on page"
               aria-label="Find on page"
-              className="h-6 min-w-0 flex-1 bg-transparent text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/40"
+              className={cn(
+                "h-full min-w-0 flex-1 bg-transparent text-[12px] text-fg/85 outline-none placeholder:text-muted-fg/45",
+                CHROME_FIELD_NO_HALO,
+              )}
             />
             <span
               role="status"
               aria-live="polite"
               className={cn(
-                "min-w-0 shrink-0 truncate text-[10px]",
-                findError ? "font-sans text-amber-100/80" : "font-mono text-muted-fg/75",
+                "min-w-0 shrink-0 truncate text-[10.5px]",
+                findError ? "font-sans text-amber-200/85" : "font-mono text-muted-fg/70",
               )}
             >
               {findError ?? findMatchLabel(findState) ?? ""}
@@ -113,9 +116,9 @@ export function BrowserFindBar({
               disabled={!findText.trim()}
               title="Previous match"
               aria-label="Previous match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
-              <CaretLeft size={11} />
+              <CaretLeft size={12} />
             </button>
             <button
               type="button"
@@ -123,18 +126,18 @@ export function BrowserFindBar({
               disabled={!findText.trim()}
               title="Next match"
               aria-label="Next match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
-              <CaretRight size={11} />
+              <CaretRight size={12} />
             </button>
             <button
               type="button"
               onClick={closeFind}
               title="Close find bar"
               aria-label="Close find bar"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
-              <X size={11} />
+              <X size={12} />
             </button>
           </form>
         </motion.div>

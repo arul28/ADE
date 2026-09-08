@@ -64,10 +64,17 @@ import {
   type FilesOpenRequest,
 } from "./filesOpenRequests";
 import { LaneMachineMarker } from "../../terminals/LaneMachineMarker";
+import {
+  WORK_TOOL_CHROME_CHIP,
+  WORK_TOOL_CHROME_ROW,
+  WorkToolChromeButton,
+} from "../../terminals/workToolChrome";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { revealLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
+import { CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
+import { cn } from "../../ui/cn";
 
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 // Open-request keys remembered for dedup. Far above any real burst; exists so a
@@ -324,6 +331,17 @@ export function FilesWorkbench({
 
   const activeGroup = groupsState.groups[groupsState.activeGroupId];
   const activeTab = activeGroup?.tabs.find((t) => t.id === activeGroup.activeTabId) ?? null;
+
+  /** Reveal a directory from the pane's breadcrumb. Declared with the other
+      hooks — this component has early returns below it. */
+  const revealDirectory = useCallback((dirPath: string) => {
+    setSelectedNodePath(dirPath);
+    // Expand rather than toggle: pressing a crumb for a directory you are
+    // already inside should never collapse the thing you are looking at.
+    if (!expanded.has(dirPath)) toggleDirectory(dirPath, false, false);
+    void loadDirectoryPath(dirPath);
+  }, [expanded, loadDirectoryPath, toggleDirectory]);
+
   const allOpenTabs = useMemo(
     () => Object.values(groupsState.groups).flatMap((g) => g.tabs),
     [groupsState.groups],
@@ -1390,6 +1408,20 @@ export function FilesWorkbench({
     );
   }
 
+  /**
+   * The open file's path, split into pressable parts.
+   *
+   * Directory parts reveal that directory in the tree; the file part is the
+   * end of the trail and is inert rather than a button that does nothing.
+   */
+  const breadcrumbSegments = activeTab && activeTab.workspaceId === workspaceId
+    ? activeTab.path.split("/").filter(Boolean).map((name, index, parts) => ({
+        name,
+        path: parts.slice(0, index + 1).join("/"),
+        isFile: index === parts.length - 1,
+      }))
+    : [];
+
   return (
     <div
       className="flex h-full min-h-0 flex-col"
@@ -1426,6 +1458,51 @@ export function FilesWorkbench({
       {error ? (
         <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
           {error}
+        </div>
+      ) : null}
+      {/*
+        The Work tools pane's one chrome row.
+
+        Embedded, the pane had no chrome of its own at all: the workspace
+        picker is hidden here (the pane follows the chat's lane), and the only
+        statement of where you are was the status bar 400px below. A breadcrumb
+        of the open file, and the one control that gets you to another file.
+      */}
+      {embedded ? (
+        <div className={WORK_TOOL_CHROME_ROW} data-testid="files-pane-chrome">
+          <nav aria-label="File path" className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
+            {breadcrumbSegments.length === 0 ? (
+              <span className="truncate px-2 text-[12px] text-muted-fg">
+                {workspace?.name ?? "Files"}
+              </span>
+            ) : breadcrumbSegments.map((segment, index) => (
+              <React.Fragment key={segment.path}>
+                {index > 0 ? (
+                  <CaretRight size={10} aria-hidden className="shrink-0 text-muted-fg/50" />
+                ) : null}
+                <button
+                  type="button"
+                  data-testid={`files-breadcrumb-${segment.name}`}
+                  disabled={segment.isFile}
+                  onClick={() => revealDirectory(segment.path)}
+                  className={cn(
+                    WORK_TOOL_CHROME_CHIP,
+                    "px-1.5",
+                    segment.isFile && "text-fg/85 disabled:opacity-100",
+                  )}
+                >
+                  <span className="min-w-0 truncate">{segment.name}</span>
+                </button>
+              </React.Fragment>
+            ))}
+          </nav>
+          <WorkToolChromeButton
+            label="Search files"
+            onClick={() => setOverlay({ kind: "search" })}
+            testId="files-pane-search"
+          >
+            <MagnifyingGlass size={16} />
+          </WorkToolChromeButton>
         </div>
       ) : null}
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: embedded ? "220px 1fr" : "260px 1fr" }}>

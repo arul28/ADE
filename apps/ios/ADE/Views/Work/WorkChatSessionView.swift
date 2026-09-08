@@ -2284,7 +2284,7 @@ struct WorkChatSessionView: View {
           WorkOutputViewerScreen(request: request)
         }
         .sheet(isPresented: $artifactDrawerPresented) {
-          WorkArtifactDrawerSheet(
+          WorkProofSheet(
             artifacts: artifacts,
             artifactContent: $artifactContent,
             isRefreshing: artifactRefreshInFlight,

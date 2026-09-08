@@ -6,11 +6,9 @@ import type {
   IosSimulatorSession,
   LaneSummary,
   OpenProjectBinding,
-  PrSummary,
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
-import { boundMachineLanePrs, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   EMPTY_WORK_TOOL_ERRORS,
   pruneWorkToolBrowserErrors,
@@ -27,10 +25,10 @@ import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
  * What a tool has to say about itself on the picker card and in the activity
  * dots — one short line, plus whether something is actually running.
  *
- * `line: null` means "nothing measured": the card falls back to the tool's
- * blurb instead of inventing a status. Every field here comes from a read the
- * pane already makes (an event subscription, a one-shot `getStatus`, the lane
- * store); nothing here starts a poller.
+ * `line: null` means "nothing measured": the card says nothing rather than
+ * inventing a status or padding the slot with prose. Every field here comes
+ * from a read the pane already makes (an event subscription, a one-shot
+ * `getStatus`, the lane store); nothing here starts a poller.
  */
 export type WorkToolStatus = {
   line: string | null;
@@ -117,11 +115,13 @@ export function workToolDotColor(state: WorkToolDotState, toolColor: string): st
  * The one line a tool gets, wherever it is shown.
  *
  * The picker card and the header's activity dots both answer "what is this tool
- * doing", and they used to answer it with two different spellings — one with a
- * blurb fallback, one without; one that appended the error suffix, one that
- * gated it and then regexed the separator back off. This is the single rule:
- * an unavailable tool says why, an available one says its status (or its blurb
- * when it has measured nothing yet) plus any error tally.
+ * doing", and they used to answer it with two different spellings — one that
+ * appended the error suffix, one that gated it and then regexed the separator
+ * back off. This is the single rule: an unavailable tool says why, an available
+ * one says its measured status plus any error tally, and a tool that has
+ * measured nothing says NOTHING. The slot is for facts; a card that fills it
+ * with a description of what the tool is for reads as a status you can act on
+ * and is not one.
  */
 export function workToolSummary(
   definition: WorkToolDefinition,
@@ -129,9 +129,9 @@ export function workToolSummary(
   availability: WorkToolAvailability,
 ): { line: string; tooltipLabel: string } {
   const line = availability.available
-    ? `${status?.line ?? definition.blurb}${workToolErrorSuffix(status?.errorCount ?? 0)}`
+    ? (status?.line ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}` : "")
     : availability.reason;
-  return { line, tooltipLabel: `${definition.label} — ${line}` };
+  return { line, tooltipLabel: line ? `${definition.label} — ${line}` : definition.label };
 }
 
 /**
@@ -198,23 +198,16 @@ export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   // "dirty" rather than "uncommitted changes": this is a status slot, not a
   // sentence, and at two columns the sentence became "3 ahead · uncommitt…".
   parts.push(dirty ? "dirty" : "clean");
-  return statusLine(parts.join(" · "), dirty || ahead > 0);
+  // Every other tool's line opens with a capital ("No tabs", "Not booted", "No
+  // app"), and git was the one that opened lowercase — a column of cards where
+  // five lines start capitalised and one does not reads as a typo. Only the
+  // first character: a line that already starts with a count ("3 ahead ·
+  // clean") is untouched, and the word mid-line stays lowercase.
+  return statusLine(capitalizeFirst(parts.join(" · ")), dirty || ahead > 0);
 }
 
-export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolStatus {
-  const pr = prs?.[0];
-  if (!pr) return statusLine("No PR", false);
-  const checks = pr.checksStatus;
-  const detail = checks === "pending"
-    ? "checks"
-    : checks === "failing"
-      ? "failing"
-      : checks === "passing"
-        ? "passing"
-        : pr.state;
-  return statusLine(`#${pr.githubPrNumber} · ${detail}`, checks === "pending", {
-    errored: checks === "failing",
-  });
+function capitalizeFirst(line: string): string {
+  return line.charAt(0).toUpperCase() + line.slice(1);
 }
 
 export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
@@ -305,7 +298,6 @@ export function useWorkToolStatuses(args: {
     appControlSession,
     canBrowser,
     offline,
-    pinnedMachineId,
   } = useNativeToolFeeds();
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
@@ -366,30 +358,20 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, offline, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
-  const prsByLaneId = useLanePrsByLaneId();
-
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles),
     browser: offline
       ? IDLE
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
-    // No changed-file count is cheap here: `LaneSummary.status` carries a dirty
-    // BOOLEAN, not a tally, and a real count means a git read the pane would
-    // then have to keep fresh. So the card states what it does rather than
-    // padding the slot with the marketing blurb.
-    files: statusLine("Lane worktree", false),
+    // Files measures nothing, so it reports nothing: `LaneSummary.status`
+    // carries a dirty BOOLEAN, not a tally, and a real changed-file count means
+    // a git read the pane would then have to keep fresh. "Lane worktree" was
+    // not a status — it was a noun sitting in the status slot pretending to be
+    // one. With no line the picker falls through to the card's own blurb.
+    files: IDLE,
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
-    // Machine-scoped, like every other PR render path: lane ids are not unique
-    // across machines, so a pinned pane must read the pinned machine's answer.
-    pr: laneId
-      ? prStatusLine(
-          pinnedMachineId
-            ? lanePrsForMachine(prsByLaneId, pinnedMachineId, laneId)
-            : boundMachineLanePrs(prsByLaneId, laneId),
-        )
-      : IDLE,
   }), [
     appControlSession,
     browserErrors,
@@ -398,8 +380,6 @@ export function useWorkToolStatuses(args: {
     lane,
     laneId,
     offline,
-    pinnedMachineId,
-    prsByLaneId,
     terminalTitles,
   ]);
 

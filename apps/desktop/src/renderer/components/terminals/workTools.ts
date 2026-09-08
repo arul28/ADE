@@ -3,7 +3,6 @@ import {
   DeviceMobile,
   FolderOpen,
   GitBranch,
-  GitPullRequest,
   Globe,
   Terminal,
   type Icon,
@@ -25,15 +24,10 @@ export type WorkToolDefinition = {
   /** Accent for the card glyph and the active header icon. */
   color: string;
   /**
-   * What the tool is for, in the user's words. Shown on a card only when the
-   * tool has no live status to report — never as a stand-in for one.
-   */
-  blurb: string;
-  /**
    * The one compact fact the active header shows beside the tool's name.
    *
    * On the definition rather than in a `if (tool === …)` cascade at the header:
-   * three of the seven tools answer this differently and the rule belongs with
+   * two of the six tools answer this differently and the rule belongs with
    * the tool. Omitted means "your status line", which is what most tools want.
    */
   contextLabel?: (context: WorkToolHeaderContext) => string | null;
@@ -51,24 +45,18 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Terminal",
     icon: Terminal,
     color: "#c4b5fd",
-    // Shown only while the tool has no measured line — so it has to fit the
-    // same one-line slot the status does ("Shells attached to this session"
-    // truncated to "Shells attache…" at two columns).
-    blurb: "Attach a shell",
   },
   {
     id: "browser",
     label: "Browser",
     icon: Globe,
     color: "#22d3ee",
-    blurb: "Open a page the agent can read",
   },
   {
     id: "git",
     label: "Git",
     icon: GitBranch,
     color: "#34d399",
-    blurb: "Stage, commit, and read diffs",
     // The branch, not the dirty count: the count is already the status line.
     contextLabel: ({ lane }) => lane?.branchRef ?? null,
   },
@@ -77,7 +65,6 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Files",
     icon: FolderOpen,
     color: "#fbbf24",
-    blurb: "Browse and edit the lane worktree",
     contextLabel: ({ lane }) => lane?.name ?? null,
   },
   {
@@ -85,21 +72,12 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "iOS Simulator",
     icon: DeviceMobile,
     color: "#60a5fa",
-    blurb: "Run and drive the app on a simulator",
   },
   {
     id: "app-control",
     label: "App Control",
     icon: Desktop,
     color: "#a78bfa",
-    blurb: "Attach to a desktop app and drive it",
-  },
-  {
-    id: "pr",
-    label: "Pull request",
-    icon: GitPullRequest,
-    color: "#f472b6",
-    blurb: "Open a PR for this lane",
   },
 ];
 
@@ -149,8 +127,15 @@ const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
  * Tools that drive something on *this* computer through a native namespace. A
  * remote project's work happens elsewhere and the web client has no namespace
  * at all, so both get the same honest sentence rather than a hidden card.
+ *
+ * The browser is deliberately NOT here. It is hosted by this desktop's own main
+ * process, and a remote lane drives that same window: loopback URLs on the
+ * pinned machine are rewritten onto a port-forward (`localizeRemoteLoopbackUrl`)
+ * and `ade browser open` run over there is handed to this desktop as a
+ * `built_in_browser_remote_request`. Gating it on the project binding took the
+ * one tool the tunnel work exists for away from the lanes that need it.
  */
-const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "ios", "app-control"]);
+const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["ios", "app-control"]);
 
 /**
  * Tools the web client cannot DRIVE but can WATCH.
@@ -179,9 +164,6 @@ export function workToolAvailability(
   }
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: "macOS only" };
-  }
-  if (id === "pr" && context.isRemoteProject) {
-    return { available: false, reason: "Open the PRs tab for remote projects" };
   }
   return AVAILABLE;
 }

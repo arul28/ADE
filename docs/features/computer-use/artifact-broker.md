@@ -93,9 +93,20 @@ layout.cacheDir          // .ade/cache
 layout.tmpDir            // .ade/tmp
 layout.worktreesDir      // managed lane worktrees
 projectRoot              // captures written beside project source
-os.tmpdir()              // OS temp dir
+os.tmpdir()              // OS temp dir ($TMPDIR; /var/folders/... on macOS)
+/tmp + realpath(/tmp)    // conventional temp dir (posix only; /private/tmp on macOS)
 ~/.agent-browser         // agent-browser output dir
 ```
+
+`resolveTempImportRoots()` builds the two temp entries and is exported for
+tests, which inject `platform`/`tmpdir`/`realpath` rather than depending on the
+host. On Windows it returns `os.tmpdir()` alone — `%TEMP%`/`%TMP%` already are
+that path, so nothing widens. On macOS both `/tmp` and its realpath
+`/private/tmp` are listed: the allow check realpaths the candidate file, and a
+root that is itself a symlink would never match once both sides resolve. Adding
+`/tmp` is not a wider trust boundary than `os.tmpdir()` — both are
+world-writable scratch space, and the extension allow-list plus the
+`.ade/secrets` deny-list are what actually gate an import.
 
 Runtime callers may add an explicit trusted import root (for example the
 machine-local browser observation root). `.ade/secrets` is always denied.

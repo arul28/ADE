@@ -27,6 +27,8 @@ import {
 } from "./builtInBrowserActorCapabilities";
 import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
 import {
+  forgetRemoteTunnelOrigins,
+  lookupRemoteTunnelOrigin,
   recordRemoteTunnelOrigin,
   resetRemoteTunnelOrigins,
 } from "./remoteTunnelOrigins";
@@ -486,6 +488,50 @@ describe("built-in browser agent access", () => {
       machineKey: "laptop",
       remotePort: 3000,
     });
+    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
+      .toThrow(/human-approval check/);
+
+    resetRemoteTunnelOrigins();
+  });
+
+  it("forgets a machine's tunnel origins once its forwards are torn down", async () => {
+    // The registry used to outlive the tunnel it described. After a
+    // disconnect the local listener is gone and the OS can hand that port to
+    // an unrelated local server, so a surviving entry would keep asserting
+    // that `127.0.0.1:52413` is Studio's port 3000 — and the approval the
+    // human granted for the tunnel would be inherited by that other page.
+    resetRemoteTunnelOrigins();
+    const prompt = vi.fn(async () => ({ granted: true }));
+    const controller = createBuiltInBrowserAgentAccessController({
+      hasAllowedPermissionForOrigin: (origin) => origin === "http://127.0.0.1:52413",
+      resolveParentWindow: () => null,
+      prompt,
+    });
+    const identity = { chatSessionId: "chat-1" };
+
+    recordRemoteTunnelOrigin({
+      localHost: "127.0.0.1",
+      localPort: 52413,
+      machineKey: "studio",
+      remotePort: 3000,
+    });
+    recordRemoteTunnelOrigin({
+      localHost: "127.0.0.1",
+      localPort: 52414,
+      machineKey: "laptop",
+      remotePort: 3000,
+    });
+    await controller.requireUrlAccess("http://127.0.0.1:52413/app", identity, "navigate");
+    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity)).not.toThrow();
+
+    forgetRemoteTunnelOrigins("studio");
+    expect(lookupRemoteTunnelOrigin("http://127.0.0.1:52413")).toBeNull();
+    // Only that machine's entries go; another machine's live tunnel is untouched.
+    expect(lookupRemoteTunnelOrigin("http://127.0.0.1:52414")).toEqual({
+      machineKey: "laptop",
+      remotePort: 3000,
+    });
+    // The approval was keyed to the tunnel, so it does not survive it.
     expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
       .toThrow(/human-approval check/);
 

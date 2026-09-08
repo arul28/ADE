@@ -160,7 +160,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     })]);
   });
 
-  it("rejects missing authentication without opening or dropping a bridge connection", async () => {
+  it("rejects missing authentication without dropping a bridge connection", async () => {
     server = await startBridgeServer(async () => ({ ok: true }));
     let authToken: string | null = null;
     const warn = vi.fn();
@@ -170,8 +170,17 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       logger: { ...silentLogger(), warn },
     });
 
-    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
-    expect(server.connectionCount()).toBe(0);
+    // A desktop IS listening here, so a missing token is a real
+    // desktop-side fault and keeps its own message — it must NOT be reported
+    // as "no desktop attached", which would send `ade browser open` off to a
+    // remote desktop while a local one is right there.
+    const authFailure = await client.getStatus().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(authFailure).toBeInstanceOf(Error);
+    expect((authFailure as Error).message).toMatch(/authentication is unavailable/);
+    expect(authFailure).not.toBeInstanceOf(DesktopBridgeUnavailableError);
     expect(warn).not.toHaveBeenCalled();
 
     authToken = "bridge-auth";
@@ -180,12 +189,32 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
 
     authToken = null;
     await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    // The unauthenticated call reuses the cached connection rather than
+    // reconnecting, and must not tear it down for the next authenticated one.
     expect(server.connectionCount()).toBe(1);
     expect(warn).not.toHaveBeenCalled();
 
     authToken = "bridge-auth";
     await expect(client.getStatus()).resolves.toEqual({ ok: true });
     expect(server.connectionCount()).toBe(1);
+    client.dispose();
+  });
+
+  it("reports a headless machine as bridge-unavailable even when the token is also missing", async () => {
+    const missingPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-headless-")),
+      "absent.sock",
+    );
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: missingPath,
+      // A machine with no desktop has no token either: the desktop is what
+      // sets it. The absent socket, not the absent token, is what decides.
+      getAuthToken: () => null,
+      logger: silentLogger(),
+    });
+    await expect(client.navigate({ url: "http://localhost:4567" })).rejects.toBeInstanceOf(
+      DesktopBridgeUnavailableError,
+    );
     client.dispose();
   });
 
@@ -505,6 +534,56 @@ describe("remote browser forwarder", () => {
     await expect(bridge.navigate({ url: "http://localhost:3000/" } as never))
       .resolves.toEqual({ attached: true });
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards from a real headless runtime, where the bridge token is missing too", async () => {
+    // Regression: the client read the auth token before it ever touched the
+    // socket. On a machine with no desktop the token is null too, so the call
+    // died with a plain Error, `forwardIfNoDesktop` did not recognise it, and
+    // `ade browser open` failed on exactly the runtime the forwarder exists
+    // for. Uses the REAL bridge client — the fake in `makeBridge` cannot show
+    // which error class the token check produces.
+    const missingPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-forward-")),
+      "absent.sock",
+    );
+    const emitted: Record<string, unknown>[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        emitted.push(payload);
+        const request = payload.event as { requestId: string };
+        queueMicrotask(() => {
+          forwarder.acknowledgeRemoteRequest({
+            requestId: request.requestId,
+            desktopLabel: "Studio",
+            accepted: true,
+            awaitingApproval: true,
+          });
+        });
+      },
+      logger: forwarderLogger,
+      ackTimeoutMs: 500,
+    });
+    const headless = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: missingPath,
+      getAuthToken: () => null,
+      logger: silentLogger(),
+    });
+    const bridge = withRemoteBrowserForwarding(headless, forwarder);
+
+    const result = await bridge.navigate({
+      url: "http://localhost:4567/",
+    } as never) as Record<string, unknown>;
+
+    expect(emitted).toHaveLength(1);
+    expect(result).toMatchObject({
+      status: "forwarded_to_desktop",
+      url: "http://localhost:4567/",
+      acknowledged: true,
+      awaitingApproval: true,
+      desktopLabel: "Studio",
+    });
+    headless.dispose();
   });
 
   it("ignores an acknowledgement for a request nobody is waiting on", () => {

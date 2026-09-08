@@ -503,7 +503,8 @@ export function commandsLeadPaletteResults(
 export type WorkToolPaletteCommand = {
   id: string;
   title: string;
-  hint: string;
+  /** Only where the row's own title does not already say it. */
+  hint?: string;
   keywords: string[];
   group: string;
   run: () => void;
@@ -538,7 +539,6 @@ export function buildWorkToolCommands({
     ).map((definition) => ({
       id: `work-tools-${definition.id}`,
       title: `Tools: ${definition.label}`,
-      hint: definition.blurb,
       keywords: ["tools", "pane", "sidebar", definition.id, definition.label],
       group: "Work tools",
       run: () => {

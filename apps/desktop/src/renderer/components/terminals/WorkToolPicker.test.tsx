@@ -18,13 +18,20 @@ function cardFor(label: string): HTMLButtonElement {
   return card as HTMLButtonElement;
 }
 
+/** By id, for the cases that walk the catalogue rather than name a tool. */
+function cardById(id: string): HTMLButtonElement {
+  const card = document.querySelector<HTMLButtonElement>(`button[data-tool-id="${id}"]`);
+  if (!card) throw new Error(`No picker card for ${id}`);
+  return card;
+}
+
 describe("WorkToolPicker", () => {
   afterEach(cleanup);
 
-  it("renders a card per tool with its live status line", () => {
+  it("renders a titled column of cards, each with its live status line", () => {
     const statuses: WorkToolStatusMap = {
-      terminal: { line: "2 shells · zsh, npm run dev", live: true },
-      browser: { line: "No tabs", live: false },
+      terminal: { line: "2 shells", live: true },
+      browser: { line: "3 tabs · agent", live: true },
     };
     render(
       <WorkToolPicker
@@ -36,12 +43,36 @@ describe("WorkToolPicker", () => {
       />,
     );
 
+    // The page names itself once, above the grid — the pane header no longer
+    // repeats it.
+    expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
+    expect(screen.getByText("Pick what this lane works with")).toBeTruthy();
+
     expect(screen.getAllByRole("button")).toHaveLength(WORK_TOOL_DEFINITIONS.length);
-    expect(screen.getByText("2 shells · zsh, npm run dev")).toBeTruthy();
-    expect(screen.getByText("No tabs")).toBeTruthy();
-    // A tool with nothing measurable says what it is FOR rather than faking a
-    // status line.
-    expect(screen.getByText("Browse and edit the lane worktree")).toBeTruthy();
+    expect(screen.getByText("2 shells")).toBeTruthy();
+    expect(screen.getByText("3 tabs · agent")).toBeTruthy();
+  });
+
+  it("falls back to a short description only when a tool has measured nothing", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{ git: { line: "Clean", live: false } }}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+
+    // A tool with a status shows the status and NOT its blurb — never both.
+    expect(screen.getByText("Clean")).toBeTruthy();
+    expect(screen.queryByText("Commit, push, rebase")).toBeNull();
+    // A tool with nothing measured says what it is for, in four words.
+    expect(screen.getByText("Drive a real browser")).toBeTruthy();
+    expect(screen.getByText("Run a shell here")).toBeTruthy();
+    // Files measures nothing, so it always shows its blurb rather than a noun
+    // ("Lane worktree") dressed up as a status.
+    expect(screen.getByText("Browse the worktree")).toBeTruthy();
   });
 
   it("shows the reason on a tool that cannot run here and refuses the click", () => {
@@ -56,11 +87,40 @@ describe("WorkToolPicker", () => {
       />,
     );
 
-    const ios = cardFor("iOS Simulator");
+    const ios = cardFor("Simulator");
     expect(ios.disabled).toBe(true);
+    // The reason replaces the blurb rather than joining it.
     expect(screen.getByText("macOS only")).toBeTruthy();
+    expect(screen.queryByText("Boot a simulator")).toBeNull();
+    // Dimmed, not hidden: the tool still exists, it just cannot run here.
+    expect(ios.className).toContain("opacity-40");
     fireEvent.click(ios);
     expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("keeps the browser clickable on a remote project and disables only the rest", () => {
+    const onPick = vi.fn();
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={{ ...LOCAL, isRemoteProject: true }}
+        statuses={{}}
+        loading={false}
+        onPick={onPick}
+      />,
+    );
+
+    // The browser is this window's, whatever machine the lane runs on: a
+    // loopback URL over there is reached through a port-forward, which is the
+    // whole point of pinning a remote lane at a browser.
+    expect(cardFor("Browser").disabled).toBe(false);
+    fireEvent.click(cardFor("Browser"));
+    expect(onPick).toHaveBeenCalledWith("browser");
+
+    // The two that really do drive something attached to this desk stay off.
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("App Control").disabled).toBe(true);
+    expect(screen.getAllByText("Runs on this computer only").length).toBe(2);
   });
 
   it("activates the tool a card names", () => {
@@ -98,39 +158,57 @@ describe("WorkToolPicker", () => {
     expect(document.querySelectorAll(".ade-tool-skeleton").length).toBeGreaterThan(0);
   });
 
-  it("colours the card dot by state, not by tool", () => {
+  it("marks only broken tools, and only with a red dot on the label row", () => {
     render(
       <WorkToolPicker
         activeTool={null}
         context={LOCAL}
         statuses={{
           terminal: { line: "2 shells", live: true },
-          browser: { line: "github.com · you own this tab", live: true, attention: true },
-          pr: { line: "#12 · checks failing", live: false, errored: true },
-          git: { line: "clean", live: false },
+          browser: { line: "github.com", live: true, errorCount: 3 },
+          "app-control": { line: "Finder", live: false, errored: true },
+          git: { line: "Clean", live: false },
         }}
         loading={false}
         onPick={vi.fn()}
       />,
     );
 
-    const stateOf = (label: string) =>
-      cardFor(label).querySelector("[data-tool-glyph-state]")?.getAttribute("data-tool-glyph-state");
+    // Activity is NOT a mark: a live shell and a clean worktree are both quiet.
+    expect(cardFor("Terminal").querySelector("[data-tool-error-dot]")).toBeNull();
+    expect(cardFor("Git").querySelector("[data-tool-error-dot]")).toBeNull();
+    // A counted tally and a bare error STATE both earn the same dot.
+    expect(cardFor("Browser").querySelector("[data-tool-error-dot]")).toBeTruthy();
+    expect(cardFor("App Control").querySelector("[data-tool-error-dot]")).toBeTruthy();
+    expect(screen.getByLabelText("Browser · errors")).toBeTruthy();
+  });
 
-    expect(stateOf("Terminal")).toBe("live");
-    // A login handoff is not "activity" and not "broken" — it is the one state
-    // that is asking the person for something.
-    expect(stateOf("Browser")).toBe("attention");
-    expect(stateOf("Pull request")).toBe("error");
-    expect(stateOf("Git")).toBe("idle");
+  it("moves a highlight with the arrow keys, starting at nothing highlighted", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
 
-    // EVERY dot announces what its colour means, idle included: a 6px dot with
-    // no accessible name is a decoration, and "nothing is happening" is still
-    // the answer to "what is this tool doing".
-    expect(screen.getByLabelText("Browser · needs you")).toBeTruthy();
-    expect(screen.getByLabelText("Pull request · errors")).toBeTruthy();
-    expect(screen.getByLabelText("Git · idle")).toBeTruthy();
-    expect(screen.getByLabelText("Terminal · live")).toBeTruthy();
+    // Opening the page pre-selects nothing: this is a page you look at, not a
+    // palette you are already typing into.
+    expect(document.querySelector("[data-highlighted='true']")).toBeNull();
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    const first = WORK_TOOL_DEFINITIONS[0]!;
+    expect(cardById(first.id).getAttribute("data-highlighted")).toBe("true");
+    // Focus travels with the highlight, so Enter is the browser's own
+    // activation rather than a second key path that could disagree.
+    expect(document.activeElement).toBe(cardById(first.id));
+
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    expect(cardById(first.id).getAttribute("data-highlighted")).toBe(null);
+    const last = WORK_TOOL_DEFINITIONS[WORK_TOOL_DEFINITIONS.length - 1]!;
+    expect(cardById(last.id).getAttribute("data-highlighted")).toBe("true");
   });
 
   it("keeps every status on one line and finishes the last row", () => {
@@ -147,11 +225,10 @@ describe("WorkToolPicker", () => {
     const status = screen.getByText("2 shells · a very long dev server command that would wrap");
     expect(status.className).toContain("truncate");
 
-    // Seven tools in a two-column grid leave the seventh alone; it spans the
-    // row instead of orphaning it.
+    // An odd tool count leaves the last card alone; it spans the row instead of
+    // orphaning it.
     const last = WORK_TOOL_DEFINITIONS[WORK_TOOL_DEFINITIONS.length - 1]!;
-    const lastCard = cardFor(last.label);
-    const gridItem = lastCard.parentElement as HTMLElement;
+    const gridItem = cardById(last.id).parentElement as HTMLElement;
     if (WORK_TOOL_DEFINITIONS.length % 2 === 1) {
       expect(gridItem.style.gridColumn).toBe("1 / -1");
     } else {
@@ -175,27 +252,10 @@ describe("WorkToolPicker", () => {
     // show read-only; the simulator's pane is a video stream and nothing else.
     expect(cardFor("Browser").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
-    expect(cardFor("iOS Simulator").disabled).toBe(true);
+    expect(cardFor("Simulator").disabled).toBe(true);
     expect(screen.getByText("Desktop app only")).toBeTruthy();
 
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
-  });
-
-  it("tells you how to get back here and how to get here from anywhere", () => {
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={{}}
-        loading={false}
-        onPick={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText(/Esc returns here/)).toBeTruthy();
-    // No dangling colon: the footer is a signpost, not a truncated sentence.
-    expect(screen.getByText(/Tools$/)).toBeTruthy();
-    expect(screen.queryByText(/Tools:/)).toBeNull();
   });
 });

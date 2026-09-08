@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
-import { createComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
+import {
+  createComputerUseArtifactBrokerService,
+  resolveTempImportRoots,
+} from "./computerUseArtifactBrokerService";
 
 function createLogger() {
   return {
@@ -1079,6 +1082,69 @@ describe("computerUseArtifactBrokerService", () => {
       ).toThrow(/outside allowed import roots/);
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  describe("temp import roots", () => {
+    it("allows both $TMPDIR and the /tmp symlink target on darwin", () => {
+      // macOS os.tmpdir() is a per-user /var/folders path while agents write to
+      // /tmp, which is a symlink to /private/tmp. Both spellings have to be
+      // roots or a real screenshot in a real directory is rejected.
+      const roots = resolveTempImportRoots({
+        platform: "darwin",
+        tmpdir: () => "/var/folders/xy/T",
+        realpath: (candidate) => (candidate === "/tmp" ? "/private/tmp" : candidate),
+      });
+
+      expect(roots).toEqual(["/var/folders/xy/T", "/tmp", "/private/tmp"]);
+    });
+
+    it("keeps the literal /tmp root when it cannot be realpathed", () => {
+      const roots = resolveTempImportRoots({
+        platform: "linux",
+        tmpdir: () => "/tmp",
+        realpath: () => {
+          throw new Error("ENOENT");
+        },
+      });
+
+      // /tmp is os.tmpdir() on Linux, so the set collapses to one entry.
+      expect(roots).toEqual(["/tmp"]);
+    });
+
+    it("adds nothing beyond os.tmpdir() on Windows", () => {
+      // %TEMP%/%TMP% are already os.tmpdir(); there is no /tmp to widen to.
+      const roots = resolveTempImportRoots({
+        platform: "win32",
+        tmpdir: () => "C:\\Users\\dev\\AppData\\Local\\Temp",
+        realpath: (candidate) => candidate,
+      });
+
+      expect(roots).toEqual([path.resolve("C:\\Users\\dev\\AppData\\Local\\Temp")]);
+    });
+  });
+
+  it("imports proof staged in the conventional /tmp directory", () => {
+    if (process.platform === "win32") return;
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+
+    const stagedPath = path.join("/tmp", `ade-proof-roots-${Date.now()}.png`);
+    fs.writeFileSync(stagedPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    try {
+      const ingested = broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [{ kind: "screenshot", title: "Tmp proof", path: stagedPath }],
+      });
+
+      expect(ingested.artifacts[0]).toMatchObject({ kind: "screenshot", title: "Tmp proof" });
+      expect(ingested.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
+    } finally {
+      fs.rmSync(stagedPath, { force: true });
     }
   });
 });

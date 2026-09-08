@@ -3304,6 +3304,28 @@ export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCount
   return getTerminalRuntimeSnapshot(sessionId)?.health ?? null;
 }
 
+/**
+ * Wipe the viewport and scrollback of a mounted shell.
+ *
+ * The chrome row's "Clear" is a view operation, not a shell one: sending `\f`
+ * or `clear` down the PTY would land in whatever is reading stdin — a half-typed
+ * command, a REPL, an agent CLI's prompt — and be either echoed or executed.
+ * Clearing xterm's own buffers touches nothing the process can observe.
+ *
+ * Returns false when the session has no live runtime, so a caller can leave its
+ * control disabled rather than pretending the click did something.
+ */
+export function clearTerminalRuntimeScrollback(sessionId: string): boolean {
+  const runtime = Array.from(runtimeCache.values()).find((entry) => entry.sessionId === sessionId);
+  if (!runtime || runtime.disposed) return false;
+  // `clear()` promotes the current row to the top and drops everything above
+  // it — the same result as the shell's own `clear`. `reset()` is deliberately
+  // NOT used: it would also drop scroll regions and modes, which is how you
+  // wreck a full-screen TUI that happens to be running in the tab.
+  runtime.term.clear();
+  return true;
+}
+
 export function __resetTerminalRuntimesForTests(): void {
   for (const runtime of Array.from(runtimeCache.values())) {
     teardownRuntime(runtime);

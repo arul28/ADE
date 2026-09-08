@@ -5,13 +5,12 @@
  * this session", "3 ahead · uncommitted changes") is what truncated mid-word.
  */
 import { describe, expect, it } from "vitest";
-import type { BuiltInBrowserStatus, LaneSummary, PrSummary } from "../../../shared/types";
+import type { BuiltInBrowserStatus, LaneSummary } from "../../../shared/types";
 import {
   appControlStatusLine,
   browserStatusLine,
   gitStatusLine,
   iosStatusLine,
-  prStatusLine,
   terminalStatusLine,
   workToolSummary,
 } from "./useWorkToolStatuses";
@@ -70,7 +69,12 @@ describe("work tool status lines", () => {
     const lane = (status: Partial<NonNullable<LaneSummary["status"]>>) => ({
       status: { ahead: 0, behind: 0, dirty: false, rebaseInProgress: false, ...status },
     } as LaneSummary);
-    expect(gitStatusLine(lane({})).line).toBe("clean");
+    // Capitalised like every other tool's line, so a column of cards does not
+    // read as five sentences and one typo.
+    expect(gitStatusLine(lane({})).line).toBe("Clean");
+    expect(gitStatusLine(lane({ dirty: true })).line).toBe("Dirty");
+    // Only the FIRST character: a line that already opens with a count is left
+    // exactly as it was, and the state word stays lowercase mid-line.
     expect(gitStatusLine(lane({ ahead: 3, dirty: true })).line).toBe("3 ahead · dirty");
     expect(gitStatusLine(lane({ rebaseInProgress: true })).line).toBe("Rebasing");
   });
@@ -80,13 +84,10 @@ describe("work tool status lines", () => {
     expect(iosStatusLine({ deviceName: "iPhone 17 Pro" } as never).line).toBe("iPhone 17 Pro");
     expect(appControlStatusLine(null).line).toBe("No app");
     expect(appControlStatusLine({ label: "Zen", status: "running" } as never).line).toBe("Zen");
-    expect(prStatusLine([]).line).toBe("No PR");
-    expect(prStatusLine([{ githubPrNumber: 1230, checksStatus: "pending", state: "open" } as PrSummary]).line)
-      .toBe("#1230 · checks");
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {
-    for (const line of ["No shells", "2 shells", "No tabs", "clean", "3 ahead · dirty", "Not booted", "No app", "No PR"]) {
+    for (const line of ["No shells", "2 shells", "No tabs", "Clean", "3 ahead · dirty", "Not booted", "No app"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
   });
@@ -136,7 +137,7 @@ describe("isAppControlSessionLive", () => {
 });
 
 describe("workToolSummary", () => {
-  const definition = { id: "browser", label: "Browser", blurb: "Open a page the agent can read" } as never;
+  const definition = { id: "browser", label: "Browser" } as never;
   const available = { available: true, reason: null } as const;
 
   it("gives the picker and the header the same line", () => {
@@ -145,8 +146,11 @@ describe("workToolSummary", () => {
     expect(summary.tooltipLabel).toBe("Browser — 3 tabs · 2 errors");
   });
 
-  it("falls back to the blurb when nothing has been measured", () => {
-    expect(workToolSummary(definition, undefined, available).line).toBe("Open a page the agent can read");
+  it("says nothing at all when nothing has been measured", () => {
+    const summary = workToolSummary(definition, undefined, available);
+    expect(summary.line).toBe("");
+    // …and the tooltip is then the tool's name, not "Browser — ".
+    expect(summary.tooltipLabel).toBe("Browser");
   });
 
   it("states the reason instead when the tool cannot run here", () => {

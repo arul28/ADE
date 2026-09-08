@@ -13,9 +13,10 @@ import {
   Check,
   CursorClick,
   DeviceMobile,
-  DotsThreeVertical,
+  DotsThree,
   MagnifyingGlass,
   Monitor,
+  Plus,
   Pulse,
   Selection,
   ShieldCheck,
@@ -34,14 +35,14 @@ import {
 import { modifierKeyLabel } from "../../../lib/platform";
 import { cn } from "../../ui/cn";
 import {
+  CHROME_GHOST,
+  CHROME_ICON_SIZE,
   MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
   MENU_SEPARATOR_CLASS,
   MenuSwitch,
-  TOOLBAR_CONTROL,
   TOOLBAR_FOCUS,
-  TOOLBAR_IDLE,
   TOOLBAR_MOTION,
   type BrowserChromeShared,
 } from "./browserChrome";
@@ -56,6 +57,8 @@ export type BrowserOverflowMenuProps = {
   onZoomReset: () => void;
   onAttachScreenshot: () => void;
   onOpenFind: () => void;
+  /** The tab strip hides itself at one tab, so `+` lives here as well. */
+  onNewTab: () => void;
   devToolsOpen: boolean;
   onToggleDevTools: () => void;
   networkLogging: boolean;
@@ -84,6 +87,7 @@ export function BrowserOverflowMenu({
   onZoomReset,
   onAttachScreenshot,
   onOpenFind,
+  onNewTab,
   devToolsOpen,
   onToggleDevTools,
   networkLogging,
@@ -106,6 +110,7 @@ export function BrowserOverflowMenu({
     toolbar,
     busy,
     apiAvailable,
+    canAttachContext,
     inspecting,
     onInspectToggle,
     emulation,
@@ -113,6 +118,12 @@ export function BrowserOverflowMenu({
     deviceMenuItems,
     selection,
   } = shared;
+  // The row hides a control when it runs out of width; this menu is where it
+  // reappears. But a control the HOST cannot support never appears in either —
+  // Inspect and the region capture both end in an insert, and a shell session
+  // has nothing to insert into.
+  const inspectItem = canAttachContext && !toolbar.showInspect;
+  const captureItem = canAttachContext && !toolbar.showCamera;
   return (
     <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
       <DropdownMenu.Trigger asChild>
@@ -121,19 +132,47 @@ export function BrowserOverflowMenu({
           disabled={!apiAvailable}
           title="More browser options"
           aria-label="More browser options"
-          className={cn(
-            "inline-flex w-7 shrink-0 items-center justify-center",
-            TOOLBAR_CONTROL,
-            TOOLBAR_IDLE,
-            TOOLBAR_MOTION,
-            TOOLBAR_FOCUS,
-          )}
+          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
         >
-          <DotsThreeVertical size={14} weight="bold" />
+          <DotsThree size={CHROME_ICON_SIZE} weight="bold" />
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={6} className={MENU_CONTENT_CLASS}>
+          {/*
+            The order is the order every premium browser's ⋯ menu uses: the
+            two things you came for (a new tab, find), then the page's own
+            settings, then the standing preferences, then the ways out.
+          */}
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onNewTab}>
+            <Plus size={12} className="shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate">New tab</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onOpenFind()}>
+            <MagnifyingGlass size={12} className="shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate">Find on page</span>
+            <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{`${modifierKeyLabel}F`}</span>
+          </DropdownMenu.Item>
+
+          {/*
+            Everything the toolbar had to drop at this width lives here,
+            so a 300px pane loses the buttons but never the abilities.
+          */}
+          {inspectItem ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onInspectToggle}>
+              <CursorClick size={12} className="shrink-0 opacity-70" />
+              <span className="min-w-0 flex-1 truncate">
+                {inspecting ? "Stop inspecting" : "Inspect an element"}
+              </span>
+            </DropdownMenu.Item>
+          ) : null}
+          {captureItem ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onAttachScreenshot}>
+              <Camera size={12} className="shrink-0 opacity-70" />
+              <span className="min-w-0 flex-1 truncate">Screenshot a region</span>
+            </DropdownMenu.Item>
+          ) : null}
+          <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           <DropdownMenu.Label className={MENU_LABEL_CLASS}>Zoom</DropdownMenu.Label>
           <div className="flex items-center gap-1 px-2 pb-1.5">
             <button
@@ -165,60 +204,28 @@ export function BrowserOverflowMenu({
             </button>
           </div>
 
-          {/*
-            Everything the toolbar had to drop at this width lives here,
-            so a 300px pane loses the buttons but never the abilities.
-          */}
-          {toolbar.showInspect && toolbar.showCamera && toolbar.showDevice ? null : (
-            <>
-              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-              {toolbar.showInspect ? null : (
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onInspectToggle}>
-                  <CursorClick size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {inspecting ? "Stop inspecting" : "Inspect an element"}
-                  </span>
-                </DropdownMenu.Item>
-              )}
-              {toolbar.showCamera ? null : (
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onAttachScreenshot}>
-                  <Camera size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Screenshot a region</span>
-                </DropdownMenu.Item>
-              )}
-              {toolbar.showDevice ? null : (
-                <DropdownMenu.Sub>
-                  <DropdownMenu.SubTrigger className={MENU_ITEM_CLASS}>
-                    {emulation?.mobile ? (
-                      <DeviceMobile size={12} className="shrink-0 opacity-70" />
-                    ) : (
-                      <Monitor size={12} className="shrink-0 opacity-70" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">Device</span>
-                    <span className="shrink-0 text-[9.5px] text-muted-fg/70">
-                      {deviceLabel}
-                    </span>
-                  </DropdownMenu.SubTrigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.SubContent
-                      sideOffset={4}
-                      collisionPadding={8}
-                      className={MENU_CONTENT_CLASS}
-                    >
-                      {deviceMenuItems}
-                    </DropdownMenu.SubContent>
-                  </DropdownMenu.Portal>
-                </DropdownMenu.Sub>
-              )}
-            </>
-          )}
-
           <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onOpenFind()}>
-            <MagnifyingGlass size={12} className="shrink-0 opacity-70" />
-            <span className="min-w-0 flex-1 truncate">Find on page</span>
-            <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{`${modifierKeyLabel}F`}</span>
-          </DropdownMenu.Item>
+          <DropdownMenu.Sub>
+            <DropdownMenu.SubTrigger className={MENU_ITEM_CLASS}>
+              {emulation?.mobile ? (
+                <DeviceMobile size={12} className="shrink-0 opacity-70" />
+              ) : (
+                <Monitor size={12} className="shrink-0 opacity-70" />
+              )}
+              <span className="min-w-0 flex-1 truncate">Device…</span>
+              <span className="shrink-0 text-[9.5px] text-muted-fg/70">{deviceLabel}</span>
+            </DropdownMenu.SubTrigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.SubContent
+                sideOffset={4}
+                collisionPadding={8}
+                className={MENU_CONTENT_CLASS}
+              >
+                {deviceMenuItems}
+              </DropdownMenu.SubContent>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Sub>
+          <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           {/*
             DevTools and the network log are states, not commands, so they
             read as switches — an "Off" label on a row you click is a
@@ -316,18 +323,15 @@ export function BrowserOverflowMenu({
               <span className="min-w-0 flex-1 truncate">In system browser</span>
             </DropdownMenu.RadioItem>
           </DropdownMenu.RadioGroup>
-          <p className="px-2 pb-1.5 pt-0.5 text-[9.5px] leading-[13px] text-muted-fg/70">
-            {`${modifierKeyLabel}-click always opens outside.`}
-          </p>
 
           <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onToggleProfile}>
-            <ShieldCheck size={12} className="shrink-0 opacity-70" />
-            <span className="min-w-0 flex-1 truncate">Profile…</span>
-          </DropdownMenu.Item>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onOpenLoginImport()}>
             <SignIn size={12} className="shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate">Import logins…</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onToggleProfile}>
+            <ShieldCheck size={12} className="shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate">Profile…</span>
           </DropdownMenu.Item>
           <DropdownMenu.Item
             className={MENU_ITEM_CLASS}
@@ -335,7 +339,7 @@ export function BrowserOverflowMenu({
             onSelect={onOpenExternal}
           >
             <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
-            <span className="min-w-0 flex-1 truncate">Open this page in system browser</span>
+            <span className="min-w-0 flex-1 truncate">Open in system browser</span>
           </DropdownMenu.Item>
           {selection.has ? (
             <>
@@ -348,16 +352,16 @@ export function BrowserOverflowMenu({
                 it used to disappear entirely. The row loses buttons here,
                 never abilities.
               */}
-              {toolbar.showAttach ? null : (
+              {canAttachContext && !toolbar.showAttach ? (
                 <DropdownMenu.Item
                   className={MENU_ITEM_CLASS}
-                  disabled={Boolean(busy) || !apiAvailable || !selection.canAdd}
+                  disabled={Boolean(busy) || !apiAvailable}
                   onSelect={selection.onAttach}
                 >
                   <Selection size={12} className="shrink-0 opacity-70" />
                   <span className="min-w-0 flex-1 truncate">Attach selection</span>
                 </DropdownMenu.Item>
-              )}
+              ) : null}
               {canInsertDraft ? (
                 <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onInsertSelectionDraft}>
                   <span className="min-w-0 flex-1 truncate">Insert into the message</span>

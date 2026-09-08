@@ -1114,6 +1114,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     return null;
   }, [activeLaneId, activeWorkSession, activeWorkSessionRuntimePin, draftContextTargetId, work.draftKind]);
 
+  /**
+   * Why context insertion is closed, for the one path that still needs words:
+   * the error a tool throws if it tries anyway. NOT a banner — the pane no
+   * longer explains a missing capability above controls it is still showing;
+   * the panels drop those controls instead (`canInsertContext`).
+   */
   let contextDisabledReason: string | null;
   if (!activeWorkSession && contextTarget) {
     // Draft context target is available -- no session needed.
@@ -1124,14 +1130,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = "Tool context insertion is not available for chats on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
-  } else if (activeWorkSession.toolType === "shell") {
-    contextDisabledReason = "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.";
   } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
     contextDisabledReason = `Continue this ${formatToolTypeLabel(activeWorkSession.toolType)} session before inserting tool context.`;
   } else if (!contextTarget) {
     // `formatToolTypeLabel` already ends in "session"/"chat" ("OpenCode CLI
     // session"), so a second "session" here read as "…CLI session session".
-    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} can use the lane tools, but it cannot receive inserted context.`;
+    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} cannot receive inserted context.`;
   } else {
     contextDisabledReason = null;
   }

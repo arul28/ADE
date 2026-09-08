@@ -355,7 +355,9 @@ export function ChatAppControlPanel({
   const [controlPulse, setControlPulse] = useState<{ leftPct: number; topPct: number; nonce: number } | null>(null);
   const [screenshotBlank, setScreenshotBlank] = useState(false);
   const [typeText, setTypeText] = useState("");
-  const [mode, setMode] = useState<AppControlMode>(initialUiState.mode);
+  const [mode, setMode] = useState<AppControlMode>(
+    onAddContext ? initialUiState.mode : "control",
+  );
   const modeRef = useRef<AppControlMode>(mode);
   const [attachmentAck, setAttachmentAck] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -380,6 +382,20 @@ export function ChatAppControlPanel({
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
   const controlsDisabled = Boolean(controlDisabledReason);
+  /**
+   * This host has somewhere to send an element or a screenshot.
+   *
+   * False in a shell session, which has no chat, draft or agent CLI behind it.
+   * Inspect mode and the whole "Send to chat" group exist only to produce an
+   * insert, so they are not rendered at all here — a disabled control with a
+   * tooltip would be explaining a capability that is structurally absent, not
+   * a state that will change.
+   */
+  const canSendToChat = Boolean(onAddContext || onAddAttachment);
+  // Read by the ui-state hydration effect, which is keyed on the persisted
+  // state's own key and must not re-run just because the host's callbacks did.
+  const canAttachRef = useRef(Boolean(onAddContext));
+  canAttachRef.current = Boolean(onAddContext);
   const controlsDisabledMessage = controlDisabledReason ?? "This App Control session is read-only from the current lane.";
   const sessionConnected = activeSession?.status === "connected";
   const waitingForCdp = Boolean(
@@ -405,9 +421,19 @@ export function ChatAppControlPanel({
     setLaunchCommand(saved.launchCommand);
     setLaunchCwd(saved.launchCwd);
     setCdpPort(saved.cdpPort);
-    setMode(saved.mode);
+    // A restored (or previously chosen) Inspect mode is not honoured where
+    // there is nothing to attach to: the toggle that would let you leave it is
+    // not rendered either, so the pane would be stuck picking elements nobody
+    // can receive.
+    setMode(canAttachRef.current ? saved.mode : "control");
     setRecents(saved.recents);
   }, [uiStateKey]);
+
+  // …and a host that loses the capability while mounted (switching from a chat
+  // to a shell session in the same pane) leaves Inspect with it.
+  useEffect(() => {
+    if (!onAddContext) setMode("control");
+  }, [onAddContext]);
 
   useEffect(() => {
     if (uiHydrationKeyRef.current === uiStateKey) {
@@ -1251,29 +1277,34 @@ export function ChatAppControlPanel({
           (raw URL, no host stripping), so the two disagreed on any window
           without a title. One affordance, one label. */}
 
-      <AppControlMenuLabel>Send to chat</AppControlMenuLabel>
-      <AppControlMenuItem
-        icon={<Camera size={11} />}
-        label="Screenshot to chat"
-        disabled={!sessionConnected || !onAddAttachment || Boolean(busy)}
-        disabledReason={onAddAttachment ? "Attach an app first." : "Attachments are not available in this panel."}
-        onSelect={() => {
-          void screenshotToChat();
-          close();
-        }}
-      />
-      <AppControlMenuItem
-        icon={<Crosshair size={11} />}
-        label="Insert as context"
-        hint="Switch to Inspect and click an element"
-        disabled={!sessionConnected || !onAddContext || controlsDisabled}
-        disabledReason={onAddContext ? "Attach an app first." : "Context insertion is not available in this panel."}
-        onSelect={() => {
-          setMode("inspect");
-          if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
-          close();
-        }}
-      />
+      {/* Only where there is a chat, draft or CLI session to send to. */}
+      {canSendToChat ? <AppControlMenuLabel>Send to chat</AppControlMenuLabel> : null}
+      {onAddAttachment ? (
+        <AppControlMenuItem
+          icon={<Camera size={11} />}
+          label="Screenshot to chat"
+          disabled={!sessionConnected || Boolean(busy)}
+          disabledReason="Attach an app first."
+          onSelect={() => {
+            void screenshotToChat();
+            close();
+          }}
+        />
+      ) : null}
+      {onAddContext ? (
+        <AppControlMenuItem
+          icon={<Crosshair size={11} />}
+          label="Insert as context"
+          hint="Switch to Inspect and click an element"
+          disabled={!sessionConnected || controlsDisabled}
+          disabledReason="Attach an app first."
+          onSelect={() => {
+            setMode("inspect");
+            if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
+            close();
+          }}
+        />
+      ) : null}
 
       <AppControlMenuLabel>Session</AppControlMenuLabel>
       <AppControlMenuItem
@@ -1323,7 +1354,7 @@ export function ChatAppControlPanel({
       />
     </>
   ), [
-    activeSession, attachSelection, busy, canStop, controlsDisabled, focusWindow,
+    activeSession, attachSelection, busy, canSendToChat, canStop, controlsDisabled, focusWindow,
     minimizeWindow, observeMapOn, onAddAttachment, onAddContext, onShowTerminal,
     refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected, stopSession,
     traceOpen,
@@ -1401,7 +1432,10 @@ export function ChatAppControlPanel({
 
       {/* Body — the live frame fills it, everything else is an overlay. */}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-black/20">
-        {hasActiveSession ? (
+        {/* Inspect exists to attach an element to a chat, so without one there
+            is only Control left — and a one-option toggle is chrome that asks
+            a question with a single answer. */}
+        {hasActiveSession && onAddContext ? (
           <div
             className="absolute left-2 top-2 z-10 inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 p-0.5 backdrop-blur"
             role="group"

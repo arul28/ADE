@@ -1,8 +1,15 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Terminal as TerminalIcon, Plus, X } from "@phosphor-icons/react";
+import { Terminal as TerminalIcon, Eraser, Plus, Power, Rows, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
-import { TerminalView } from "../terminals/TerminalView";
+import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
+import {
+  WORK_TOOL_CHROME_ROW,
+  WORK_TOOL_PRIMARY_BUTTON,
+  WorkToolChromeButton,
+  WorkToolEmptyLine,
+  WorkToolSurface,
+} from "../terminals/workToolChrome";
 
 type AppControlTabState = {
   terminalSessionId: string;
@@ -64,7 +71,6 @@ type ChatTerminalDrawerProps = {
   autoCreateOnOpen?: boolean;
   createRequestNonce?: number;
   disposeTabsOnUnmount?: boolean;
-  emptyMessage?: string;
   onCreateError?: (message: string) => void;
   revealRequest?: {
     terminalId: string;
@@ -151,7 +157,6 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   autoCreateOnOpen = true,
   createRequestNonce = 0,
   disposeTabsOnUnmount = false,
-  emptyMessage = "Create a terminal to start working in this chat.",
   onCreateError,
   revealRequest,
 }: ChatTerminalDrawerProps) {
@@ -165,13 +170,21 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const [creatingTab, setCreatingTab] = useState(false);
   const [restoringTabs, setRestoringTabs] = useState(false);
   const [appControlTabState, setAppControlTabState] = useState<AppControlTabState | null>(null);
+  /**
+   * The shell shown UNDER the active one while the row's split toggle is on.
+   *
+   * A second pane, not a second layout mode: the panel is one column wide, so
+   * splitting stacks. Held as a tab id rather than a boolean so closing that
+   * shell can retire the split without leaving an empty half behind.
+   */
+  const [splitTabId, setSplitTabId] = useState<string | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const isPanel = variant === "panel";
   const hadTabsRef = useRef(false);
   const previousOpenRef = useRef(open);
   const pendingAutoCreateRef = useRef(false);
   const tabsRef = useRef<TabEntry[]>([]);
-  const createTabFlightRef = useRef<Promise<void> | null>(null);
+  const createTabFlightRef = useRef<Promise<string | null> | null>(null);
   const restoringUiStateRef = useRef(false);
   const lastHandledCreateRequestRef = useRef(0);
   const createRequestHandledThisOpenRef = useRef(false);
@@ -235,13 +248,19 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     document.addEventListener("mouseup", handleDragEnd);
   }, [drawerHeight, isPanel]);
 
-  const createTab = useCallback(async () => {
+  /**
+   * Open a shell, and say which one.
+   *
+   * The id comes back so the split toggle can put a brand-new shell in the
+   * second pane instead of stealing the active one — the caller cannot infer
+   * that from `activeTabId`, which this function also moves.
+   */
+  const createTab = useCallback(async (): Promise<string | null> => {
     if (createTabFlightRef.current) {
-      await createTabFlightRef.current.catch(() => {});
-      return;
+      return await createTabFlightRef.current.catch(() => null);
     }
     setCreatingTab(true);
-    const flight = (async () => {
+    const flight = (async (): Promise<string | null> => {
       const tabIndex = nextTabIndex++;
       const label = `Terminal ${tabIndex}`;
       const created = await window.ade.pty.create({
@@ -268,22 +287,24 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       );
       if (existing) {
         setActiveTabId(existing.id);
-      } else {
-        setTabs((prev) => {
-          const prevExisting = prev.find(
-            (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
-          );
-          if (prevExisting) return prev;
-          return [...prev, nextEntry];
-        });
-        setActiveTabId(tabId);
+        return existing.id;
       }
+      setTabs((prev) => {
+        const prevExisting = prev.find(
+          (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
+        );
+        if (prevExisting) return prev;
+        return [...prev, nextEntry];
+      });
+      setActiveTabId(tabId);
+      return tabId;
     })();
     createTabFlightRef.current = flight;
     try {
-      await flight;
+      return await flight;
     } catch (error) {
       reportCreateError(error);
+      return null;
     } finally {
       if (createTabFlightRef.current === flight) createTabFlightRef.current = null;
       setCreatingTab(false);
@@ -501,6 +522,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, pin).catch(() => {});
     }
 
+    setSplitTabId((current) => (current === tabId ? null : current));
     setTabs((prev) => {
       const next = prev.filter((tab) => tab.id !== tabId);
       setActiveTabId((current) => {
@@ -511,13 +533,108 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     });
   }, [pin]);
 
+  /**
+   * Show a second shell under the active one, opening one if there is no
+   * spare. Toggling off never closes anything — the shell stays in the strip.
+   */
+  const toggleSplit = useCallback(async () => {
+    if (splitTabId) {
+      setSplitTabId(null);
+      return;
+    }
+    const spare = tabsRef.current.find((tab) => tab.id !== activeTabId && !tab.exited);
+    if (spare) {
+      setSplitTabId(spare.id);
+      return;
+    }
+    const keepActive = activeTabId;
+    const created = await createTab();
+    if (!created) return;
+    setSplitTabId(created);
+    // `createTab` focuses what it opened; the split pane is the new shell's
+    // home, so focus goes back to the tab the split was requested from.
+    if (keepActive) setActiveTabId(keepActive);
+  }, [activeTabId, createTab, splitTabId]);
+
   if (!open) return null;
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs.at(-1) ?? null;
   // An empty tab strip is a row of chrome for tabs that do not exist, and its
   // "+" competes with the centred button below it for the same single action.
   // With no shells the panel shows one affordance, not two.
-  const showEmptyState = isPanel && tabs.length === 0;
+  const showEmptyState = tabs.length === 0;
+  // Only a DIFFERENT shell can occupy the second pane; pointing the split at
+  // the tab already on screen would paint the same runtime twice.
+  const splitTab = splitTabId && splitTabId !== activeTab?.id
+    ? tabs.find((tab) => tab.id === splitTabId) ?? null
+    : null;
+
+  const renderTabPill = (tab: TabEntry) => {
+    const appControlTone = appControlTabState && appControlTabState.terminalSessionId === tab.sessionId
+      ? appControlTabState.tone
+      : null;
+    const isActive = activeTab?.id === tab.id;
+    const isSplit = splitTab?.id === tab.id;
+    return (
+      <div
+        key={tab.id}
+        data-testid="terminal-tab-pill"
+        className={cn(
+          "group/pill relative flex h-6 min-w-0 max-w-[144px] shrink-0 items-center gap-1.5 rounded-[6px] pl-2 pr-1",
+          "text-[12px] transition-colors duration-[120ms] ease-out",
+          isActive
+            ? "bg-white/[0.08] text-fg"
+            : isSplit
+              ? "bg-white/[0.04] text-fg/75"
+              : "text-muted-fg hover:bg-white/[0.05] hover:text-fg/85",
+        )}
+        title={appControlTone ? appControlTabState?.title : undefined}
+      >
+        <TerminalIcon
+          size={12}
+          weight="regular"
+          aria-hidden
+          className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
+        />
+        <button
+          type="button"
+          onClick={() => setActiveTabId(tab.id)}
+          className="min-w-0 flex-1 truncate bg-transparent p-0 text-left text-inherit focus-visible:outline-none"
+        >
+          {tab.label}
+        </button>
+        {/* The close slot is always reserved and only ever fades in, so
+            revealing it on hover cannot reflow the label under the cursor. */}
+        <button
+          type="button"
+          aria-label={`Close ${tab.label}`}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            closeTab(tab.id);
+          }}
+          // Space on a button scrolls the strip before the browser synthesises
+          // its click, and the click would then bubble to the pill and select
+          // the tab we are closing. Both are handled here rather than hoped for.
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              closeTab(tab.id);
+            }
+          }}
+          className={cn(
+            "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-muted-fg",
+            "opacity-0 transition-opacity duration-[120ms] ease-out",
+            "hover:bg-white/[0.08] hover:text-fg group-hover/pill:opacity-100",
+            "focus-visible:opacity-100 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+          )}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -539,137 +656,95 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       ) : null}
 
       {showEmptyState ? null : (
-      <div
-        className={cn(
-          "ade-pane-chrome flex shrink-0 items-stretch overflow-x-auto border-b border-white/[0.07] bg-[var(--color-surface-recessed)] px-1",
-          isPanel ? "h-9" : "h-7",
-        )}
-      >
-        <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none">
-          {tabs.map((tab) => {
-            const appControlTone = appControlTabState && appControlTabState.terminalSessionId === tab.sessionId
-              ? appControlTabState.tone
-              : null;
-            const isActive = activeTab?.id === tab.id;
-            return (
-              <div
-                key={tab.id}
-                className={cn(
-                  "group relative flex shrink-0 items-center gap-1 rounded-t-md border border-transparent px-2 font-mono text-[10px] transition-colors",
-                  isPanel ? "h-9" : "h-7",
-                  isActive
-                    ? "border-white/[0.07] border-b-transparent bg-black/[0.18] text-fg/85"
-                    : "bg-transparent text-fg/38 hover:bg-white/[0.035] hover:text-fg/65",
-                  appControlTone ? "pl-4" : null,
-                )}
-                title={appControlTone ? appControlTabState?.title : undefined}
-              >
-                {appControlTone ? (
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "pointer-events-none absolute left-1.5 top-1.5 h-1.5 w-1.5 rounded-full",
-                      appControlTone === "active" && "bg-emerald-300/85 shadow-[0_0_4px_rgba(16,185,129,0.6)]",
-                      appControlTone === "warn" && "bg-amber-300/80",
-                      appControlTone === "error" && "bg-rose-400/85",
-                    )}
-                  />
-                ) : null}
-                {isActive ? (
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-[var(--color-accent)]"
-                  />
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setActiveTabId(tab.id)}
-                  className="flex h-full min-w-0 items-center gap-1 bg-transparent p-0 text-inherit"
-                >
-                  <TerminalIcon
-                    size={10}
-                    weight="bold"
-                    className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
-                  />
-                  <span className="max-w-[80px] truncate">{tab.label}</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Close ${tab.label}`}
-                  onMouseDown={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closeTab(tab.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      closeTab(tab.id);
-                    }
-                  }}
-                  className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-white/35 opacity-60 transition-colors hover:bg-white/[0.06] hover:text-white/70 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
-                >
-                  <X size={10} weight="bold" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => { void createTab(); }}
-          className={cn(
-            "my-1 ml-1 flex shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.025] text-white/34 transition-colors hover:bg-white/[0.055] hover:text-white/65 disabled:cursor-default disabled:opacity-45",
-            isPanel ? "h-7 w-7" : "h-5 w-5",
-          )}
-          title="New terminal"
-          disabled={creatingTab}
-        >
-          <Plus size={10} weight="bold" />
-        </button>
-
-        <div className="flex-1" />
-      </div>
-      )}
-
-      <div className="flex-1 min-h-0 overflow-hidden p-2">
-        {activeTab ? (
-          <TerminalView
-            ptyId={activeTab.ptyId}
-            sessionId={activeTab.sessionId}
-            runtimePin={pin}
-            isActive
-            isVisible
-            className="h-full w-full"
-          />
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
-            <TerminalIcon size={22} weight="duotone" className="text-fg/25" />
-            <div className="flex flex-col gap-1">
-              <p className="font-sans text-[13px] font-semibold text-fg/80">Start a shell in this lane</p>
-              <p className="max-w-[240px] font-sans text-[11.5px] leading-[17px] text-muted-fg">{emptyMessage}</p>
-            </div>
-            <button
-              type="button"
+        <div className={cn(WORK_TOOL_CHROME_ROW, !isPanel && "h-8")}>
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-none">
+            {tabs.map(renderTabPill)}
+            <WorkToolChromeButton
+              label="New shell"
               onClick={() => { void createTab(); }}
               disabled={creatingTab}
-              className="inline-flex h-8 items-center gap-2 rounded-md border border-violet-400/24 bg-violet-500/[0.10] px-3 font-sans text-[12px] font-medium text-fg/88 transition-colors hover:border-violet-400/40 hover:bg-violet-500/[0.16] hover:text-fg disabled:cursor-default disabled:opacity-45"
+              testId="terminal-new-shell"
             >
-              <Plus size={13} weight="bold" />
-              <span>New terminal</span>
-            </button>
-            {/* `ade terminal list | resume | read | write | signal` is a real
-                command (apps/ade-cli/src/cli.ts). It drives shells that already
-                exist rather than opening them, and the copy says so. */}
-            <p className="font-sans text-[11px] leading-4 text-muted-fg/65">
-              Agents read and drive these shells with{" "}
-              <code className="rounded bg-white/[0.05] px-1 py-px font-mono text-[10.5px] text-fg/70">ade terminal</code>
-            </p>
+              <Plus size={16} />
+            </WorkToolChromeButton>
           </div>
+
+          <div className="flex shrink-0 items-center gap-0.5">
+            <WorkToolChromeButton
+              label={splitTab ? "Close split" : "Split"}
+              onClick={() => { void toggleSplit(); }}
+              active={Boolean(splitTab)}
+              disabled={creatingTab || !activeTab}
+              testId="terminal-split"
+            >
+              <Rows size={16} />
+            </WorkToolChromeButton>
+            <WorkToolChromeButton
+              label="Clear"
+              onClick={() => {
+                if (activeTab) clearTerminalRuntimeScrollback(activeTab.sessionId);
+              }}
+              disabled={!activeTab}
+              testId="terminal-clear"
+            >
+              <Eraser size={16} />
+            </WorkToolChromeButton>
+            <WorkToolChromeButton
+              label="Kill shell"
+              onClick={() => {
+                if (activeTab) closeTab(activeTab.id);
+              }}
+              disabled={!activeTab}
+              testId="terminal-kill"
+            >
+              <Power size={16} />
+            </WorkToolChromeButton>
+          </div>
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2">
+        {activeTab ? (
+          <>
+            <WorkToolSurface>
+              <TerminalView
+                ptyId={activeTab.ptyId}
+                sessionId={activeTab.sessionId}
+                runtimePin={pin}
+                isActive
+                isVisible
+                className="h-full w-full"
+              />
+            </WorkToolSurface>
+            {splitTab ? (
+              <WorkToolSurface>
+                <TerminalView
+                  ptyId={splitTab.ptyId}
+                  sessionId={splitTab.sessionId}
+                  runtimePin={pin}
+                  isActive={false}
+                  isVisible
+                  className="h-full w-full"
+                />
+              </WorkToolSurface>
+            ) : null}
+          </>
+        ) : (
+          <WorkToolEmptyLine
+            title="Start a shell in this lane"
+            action={(
+              <button
+                type="button"
+                onClick={() => { void createTab(); }}
+                disabled={creatingTab}
+                className={WORK_TOOL_PRIMARY_BUTTON}
+                data-testid="terminal-empty-new-shell"
+              >
+                <Plus size={14} weight="bold" />
+                <span>New shell</span>
+              </button>
+            )}
+          />
         )}
       </div>
     </div>

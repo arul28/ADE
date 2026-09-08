@@ -10,6 +10,23 @@ import { Hand } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { BuiltInBrowserTabHandoff } from "../../../../shared/types/builtInBrowser";
 import { revealTransition } from "../../../lib/motion";
+import { cn } from "../../ui/cn";
+import { CHROME_BAR_CLASS, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
+
+/**
+ * The one coloured fill left in the chrome.
+ *
+ * Everything else on this pane is ghost — so amber at 10% is not decoration
+ * here, it is the whole signal that the browser has stopped being the agent's
+ * and started being yours.
+ */
+const HANDOFF_FILL = "bg-amber-500/10";
+
+/** A button inside the amber bar: no fill of its own, just the amber type. */
+const HANDOFF_BUTTON = [
+  "inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium",
+  "text-amber-50/90 hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-45",
+].join(" ");
 
 export type BrowserHandoffBarProps = {
   handoff: BuiltInBrowserTabHandoff | null;
@@ -44,36 +61,36 @@ export function BrowserHandoffBar({
           animate={{ height: "auto", opacity: 1 }}
           exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
           transition={revealTransition}
-          className="shrink-0 overflow-hidden border-b border-amber-300/16 bg-amber-500/[0.075]"
+          className={cn("shrink-0 overflow-hidden border-b border-amber-300/15", HANDOFF_FILL)}
         >
           <div
             role="status"
             aria-live="polite"
-            className="flex min-w-0 items-center gap-2 overflow-hidden px-2.5 py-1.5 text-[11px] text-amber-100/85"
+            className={cn("flex min-w-0 items-center gap-2 overflow-hidden px-2.5 text-[11.5px] text-amber-100/85", CHROME_BAR_CLASS)}
           >
             {showHandBackOffer ? (
               <>
-                <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
+                <Hand size={13} weight="duotone" className="shrink-0" aria-hidden />
                 <span className="min-w-0 break-words">Signed in?</span>
                 <button
                   type="button"
                   onClick={() => onHandBack("auto-offer")}
                   disabled={busy === "hand-back"}
-                  className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+                  className={cn("ml-auto", HANDOFF_BUTTON, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
                 >
                   Hand back now
                 </button>
                 <button
                   type="button"
                   onClick={onKeepControl}
-                  className="shrink-0 rounded border border-white/[0.08] px-1.5 py-0.5 text-[10px] font-medium text-amber-100/70 hover:bg-white/[0.06]"
+                  className={cn(HANDOFF_BUTTON, "text-amber-100/70", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
                 >
                   Keep control
                 </button>
               </>
             ) : (
               <>
-                <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
+                <Hand size={13} weight="duotone" className="shrink-0" aria-hidden />
                 <span className="min-w-0 break-words">
                   Agent needs you to sign in · &ldquo;{handoff.reason}&rdquo;
                 </span>
@@ -81,7 +98,7 @@ export function BrowserHandoffBar({
                   type="button"
                   onClick={() => onHandBack("human")}
                   disabled={busy === "hand-back"}
-                  className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+                  className={cn("ml-auto", HANDOFF_BUTTON, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
                 >
                   Hand back
                 </button>

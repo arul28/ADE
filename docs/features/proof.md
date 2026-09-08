@@ -99,10 +99,55 @@ ade proof attach "$TMPDIR/checkout-success.png" --caption "checkout flow complet
 
 Imports are restricted to a fixed set of roots: the project root, the lane
 worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir
-(`os.tmpdir()` / `$TMPDIR`, which on macOS lives under `/var/folders` — plain
-`/tmp` is **not** an allowed root), and `~/.agent-browser`. Run the command from
-inside the lane worktree; a shell cwd outside it is rejected with
-`callerRoot must be inside the server-authorized lane worktree`.
+(`os.tmpdir()` / `$TMPDIR`, which on macOS lives under `/var/folders`), the
+platform's conventional temp dir (`/tmp`, plus its realpath `/private/tmp` on
+macOS; on Windows `%TEMP%`/`%TMP%` already *are* `os.tmpdir()`), and
+`~/.agent-browser`. Both temp conventions are roots because both are the same
+world-writable scratch space, and the evidence-extension allow-list plus the
+`.ade/secrets` deny-list — not the root list — decide what may be copied in.
+
+### Which directory the call claims
+
+The runtime authorizes ingestion against the lane worktree it resolved for the
+caller, and compares it against the `callerRoot` the CLI sends. The CLI derives
+that root from the environment first:
+
+| Environment | `callerRoot` sent | Source reported |
+|---|---|---|
+| `ADE_WORKSPACE_ROOT` set | that path | `env ADE_WORKSPACE_ROOT` |
+| only `ADE_LANE_ID` set | omitted — the runtime uses the lane worktree it authorized | `env ADE_LANE_ID=<id>` |
+| neither | `process.cwd()` | `cwd` |
+
+This is what makes a call spawned from a shell parked outside the worktree
+succeed: the lane environment, not the wandering cwd, describes the workspace.
+When the check still fails, the error names all three facts — the path used,
+where it came from, and the authorized root:
+
+```
+callerRoot must be inside the server-authorized lane worktree: used /elsewhere
+(from env ADE_WORKSPACE_ROOT), authorized root is /repo/.ade/worktrees/lane-9.
+Run ade from inside that worktree, or set ADE_WORKSPACE_ROOT to it.
+```
+
+### Confirming that a capture landed
+
+`ade proof attach`, `capture`, `ingest`, and `record` re-read the record they
+just filed through the same list path the drawer uses, and in `--text` mode end
+with one unambiguous line:
+
+```
+Attached 1 artifact to lane improving-browser-4bb19b3f / chat 8f3c2a11 (roots check)
+```
+
+Exit code is `0` only when that record exists. Every other outcome — a refused
+path, a rejected root, a scratch-only capture, a record that cannot be read back
+— exits non-zero and prints a single line containing the word `failed`:
+
+```
+ade: proof attach failed — the runtime filed no proof record: Scratch capture …
+```
+
+`--no-verify` skips the re-read. Nothing skips the confirmation line.
 
 The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
 
@@ -114,13 +159,27 @@ checks and opens the source with `O_NOFOLLOW` before copying.
 
 ### `ade proof list`
 
-Print the proof set for the current session as JSON.
+Print the proof set for the current session as JSON, or as a table with `--text`.
 
 ```
 ade proof list [--owner-kind chat|lane] [--owner-id <id>] [--limit <n>]
 ```
 
-No args: lists the inferred session. Primarily for agents to see what they have already captured.
+No args: lists the inferred session. Primarily for agents to see what they have
+already captured — and it is the confirmation step after any attach.
+
+`--text` output leads with the scope that was listed and carries an `owner`
+column, so an agent can tell whose drawer it is reading:
+
+```
+Proof for lane improving-browser-4bb19b3f · chat 8f3c2a11: 2 artifacts
+kind        created                   owner                                    title         path
+----------  ------------------------  ---------------------------------------  ------------  ----
+screenshot  2026-09-08T10:00:00.000Z  lane improving-browser-4bb19b3f · chat …  roots check   …
+```
+
+The scope comes from the runtime (`scope.owners`, `scope.projectWide`), not from
+what the caller asked for, so it reflects the authorized owner set.
 
 ### Other proof commands
 

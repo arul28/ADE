@@ -2167,6 +2167,62 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
   });
 
+  it("names the rejected caller root, its source, and the authorized root", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    const strayRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stray-caller-root-"));
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+
+    try {
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        callerRoot: strayRoot,
+        callerRootSource: "env ADE_WORKSPACE_ROOT",
+        inputs: [{ kind: "screenshot", title: "Proof", path: "shots/proof.png" }],
+      });
+
+      expect(response.isError).toBe(true);
+      // Without all three facts the caller cannot tell whether the CLI sent its
+      // cwd or an env-provided root, so it retries the same failing command.
+      const message = JSON.stringify(response.error ?? response.structuredContent ?? {});
+      expect(message).toContain(strayRoot);
+      expect(message).toContain("env ADE_WORKSPACE_ROOT");
+      expect(message).toContain(fs.realpathSync(laneRoot));
+    } finally {
+      fs.rmSync(strayRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the owner scope it listed alongside the artifacts", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts.mockReturnValue([
+      { id: "artifact-1", createdAt: "2026-09-08T10:00:00.000Z" },
+    ]);
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+
+    const response = await callTool(handler, "list_computer_use_artifacts", {});
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.scope).toMatchObject({ projectWide: false });
+    expect(response.structuredContent.scope.owners).toEqual(
+      expect.arrayContaining([{ kind: "chat_session", id: "chat-session-1" }]),
+    );
+  });
+
   it("rejects caller roots and lane ids outside the server-authorized chat lane", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

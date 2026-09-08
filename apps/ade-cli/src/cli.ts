@@ -356,6 +356,7 @@ type FormatterId =
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
+  | "proof-filed"
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
@@ -463,6 +464,18 @@ type CliPlan =
        * exits 1 when a query returns no results, so scripts can branch on it).
        */
       exitCodeFromResult?: (result: unknown) => number;
+      /**
+       * Marks a plan that files a proof record, so its result is summarized
+       * into an explicit confirmation line and its failures are prefixed with
+       * "<command> failed —".
+       *
+       * Six silent `ade proof attach` failures in one coordinator loop is what
+       * this exists for: the command exited 0-looking with a JSON blob nobody
+       * read, and the drawer stayed empty. A filing command now either prints
+       * one unambiguous "Attached …" line or a line with the word "failed" in
+       * it, so even a naive grep catches the difference.
+       */
+      proofFiling?: { command: string; verify: boolean };
       /**
        * Run a recovery step and re-execute the plan once, when the first result
        * says the command cannot succeed without it. Returning false leaves the
@@ -2427,9 +2440,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Attach/ingest only import from these roots: the project root, the lane
   worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp dir
-  (\`$TMPDIR\`, which on macOS is under /var/folders — plain \`/tmp\` is NOT
-  allowed), and ~/.agent-browser. Run the command from inside the lane
-  worktree; a shell cwd outside it is rejected.
+  (\`$TMPDIR\`, which on macOS is under /var/folders), the conventional temp
+  dir \`/tmp\` (\`/private/tmp\` on macOS), and ~/.agent-browser.
+
+  Which directory the call claims
+
+  \`ADE_WORKSPACE_ROOT\` (the lane worktree) wins over the shell cwd, and with
+  only \`ADE_LANE_ID\` set the runtime resolves the lane's worktree itself — so
+  a command spawned from outside the worktree still authorizes correctly. A
+  rejection names the path used, where it came from, and the authorized root.
+
+  Confirming a capture landed
+
+  \`attach\`, \`capture\`, \`ingest\`, and \`record\` re-read the record they just
+  filed and, with --text, end with a line like
+  \`Attached 1 artifact to lane <id> / chat <id> (<title>)\`. Anything else is a
+  failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
+  Pass --no-verify to skip the re-read.
 `,
   "ios-sim": `${ADE_BANNER}
   iOS Simulator
@@ -9586,6 +9613,61 @@ function readProofOwnerBase(args: string[]): JsonObject {
   };
 }
 
+/**
+ * Where `ade proof` resolves relative paths from, and the root the runtime
+ * authorizes the ingest against.
+ *
+ * `process.cwd()` alone was wrong for agents. A coordinator that runs
+ * `ade proof attach` from a shell parked outside the lane worktree still
+ * carries the lane's environment, and the runtime rejected the cwd the caller
+ * never meant to claim — six attaches in a row failed that way while the loop
+ * read the exit status of the wrong thing. The env-provided worktree is the
+ * agent's real workspace, so it wins; the runtime still validates it against
+ * the lane worktree it authorized, and its rejection now names both paths.
+ *
+ * With only `ADE_LANE_ID` there is no path to send: a lane's worktree is
+ * something only the runtime can resolve. Omitting `callerRoot` so it uses that
+ * authorized root *is* the env-derived answer, not a fallback to cwd.
+ */
+function proofCallerRoot(): { path: string | null; source: string } {
+  const workspaceFromEnv = process.env.ADE_WORKSPACE_ROOT?.trim();
+  if (workspaceFromEnv) {
+    return { path: path.resolve(workspaceFromEnv), source: "env ADE_WORKSPACE_ROOT" };
+  }
+  const laneFromEnv = process.env.ADE_LANE_ID?.trim();
+  if (laneFromEnv) {
+    return { path: null, source: `env ADE_LANE_ID=${laneFromEnv} (runtime-resolved lane worktree)` };
+  }
+  return { path: process.cwd(), source: "cwd" };
+}
+
+/** `callerRoot` + its provenance, as the ingest tool wants them. */
+function proofCallerRootArgs(): JsonObject {
+  const callerRoot = proofCallerRoot();
+  return {
+    ...(callerRoot.path ? { callerRoot: callerRoot.path } : {}),
+    callerRootSource: callerRoot.source,
+  };
+}
+
+/**
+ * Re-read step every filing command runs before reporting success.
+ *
+ * Ingest returning a row is not proof that the drawer has one: the record has
+ * to survive the read path the drawer itself uses. Optional so a listing that
+ * the caller is not scoped for degrades to "could not verify" instead of
+ * discarding a capture that did land.
+ */
+function proofVerifyStep(): InvocationStep {
+  return {
+    key: "verify",
+    method: "ade/actions/call",
+    params: { name: "list_computer_use_artifacts", arguments: { limit: 50 } },
+    unwrapToolResult: true,
+    optional: true,
+  };
+}
+
 function buildProofPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   const proofOwnerBase = () => readProofOwnerBase(args);
@@ -9652,19 +9734,27 @@ function buildProofPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "ingest")
+  if (sub === "ingest") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "proof ingest",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof ingest", verify },
       steps: [
         actionCallStep(
           "result",
           "ingest_computer_use_artifacts",
-          collectGenericObjectArgs(args, { callerRoot: process.cwd() }),
+          collectGenericObjectArgs(args, proofCallerRootArgs()),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
+  }
   if (sub === "attach") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const rawPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
@@ -9681,6 +9771,8 @@ function buildProofPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "proof attach",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof attach", verify },
       steps: [
         actionCallStep(
           "result",
@@ -9689,7 +9781,7 @@ function buildProofPlan(args: string[]): CliPlan {
             backendStyle: "manual",
             backendName: "ade-cli",
             toolName: "proof attach",
-            callerRoot: process.cwd(),
+            ...proofCallerRootArgs(),
             ...proofOwnerBase(),
             inputs: [
               {
@@ -9701,6 +9793,7 @@ function buildProofPlan(args: string[]): CliPlan {
             ],
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -9764,10 +9857,14 @@ function buildProofPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     return {
       kind: "execute",
       label: "computer-use screenshot",
+      formatter: "proof-filed",
+      proofFiling: { command: `proof ${sub === "capture" ? "capture" : "screenshot"}`, verify },
       steps: [
         actionCallStep(
           "result",
@@ -9780,14 +9877,19 @@ function buildProofPlan(args: string[]): CliPlan {
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
       preferHeadless: true,
     };
   }
-  if (sub === "record")
+  if (sub === "record") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "computer-use record",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof record", verify },
       steps: [
         actionCallStep(
           "result",
@@ -9806,9 +9908,11 @@ function buildProofPlan(args: string[]): CliPlan {
             ]),
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
       preferHeadless: true,
     };
+  }
   if (sub === "launch")
     return {
       kind: "execute",
@@ -22245,18 +22349,93 @@ function formatTestsRuns(value: unknown): string {
   );
 }
 
+/**
+ * Owner of one listed artifact, as "lane <id> · chat <id>".
+ *
+ * The drawer is owner-scoped, so "which lane/chat is this row filed under" is
+ * the column that tells an agent whether it is looking at its own proof.
+ */
+function proofArtifactOwnerCell(artifact: JsonObject): string {
+  const links = firstArray(artifact, ["links"]);
+  const ownerId = (kind: string): string | null => {
+    for (const link of links) {
+      if (asString(link.ownerKind) === kind) return asString(link.ownerId);
+    }
+    return null;
+  };
+  const laneId = ownerId("lane") ?? asString(artifact.laneId);
+  const chatSessionId = ownerId("chat_session");
+  const parts: string[] = [];
+  if (laneId) parts.push(`lane ${shortProofOwnerId(laneId)}`);
+  if (chatSessionId) parts.push(`chat ${shortProofOwnerId(chatSessionId)}`);
+  return parts.length ? parts.join(" · ") : "unowned";
+}
+
+/** "Proof for lane … · chat …" header naming the scope that was listed. */
+function proofListScopeLabel(value: unknown, artifactCount: number): string {
+  const scope = firstRecord(value, ["scope"]);
+  const owners = firstArray(scope, ["owners"]);
+  const described = owners
+    .map((owner) => {
+      const id = asString(owner.id);
+      const kind = asString(owner.kind);
+      if (!id || !kind) return null;
+      return `${kind === "chat_session" ? "chat" : kind} ${shortProofOwnerId(id)}`;
+    })
+    .filter((entry): entry is string => Boolean(entry));
+  const target = described.length
+    ? described.join(" · ")
+    : scope?.projectWide === true
+      ? "this project (all owners)"
+      : "the current session";
+  return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
+}
+
 function formatProofList(value: unknown): string {
   const artifacts = firstArray(value, ["artifacts", "items"]);
-  return renderTable(
-    ["kind", "created", "title", "path"],
-    artifacts.map((artifact) => [
-      artifact.kind ?? artifact.type,
-      artifact.createdAt,
-      artifact.title ?? artifact.name,
-      artifact.path ?? artifact.uri,
-    ]),
-    "ADE proof artifacts\n(no artifacts)",
-  );
+  const header = proofListScopeLabel(value, artifacts.length);
+  return [
+    header,
+    renderTable(
+      ["kind", "created", "owner", "title", "path"],
+      artifacts.map((artifact) => [
+        artifact.kind ?? artifact.type,
+        artifact.createdAt,
+        proofArtifactOwnerCell(artifact),
+        artifact.title ?? artifact.name,
+        artifact.path ?? artifact.uri,
+      ]),
+      "(no artifacts)",
+    ),
+  ].join("\n");
+}
+
+/**
+ * Text output of a filing command. The confirmation line is last on purpose:
+ * an agent that reads only the tail of the output still sees whether a record
+ * landed and which lane/chat it landed in.
+ */
+function formatProofFiled(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const artifacts = firstArray(record, ["artifacts"]);
+  const confirmation = asString(record.confirmation) ?? "";
+  return [
+    renderTable(
+      ["artifact", "kind", "title", "path"],
+      artifacts.map((artifact) => [
+        artifact.id,
+        artifact.kind,
+        artifact.title,
+        artifact.uri,
+      ]),
+      "(no artifact rows returned)",
+    ),
+    record.verified === true
+      ? "verified: re-read through ade proof list"
+      : "verified: skipped (--no-verify)",
+    "",
+    confirmation,
+  ].join("\n");
 }
 
 function formatIosSimStatus(value: unknown): string {
@@ -23647,6 +23826,8 @@ function formatTextOutput(
       return formatTestsRuns(value);
     case "proof-list":
       return formatProofList(value);
+    case "proof-filed":
+      return formatProofFiled(value);
     case "ios-sim-status":
       return formatIosSimStatus(value);
     case "ios-sim-devices":
@@ -23871,6 +24052,109 @@ function inferFormatter(
   return "action-result";
 }
 
+
+/**
+ * Ids ADE prints for humans. A uuid is unreadable in full and unique in its
+ * first block; a lane id is already a readable slug and is left alone.
+ */
+function shortProofOwnerId(id: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
+}
+
+/**
+ * Turns a filing command's raw ingest payload into the one thing its caller
+ * actually has to read: did a record land, and where.
+ *
+ * Throws instead of returning a failure record, so the CLI exits non-zero and
+ * prints `ade: <command> failed — <reason>`. An agent grepping for "failed"
+ * has to find it; a JSON blob that merely lacks an `artifacts` array is exactly
+ * what went unread when six attaches in a row silently did nothing.
+ */
+function summarizeProofFiling(
+  spec: { command: string; verify: boolean },
+  values: JsonObject,
+): JsonObject {
+  const raw = unwrapActionEnvelope(values.result);
+  const record = isRecord(raw) ? raw : {};
+  const artifacts = firstArray(record, ["artifacts"]);
+  const fail = (reason: string): never => {
+    throw new CliToolError(`${spec.command} failed — ${reason}`, {
+      command: spec.command,
+      result: raw ?? null,
+    });
+  };
+  if (!artifacts.length) {
+    const note = asString(record.note);
+    fail(
+      note
+        ? `the runtime filed no proof record: ${note}`
+        : "the runtime returned no proof record for this call",
+    );
+  }
+  const links = firstArray(record, ["links"]);
+  const ownerId = (kind: string): string | null => {
+    for (const link of links) {
+      if (asString(link.ownerKind) === kind) return asString(link.ownerId);
+    }
+    return null;
+  };
+  const laneId = ownerId("lane")
+    ?? artifacts.map((artifact) => asString(artifact.laneId)).find(Boolean)
+    ?? null;
+  const chatSessionId = ownerId("chat_session");
+  const artifactIds = artifacts
+    .map((artifact) => asString(artifact.id))
+    .filter((id): id is string => Boolean(id));
+
+  let verified: boolean | null = null;
+  if (spec.verify) {
+    const verifyValue = values.verify;
+    const verifyFailure = isRecord(verifyValue) && verifyValue.ok === false
+      ? asString(verifyValue.error) ?? "proof listing was refused"
+      : null;
+    if (verifyFailure) {
+      fail(
+        `filed ${artifactIds.join(", ")} but could not re-read it to confirm: ${verifyFailure}`,
+      );
+    }
+    const listed = new Set(
+      firstArray(unwrapActionEnvelope(verifyValue), ["artifacts"])
+        .map((artifact) => asString(artifact.id))
+        .filter((id): id is string => Boolean(id)),
+    );
+    const missing = artifactIds.filter((id) => !listed.has(id));
+    if (missing.length) {
+      fail(
+        `the runtime reported ${missing.join(", ")} but the proof list does not contain it`,
+      );
+    }
+    verified = true;
+  }
+
+  const title = asString(artifacts[0]?.title) ?? "untitled";
+  const owner = [
+    `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
+    `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
+  ].join(" / ");
+  return {
+    ok: true,
+    command: spec.command,
+    filed: artifacts.length,
+    verified,
+    laneId,
+    chatSessionId,
+    artifacts: artifacts.map((artifact) => ({
+      id: artifact.id,
+      kind: artifact.kind,
+      title: artifact.title,
+      uri: artifact.uri,
+    })),
+    confirmation:
+      `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
+      + `to ${owner} (${title})`,
+  };
+}
+
 function summarizeExecution(args: {
   plan: CliPlan & { kind: "execute" };
   connection: CliConnection;
@@ -23924,6 +24208,10 @@ function summarizeExecution(args: {
         ? readiness.auth.note
         : "ADE CLI auth is local project access.",
     };
+  }
+
+  if (plan.proofFiling) {
+    return summarizeProofFiling(plan.proofFiling, values);
   }
 
   if (plan.label === "PR create") {
@@ -24730,6 +25018,18 @@ async function executePlan(
                   `Update and restart ADE on ${os.hostname()}, then retry with `
                   + `\`ade chat message ${createdSessionId} --kind auto --text \"<prompt>\"\`.`,
               },
+            );
+          }
+          if (plan.proofFiling) {
+            // Every way a filing command can fail says "failed" in one line,
+            // whether the runtime refused the path, the roots, or the caller
+            // root. A caller that only greps stderr must not have to know
+            // which layer said no.
+            throw new CliToolError(
+              `${plan.proofFiling.command} failed — ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              { command: plan.proofFiling.command, step: step.key },
             );
           }
           throw error;

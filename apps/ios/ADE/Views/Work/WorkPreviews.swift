@@ -860,4 +860,336 @@ private struct WorkRootPreviewHarness: View {
     }
   }
 }
+
+// MARK: - Proof + Tools fixtures
+
+/// Fixture data for the Proof sheet, its full-screen viewer, and the Work Tools
+/// sheet. Everything here is synthesised in-process: no sync socket, no brain,
+/// no network, no files on disk. That is what makes these screens renderable in
+/// an Xcode preview and on a bare simulator (see `ADEPreviewScreenHost`).
+@MainActor
+enum WorkProofPreviewData {
+  static let laneId = WorkPreviewData.lane.id
+
+  /// A plausible captured page, drawn rather than bundled so the fixture adds
+  /// no binary assets to the app.
+  static func pageImage(
+    host: String,
+    heading: String,
+    accent: UIColor,
+    dark: Bool = false
+  ) -> UIImage {
+    let size = CGSize(width: 1_180, height: 820)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { context in
+      let cg = context.cgContext
+      let page = dark ? UIColor(white: 0.09, alpha: 1) : UIColor.white
+      page.setFill()
+      cg.fill(CGRect(origin: .zero, size: size))
+
+      // Browser chrome.
+      let chromeHeight: CGFloat = 92
+      (dark ? UIColor(white: 0.16, alpha: 1) : UIColor(white: 0.94, alpha: 1)).setFill()
+      cg.fill(CGRect(x: 0, y: 0, width: size.width, height: chromeHeight))
+      for (index, dotColor) in [UIColor.systemRed, .systemOrange, .systemGreen].enumerated() {
+        dotColor.setFill()
+        cg.fillEllipse(in: CGRect(x: 26 + CGFloat(index) * 26, y: 34, width: 16, height: 16))
+      }
+      let field = CGRect(x: 120, y: 26, width: size.width - 176, height: 40)
+      (dark ? UIColor(white: 0.24, alpha: 1) : UIColor.white).setFill()
+      UIBezierPath(roundedRect: field, cornerRadius: 12).fill()
+      draw(
+        host,
+        at: CGPoint(x: field.minX + 16, y: field.minY + 10),
+        font: .systemFont(ofSize: 19, weight: .regular),
+        color: dark ? UIColor(white: 0.75, alpha: 1) : UIColor(white: 0.35, alpha: 1)
+      )
+
+      // Page body: a heading, a rule, and a couple of content blocks.
+      draw(
+        heading,
+        at: CGPoint(x: 64, y: chromeHeight + 60),
+        font: .systemFont(ofSize: 46, weight: .bold),
+        color: dark ? .white : UIColor(white: 0.1, alpha: 1)
+      )
+      accent.setFill()
+      UIBezierPath(
+        roundedRect: CGRect(x: 64, y: chromeHeight + 132, width: 150, height: 8),
+        cornerRadius: 4
+      ).fill()
+
+      let line = dark ? UIColor(white: 0.22, alpha: 1) : UIColor(white: 0.9, alpha: 1)
+      for row in 0..<5 {
+        line.setFill()
+        let width = [820.0, 700.0, 780.0, 540.0, 660.0][row]
+        UIBezierPath(
+          roundedRect: CGRect(x: 64, y: chromeHeight + 190 + CGFloat(row) * 34, width: width, height: 14),
+          cornerRadius: 7
+        ).fill()
+      }
+
+      accent.withAlphaComponent(0.16).setFill()
+      UIBezierPath(
+        roundedRect: CGRect(x: 64, y: chromeHeight + 400, width: size.width - 128, height: 220),
+        cornerRadius: 20
+      ).fill()
+      accent.setFill()
+      UIBezierPath(
+        roundedRect: CGRect(x: 96, y: chromeHeight + 440, width: 232, height: 52),
+        cornerRadius: 14
+      ).fill()
+      draw(
+        "Continue",
+        at: CGPoint(x: 148, y: chromeHeight + 454),
+        font: .systemFont(ofSize: 21, weight: .semibold),
+        color: .white
+      )
+    }
+  }
+
+  private static func draw(_ text: String, at point: CGPoint, font: UIFont, color: UIColor) {
+    (text as NSString).draw(
+      at: point,
+      withAttributes: [.font: font, .foregroundColor: color]
+    )
+  }
+
+  static func artifact(
+    id: String,
+    kind: String,
+    title: String,
+    minutesAgo: Int,
+    mimeType: String
+  ) -> ComputerUseArtifactSummary {
+    ComputerUseArtifactSummary(
+      id: id,
+      artifactKind: kind,
+      backendStyle: "local",
+      backendName: "ade-browser",
+      sourceToolName: "browser",
+      originalType: kind == "video_recording" ? "video" : "image",
+      title: title,
+      description: nil,
+      uri: "ade://artifact/\(id)",
+      storageKind: "file",
+      mimeType: mimeType,
+      metadataJson: nil,
+      laneId: laneId,
+      createdAt: WorkPreviewData.iso(minutesAgo: minutesAgo),
+      ownerKind: "chat_session",
+      ownerId: WorkPreviewData.chatSummary.sessionId,
+      relation: "evidence",
+      reviewState: nil,
+      workflowState: nil,
+      reviewNote: nil
+    )
+  }
+
+  /// Oldest first — the host appends, and the sheet reverses for display.
+  static let artifacts: [ComputerUseArtifactSummary] = [
+    artifact(
+      id: "proof-6",
+      kind: "screenshot",
+      title: "Browser tool · example.com",
+      minutesAgo: 61 * 24 * 3,
+      mimeType: "image/png"
+    ),
+    artifact(
+      id: "proof-5",
+      kind: "screenshot",
+      title: "Checkout total updates after promo code",
+      minutesAgo: 260,
+      mimeType: "image/png"
+    ),
+    artifact(
+      id: "proof-4",
+      kind: "video_recording",
+      title: "Sign-in flow · docs.example.com",
+      minutesAgo: 47,
+      mimeType: "video/mp4"
+    ),
+    artifact(
+      id: "proof-3",
+      kind: "screenshot",
+      title: "Browser tool · settings.example.com",
+      minutesAgo: 18,
+      mimeType: "image/png"
+    ),
+    artifact(
+      id: "proof-2",
+      kind: "screenshot",
+      title: "Empty state after clearing every filter",
+      minutesAgo: 4,
+      mimeType: "image/png"
+    ),
+    artifact(
+      id: "proof-1",
+      kind: "screenshot",
+      title: "Browser tool · app.example.com",
+      minutesAgo: 0,
+      mimeType: "image/png"
+    ),
+  ]
+
+  static let content: [String: WorkLoadedArtifactContent] = [
+    "proof-1": .image(
+      pageImage(host: "app.example.com/dashboard", heading: "Dashboard", accent: .systemIndigo)
+    ),
+    "proof-2": .image(
+      pageImage(host: "app.example.com/inbox?q=", heading: "Nothing here yet", accent: .systemTeal)
+    ),
+    "proof-3": .image(
+      pageImage(host: "settings.example.com/profile", heading: "Profile", accent: .systemPink, dark: true)
+    ),
+    // A capture whose bytes never arrived. The row falls back to the warning
+    // glyph and the viewer prints the reason instead of a blank page.
+    "proof-4": .video(URL(fileURLWithPath: "/tmp/ade-preview-recording.mp4")),
+    "proof-5": .error("Couldn't load this artifact."),
+    "proof-6": .image(
+      pageImage(host: "example.com", heading: "Example Domain", accent: .systemBlue)
+    ),
+  ]
+
+  static let toolsFrame = pageImage(
+    host: "app.example.com/dashboard",
+    heading: "Dashboard",
+    accent: .systemIndigo
+  )
+
+  static let toolsState = WorkToolsLaneState(
+    laneId: laneId,
+    activeTool: "browser",
+    browser: WorkToolsBrowserState(
+      tabs: [
+        WorkToolsBrowserTab(
+          id: "tab-1",
+          title: "Dashboard · Example",
+          url: "https://app.example.com/dashboard",
+          ownerChatSessionId: nil,
+          recording: false,
+          active: true,
+          handoffReason: nil
+        ),
+        WorkToolsBrowserTab(
+          id: "tab-2",
+          title: "Sign in to Example",
+          url: "https://accounts.example.com/sign-in?redirect=/dashboard",
+          ownerChatSessionId: WorkPreviewData.chatSummary.sessionId,
+          recording: true,
+          active: false,
+          handoffReason: nil
+        ),
+        WorkToolsBrowserTab(
+          id: "tab-3",
+          title: "Settings",
+          url: "https://settings.example.com/profile",
+          ownerChatSessionId: nil,
+          recording: false,
+          active: false,
+          handoffReason: nil
+        ),
+      ],
+      latestObservation: WorkToolsObservation(
+        path: "/preview/observation.png",
+        caption: "app.example.com/dashboard"
+      )
+    ),
+    browserUnavailable: nil,
+    appControl: nil
+  )
+}
+
+/// A fixture screen selectable from the command line, so a screenshot of a
+/// design change needs a simulator and nothing else:
+///
+///     xcrun simctl launch <udid> dev.ade.ADE -adePreviewScreen proof
+///
+/// DEBUG-only on both sides — the launch argument is ignored by a release
+/// build because `ADEApp` never reads it there.
+enum ADEPreviewScreen: String, CaseIterable {
+  case proofList = "proof"
+  case proofEmpty = "proof-empty"
+  case proofViewer = "proof-viewer"
+  case tools = "tools"
+
+  /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
+  /// Xcode scheme editor both use for launch arguments.
+  static var requested: ADEPreviewScreen? {
+    let arguments = ProcessInfo.processInfo.arguments
+    guard let flagIndex = arguments.firstIndex(of: "-adePreviewScreen"),
+          arguments.index(after: flagIndex) < arguments.endIndex else {
+      return nil
+    }
+    return ADEPreviewScreen(rawValue: arguments[arguments.index(after: flagIndex)])
+  }
+}
+
+/// Hosts one fixture screen full-bleed so it can be screenshotted on a
+/// simulator with no brain, no pairing, and no network. Selected by a launch
+/// argument in `ADEApp`; DEBUG-only, so it cannot exist in a release build.
+struct ADEPreviewScreenHost: View {
+  let screen: ADEPreviewScreen
+
+  @State private var content = WorkProofPreviewData.content
+
+  var body: some View {
+    switch screen {
+    case .proofList:
+      WorkProofSheet(
+        artifacts: WorkProofPreviewData.artifacts,
+        artifactContent: $content,
+        isRefreshing: false,
+        refreshError: nil,
+        onRefresh: {},
+        onLoadArtifact: { _ in }
+      )
+    case .proofEmpty:
+      WorkProofSheet(
+        artifacts: [],
+        artifactContent: .constant([:]),
+        isRefreshing: false,
+        refreshError: nil,
+        onRefresh: {},
+        onLoadArtifact: { _ in }
+      )
+    case .proofViewer:
+      WorkProofViewer(
+        artifacts: WorkProofPreviewData.artifacts.reversed(),
+        artifactContent: WorkProofPreviewData.content,
+        initialArtifactId: "proof-1",
+        onLoadArtifact: { _ in }
+      )
+    case .tools:
+      WorkToolsSheet(
+        laneId: WorkProofPreviewData.laneId,
+        previewState: WorkProofPreviewData.toolsState,
+        previewFrame: WorkProofPreviewData.toolsFrame
+      )
+    }
+  }
+}
+
+#Preview("Proof sheet") {
+  ADEPreviewScreenHost(screen: .proofList)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Proof sheet - empty") {
+  ADEPreviewScreenHost(screen: .proofEmpty)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Proof viewer") {
+  ADEPreviewScreenHost(screen: .proofViewer)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Work tools sheet") {
+  ADEPreviewScreenHost(screen: .tools)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
 #endif

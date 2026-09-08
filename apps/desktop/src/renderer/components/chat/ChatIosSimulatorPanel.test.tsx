@@ -412,8 +412,34 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    expect(await screen.findByText(/prebuilt — changes not included/i)).toBeTruthy();
+    expect(await screen.findByText("prebuilt")).toBeTruthy();
     expect(api.launch).not.toHaveBeenCalled();
+  });
+
+  it("puts device, launch and stop on one chrome row", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const chrome = await screen.findByTestId("ios-pane-chrome");
+    // One row, not three: the device is a chip whose menu is a real <select>,
+    // and every verb on it is a glyph with a tooltip.
+    expect(chrome.textContent).toContain("iPhone 17 Pro");
+    expect(screen.getByLabelText("Simulator device")).toBeTruthy();
+
+    fireEvent.click(await screen.findByTestId("ios-pane-launch"));
+    await waitFor(() => expect(api.launch).toHaveBeenCalled());
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(await screen.findByTestId("ios-pane-stop"));
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalled());
+    confirm.mockRestore();
   });
 
   it("names the build root only when it is not this project's checkout", async () => {
@@ -455,7 +481,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await screen.findByText("Live");
+    // The "Live" pill is gone from the row — a running session now shows as
+    // the one control only a running session has.
+    await screen.findByTestId("ios-pane-stop");
     expect(screen.queryByText("…/tmp/project")).toBeNull();
   });
 
@@ -477,7 +505,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await screen.findByText("Live");
+    // The "Live" pill is gone from the row — a running session now shows as
+    // the one control only a running session has.
+    await screen.findByTestId("ios-pane-stop");
     expect(screen.queryByText("…/tmp/project")).toBeNull();
   });
 
@@ -499,7 +529,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await screen.findByText("Live");
+    // The "Live" pill is gone from the row — a running session now shows as
+    // the one control only a running session has.
+    await screen.findByTestId("ios-pane-stop");
     // The chip renders the abbreviated tail, so that — not the full root — is
     // the only text an assertion here can discriminate on.
     expect(screen.queryByText("…/Me/Project")).toBeNull();
@@ -598,7 +630,7 @@ describe("ChatIosSimulatorPanel", () => {
     expect(launchTargetSelect!.value).toBe(secondLaunchTarget.id);
     expect(api.launch).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previews" }));
     await waitFor(() => expect(api.listPreviewTargets).toHaveBeenCalled());
     expect(api.ensurePreviewWorkspace).toHaveBeenCalledWith({
       projectRoot: "/tmp/project",
@@ -713,7 +745,7 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previews" }));
     await screen.findByText("ContentView.swift:12");
 
     fireEvent.click(screen.getByRole("button", { name: "Ask agent" }));
@@ -736,7 +768,7 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previews" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Create preview" }));
 
@@ -764,8 +796,8 @@ describe("ChatIosSimulatorPanel", () => {
     expect(textInput.value).toBe("hello simulator");
     expect(api.typeText).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Simulator" }));
-    fireEvent.click(screen.getByRole("button", { name: "Simulator" }));
+    // Already on the live surface: the row's one surface toggle would take us
+    // to Previews, so there is nothing to click to stay here.
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(await screen.findByAltText("iOS Simulator snapshot")).toBeTruthy();
 
@@ -799,9 +831,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    const launchButton = await screen.findByRole("button", { name: "Launch" }) as HTMLButtonElement;
+    const launchButton = await screen.findByTestId("ios-pane-launch") as HTMLButtonElement;
     expect(launchButton.disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.queryByTestId("ios-pane-stop")).toBeNull();
     expect(screen.queryByPlaceholderText("Type into the active simulator app")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
@@ -1710,7 +1742,7 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    fireEvent.click(await screen.findByTestId("ios-pane-stop"));
 
     await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({ chatSessionId: "chat-1", force: false }, null));
     confirmSpy.mockRestore();
@@ -1736,7 +1768,7 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    fireEvent.click(await screen.findByTestId("ios-pane-stop"));
 
     // activeStatus's session is owned by chat-1, not this drawer's chat-2: the
     // drawer names itself and asks for the bypass, rather than answering "I am
@@ -1771,16 +1803,16 @@ describe("ChatIosSimulatorPanel", () => {
 
     // The header carries one Launch, the empty body another; either one is the
     // user's own click.
-    const [launchButton] = await screen.findAllByRole("button", { name: "Launch" });
+    const launchButton = await screen.findByTestId("ios-pane-launch");
     api.getStatus.mockResolvedValue({ ...activeStatus, activeSession: launched });
     fireEvent.click(launchButton!);
 
-    expect(await screen.findByText(/prebuilt — changes not included/i)).toBeTruthy();
+    expect(await screen.findByText("prebuilt")).toBeTruthy();
 
     api.getStatus.mockResolvedValue(idleStatus);
-    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    fireEvent.click(await screen.findByTestId("ios-pane-stop"));
 
-    await waitFor(() => expect(screen.queryByText(/prebuilt — changes not included/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByText("prebuilt")).toBeNull());
     confirmSpy.mockRestore();
   });
 
@@ -1849,8 +1881,8 @@ describe("ChatIosSimulatorPanel", () => {
     );
 
     // The header already believes there is a session.
-    expect(await screen.findByText("Live")).toBeTruthy();
-    expect(screen.queryByText("No simulator running")).toBeNull();
+    expect(await screen.findByTestId("ios-pane-stop")).toBeTruthy();
+    expect(screen.queryByText("Boot a simulator")).toBeNull();
     expect(screen.getByText(/connecting to the simulator/i)).toBeTruthy();
 
     act(() => releaseStartStream?.());

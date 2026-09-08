@@ -139,25 +139,6 @@ vi.mock("../chat/ChatTerminalDrawer", async () => {
   };
 });
 
-vi.mock("../chat/ChatPrPane", async () => {
-  const React = await import("react");
-  return {
-    ChatPrPane: ({ chromeless, onRegisterRefresh }: {
-      chromeless?: boolean;
-      onRegisterRefresh?: (action: { run: () => void; syncing: boolean } | null) => void;
-    }) => {
-      React.useEffect(() => {
-        onRegisterRefresh?.({ run: () => {}, syncing: false });
-        return () => onRegisterRefresh?.(null);
-      }, [onRegisterRefresh]);
-      return React.createElement("div", {
-        "data-testid": "pr-pane",
-        "data-chromeless": chromeless ? "true" : "false",
-      });
-    },
-  };
-});
-
 vi.mock("../files/FilesTab", async () => {
   const React = await import("react");
   return { FilesTab: () => React.createElement("div", null, "Files") };
@@ -471,13 +452,14 @@ describe("WorkSidebar context targets", () => {
       contextTarget: null,
     });
 
-    // The whole empty state, not the bare sentence it used to be: a headline
-    // you can act on, the reason, an action, and the CLI hint.
-    expect(screen.getByText("This session has ended")).toBeTruthy();
-    expect(screen.getByText(/Resume this .* to attach shells to it again\./)).toBeTruthy();
-    expect(screen.getByText("ade terminal")).toBeTruthy();
+    // One row, not a five-element column: what ended, and the two things you
+    // can do about it. The paragraph explaining what "ended" means and the
+    // `ade terminal` hint were both saying things the header already says.
+    const card = screen.getByTestId("terminal-ended-card");
+    expect(card.textContent).toMatch(/ended$|ended/);
+    expect(screen.queryByText("ade terminal")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Resume session/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Resume/ }));
     await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: activeSession.id }),
     ));
@@ -488,7 +470,8 @@ describe("WorkSidebar context targets", () => {
     renderSidebar({ tab: "terminal", activeSession: null, contextTarget: null });
 
     expect(screen.getByText("Start a shell in this lane")).toBeTruthy();
-    expect(screen.getByText("ade terminal")).toBeTruthy();
+    // One line and nothing else — no paragraph, no `ade terminal` hint.
+    expect(screen.queryByText("ade terminal")).toBeNull();
   });
 
   it("writes formatted context to active PTY targets instead of dispatching chat events", async () => {
@@ -538,15 +521,19 @@ describe("WorkSidebar context targets", () => {
     expect(terminalWrite.mock.calls[0]?.[0].data).not.toContain("base64");
   });
 
-  it("keeps tools mounted but disables context insertion when there is no target", () => {
-    renderSidebar({
+  it("withholds the context callbacks — and says nothing about it — with no target", () => {
+    const { container } = renderSidebar({
       tab: "ios",
       contextTarget: null,
-      contextDisabledReason: "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.",
+      contextDisabledReason: "This shell cannot receive inserted context.",
     });
 
     expect(screen.getByTestId("ios-panel")).toBeTruthy();
-    expect(screen.getByText(/Shell sessions can use the lane tools/)).toBeTruthy();
+    // The pane does not narrate a capability it simply does not have here: the
+    // panels drop the controls that depend on it instead of explaining their
+    // absence in a bar above controls you can still see.
+    expect(screen.queryByText(/cannot receive inserted context/)).toBeNull();
+    expect(container.querySelector(".bg-amber-500\\/\\[0\\.055\\]")).toBeNull();
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
   });
@@ -725,7 +712,46 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("disables the local-only tools for remote projects and falls back to the picker", async () => {
+  it("disables only the this-computer tools for remote projects and falls back to the picker", async () => {
+    const onTabChange = vi.fn();
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // Every tool still has a card — an unavailable one says why rather than
+    // vanishing — but only the remote-capable ones are clickable.
+    expect(cardFor("Git").disabled).toBe(false);
+    expect(cardFor("Files").disabled).toBe(false);
+    expect(cardFor("Terminal").disabled).toBe(false);
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("App Control").disabled).toBe(true);
+    // The browser is NOT a this-computer tool. It is hosted by this window
+    // whatever the lane is bound to, and a remote lane is exactly what the
+    // loopback port-forward exists for.
+    expect(cardFor("Browser").disabled).toBe(false);
+    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
+    // The picker, not some other tool: being dumped into Git because the
+    // simulator is unavailable would be a non-sequitur.
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
+    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("opens the browser on a remote project rather than falling back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -745,22 +771,9 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    // Every tool still has a card — an unavailable one says why rather than
-    // vanishing — but only the remote-capable ones are clickable.
-    expect(cardFor("Git").disabled).toBe(false);
-    expect(cardFor("Files").disabled).toBe(false);
-    expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("iOS Simulator").disabled).toBe(true);
-    expect(cardFor("App Control").disabled).toBe(true);
-    expect(cardFor("Browser").disabled).toBe(true);
-    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
-    expect(screen.queryByTestId("browser-panel")).toBeNull();
-    // The picker, not some other tool: being dumped into Git because the
-    // browser is unavailable would be a non-sequitur.
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
-    expect(window.ade.builtInBrowser.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId("browser-panel")).toBeTruthy();
+    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+    expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
   it("disables the macOS-only iOS Simulator card on Windows", async () => {
@@ -776,7 +789,7 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(cardFor("iOS Simulator").disabled).toBe(true);
+    expect(cardFor("Simulator").disabled).toBe(true);
     expect(screen.getByText("macOS only")).toBeTruthy();
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
@@ -868,16 +881,6 @@ describe("WorkSidebar pane chrome", () => {
       Object.defineProperty(window.navigator, "platform", originalNavigatorPlatform);
     }
     vi.restoreAllMocks();
-  });
-
-  it("mounts the PR pane chromeless and lifts its refresh into the shell header", async () => {
-    renderSidebar({ tab: "pr", contextTarget: { kind: "chat", sessionId: "chat-1" } });
-
-    // One header, not two: the pane surrenders its own title bar...
-    expect(screen.getByTestId("pr-pane").getAttribute("data-chromeless")).toBe("true");
-    // ...and does not lose its one action doing so.
-    await waitFor(() => expect(screen.getByLabelText("Refresh pull request")).toBeTruthy());
-    expect(screen.getAllByText("Pull request")).toHaveLength(1);
   });
 
   it("returns to the picker on Escape from inside the pane", () => {

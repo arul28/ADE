@@ -288,8 +288,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   sessionId = null,
   onClose,
   runtimePin = null,
-  chromeless = false,
-  onRegisterRefresh,
 }: {
   laneId: string;
   branchName?: string | null;
@@ -305,23 +303,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   onClose?: () => void;
   /** See `ChatGitToolbar.runtimePin` — the machine this lane's PR row lives on. */
   runtimePin?: OpenProjectBinding | null;
-  /**
-   * Drops this pane's own title bar.
-   *
-   * Set by hosts that already draw one — the Work tools pane, whose shell
-   * header names the tool and owns the close button. Two stacked headers
-   * saying "Pull request" and "Tools · Pull request" is 72px of chrome above
-   * an 80px card. The refresh action does not disappear with the bar: it is
-   * published through `onRegisterRefresh` for the host to place.
-   */
-  chromeless?: boolean;
-  /**
-   * Hands the host the refresh action while `chromeless`, and `null` on
-   * unmount. Reported with its in-flight flag rather than as a bare callback so
-   * the host's button can spin off the same state the title bar's did instead
-   * of guessing at a duration.
-   */
-  onRegisterRefresh?: (action: { run: () => void; syncing: boolean } | null) => void;
 }) {
   const navigate = useNavigate();
   // Also rendered from the Work view area, which has no chat scope above it,
@@ -588,41 +569,31 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   // The ↻ spins for a manual sync in flight OR a backend reconcile-on-focus.
   const syncSpinning = syncing || reconciling;
 
-  // Publish the action the hidden title bar used to own. Re-runs when the
-  // handler or the spinner changes so the host's button stays truthful.
-  useEffect(() => {
-    if (!chromeless || !onRegisterRefresh) return undefined;
-    onRegisterRefresh({ run: () => void handleSyncLanePr(), syncing: syncSpinning });
-    return () => onRegisterRefresh(null);
-  }, [chromeless, handleSyncLanePr, onRegisterRefresh, syncSpinning]);
-
   return (
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
-      {chromeless ? null : (
-        <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
-          <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
-          <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">Pull request</span>
-          <button
-            type="button"
-            onClick={() => void handleSyncLanePr()}
-            disabled={syncing}
-            className={cn(titleBarIconButton, "ml-auto")}
-            title={syncSpinning ? "Syncing PR status…" : "Refresh pull request"}
-            aria-label="Refresh pull request"
-          >
-            <ArrowsClockwise size={12} weight="bold" className={cn(syncSpinning && "animate-spin")} />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className={titleBarIconButton}
-            title="Close"
-            aria-label="Close pull request panel"
-          >
-            <X size={12} weight="bold" />
-          </button>
-        </div>
-      )}
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
+        <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
+        <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">Pull request</span>
+        <button
+          type="button"
+          onClick={() => void handleSyncLanePr()}
+          disabled={syncing}
+          className={cn(titleBarIconButton, "ml-auto")}
+          title={syncSpinning ? "Syncing PR status…" : "Refresh pull request"}
+          aria-label="Refresh pull request"
+        >
+          <ArrowsClockwise size={12} weight="bold" className={cn(syncSpinning && "animate-spin")} />
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className={titleBarIconButton}
+          title="Close"
+          aria-label="Close pull request panel"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
         {loading ? (
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>

@@ -4,9 +4,13 @@
  * Its own file because the strip is the one part of the chrome with real
  * keyboard semantics to get right — a tablist with roving focus — and that
  * logic was invisible buried in the middle of a 3,000-line render.
+ *
+ * It renders nothing at all for a single tab. One tab is not a choice, and a
+ * strip that draws a lone chip above the address bar is 28px of furniture
+ * restating what the tool header already says.
  */
 import type { Dispatch, KeyboardEvent, MutableRefObject, SetStateAction } from "react";
-import { Globe, Plus, Robot, SpinnerGap, X } from "@phosphor-icons/react";
+import { Globe, Plus, Robot, X } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
@@ -114,14 +118,18 @@ export function BrowserTabStrip({
     }
   };
 
+  // One tab is not a choice. The title lives in the tool header above, so the
+  // strip stays out of the way until there is something to switch between.
+  if (tabs.length <= 1) return null;
+
   return (
-    <div className="relative flex h-[28px] min-w-0 shrink-0 select-none items-center overflow-hidden bg-white/[0.02]">
+    <div className="relative flex h-[32px] min-w-0 shrink-0 select-none items-center overflow-hidden">
       <div
         ref={stripRef}
         onScroll={onScroll}
         role="tablist"
         aria-label="ADE browser tabs"
-        className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto px-1.5"
+        className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto px-2"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId;
@@ -146,8 +154,8 @@ export function BrowserTabStrip({
               }}
               onKeyDown={(event) => handleTabKeyDown(event, index)}
               className={cn(
-                "group/tab relative inline-flex h-[22px] max-w-[188px] min-w-[92px] shrink-0 items-center",
-                "gap-1.5 rounded-[7px] px-2 text-[10.5px]",
+                "group/tab relative inline-flex h-6 max-w-[144px] min-w-[84px] shrink-0 items-center",
+                "gap-1.5 rounded-md px-2 text-[12px]",
                 "transition-colors duration-[120ms] ease-out",
                 active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
               )}
@@ -157,13 +165,13 @@ export function BrowserTabStrip({
                 reduceMotion ? (
                   <span
                     aria-hidden="true"
-                    className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-white/[0.07]"
                   />
                 ) : (
                   <motion.span
                     aria-hidden="true"
                     layoutId={TAB_INDICATOR_LAYOUT_ID}
-                    className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-white/[0.07]"
                     transition={TAB_INDICATOR_SPRING}
                   />
                 )
@@ -179,9 +187,7 @@ export function BrowserTabStrip({
                   TOOLBAR_FOCUS,
                 )}
               >
-                {tab.isLoading ? (
-                  <SpinnerGap size={11} className="shrink-0 animate-spin text-sky-300/75" />
-                ) : tab.faviconUrl && !failedFavicons[tab.id] ? (
+                {tab.faviconUrl && !failedFavicons[tab.id] ? (
                   <motion.img
                     key={tab.faviconUrl}
                     src={tab.faviconUrl}
@@ -194,10 +200,10 @@ export function BrowserTabStrip({
                     onError={() => setFailedFavicons((previous) => (
                       previous[tab.id] ? previous : { ...previous, [tab.id]: true }
                     ))}
-                    className="h-[11px] w-[11px] shrink-0 rounded-[2px] object-contain"
+                    className="h-3 w-3 shrink-0 rounded-[2px] object-contain"
                   />
                 ) : (
-                  <Globe size={11} className={cn("shrink-0", active ? "text-fg/70" : "text-muted-fg/50")} />
+                  <Globe size={12} className={cn("shrink-0", active ? "text-fg/70" : "text-muted-fg/50")} />
                 )}
                 <span className="min-w-0 truncate leading-none">{label}</span>
                 {tab.recording ? (
@@ -221,7 +227,7 @@ export function BrowserTabStrip({
                 tabIndex={-1}
                 aria-label={`Close ${label}`}
                 className={cn(
-                  "relative -mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
+                  "relative -mr-1 inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px]",
                   "text-muted-fg/45 opacity-0 transition-colors duration-[120ms] ease-out",
                   "hover:bg-white/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
                   TOOLBAR_FOCUS,
@@ -231,7 +237,7 @@ export function BrowserTabStrip({
                   onCloseTab(tab.id);
                 }}
               >
-                <X size={9} />
+                <X size={10} />
               </button>
             </div>
           );
@@ -240,13 +246,13 @@ export function BrowserTabStrip({
       {fades.start ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute left-0 top-0 h-full w-5 bg-gradient-to-r from-[var(--color-bg)] to-transparent"
+          className="pointer-events-none absolute left-0 top-0 h-full w-6 bg-gradient-to-r from-[var(--color-bg)] to-transparent"
         />
       ) : null}
       {fades.end ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute right-8 top-0 h-full w-5 bg-gradient-to-l from-[var(--color-bg)] to-transparent"
+          className="pointer-events-none absolute right-8 top-0 h-full w-6 bg-gradient-to-l from-[var(--color-bg)] to-transparent"
         />
       ) : null}
       <button
@@ -254,15 +260,15 @@ export function BrowserTabStrip({
         disabled={Boolean(busy) || !apiAvailable}
         onClick={onNewTab}
         className={cn(
-          "mr-1.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px]",
-          "text-muted-fg/55 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+          "mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+          "text-muted-fg/60 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
           "disabled:cursor-not-allowed disabled:opacity-45",
           TOOLBAR_FOCUS,
         )}
         title="New tab"
         aria-label="New tab"
       >
-        {busy === "new-tab" ? <SpinnerGap size={11} className="animate-spin" /> : <Plus size={11} />}
+        <Plus size={12} />
       </button>
     </div>
   );

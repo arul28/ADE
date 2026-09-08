@@ -91,11 +91,25 @@ export function mergeDevServer(
   return merged;
 }
 
-/** `npm run dev · :5173`, or just `:5173` when nothing named the port. */
-export function devServerChipLabel(server: BrowserDevServer): string {
-  const port = server.port != null
-    ? `:${server.port}`
+/**
+ * How one local server reads as a launchpad row.
+ *
+ * `localhost:5173` is the server's identity, so it is the title; the command
+ * that opened it is the detail underneath. The old single chip label glued the
+ * two together (`npm run dev · :5173`) because a chip has one line — a row has
+ * two, and stacking them is what lets a column of six ports be scanned by port.
+ */
+export function devServerRowLabels(server: BrowserDevServer): {
+  title: string;
+  subtitle: string | null;
+} {
+  const title = server.port != null
+    ? `localhost:${server.port}`
     : browserHostLabel(server.url) ?? server.url;
-  if (server.source) return `${server.source} · ${port}`;
-  return server.port != null ? `localhost${port}` : port;
+  return { title, subtitle: server.source };
+}
+
+/** `:5173`, the one thing small enough to print inside a 48×30 thumbnail. */
+export function devServerThumbLabel(server: BrowserDevServer): string {
+  return server.port != null ? `:${server.port}` : browserHostLabel(server.url) ?? "";
 }

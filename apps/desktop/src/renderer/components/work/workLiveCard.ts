@@ -393,13 +393,55 @@ export function formatWorkLiveAge(elapsedMs: number): string {
 
 /* ── Placement ────────────────────────────────────────────────────────────── */
 
-export const WORK_LIVE_CARD_WIDTH = 260;
+/**
+ * The card's box, following t3's mini-player: a 320×320 envelope, never smaller
+ * than 240×150, with a 12px gap to every edge of the column.
+ *
+ * The envelope is square; the card is not. Each tool gets the aspect its pixels
+ * actually have, scaled to fill the envelope, so the `object-contain` inside
+ * letterboxes as little as possible — a 16:10 page in a square box would be
+ * 37% black bars, and a phone in a 16:10 box is worse.
+ */
+export const WORK_LIVE_CARD_MAX_SIZE = 320;
+export const WORK_LIVE_CARD_MIN_WIDTH = 240;
+export const WORK_LIVE_CARD_MIN_HEIGHT = 150;
+/** The widest the card ever gets; what the preview stream is sized against. */
+export const WORK_LIVE_CARD_WIDTH = WORK_LIVE_CARD_MAX_SIZE;
 /** 16:10, matching the aspect the browser and App Control both preview at. */
 export const WORK_LIVE_CARD_ASPECT = 16 / 10;
+/** The simulator is a phone; 3:4 is the closest honest frame that still fits. */
+export const WORK_LIVE_CARD_PORTRAIT_ASPECT = 3 / 4;
 export const WORK_LIVE_CARD_INSET = 12;
 /** Below either of these the card would cover the thing it sits next to. */
 export const WORK_LIVE_CARD_MIN_HOST_WIDTH = 380;
 export const WORK_LIVE_CARD_MIN_HOST_HEIGHT = 260;
+
+export type WorkLiveCardSize = { width: number; height: number };
+
+/** The largest box of `aspect` that fits the envelope, floored at the minimum. */
+function fitCardEnvelope(aspect: number): WorkLiveCardSize {
+  const landscape = aspect >= 1;
+  return {
+    width: Math.max(
+      WORK_LIVE_CARD_MIN_WIDTH,
+      landscape ? WORK_LIVE_CARD_MAX_SIZE : Math.round(WORK_LIVE_CARD_MAX_SIZE * aspect),
+    ),
+    height: Math.max(
+      WORK_LIVE_CARD_MIN_HEIGHT,
+      landscape ? Math.round(WORK_LIVE_CARD_MAX_SIZE / aspect) : WORK_LIVE_CARD_MAX_SIZE,
+    ),
+  };
+}
+
+/** 320×200. */
+export const WORK_LIVE_CARD_LANDSCAPE_SIZE = fitCardEnvelope(WORK_LIVE_CARD_ASPECT);
+/** 240×320. */
+export const WORK_LIVE_CARD_PORTRAIT_SIZE = fitCardEnvelope(WORK_LIVE_CARD_PORTRAIT_ASPECT);
+
+/** The box this tool's card occupies. Only the simulator is portrait. */
+export function workLiveCardSize(tool: WorkLiveScreenTool | null): WorkLiveCardSize {
+  return tool === "ios" ? WORK_LIVE_CARD_PORTRAIT_SIZE : WORK_LIVE_CARD_LANDSCAPE_SIZE;
+}
 
 /**
  * The frame width to ask the source for: the card's own width in DEVICE
@@ -424,9 +466,12 @@ export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): n
 export function workLiveCardFits(
   host: { width: number; height: number },
   bottomReserve = 0,
+  /** The box actually being placed; defaults to the largest one any tool takes. */
+  card: WorkLiveCardSize = { width: WORK_LIVE_CARD_MAX_SIZE, height: WORK_LIVE_CARD_MAX_SIZE },
 ): boolean {
-  return host.width >= WORK_LIVE_CARD_MIN_HOST_WIDTH
-    && host.height >= WORK_LIVE_CARD_MIN_HOST_HEIGHT + Math.max(0, bottomReserve);
+  const minWidth = Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2);
+  const minHeight = Math.max(WORK_LIVE_CARD_MIN_HOST_HEIGHT, card.height + WORK_LIVE_CARD_INSET * 2);
+  return host.width >= minWidth && host.height >= minHeight + Math.max(0, bottomReserve);
 }
 
 /**
@@ -440,15 +485,18 @@ export function workLiveCardFits(
 export function workLiveCardTravel(args: {
   host: { width: number; height: number };
   cardHeight: number;
+  /** Defaults to the widest card, so a caller that omits it under-reaches. */
+  cardWidth?: number;
   bottomReserve?: number;
 }): { minLeft: number; maxLeft: number; minTop: number; maxTop: number } {
   const bottomReserve = Math.max(0, args.bottomReserve ?? 0);
+  const cardWidth = args.cardWidth ?? WORK_LIVE_CARD_WIDTH;
   const minLeft = WORK_LIVE_CARD_INSET;
   const minTop = WORK_LIVE_CARD_INSET;
   return {
     minLeft,
     minTop,
-    maxLeft: Math.max(minLeft, args.host.width - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET),
+    maxLeft: Math.max(minLeft, args.host.width - cardWidth - WORK_LIVE_CARD_INSET),
     maxTop: Math.max(minTop, args.host.height - args.cardHeight - WORK_LIVE_CARD_INSET - bottomReserve),
   };
 }
@@ -459,6 +507,7 @@ export function clampWorkLiveCardRect(args: {
   left: number;
   top: number;
   cardHeight: number;
+  cardWidth?: number;
   bottomReserve?: number;
 }): { left: number; top: number } {
   const travel = workLiveCardTravel(args);
@@ -477,6 +526,7 @@ export function workLiveCardRect(args: {
   host: { width: number; height: number };
   position: WorkLiveCardPosition | null;
   cardHeight: number;
+  cardWidth?: number;
   /** Space to leave at the bottom, e.g. the composer's height. */
   bottomReserve?: number;
 }): { left: number; top: number } {
@@ -487,7 +537,7 @@ export function workLiveCardRect(args: {
   }
   return clampWorkLiveCardRect({
     ...args,
-    left: position.xPct * (host.width - WORK_LIVE_CARD_WIDTH),
+    left: position.xPct * (host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH)),
     top: position.yPct * (host.height - cardHeight),
   });
 }
@@ -502,6 +552,7 @@ export function workLiveCardDragConstraints(args: {
   host: { width: number; height: number };
   origin: { left: number; top: number };
   cardHeight: number;
+  cardWidth?: number;
   bottomReserve?: number;
 }): { left: number; right: number; top: number; bottom: number } {
   const travel = workLiveCardTravel(args);
@@ -519,8 +570,9 @@ export function workLiveCardPositionFromRect(args: {
   left: number;
   top: number;
   cardHeight: number;
+  cardWidth?: number;
 }): WorkLiveCardPosition {
-  const spanX = Math.max(1, args.host.width - WORK_LIVE_CARD_WIDTH);
+  const spanX = Math.max(1, args.host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH));
   const spanY = Math.max(1, args.host.height - args.cardHeight);
   return {
     xPct: Math.max(0, Math.min(1, args.left / spanX)),

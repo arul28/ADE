@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Play, Terminal as TerminalIcon, WarningCircle } from "@phosphor-icons/react";
+import { Play, WarningCircle } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
   AgentChatFileRef,
@@ -15,7 +15,6 @@ import { formatToolTypeLabel } from "../../lib/sessions";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
-import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
@@ -23,13 +22,14 @@ import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
+import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 
 /**
  * One component per Work tool, keyed by tool id.
  *
  * This used to be a 270-line `useMemo` in `WorkSidebar` dispatching through
- * seven sequential `if (effectiveTool === "…")` blocks over a hand-maintained
+ * six sequential `if (effectiveTool === "…")` blocks over a hand-maintained
  * 28-entry dependency array — a memo that could never memoize (half its inputs
  * changed on every status event) and a dep list nothing kept honest. A lookup
  * into this map does the same job: React memoizes per component, each panel's
@@ -39,8 +39,6 @@ import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
  * Every panel takes the same explicit props object, so the pane hands over one
  * value and the contract is readable in one place.
  */
-export type PrRefreshAction = { run: () => void; syncing: boolean };
-
 export type WorkToolPanelProps = {
   laneId: string | null;
   /** The lane's worktree path, for the panels that run inside it. */
@@ -55,7 +53,12 @@ export type WorkToolPanelProps = {
   toolContext: WorkToolContext;
   pinnedMachineOffline: boolean;
   pinnedMachineName: string | null;
-  /** Lane-attribution or context-disabled prose, shown above the native panels. */
+  /**
+   * Lane attribution: this tool is attached to a DIFFERENT lane than the one on
+   * screen. A real state warning, not an explanation of a capability — the
+   * panels drop their controls when a capability is absent rather than
+   * narrating it in a banner.
+   */
   warningReason: string | null;
   canInsertContext: boolean;
   shouldPersistPanelAttachment: boolean;
@@ -72,7 +75,6 @@ export type WorkToolPanelProps = {
   onAddIosContext: ((item: IosElementContextItem) => void) | undefined;
   onInsertDraft: ((text: string) => void) | undefined;
   onResumeEndedSession: () => void;
-  onRegisterPrRefresh: (action: PrRefreshAction | null) => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
   onClose: () => void;
 };
@@ -89,70 +91,26 @@ export function WarningBanner({ message }: { message: string }) {
 }
 
 /**
- * The pane's empty state, in the terminal drawer's own language.
+ * The pane's empty state: one line, and at most one thing to press.
  *
- * A bare sentence centred in 600px of black reads as a failure — that is what
- * "Continue this OpenCode CLI session before opening an attached terminal." was
- * doing here while the drawer three lines below had a proper icon, headline and
- * button. Same anatomy in both places: a duotone glyph, a headline you can act
- * on, one line of explanation, then whatever actions exist.
+ * Every tool used to draw a duotone glyph, a headline, a wrapped paragraph
+ * explaining the tool, and — in the terminal's case — a second button and a
+ * code hint under that. Five elements stacked in a 280px column, none of them
+ * the reason you opened the tool. `WorkToolEmptyLine` is the whole anatomy now.
  */
 export function WorkToolEmptyState({
   title,
-  message,
   actions,
-  hint,
 }: {
   title: string;
-  message: string;
   actions?: ReactNode;
-  hint?: ReactNode;
 }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
-      <TerminalIcon size={22} weight="duotone" className="text-fg/25" />
-      <div className="flex flex-col gap-1">
-        <p className="font-sans text-[13px] font-semibold text-fg/80">{title}</p>
-        <p className="max-w-[240px] font-sans text-[11.5px] leading-[17px] text-muted-fg">{message}</p>
-      </div>
-      {actions}
-      {hint}
-    </div>
-  );
+  return <WorkToolEmptyLine title={title} action={actions} />;
 }
-
-/** The one line that tells you these shells are also an agent surface. */
-function TerminalCliHint() {
-  return (
-    <p className="font-sans text-[11px] leading-4 text-muted-fg/65">
-      Agents read and drive these shells with{" "}
-      <code className="rounded bg-white/[0.05] px-1 py-px font-mono text-[10.5px] text-fg/70">ade terminal</code>
-    </p>
-  );
-}
-
-const TERMINAL_EMPTY_PRIMARY_CLASS = cn(
-  "inline-flex h-8 items-center gap-2 rounded-md border border-violet-400/24 bg-violet-500/[0.10] px-3",
-  "font-sans text-[12px] font-medium text-fg/88 transition-colors",
-  "hover:border-violet-400/40 hover:bg-violet-500/[0.16] hover:text-fg",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-  "disabled:cursor-default disabled:opacity-45",
-);
-
-const TERMINAL_EMPTY_SECONDARY_CLASS = cn(
-  "inline-flex h-8 items-center rounded-md border border-white/[0.10] px-3 font-sans text-[12px]",
-  "font-medium text-muted-fg transition-colors hover:border-white/20 hover:text-fg",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-  "disabled:cursor-default disabled:opacity-45",
-);
 
 /** Every tool below the terminal and the browser needs a lane to talk about. */
 function NoLaneNotice() {
-  return (
-    <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-muted-fg">
-      Select a lane or open a Work session to use the sidebar.
-    </div>
-  );
+  return <WorkToolEmptyLine title="Select a lane to use this tool" />;
 }
 
 /** The native panels share one frame: optional warning bar, then the panel. */
@@ -189,63 +147,48 @@ function WorkTerminalTool({
   onClose,
 }: WorkToolPanelProps) {
   if (!laneId) {
-    return (
-      <WorkToolEmptyState
-        title="No lane selected"
-        message="Pick a lane or open a Work session and its shells appear here."
-      />
-    );
+    return <WorkToolEmptyState title="Select a lane to open shells" />;
   }
   if (!terminalOwnerSessionId) {
     // An ENDED session is the common case here — you left a CLI running, it
-    // finished, and the pane still has to be useful. It gets the one action
-    // that makes shells possible again instead of a sentence telling you to go
-    // and find that action yourself.
+    // finished, and the pane still has to be useful. One row, two ghost
+    // controls: the sentence explaining what "ended" means was doing no work
+    // the header above it was not already doing.
     const endedSession = activeSession?.status && activeSession.status !== "running" ? activeSession : null;
     if (endedSession) {
       return (
-        <WorkToolEmptyState
-          title="This session has ended"
-          // `formatToolTypeLabel` already ends in "session" for the CLI tools
-          // ("OpenCode CLI session"), so no second "session" here.
-          message={`Resume this ${formatToolTypeLabel(endedSession.toolType)} to attach shells to it again.`}
-          actions={(
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onResumeEndedSession}
-                disabled={resumingSession}
-                className={TERMINAL_EMPTY_PRIMARY_CLASS}
-              >
-                <Play size={13} weight="fill" />
-                <span>{resumingSession ? "Resuming…" : "Resume session"}</span>
-              </button>
-              {/* `onClose`, not the pane's `closePane`: this branch only renders
-                  for the terminal tool, where there is no browser view to park. */}
-              <button type="button" onClick={onClose} className={TERMINAL_EMPTY_SECONDARY_CLASS}>
-                Close
-              </button>
-            </div>
-          )}
-          hint={<TerminalCliHint />}
-        />
+        <div className="flex h-full min-h-0 items-center justify-center px-4">
+          <div
+            data-testid="terminal-ended-card"
+            className="flex w-full max-w-[320px] items-center gap-2 rounded-[10px] px-2 py-1.5 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]"
+          >
+            {/* `formatToolTypeLabel` already ends in "session" for the CLI
+                tools ("OpenCode CLI session"), so no second "session" here. */}
+            <span className="min-w-0 flex-1 truncate font-sans text-[13px] text-fg/80">
+              {formatToolTypeLabel(endedSession.toolType)} ended
+            </span>
+            <button
+              type="button"
+              onClick={onResumeEndedSession}
+              disabled={resumingSession}
+              className={WORK_TOOL_CHROME_CHIP}
+            >
+              <Play size={12} weight="fill" />
+              <span>{resumingSession ? "Resuming…" : "Resume"}</span>
+            </button>
+            {/* `onClose`, not the pane's `closePane`: this branch only renders
+                for the terminal tool, where there is no browser view to park. */}
+            <button type="button" onClick={onClose} className={WORK_TOOL_CHROME_CHIP}>
+              Close
+            </button>
+          </div>
+        </div>
       );
     }
-    return (
-      <WorkToolEmptyState
-        title="Start a shell in this lane"
-        message="Shells attach to a chat or a running agent CLI session. Open one and they land here."
-        hint={<TerminalCliHint />}
-      />
-    );
+    return <WorkToolEmptyState title="Start a shell in this lane" />;
   }
   if (pinnedMachineOffline) {
-    return (
-      <WorkToolEmptyState
-        title={`${pinnedMachineName} is offline`}
-        message="Its shells are still there. They come back when the machine answers again."
-      />
-    );
+    return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
   return (
     <ChatTerminalDrawer
@@ -258,7 +201,6 @@ function WorkTerminalTool({
       laneId={laneId}
       chatSessionId={terminalOwnerSessionId}
       runtimePin={runtimePin}
-      emptyMessage="Shells you open here stay attached to this session."
     />
   );
 }
@@ -311,12 +253,7 @@ function WorkGitTool({
   const navigate = useNavigate();
   if (!laneId) return <NoLaneNotice />;
   if (pinnedMachineOffline) {
-    return (
-      <WorkToolEmptyState
-        title={`${pinnedMachineName} is offline`}
-        message="Git for this lane lives on that machine, so there is nothing to read from here yet."
-      />
-    );
+    return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
   const hasDiffSelection = Boolean(selectedPath || selectedCommit);
   return (
@@ -326,6 +263,7 @@ function WorkGitTool({
           key={`work-git:${runtimePin?.key ?? "bound"}:${laneId}`}
           laneId={laneId}
           runtimePin={runtimePin}
+          variant="pane"
           autoRebaseEnabled={false}
           onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
           onSelectFile={onSelectFile}
@@ -362,35 +300,6 @@ function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
       pin={runtimePin}
       embedded
     />
-  );
-}
-
-function WorkPrTool({
-  laneId,
-  activeLane,
-  activeSession,
-  panelSessionId,
-  runtimePin,
-  onRegisterPrRefresh,
-  onToolChange,
-}: WorkToolPanelProps) {
-  if (!laneId) return <NoLaneNotice />;
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ChatPrPane
-        key={`work-pr:${runtimePin?.key ?? "bound"}:${laneId}`}
-        laneId={laneId}
-        branchName={activeLane?.branchRef ?? null}
-        sessionTitle={activeSession?.title ?? null}
-        sessionId={panelSessionId}
-        runtimePin={runtimePin}
-        onClose={() => onToolChange(null)}
-        // The shell header above already says "Pull request" and owns the close
-        // button; the pane's refresh moves up into it.
-        chromeless
-        onRegisterRefresh={onRegisterPrRefresh}
-      />
-    </div>
   );
 }
 
@@ -469,5 +378,4 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
-  pr: WorkPrTool,
 };

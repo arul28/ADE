@@ -564,6 +564,7 @@ const TOOL_SPECS: ToolSpec[] = [
         toolName: { type: "string" },
         command: { type: "string" },
         callerRoot: { type: "string", description: "Absolute directory that relative input paths are resolved against. Defaults to the agent's workspace root." },
+        callerRootSource: { type: "string", description: "Where callerRoot came from (e.g. \"cwd\" or \"env ADE_WORKSPACE_ROOT\"). Reported back in the authorization error so a caller can see which path was used." },
         inputs: {
           type: "array",
           items: {
@@ -2119,6 +2120,19 @@ function isPathWithinAuthorizedRoot(root: string, candidate: string): boolean {
   }
 }
 
+/**
+ * Free-text label for where the caller says its `callerRoot` came from.
+ *
+ * Untrusted input that only ever lands in an error string, so it is bounded and
+ * stripped of newlines rather than validated against an enum — a caller on an
+ * older CLI sends nothing at all, and "cwd" is the historic behaviour.
+ */
+function describeCallerRootSource(raw: unknown): string {
+  const value = asOptionalTrimmedString(raw);
+  if (!value) return "cwd";
+  return value.replace(/[\r\n]+/g, " ").slice(0, 80);
+}
+
 async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2169,9 +2183,19 @@ async function resolveAuthorizedComputerUseIngestRoot(
     callerRoot
     && !isPathWithinAuthorizedRoot(authorizedRoot, callerRoot)
   ) {
+    // Name the path, where it came from, and the root it had to be inside.
+    // The bare rule was unactionable: an agent whose shell had wandered out of
+    // its worktree could not tell whether the CLI had sent its cwd or an
+    // environment-provided root, so it retried the same failing command.
+    const source = describeCallerRootSource(toolArgs.callerRootSource);
+    // Report the canonical root: the check realpaths both sides, so the raw
+    // lane path can differ from the one the caller has to be inside.
+    const canonicalAuthorizedRoot = canonicalAuthorizationPath(authorizedRoot);
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "callerRoot must be inside the server-authorized lane worktree",
+      "callerRoot must be inside the server-authorized lane worktree: "
+      + `used ${callerRoot} (from ${source}), authorized root is ${canonicalAuthorizedRoot}. `
+      + `Run ade from inside that worktree, or set ADE_WORKSPACE_ROOT to it.`,
     );
   }
   const canonicalRoot = canonicalAuthorizationPath(authorizedRoot);
@@ -4992,12 +5016,21 @@ async function runTool(args: {
         }
       }
       return {
+        // The scope is part of the answer: an agent that sees only rows cannot
+        // tell whether it is looking at its own chat, its lane, or the project.
+        scope: { projectWide: false, owners: owners.map((owner) => ({ kind: owner.kind, id: owner.id })) },
         artifacts: [...artifacts.values()]
           .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
           .slice(0, limit),
       };
     }
     return {
+      scope: {
+        projectWide: !requestedOwnerKind && !requestedOwnerId,
+        owners: requestedOwnerKind && requestedOwnerId
+          ? [{ kind: requestedOwnerKind, id: requestedOwnerId }]
+          : authorizedOwners.map((owner) => ({ kind: owner.kind, id: owner.id })),
+      },
       artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
         ownerKind: requestedOwnerKind as any,
         ownerId: requestedOwnerId,

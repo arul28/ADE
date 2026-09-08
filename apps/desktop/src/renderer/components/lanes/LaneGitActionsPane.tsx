@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   selectActiveProjectStateKey,
@@ -12,7 +12,15 @@ import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
 import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
+import { PaneTooltip } from "../ui/PaneTooltip";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
+import {
+  WORK_TOOL_CHROME_CHIP,
+  WORK_TOOL_CHROME_CHIP_WRAP,
+  WORK_TOOL_CHROME_META,
+  WORK_TOOL_CHROME_ROW,
+  WorkToolChromeButton,
+} from "../terminals/workToolChrome";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
 import { LaneDiffPane } from "./LaneDiffPane";
@@ -424,6 +432,7 @@ function SectionCard({
   children,
   dataTestId,
   showDescription = false,
+  plain = false,
   sectionStyle,
   headerStyle,
   bodyStyle,
@@ -434,10 +443,32 @@ function SectionCard({
   children: React.ReactNode;
   dataTestId?: string;
   showDescription?: boolean;
+  /**
+   * Drop the card entirely: no border, no fill, no rule under the title — just
+   * a 12px muted label over the rows. Two nested cards inside a 440px pane is
+   * three frames deep before any content, and the pane already has a header.
+   */
+  plain?: boolean;
   sectionStyle?: React.CSSProperties;
   headerStyle?: React.CSSProperties;
   bodyStyle?: React.CSSProperties;
 }) {
+  if (plain) {
+    return (
+      <section
+        data-testid={dataTestId}
+        style={{ display: "flex", flexDirection: "column", minWidth: 0, ...sectionStyle }}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-1">
+          <span className="text-[12px] font-medium text-muted-fg">{title}</span>
+          {aside}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...bodyStyle }}>
+          {children}
+        </div>
+      </section>
+    );
+  }
   return (
     <section
       data-testid={dataTestId}
@@ -615,7 +646,8 @@ export function LaneGitActionsPane({
   currentMachineName,
   currentMachineId,
   currentMachineHeadSha = null,
-  runtimePin = null
+  runtimePin = null,
+  variant = "page"
 }: {
   laneId: string | null;
   active?: boolean;
@@ -660,8 +692,19 @@ export function LaneGitActionsPane({
    * changes.
    */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Where this pane is mounted.
+   *
+   * "page" is the Lanes tab: a wide surface where the uppercase status header,
+   * the labelled button row and the advanced tray all fit and all belong.
+   * "pane" is the Work tools pane — one 40px chrome row in the same language
+   * the browser and terminal use there, with the same actions as ghost glyphs.
+   * Only the chrome differs; every handler below is shared.
+   */
+  variant?: "page" | "pane";
 }) {
   const navigate = useNavigate();
+  const isPane = variant === "pane";
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
@@ -1855,118 +1898,222 @@ export function LaneGitActionsPane({
     (selectedPath && selectedMode) || selectedCommit,
   );
 
+  /*
+    The Work tools pane's one chrome row.
+
+    Same four facts the page header carries — which branch, how far from the
+    remote, and the four things you do about it — spent as a ghost chip, a
+    muted count and four 28px glyphs instead of an uppercase status bar plus a
+    row of labelled buttons. Nothing here is new behaviour: every handler is
+    the one the page's own control calls.
+  */
+  const paneAhead = syncStatus?.hasUpstream ? syncStatus.ahead : lane?.status.ahead ?? 0;
+  const paneBehind = syncStatus?.hasUpstream ? syncStatus.behind : lane?.status.behind ?? 0;
+  const paneChromeRow = (
+    <div className={WORK_TOOL_CHROME_ROW} data-testid="git-pane-chrome">
+      <PaneTooltip label={lane?.branchRef ?? "No branch"} side="bottom" className={WORK_TOOL_CHROME_CHIP_WRAP}>
+        <span className={cn(WORK_TOOL_CHROME_CHIP, "cursor-default font-mono")}>
+          <BranchIcon size={12} weight="bold" aria-hidden className="shrink-0 text-muted-fg" />
+          <span className="min-w-0 truncate">{lane?.branchRef ?? "No branch"}</span>
+        </span>
+      </PaneTooltip>
+      {paneAhead > 0 || paneBehind > 0 ? (
+        <PaneTooltip
+          label={`${paneAhead} ahead, ${paneBehind} behind ${syncStatus?.hasUpstream ? "remote" : "base"}`}
+          side="bottom"
+        >
+          <span className={WORK_TOOL_CHROME_META} data-testid="git-pane-divergence">
+            {paneAhead}↑ {paneBehind}↓
+          </span>
+        </PaneTooltip>
+      ) : null}
+
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <WorkToolChromeButton
+          label={amendCommit ? "Amend commit" : "Commit"}
+          shortcut={`${modifierKeyLabel}+Enter`}
+          onClick={() => { void submitCommit(); }}
+          disabled={(!hasStaged && !amendCommit) || busyAction != null}
+          testId="git-pane-commit"
+        >
+          <GitCommit size={16} />
+        </WorkToolChromeButton>
+        <WorkToolChromeButton
+          label={`Pull (${syncMode})`}
+          onClick={() => runPull(syncMode)}
+          disabled={!laneId || busyAction != null || pullBlockedByConflict}
+          testId="git-pane-pull"
+        >
+          <ArrowDown size={16} />
+        </WorkToolChromeButton>
+        <WorkToolChromeButton
+          label={upstreamMissing
+            ? "Recreate remote branch"
+            : syncStatus?.hasUpstream === false
+              ? "Publish branch"
+              : nextActionHint?.action === "force_push_lease"
+                ? "Force push (lease)"
+                : "Push"}
+          onClick={() => {
+            if (nextActionHint?.action === "force_push_lease") {
+              const ok = window.confirm(
+                "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+              );
+              if (!ok) return;
+              runPush(true);
+              return;
+            }
+            runPush(false);
+          }}
+          disabled={!laneId || busyAction != null}
+          testId="git-pane-push"
+        >
+          <ArrowUp size={16} />
+        </WorkToolChromeButton>
+        <WorkToolChromeButton
+          label="Rebase on parent and push"
+          onClick={() => runRebaseAndPushFlow(true)}
+          disabled={syncButtonDisabled || !lane?.parentLaneId}
+          testId="git-pane-rebase"
+        >
+          <Stack size={16} />
+        </WorkToolChromeButton>
+        <WorkToolChromeButton
+          label="More git actions"
+          onClick={() => setShowAdvanced((prev) => !prev)}
+          active={showAdvanced}
+          testId="git-pane-more"
+        >
+          <DotsThree size={16} weight="bold" />
+        </WorkToolChromeButton>
+        <WorkToolChromeButton
+          label="Refresh"
+          onClick={() => {
+            setShowAdvanced(false);
+            refreshAll({ fetchRemote: true }).catch(() => {});
+          }}
+          testId="git-pane-refresh"
+        >
+          <ArrowsClockwise size={16} className={cn(loading && "animate-spin")} />
+        </WorkToolChromeButton>
+      </div>
+    </div>
+  );
+
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
-      <div
-        className="shrink-0"
-        style={{ padding: "12px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
-      >
-        <div className="flex flex-wrap items-center gap-2" style={{ rowGap: 8 }}>
-          <span
-            className="shrink-0"
-            title={getLaneHeaderDotTitle(lane)}
-            style={{ width: 10, height: 10, borderRadius: "50%", background: headerDotColor }}
-          />
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              letterSpacing: "1px",
-              textTransform: "uppercase",
-              color: COLORS.textPrimary,
-            }}
-            className="truncate"
-            title={lane?.name}
-          >
-            {lane?.name ?? "NO LANE"}
-          </span>
-          {lane?.linearIssue ? (
-            <LinearIssueBadge issue={lane.linearIssue} />
-          ) : null}
-          {lane ? (
-            <>
-              <span
-                title={`Git branch: ${lane.branchRef}`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 5,
-                  padding: "3px 8px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  fontFamily: MONO_FONT,
-                  color: COLORS.accent,
-                  background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
-                  letterSpacing: "0.5px",
-                }}
-              >
-                <BranchIcon size={11} weight="bold" style={{ flexShrink: 0, color: COLORS.accent }} />
-                {lane.branchRef}
-              </span>
-              <span
-                title={lane.status.dirty ? "Worktree has uncommitted changes." : "Worktree is clean."}
-                style={{
-                  padding: "3px 8px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  fontFamily: MONO_FONT,
-                  color: lane.status.dirty ? COLORS.warning : "#10B981",
-                  background: lane.status.dirty ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "#10B98115",
-                  letterSpacing: "0.5px",
-                }}
-              >
-                {lane.status.dirty ? "DIRTY" : "CLEAN"}
-              </span>
-            </>
-          ) : null}
-          <div
-            className="flex flex-wrap items-center gap-2"
-            style={{ marginLeft: responsiveMode === "wide" ? "auto" : 0, color: COLORS.textDim }}
-          >
-            {lane ? (
-              <span
-                style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
-                title={`${lane.status.ahead} commit${lane.status.ahead === 1 ? "" : "s"} ahead of base, ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind base`}
-              >
-                base ↑{lane.status.ahead} ↓{lane.status.behind}
-              </span>
+      {isPane ? paneChromeRow : (
+        <div
+          className="shrink-0"
+          style={{ padding: "12px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        >
+          <div className="flex flex-wrap items-center gap-2" style={{ rowGap: 8 }}>
+            <span
+              className="shrink-0"
+              title={getLaneHeaderDotTitle(lane)}
+              style={{ width: 10, height: 10, borderRadius: "50%", background: headerDotColor }}
+            />
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                letterSpacing: "1px",
+                textTransform: "uppercase",
+                color: COLORS.textPrimary,
+              }}
+              className="truncate"
+              title={lane?.name}
+            >
+              {lane?.name ?? "NO LANE"}
+            </span>
+            {lane?.linearIssue ? (
+              <LinearIssueBadge issue={lane.linearIssue} />
             ) : null}
-            {syncStatus ? (
-              syncStatus.upstreamState === "missing" ? (
+            {lane ? (
+              <>
                 <span
-                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
-                  title="The configured upstream branch no longer exists on remote. It may have been deleted after merge."
+                  title={`Git branch: ${lane.branchRef}`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "3px 8px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.accent,
+                    background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
+                    letterSpacing: "0.5px",
+                  }}
                 >
-                  remote missing
+                  <BranchIcon size={11} weight="bold" style={{ flexShrink: 0, color: COLORS.accent }} />
+                  {lane.branchRef}
                 </span>
-              ) : syncStatus.hasUpstream ? (
+                <span
+                  title={lane.status.dirty ? "Worktree has uncommitted changes." : "Worktree is clean."}
+                  style={{
+                    padding: "3px 8px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    fontFamily: MONO_FONT,
+                    color: lane.status.dirty ? COLORS.warning : "#10B981",
+                    background: lane.status.dirty ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "#10B98115",
+                    letterSpacing: "0.5px",
+                  }}
+                >
+                  {lane.status.dirty ? "DIRTY" : "CLEAN"}
+                </span>
+              </>
+            ) : null}
+            <div
+              className="flex flex-wrap items-center gap-2"
+              style={{ marginLeft: responsiveMode === "wide" ? "auto" : 0, color: COLORS.textDim }}
+            >
+              {lane ? (
                 <span
                   style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
-                  title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}
+                  title={`${lane.status.ahead} commit${lane.status.ahead === 1 ? "" : "s"} ahead of base, ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind base`}
                 >
-                  remote ↑{syncStatus.ahead} ↓{syncStatus.behind}
+                  base ↑{lane.status.ahead} ↓{lane.status.behind}
                 </span>
-              ) : (
-                <span
-                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
-                  title="This lane has not been published to remote yet."
-                >
-                  remote unpublished
-                </span>
-              )
-            ) : null}
+              ) : null}
+              {syncStatus ? (
+                syncStatus.upstreamState === "missing" ? (
+                  <span
+                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
+                    title="The configured upstream branch no longer exists on remote. It may have been deleted after merge."
+                  >
+                    remote missing
+                  </span>
+                ) : syncStatus.hasUpstream ? (
+                  <span
+                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
+                    title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}
+                  >
+                    remote ↑{syncStatus.ahead} ↓{syncStatus.behind}
+                  </span>
+                ) : (
+                  <span
+                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
+                    title="This lane has not been published to remote yet."
+                  >
+                    remote unpublished
+                  </span>
+                )
+              ) : null}
+            </div>
           </div>
+          {lane && originLabel ? (
+            <div
+              title="The parent lane this branch was created from."
+              style={{ marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}
+            >
+              {originLabel}
+            </div>
+          ) : null}
         </div>
-        {lane && originLabel ? (
-          <div
-            title="The parent lane this branch was created from."
-            style={{ marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}
-          >
-            {originLabel}
-          </div>
-        ) : null}
-      </div>
+      )}
 
       {stuckRebase ? (
         <div
@@ -2192,300 +2339,336 @@ export function LaneGitActionsPane({
           className="shrink-0"
           data-testid="action-toolbar"
           style={{
-            padding: "6px 10px",
+            padding: isPane ? "8px" : "6px 10px",
             display: "flex",
             flexDirection: "column",
             gap: 4,
-            background: COLORS.cardBg,
-            borderBottom: `1px solid ${COLORS.border}`,
+            background: isPane ? "transparent" : COLORS.cardBg,
+            borderBottom: isPane ? "none" : `1px solid ${COLORS.border}`,
           }}
         >
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-            {/* Commit controls */}
-            <input
-              disabled={busyAction != null}
-              style={{
-                height: 30,
-                flex: "1 1 180px",
-                minWidth: 0,
-                padding: "0 8px",
-                fontSize: 11,
-                fontFamily: MONO_FONT,
-                letterSpacing: "0.4px",
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                color: COLORS.textSecondary,
-                outline: "none",
-                borderRadius: 6,
-                opacity: busyAction != null ? 0.7 : 1,
-              }}
-              placeholder="Commit message"
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void submitCommit();
-                }
-              }}
-            />
-            <SmartTooltip content={{
-              label: amendCommit ? "Amend ON" : "Amend",
-              description: getAmendSummary(amendCommit),
-              gitCommand: amendCommit ? "git commit --amend" : undefined,
-              effect: amendCommit ? "Your next commit will rewrite the latest commit" : "Click to enable amend mode",
-            }}>
-              <button
-                type="button"
-                style={{
-                  ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
-                  color: amendCommit ? COLORS.warning : COLORS.textDim,
-                  border: `1px solid ${amendCommit ? "color-mix(in srgb, var(--color-warning) 40%, transparent)" : COLORS.outlineBorder}`,
-                  background: amendCommit ? "color-mix(in srgb, var(--color-warning) 10%, transparent)" : "transparent",
-                }}
+          {isPane ? (
+            <div className="flex items-center gap-1.5">
+              <input
                 disabled={busyAction != null}
-                onClick={() => setAmendCommit((prev) => !prev)}
-              >
-                {amendCommit ? "AMEND ON" : "AMEND"}
-              </button>
-            </SmartTooltip>
-            <SmartTooltip content={{
-              label: amendCommit ? "Amend Commit" : "Commit",
-              description: amendCommit ? "Rewrite the latest commit with current staged changes and message." : "Create a new commit from staged changes.",
-              gitCommand: amendCommit ? "git commit --amend" : "git commit",
-              effect: hasStaged
-                ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
-                : "No staged files to commit",
-              shortcut: `${modifierKeyLabel}+Enter`,
-            }}>
-              <button
-                type="button"
-                style={{
-                  ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
-                  opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
-                  pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
-                }}
-                disabled={(!hasStaged && !amendCommit) || busyAction != null}
-                onClick={() => void submitCommit()}
-              >
-                {commitButtonLabel}
-              </button>
-            </SmartTooltip>
-
-            {/* Separator */}
-            <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
-
-            {/* Sync controls */}
-            <div className="flex items-center" style={{ gap: 2 }}>
-              {(["merge", "rebase"] as const).map((mode) => (
-                <SmartTooltip key={mode} content={{
-                  label: mode === "merge" ? "Merge Mode" : "Rebase Mode",
-                  description: getPullModeSummary(mode),
-                  effect: syncMode === mode ? "Currently active" : `Switch pull strategy to ${mode}`,
-                }}>
-                  <button
-                    type="button"
-                    disabled={!laneId || busyAction != null}
-                    onClick={() => setSyncMode(mode)}
-                    style={{
-                      ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
-                      color: syncMode === mode ? COLORS.accent : COLORS.textDim,
-                      border: `1px solid ${syncMode === mode ? "color-mix(in srgb, var(--color-accent) 40%, transparent)" : "transparent"}`,
-                      background: syncMode === mode ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
-                      opacity: !laneId || busyAction != null ? 0.5 : 1,
-                    }}
-                  >
-                    {mode === "merge" ? "MERGE" : "REBASE"}
-                  </button>
-                </SmartTooltip>
-              ))}
-            </div>
-            <SmartTooltip content={{
-              label: `Pull (${syncMode})`,
-              description: getPullModeSummary(syncMode),
-              gitCommand: syncMode === "merge" ? "git pull --no-rebase" : "git pull --rebase",
-              effect: pullBlockedByConflict
-                ? `Blocked: ${conflictState?.kind ?? "conflict"} in progress`
-                : behindCount > 0
-                  ? `Pull ${behindCount} commit${behindCount === 1 ? "" : "s"} from remote`
-                  : "Already up to date with remote",
-              warning: pullBlockedByConflict ? `Resolve the current ${conflictState?.kind ?? "conflict"} first` : undefined,
-            }}>
-              <button
-                type="button"
-                className={behindCount > 0 ? "pull-btn-flash" : undefined}
-                style={{
-                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
-                    ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" }
-                    : {}),
-                }}
-                disabled={!laneId || busyAction != null || pullBlockedByConflict}
-                onClick={() => runPull(syncMode)}
-              >
-                <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
-                PULL
-                {behindCount > 0 && (
-                  <span
-                    style={{
-                      marginLeft: 5,
-                      background: COLORS.accent,
-                      color: "#fff",
-                      borderRadius: 8,
-                      padding: "1px 5px",
-                      fontSize: 9,
-                      fontWeight: 700,
-                      lineHeight: "14px",
-                      minWidth: 16,
-                      textAlign: "center" as const,
-                      display: "inline-block",
-                    }}
-                  >
-                    {behindCount}
-                  </span>
+                data-testid="git-pane-commit-message"
+                className={cn(
+                  "h-7 min-w-0 flex-1 rounded-[7px] bg-white/[0.03] px-2 font-sans text-[12px] text-fg/85",
+                  "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
+                  "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
+                  "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                  "disabled:opacity-50",
                 )}
-              </button>
-            </SmartTooltip>
-            <SmartTooltip content={{
-              label: upstreamMissing ? "Recreate" : syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
-              description: upstreamMissing
-                ? "Recreate the missing remote branch for this lane."
-                : syncStatus?.hasUpstream === false
-                  ? "Create the remote branch and connect this lane to it."
-                  : nextActionHint?.action === "force_push_lease"
-                    ? "Overwrite the remote branch with your local history after a rebase or amend."
-                    : "Send your local commits to the tracked remote branch.",
-              gitCommand: upstreamMissing || syncStatus?.hasUpstream === false
-                ? `git push -u origin ${lane?.branchRef ?? "HEAD"}`
-                : nextActionHint?.action === "force_push_lease"
-                  ? "git push --force-with-lease"
-                  : "git push",
-              effect: upstreamMissing
-                ? `Recreate the remote branch for "${lane?.name ?? ""}"`
-                : syncStatus?.hasUpstream === false
-                  ? `Publish lane "${lane?.name ?? ""}" to remote`
-                  : (syncStatus?.ahead ?? 0) > 0
-                    ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
-                    : "No local commits to push",
-              warning: nextActionHint?.action === "force_push_lease" ? "This overwrites remote history" : undefined,
-            }}>
-              <button
-                type="button"
-                style={{
-                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
-                }}
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (nextActionHint?.action === "force_push_lease") {
-                    const ok = window.confirm(
-                      "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-                    );
-                    if (!ok) return;
-                    runPush(true);
-                  } else {
-                    runPush(false);
+                placeholder="Commit message"
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void submitCommit();
                   }
                 }}
+              />
+              <WorkToolChromeButton
+                label={amendCommit ? "Amend is on" : "Amend last commit"}
+                onClick={() => setAmendCommit((prev) => !prev)}
+                active={amendCommit}
+                disabled={busyAction != null}
+                testId="git-pane-amend"
               >
-                <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
-                {upstreamMissing ? "RECREATE" : syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
-              </button>
-            </SmartTooltip>
-            {lane?.parentLaneId ? (
-              <HoverTitleButton
-                type="button"
-                style={{
-                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
-                  opacity: syncButtonDisabled ? 0.45 : 1,
-                }}
-                disabled={syncButtonDisabled}
-                onClick={() => runRebaseAndPushFlow(true)}
-                tooltip={syncButtonTitle}
-                smartTooltip={{
-                  label: "Sync",
-                  description: syncButtonTitle,
-                  gitCommand: "git rebase <parent> && git push",
-                  effect: lane?.status.behind > 0
-                    ? `Rebase ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} from parent and push`
-                    : "Already in sync with parent",
-                }}
-              >
-                <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
-                SYNC
-              </HoverTitleButton>
-            ) : null}
-
-            {/* Separator */}
-            <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
-
-            {/* Advanced toggle */}
-            <SmartTooltip content={{
-              label: "More",
-              description: "Show advanced git operations like fetch, force push, rebase, revert, and cherry-pick.",
-              effect: showAdvanced ? "Click to collapse" : "Click to expand",
-            }}>
-              <button
-                type="button"
-                style={{
-                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  color: showAdvanced ? COLORS.accent : COLORS.textMuted,
-                  border: `1px solid ${showAdvanced ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : COLORS.outlineBorder}`,
-                }}
-                onClick={() => setShowAdvanced((prev) => !prev)}
-              >
-                MORE {showAdvanced ? "\u25B4" : "\u25BE"}
-              </button>
-            </SmartTooltip>
-
-            {/* Refresh */}
-            <SmartTooltip content={{
-              label: "Refresh",
-              description: "Fetch from remote and refresh all git state including file changes, sync status, and stashes.",
-              gitCommand: "git fetch",
-              effect: "Fetch latest remote state",
-            }}>
-              <button
-                type="button"
-                aria-label="Refresh git state"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 30,
-                  height: 30,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  background: "transparent",
-                  color: COLORS.textMuted,
-                  cursor: "pointer",
-                  borderRadius: 6,
-                  flexShrink: 0,
-                }}
-                onClick={() => {
-                  setShowAdvanced(false);
-                  refreshAll({ fetchRemote: true }).catch(() => {});
-                }}
-              >
-                <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
-              </button>
-            </SmartTooltip>
-          </div>
-
-          {/* Helper / status row */}
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.4 }}>
-            <span style={{ minWidth: 0, flex: "1 1 auto" }}>{commitHelperText}</span>
-            <div className="flex items-center gap-2" style={{ flexShrink: 0, fontSize: 10 }}>
-              {nextActionHint ? (
-                <span style={{ color: COLORS.accent, fontWeight: 500 }} title={nextActionHint.detail}>
-                  NEXT: {nextActionHint.label}
-                </span>
-              ) : (
-                <span style={{ color: COLORS.textDim }}>UP TO DATE</span>
-              )}
-              {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
+                <ArrowUUpLeft size={16} />
+              </WorkToolChromeButton>
             </div>
-          </div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+              {/* Commit controls */}
+              <input
+                disabled={busyAction != null}
+                style={{
+                  height: 30,
+                  flex: "1 1 180px",
+                  minWidth: 0,
+                  padding: "0 8px",
+                  fontSize: 11,
+                  fontFamily: MONO_FONT,
+                  letterSpacing: "0.4px",
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  color: COLORS.textSecondary,
+                  outline: "none",
+                  borderRadius: 6,
+                  opacity: busyAction != null ? 0.7 : 1,
+                }}
+                placeholder="Commit message"
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void submitCommit();
+                  }
+                }}
+              />
+              <SmartTooltip content={{
+                label: amendCommit ? "Amend ON" : "Amend",
+                description: getAmendSummary(amendCommit),
+                gitCommand: amendCommit ? "git commit --amend" : undefined,
+                effect: amendCommit ? "Your next commit will rewrite the latest commit" : "Click to enable amend mode",
+              }}>
+                <button
+                  type="button"
+                  style={{
+                    ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
+                    color: amendCommit ? COLORS.warning : COLORS.textDim,
+                    border: `1px solid ${amendCommit ? "color-mix(in srgb, var(--color-warning) 40%, transparent)" : COLORS.outlineBorder}`,
+                    background: amendCommit ? "color-mix(in srgb, var(--color-warning) 10%, transparent)" : "transparent",
+                  }}
+                  disabled={busyAction != null}
+                  onClick={() => setAmendCommit((prev) => !prev)}
+                >
+                  {amendCommit ? "AMEND ON" : "AMEND"}
+                </button>
+              </SmartTooltip>
+              <SmartTooltip content={{
+                label: amendCommit ? "Amend Commit" : "Commit",
+                description: amendCommit ? "Rewrite the latest commit with current staged changes and message." : "Create a new commit from staged changes.",
+                gitCommand: amendCommit ? "git commit --amend" : "git commit",
+                effect: hasStaged
+                  ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
+                  : "No staged files to commit",
+                shortcut: `${modifierKeyLabel}+Enter`,
+              }}>
+                <button
+                  type="button"
+                  style={{
+                    ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
+                    opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
+                    pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
+                  }}
+                  disabled={(!hasStaged && !amendCommit) || busyAction != null}
+                  onClick={() => void submitCommit()}
+                >
+                  {commitButtonLabel}
+                </button>
+              </SmartTooltip>
+
+              {/* Separator */}
+              <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
+
+              {/* Sync controls */}
+              <div className="flex items-center" style={{ gap: 2 }}>
+                {(["merge", "rebase"] as const).map((mode) => (
+                  <SmartTooltip key={mode} content={{
+                    label: mode === "merge" ? "Merge Mode" : "Rebase Mode",
+                    description: getPullModeSummary(mode),
+                    effect: syncMode === mode ? "Currently active" : `Switch pull strategy to ${mode}`,
+                  }}>
+                    <button
+                      type="button"
+                      disabled={!laneId || busyAction != null}
+                      onClick={() => setSyncMode(mode)}
+                      style={{
+                        ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
+                        color: syncMode === mode ? COLORS.accent : COLORS.textDim,
+                        border: `1px solid ${syncMode === mode ? "color-mix(in srgb, var(--color-accent) 40%, transparent)" : "transparent"}`,
+                        background: syncMode === mode ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
+                        opacity: !laneId || busyAction != null ? 0.5 : 1,
+                      }}
+                    >
+                      {mode === "merge" ? "MERGE" : "REBASE"}
+                    </button>
+                  </SmartTooltip>
+                ))}
+              </div>
+              <SmartTooltip content={{
+                label: `Pull (${syncMode})`,
+                description: getPullModeSummary(syncMode),
+                gitCommand: syncMode === "merge" ? "git pull --no-rebase" : "git pull --rebase",
+                effect: pullBlockedByConflict
+                  ? `Blocked: ${conflictState?.kind ?? "conflict"} in progress`
+                  : behindCount > 0
+                    ? `Pull ${behindCount} commit${behindCount === 1 ? "" : "s"} from remote`
+                    : "Already up to date with remote",
+                warning: pullBlockedByConflict ? `Resolve the current ${conflictState?.kind ?? "conflict"} first` : undefined,
+              }}>
+                <button
+                  type="button"
+                  className={behindCount > 0 ? "pull-btn-flash" : undefined}
+                  style={{
+                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                    ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
+                      ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" }
+                      : {}),
+                  }}
+                  disabled={!laneId || busyAction != null || pullBlockedByConflict}
+                  onClick={() => runPull(syncMode)}
+                >
+                  <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
+                  PULL
+                  {behindCount > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 5,
+                        background: COLORS.accent,
+                        color: "#fff",
+                        borderRadius: 8,
+                        padding: "1px 5px",
+                        fontSize: 9,
+                        fontWeight: 700,
+                        lineHeight: "14px",
+                        minWidth: 16,
+                        textAlign: "center" as const,
+                        display: "inline-block",
+                      }}
+                    >
+                      {behindCount}
+                    </span>
+                  )}
+                </button>
+              </SmartTooltip>
+              <SmartTooltip content={{
+                label: upstreamMissing ? "Recreate" : syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
+                description: upstreamMissing
+                  ? "Recreate the missing remote branch for this lane."
+                  : syncStatus?.hasUpstream === false
+                    ? "Create the remote branch and connect this lane to it."
+                    : nextActionHint?.action === "force_push_lease"
+                      ? "Overwrite the remote branch with your local history after a rebase or amend."
+                      : "Send your local commits to the tracked remote branch.",
+                gitCommand: upstreamMissing || syncStatus?.hasUpstream === false
+                  ? `git push -u origin ${lane?.branchRef ?? "HEAD"}`
+                  : nextActionHint?.action === "force_push_lease"
+                    ? "git push --force-with-lease"
+                    : "git push",
+                effect: upstreamMissing
+                  ? `Recreate the remote branch for "${lane?.name ?? ""}"`
+                  : syncStatus?.hasUpstream === false
+                    ? `Publish lane "${lane?.name ?? ""}" to remote`
+                    : (syncStatus?.ahead ?? 0) > 0
+                      ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
+                      : "No local commits to push",
+                warning: nextActionHint?.action === "force_push_lease" ? "This overwrites remote history" : undefined,
+              }}>
+                <button
+                  type="button"
+                  style={{
+                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                    ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
+                  }}
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (nextActionHint?.action === "force_push_lease") {
+                      const ok = window.confirm(
+                        "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+                      );
+                      if (!ok) return;
+                      runPush(true);
+                    } else {
+                      runPush(false);
+                    }
+                  }}
+                >
+                  <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
+                  {upstreamMissing ? "RECREATE" : syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
+                </button>
+              </SmartTooltip>
+              {lane?.parentLaneId ? (
+                <HoverTitleButton
+                  type="button"
+                  style={{
+                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                    ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
+                    opacity: syncButtonDisabled ? 0.45 : 1,
+                  }}
+                  disabled={syncButtonDisabled}
+                  onClick={() => runRebaseAndPushFlow(true)}
+                  tooltip={syncButtonTitle}
+                  smartTooltip={{
+                    label: "Sync",
+                    description: syncButtonTitle,
+                    gitCommand: "git rebase <parent> && git push",
+                    effect: lane?.status.behind > 0
+                      ? `Rebase ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} from parent and push`
+                      : "Already in sync with parent",
+                  }}
+                >
+                  <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
+                  SYNC
+                </HoverTitleButton>
+              ) : null}
+
+              {/* Separator */}
+              <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
+
+              {/* Advanced toggle */}
+              <SmartTooltip content={{
+                label: "More",
+                description: "Show advanced git operations like fetch, force push, rebase, revert, and cherry-pick.",
+                effect: showAdvanced ? "Click to collapse" : "Click to expand",
+              }}>
+                <button
+                  type="button"
+                  style={{
+                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                    color: showAdvanced ? COLORS.accent : COLORS.textMuted,
+                    border: `1px solid ${showAdvanced ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : COLORS.outlineBorder}`,
+                  }}
+                  onClick={() => setShowAdvanced((prev) => !prev)}
+                >
+                  MORE {showAdvanced ? "\u25B4" : "\u25BE"}
+                </button>
+              </SmartTooltip>
+
+              {/* Refresh */}
+              <SmartTooltip content={{
+                label: "Refresh",
+                description: "Fetch from remote and refresh all git state including file changes, sync status, and stashes.",
+                gitCommand: "git fetch",
+                effect: "Fetch latest remote state",
+              }}>
+                <button
+                  type="button"
+                  aria-label="Refresh git state"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 30,
+                    height: 30,
+                    border: `1px solid ${COLORS.outlineBorder}`,
+                    background: "transparent",
+                    color: COLORS.textMuted,
+                    cursor: "pointer",
+                    borderRadius: 6,
+                    flexShrink: 0,
+                  }}
+                  onClick={() => {
+                    setShowAdvanced(false);
+                    refreshAll({ fetchRemote: true }).catch(() => {});
+                  }}
+                >
+                  <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
+                </button>
+              </SmartTooltip>
+            </div>
+          )}
+
+          {/* Helper / status row — the pane says the same things in its chrome. */}
+          {isPane ? null : (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.4 }}>
+              <span style={{ minWidth: 0, flex: "1 1 auto" }}>{commitHelperText}</span>
+              <div className="flex items-center gap-2" style={{ flexShrink: 0, fontSize: 10 }}>
+                {nextActionHint ? (
+                  <span style={{ color: COLORS.accent, fontWeight: 500 }} title={nextActionHint.detail}>
+                    NEXT: {nextActionHint.label}
+                  </span>
+                ) : (
+                  <span style={{ color: COLORS.textDim }}>UP TO DATE</span>
+                )}
+                {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ─── Advanced Git (collapsible) ─── */}
@@ -2670,8 +2853,8 @@ export function LaneGitActionsPane({
             display: "grid",
             gridTemplateColumns: responsiveMode === "narrow" ? "1fr" : "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
             gridTemplateRows: responsiveMode === "narrow" ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
-            padding: 10,
-            gap: 10,
+            padding: isPane ? "0 8px 8px" : 10,
+            gap: isPane ? 12 : 10,
             flex: "1 1 0",
             minWidth: 0,
             minHeight: 0,
@@ -2688,12 +2871,24 @@ export function LaneGitActionsPane({
                 : "Changed files. Stashes are saved snapshots below."
             }
             dataTestId="files-section"
-            sectionStyle={{ minHeight: 0, height: "100%", background: "rgba(255,255,255,0.03)" }}
+            plain={isPane}
+            sectionStyle={isPane
+              ? { minHeight: 0, height: "100%" }
+              : { minHeight: 0, height: "100%", background: "rgba(255,255,255,0.03)" }}
             headerStyle={{ background: "rgba(255,255,255,0.03)" }}
             bodyStyle={
               diffViewActive
-                ? { flex: 1, minHeight: 0, padding: 0, gap: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "rgba(255,255,255,0.03)" }
-                : { flex: 1, minHeight: 0, background: "rgba(255,255,255,0.03)" }
+                ? {
+                    flex: 1,
+                    minHeight: 0,
+                    padding: 0,
+                    gap: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                    ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }),
+                  }
+                : { flex: 1, minHeight: 0, gap: 8, ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }) }
             }
             aside={
               diffViewActive ? (
@@ -2710,9 +2905,18 @@ export function LaneGitActionsPane({
                 </SmartTooltip>
               ) : (
               <div className="flex flex-wrap items-center gap-2">
-                <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>
-                  {changedFileCount}
-                </span>
+                {/* A count is a fact you read, not a control you press. The
+                    accent-filled pill was the loudest thing in the pane and it
+                    said "0" most of the time. */}
+                {isPane ? (
+                  changedFileCount > 0 ? (
+                    <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
+                  ) : null
+                ) : (
+                  <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>
+                    {changedFileCount}
+                  </span>
+                )}
                 {changes.unstaged.length > 0 ? (
                   <>
                     <SmartTooltip content={{
@@ -2820,9 +3024,14 @@ export function LaneGitActionsPane({
               </div>
             ) : (
             <>
+            {/* Stashes are a real feature with a real cost in a 440px column:
+                a label, a count, a button and a two-line explanation above the
+                changes you actually came to look at. In the pane they live
+                behind the row's "more", where the rest of the advanced git
+                actions already are. */}
             <div
               style={{
-                display: "flex",
+                display: isPane && !showAdvanced ? "none" : "flex",
                 flexDirection: "column",
                 gap: 8,
                 paddingBottom: 8,
@@ -3051,9 +3260,15 @@ export function LaneGitActionsPane({
                 </div>
               ) : null}
               {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic" }}>
-                  No changes
-                </div>
+                isPane ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg" data-testid="git-pane-clean">
+                    Clean · nothing to commit
+                  </div>
+                ) : (
+                  <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic" }}>
+                    No changes
+                  </div>
+                )
               ) : null}
             </div>
             </>
@@ -3064,11 +3279,13 @@ export function LaneGitActionsPane({
             title="History"
             description="Recent commits on this branch."
             dataTestId="history-section"
+            plain={isPane}
             sectionStyle={{ minHeight: 0, height: "100%" }}
             bodyStyle={{ flex: 1, minHeight: 0 }}
           >
             <div style={{ flex: 1, minHeight: 0 }}>
               <CommitTimeline
+                hideHeader={isPane}
                 laneId={laneId ?? null}
                 runtimePin={pin}
                 active={active}

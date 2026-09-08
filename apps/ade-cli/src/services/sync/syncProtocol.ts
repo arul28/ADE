@@ -67,6 +67,18 @@ export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 export const RPC_DATA_CHUNK_BYTES = 256 * 1024;
 export const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
 export const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+/**
+ * When an `rpc_data` write is refused rather than handed to the transport.
+ *
+ * Strictly between `PEER_BACKPRESSURE_BYTES` (4 MiB — where droppable traffic
+ * starts being skipped) and the host's required-send ceiling (16 MiB — where
+ * the host closes the entire peer connection with 4001), and both bounds
+ * matter. Gate at 4 MiB and an ordinary large response, which the link would
+ * have drained fine, kills the RPC channel. Gate at 16 MiB and the host's own
+ * kill fires first, taking chat, changesets and phone sync down with it. At
+ * 12 MiB the channel — and only the channel — is what gives out.
+ */
+export const RPC_CHANNEL_BACKPRESSURE_BYTES = 12 * 1024 * 1024;
 export const BACKPRESSURE_POLL_MS = 25;
 export const MAX_CHANNEL_ID_CHARS = 128;
 export const MAX_ENVELOPE_CHUNK_ID_BYTES = 128;

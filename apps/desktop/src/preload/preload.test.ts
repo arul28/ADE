@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
+import { BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT } from "../shared/types/builtInBrowserRemote";
 
 describe("preload Attention Notch bridge", () => {
   beforeEach(() => {
@@ -8982,19 +8983,26 @@ describe("preload built-in browser loopback tunneling", () => {
     delete (globalThis as any).__adeBridge;
   });
 
-  async function loadBridge() {
+  async function loadBridge(options: { holdForwards?: boolean } = {}) {
     let forwardCalls = 0;
+    let localPort = 52413;
+    const releaseForward: (() => void)[] = [];
+    const listeners = new Map<string, ((event: unknown, payload: unknown) => void)[]>();
     const invoke = vi.fn(async (channel: string, arg: unknown) => {
       if (channel === IPC.remoteRuntimeEnsurePortForward) {
         forwardCalls += 1;
         const request = (arg as { request: { remotePort: number } }).request;
+        const port = localPort;
+        if (options.holdForwards) {
+          await new Promise<void>((resolve) => releaseForward.push(resolve));
+        }
         return {
           targetId: "target-studio",
           remoteHost: "127.0.0.1",
           remotePort: request.remotePort,
           localHost: "127.0.0.1",
-          localPort: 52413,
-          localUrl: "http://127.0.0.1:52413",
+          localPort: port,
+          localUrl: `http://127.0.0.1:${port}`,
           label: null,
           createdAt: 0,
           lastUsedAt: 0,
@@ -9008,7 +9016,15 @@ describe("preload built-in browser loopback tunneling", () => {
           (globalThis as any).__adeBridge = value;
         }),
       },
-      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      ipcRenderer: {
+        invoke,
+        on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
+          const existing = listeners.get(channel) ?? [];
+          existing.push(listener);
+          listeners.set(channel, existing);
+        }),
+        removeListener: vi.fn(),
+      },
       webFrame: {
         getZoomLevel: vi.fn(() => 0),
         setZoomLevel: vi.fn(),
@@ -9016,7 +9032,20 @@ describe("preload built-in browser loopback tunneling", () => {
       },
     }));
     await import("./preload");
-    return { bridge: (globalThis as any).__adeBridge, invoke, forwardCalls: () => forwardCalls };
+    return {
+      bridge: (globalThis as any).__adeBridge,
+      invoke,
+      forwardCalls: () => forwardCalls,
+      setLocalPort: (port: number) => {
+        localPort = port;
+      },
+      releaseForwards: () => {
+        for (const resolve of releaseForward.splice(0)) resolve();
+      },
+      emitMain: (channel: string, payload: unknown) => {
+        for (const listener of listeners.get(channel) ?? []) listener({}, payload);
+      },
+    };
   }
 
   it("navigates a remote-pinned chat through THIS desktop's browser, not the pinned one", async () => {
@@ -9038,14 +9067,58 @@ describe("preload built-in browser loopback tunneling", () => {
     );
   });
 
-  it("reuses one forward per (machine, port) across navigations", async () => {
-    const { bridge, forwardCalls } = await loadBridge();
+  it("shares one in-flight forward request between concurrent navigations", async () => {
+    const { bridge, forwardCalls, releaseForwards } = await loadBridge({ holdForwards: true });
+
+    const navigations = Promise.all([
+      bridge.builtInBrowser.navigate({ url: "http://localhost:3000/a" }, REMOTE_PIN),
+      bridge.builtInBrowser.navigate({ url: "http://127.0.0.1:3000/b" }, REMOTE_PIN),
+      bridge.builtInBrowser.createTab({ url: "http://[::1]:3000/c" }, REMOTE_PIN),
+    ]);
+    await Promise.resolve();
+    releaseForwards();
+    await navigations;
+
+    // Three simultaneous navigations must not race to create three forwards.
+    expect(forwardCalls()).toBe(1);
+  });
+
+  it("re-asks main for a forward instead of reusing a resolved one", async () => {
+    // The resolved forward used to be memoized for the life of the window with
+    // no invalidation. A forward's local listener dies with its transport and
+    // the OS re-assigns that port, so the cached entry either pointed at
+    // nothing (ERR_CONNECTION_REFUSED after a reconnect) or at some unrelated
+    // local server shown under a remote origin badge. Main is the authority
+    // and answers from its own map, so asking every time is the validation.
+    const { bridge, forwardCalls, setLocalPort } = await loadBridge();
 
     await bridge.builtInBrowser.navigate({ url: "http://localhost:3000/a" }, REMOTE_PIN);
-    await bridge.builtInBrowser.navigate({ url: "http://127.0.0.1:3000/b" }, REMOTE_PIN);
-    await bridge.builtInBrowser.createTab({ url: "http://[::1]:3000/c" }, REMOTE_PIN);
+    setLocalPort(52999);
+    const localized = await bridge.builtInBrowser.localizeRemoteUrl(
+      { url: "http://localhost:3000/a" },
+      REMOTE_PIN,
+    );
 
-    expect(forwardCalls()).toBe(1);
+    expect(forwardCalls()).toBe(2);
+    expect(localized.url).toBe("http://127.0.0.1:52999/a");
+  });
+
+  it("drops an in-flight forward when main reports the target's forwards torn down", async () => {
+    const { bridge, forwardCalls, releaseForwards, emitMain } = await loadBridge({
+      holdForwards: true,
+    });
+
+    const first = bridge.builtInBrowser.navigate({ url: "http://localhost:3000/a" }, REMOTE_PIN);
+    await Promise.resolve();
+    // The transport died while that request was in flight; it was issued
+    // against a connection that no longer exists.
+    emitMain(IPC.remoteRuntimePortForwardsInvalidated, { targetId: "target-studio" });
+    const second = bridge.builtInBrowser.navigate({ url: "http://localhost:3000/b" }, REMOTE_PIN);
+    await Promise.resolve();
+    releaseForwards();
+    await Promise.all([first, second]);
+
+    expect(forwardCalls()).toBe(2);
   });
 
   it("leaves non-loopback URLs and local pins alone", async () => {
@@ -9089,5 +9162,135 @@ describe("preload built-in browser loopback tunneling", () => {
         localOrigin: "http://127.0.0.1:52413",
       },
     });
+  });
+});
+
+describe("preload built-in browser remote requests", () => {
+  const REMOTE_PIN = {
+    kind: "remote" as const,
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    runtimeName: "Mac Studio",
+    projectId: "project-a",
+    rootPath: "/remote/repo-a",
+    displayName: "repo-a",
+  };
+  const REQUEST = {
+    requestId: "bbr-1",
+    url: "http://localhost:3000/app",
+    laneId: "lane-1",
+    chatSessionId: "chat-1",
+    openPanel: true,
+    requestedAt: "2026-09-08T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  /** One batch containing the forwarded request, then nothing forever. */
+  async function loadBridge(options: { binding?: unknown } = {}) {
+    let served = false;
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: options.binding ?? null };
+      }
+      if (
+        channel === IPC.remoteRuntimeStreamEvents
+        || channel === IPC.localRuntimeStreamEvents
+      ) {
+        const events = served
+          ? []
+          : [{
+            id: 1,
+            timestamp: "2026-09-08T00:00:00.000Z",
+            category: "runtime",
+            payload: { type: BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT, event: REQUEST },
+          }];
+        served = true;
+        return { events, nextCursor: 1, hasMore: false, eventEpoch: "epoch-a" };
+      }
+      return { ok: true };
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return { bridge: (globalThis as any).__adeBridge, invoke };
+  }
+
+  it("subscribes a remote pin to the pinned machine's stream and delivers the request", async () => {
+    vi.useFakeTimers();
+    const { bridge, invoke } = await loadBridge();
+    const received: unknown[] = [];
+
+    const unsubscribe = bridge.builtInBrowser.onRemoteRequest(
+      (request: unknown) => received.push(request),
+      REMOTE_PIN,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, expect.objectContaining({
+      id: "target-studio",
+      projectId: "project-a",
+    }));
+    expect(received).toEqual([REQUEST]);
+    unsubscribe();
+  });
+
+  it("still subscribes when the pinned machine IS the window's active binding", async () => {
+    // The regression: a remote project tab pins its own runtime, the shared
+    // pump already polls it, and the pinned-pump helper answers null. Without a
+    // fanout to fall back to, `ade browser open` over there reached nobody.
+    vi.useFakeTimers();
+    const { bridge } = await loadBridge({ binding: REMOTE_PIN });
+    const received: unknown[] = [];
+
+    // Adopt the window session binding the way the renderer does at startup.
+    await bridge.app.getWindowSession();
+    const unsubscribe = bridge.builtInBrowser.onRemoteRequest(
+      (request: unknown) => received.push(request),
+      REMOTE_PIN,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(received).toEqual([REQUEST]);
+    unsubscribe();
+  });
+
+  it("never subscribes for a local pin", async () => {
+    vi.useFakeTimers();
+    const { bridge, invoke } = await loadBridge();
+    const received: unknown[] = [];
+
+    const unsubscribe = bridge.builtInBrowser.onRemoteRequest(
+      (request: unknown) => received.push(request),
+      { kind: "local", key: "local:/other", rootPath: "/other", displayName: "other" },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A local runtime opens the browser through the desktop bridge socket
+    // directly, so it never forwards — and must not open a stream to say so.
+    expect(received).toEqual([]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, expect.anything());
+    unsubscribe();
   });
 });

@@ -1,6 +1,7 @@
 import { CaretDown, ListChecks, WarningCircle, WifiSlash } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "../ui/cn";
+import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browser/browserChrome";
 import type { TraceRow } from "./appControlTrace";
 
 /** ADE's canonical reveal curve (chat/BottomDrawerSection.tsx). */
@@ -33,7 +34,7 @@ export function AppControlStatusRow({
   onToggleTrace: () => void;
 }) {
   return (
-    <div className="flex h-[28px] shrink-0 items-center gap-2 border-t border-white/[0.08] px-2 text-[10.5px]">
+    <div className="flex h-7 shrink-0 items-center gap-2 border-t border-white/[0.07] px-2 text-[11px]">
       <span
         className={cn("min-w-0 flex-1 truncate", lastLine ? "text-fg/75" : "text-muted-fg/60")}
         title={lastLine ?? hint}
@@ -73,10 +74,11 @@ export function AppControlStatusRow({
         aria-label={traceOpen ? "Hide action trace" : "Show action trace"}
         title={traceCount > 0 ? `${traceCount} recorded ${traceCount === 1 ? "action" : "actions"}` : "No recorded actions yet"}
         className={cn(
-          "inline-flex h-[20px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 font-medium",
-          "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
-          "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+          "inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-medium",
+          "hover:bg-white/[0.06] hover:text-fg",
           traceOpen ? "bg-white/[0.06] text-fg/85" : "text-muted-fg/75",
+          TOOLBAR_MOTION,
+          TOOLBAR_FOCUS,
         )}
       >
         <ListChecks size={11} />
@@ -113,11 +115,11 @@ export function AppControlTraceDrawer({
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
           transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: REVEAL }}
-          className="shrink-0 overflow-hidden border-t border-white/[0.08] bg-black/25"
+          className="shrink-0 overflow-hidden border-t border-white/[0.07]"
           data-testid="app-control-trace-drawer"
         >
           <div className="flex items-center gap-2 px-2 py-1">
-            <span className="text-[9px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
+            <span className="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/60">
               Action trace
             </span>
             <button
@@ -125,16 +127,17 @@ export function AppControlTraceDrawer({
               onClick={onClose}
               aria-label="Close action trace"
               className={cn(
-                "ml-auto inline-flex h-[18px] w-[18px] items-center justify-center rounded-[var(--radius-sm)]",
-                "text-muted-fg/65 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
-                "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                "ml-auto inline-flex h-5 w-5 items-center justify-center rounded-md",
+                "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg",
+                TOOLBAR_MOTION,
+                TOOLBAR_FOCUS,
               )}
             >
               <CaretDown size={10} weight="bold" />
             </button>
           </div>
           {rows.length === 0 ? (
-            <div className="px-2 pb-2 text-[10.5px] text-muted-fg/60">
+            <div className="px-2 pb-2 text-[11px] text-muted-fg/60">
               Nothing yet. Agent actions on this app show up here.
             </div>
           ) : (
@@ -143,7 +146,7 @@ export function AppControlTraceDrawer({
                 <li
                   key={row.id}
                   className={cn(
-                    "flex items-baseline gap-2 px-2 py-[3px] text-[10.5px]",
+                    "flex items-baseline gap-2 px-2 py-[3px] text-[11px]",
                     row.failed ? "text-rose-200/85" : "text-fg/75",
                   )}
                   title={row.error ?? `${row.action} ${row.target} · ${row.relative}`}

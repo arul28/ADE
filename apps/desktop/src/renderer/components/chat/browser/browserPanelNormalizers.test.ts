@@ -26,11 +26,18 @@ import {
 } from "./browserPanelNormalizers";
 import type { BuiltInBrowserStatus } from "./browserPanelTypes";
 import {
-  devServerChipLabel,
+  devServerRowLabels,
+  devServerThumbLabel,
   mergeDevServer,
   normalizeDevServer,
   normalizeDevServers,
 } from "./browserDevServers";
+import {
+  BROWSER_RECENT_URL_LIMIT,
+  browserRecentUrlsKey,
+  parseBrowserRecentUrls,
+  withBrowserRecentUrl,
+} from "./browserRecentUrls";
 
 function status(partial: Partial<BuiltInBrowserStatus> = {}): BuiltInBrowserStatus {
   return {
@@ -250,10 +257,59 @@ describe("dev servers", () => {
       .toEqual([{ url: "http://localhost:5173", port: 5_173, source: "npm run dev" }]);
   });
 
-  it("names the command when it knows it, and the port when it does not", () => {
-    expect(devServerChipLabel({ url: "http://localhost:5173", port: 5_173, source: "npm run dev" }))
-      .toBe("npm run dev · :5173");
-    expect(devServerChipLabel({ url: "http://localhost:5173", port: 5_173, source: null }))
-      .toBe("localhost:5173");
+  it("titles a launchpad row by its port and names the command underneath", () => {
+    // The port is the server's identity, so it is the title; the command that
+    // opened it is the detail. A single glued chip label ("npm run dev · :5173")
+    // could not be scanned down a column of six ports.
+    expect(devServerRowLabels({ url: "http://localhost:5173", port: 5_173, source: "npm run dev" }))
+      .toEqual({ title: "localhost:5173", subtitle: "npm run dev" });
+    expect(devServerRowLabels({ url: "http://localhost:5173", port: 5_173, source: null }))
+      .toEqual({ title: "localhost:5173", subtitle: null });
+  });
+
+  it("prints only the port inside the 48×30 window mockup", () => {
+    expect(devServerThumbLabel({ url: "http://localhost:5173", port: 5_173, source: null })).toBe(":5173");
+    expect(devServerThumbLabel({ url: "http://staging.test/", port: null, source: null }))
+      .toBe("staging.test");
+  });
+});
+
+describe("launchpad recents", () => {
+  const visit = (url: string, title: string | null = null) => ({ url, title, visitedAt: 1 });
+
+  it("moves a revisited page to the front instead of listing it twice", () => {
+    const list = withBrowserRecentUrl(
+      [visit("https://b.test/"), visit("https://a.test/")],
+      { url: "https://a.test/", title: "A", visitedAt: 9 },
+    );
+    expect(list.map((entry) => entry.url)).toEqual(["https://a.test/", "https://b.test/"]);
+    expect(list[0].title).toBe("A");
+  });
+
+  it("keeps the list a list, not a history", () => {
+    let list = [] as ReturnType<typeof withBrowserRecentUrl>;
+    for (let index = 0; index < BROWSER_RECENT_URL_LIMIT + 5; index += 1) {
+      list = withBrowserRecentUrl(list, visit(`https://site-${index}.test/`));
+    }
+    expect(list).toHaveLength(BROWSER_RECENT_URL_LIMIT);
+    // Newest first, so the cap drops the oldest rather than refusing new ones.
+    expect(list[0].url).toBe(`https://site-${BROWSER_RECENT_URL_LIMIT + 4}.test/`);
+  });
+
+  it("treats every unreadable stored value as no recents at all", () => {
+    // A launchpad that throws on a half-written localStorage entry is worse
+    // than one with an empty group.
+    expect(parseBrowserRecentUrls(null)).toEqual([]);
+    expect(parseBrowserRecentUrls("not json")).toEqual([]);
+    expect(parseBrowserRecentUrls('{"url":"https://a.test/"}')).toEqual([]);
+    expect(parseBrowserRecentUrls('[{"nope":1},{"url":"https://a.test/"}]'))
+      .toEqual([{ url: "https://a.test/", title: null, visitedAt: 0 }]);
+  });
+
+  it("files a project's recents apart from the personal browser's", () => {
+    // Same split the tab collections use: offering a work lane's pages in the
+    // personal pane would be a leak dressed up as a convenience.
+    expect(browserRecentUrlsKey("/repo")).not.toBe(browserRecentUrlsKey("personal"));
+    expect(browserRecentUrlsKey(null)).toBe(browserRecentUrlsKey("  "));
   });
 });
