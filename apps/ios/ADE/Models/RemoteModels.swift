@@ -6176,8 +6176,8 @@ struct WorkToolsLaneState: Codable, Equatable {
   var browser: WorkToolsBrowserState?
   /// Why `browser` is nil. Mirrors the desktop's `WorkToolsUnavailableReason`
   /// (`desktop_not_attached` | `desktop_not_attached_for_project` |
-  /// `unsupported` | `error`) and is kept as a raw string so a newer reason
-  /// falls back instead of failing to decode.
+  /// `browser_pane_not_opened` | `unsupported` | `error`) and is kept as a raw
+  /// string so a newer reason falls back instead of failing to decode.
   var browserUnavailable: String?
   var appControl: WorkToolsAppControlState?
 }

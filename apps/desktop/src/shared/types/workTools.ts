@@ -50,22 +50,36 @@ export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
  * IS running on this machine, it just has no window open for this project. It is
  * a separate reason because "open ADE on your Mac" is the wrong instruction for
  * a user whose ADE is already open — they need to open THIS project.
+ *
+ * `browser_pane_not_opened` is narrower still: the project IS open in a window,
+ * but its Browser pane has never been used, so there is no tab collection to
+ * read. The desktop deliberately does not build one to answer a poll (that
+ * would restore and load a background project's persisted tabs for a pane
+ * nobody opened), so this is a real, permanent-until-you-click state — and
+ * telling that user the project is not open would be a lie about something one
+ * click away.
  */
 export type WorkToolsUnavailableReason =
   | "desktop_not_attached"
   | "desktop_not_attached_for_project"
+  | "browser_pane_not_opened"
   | "unsupported"
   | "error";
 
 /**
- * The one place the four reasons become sentences.
+ * The one place the five reasons become sentences.
  *
  * Every read-only client renders the same absence, so the copy lives with the
- * union rather than with any one view: a reason added above and not worded here
- * fails to compile, and a client that forgets a case cannot silently fall back
- * to "open ADE on your Mac" for a desktop that is already open. iOS keeps its
- * own Swift `switch` (it cannot import this file), but it switches on the same
- * strings — `apps/ios/ADE/Views/Work/WorkToolsSheet.swift`.
+ * union rather than with any one view. iOS keeps its own Swift `switch` (it
+ * cannot import this file), but it switches on the same strings —
+ * `apps/ios/ADE/Views/Work/WorkToolsSheet.swift`.
+ *
+ * The parameter is deliberately widened with `| string`: the reason arrives as
+ * an unvalidated field on a daemon payload, and a phone or web client running
+ * an older build must degrade to a sentence rather than render `undefined`. The
+ * cost of that tolerance is that this is NOT exhaustive — adding a member to
+ * the union above still compiles here and silently lands on the default. When
+ * you add one, word it here and in the Swift switch in the same change.
  *
  * An unknown or absent reason falls back to the common case rather than
  * inventing a diagnosis.
@@ -83,6 +97,10 @@ export function workToolsUnavailableMessage(
       // doesn't have this project open, so "open ADE on your Mac" would send the
       // user to look at an app that is already in front of them.
       return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs.";
+    case "browser_pane_not_opened":
+      // The project IS open on the desktop; only the Browser pane is unused, so
+      // the instruction is one click, not "open the project".
+      return "Open the Browser tool on the desktop to see tabs here.";
     default:
       return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs.";
   }

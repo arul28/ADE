@@ -122,6 +122,12 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
       url: string;
       sessionId?: string | null;
       laneId?: string | null;
+      /**
+       * The detecting terminal's project. Only the caller knows it — a lane id
+       * is not resolvable to a project anywhere downstream — and consumers
+       * route the detection by it, so it is captured here and never re-derived.
+       */
+      projectRoot?: string | null;
       detectedAt?: string;
     }): DevServerRecord | null {
       if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) return null;
@@ -131,7 +137,11 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
       const next: DevServerRecord = {
         port: input.port,
         url: input.url,
-        source: { sessionId: input.sessionId?.trim() || null, laneId },
+        source: {
+          sessionId: input.sessionId?.trim() || null,
+          laneId,
+          projectRoot: input.projectRoot?.trim() || null,
+        },
         detectedAt: input.detectedAt ?? new Date().toISOString(),
       };
       records.set(key, next);

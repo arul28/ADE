@@ -6603,6 +6603,10 @@ export function createPtyService({
             url: detection.url,
             sessionId: entry.sessionId,
             laneId: entry.laneId,
+            // Stamped here because this is the only place that knows it: the
+            // Browser service routes the chip by project, and a lane that has
+            // never opened a tab leaves it nothing else to route by.
+            projectRoot,
           });
         }
 

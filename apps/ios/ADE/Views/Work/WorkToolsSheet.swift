@@ -206,11 +206,15 @@ struct WorkToolsSheet: View {
     state?.browser?.tabs.compactMap(\.handoffReason).first
   }
 
-  /// Why there is no browser to show. The desktop distinguishes four cases
+  /// Why there is no browser to show. The desktop distinguishes five cases
   /// (`WorkToolsUnavailableReason`) and only one of them is "open ADE on your
   /// Mac" — telling a user to open an app that is already open, because the
   /// read failed, sends them chasing the wrong thing. An unknown or absent
   /// reason falls back to the common case rather than inventing a diagnosis.
+  ///
+  /// Keep these sentences byte-identical to `workToolsUnavailableMessage` in
+  /// `apps/desktop/src/shared/types/workTools.ts`: this switch cannot import
+  /// it, so a reason worded there and not here silently reads as the default.
   private var browserUnavailableMessage: String {
     switch state?.browserUnavailable {
     case "unsupported":
@@ -222,6 +226,11 @@ struct WorkToolsSheet: View {
       // just doesn't have this project open, so "open ADE on your Mac" would
       // send the user to look at an app that is already in front of them.
       return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs."
+    case "browser_pane_not_opened":
+      // Narrower still: the project IS open on the desktop, only the Browser
+      // pane is unused, so the instruction is one click — not "open the
+      // project", which would be a lie about something already in front of them.
+      return "Open the Browser tool on the desktop to see tabs here."
     default:
       return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
     }

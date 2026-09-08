@@ -215,14 +215,22 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       // to one project; answering out of whichever window is active would hide
       // its own tabs and leak another project's tab titles and URLs onto a
       // phone bound to this one.
-      const status = service.getStatusForProjectScope(normalizedString(rawParams.projectRoot));
+      const scopeProjectRoot = normalizedString(rawParams.projectRoot);
+      const status = service.getStatusForProjectScope(scopeProjectRoot);
       if (!status) {
-        const noWindow: BuiltInBrowserRuntimeStatus = {
+        // Two different absences, two different instructions. A window that has
+        // the project open but has never used its Browser pane has no
+        // collection to read — and the read deliberately does not build one —
+        // but that user must not be told to open a project they already have
+        // open. `hasWindowForProjectScope` is the same side-effect-free lookup.
+        const empty: BuiltInBrowserRuntimeStatus = {
           activeTabId: null,
           tabs: [],
-          unavailable: "desktop_not_attached_for_project",
+          unavailable: service.hasWindowForProjectScope(scopeProjectRoot)
+            ? "browser_pane_not_opened"
+            : "desktop_not_attached_for_project",
         };
-        return noWindow;
+        return empty;
       }
       const runtimeStatus: BuiltInBrowserRuntimeStatus = {
         unavailable: null,

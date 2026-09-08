@@ -1089,6 +1089,30 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus().collectionProjectRoot).toBe("/Users/ade/project-alpha");
   });
 
+  it("tells a project with no window apart from one whose Browser pane was never opened", async () => {
+    // Both read as a null status, and they are NOT the same state: the phone
+    // words them differently (`desktop_not_attached_for_project` vs
+    // `browser_pane_not_opened`), because "ADE Desktop doesn't have this
+    // project open" sends a user whose project IS open — one click from the
+    // tabs — to look for something already in front of them.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    scoped.openWindow("/Users/ade/project-beta");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+
+    // Beta: a window serves it, its pane has just never been used.
+    expect(service.getStatusForProjectScope("/Users/ade/project-beta")).toBeNull();
+    expect(service.hasWindowForProjectScope("/Users/ade/project-beta")).toBe(true);
+    // Gamma: no window on this machine has it open at all.
+    expect(service.getStatusForProjectScope("/Users/ade/project-gamma")).toBeNull();
+    expect(service.hasWindowForProjectScope("/Users/ade/project-gamma")).toBe(false);
+    // Asking never materialized anything, in either branch.
+    expect(service.getStatus().collectionProjectRoot).toBe("/Users/ade/project-alpha");
+  });
+
   it("stamps the dev-server chip with the lane's own collection, not the frontmost one", async () => {
     // Every surface filters `dev-server-detected` on `status.collectionProjectRoot`,
     // so a chip stamped with whichever collection happens to be frontmost is
@@ -1121,6 +1145,89 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(chip).toMatchObject({ autoOpened: false, tabId: null });
     expect(chip && "status" in chip ? chip.status.collectionProjectRoot : null)
       .toBe("/Users/ade/project-beta");
+    watched.dispose();
+  });
+
+  it("stamps the chip with the detecting project's collection when the lane holds no tab", async () => {
+    // The lane owns no browser tab, so there is nothing to resolve the chip's
+    // collection from except the record's own project — and the frontmost
+    // window is another project's, with tabs in it. Stamped with that one, the
+    // lane's panel drops the chip and the other project's launchpad shows a
+    // `localhost` URL that has nothing to do with it.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinAlpha } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        projectRoot === "/Users/ade/project-alpha" ? browserWinAlpha : browserWinBeta,
+    });
+    // Alpha's pane exists (a human opened it) but holds no tab of this lane's.
+    watched.attachToWindow(browserWinAlpha);
+    await watched.createTab({ url: "https://alpha.example.test", activate: true }, browserWinAlpha);
+    // Beta is frontmost and has tabs, so it is not an auto-open target either.
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true }, browserWinBeta);
+
+    collector.events.length = 0;
+    registry.record({
+      port: 5288,
+      url: "http://localhost:5288/",
+      laneId: "lane-alpha",
+      sessionId: "sess-alpha",
+      projectRoot: "/Users/ade/project-alpha",
+    });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    const chip = collector.events.find((entry) => entry.type === "dev-server-detected");
+    expect(chip).toMatchObject({ autoOpened: false, tabId: null });
+    expect(chip && "status" in chip ? chip.status.collectionProjectRoot : null)
+      .toBe("/Users/ade/project-alpha");
+    watched.dispose();
+  });
+
+  it("emits no chip at all rather than filing it under another project's collection", async () => {
+    // The lane's project has no Browser collection on this machine, and
+    // building one to answer a chip would restore and load a background
+    // project's persisted tabs for a pane nobody opened. The registry still
+    // holds the record, so the pane lists the server the moment it is opened.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    scoped.openWindow("/Users/ade/project-alpha");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+    });
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true }, browserWinBeta);
+
+    collector.events.length = 0;
+    const viewsBefore = fakes.webContentsViewInstances.length;
+    registry.record({
+      port: 5299,
+      url: "http://localhost:5299/",
+      laneId: "lane-alpha",
+      sessionId: "sess-alpha",
+      projectRoot: "/Users/ade/project-alpha",
+    });
+    await vi.waitFor(() => expect(registry.list({ laneId: "lane-alpha" })).toHaveLength(1));
+
+    expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(false);
+    expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
     watched.dispose();
   });
 

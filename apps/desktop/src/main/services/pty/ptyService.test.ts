@@ -7428,7 +7428,9 @@ describe("ptyService", () => {
         expect.objectContaining({
           port: 5173,
           url: "http://localhost:5173/",
-          source: { laneId: "lane-1", sessionId },
+          // The project is stamped at detection time: this is the only place
+          // that knows it, and the Browser tool routes the chip by it.
+          source: { laneId: "lane-1", sessionId, projectRoot: "/tmp/test-project" },
         }),
       ]);
 

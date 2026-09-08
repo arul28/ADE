@@ -14,9 +14,12 @@
  *
  * "No timeout" is only defensible with an answer to "then how does it end", so:
  * every live child is tracked here, the promise's own settle path terminates it
- * (including the spawn-error and unreadable-answer paths), a second read of the
- * same source reuses the first rather than spawning again, and
+ * (including the spawn-error and unreadable-answer paths), and
  * {@link terminateLoginImportReadWorkers} kills whatever is left at app quit.
+ * A second read of the same source does not spawn a second child either, but
+ * that is the caller's doing, not this module's: `loginImportService.ts`'s
+ * `inFlightReads` map coalesces them, so anything that calls in here directly
+ * gets one child per call and one Keychain prompt per child.
  * There is deliberately no caller-supplied cancellation: nothing above this
  * module has a lifetime to hang one on, and an advertised cancel token with no
  * caller is a contract the code does not keep. Without the quit hook, quitting ADE while a

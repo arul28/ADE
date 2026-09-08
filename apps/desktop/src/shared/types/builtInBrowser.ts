@@ -621,6 +621,18 @@ export type DevServerRecord = {
   source: {
     sessionId: string | null;
     laneId: string | null;
+    /**
+     * The project the detecting terminal belongs to, stamped at detection time.
+     *
+     * Carried on the record because nothing downstream can recover it: a lane
+     * that has never opened a browser tab gives the Browser service no way to
+     * tell which project's collection the chip belongs in, and stamping it with
+     * whichever window is frontmost puts one project's `localhost` URL in
+     * another project's launchpad (every surface filters `dev-server-detected`
+     * on `status.collectionProjectRoot`). `null` only for detections that came
+     * from no project at all.
+     */
+    projectRoot: string | null;
   };
   detectedAt: string;
 };

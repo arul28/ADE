@@ -34,15 +34,21 @@ export type BuiltInBrowserRuntimeStatus = {
   activeTabId: string | null;
   tabs: BuiltInBrowserRuntimeTabStatus[];
   /**
-   * Set when the desktop is attached to this machine but has no window open for
-   * the project the asking daemon serves.
+   * Set when the desktop is attached to this machine but cannot answer for the
+   * project the asking daemon serves. `tabs` is empty whenever this is set.
    *
    * The alternative — answering out of whatever window is frontmost — is worse
    * than answering nothing: it hides the asking project's tabs and renders
-   * another project's tab titles and URLs on a phone bound to this one. `tabs`
-   * is empty whenever this is set.
+   * another project's tab titles and URLs on a phone bound to this one.
+   *
+   * The two cases are kept apart because they carry opposite instructions
+   * (`workToolsUnavailableMessage` in `shared/types/workTools.ts` words both):
+   * `desktop_not_attached_for_project` means no window on this machine has the
+   * project open, while `browser_pane_not_opened` means one does and its
+   * Browser pane has simply never been used — telling that user to open a
+   * project that is already open sends them chasing the wrong thing.
    */
-  unavailable: "desktop_not_attached_for_project" | null;
+  unavailable: "desktop_not_attached_for_project" | "browser_pane_not_opened" | null;
 };
 
 /** Bridge method name for {@link BuiltInBrowserRuntimeStatus}. */

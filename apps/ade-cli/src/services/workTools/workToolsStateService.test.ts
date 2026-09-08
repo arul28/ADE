@@ -185,6 +185,25 @@ describe("workToolsStateService", () => {
     service.dispose();
   });
 
+  it("passes through an unopened Browser pane as its own reason", async () => {
+    // Narrower than "not attached for this project": the project IS open on the
+    // desktop, only the pane is unused. The daemon must forward the distinction
+    // verbatim — it is what decides whether the phone tells someone to open a
+    // project they already have open.
+    const service = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: async () => ({
+        activeTabId: null,
+        tabs: [],
+        unavailable: "browser_pane_not_opened" as const,
+      }),
+    });
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.browser).toBeNull();
+    expect(state.browserUnavailable).toBe("browser_pane_not_opened");
+    service.dispose();
+  });
+
   it("omits the browser entirely on a runtime with no bridge", async () => {
     const service = createWorkToolsStateService({ projectRoot });
     const state = await service.getLaneState({ laneId: "lane-1" });

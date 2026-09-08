@@ -124,6 +124,19 @@ const RECORDING_CACHE_DIR = "recordings";
 const BROWSER_RECORDER_PARTITION = "ade-browser-recorder";
 const DISPLAY_MEDIA_ARM_TTL_MS = 10_000;
 
+/**
+ * The tab's current document title, or `null` once its WebContents is gone.
+ *
+ * Exported because the two emitters of an automatically-ended `recording` event
+ * live on opposite sides of the service/capability seam — the max-duration
+ * timer here and `startHandoff` in `builtInBrowserService.ts` — and they are one
+ * contract: an automatic ending names the tab it ended, because the person who
+ * gets the toast is not the one who started it.
+ */
+export function builtInBrowserTabTitle(tab: BrowserTabState): string | null {
+  return tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle());
+}
+
 // Resolved lazily (and defensively) rather than as a named import: unit-test
 // `electron` mocks omit BrowserWindow, and only the recording path needs it.
 function electronBrowserWindowCtor(): (new (options: Record<string, unknown>) => unknown) | null {
@@ -1150,10 +1163,6 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
    * and by the session's own max-duration timer, so an auto-stopped recording
    * lands the same file and the same event — with `endedBy` naming what ended it.
    */
-  /** The tab's current document title, or `null` once its WebContents is gone. */
-  const liveTabTitle = (tab: BrowserTabState): string | null =>
-    tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle());
-
   const finishRecording = async (
     tab: BrowserTabState,
     session: BuiltInBrowserRecordingSession,
@@ -1168,7 +1177,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       frameCount: result.frameCount,
       // Only on an automatic ending: an explicit `stopRecording` raises no
       // toast, and the tab's own pane already says which tab it was.
-      ...(endedBy ? { endedBy, tabTitle: liveTabTitle(tab) } : {}),
+      ...(endedBy ? { endedBy, tabTitle: builtInBrowserTabTitle(tab) } : {}),
       updatedAt: new Date().toISOString(),
     });
     emitStatus();

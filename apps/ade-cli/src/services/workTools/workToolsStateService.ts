@@ -38,8 +38,10 @@ import {
  *   browser to describe — that is `browser: null` with
  *   `browserUnavailable: "desktop_not_attached"`, an ordinary state, not an
  *   error. A desktop that is attached but has no window open for this project
- *   is `"desktop_not_attached_for_project"`: also ordinary, and deliberately not
- *   answered out of another project's window collection.
+ *   is `"desktop_not_attached_for_project"`, and one that HAS this project open
+ *   but has never used its Browser pane is `"browser_pane_not_opened"`: both
+ *   ordinary, both deliberately not answered out of another project's window
+ *   collection, and worded apart because only the first means "open something".
  * - `appControl` is **read in-process** from the daemon's own App Control
  *   service, which is why it survives a desktop that has quit.
  *

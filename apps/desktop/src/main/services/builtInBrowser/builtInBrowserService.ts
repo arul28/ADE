@@ -127,7 +127,10 @@ import {
   normalizeDimension,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
-import { createBuiltInBrowserTabCapabilities } from "./builtInBrowserTabCapabilities";
+import {
+  builtInBrowserTabTitle,
+  createBuiltInBrowserTabCapabilities,
+} from "./builtInBrowserTabCapabilities";
 import { evaluateInTab } from "./builtInBrowserCdp";
 import {
   BuiltInBrowserHandoffActiveError,
@@ -811,8 +814,8 @@ export function createBuiltInBrowserService(args: {
 
   /**
    * Project-scoped read that never constructs, never attaches, never marks a
-   * window active, and returns `null` instead of throwing when no window serves
-   * the project.
+   * window active, and returns `null` instead of throwing when there is nothing
+   * to read.
    *
    * This is a plain `windowServices` lookup on purpose. `serviceForProjectRoot`
    * is the write path: it calls `attachToWindow` and can mark the collection
@@ -825,18 +828,41 @@ export function createBuiltInBrowserService(args: {
    * that project's tabs for a pane nobody opened.
    *
    * A window that is open for the project but has never used the Browser pane
-   * therefore reads as `null`, i.e. the same "not attached for this project"
-   * state as no window at all — which is what the human sees on that machine.
+   * therefore reads as `null` too. That is NOT the same state as no window at
+   * all, and callers must not render it as one — ask
+   * `hasLiveWindowForProjectRoot` to tell the two apart.
+   *
+   * A blank or null root reads as `null` rather than falling through to
+   * `activeService()`: that is the creating, marking write path, and this
+   * function's whole contract is that it is not. The frontmost-window fallback
+   * for a project-less caller lives at the one call site that wants it
+   * (`getStatusForProjectScope`), where it is visible.
    */
   const readOnlyServiceForProjectRoot = (
     projectRoot: string | null,
   ): WindowBrowserService | null => {
     const normalized = normalizedProjectRoot(projectRoot);
-    if (!normalized) return activeService();
+    if (!normalized) return null;
     const win = liveWindowForProjectRoot(normalized);
     if (!win) return null;
     const key = serviceKey(win.id, collectionForProjectRoot(normalized));
     return windowServices.get(key)?.service ?? null;
+  };
+
+  /**
+   * Does a live window on this machine serve `projectRoot` at all — whether or
+   * not its Browser pane was ever opened?
+   *
+   * The distinction the read above cannot make on its own: "the desktop doesn't
+   * have this project open" and "it does, you just haven't opened the Browser
+   * tool" are opposite instructions, and giving the second user the first
+   * sentence tells them to open something already in front of them. Pure: this
+   * is window bookkeeping only, with no collection lookup and no construction.
+   */
+  const hasLiveWindowForProjectRoot = (projectRoot: string | null): boolean => {
+    const normalized = normalizedProjectRoot(projectRoot);
+    if (!normalized) return false;
+    return liveWindowForProjectRoot(normalized) != null;
   };
 
   /* ── Dev-server discovery ───────────────────────────────────────────────── */
@@ -857,8 +883,18 @@ export function createBuiltInBrowserService(args: {
    * pane it is already using. Otherwise the only safe target is a Browser tool
    * with nothing open at all: dropping a tab into a pane someone is working in
    * would be exactly the kind of surprise this feature must not cause.
+   *
+   * That empty pane also has to belong to the detecting terminal's own project.
+   * `activeService()` is whichever window is frontmost, which on a two-project
+   * machine is routinely not the lane's — and a `localhost` tab that appears in
+   * a different project's Browser tool is both a surprise and, since every
+   * surface filters on `status.collectionProjectRoot`, invisible where it was
+   * wanted. A detection with no project (a project-less terminal) has no such
+   * constraint to check.
    */
-  const devServerTargetService = (laneId: string | null): WindowBrowserService | null => {
+  const devServerTargetService = (record: DevServerRecord): WindowBrowserService | null => {
+    const laneId = record.source.laneId;
+    const projectRoot = normalizedProjectRoot(record.source.projectRoot);
     if (laneId) {
       for (const service of allWindowServices()) {
         if (service.getStatus().tabs.some((tab) => tab.ownerLaneId === laneId)) return service;
@@ -872,8 +908,41 @@ export function createBuiltInBrowserService(args: {
     // that fallback — and this resolver now runs BEFORE the chip, so relying on
     // that ordering would silently stop auto-opening on a cold pane.
     const active = activeService();
-    if (active.getStatus().tabs.length === 0) return active;
-    return null;
+    const activeStatus = active.getStatus();
+    if (activeStatus.tabs.length > 0) return null;
+    if (projectRoot && !projectRootsMatch(activeStatus.collectionProjectRoot, projectRoot)) return null;
+    return active;
+  };
+
+  /**
+   * The collection a detection's chip is stamped with.
+   *
+   * Every surface filters `dev-server-detected` on
+   * `status.collectionProjectRoot` (`browserPanelNormalizers.ts#eventProjectRoot`),
+   * so this is what decides which launchpad shows the chip — and stamping it
+   * with whatever window is frontmost put one project's `localhost` URL in
+   * another project's pane while the lane's own pane dropped it.
+   *
+   * The auto-open target wins when it is the lane's project, because that is
+   * where the tab will land. Otherwise the record's own project decides, read
+   * through the non-constructing lookup: a project whose Browser pane was never
+   * opened yields `null` and no chip at all. That is the honest outcome — there
+   * is no pane to render it, and materializing one here would restore and load
+   * a background project's persisted tabs for a chip nobody is looking at.
+   */
+  const devServerChipService = (
+    record: DevServerRecord,
+    targetService: WindowBrowserService | null,
+  ): WindowBrowserService | null => {
+    const projectRoot = normalizedProjectRoot(record.source.projectRoot);
+    if (!projectRoot) return targetService ?? activeService();
+    if (
+      targetService
+      && projectRootsMatch(targetService.getStatus().collectionProjectRoot, projectRoot)
+    ) {
+      return targetService;
+    }
+    return readOnlyServiceForProjectRoot(projectRoot);
   };
 
   const handleDevServerDetected = async (record: DevServerRecord): Promise<void> => {
@@ -890,16 +959,23 @@ export function createBuiltInBrowserService(args: {
     // whatever collection happens to be frontmost is dropped by the lane's own
     // panel and merged into a different project's launchpad. This resolver is
     // synchronous, so it costs nothing to do it here.
-    const targetService = devServerTargetService(laneId);
+    const targetService = devServerTargetService(record);
+    const chipService = devServerChipService(record, targetService);
     // Still tell surfaces about it even when nothing opened: the launchpad chips
     // and the corner card want the server either way.
     const emitChipOnly = (): void => {
+      // No collection for the detecting project means no pane to render this
+      // chip in. Emitting it anyway would stamp it with someone else's
+      // collection, which is how a lane's `localhost` URL ended up in another
+      // project's launchpad; the record stays in the registry, so the pane
+      // lists it the moment it is opened.
+      if (!chipService) return;
       args.onEvent?.({
         type: "dev-server-detected",
         server: record,
         tabId: null,
         autoOpened: false,
-        status: (targetService ?? activeService()).getStatus(),
+        status: chipService.getStatus(),
         detectedAt: record.detectedAt,
       }, null);
     };
@@ -1060,16 +1136,33 @@ export function createBuiltInBrowserService(args: {
      * Side-effect-free status for one project's collection, for the desktop
      * bridge's `getStatusForRuntime`.
      *
-     * `null` means "no window on this machine is open for that project" — the
-     * caller must render that as its own state, not as this machine's browser,
-     * because falling back to the frontmost window would show one project's
-     * tabs to another project's Work-tools pane. A `null`/blank `projectRoot`
-     * (a project-less daemon) keeps the frontmost-window behaviour.
+     * `null` means "there is nothing to read for that project" — either no
+     * window on this machine has it open, or one does and its Browser pane was
+     * never used. The caller must render that as its own state, not as this
+     * machine's browser, because falling back to the frontmost window would
+     * show one project's tabs to another project's Work-tools pane; ask
+     * {@link hasWindowForProjectScope} which of the two absences it is.
+     *
+     * A `null`/blank `projectRoot` (a project-less daemon) keeps the
+     * frontmost-window behaviour, and is the one path here that can construct:
+     * such a caller has no project to be shown the wrong tabs for.
      */
     getStatusForProjectScope(projectRoot: string | null): BuiltInBrowserStatus | null {
+      if (!normalizedProjectRoot(projectRoot)) return activeService().getStatusForInput({});
       const scoped = readOnlyServiceForProjectRoot(projectRoot);
       if (!scoped) return null;
       return scoped.getStatusForInput({});
+    },
+    /**
+     * Whether a live window on this machine serves the project, independent of
+     * whether its Browser pane was ever opened. Side-effect-free.
+     *
+     * Pairs with {@link getStatusForProjectScope}: `null` status + `true` here
+     * is "the pane was never opened", `null` + `false` is "this project is not
+     * open on this Mac". Only the second may say so to a human.
+     */
+    hasWindowForProjectScope(projectRoot: string | null): boolean {
+      return hasLiveWindowForProjectRoot(projectRoot);
     },
     requestOriginAccess(
       input: BuiltInBrowserRequestOriginAccessArgs = {},
@@ -2932,7 +3025,7 @@ function createBuiltInBrowserWindowService(args: {
         recording: null,
         frameCount: 0,
         endedBy: "handoff",
-        tabTitle: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
+        tabTitle: builtInBrowserTabTitle(tab),
         updatedAt: new Date().toISOString(),
       });
       traceAutoEndedRecording(tab, "handoff");
