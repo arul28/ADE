@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../state/appStore";
 import { useWorkSidebarTool, workToolScopeKey } from "./useWorkSidebarTool";
 import {
@@ -146,5 +146,65 @@ describe("workToolRequests", () => {
     const pending = takePendingWorkToolRequest();
     expect(pending?.tool).toBe(null);
     expect(pending?.nonce).toBeTruthy();
+  });
+});
+
+describe("Work tool analytics", () => {
+  const capture = vi.fn(async () => undefined);
+
+  beforeEach(() => {
+    capture.mockClear();
+    setProject(PROJECT_ROOT);
+    (window as unknown as { ade: unknown }).ade = { analytics: { capture } };
+  });
+
+  afterEach(() => {
+    cleanup();
+    setProject(null);
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  it("reports which tool was opened, coarsely and once a day per tool", () => {
+    const { result } = renderHook(() => useWorkSidebarTool("lane-1"));
+
+    act(() => result.current.setTool("app-control"));
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith({
+      event: "ade_feature_used",
+      properties: {
+        feature: "work",
+        action: "tool_opened",
+        // Hyphenated ids are normalized so the value stays inside the closed
+        // `outcome` allowlist rather than arriving as a new spelling.
+        outcome: "tool_app_control",
+        source: "renderer_route",
+      },
+      dedupeKey: "work_tool_opened:app-control",
+      minimumIntervalMs: 24 * 60 * 60_000,
+    });
+    // Nothing about WHAT was being worked on crosses the boundary.
+    const sent = JSON.stringify(capture.mock.calls[0]![0]);
+    expect(sent).not.toContain("lane-1");
+    expect(sent).not.toContain(PROJECT_ROOT);
+  });
+
+  it("says nothing when the pane goes back to the picker", () => {
+    const { result } = renderHook(() => useWorkSidebarTool("lane-1"));
+
+    act(() => result.current.setTool("browser"));
+    capture.mockClear();
+
+    // Returning to the picker is not a tool: counting it would report closing
+    // as engagement and would double every open/close pair.
+    act(() => result.current.setTool(null));
+    expect(capture).not.toHaveBeenCalled();
+    expect(result.current.tool).toBe(null);
+
+    // Re-opening the same tool still goes through the same dedupe key, so the
+    // service — not this call site — is what bounds a flick through the picker.
+    act(() => result.current.setTool("browser"));
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture.mock.calls[0]![0]).toMatchObject({ dedupeKey: "work_tool_opened:browser" });
   });
 });

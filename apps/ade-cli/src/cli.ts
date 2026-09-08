@@ -121,6 +121,10 @@ import {
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
+import {
+  isWorkToolId,
+  workToolsUnavailableMessage,
+} from "../../desktop/src/shared/types/workTools";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -364,9 +368,11 @@ type FormatterId =
   | "app-control-snapshot"
   | "app-control-selection"
   | "browser-status"
+  | "browser-dev-servers"
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
+  | "work-tools-state"
   | "pty-create"
   | "terminal-list"
   | "terminal-read"
@@ -810,6 +816,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -2588,7 +2595,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
+    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
     $ ade --socket browser actions --text          List built_in_browser actions
+
+  "dev-servers" reports what ADE passively noticed in its own terminal output
+  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
+  lane. An empty list means nothing printed a line ADE recognised, not that
+  nothing is listening — start the server in an ADE shell, or just open the URL.
 
   Login handoff (you cannot sign in; a person must):
     $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
@@ -2719,6 +2732,40 @@ const HELP_BY_COMMAND: Record<string, string> = {
                          On panel/switch, claims only when passed explicitly.
     --chat-session <id>  Claim chat/session for open/new-tab/claim/session/actions.
                          On panel/switch, claims only when passed explicitly.
+`,
+  "work-tools": `${ADE_BANNER}
+  ADE work tools
+
+  The read-only mirror of the desktop's Work tools pane for one lane: which tool
+  the desktop has open, the browser tabs that lane owns (with owner, recording
+  and handoff state), the App Control session and driver, and the path of the
+  newest screenshot each already wrote to disk.
+
+  This is a state read, not a control surface. Which tool the pane shows is
+  published by the desktop renderer that owns it, so there is no command to set
+  it; open the tool in ADE Desktop. To drive a tool, use "ade browser" or
+  "ade app-control".
+
+    $ ade work-tools state --text                  Tools pane state for this agent's lane
+    $ ade work-tools state --lane <lane-id> --text Another lane (human callers only)
+    $ ade work-tools actions --text                List every callable work_tools action
+
+  Flags:
+    --lane, --lane-id <id> Lane to read. Ignored for chat-bound agents, which
+                           always read their own lane; falls back to ADE_LANE_ID.
+    --text                 Human-readable summary.
+    --json                 Structured JSON (default when piped).
+
+  Notes:
+    "browser" is null when the desktop cannot answer for this project, and the
+    reason is printed in its place — a desktop that is not attached, one with no
+    window on this project, or one whose Browser pane has never been opened.
+    Those are ordinary states, not errors.
+
+    Observation bytes never travel with the state. "state" prints the
+    host-absolute path the desktop wrote; read that file directly, or call
+    "ade actions run work_tools.readObservationPreview" when the caller cannot
+    see this machine's filesystem.
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -11347,6 +11394,60 @@ function isBrowserSessionActionMode(value: string): boolean {
 
 
 /**
+ * `ade work-tools` — the read-only mirror of the desktop's Work tools pane.
+ *
+ * Read-only is the whole domain, not a CLI choice: `work_tools.setActiveTool`
+ * is how a desktop renderer publishes which tool it has open, and
+ * `adeRpcServer` denies it to anything that is not a user client. Giving it a
+ * subcommand would only produce a command that always fails for the agents this
+ * CLI exists for, so `state` is the only typed verb and `actions` lists the
+ * rest. `readObservationPreview` has no wrapper either: it answers with base64
+ * image bytes, and `state` already prints the host-absolute path the desktop
+ * wrote — on this machine, reading that file is the shorter path. Clients that
+ * genuinely cannot see the filesystem (iOS, hosted web) call the action.
+ */
+function buildWorkToolsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "state";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["work-tools"] };
+  if (sub === "actions") {
+    return {
+      kind: "execute",
+      label: "work tools actions",
+      steps: [listActionsStep("actions", "work_tools")],
+    };
+  }
+  if (sub === "state" || sub === "status" || sub === "get") {
+    // A chat-bound agent never needs --lane: the daemon overwrites laneId with
+    // the lane its session resolves to, whatever was asked for. The flag (and
+    // ADE_LANE_ID) is for the human at a terminal, who is a user client and is
+    // therefore the only caller allowed to name another lane.
+    const laneId = asString(
+      readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+    );
+    return {
+      kind: "execute",
+      label: "work tools state",
+      steps: [
+        actionStep(
+          "result",
+          "work_tools",
+          "getLaneState",
+          collectGenericObjectArgs(args, laneId ? { laneId } : {}),
+        ),
+      ],
+    };
+  }
+  if (isWorkToolId(sub) || sub === "set" || sub === "set-active" || sub === "open") {
+    throw new CliUsageError(
+      "work-tools is read-only. Which tool the pane shows is published by the desktop that owns it; open the tool in ADE Desktop instead.",
+    );
+  }
+  throw new CliUsageError(
+    `Unknown work-tools command: ${sub}. Use state or actions.`,
+  );
+}
+
+/**
  * `ade browser handoff` — the agent says out loud that it cannot get past this
  * page and hands the tab to the human.
  *
@@ -11446,6 +11547,31 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "built_in_browser",
           "getStatus",
           collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+        ),
+      ],
+    };
+  }
+  // The launchpad chips the Browser pane renders, as a list. An agent that just
+  // ran `npm run dev` in an ADE shell reads the port from here instead of
+  // guessing it or grepping the terminal. Scope is not an argument: the daemon
+  // drops any caller-supplied `laneId` and the desktop bridge substitutes the
+  // actor capability's lane, so this always answers for the calling chat.
+  if (
+    sub === "dev-servers" ||
+    sub === "dev-server" ||
+    sub === "devservers" ||
+    sub === "servers" ||
+    sub === "localhost"
+  ) {
+    return {
+      kind: "execute",
+      label: "browser dev servers",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getDevServers",
+          collectGenericObjectArgs(args),
         ),
       ],
     };
@@ -14165,6 +14291,8 @@ function buildCliPlan(
     "ade-browser": "browser",
     "built-in-browser": "browser",
     "builtin-browser": "browser",
+    worktools: "work-tools",
+    "tools-pane": "work-tools",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -14499,6 +14627,12 @@ function buildCliPlan(
     primary === "builtin-browser"
   )
     return buildBrowserPlan(args);
+  if (
+    primary === "work-tools" ||
+    primary === "worktools" ||
+    primary === "tools-pane"
+  )
+    return buildWorkToolsPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "storage" || primary === "disk")
@@ -22533,6 +22667,88 @@ function formatBrowserStatus(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * Dev servers ADE noticed in its own terminal output. Detection is passive, so
+ * an empty list means "nothing printed a ready line ADE recognised", not
+ * "nothing is listening" — the empty-state line says so rather than leaving an
+ * agent to conclude its server failed to start.
+ */
+function formatBrowserDevServers(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const servers = firstArray(result, ["servers"]);
+  return renderTable(
+    ["port", "url", "lane", "terminal", "detected"],
+    servers.map((server) => {
+      const source = firstRecord(server, ["source"]) ?? {};
+      return [
+        server.port,
+        server.url,
+        source.laneId,
+        source.sessionId,
+        server.detectedAt,
+      ];
+    }),
+    "ADE dev servers\n(no dev servers detected in ADE terminals for this chat)",
+  );
+}
+
+/**
+ * The Work tools pane as the phone and the hosted web client see it.
+ *
+ * A null `browser` is an ordinary state, not a failure, so the reason is
+ * rendered as the browser's value using the same sentences every read-only
+ * client shows. A null `appControl` has no reason code — the daemon reads that
+ * one in-process, so the only way to have none is to have launched nothing.
+ * Observation paths are printed but not fetched: bytes come from
+ * `work_tools.readObservationPreview`, deliberately not from a state read.
+ */
+function formatWorkToolsState(value: unknown): string {
+  const state = isRecord(value) ? value : {};
+  const browser = firstRecord(state, ["browser"]);
+  const appControl = firstRecord(state, ["appControl"]);
+  const browserObservation = browser ? firstRecord(browser, ["latestObservation"]) : null;
+  const appControlObservation = appControl
+    ? firstRecord(appControl, ["latestObservation"])
+    : null;
+  const tabs = browser ? firstArray(browser, ["tabs"]) : [];
+  const activeTabId = browser ? asString(browser.activeTabId) : null;
+  return [
+    renderKeyValues("ADE work tools", [
+      ["lane", state.laneId],
+      ["active tool", state.activeTool ?? "(desktop has published none)"],
+      ["active tool updated", state.activeToolUpdatedAt],
+      ["captured", state.capturedAt],
+      [
+        "browser",
+        browser
+          ? `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`
+          : workToolsUnavailableMessage(asString(state.browserUnavailable)),
+      ],
+      ["browser active tab", activeTabId],
+      ["browser observation", browserObservation?.path],
+      ["browser observation captured", browserObservation?.capturedAt],
+      ["app control app", appControl?.appName],
+      ["app control status", appControl?.status],
+      ["app control driver", appControl?.driver],
+      ["app control observation", appControlObservation?.path],
+    ]),
+    "",
+    renderTable(
+      ["active", "tab", "owner chat", "recording", "handoff", "title", "url"],
+      tabs.map((tab) => [
+        tab.active === true || asString(tab.id) === activeTabId ? "*" : "",
+        tab.id,
+        tab.ownerChatSessionId,
+        tab.recording === true ? "yes" : "",
+        tab.handoffReason,
+        tab.title,
+        tab.url,
+      ]),
+      "Browser tabs\n(no browser tabs)",
+    ),
+  ].join("\n");
+}
+
 function formatBrowserSessions(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const session = firstRecord(result, ["session"]);
@@ -23447,6 +23663,10 @@ function formatTextOutput(
       return formatAppControlSelection(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-dev-servers":
+      return formatBrowserDevServers(value);
+    case "work-tools-state":
+      return formatWorkToolsState(value);
     case "browser-sessions":
       return formatBrowserSessions(value);
     case "browser-observation":
@@ -23594,6 +23814,8 @@ function inferFormatter(
     label === "browser close"
   )
     return "browser-status";
+  if (label === "browser dev servers") return "browser-dev-servers";
+  if (label === "work tools state") return "work-tools-state";
   if (
     label === "browser session start" ||
     label === "browser session end" ||

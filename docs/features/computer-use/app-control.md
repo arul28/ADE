@@ -45,6 +45,21 @@ collector (`AGENT_DOM_COLLECTOR_FUNCTION`), and the numbered element-map overlay
 (`AGENT_ELEMENT_MAP_OVERLAY_FUNCTION`). It imports nothing from Electron or
 node, so App Control keeps working inside the headless `ade` daemon.
 
+Two siblings complete the split, for the same reason: the browser and App
+Control evaluate the *same* collector and write the same observation
+triples, so a fork of either deletes files or leaks secrets.
+
+- `apps/desktop/src/shared/agentObservationNormalizers.ts` validates the
+  untrusted `unknown` shapes CDP hands back and owns the single
+  trace-target redaction rule. A forked `actionTargetForTrace` had already
+  drifted: typing an API key wrote a `textLength` on one surface and the
+  key itself on the other. Also dependency-free.
+- `apps/desktop/src/main/services/shared/agentObservationCache.ts` owns the
+  two disk sweeps both caches need — keep the newest N observations for a
+  live owner, and drop whole directories whose files have aged out —
+  across `.ade/cache/browser-observations` (per tab) and
+  `.ade/cache/app-control-observations` (per session).
+
 ### Shared types
 
 - `apps/desktop/src/shared/types/appControl.ts` — the type contract:

@@ -47,9 +47,9 @@ the remote host.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — merges the resolved `computer_use` server into every Codex `thread/start` and `thread/resume` config and handles MCP tool/source events plus elicitation requests.
 - `apps/desktop/src/shared/cliLaunch.ts` — emits the equivalent `-c mcp_servers.computer_use.*` flags for tracked Codex CLI start/resume commands. `agentChatCliLaunch.ts`, `ptyService.ts`, and `externalSessionsService.ts` resolve the config at each launch/resume so a newly installed or disabled plugin is respected.
 
-Computer-use services that used to exist and were deleted on this branch:
+Computer-use services that used to exist and are deliberately gone (do not re-add):
 
-- `proofObserver.ts` — the passive observer that auto-ingested screenshots from `tool_result` events. Captures are always intentional now.
+- `proofObserver.ts` — the passive observer that auto-ingested screenshots from `tool_result` events. Captures are always intentional: a bare `screenshot_environment` writes to the project's cache/tmp scratch root (`createComputerUseScratchPath` in `localComputerUse.ts`), which the broker already allows as an import root, and only a proof-named call creates a drawer record.
 - Ghost OS status shelling (`ghost status` / `ghost doctor` probes). The broker no longer shells out to external backend binaries.
 
 ### IPC and runtime RPC

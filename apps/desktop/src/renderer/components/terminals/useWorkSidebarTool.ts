@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { WorkToolId } from "../../../shared/types/workTools";
 import {
   laneWorkViewScopeKey,
   selectActiveProjectStateKey,
@@ -13,6 +14,43 @@ import {
  * `"<project>::<lane>"` is gone.
  */
 export { laneWorkViewScopeKey as workToolScopeKey };
+
+/**
+ * The one product fact the Work tools pane reports: which tool an installation
+ * actually opens.
+ *
+ * `ade_screen_viewed` already records that the Work screen was reached, and it
+ * cannot tell an install that lives in the Browser from one that only ever
+ * opens Git — which is the question this pane exists to answer. Emitted here,
+ * at the single writer every entry point funnels through (picker card, command
+ * palette, the reveal channel a dev-server chip uses), rather than at each of
+ * them, so the count cannot depend on how the tool was reached.
+ *
+ * Coarse and closed: the tool id and nothing else. No lane, project, tab, URL,
+ * session, duration, or ordering — a tool id says what was used, and any of
+ * those would say what was being worked on. Returning to the picker emits
+ * nothing: a null tool is not a tool.
+ *
+ * A per-tool 24-hour deduplication key holds this to at most SEVEN accepted
+ * events per installation per UTC day (one per id) no matter how often the user
+ * flips between panes, which is well inside the existing `ade_feature_used`
+ * 140-per-day / 30-per-minute limits and the shared 200-event ceiling. No
+ * ceiling was raised. The dashboard spec is deliberately untouched: no card
+ * asks this yet.
+ */
+function captureWorkToolOpened(tool: WorkToolId): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: {
+      feature: "work",
+      action: "tool_opened",
+      outcome: `tool_${tool.replace(/-/g, "_")}`,
+      source: "renderer_route",
+    },
+    dedupeKey: `work_tool_opened:${tool}`,
+    minimumIntervalMs: 24 * 60 * 60_000,
+  }).catch(() => undefined);
+}
 
 /**
  * Reads and writes "which tool is open in the Work tools pane".
@@ -50,6 +88,7 @@ export function useWorkSidebarTool(laneId: string | null): {
   const setTool = useCallback(
     (next: WorkSidebarTab | null) => {
       if (!projectStateKey) return;
+      if (next) captureWorkToolOpened(next);
       if (laneId) {
         setLaneWorkViewState(projectStateKey, laneId, { workSidebarTool: next });
       } else {

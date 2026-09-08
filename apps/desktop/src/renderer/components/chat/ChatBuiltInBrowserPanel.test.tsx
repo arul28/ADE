@@ -1930,4 +1930,53 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(screen.getByLabelText("Stop loading")).toBeTruthy();
     });
   });
+
+  /**
+   * The strip was a row of buttons with no tab semantics at all: a screen
+   * reader announced N unrelated buttons instead of "tab 2 of 3, selected",
+   * and Tab walked into every one of them. The fix is a real tablist with
+   * roving tabIndex, so these assert the three parts a reader depends on —
+   * container role, per-tab selection state, and arrow-key movement that also
+   * switches the tab.
+   */
+  describe("tab strip accessibility", () => {
+    it("is a tablist with roving focus, not a row of buttons", async () => {
+      const { api, emit } = installBrowserApi();
+      const twoTabs = statusWith({
+        activeTabId: "tab-1",
+        tabs: [
+          { ...browserStatus.tabs[0], id: "tab-1" },
+          makeBuiltInBrowserTab({ id: "tab-2", url: "https://second.test/", title: "Second" }),
+        ],
+      });
+      api.getStatus.mockResolvedValue(twoTabs);
+      api.switchTab.mockResolvedValue(twoTabs);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      emit({ type: "status", status: twoTabs });
+
+      const strip = await screen.findByRole("tablist");
+      expect(strip.getAttribute("aria-label")).toBe("ADE browser tabs");
+
+      const tabs = await screen.findAllByRole("tab");
+      expect(tabs).toHaveLength(2);
+      // Selection is announced, and only the selected tab is in the tab order —
+      // the row of plain buttons this replaced put every tab in it and told a
+      // screen reader nothing about which one was showing.
+      expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+      expect(tabs.map((tab) => tab.getAttribute("tabindex"))).toEqual(["0", "-1"]);
+
+      // Arrows walk the strip and take the tab with them, so focus never sits
+      // on a tab that is not the one showing.
+      fireEvent.keyDown(tabs[0]!, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(tabs[1]);
+      await waitFor(() =>
+        expect(api.switchTab).toHaveBeenCalledWith(expect.objectContaining({ tabId: "tab-2" }), null),
+      );
+
+      // Home jumps to the end of the strip rather than scrolling the pane.
+      fireEvent.keyDown(screen.getAllByRole("tab")[1]!, { key: "Home" });
+      expect(document.activeElement).toBe(screen.getAllByRole("tab")[0]);
+    });
+  });
 });

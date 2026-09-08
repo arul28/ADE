@@ -108,6 +108,7 @@ import {
   getOpenCodeRuntimeDiagnostics,
   watchCursorCloudMirror,
   getCursorCloudFleet,
+  getWorkToolsLaneState,
   getSlashCommands,
   getScheduledWorkState,
   getStoredApiKeyProviders,
@@ -393,7 +394,10 @@ import {
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
+  formatWorkToolsLaneState,
+  formatWorkToolsSummary,
   CURSOR_CLOUD_PANE_NOTE,
+  WORK_TOOLS_PANE_NOTE,
 } from "./rightPaneFormatters";
 import { cursorCloudRenameBlockedReason } from "./cursorCloudChatRename";
 import {
@@ -10868,6 +10872,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           kind: "details",
           title: "Cloud agents",
           body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (name === "/tools") {
+      // Read-only, everywhere this state travels: the Work tools panes own a
+      // WebContentsView, a CDP connection, and a simulator stream, all of which
+      // live in the desktop's main process. A terminal can describe them.
+      const toolsLaneId = args.trim()
+        ? resolveLaneReference(lanes, args.trim())?.id ?? null
+        : laneId;
+      if (!toolsLaneId) {
+        setRightPane({
+          kind: "details",
+          title: "Tools",
+          body: args.trim()
+            ? `No lane matched "${args.trim()}". Use an exact lane name or id.`
+            : "No active lane. Switch to a lane to see the tools its desktop has open.",
+        });
+        return;
+      }
+      setRightPane({ kind: "details", title: "Tools", body: "Loading tools state…" });
+      setRightOpen(true);
+      try {
+        const state = await getWorkToolsLaneState(conn, toolsLaneId);
+        setRightPane({
+          kind: "details",
+          title: formatWorkToolsSummary(state),
+          body: `${formatWorkToolsLaneState(state)}\n\n${WORK_TOOLS_PANE_NOTE}`,
+        });
+      } catch (error) {
+        // A daemon older than `work_tools` rejects the action outright. That is
+        // an absent surface, not a failure the reader can act on, so it reads
+        // the same way the desktop-less cases do rather than as a stack of RPC
+        // vocabulary.
+        setRightPane({
+          kind: "details",
+          title: "Tools",
+          body: `Couldn't read this lane's tools state.\n${error instanceof Error ? error.message : String(error)}`,
         });
       }
       return;

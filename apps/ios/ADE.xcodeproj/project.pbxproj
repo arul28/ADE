@@ -193,6 +193,7 @@
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
 		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
+		D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F0D /* WorkToolsContractTests.swift */; };
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
 		FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */; };
@@ -508,6 +509,7 @@
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
 		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000F0D /* WorkToolsContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsContractTests.swift; path = ADETests/WorkToolsContractTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalStateTests.swift; path = ADETests/WorkSessionCanonicalStateTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
@@ -1200,6 +1202,7 @@
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				D3000000000000000000000A /* WorkPromptStashTests.swift */,
+				D30000000000000000000F0D /* WorkToolsContractTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
 				FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */,
@@ -1742,6 +1745,7 @@
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
+				D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
 				FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */,

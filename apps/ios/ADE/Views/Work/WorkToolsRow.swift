@@ -88,10 +88,17 @@ struct WorkToolsRow: View {
         Capsule(style: .continuous)
           .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
       )
+      // The capsule stays visually compact — it sits above a transcript, not in
+      // a toolbar — but the tappable region is padded out to the 44pt minimum
+      // and made a full rectangle, so the hit area is not the drawn capsule.
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
     .accessibilityLabel("Tools on your Mac. \(summary)")
     .accessibilityHint("Opens a read-only view of this lane's tools")
+    .accessibilityAddTraits(.isButton)
   }
 
   /// One line, most-specific-first: the pane the desktop has open, then what is

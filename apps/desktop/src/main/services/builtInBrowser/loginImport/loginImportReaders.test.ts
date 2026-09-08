@@ -4,10 +4,11 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readChromiumCookieDatabase, decryptChromiumValue } from "./chromiumCookies";
 import { decodeWindowsWrappedKey, deriveChromiumKey, resolveChromiumKeys } from "./chromiumKeys";
+import { TrustedWindowsToolError } from "../../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { aggregateCookieDomains, selectCookiesForDomains } from "./cookieDomains";
 import { cookieScope, isExpired, snapshotCookieDatabase, type ImportedCookie } from "./cookieDatabase";
 import { readFirefoxCookieDatabase, readFirefoxCookies } from "./firefoxCookies";
@@ -18,6 +19,32 @@ import {
   parseFirefoxProfilesIni,
   WINDOWS_CHROMIUM_UNSUPPORTED_REASON,
 } from "./loginImportSources";
+
+/**
+ * Windows-only key unwrap. The default `unwrapWindowsKey` is module-private and
+ * is the one process on the machine that gets DPAPI key material on its stdin,
+ * so its spawn contract is pinned here rather than left to a Windows host:
+ * PowerShell resolved through the GLOBALROOT-checked trusted-tools helper (not
+ * `SystemRoot`/`WINDIR`/`PATH`, all caller-controlled), the blob on stdin (not
+ * argv, which the process table exposes), `windowsHide` so no console flashes,
+ * and a bounded timeout so a wedged shell cannot hang the import forever.
+ */
+const dpapi = vi.hoisted(() => ({
+  spawnSync: vi.fn(),
+  resolveTrustedWindowsTool: vi.fn(() => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return { ...original, spawnSync: dpapi.spawnSync };
+});
+
+vi.mock("../../../../../../ade-cli/src/lib/trustedWindowsTools", async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import("../../../../../../ade-cli/src/lib/trustedWindowsTools")
+  >();
+  return { ...original, resolveTrustedWindowsTool: dpapi.resolveTrustedWindowsTool };
+});
 
 type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
@@ -649,5 +676,54 @@ describe("profile discovery inputs", () => {
       { name: "default-release", relativePath: "Profiles/abc.default-release", isRelative: true },
       { name: "absolute", relativePath: "/tmp/somewhere", isRelative: false },
     ]);
+  });
+});
+
+describe("windows DPAPI key unwrap", () => {
+  const WRAPPED = Buffer.from("wrapped-blob");
+  const localState = JSON.stringify({
+    os_crypt: { encrypted_key: Buffer.concat([Buffer.from("DPAPI"), WRAPPED]).toString("base64") },
+  });
+
+  afterEach(() => {
+    dpapi.spawnSync.mockReset();
+    dpapi.resolveTrustedWindowsTool.mockReset();
+    dpapi.resolveTrustedWindowsTool.mockReturnValue(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+  });
+
+  it("runs a trusted PowerShell hidden and bounded, with the blob on stdin and never in argv", () => {
+    const plain = Buffer.alloc(32, 7);
+    dpapi.spawnSync.mockReturnValue({ status: 0, stdout: plain.toString("base64"), error: undefined });
+
+    const keys = resolveChromiumKeys(
+      { platform: "win32", windowsLocalStatePath: "C:\\Users\\x\\Local State" },
+      { readFile: () => localState },
+    );
+
+    expect(keys.gcmV10).toEqual(plain);
+    expect(dpapi.resolveTrustedWindowsTool).toHaveBeenCalledWith("powershell");
+    const [command, argv, options] = dpapi.spawnSync.mock.calls[0]!;
+    expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    // Key material rides on stdin; a command line is readable machine-wide.
+    expect(options).toMatchObject({ input: WRAPPED.toString("base64"), windowsHide: true });
+    expect(options.timeout).toBeGreaterThan(0);
+    expect((argv as string[]).join(" ")).not.toContain(WRAPPED.toString("base64"));
+    expect(argv).toContain("-NonInteractive");
+  });
+
+  it("reports a refused trusted-tool lookup as key_unavailable instead of shelling out anyway", () => {
+    dpapi.resolveTrustedWindowsTool.mockImplementation(() => {
+      throw new TrustedWindowsToolError("powershell is not where Windows says it is");
+    });
+
+    expect(() =>
+      resolveChromiumKeys(
+        { platform: "win32", windowsLocalStatePath: "C:\\Users\\x\\Local State" },
+        { readFile: () => localState },
+      ),
+    ).toThrowError(/trusted PowerShell/i);
+    expect(dpapi.spawnSync).not.toHaveBeenCalled();
   });
 });

@@ -12067,6 +12067,53 @@ describe("ADE CLI", () => {
 
     expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
       .toThrow(/Unknown browser record command/);
+
+    // Scope is never an argument here: `scopeBuiltInBrowserAdeActionArgs` drops
+    // any caller `laneId` and the desktop bridge substitutes the capability's
+    // lane, so the command deliberately sends no target of its own.
+    expect(firstStepArgs(["browser", "dev-servers"])).toEqual({ action: "getDevServers" });
+    for (const alias of ["dev-server", "devservers", "servers", "localhost"]) {
+      expect(firstStepArgs(["browser", alias])).toMatchObject({ action: "getDevServers" });
+    }
+  }));
+
+  it("work-tools exposes the read side of the Work tools pane and refuses the write", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments?.domain).toBe("work_tools");
+      return {
+        action: params?.arguments?.action,
+        ...(params?.arguments?.args ?? {}),
+      };
+    };
+
+    // Bare `work-tools` reads state; a chat-bound agent supplies no lane and the
+    // daemon forces its own, so an argument-free call must still be valid.
+    expect(firstStepArgs(["work-tools"])).toEqual({ action: "getLaneState" });
+    expect(firstStepArgs(["work-tools", "state", "--lane", "lane-1"]))
+      .toMatchObject({ action: "getLaneState", laneId: "lane-1" });
+    expect(firstStepArgs(["worktools", "status", "--lane", "lane-1"]))
+      .toMatchObject({ action: "getLaneState", laneId: "lane-1" });
+
+    const actions = buildCliPlan(["work-tools", "actions"]);
+    expect(actions.kind).toBe("execute");
+    if (actions.kind !== "execute") return;
+    expect(actions.steps[0]?.params).toMatchObject({ arguments: { domain: "work_tools" } });
+
+    // `setActiveTool` is the desktop publishing its own pane state and is denied
+    // to agents by adeRpcServer; the CLI says so instead of minting a call that
+    // can only fail.
+    expect(() => buildCliPlan(["work-tools", "browser"])).toThrow(/read-only/i);
+    expect(() => buildCliPlan(["work-tools", "set-active", "--lane", "lane-1"])).toThrow(/read-only/i);
+    expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
   }));
 
   it("browser open --device applies emulation after navigating", () => withEnv({

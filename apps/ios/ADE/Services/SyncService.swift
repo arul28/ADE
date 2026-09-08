@@ -14000,18 +14000,55 @@ final class SyncService: ObservableObject {
     supportsRemoteAction("workTools.getLaneState")
   }
 
+  /// Whether frames can be fetched at all. Registered alongside `getLaneState`
+  /// today, but feature-detected separately so a host that advertises only the
+  /// state read never gets a preview RPC it would answer with an error.
+  var supportsWorkToolsObservationPreview: Bool {
+    supportsRemoteAction("workTools.readObservationPreview")
+  }
+
+  /// Timeout for both Work-tools reads. Deliberately short: these are polls
+  /// behind a disclosure row, so a slow answer should be dropped and retried on
+  /// the next tick rather than held open.
+  private static let workToolsRequestTimeoutNanoseconds: UInt64 = 8_000_000_000
+
   /// What the desktop currently has open in this lane's tools pane.
+  ///
+  /// `disconnectOnTimeout: false` is load-bearing. This runs on a timer behind
+  /// every open chat transcript (10s) and again while the Tools sheet is up
+  /// (3s), so the default — tear the socket down and recover — would let a
+  /// read-only disclosure drop the user's whole sync connection on one slow
+  /// cellular round trip.
   func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
+    try requireWorkToolsAction("workTools.getLaneState")
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     // Project-scoped, resolved from the active project binding: a lane only
     // exists inside the project the phone is already looking at.
     return try decode(
       try await sendCommand(
         action: "workTools.getLaneState",
-        args: ["laneId": trimmed]
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
       ),
       as: WorkToolsLaneState.self
     )
+  }
+
+  /// Refuses a Work-tools read the connected host never advertised, rather than
+  /// putting an unknown action on the wire every poll. Older brains and
+  /// chat-only runtimes simply omit these commands.
+  private func requireWorkToolsAction(_ action: String) throws {
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
   }
 
   /// Bytes for one observation, fetched by the path the state handed us.
@@ -14020,11 +14057,14 @@ final class SyncService: ObservableObject {
   /// a screenshot would put a megabyte on the wire every few seconds for a
   /// picture nobody may be looking at.
   func readWorkToolsObservationPreview(path: String) async throws -> WorkToolsObservationPreview? {
+    try requireWorkToolsAction("workTools.readObservationPreview")
     let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     let result = try await sendCommand(
       action: "workTools.readObservationPreview",
-      args: ["path": trimmed]
+      args: ["path": trimmed],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
     )
     guard result is [String: Any] else { return nil }
     return try? decode(result, as: WorkToolsObservationPreview.self)

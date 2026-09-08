@@ -157,6 +157,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // never the surface, never the report or its upload reference — those are the
   // local file and the upload the user was toasted about, not analytics.
   "auto_sent",
+  // Which of the Work tools pane's tools an installation actually opens. The
+  // pane is a picker plus one active tool, and `ade_screen_viewed` "work" only
+  // says the surface was reached — it cannot tell a Browser install from a Git
+  // one. Never a lane, project, tab, URL, or session.
+  "tool_opened",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -290,6 +295,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `failed` on purpose: "we chose not to send" and "we tried and could not"
     // answer different questions, and the first is the guardrail working.
     "skipped_budget",
+    // Which Work tool was opened. Prefixed so these can never be confused with
+    // the usage scopes above, and closed to the seven ids in
+    // `shared/types/workTools.ts` — an eighth tool has to be added here
+    // deliberately rather than arriving as free text.
+    "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
+    "tool_browser", "tool_pr",
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

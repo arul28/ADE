@@ -566,7 +566,34 @@ Work session when one is selected). It is rendered next to
 not `grid` — the grid layout owns the full row, so the sidebar is
 suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
 container with a 5 px draggable column separator; the sidebar width is
-persisted as `workSidebarWidthPct` (26–55%).
+persisted as `workSidebarWidthPct`.
+
+### The splitter is clamped in two units
+
+`workSidebarSplitter.ts` owns the whole rule, pure so the arithmetic is
+testable without a layout engine. The percentage clamp
+(`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
+mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
+and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
+234 px the pane's own 36 px header — back button, tool name, activity
+dots, ✕ — has nowhere to go, which is how a drag once left the close
+button off-window. So a drag is clamped in **both** units: never below
+`MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
+column narrower than `MIN_WORK_CONTENT_PANE_PX` (360). The container
+width is the only thing the pane supplies; omit it (as the store does
+when it has no layout to consult) and only the percentage rule applies.
+`WORK_SIDEBAR_SPLITTER_PX` (5) belongs to neither pane, and arrow keys
+move the separator by `WORK_SIDEBAR_KEYBOARD_STEP_PCT` (2).
+
+The splitter also announces itself: `TerminalsPage` dispatches
+`ade:work-sidebar-browser-resize-start` / `-end`
+(`renderer/lib/workSidebarBrowserResize.ts`) so the browser panel's
+`useNativeBrowserViewBounds` can raise its suppression count for the
+length of the drag and keep pushing bounds every frame for 400 ms after
+it ends. Bounds are measured against the pane's **content box**, not the
+frame's own laid-out rect, which lags a pointer-driven resize by a frame
+or two — without that trim the composited page keeps its old width and
+paints over the chat column and the window edge while you drag.
 
 ### Picker page, then one tool
 
@@ -574,7 +601,7 @@ The pane is a **picker page plus one active tool** — there is no tab
 strip and no multi-instance. The picker is a two-column grid of cards,
 one per tool, in the order Terminal, Browser, Git, Files, iOS
 Simulator, App Control, Pull request
-(`WorkToolPicker.tsx`, catalogue in `workTools.tsx`). Each card carries
+(`WorkToolPicker.tsx`, catalogue in `workTools.ts`). Each card carries
 the tool's icon, its name, one live status line, and a right-side dot
 that is filled when the tool has something running. Status comes only
 from reads the pane already makes — the `builtInBrowser` / `iosSimulator`
@@ -594,7 +621,8 @@ capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
 
-While a tool is open the pane shows a 36 px header: a `⊞ Tools` button
+While a tool is open the pane shows a 36 px header
+(`WorkToolHeader.tsx`): a `⊞ Tools` button
 back to the picker (Escape does the same, bound as `work.tools.picker`
 with scope `work` so it only fires inside the pane), the tool's icon,
 name, and one compact context string (the browser's page, the shell
@@ -816,6 +844,76 @@ pane is mounted as a Work tile (`SessionSurface`), so the chat header
 no longer shows the iOS / App Control toggles inside Work — those
 drawers now live on the lane-scoped `WorkSidebar`. Proof remains
 chat-scoped and stays on the chat header.
+
+### One set of tool feeds, shared
+
+The pane's status lines and activity dots and the floating corner card
+all need the same three answers — what the browser, App Control, and the
+simulator are doing. `useNativeToolSessions.ts` is that subscription set
+(browser status + events, App Control session + events, simulator session
++ events, one capability gate, one definition of "live"), and mounting it
+twice opens two sets of subscriptions. `NativeToolFeedsContext.tsx` is
+the sharing mechanism: `TerminalsPage` mounts the hook once and provides
+it, and the pane and the card both read from the context. Browser error
+badges are a pure fold over pushed `diagnostics` events
+(`workToolErrors.ts`) — the service emits a tally when a tab's count
+moves and resets it to zero on a main-frame navigation, so a reload
+clears the badge and nothing polls.
+
+### The floating live-preview card: `WorkLiveCornerCard.tsx`
+
+The Work tab has exactly one pane for a screen tool, so the moment an
+agent starts driving the browser while you read a diff, the thing you
+most want to see is the thing you just navigated away from. The corner
+card is a 260 px live thumbnail of the most recently active screen tool
+that is **not** the one on screen, parked in a corner of the chat column
+and one click away from taking the pane back.
+
+- **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
+  available, live, non-active tool with the newest activity. Only
+  `browser`, `app-control`, and `ios` are previewable
+  (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
+  store also imports so the list cannot fork); Git and Files have nothing
+  to look at.
+- **Dismissal is per tool and per lane.** The ✕ records the activity
+  stamp the card was showing, so the tool comes back only on strictly
+  newer activity — closing it silences the current burst, not the
+  feature, and never another tool. Stamps live in the lane's work-view
+  state; the card's position is project-scoped and stored as fractions of
+  the chat column (`workLiveCardPosition`) so resizing the column keeps it
+  in place instead of stranding it off an edge.
+- **It costs nothing when nobody watches.** It subscribes to feeds that
+  already exist — App Control's screencast, the browser's refcounted
+  preview stream, the simulator's shared window capture via
+  `iosSimulatorPreviewStream.ts`, which takes its own refcounted parking
+  hold and never stops a stream the iOS panel started — paints frames
+  straight onto an `<img>`/`<video>` ref inside one rAF (so a 12 fps feed
+  causes zero React renders), and tears every feed down the moment the
+  Work route is not active.
+- **Parked, not hidden.** A `WebContentsView` that is detached or
+  `setVisible(false)` has no compositor surface, and with no surface every
+  capture path returns an empty image. So a browser tab with a live
+  preview subscriber is *parked* past the union of every display's bounds
+  instead of being detached — see [Chat › the corner card and parked
+  preview views](../chat/README.md#the-corner-card-and-parked-preview-views).
+
+### Tooltips and menus in the pane
+
+`ui/PaneTooltip.tsx` over the pure `ui/tooltipPosition.ts` places the
+pane's tooltips: **flip before shift** (a tooltip that would leave the
+window flips to the opposite side if that side fits, and is only then
+shifted along its cross axis — shifting first is what produced the
+clipped "Clos"), and **never over the trigger**, so a tooltip cannot
+cover the control it describes. `ui/paneMenuTokens.ts` is the one menu
+surface both pane dropdowns paint with: the browser toolbar's Radix
+`DropdownMenu` and App Control's hand-rolled menu, which stays
+hand-rolled because it hosts inline forms a Radix menu's typeahead and
+focus management would fight. The tokens carry paint and width only —
+each menu keeps its own positioning, and App Control's is absolutely
+positioned inside the pane so it cannot escape the stacking context and
+float over another tool's live frame. Max height is viewport-aware
+rather than a fixed 320 px, because on a short window a constant cut the
+last item ("Stop") in half.
 
 ## Terminal renderer: `TerminalView.tsx`
 

@@ -2005,10 +2005,10 @@ struct WorkChatSessionView: View {
         // Read-only summary of the Work tools pane running on the user's Mac.
         // It hides itself when the brain cannot describe one, so a lane with no
         // desktop attached costs nothing but a probe.
+        // No vertical padding: the row carries its own 44pt tap target, which
+        // already supplies the breathing room above the transcript.
         WorkToolsRow(laneId: session.laneId)
           .padding(.horizontal, 12)
-          .padding(.top, 4)
-          .padding(.bottom, 2)
 
         transcriptScrollView(proxy: proxy)
           .overlay(alignment: .bottomLeading) {

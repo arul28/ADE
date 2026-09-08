@@ -2526,6 +2526,46 @@ Known limits, all deliberate:
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 
+### Work tools row and sheet
+
+The desktop's Work tools pane cannot run on a phone — the browser is a
+`WebContentsView`, App Control is a CDP socket to a local process, and the
+iOS panel is a capture stream — so the phone gets a **read-only mirror**
+and no controls at all. A button that could not do anything would be a
+lie.
+
+`WorkToolsRow.swift` sits above a chat transcript as a one-line
+disclosure: "Tools · Browser active · 3 tabs ›". It hides itself entirely
+when the brain does not advertise `workTools.getLaneState`
+(`SyncService.supportsWorkToolsState`) or when there is nothing to say —
+an empty "Tools ›" that opens onto "nothing here" is worse than no row.
+Tapping it opens `WorkToolsSheet.swift`: three cards in the order people
+ask about them — what the desktop has open now, with the last frame it
+captured; the browser's tabs; App Control's session — plus pull to
+refresh.
+
+Refresh is a poll, not a subscription: the brain has no generic
+named-event channel to the phone (its push surface is cr-sqlite
+changesets, and this state is deliberately not table-backed), so the
+sheet polls `workTools.getLaneState` every 3 s while it is open and the
+row polls every 10 s while it is on screen. The row **skips its tick
+while the sheet is up**, because the sheet is presented from the row and
+polls the same command — a second read would be a duplicate RPC for a
+summary line nobody can see — and catches up on the next tick after
+dismissal. Both the row and the sheet live under one `Group` root so the
+poll and the sheet keep a single view identity.
+
+Frames never ride along with the state. The state carries the newest
+observation's path and the sheet fetches the bytes separately through
+`workTools.readObservationPreview`, which resolves paths inside the two
+observation cache roots only, rejects non-image extensions, and caps a
+preview at 10 MiB. Both commands are `viewerAllowed` and listed in
+`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a brain that predates
+them omits them and the phone hides the row instead of flipping the host
+into `limited` mode. Browser login handoff is surfaced read-only through
+`WorkToolsBrowserTab.handoffReason`. See
+[Chat › the Work tools pane on iOS and the hosted web client](../chat/README.md#the-work-tools-pane-on-ios-and-the-hosted-web-client).
+
 ### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |

@@ -430,3 +430,62 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(onPick).not.toHaveBeenCalled();
   });
 });
+
+describe("WorkLiveCornerCard tool switching", () => {
+  it("keeps painting frames after the card has swapped source tools once", async () => {
+    // `AnimatePresence` defaults to `mode="sync"`, so the OUTGOING card's ref
+    // callback fires with `null` AFTER the incoming card has already claimed
+    // the ref. A naive `ref={(node) => { imageRef.current = node; }}` therefore
+    // ends every tool switch with a null image ref, and the live thumbnail
+    // never painted again for the life of the pane — while "Live", the feed
+    // subscription and every other assertion in this file stayed green.
+    seedProject();
+    renderCard({ activeTool: "git" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
+
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    const first = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+    const firstFrame = "data:image/jpeg;base64,Zmlyc3Q=";
+    emitBrowserEvent({
+      type: "preview-frame",
+      tabId: "tab-1",
+      dataUrl: firstFrame,
+      width: 480,
+      height: 300,
+      capturedAt: new Date().toISOString(),
+    });
+    await waitFor(() => expect(first.querySelector("img")?.getAttribute("src")).toBe(firstFrame));
+
+    // App Control becomes the newest active tool: the browser card exits and
+    // the App Control card enters, both mounted at once for the crossfade.
+    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
+    await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
+
+    // …and the browser becomes newest again.
+    emitBrowserEvent({
+      type: "status",
+      status: { ...BROWSER_STATUS, tabs: [{ ...BROWSER_STATUS.tabs[0]!, title: "Signed in" }] },
+    });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+    // Let the crossfade finish so only the incoming card is left holding the ref.
+    await waitFor(
+      () => expect(screen.queryByLabelText("App Control live preview")).toBeNull(),
+      { timeout: 3_000 },
+    );
+
+    const secondFrame = "data:image/jpeg;base64,c2Vjb25k";
+    emitBrowserEvent({
+      type: "preview-frame",
+      tabId: "tab-1",
+      dataUrl: secondFrame,
+      width: 480,
+      height: 300,
+      capturedAt: new Date().toISOString(),
+    });
+    await waitFor(() => {
+      const live = screen.getByLabelText("Browser live preview").querySelector("img");
+      expect(live?.getAttribute("src")).toBe(secondFrame);
+    });
+  });
+});

@@ -162,6 +162,20 @@ Browser `window.ade` adapter:
   boundary: it drops old terminal subscriptions, clears command-read caches,
   binds the newly selected id, and fans a full-domain invalidation out before
   the reused renderer can hydrate stale project data.
+- `apps/desktop/src/renderer/webclient/adapter/misc.ts` - the small
+  namespaces, including the two Work-tools ones. `workTools` is a read-only
+  mirror: `getLaneState` and `readObservationPreview` are real remote
+  commands, and `setActiveTool` is a deliberate no-op, because publishing
+  which tool is open is the privilege of the surface that actually has one
+  and a web tab echoing its own picker would overwrite the desktop's truth on
+  every phone. `builtInBrowser` is an unavailable stub with two exceptions
+  whose *shape* is load-bearing: `getStatus` returns a real, empty
+  `BuiltInBrowserStatus` (the Work tools pane and the corner card call it here
+  too and read `status.tabs`; a bare `{ supported: false }` handed them
+  `undefined` and crashed the Work tab on render), and `getDevServers`
+  returns an empty list because dev-server discovery reads this machine's PTY
+  output and a web tab has none. Everything else in the namespace is
+  deliberately absent so a caller feature-detects instead of getting a fake.
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.

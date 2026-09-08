@@ -31,6 +31,7 @@ import {
   usageScopeSelectedCapture,
   USAGE_SCOPE_ANALYTICS_MIN_INTERVAL_MS,
 } from "./usageScopeAnalytics";
+import { WORK_TOOL_IDS } from "../../../shared/types/workTools";
 
 function makeHarness(options: {
   token?: string;
@@ -1598,6 +1599,41 @@ describe("product analytics producers", () => {
       action: "auto_resume",
       outcome: "rescheduled",
     })).not.toHaveProperty("outcome");
+  });
+
+  it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
+    // The pane is a picker plus one active tool, so the closed id set IS the
+    // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and
+    // not to the allowlist ships anonymous, which is the failure this pins.
+    for (const tool of WORK_TOOL_IDS) {
+      const outcome = `tool_${tool.replace(/-/g, "_")}`;
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "tool_opened",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "work", action: "tool_opened", outcome, source: "renderer_route" });
+    }
+
+    // An eighth tool has to be registered here deliberately, and nothing that
+    // identifies the work — a lane, a project, a tab — can ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "tool_opened",
+      outcome: "tool_notebook",
+    })).not.toHaveProperty("outcome");
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "tool_opened",
+      outcome: "tool_browser",
+      // Not on `ade_feature_used`'s key list at all.
+      lane_id: "lane-1",
+      url: "https://intranet.example.test/",
+    })).toEqual({
+      feature: "work",
+      action: "tool_opened",
+      outcome: "tool_browser",
+    });
   });
 
   it("keeps the Report-issue outcome through the sanitizer and nothing else", () => {

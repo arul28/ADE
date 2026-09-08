@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
-import { createBuiltInBrowserService } from "./builtInBrowserService";
+import {
+  BuiltInBrowserNoTabError,
+  createBuiltInBrowserService,
+  isBuiltInBrowserNoTabError,
+} from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 
 const fakes = vi.hoisted(() => {
@@ -4004,4 +4008,44 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     expect(service.getStatus().isInspecting).toBe(false);
   });
 
+});
+
+/**
+ * The soft "no tab" result the IPC boundary returns instead of an error.
+ *
+ * `registerIpc` narrows with `isBuiltInBrowserNoTabError` and then reads
+ * `error.tabId` for its debug line, so the predicate has to prove the field is
+ * there — not just that the name matches. A name-only match would hand those
+ * two readers `undefined` under a type that says `string | null`, which is the
+ * shape a second copy of this module (or an error rehydrated across a process
+ * boundary) actually produces.
+ */
+describe("BuiltInBrowserNoTabError", () => {
+  it("keeps the named tab in the message so a raw log still says which one lost", () => {
+    const named = new BuiltInBrowserNoTabError("No browser tab is open", "tab-7");
+    expect(named.tabId).toBe("tab-7");
+    expect(named.message).toBe("No browser tab is open: tab-7");
+    expect(named.reason).toBe("no_tab");
+
+    const anonymous = new BuiltInBrowserNoTabError("No browser tab is open");
+    expect(anonymous.tabId).toBeNull();
+    // Nothing to append, so the message is not decorated with an empty suffix.
+    expect(anonymous.message).toBe("No browser tab is open");
+  });
+
+  it("accepts a foreign copy only when it can actually answer `tabId`", () => {
+    expect(isBuiltInBrowserNoTabError(new BuiltInBrowserNoTabError("x", "tab-1"))).toBe(true);
+
+    // A second module copy: not `instanceof`, but it carries the field the
+    // readers dereference.
+    const foreign = Object.assign(new Error("x"), { name: "BuiltInBrowserNoTabError", tabId: null });
+    expect(isBuiltInBrowserNoTabError(foreign)).toBe(true);
+
+    // Same name, no field — narrowing this would be the unsound branch.
+    const nameOnly = Object.assign(new Error("x"), { name: "BuiltInBrowserNoTabError" });
+    expect(isBuiltInBrowserNoTabError(nameOnly)).toBe(false);
+    expect(isBuiltInBrowserNoTabError(new Error("No browser tab is open"))).toBe(false);
+    expect(isBuiltInBrowserNoTabError({ name: "BuiltInBrowserNoTabError", tabId: "t" })).toBe(false);
+    expect(isBuiltInBrowserNoTabError(null)).toBe(false);
+  });
 });

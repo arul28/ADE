@@ -46,6 +46,19 @@ type BridgeReturn<Method extends BuiltInBrowserDesktopBridgeMethod> =
 
 export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "getStatus",
+  /**
+   * The dev servers ADE sniffed out of its own terminals — the same feed the
+   * Browser pane's launchpad chips render. Read-only, and here rather than
+   * renderer-only because an agent that just started `npm run dev` in an ADE
+   * shell otherwise has to guess the port before it can `ade browser open` it.
+   *
+   * Scope comes from the caller, not the argument: the bridge overwrites
+   * `laneId` with the actor capability's lane, so a lane-bound agent sees its
+   * own lane's servers whatever it asks for. A personal (project-less) chat has
+   * no lane and gets the machine-wide list, which carries no more than the
+   * project roots `ade projects list` already prints.
+   */
+  "getDevServers",
   "requestOriginAccess",
   "claim",
   "startHandoff",

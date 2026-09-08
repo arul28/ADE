@@ -723,9 +723,10 @@ Renderer surfaces:
   existing App Control / iOS Simulator session are shown as an
   informational warning banner but no longer block context insertion —
   controls affect the running tool while inserted context goes to the
-  current chat, draft, or CLI target. The tab strip must stay reachable
-  when the Work pane is narrow: labels collapse to accessible icon
-  buttons while preserving stable hit targets and tooltips.
+  current chat, draft, or CLI target. There is no tab strip: the pane is a
+  picker page plus one tool, and a narrow pane is handled by the splitter
+  clamp (`workSidebarSplitter.ts`) refusing to shrink it below the width
+  its 36 px header needs, rather than by collapsing labels.
 
   The pane follows the **chat's** machine, not the tab's. `runtimePin`
   (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
@@ -753,6 +754,42 @@ Renderer surfaces:
   ("Tool context insertion is not available for chats on another machine."),
   because it travels as a DOM window event the chat pane consumes and that
   path carries no machine.
+- `apps/desktop/src/renderer/components/terminals/workTools.ts` — the tool
+  catalogue and the capability rules: `WORK_TOOL_DEFINITIONS` (order, icon,
+  label, header context string), `workToolAvailability` (available, or a
+  reason: local-only, desktop-only, macOS-only, "Open the PRs tab for remote
+  projects"), and `isReadOnlyWorkTool` for the hosted web client. Availability
+  is decided from capability flags, never `process.platform` — the web client
+  renders the same components.
+- `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
+  `WorkToolHeader.tsx`, `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
+  the pane's two pages and the panel mounts. The picker is a two-column grid
+  of cards with one live status line each; the header is the 36 px bar with
+  the `⊞ Tools` button, the tool's icon/name/context, the other tools'
+  activity dots, and ✕; the read-only view replaces the browser and App
+  Control panels on the hosted web client; `workToolPanels.tsx` is one component per
+  tool id, replacing a 270-line `useMemo` in `WorkSidebar` that dispatched
+  through seven sequential `if` blocks over a 28-entry dependency array and
+  could never memoize; each panel now takes the same explicit props object,
+  keeps its own guards and empty states, and adding a tool is one entry here
+  plus one in `WORK_TOOL_DEFINITIONS`.
+- `apps/desktop/src/renderer/components/terminals/useWorkSidebarTool.ts`,
+  `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
+  `workSidebarSplitter.ts` — which tool is open (per lane, and published to
+  the runtime as `work_tools.setActiveTool` on a 250 ms debounce), the status
+  lines assembled only from reads the pane already makes, the request queue
+  surfaces outside the Work page file instead of writing pane state directly,
+  the pushed-diagnostics fold behind the red activity dots, and the two-unit
+  splitter clamp.
+- `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`,
+  `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
+  subscription set, mounted once by `TerminalsPage` and shared with both the
+  pane and the floating corner card.
+- `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
+  `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
+  live-preview card for the most recently active screen tool that is *not*
+  in the pane. See
+  [UI surfaces](ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx).
 - `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
   same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip
   primaries and `main`/`master`, pull later same-branch lanes (including
