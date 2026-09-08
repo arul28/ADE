@@ -236,10 +236,12 @@ export function buildCodingAgentSystemPrompt(args: {
   const runtime = args.runtime;
   const hasCreateLane = toolNames.includes("createLane");
   const hasCreatePr = toolNames.includes("createPrFromLane");
-  const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
-  const hasReportCompletion = toolNames.includes("reportCompletion");
   const hasTodoTools = toolNames.includes("TodoWrite") || toolNames.includes("TodoRead");
-  const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
+  // Only tools with a live implementation get a bullet. `createLane` and
+  // `createPrFromLane` are real (`ctoOperatorTools.ts`); `captureScreenshot`
+  // and `reportCompletion` had none in any tool registry, so advertising them
+  // just earned the model a tool-not-found error.
+  const hasWorkflowTools = hasCreateLane || hasCreatePr;
   const guardedLocalReadOnly = permissionMode === "plan";
   const adeSkillRoots = args.adeSkillRoots ?? getAdeAgentSkillRootsForPrompt({ cwd: args.cwd });
   const PR_ISSUE_TOOL_NAMES = new Set([
@@ -348,14 +350,8 @@ export function buildCodingAgentSystemPrompt(args: {
           ...(hasCreatePr
             ? ["- **createPrFromLane**: Open a GitHub pull request from a lane. Use this when your changes are committed and pushed. Prefer draft PRs for work-in-progress."]
             : []),
-          ...(hasCaptureScreenshot
-            ? ["- **captureScreenshot**: Take a screenshot for your own visual verification. It returns a scratch file path and does NOT create reviewer-facing proof — run `ade proof capture --caption \"…\"` (or `ade proof attach <path> --caption \"…\"`) for that."]
-            : []),
-          ...(hasReportCompletion
-            ? ["- **reportCompletion**: Submit a structured completion report when done. Always include a summary, status, and list of artifacts produced."]
-            : []),
           "",
-          "**Recommended workflow:** Create a lane, make changes, verify with tests and screenshots, create a PR, then report completion.",
+          "**Recommended workflow:** Create a lane, make changes, verify with tests and `ade proof capture --caption \"…\"`, then create a PR.",
           "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
         ]
       : []),

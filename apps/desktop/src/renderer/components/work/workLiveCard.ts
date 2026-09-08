@@ -1,4 +1,13 @@
 import type { WorkSidebarTab } from "../../state/appStore";
+import {
+  WORK_LIVE_SCREEN_TOOLS,
+  isWorkLiveScreenTool,
+  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardPosition,
+  type WorkLiveCardDismissals,
+  type WorkLiveCardPosition,
+  type WorkLiveScreenTool,
+} from "../../state/workLiveCardState";
 
 /**
  * The floating corner card's decisions, as pure functions.
@@ -9,14 +18,28 @@ import type { WorkSidebarTab } from "../../state/appStore";
  * scrubber that shows frame 10 of 3), and neither needs a DOM to answer.
  */
 
-/** The tools that have something to *look at*. Git and Files do not. */
-export type WorkLiveScreenTool = Extract<WorkSidebarTab, "browser" | "app-control" | "ios">;
+/**
+ * The tool ids, the two persisted shapes and their normalizers live in
+ * `state/workLiveCardState` so the app store can share them without importing a
+ * component module — they used to exist twice and had already drifted on which
+ * ids count as previewable. Re-exported here because this is the module the
+ * card and its tests read.
+ */
+export {
+  WORK_LIVE_SCREEN_TOOLS,
+  isWorkLiveScreenTool,
+  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardPosition,
+};
+export type { WorkLiveCardDismissals, WorkLiveCardPosition, WorkLiveScreenTool };
 
-export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = ["browser", "app-control", "ios"];
-
-export function isWorkLiveScreenTool(tool: WorkSidebarTab | null): tool is WorkLiveScreenTool {
-  return tool === "browser" || tool === "app-control" || tool === "ios";
-}
+/**
+ * Compile-time proof that every previewable tool id is a real sidebar tab id.
+ * `workLiveCardState` cannot import `WorkSidebarTab` (the store imports IT), so
+ * the two lists are tied together here instead.
+ */
+const _screenToolsAreSidebarTabs: readonly WorkSidebarTab[] = WORK_LIVE_SCREEN_TOOLS;
+void _screenToolsAreSidebarTabs;
 
 export type WorkLiveActivity = {
   tool: WorkLiveScreenTool;
@@ -29,28 +52,6 @@ export type WorkLiveActivity = {
 };
 
 /* ── Dismissal ────────────────────────────────────────────────────────────── */
-
-/**
- * The activity stamp each tool's card was dismissed at, keyed by tool id.
- *
- * Per TOOL rather than one flag because "I don't need to watch the browser
- * right now" says nothing about the simulator that boots ten seconds later.
- * The value is the activity clock the card was showing when you closed it, so
- * the rule "come back on NEW activity" is a plain `>` and cannot be defeated by
- * the bookkeeping event that closing the card itself provokes.
- */
-export type WorkLiveCardDismissals = Record<string, number>;
-
-export function normalizeWorkLiveCardDismissals(value: unknown): WorkLiveCardDismissals | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const next: WorkLiveCardDismissals = {};
-  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
-    if (!isWorkLiveScreenTool(key as WorkSidebarTab)) continue;
-    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
-    next[key] = stamp;
-  }
-  return Object.keys(next).length > 0 ? next : null;
-}
 
 export function commitWorkLiveCardDismissal(
   dismissals: WorkLiveCardDismissals | null | undefined,
@@ -93,6 +94,116 @@ export function selectWorkLiveCardTool(args: {
   return best?.tool ?? null;
 }
 
+/* ── Per-tool source adapters ─────────────────────────────────────────────── */
+
+/**
+ * Everything the card needs to know about the tool it is picturing, folded into
+ * one shape.
+ *
+ * The component used to answer these five questions with five consecutive
+ * `if (tool === "browser") … if (tool === "app-control") … if (tool === "ios")`
+ * ladders over the same three states, each with its own field-picking rule —
+ * so a fourth previewable tool meant finding seven edit sites in one file.
+ * One adapter per tool, in a map beside {@link WORK_LIVE_SCREEN_TOOLS}, keeps
+ * the answers together and makes them testable without mounting the card.
+ */
+export type WorkLiveSource = {
+  /** Something of this tool's is running right now. */
+  live: boolean;
+  /** `"agent"` when an agent session owns it, else null. */
+  ownerLabel: string | null;
+  /** The tool's own idea of what it is showing, before any action caption. */
+  caption: string | null;
+  /** A login handoff or equivalent "needs you" state, or null. */
+  handoff: WorkLiveHandoff;
+  /** Truthy while the tool is recording; only the browser can be. */
+  recording: unknown;
+};
+
+export type WorkLiveHandoff = { label: string; detail: string | null } | null;
+
+/**
+ * Feature detection, not a type assertion: the handoff field may not exist in
+ * every build of every source. An absent field renders nothing rather than an
+ * "unknown" chip.
+ */
+export function detectWorkLiveHandoff(value: unknown): WorkLiveHandoff {
+  if (!value || typeof value !== "object") return null;
+  const handoff = (value as { handoff?: unknown }).handoff;
+  if (!handoff || typeof handoff !== "object") return null;
+  const record = handoff as { reason?: unknown; label?: unknown; state?: unknown; status?: unknown };
+  for (const candidate of [record.reason, record.label, record.state, record.status]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return { label: "Needs you", detail: candidate.trim() };
+    }
+  }
+  return { label: "Needs you", detail: null };
+}
+
+/** The three states the adapters read, in the shapes the feeds deliver them. */
+export type WorkLiveSourceState = {
+  /** The browser's active tab, or null. */
+  browserTab: {
+    ownerChatSessionId?: string | null;
+    title?: string | null;
+    url?: string | null;
+    recording?: unknown;
+    handoff?: unknown;
+  } | null;
+  appControlSession: {
+    chatSessionId?: string | null;
+    label?: string | null;
+    status?: string | null;
+    handoff?: unknown;
+  } | null;
+  iosSession: {
+    chatSessionId?: string | null;
+    appName?: string | null;
+    deviceName?: string | null;
+    handoff?: unknown;
+  } | null;
+};
+
+const AGENT_OWNER_LABEL = "agent";
+
+export const WORK_LIVE_SOURCES: Record<
+  WorkLiveScreenTool,
+  (state: WorkLiveSourceState) => WorkLiveSource
+> = {
+  browser: ({ browserTab }) => ({
+    live: Boolean(browserTab),
+    ownerLabel: browserTab?.ownerChatSessionId ? AGENT_OWNER_LABEL : null,
+    caption: browserTab?.title ?? browserTab?.url ?? null,
+    handoff: detectWorkLiveHandoff(browserTab),
+    recording: browserTab?.recording ?? null,
+  }),
+  "app-control": ({ appControlSession }) => ({
+    // `stopped` and `exited` are terminal; `failed` is not — the session is
+    // still attached, which is what makes the dot red rather than absent.
+    live: Boolean(appControlSession)
+      && appControlSession?.status !== "stopped"
+      && appControlSession?.status !== "exited",
+    ownerLabel: appControlSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
+    caption: appControlSession?.label ?? null,
+    handoff: detectWorkLiveHandoff(appControlSession),
+    recording: null,
+  }),
+  ios: ({ iosSession }) => ({
+    live: Boolean(iosSession),
+    ownerLabel: iosSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
+    caption: iosSession?.appName ?? iosSession?.deviceName ?? null,
+    handoff: detectWorkLiveHandoff(iosSession),
+    recording: null,
+  }),
+};
+
+export function workLiveSource(
+  tool: WorkLiveScreenTool,
+  state: WorkLiveSourceState,
+): WorkLiveSource {
+  return WORK_LIVE_SOURCES[tool](state);
+}
+
 /* ── Frame scrubber ───────────────────────────────────────────────────────── */
 
 export const WORK_LIVE_SCRUB_BUFFER_SIZE = 10;
@@ -113,6 +224,18 @@ export type WorkLiveScrubFrame = {
    */
   id?: string | null;
 };
+
+/**
+ * A stable identity for one scrub frame.
+ *
+ * The ring buffer shifts left when it is full, so an INDEX is not an identity:
+ * a frame the pointer is parked on moves under it and the caption starts
+ * describing a different action than the picture. Trace ids are present for
+ * both sources today; `at` is the fallback for a frame committed without one.
+ */
+export function workLiveScrubFrameKey(frame: WorkLiveScrubFrame): string {
+  return `${frame.id ?? ""}:${frame.at}`;
+}
 
 /**
  * Commits one frame to the ring buffer.
@@ -138,14 +261,17 @@ export function updateWorkLiveScrubCaption(
   buffer: readonly WorkLiveScrubFrame[],
   id: string,
   caption: string | null,
-): WorkLiveScrubFrame[] {
+): readonly WorkLiveScrubFrame[] {
   let changed = false;
   const next = buffer.map((frame) => {
     if (frame.id !== id || frame.caption === caption) return frame;
     changed = true;
     return { ...frame, caption };
   });
-  return changed ? next : [...buffer];
+  // Identity-preserving on no change: returning a fresh array unconditionally
+  // meant the `changed` bookkeeping bought nothing and React could never bail
+  // out of the re-render.
+  return changed ? next : buffer;
 }
 
 /**
@@ -209,9 +335,6 @@ export function formatWorkLiveAge(elapsedMs: number): string {
 
 /* ── Placement ────────────────────────────────────────────────────────────── */
 
-/** Fraction of the host box, so a resized column keeps the card where it was. */
-export type WorkLiveCardPosition = { xPct: number; yPct: number };
-
 export const WORK_LIVE_CARD_WIDTH = 260;
 /** 16:10, matching the aspect the browser and App Control both preview at. */
 export const WORK_LIVE_CARD_ASPECT = 16 / 10;
@@ -232,8 +355,20 @@ export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): n
   return Math.max(320, Math.min(960, Math.round(WORK_LIVE_CARD_WIDTH * ratio)));
 }
 
-export function workLiveCardFits(host: { width: number; height: number }): boolean {
-  return host.width >= WORK_LIVE_CARD_MIN_HOST_WIDTH && host.height >= WORK_LIVE_CARD_MIN_HOST_HEIGHT;
+/**
+ * Is there room for the card at all?
+ *
+ * `bottomReserve` is the composer's measured height: the card sits ABOVE it, so
+ * a column that clears the minimum only by borrowing the composer's rows has no
+ * room. Without this term `workLiveCardTravel`'s `Math.max` silently gave up
+ * and parked the card ON the composer it was measured to avoid.
+ */
+export function workLiveCardFits(
+  host: { width: number; height: number },
+  bottomReserve = 0,
+): boolean {
+  return host.width >= WORK_LIVE_CARD_MIN_HOST_WIDTH
+    && host.height >= WORK_LIVE_CARD_MIN_HOST_HEIGHT + Math.max(0, bottomReserve);
 }
 
 /**
@@ -335,14 +470,3 @@ export function workLiveCardPositionFromRect(args: {
   };
 }
 
-export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosition | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<WorkLiveCardPosition>;
-  const xPct = typeof candidate.xPct === "number" && Number.isFinite(candidate.xPct) ? candidate.xPct : null;
-  const yPct = typeof candidate.yPct === "number" && Number.isFinite(candidate.yPct) ? candidate.yPct : null;
-  if (xPct == null || yPct == null) return null;
-  return {
-    xPct: Math.max(0, Math.min(1, xPct)),
-    yPct: Math.max(0, Math.min(1, yPct)),
-  };
-}

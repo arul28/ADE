@@ -309,6 +309,19 @@ export async function createBuiltInBrowserRecordingSession(args: {
   createRecorder: BuiltInBrowserRecorderFactory;
   now?: () => number;
   logger?: Logger | null;
+  /**
+   * Hard wall-clock bound. The session owns the timer so the bound holds even
+   * if the caller that armed the recording never comes back — which is the
+   * case the bound exists for.
+   */
+  maxDurationMs?: number | null;
+  /**
+   * Fired once when {@link maxDurationMs} elapses with the recording still
+   * running. The session does NOT stop itself: finalizing a recording means
+   * emitting events and writing a result the owner has to publish, so the owner
+   * calls `stop()` from here.
+   */
+  onMaxDurationReached?: (() => void) | null;
 }): Promise<BuiltInBrowserRecordingSession> {
   const now = args.now ?? (() => Date.now());
   await fs.mkdir(args.directory, { recursive: true });
@@ -326,6 +339,29 @@ export async function createBuiltInBrowserRecordingSession(args: {
   const startedAtMs = now();
   let stopped = false;
 
+  let maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearMaxDurationTimer = (): void => {
+    if (!maxDurationTimer) return;
+    clearTimeout(maxDurationTimer);
+    maxDurationTimer = null;
+  };
+  const maxDurationMs = args.maxDurationMs ?? null;
+  if (maxDurationMs != null && maxDurationMs > 0 && args.onMaxDurationReached) {
+    maxDurationTimer = setTimeout(() => {
+      maxDurationTimer = null;
+      if (stopped) return;
+      try {
+        args.onMaxDurationReached?.();
+      } catch (error) {
+        args.logger?.warn("built_in_browser.recording_max_duration_handler_failed", {
+          id: args.id,
+          err: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, maxDurationMs);
+    maxDurationTimer.unref?.();
+  }
+
   return {
     id: args.id,
     fps: args.fps,
@@ -335,6 +371,7 @@ export async function createBuiltInBrowserRecordingSession(args: {
     async stop() {
       if (stopped) throw new Error("Browser recording already stopped.");
       stopped = true;
+      clearMaxDurationTimer();
       const durationMs = Math.max(0, now() - startedAtMs);
       const result = await recorder.stop({ durationMs });
       return {
@@ -347,6 +384,7 @@ export async function createBuiltInBrowserRecordingSession(args: {
     abort() {
       if (stopped) return;
       stopped = true;
+      clearMaxDurationTimer();
       recorder.abort();
     },
   };

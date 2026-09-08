@@ -27,7 +27,7 @@ ade help proof
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
 - `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, and `ade browser proof` **do** file.
-- The `captureScreenshot` chat tool and a bare `screenshot_environment` / `record_environment` call **do not** — they hand you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it.
+- A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  laneWorkViewScopeKey,
   selectActiveProjectStateKey,
   useAppStore,
   type WorkProjectViewState,
@@ -7,19 +8,11 @@ import {
 } from "../../state/appStore";
 
 /**
- * The scope key a lane's tools-pane state lives under in `laneWorkViewByScope`.
- * Returns "" when either half is missing, which callers read as "no lane scope,
- * use the project scope".
+ * The scope key is the store's own — `laneWorkViewScopeKey`. Re-exported under
+ * the name this module's callers already use; the third hand-rolled copy of
+ * `"<project>::<lane>"` is gone.
  */
-export function workToolScopeKey(
-  projectStateKey: string | null,
-  laneId: string | null,
-): string {
-  const project = projectStateKey?.trim() ?? "";
-  const lane = laneId?.trim() ?? "";
-  if (!project || !lane) return "";
-  return `${project}::${lane}`;
-}
+export { laneWorkViewScopeKey as workToolScopeKey };
 
 /**
  * Reads and writes "which tool is open in the Work tools pane".
@@ -43,7 +36,7 @@ export function useWorkSidebarTool(laneId: string | null): {
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
 
-  const scopeKey = workToolScopeKey(projectStateKey, laneId);
+  const scopeKey = laneWorkViewScopeKey(projectStateKey, laneId);
 
   const tool = useMemo<WorkSidebarTab | null>(() => {
     const scoped: WorkProjectViewState | undefined = scopeKey

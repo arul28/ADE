@@ -14,54 +14,74 @@ import SwiftUI
 struct WorkToolsRow: View {
   let laneId: String
 
+  /// Poll cadence while the row is on screen. Deliberately much slower than
+  /// `WorkToolsSheet`'s 3s: the sheet is a surface the user opened to watch,
+  /// whereas this row sits behind every chat transcript, so it only has to
+  /// catch up within a few breaths of the Mac switching tools or closing tabs.
+  private static let refreshInterval: Duration = .seconds(10)
+
   @EnvironmentObject private var syncService: SyncService
   @State private var state: WorkToolsLaneState?
   @State private var toolsPresented = false
 
+  /// One root, so the probe and the sheet keep a single identity. Branching at
+  /// the top level would give the two cases different identities, cancelling
+  /// the poll and tearing down an open sheet every time the row appears or
+  /// disappears.
   var body: some View {
-    if syncService.supportsWorkToolsState, let summary = summaryLine {
-      Button {
-        ADEHaptics.light()
-        toolsPresented = true
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "wrench.and.screwdriver")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-          Text(summary)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-          Spacer(minLength: 0)
-          Image(systemName: "chevron.right")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .frame(minHeight: 32)
-        .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
-        )
+    Group {
+      if syncService.supportsWorkToolsState, let summary = summaryLine {
+        summaryButton(summary)
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Tools on your Mac. \(summary)")
-      .accessibilityHint("Opens a read-only view of this lane's tools")
-      .task(id: laneId) { await refresh() }
-      .sheet(isPresented: $toolsPresented) {
-        WorkToolsSheet(laneId: laneId)
-          .presentationDetents([.medium, .large])
-          .presentationDragIndicator(.visible)
-      }
-    } else {
-      // Still probe once, so the row can appear when a desktop attaches later.
-      Color.clear
-        .frame(height: 0)
-        .task(id: laneId) { await refresh() }
     }
+    .task(id: laneId) {
+      await refresh()
+      // The desktop's state is not table-backed, so there is nothing to
+      // subscribe to; poll while the row is alive and stop when it is not.
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.refreshInterval)
+        guard !Task.isCancelled else { return }
+        await refresh()
+      }
+    }
+    .sheet(isPresented: $toolsPresented) {
+      WorkToolsSheet(laneId: laneId)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+  }
+
+  private func summaryButton(_ summary: String) -> some View {
+    Button {
+      ADEHaptics.light()
+      toolsPresented = true
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: "wrench.and.screwdriver")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5)
+      .frame(minHeight: 32)
+      .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Tools on your Mac. \(summary)")
+    .accessibilityHint("Opens a read-only view of this lane's tools")
   }
 
   /// One line, most-specific-first: the pane the desktop has open, then what is

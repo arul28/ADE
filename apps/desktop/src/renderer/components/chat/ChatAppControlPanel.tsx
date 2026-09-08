@@ -31,7 +31,15 @@ import type {
 } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import {
+  appControlDisplayedMetrics,
+  appControlOverlayBox,
+  mapClientPointToFrame,
+  type LiveFrameDims,
+  type MappedPoint,
+} from "./appControlFrameGeometry";
 import { AppControlMenuItem, AppControlMenuLabel } from "./AppControlMenu";
+import { APP_CONTROL_FRAME_STALE_MS, useAppControlLiveFrame } from "./useAppControlLiveFrame";
 import {
   AppControlAgentCursor,
   AppControlObserveOverlay,
@@ -64,24 +72,6 @@ type ChatAppControlPanelProps = {
 type MessageTone = "info" | "error";
 type Message = { tone: MessageTone; text: string };
 type AppControlMode = "control" | "inspect";
-type LiveFrameDims = {
-  width: number;
-  height: number;
-  viewportWidth: number;
-  viewportHeight: number;
-  scale: number;
-  scaleX: number;
-  scaleY: number;
-};
-type MappedPoint = {
-  viewportX: number;
-  viewportY: number;
-  imageX: number;
-  imageY: number;
-  leftPct: number;
-  topPct: number;
-};
-
 type PanelUiState = {
   launchCommand: string;
   launchCwd: string;
@@ -335,16 +325,21 @@ export function ChatAppControlPanel({
   const [snapshot, setSnapshot] = useState<AppControlSnapshot | null>(null);
   const [targets, setTargets] = useState<AppControlTarget[]>([]);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
-  const [liveFrameActive, setLiveFrameActive] = useState(false);
-  const [liveFrameInitialSrc, setLiveFrameInitialSrc] = useState<string | null>(null);
-  const [staleFrameSrc, setStaleFrameSrc] = useState<string | null>(null);
-  const liveFrameDimsRef = useRef<LiveFrameDims | null>(null);
-  const liveFrameActiveRef = useRef(false);
-  const liveFrameSrcRef = useRef<string | null>(null);
-  const liveFramePendingSrcRef = useRef<string | null>(null);
-  const liveFrameRafRef = useRef<number | null>(null);
-  const liveFrameLastAtRef = useRef<number | null>(null);
-  const [frameHealthTick, setFrameHealthTick] = useState(0);
+  // The 30fps transport — refs, the rAF pump and the health tick — lives in its
+  // own hook; the panel keeps only what its JSX reads.
+  const liveFrame = useAppControlLiveFrame(imageRef);
+  const {
+    active: liveFrameActive,
+    initialSrc: liveFrameInitialSrc,
+    staleSrc: staleFrameSrc,
+    dimsRef: liveFrameDimsRef,
+    // Stable identities (the hook's `useCallback`s), so the panel's one
+    // `onEvent` subscription can depend on them without re-subscribing on
+    // every render — which depending on `liveFrame` itself would have done.
+    onFrame: onLiveFrame,
+    reset: resetLiveFrame,
+    clear: clearLiveFrame,
+  } = liveFrame;
   const activeTargetIdRef = useRef<string | null>(null);
   const scrollPendingRef = useRef<{ x: number; y: number; deltaX: number; deltaY: number; coordinateSpace: "viewport" } | null>(null);
   const scrollRafRef = useRef<number | null>(null);
@@ -428,14 +423,7 @@ export function ChatAppControlPanel({
 
   useEffect(() => {
     scrollEnabledRef.current = liveFrameActive && mode === "control";
-    liveFrameActiveRef.current = liveFrameActive;
   }, [liveFrameActive, mode]);
-
-  useEffect(() => {
-    if (!liveFrameActive) return undefined;
-    const timer = window.setInterval(() => setFrameHealthTick((value) => value + 1), 2_000);
-    return () => window.clearInterval(timer);
-  }, [liveFrameActive]);
 
   // Relative times in the drawer only need to be roughly right, and a 1s tick
   // would repaint the whole list for no one's benefit.
@@ -446,60 +434,33 @@ export function ChatAppControlPanel({
     return () => window.clearInterval(timer);
   }, [traceOpen]);
 
-  const getDisplayedMetrics = useCallback((): LiveFrameDims | null => {
-    if (liveFrameActive) {
-      const live = liveFrameDimsRef.current;
-      if (live && live.width > 0 && live.height > 0 && live.viewportWidth > 0 && live.viewportHeight > 0) {
-        return live;
-      }
-    }
-    const sw = snapshot?.screenshot?.width ?? 0;
-    const sh = snapshot?.screenshot?.height ?? 0;
-    if (sw <= 0 || sh <= 0) return null;
-    const scaleX = snapshot?.screen.scaleX ?? snapshot?.screen.scale ?? 1;
-    const scaleY = snapshot?.screen.scaleY ?? snapshot?.screen.scale ?? scaleX;
-    return {
-      width: sw,
-      height: sh,
-      viewportWidth: snapshot?.screen.viewportWidth && snapshot.screen.viewportWidth > 0
-        ? snapshot.screen.viewportWidth
-        : sw / scaleX,
-      viewportHeight: snapshot?.screen.viewportHeight && snapshot.screen.viewportHeight > 0
-        ? snapshot.screen.viewportHeight
-        : sh / scaleY,
-      scale: snapshot?.screen.scale ?? scaleX,
-      scaleX,
-      scaleY,
-    };
-  }, [liveFrameActive, snapshot]);
+  // The maths lives in `appControlFrameGeometry` — pure, DOM-free and tested.
+  // These three are the thin bindings that hand it the panel's current state.
+  const getDisplayedMetrics = useCallback((): LiveFrameDims | null => appControlDisplayedMetrics({
+    liveFrameActive,
+    liveFrameDims: liveFrameDimsRef.current,
+    snapshot,
+  }), [liveFrameActive, liveFrameDimsRef, snapshot]);
 
-  const mapClientPoint = useCallback((clientX: number, clientY: number, image: HTMLImageElement | null = imageRef.current): MappedPoint | null => {
+  const mapClientPoint = useCallback((
+    clientX: number,
+    clientY: number,
+    image: HTMLImageElement | null = imageRef.current,
+  ): MappedPoint | null => {
     if (!image) return null;
-    const rect = image.getBoundingClientRect();
-    const metrics = getDisplayedMetrics();
-    if (!metrics || rect.width <= 0 || rect.height <= 0) return null;
-    const xRatio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const yRatio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
-    return {
-      viewportX: Math.round(xRatio * metrics.viewportWidth),
-      viewportY: Math.round(yRatio * metrics.viewportHeight),
-      imageX: Math.round(xRatio * metrics.width),
-      imageY: Math.round(yRatio * metrics.height),
-      leftPct: xRatio * 100,
-      topPct: yRatio * 100,
-    };
+    return mapClientPointToFrame({
+      clientX,
+      clientY,
+      rect: image.getBoundingClientRect(),
+      metrics: getDisplayedMetrics(),
+    });
   }, [getDisplayedMetrics]);
 
-  const overlayStyleForElement = useCallback((element: AppControlElement): CSSProperties | null => {
-    const metrics = getDisplayedMetrics();
-    if (!metrics || metrics.viewportWidth <= 0 || metrics.viewportHeight <= 0) return null;
-    return {
-      left: `${(element.frame.x / metrics.viewportWidth) * 100}%`,
-      top: `${(element.frame.y / metrics.viewportHeight) * 100}%`,
-      width: `${(element.frame.width / metrics.viewportWidth) * 100}%`,
-      height: `${(element.frame.height / metrics.viewportHeight) * 100}%`,
-    };
-  }, [getDisplayedMetrics]);
+  const overlayStyleForElement = useCallback(
+    (element: AppControlElement): CSSProperties | null =>
+      appControlOverlayBox(element.frame, getDisplayedMetrics()),
+    [getDisplayedMetrics],
+  );
 
   // Wheel forwarding: must be a NON-passive listener so preventDefault works,
   // and React's synthetic onWheel is passive in modern React. Attach
@@ -662,24 +623,18 @@ export function ChatAppControlPanel({
   useEffect(() => {
     let cancelled = false;
     function resetSessionState(): void {
-      // Keep the last painted frame around so a dropped session can show it
-      // dimmed behind Reconnect instead of blanking to an empty pane.
-      setStaleFrameSrc(liveFrameSrcRef.current);
+      // Keeps the last painted frame as the stale one, so a dropped session can
+      // show it dimmed behind Reconnect instead of blanking to an empty pane.
+      resetLiveFrame();
       setSnapshot(null);
       setSelectedElement(null);
       setSelectedPoint(null);
       setSelectedContextItem(null);
       setHoverElement(null);
-      setLiveFrameActive(false);
-      setLiveFrameInitialSrc(null);
       setObservation(null);
       setObserveMapOn(false);
       setActiveHandle(null);
       observationElementsRef.current = [];
-      liveFrameDimsRef.current = null;
-      liveFrameLastAtRef.current = null;
-      liveFrameSrcRef.current = null;
-      liveFramePendingSrcRef.current = null;
     }
     void refreshStatus().then((nextStatus) => {
       if (!cancelled && nextStatus.activeSession?.status === "connected") {
@@ -700,12 +655,9 @@ export function ChatAppControlPanel({
         const nextStatus = event.session?.status ?? null;
         if (nextStatus === "connected") {
           if (previousTargetId !== nextTargetId) {
-            setLiveFrameActive(false);
-            setLiveFrameInitialSrc(null);
-            liveFrameDimsRef.current = null;
-            liveFrameLastAtRef.current = null;
-            liveFrameSrcRef.current = null;
-            liveFramePendingSrcRef.current = null;
+            // A different window: the previous one's last frame is not a
+            // "stale" view of this one, so it is dropped rather than kept.
+            clearLiveFrame();
             if (imageRef.current) imageRef.current.removeAttribute("src");
           }
           void refreshSnapshot().catch(() => {});
@@ -730,62 +682,19 @@ export function ChatAppControlPanel({
         cursorTraceIdRef.current = null;
       }
       if (event.type === "frame") {
-        if (event.frame.cdpTargetId !== activeTargetIdRef.current) return;
-        const src = `data:${event.frame.mimeType};base64,${event.frame.data}`;
-        liveFrameSrcRef.current = src;
-        liveFrameLastAtRef.current = Date.now();
-        if (!liveFrameActiveRef.current) setLiveFrameInitialSrc(src);
-        // Hot-path: avoid React state churn at 30+ fps. Stash the latest data
-        // URL and let a single requestAnimationFrame paint the freshest one
-        // onto the <img> ref directly.
-        liveFramePendingSrcRef.current = src;
-        if (event.frame.width > 0 && event.frame.height > 0) {
-          liveFrameDimsRef.current = {
-            width: event.frame.width,
-            height: event.frame.height,
-            viewportWidth: event.frame.viewportWidth && event.frame.viewportWidth > 0
-              ? event.frame.viewportWidth
-              : Math.round(event.frame.width / (event.frame.scale || 1)),
-            viewportHeight: event.frame.viewportHeight && event.frame.viewportHeight > 0
-              ? event.frame.viewportHeight
-              : Math.round(event.frame.height / (event.frame.scale || 1)),
-            scale: event.frame.scale || event.frame.scaleX || 1,
-            scaleX: event.frame.scaleX || event.frame.scale || 1,
-            scaleY: event.frame.scaleY || event.frame.scale || 1,
-          };
-        }
-        if (liveFrameRafRef.current == null) {
-          liveFrameRafRef.current = window.requestAnimationFrame(() => {
-            liveFrameRafRef.current = null;
-            const next = liveFramePendingSrcRef.current;
-            liveFramePendingSrcRef.current = null;
-            if (next && imageRef.current) imageRef.current.src = next;
-          });
-        }
-        // Flip to "live" once on the first frame; this triggers a single React
-        // render that swaps the static screenshot out for the live <img>.
-        setLiveFrameActive((current) => {
-          if (current) return current;
-          liveFrameActiveRef.current = true;
-          setStaleFrameSrc(null);
-          return true;
-        });
+        onLiveFrame(event.frame, activeTargetIdRef.current);
       }
     }, runtimePinRef.current);
     return () => {
       cancelled = true;
       unsubscribe();
-      if (liveFrameRafRef.current != null) {
-        window.cancelAnimationFrame(liveFrameRafRef.current);
-        liveFrameRafRef.current = null;
-      }
       if (scrollRafRef.current != null) {
         window.cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
       }
       scrollPendingRef.current = null;
     };
-  }, [refreshSnapshot, refreshStatus, refreshTrace]);
+  }, [clearLiveFrame, onLiveFrame, refreshSnapshot, refreshStatus, refreshTrace, resetLiveFrame]);
 
   // Refresh the list of CDP targets while the session is connected so the
   // user can switch to a freshly-opened window without restarting App Control.
@@ -1264,11 +1173,8 @@ export function ChatAppControlPanel({
   }, [onInsertDraft]);
 
   const screenshot = snapshot?.screenshot ?? null;
-  // frameHealthTick * 0 is intentional: it refreshes age from a ref-backed timestamp.
-  const liveFrameAgeMs = liveFrameActive && liveFrameLastAtRef.current != null
-    ? Date.now() - liveFrameLastAtRef.current + frameHealthTick * 0
-    : null;
-  const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > 4_000;
+  const liveFrameAgeMs = liveFrame.ageMs;
+  const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > APP_CONTROL_FRAME_STALE_MS;
   const focusElement = hoverElement ?? selectedElement;
   const metrics = getDisplayedMetrics();
   const overlayViewport = metrics
@@ -1286,7 +1192,16 @@ export function ChatAppControlPanel({
   );
   const hasFrame = Boolean(screenshot || liveFrameActive);
   const launching = hasActiveSession && !sessionConnected;
-  const showDisconnected = !hasFrame && !launching && Boolean(staleFrameSrc);
+  // "The app stopped responding" is for a session that DROPPED, not for one you
+  // stopped. Gated on the session's own error tone (`Disconnected`, `Failed`)
+  // rather than on "there is a stale frame and no live one", which was also
+  // true one beat after the ⋯ → Stop you just chose — so a deliberate stop
+  // rendered a greyed-out frame and a Reconnect button instead of the "No app
+  // attached" empty state.
+  const showDisconnected = !hasFrame
+    && !launching
+    && Boolean(staleFrameSrc)
+    && sessionStatus.tone === "error";
 
   const renderOverflow = useCallback((close: () => void) => (
     <>
@@ -1330,23 +1245,11 @@ export function ChatAppControlPanel({
         }}
       />
 
-      {targets.length > 1 ? (
-        <>
-          <AppControlMenuLabel>Windows</AppControlMenuLabel>
-          {targets.map((target) => (
-            <AppControlMenuItem
-              key={target.id}
-              label={(target.title ?? target.url ?? target.id).trim() || target.id}
-              checked={(pendingTargetId ?? targets.find((entry) => entry.active)?.id ?? "") === target.id}
-              disabled={controlsDisabled || Boolean(busy)}
-              onSelect={() => {
-                void attachToTargetId(target.id);
-                close();
-              }}
-            />
-          ))}
-        </>
-      ) : null}
+      {/* No "Windows" group here. The toolbar already exposes every window —
+          up to three segments plus a `+N` menu listing the rest — and this was
+          a second, complete copy of the same list with a different label rule
+          (raw URL, no host stripping), so the two disagreed on any window
+          without a title. One affordance, one label. */}
 
       <AppControlMenuLabel>Send to chat</AppControlMenuLabel>
       <AppControlMenuItem
@@ -1420,10 +1323,10 @@ export function ChatAppControlPanel({
       />
     </>
   ), [
-    activeSession, attachSelection, attachToTargetId, busy, canStop, controlsDisabled, focusWindow,
-    minimizeWindow, observeMapOn, onAddAttachment, onAddContext, onShowTerminal, pendingTargetId,
+    activeSession, attachSelection, busy, canStop, controlsDisabled, focusWindow,
+    minimizeWindow, observeMapOn, onAddAttachment, onAddContext, onShowTerminal,
     refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected, stopSession,
-    targets, traceOpen,
+    traceOpen,
   ]);
 
   return (
@@ -1567,12 +1470,9 @@ export function ChatAppControlPanel({
                   }
                 }}
                 onError={() => {
-                  liveFrameActiveRef.current = false;
-                  liveFrameLastAtRef.current = null;
-                  liveFrameSrcRef.current = null;
-                  liveFramePendingSrcRef.current = null;
-                  setLiveFrameInitialSrc(null);
-                  setLiveFrameActive(false);
+                  // A frame the browser refused to decode is not a frame worth
+                  // keeping as the "last good" one either.
+                  clearLiveFrame();
                   setScreenshotBlank(false);
                 }}
                 onClick={handleImageClick}

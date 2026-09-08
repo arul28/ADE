@@ -1387,8 +1387,13 @@ export async function createAdeRuntime(args: {
     // the in-process App Control service and the desktop browser bridge.
     const workToolsStateService = createWorkToolsStateService({
       projectRoot,
+      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator is
+      // the daemon itself and holds no per-chat actor capability, which every
+      // `BuiltInBrowserService` bridge method requires. `getStatus` here always
+      // failed `policyDenied`, so the Tools pane reported "no desktop attached"
+      // even with ADE Desktop running.
       getBrowserStatus: builtInBrowserBridge
-        ? () => builtInBrowserBridge.getStatus()
+        ? () => builtInBrowserBridge.getStatusForRuntime()
         : null,
       getAppControlStatus: appControlService
         ? () => appControlService.getStatus()

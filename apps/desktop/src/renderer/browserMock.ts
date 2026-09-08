@@ -92,6 +92,14 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+/** Mirrors `createLoginImportUnavailableStub` in the hosted web adapter. */
+const LOGIN_IMPORT_UNAVAILABLE = {
+  ok: false as const,
+  sourceId: "",
+  status: "unsupported" as const,
+  reason: "Login import needs the ADE desktop app on the machine holding the browser.",
+  settingsPaneId: null,
+};
 const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
@@ -5320,8 +5328,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           sources: [],
           capabilities: { platform: "other" as const, anySupported: false, browsers: [] },
         }),
-        listDomains: resolvedArg({} as any),
-        import: resolvedArg({} as any),
+        // Shape-conforming, like the hosted web client's stub: `{} as any`
+        // handed a preview run an object with none of `ok`/`sourceId`/`status`,
+        // which is a different failure from "not available here".
+        listDomains: resolvedArg(LOGIN_IMPORT_UNAVAILABLE),
+        import: resolvedArg(LOGIN_IMPORT_UNAVAILABLE),
       },
       claim: resolvedArg({} as any),
       showPanel: resolvedArg({} as any),

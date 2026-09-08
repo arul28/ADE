@@ -142,6 +142,68 @@ describe("browser recording session state machine", () => {
     expect(recorder.abort).toHaveBeenCalledTimes(1);
   });
 
+  // Regression: BUILT_IN_BROWSER_MAX_RECORDING_FRAMES documented a cap that
+  // nothing enforced, so an agent that never called stopRecording captured the
+  // tab until the app quit.
+  it("fires the max-duration handler exactly once when the cap elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      const onMaxDurationReached = vi.fn();
+      const session = await createBuiltInBrowserRecordingSession({
+        id: "rec-cap",
+        directory: scratchDir(),
+        fps: 30,
+        caption: null,
+        createRecorder: async () => stubRecorder(),
+        maxDurationMs: 1_000,
+        onMaxDurationReached,
+      });
+      expect(onMaxDurationReached).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1_000);
+      expect(onMaxDurationReached).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(10_000);
+      expect(onMaxDurationReached).toHaveBeenCalledTimes(1);
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disarms the max-duration timer on stop and on abort", async () => {
+    vi.useFakeTimers();
+    try {
+      const stopped = vi.fn();
+      const stoppedSession = await createBuiltInBrowserRecordingSession({
+        id: "rec-cap-stop",
+        directory: scratchDir(),
+        fps: 30,
+        caption: null,
+        createRecorder: async () => stubRecorder(),
+        maxDurationMs: 1_000,
+        onMaxDurationReached: stopped,
+      });
+      await stoppedSession.stop();
+
+      const aborted = vi.fn();
+      const abortedSession = await createBuiltInBrowserRecordingSession({
+        id: "rec-cap-abort",
+        directory: scratchDir(),
+        fps: 30,
+        caption: null,
+        createRecorder: async () => stubRecorder(),
+        maxDurationMs: 1_000,
+        onMaxDurationReached: aborted,
+      });
+      abortedSession.abort();
+
+      vi.advanceTimersByTime(5_000);
+      expect(stopped).not.toHaveBeenCalled();
+      expect(aborted).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("creates the recording directory up front", async () => {
     const directory = path.join(scratchDir(), "nested", "rec-5");
     await createBuiltInBrowserRecordingSession({

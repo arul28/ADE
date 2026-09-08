@@ -38,6 +38,7 @@ import {
   getStoredZoomLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
+import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
 import {
@@ -1155,6 +1156,11 @@ export function TopBar({
     const onCommand = window.ade?.zoom?.onCommand;
     if (typeof onCommand !== "function") return;
     return onCommand((command) => {
+      // Electron consumes CmdOrCtrl+=/−/0 as menu accelerators before any
+      // renderer keydown, so a surface that wants those chords for its own
+      // content — the built-in browser's page zoom — has to be offered the
+      // command here. It declines unless it actually has focus.
+      if (consumeAppZoomCommand(command)) return;
       if (command === "in") applyZoom(zoomRef.current + ZOOM_STEP);
       else if (command === "out") applyZoom(zoomRef.current - ZOOM_STEP);
       else applyZoom(DEFAULT_ZOOM);

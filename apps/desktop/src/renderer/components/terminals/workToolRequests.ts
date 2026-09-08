@@ -1,4 +1,5 @@
 import type { WorkSidebarTab } from "../../state/appStore";
+import { createPendingRequestChannel } from "../../lib/pendingRequestChannel";
 
 /**
  * "Open this tool in the Work tools pane" — a one-shot request channel.
@@ -11,8 +12,8 @@ import type { WorkSidebarTab } from "../../state/appStore";
  *
  * They ask instead. A live Work page answers immediately; a Work page that has
  * not mounted yet (the request arrived while another tab was open, and the
- * handler navigated to /work) drains the held request on mount. Same idiom as
- * `filesOpenRequests`.
+ * handler navigated to /work) drains the held request on mount. The mechanics
+ * are `createPendingRequestChannel`; only the payload is this module's.
  */
 export type WorkToolRequest = {
   /** The tool to open, or null to return the pane to its picker page. */
@@ -24,49 +25,26 @@ export type WorkToolRequest = {
   nonce: string;
 };
 
-type Listener = (request: WorkToolRequest) => void;
-
-const listeners = new Set<Listener>();
-
-let pendingRequest: WorkToolRequest | null = null;
-let nonceCounter = 0;
+const channel = createPendingRequestChannel<{ tool: WorkSidebarTab | null }>("work-tool");
 
 export function requestWorkTool(tool: WorkSidebarTab | null): void {
-  nonceCounter += 1;
-  const request: WorkToolRequest = { tool, nonce: `work-tool-${nonceCounter}` };
-  pendingRequest = request;
-  for (const listener of listeners) listener(request);
+  channel.request({ tool });
 }
 
 /**
  * Consume whatever was requested before the Work page mounted. Returns null
  * when nothing is waiting, so a normal mount costs nothing.
  */
-export function takePendingWorkToolRequest(): WorkToolRequest | null {
-  const request = pendingRequest;
-  pendingRequest = null;
-  return request;
-}
+export const takePendingWorkToolRequest = channel.takePending;
 
 /**
  * Called by a live consumer that has already handled a broadcast request, so
  * the hold does not survive it and the next Work page to mount does not reopen
  * a tool nobody asked for.
  */
-export function clearPendingWorkToolRequest(): void {
-  pendingRequest = null;
-}
+export const clearPendingWorkToolRequest = channel.clearPending;
 
-export function subscribeWorkToolRequests(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
+export const subscribeWorkToolRequests = channel.subscribe;
 
 /** Test seam: drops queued state so one test cannot leak into the next. */
-export function resetWorkToolRequestsForTests(): void {
-  listeners.clear();
-  pendingRequest = null;
-  nonceCounter = 0;
-}
+export const resetWorkToolRequestsForTests = channel.resetForTests;

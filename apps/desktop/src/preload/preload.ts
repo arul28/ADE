@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import {
+  type AppOpenSystemSettingsPaneArgs,
+  type AppOpenSystemSettingsPaneResult,
+  type SystemSettingsPaneId,
+} from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
@@ -51,8 +56,11 @@ import {
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type {
   WorkToolId,
+  WorkToolsGetLaneStateArgs,
   WorkToolsLaneState,
   WorkToolsObservationPreview,
+  WorkToolsReadObservationPreviewArgs,
+  WorkToolsSetActiveToolArgs,
 } from "../shared/types/workTools";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
@@ -4179,6 +4187,15 @@ const adeBridge = {
     },
     openExternal: async (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenExternal, { url }),
+    /**
+     * Open an OS settings pane by id. Deliberately not `openExternal(url)`:
+     * `x-apple.systempreferences:` is outside the external-URL scheme
+     * allowlist, so main resolves the id against a vetted table instead.
+     */
+    openSystemSettingsPane: async (
+      paneId: SystemSettingsPaneId,
+    ): Promise<AppOpenSystemSettingsPaneResult> =>
+      ipcRenderer.invoke(IPC.appOpenSystemSettingsPane, { paneId } satisfies AppOpenSystemSettingsPaneArgs),
     revealPath: async (path: string): Promise<void> => {
       await assertNotRemoteProjectPathAction("Reveal path", [path]);
       return ipcRenderer.invoke(IPC.appRevealPath, { path });
@@ -8579,7 +8596,7 @@ const adeBridge = {
       // request), so its success is tagged here to keep one shape for callers.
       isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserScreenshot>(pin, "built_in_browser", "captureScreenshot", { args })
-            .then((screenshot) => ({ ok: true, ...screenshot }) as BuiltInBrowserScreenshotResult)
+            .then((screenshot) => ({ ok: true as const, ...screenshot }))
         : ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
@@ -8606,20 +8623,23 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
           ),
     /**
-     * Human hand-back. Routed like every other browser call, but the runtime
-     * side gates it to user clients — an agent must not be able to declare
-     * itself done with a sign-in the person is still in the middle of.
+     * Human hand-back. Deliberately NOT routed through a locally-pinned
+     * runtime, unlike every other browser call. The handed-off tab is this
+     * Electron process's own `WebContentsView`, and the daemon round-trip
+     * cannot reach it: `adeRpcServer` only accepts `endHandoff` from a user
+     * client (no `chatSessionId`), and `desktopBridgeServer` then refuses that
+     * same caller for having no chat capability. Routing it locally is the only
+     * shape where `Hand back` actually works on a local pin; the agent-facing
+     * gate is unaffected because agents never reach this preload surface.
      */
     endHandoff: async (
       args: BuiltInBrowserEndHandoffArgs = {},
-      pin?: OpenProjectBinding | null,
+      _pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserHandoffResult> =>
-      isLocalBrowserRoutingPin(pin)
-        ? callPinnedRuntimeAction<BuiltInBrowserHandoffResult>(pin, "built_in_browser", "endHandoff", { args })
-        : clearAround(
-            () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserEndHandoff, args),
-          ),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserEndHandoff, args),
+      ),
     setEmulation: async (
       args: BuiltInBrowserSetEmulationArgs = {},
       pin?: OpenProjectBinding | null,
@@ -8725,20 +8745,25 @@ const adeBridge = {
     startPreviewStream: async (
       args: BuiltInBrowserStartPreviewStreamArgs = {},
     ): Promise<BuiltInBrowserPreviewStreamResult> => {
-      const result = await ipcRenderer.invoke(
-        IPC.builtInBrowserStartPreviewStream,
-        args,
-      ) as BuiltInBrowserPreviewStreamResult;
+      // Narrow rather than cast: in runtime-backed mode a missing handler
+      // resolves to something without `tabId`, and dereferencing it inside the
+      // preload throws a TypeError the caller cannot see or handle.
+      const raw: unknown = await ipcRenderer.invoke(IPC.builtInBrowserStartPreviewStream, args);
+      if (!isRecord(raw) || typeof raw.tabId !== "string") {
+        throw new Error("Built-in browser preview stream is unavailable in this window.");
+      }
+      const result = raw as unknown as BuiltInBrowserPreviewStreamResult;
       trackBuiltInBrowserPreviewStream(result.tabId, args);
       return result;
     },
     stopPreviewStream: async (
       args: BuiltInBrowserStopPreviewStreamArgs = {},
     ): Promise<BuiltInBrowserPreviewStreamResult> => {
-      const result = await ipcRenderer.invoke(
-        IPC.builtInBrowserStopPreviewStream,
-        args,
-      ) as BuiltInBrowserPreviewStreamResult;
+      const raw: unknown = await ipcRenderer.invoke(IPC.builtInBrowserStopPreviewStream, args);
+      if (!isRecord(raw) || typeof raw.tabId !== "string") {
+        throw new Error("Built-in browser preview stream is unavailable in this window.");
+      }
+      const result = raw as unknown as BuiltInBrowserPreviewStreamResult;
       untrackBuiltInBrowserPreviewStream(result.tabId);
       return result;
     },
@@ -8827,8 +8852,6 @@ const adeBridge = {
   localhost: {
     probePort: async (port: number): Promise<boolean> =>
       ipcRenderer.invoke(IPC.localhostProbePort, { port }),
-    getDevServers: async (args: DevServersArgs = {}): Promise<DevServersResult> =>
-      ipcRenderer.invoke(IPC.localhostGetDevServers, args),
   },
   // Universal search is daemon-only by design: it always routes through the
   // ADE runtime action bridge (never an in-process IPC fallback) so packaged
@@ -10963,7 +10986,7 @@ const adeBridge = {
       const runtime = await callProjectRuntimeActionIfBound<WorkToolsLaneState>(
         "work_tools",
         "getLaneState",
-        { args: { laneId } },
+        { args: { laneId } satisfies WorkToolsGetLaneStateArgs },
       );
       return runtime.handled ? runtime.result : null;
     },
@@ -10974,7 +10997,7 @@ const adeBridge = {
       await callProjectRuntimeActionIfBound(
         "work_tools",
         "setActiveTool",
-        { args: { laneId, tool } },
+        { args: { laneId, tool } satisfies WorkToolsSetActiveToolArgs },
       );
     },
     readObservationPreview: async (
@@ -10983,7 +11006,7 @@ const adeBridge = {
       const runtime = await callProjectRuntimeActionIfBound<WorkToolsObservationPreview | null>(
         "work_tools",
         "readObservationPreview",
-        { args: { path: observationPath } },
+        { args: { path: observationPath } satisfies WorkToolsReadObservationPreviewArgs },
       );
       return runtime.handled ? runtime.result : null;
     },

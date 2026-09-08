@@ -13,7 +13,14 @@ import {
   iosStatusLine,
   prStatusLine,
   terminalStatusLine,
+  workToolSummary,
 } from "./useWorkToolStatuses";
+import { asBuiltInBrowserStatus, isAppControlSessionLive } from "./useNativeToolSessions";
+import {
+  EMPTY_WORK_TOOL_ERRORS,
+  pruneWorkToolBrowserErrors,
+  workToolBrowserErrorCount,
+} from "./workToolErrors";
 
 /** The longest a status can be before the two-column card cuts it. */
 const ONE_LINE_BUDGET = 16;
@@ -82,5 +89,71 @@ describe("work tool status lines", () => {
     for (const line of ["No shells", "2 shells", "No tabs", "clean", "3 ahead · dirty", "Not booted", "No app", "No PR"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
+  });
+});
+
+/**
+ * The hosted web client answers `builtInBrowser.getStatus` from a stub that has
+ * no `tabs`, cast into the real type by the adapter — so `tsc` never sees the
+ * mismatch and every consumer that dereferences `status.tabs` throws during
+ * render. These lock the boundary check, not the stub.
+ */
+describe("non-conforming browser status (web client stub)", () => {
+  const unsupportedStub = {
+    supported: false,
+    available: false,
+    state: "unsupported",
+  } as unknown as BuiltInBrowserStatus;
+
+  it("is rejected by the boundary guard", () => {
+    expect(asBuiltInBrowserStatus(unsupportedStub)).toBeNull();
+    expect(asBuiltInBrowserStatus(null)).toBeNull();
+    expect(asBuiltInBrowserStatus(browserStatus({ tabs: [] }))).not.toBeNull();
+  });
+
+  it("does not throw from the status line", () => {
+    expect(() => browserStatusLine(unsupportedStub, "lane-1")).not.toThrow();
+    expect(browserStatusLine(unsupportedStub, "lane-1").line).toBe("No tabs");
+  });
+
+  it("does not throw from the error tally", () => {
+    expect(() => workToolBrowserErrorCount(EMPTY_WORK_TOOL_ERRORS, unsupportedStub)).not.toThrow();
+    expect(workToolBrowserErrorCount(EMPTY_WORK_TOOL_ERRORS, unsupportedStub)).toBe(0);
+    expect(() => pruneWorkToolBrowserErrors({ "tab-1": { consoleErrorCount: 1, failedRequestCount: 0 } }, unsupportedStub))
+      .not.toThrow();
+  });
+});
+
+describe("isAppControlSessionLive", () => {
+  it("is the one rule both the pane and the corner card read", () => {
+    expect(isAppControlSessionLive(null)).toBe(false);
+    expect(isAppControlSessionLive({ status: "connected" } as never)).toBe(true);
+    // `failed` is still attached — that is what makes the dot red, not absent.
+    expect(isAppControlSessionLive({ status: "failed" } as never)).toBe(true);
+    expect(isAppControlSessionLive({ status: "stopped" } as never)).toBe(false);
+    expect(isAppControlSessionLive({ status: "exited" } as never)).toBe(false);
+  });
+});
+
+describe("workToolSummary", () => {
+  const definition = { id: "browser", label: "Browser", blurb: "Open a page the agent can read" } as never;
+  const available = { available: true, reason: null } as const;
+
+  it("gives the picker and the header the same line", () => {
+    const summary = workToolSummary(definition, { line: "3 tabs", live: true, errorCount: 2 }, available);
+    expect(summary.line).toBe("3 tabs · 2 errors");
+    expect(summary.tooltipLabel).toBe("Browser — 3 tabs · 2 errors");
+  });
+
+  it("falls back to the blurb when nothing has been measured", () => {
+    expect(workToolSummary(definition, undefined, available).line).toBe("Open a page the agent can read");
+  });
+
+  it("states the reason instead when the tool cannot run here", () => {
+    const summary = workToolSummary(definition, { line: "3 tabs", live: true }, {
+      available: false,
+      reason: "Not available on this machine",
+    });
+    expect(summary.line).toBe("Not available on this machine");
   });
 });

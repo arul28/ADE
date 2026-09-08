@@ -14,7 +14,12 @@ import { BUILT_IN_BROWSER_HANDOFF_ACTIVE_CODE } from "../../../shared/types/buil
 
 export const DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS = 15 * 60_000;
 const MIN_HANDOFF_TIMEOUT_MS = 60_000;
-const MAX_HANDOFF_TIMEOUT_MS = 2 * 60 * 60_000;
+/**
+ * Hard ceiling on a handoff window. Exported because the CLI transport must
+ * pick a call timeout that outlives it — three processes, one policy, one
+ * constant.
+ */
+export const MAX_HANDOFF_TIMEOUT_MS = 2 * 60 * 60_000;
 
 export function normalizeHandoffTimeoutMs(value: unknown): number {
   const raw = typeof value === "number" && Number.isFinite(value)

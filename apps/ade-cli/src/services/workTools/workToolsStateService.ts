@@ -2,14 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
-import type {
-  AppControlStatus,
-  BuiltInBrowserStatus,
-} from "../../../../desktop/src/shared/types";
+import type { AppControlStatus } from "../../../../desktop/src/shared/types";
+import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
+import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   isWorkToolId,
   type WorkToolId,
   type WorkToolsAppControlState,
+  type WorkToolsGetLaneStateArgs,
+  type WorkToolsReadObservationPreviewArgs,
+  type WorkToolsSetActiveToolArgs,
   type WorkToolsBrowserState,
   type WorkToolsLaneState,
   type WorkToolsObservation,
@@ -77,7 +79,7 @@ const OBSERVATION_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
  */
 export const WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS = 250;
 
-export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserStatus>;
+export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserRuntimeStatus>;
 export type WorkToolsAppControlStatusReader = () => AppControlStatus | Promise<AppControlStatus>;
 
 export type WorkToolsStateServiceArgs = {
@@ -97,9 +99,11 @@ export type WorkToolsStateServiceArgs = {
 };
 
 export type WorkToolsStateService = {
-  setActiveTool(args: { laneId: string; tool: WorkToolId | null }): { ok: true };
-  getLaneState(args: { laneId: string }): Promise<WorkToolsLaneState>;
-  readObservationPreview(args: { path: string }): Promise<WorkToolsObservationPreview | null>;
+  setActiveTool(args: WorkToolsSetActiveToolArgs): { ok: true };
+  getLaneState(args: WorkToolsGetLaneStateArgs): Promise<WorkToolsLaneState>;
+  readObservationPreview(
+    args: WorkToolsReadObservationPreviewArgs,
+  ): Promise<WorkToolsObservationPreview | null>;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -223,7 +227,7 @@ async function findLatestObservation(
 }
 
 function summarizeBrowser(
-  status: BuiltInBrowserStatus,
+  status: BuiltInBrowserRuntimeStatus,
   laneId: string,
 ): WorkToolsBrowserState {
   // A tab claimed by ANOTHER lane belongs to that lane's pane, not this one.
@@ -240,7 +244,7 @@ function summarizeBrowser(
       url: trimmedOrNull(tab.url),
       ownerChatSessionId: trimmedOrNull(tab.ownerChatSessionId)
         ?? trimmedOrNull(tab.handoff?.previousOwner.chatSessionId),
-      recording: tab.recording != null,
+      recording: tab.recording,
       active: tab.id === status.activeTabId,
       handoffReason: trimmedOrNull(tab.handoff?.reason),
     }));
@@ -293,16 +297,24 @@ export function createWorkToolsStateService(
   ): Promise<{ browser: WorkToolsBrowserState | null; unavailable: WorkToolsLaneState["browserUnavailable"] }> => {
     const reader = args.getBrowserStatus;
     if (!reader) return { browser: null, unavailable: "desktop_not_attached" };
-    let status: BuiltInBrowserStatus;
+    let status: BuiltInBrowserRuntimeStatus;
     try {
       status = await reader();
     } catch (error) {
       // The bridge throws `DesktopBridgeUnavailableError` when no desktop is
       // listening on this machine, which is the normal headless state — not
-      // something to log as a fault or surface as a failure.
-      args.logger?.debug("work_tools.browser_status_unavailable", {
-        err: error instanceof Error ? error.message : String(error),
-      });
+      // something to log as a fault. ANY other failure means a desktop IS
+      // there and refused us, which is a real fault: it renders as the same
+      // "no desktop attached" empty state on every phone and web client, so a
+      // debug-level line would make it invisible (it did — a `policyDenied`
+      // from calling `getStatus` without a capability was silent for the whole
+      // life of this surface).
+      const reason = error instanceof Error ? error.message : String(error);
+      if (error instanceof DesktopBridgeUnavailableError) {
+        args.logger?.debug("work_tools.browser_status_unavailable", { err: reason });
+      } else {
+        args.logger?.warn("work_tools.browser_status_failed", { err: reason });
+      }
       return { browser: null, unavailable: "desktop_not_attached" };
     }
     const browser = summarizeBrowser(status, laneId);
@@ -376,6 +388,19 @@ export function createWorkToolsStateService(
         }
       }
       if (!canonical) return null;
+      // Ownership re-check. `findLatestObservation` already refuses another
+      // lane's observation, but a caller can hand back any path inside the
+      // roots — including one it learned before the sidecar was written, or one
+      // it guessed. The sidecar is the authority on who owns the frame, so read
+      // it again here rather than trusting that the path came from us.
+      // `callerLaneId` is injected by `adeRpcServer`'s `work_tools` scoping from
+      // the caller's own chat session; a user client sends none and is unscoped.
+      const callerLaneId = trimmedOrNull(input?.callerLaneId);
+      if (callerLaneId) {
+        const sidecarPath = `${canonical.slice(0, canonical.length - path.extname(canonical).length)}.json`;
+        const sidecar = await readObservationJson(sidecarPath);
+        if (sidecar?.ownerLaneId && sidecar.ownerLaneId !== callerLaneId) return null;
+      }
       const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
       const mimeType = OBSERVATION_PREVIEW_MIME_BY_EXTENSION[ext];
       if (!mimeType) return null;

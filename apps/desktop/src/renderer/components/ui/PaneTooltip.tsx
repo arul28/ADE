@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from "./tooltipPosition";
 
@@ -13,8 +21,10 @@ import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from 
  * click, and happily painted over the control it described.
  *
  * Contract:
- * - 500ms hover intent before it appears; keyboard focus shows it immediately
- *   (a focused control has already been chosen deliberately).
+ * - 500ms hover intent before it appears; KEYBOARD focus shows it immediately
+ *   (a focused control has already been chosen deliberately). Mouse focus does
+ *   not — a `<button>` takes focus after `pointerdown`, so treating any focus
+ *   as a summon popped the tooltip open on the very click meant to dismiss it.
  * - Dismissed by pointer leave, any click, any keydown, scroll, or window blur.
  * - Portalled to `document.body` and positioned by `computeTooltipPosition`,
  *   which flips then shifts to stay inside the window and is guaranteed never
@@ -116,6 +126,28 @@ export function PaneTooltip({
     setVisible(true);
   }, [clearTimer, hasSomethingToAdd]);
 
+  /**
+   * Focus shows the tooltip only for KEYBOARD focus.
+   *
+   * A `<button>` takes focus AFTER `pointerdown`, so `onPointerDown={hide}`
+   * followed by `onFocus={showNow}` ran in exactly the wrong order: clicking a
+   * wrapped control that stays mounted popped the tooltip open on the click —
+   * the behaviour the pointerdown handler exists to prevent. `:focus-visible`
+   * is the browser's own "was this focus keyboard-driven" answer.
+   */
+  const showOnKeyboardFocus = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null;
+    // jsdom and older engines have no `:focus-visible`; there, keep the old
+    // behaviour rather than silently losing the tooltip on Tab.
+    let keyboardFocused = true;
+    try {
+      keyboardFocused = target?.matches?.(":focus-visible") ?? true;
+    } catch {
+      keyboardFocused = true;
+    }
+    if (keyboardFocused) showNow();
+  }, [showNow]);
+
   useEffect(() => clearTimer, [clearTimer]);
 
   // Any of these means the person moved on: a tooltip that outlives the gesture
@@ -164,6 +196,23 @@ export function PaneTooltip({
     ));
   }, [side, visible]);
 
+  /**
+   * `aria-describedby` belongs on the FOCUSABLE node, not on the wrapper.
+   *
+   * The wrapper is a layout `<span>`; a screen reader announces the description
+   * of the element the user is on, which is the `<button>` inside. Merged with
+   * any value the child already carries so a caller's own description is not
+   * dropped, and only while the tooltip is actually up.
+   */
+  const describedChildren = React.isValidElement(children) && visible
+    ? React.cloneElement(children as React.ReactElement<{ "aria-describedby"?: string }>, {
+      "aria-describedby": [
+        (children as React.ReactElement<{ "aria-describedby"?: string }>).props["aria-describedby"],
+        tooltipId,
+      ].filter(Boolean).join(" "),
+    })
+    : children;
+
   return (
     <>
       <span
@@ -173,11 +222,14 @@ export function PaneTooltip({
         onPointerEnter={showAfterDelay}
         onPointerLeave={hide}
         onPointerDown={hide}
-        onFocus={showNow}
+        onFocus={showOnKeyboardFocus}
         onBlur={hide}
-        aria-describedby={visible ? tooltipId : undefined}
+        // Fallback only: when `children` is not a single element (a fragment,
+        // a string) there is nothing to clone, and the wrapper is the closest
+        // thing to the described control there is.
+        aria-describedby={visible && !React.isValidElement(children) ? tooltipId : undefined}
       >
-        {children}
+        {describedChildren}
       </span>
       {visible
         ? createPortal(

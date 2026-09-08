@@ -3,9 +3,10 @@ import path from "node:path";
 import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
+import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
-  isBuiltInBrowserActorCapabilityMethod,
+  isBuiltInBrowserBridgeServedMethod,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -31,8 +32,8 @@ import {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 3_000;
-/** Ceiling for a login handoff wait; matches the service's own handoff cap. */
-const MAX_HANDOFF_WAIT_MS = 2 * 60 * 60_000;
+/** Ceiling for a login handoff wait. The service's own cap, imported not copied. */
+const MAX_HANDOFF_WAIT_MS = MAX_HANDOFF_TIMEOUT_MS;
 
 async function raceWithTimeout<T>(
   operation: Promise<T>,
@@ -175,15 +176,21 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   ): Record<string, unknown> => {
     const bridgeAuthToken = args.getAuthToken()?.trim() ?? "";
     if (!bridgeAuthToken) {
-      logger.warn("built_in_browser_bridge.auth_token_missing", {
+      // Debug, not warn: an absent bridge token is the ordinary state on a
+      // machine with no desktop attached, and on that machine every single
+      // `ade browser` call would otherwise emit a warning. The caller already
+      // gets a specific, actionable error — the log line adds nothing but noise.
+      logger.debug("built_in_browser_bridge.auth_token_missing", {
         socketPath,
         projectRoot,
       });
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
-    // Capability issuance carries the scope of the chat being launched, which
-    // may be a personal (project-less) chat or a lane in another project. It
-    // must not be rewritten to the daemon's own project root.
+    // Bridge-served methods must not be rewritten to the daemon's own project
+    // root. Capability issuance carries the scope of the chat being launched,
+    // which may be a personal (project-less) chat or a lane in another project;
+    // `getStatusForRuntime` is deliberately unscoped so the Work-tools mirror
+    // sees the same collection the pane does.
     const scoped = opts.applyRuntimeScope ? withRuntimeScope(params) : params;
     return {
       ...(scoped && typeof scoped === "object" && !Array.isArray(scoped)
@@ -195,7 +202,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
 
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const requestParams = authenticatedParams(params, {
-      applyRuntimeScope: !isBuiltInBrowserActorCapabilityMethod(method),
+      applyRuntimeScope: !isBuiltInBrowserBridgeServedMethod(method),
     });
     const c = await ensureClient();
     const timeoutMs = bridgeCallTimeoutMs(method, requestParams);
@@ -227,7 +234,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       if (
         typeof property === "string"
         && (isBuiltInBrowserDesktopBridgeMethod(property)
-          || isBuiltInBrowserActorCapabilityMethod(property))
+          || isBuiltInBrowserBridgeServedMethod(property))
       ) {
         return (params?: unknown) => callBridge(property, params);
       }

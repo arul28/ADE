@@ -235,6 +235,26 @@ const workViewAreaProps = vi.hoisted(() => ({
 }));
 
 vi.mock("../../state/appStore", () => ({
+  // The real key builder: the pane's lane scope key is the store's own storage
+  // layout, and a mock that reimplemented it would test the mock.
+  laneWorkViewScopeKey: (projectRoot: string | null | undefined, laneId: string | null | undefined) => {
+    const project = typeof projectRoot === "string" ? projectRoot.trim() : "";
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    return project && lane ? `${project}::${lane}` : "";
+  },
+  // Same shape the real selectors return: the stored slice, or an empty one.
+  // The corner card reads its position/dismissals through these rather than
+  // reaching into the maps, so the mock has to answer them.
+  selectWorkViewState: (projectKey: string | null | undefined) =>
+    (state: { workViewByProject?: Record<string, unknown> }) =>
+      (projectKey ? state.workViewByProject?.[projectKey] : null) ?? {},
+  selectLaneWorkViewState: (projectKey: string | null | undefined, laneId: string | null | undefined) =>
+    (state: { laneWorkViewByScope?: Record<string, unknown> }) => {
+      const project = typeof projectKey === "string" ? projectKey.trim() : "";
+      const lane = typeof laneId === "string" ? laneId.trim() : "";
+      const key = project && lane ? `${project}::${lane}` : "";
+      return (key ? state.laneWorkViewByScope?.[key] : null) ?? {};
+    },
   selectActiveProjectRoot: (state: {
     projectBinding?: { kind?: string; rootPath?: string | null } | null;
     project?: { rootPath?: string | null } | null;

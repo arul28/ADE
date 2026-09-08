@@ -32,15 +32,14 @@ import type {
   BrowserLoginImportSource,
   BrowserLoginImportSourceStatus,
 } from "../../../../shared/types/builtInBrowserLoginImport";
-import { MACOS_FULL_DISK_ACCESS_SETTINGS_URL } from "../../../../shared/types/builtInBrowserLoginImport";
+import type { SystemSettingsPaneId } from "../../../../shared/types/systemSettings";
 import type { Logger } from "../../logging/logger";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowserConstants";
-import { CookieSnapshotError, type ImportedCookie } from "./cookieDatabase";
+import type { ImportedCookie } from "./cookieDatabase";
 import { aggregateCookieDomains, selectCookiesForDomains, displayDomain } from "./cookieDomains";
-import { readChromiumCookies } from "./chromiumCookies";
-import { ChromiumKeyError, resolveChromiumKeys } from "./chromiumKeys";
-import { readFirefoxCookies } from "./firefoxCookies";
-import { readSafariCookies, safariAccessDenied, SafariCookieReadError } from "./safariCookies";
+import type { LoginImportReadRequest, LoginImportReadResponse } from "./loginImportRead";
+import { readLoginImportSourceInWorker } from "./loginImportReadWorkerClient";
+import { safariAccessDenied } from "./safariCookies";
 import {
   describeLoginImportCapabilities,
   discoverProfiles,
@@ -74,6 +73,11 @@ export type BrowserLoginImportServiceArgs = {
   /** Injected for tests; defaults to the built-in browser's global profile. */
   getSession?: () => Session;
   now?: () => number;
+  /**
+   * Injected for tests. Production always goes through
+   * `readLoginImportSourceInWorker` so the blocking read never runs here.
+   */
+  readSource?: (request: LoginImportReadRequest) => Promise<LoginImportReadResponse>;
 };
 
 type ResolvedSource = {
@@ -93,32 +97,8 @@ function defaultPathContext(): LoginImportPathContext {
   };
 }
 
-/** Maps a reader failure onto the contract's blocked reasons. */
-function classifyReadFailure(error: unknown): { status: BrowserLoginImportBlockedReason; reason: string } {
-  if (error instanceof SafariCookieReadError) {
-    return error.reason === "needs_full_disk_access"
-      ? {
-          status: "needs_full_disk_access",
-          reason: "ADE needs Full Disk Access to read Safari's cookies.",
-        }
-      : { status: "read_failed", reason: "Safari's cookie file could not be read." };
-  }
-  if (error instanceof ChromiumKeyError) {
-    if (error.reason === "unsupported") return { status: "unsupported", reason: error.message };
-    if (error.reason === "key_unavailable") return { status: "key_unavailable", reason: error.message };
-    return { status: "read_failed", reason: error.message };
-  }
-  if (error instanceof CookieSnapshotError) {
-    return {
-      status: "locked",
-      reason: "The browser is holding its cookie database. Quit it and try again.",
-    };
-  }
-  return { status: "read_failed", reason: "The cookie database could not be read." };
-}
-
-function settingsPaneFor(status: BrowserLoginImportSourceStatus): string | null {
-  return status === "needs_full_disk_access" ? MACOS_FULL_DISK_ACCESS_SETTINGS_URL : null;
+function settingsPaneFor(status: BrowserLoginImportSourceStatus): SystemSettingsPaneId | null {
+  return status === "needs_full_disk_access" ? "macos-full-disk-access" : null;
 }
 
 export function createBrowserLoginImportService(args: BrowserLoginImportServiceArgs = {}) {
@@ -180,7 +160,7 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
             profileName: profile.name,
             status,
             reason,
-            settingsPaneUrl: settingsPaneFor(status),
+            settingsPaneId: settingsPaneFor(status),
           },
         });
       }
@@ -211,35 +191,38 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
     sourceId,
     status,
     reason,
-    settingsPaneUrl: settingsPaneFor(status),
+    settingsPaneId: settingsPaneFor(status),
   });
 
-  const readSource = (entry: ResolvedSource): CacheEntry => {
+  /**
+   * Off the main thread, always. Every step of this read blocks — the macOS
+   * Keychain modal has no timeout by design — and on the main thread that
+   * freezes every window, every IPC handler and every agent's browser call.
+   */
+  const readSource = async (entry: ResolvedSource): Promise<LoginImportReadResponse> => {
     const { definition, profile } = entry;
-    if (definition.engine === "firefox") {
-      const result = readFirefoxCookies(profile.cookieDatabasePath);
-      return { cookies: [...result.cookies], unreadable: result.unreadable, readAt: now() };
-    }
-    if (definition.engine === "safari") {
-      const result = readSafariCookies(profile.cookieDatabasePath);
-      return { cookies: [...result.cookies], unreadable: result.unreadable, readAt: now() };
-    }
-    const root = definition.userDataDirectory(context);
-    const keys = resolveChromiumKeys({
+    const request: LoginImportReadRequest = {
+      engine: definition.engine,
+      cookieDatabasePath: profile.cookieDatabasePath,
       platform: context.platform,
-      keychainService: definition.keychainService,
-      keychainAccount: definition.keychainAccount,
-      linuxSecretApplication: definition.linuxSecretApplication,
-      windowsLocalStatePath: root ? path.join(root, "Local State") : undefined,
-    });
-    const result = readChromiumCookies(profile.cookieDatabasePath, keys, context.platform);
-    return { cookies: [...result.cookies], unreadable: result.unreadable, readAt: now() };
+      ...(definition.keychainService ? { keychainService: definition.keychainService } : {}),
+      ...(definition.keychainAccount ? { keychainAccount: definition.keychainAccount } : {}),
+      ...(definition.linuxSecretApplication
+        ? { linuxSecretApplication: definition.linuxSecretApplication }
+        : {}),
+      chromiumUserDataDirectory: definition.engine === "chromium"
+        ? definition.userDataDirectory(context)
+        : null,
+    };
+    return args.readSource ? args.readSource(request) : readLoginImportSourceInWorker(request);
   };
 
   /** Reads a source, reusing a recent read so consent is asked for once. */
-  const loadSource = (
+  const loadSource = async (
     sourceId: string,
-  ): { ok: true; entry: CacheEntry } | { ok: false; failure: BrowserLoginImportFailure } => {
+  ): Promise<
+    { ok: true; entry: CacheEntry } | { ok: false; failure: BrowserLoginImportFailure }
+  > => {
     const resolved = resolveSources().find((candidate) => candidate.source.id === sourceId);
     if (!resolved) {
       return { ok: false, failure: failure(sourceId, "not_installed", "That browser profile is no longer on this machine.") };
@@ -258,25 +241,28 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
     const cached = readCache.get(sourceId);
     if (cached && now() - cached.readAt < READ_CACHE_TTL_MS) return { ok: true, entry: cached };
 
-    try {
-      const entry = readSource(resolved);
-      readCache.set(sourceId, entry);
-      return { ok: true, entry };
-    } catch (error) {
-      const classified = classifyReadFailure(error);
+    const read = await readSource(resolved);
+    if (!read.ok) {
       logger()?.warn("built_in_browser.login_import.read_failed", {
         sourceId,
         browserId: resolved.definition.id,
-        status: classified.status,
+        status: read.status,
       });
-      return { ok: false, failure: failure(sourceId, classified.status, classified.reason) };
+      return { ok: false, failure: failure(sourceId, read.status, read.reason) };
     }
+    const entry: CacheEntry = {
+      cookies: read.cookies,
+      unreadable: read.unreadable,
+      readAt: now(),
+    };
+    readCache.set(sourceId, entry);
+    return { ok: true, entry };
   };
 
-  const listDomains = (
+  const listDomains = async (
     input: BrowserLoginImportListDomainsArgs,
-  ): BrowserLoginImportListDomainsResult => {
-    const loaded = loadSource(input.sourceId);
+  ): Promise<BrowserLoginImportListDomainsResult> => {
+    const loaded = await loadSource(input.sourceId);
     if (!loaded.ok) return loaded.failure;
     const domains = aggregateCookieDomains(loaded.entry.cookies, Math.floor(now() / 1000));
     logger()?.info("built_in_browser.login_import.list_domains", {
@@ -288,7 +274,7 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
   };
 
   const importLogins = async (input: BrowserLoginImportArgs): Promise<BrowserLoginImportResult> => {
-    const loaded = loadSource(input.sourceId);
+    const loaded = await loadSource(input.sourceId);
     if (!loaded.ok) return loaded.failure;
 
     const nowSeconds = Math.floor(now() / 1000);

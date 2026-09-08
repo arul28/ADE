@@ -13,6 +13,8 @@ import {
   normalizeWorkLiveCardPosition,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
+  workLiveScrubFrameKey,
+  workLiveSource,
   workLiveCardDragConstraints,
   workLiveCardFits,
   workLiveCardPositionFromRect,
@@ -393,5 +395,93 @@ describe("workLivePreviewMaxWidth", () => {
     expect(workLivePreviewMaxWidth(0)).toBe(320);
     expect(workLivePreviewMaxWidth(Number.NaN)).toBe(320);
     expect(workLivePreviewMaxWidth(12)).toBe(960);
+  });
+});
+
+describe("workLiveCardFits", () => {
+  const wide = { width: 400, height: 400 };
+
+  it("refuses a host too small for the card at all", () => {
+    expect(workLiveCardFits({ width: 300, height: 400 })).toBe(false);
+    expect(workLiveCardFits({ width: 400, height: 200 })).toBe(false);
+    expect(workLiveCardFits(wide)).toBe(true);
+  });
+
+  it("counts the composer's height, which the card sits above", () => {
+    // 300px of column with a 150px composer leaves 150px for a 211px card:
+    // `fits` used to say yes, `workLiveCardTravel`'s `Math.max` then gave up
+    // and parked the card on top of the composer it was measured to avoid.
+    expect(workLiveCardFits({ width: 400, height: 300 }, 150)).toBe(false);
+    expect(workLiveCardFits({ width: 400, height: 420 }, 150)).toBe(true);
+    // A negative reserve is not a bonus.
+    expect(workLiveCardFits({ width: 400, height: 260 }, -100)).toBe(true);
+  });
+});
+
+describe("workLiveScrubFrameKey", () => {
+  it("identifies a frame by trace id, so an eviction cannot move it", () => {
+    const buffer = [
+      { id: "t1", dataUrl: null, caption: "click", at: 1 },
+      { id: "t2", dataUrl: null, caption: "type", at: 2 },
+    ];
+    const held = workLiveScrubFrameKey(buffer[1]!);
+    // A new action shifts the buffer left; the held frame is now at index 0.
+    const shifted = buffer.slice(1);
+    expect(shifted.findIndex((frame) => workLiveScrubFrameKey(frame) === held)).toBe(0);
+  });
+
+  it("falls back to the timestamp for a frame committed without an id", () => {
+    expect(workLiveScrubFrameKey({ id: null, dataUrl: null, caption: null, at: 7 })).toBe(":7");
+  });
+});
+
+describe("workLiveSource", () => {
+  const empty = { browserTab: null, appControlSession: null, iosSession: null };
+
+  it("answers every per-tool question from one adapter", () => {
+    const browser = workLiveSource("browser", {
+      ...empty,
+      browserTab: {
+        ownerChatSessionId: "chat-1",
+        title: "Sign in",
+        url: "https://example.test/login",
+        recording: { startedAt: "now" },
+        handoff: { reason: "Sign in to continue" },
+      },
+    });
+    expect(browser).toEqual({
+      live: true,
+      ownerLabel: "agent",
+      caption: "Sign in",
+      handoff: { label: "Needs you", detail: "Sign in to continue" },
+      recording: { startedAt: "now" },
+    });
+  });
+
+  it("treats a terminal App Control session as not live, and `failed` as live", () => {
+    expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "stopped" } }).live).toBe(false);
+    expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "exited" } }).live).toBe(false);
+    expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "failed" } }).live).toBe(true);
+  });
+
+  it("only the browser can be recording", () => {
+    expect(workLiveSource("ios", { ...empty, iosSession: { appName: "ADE" } })).toMatchObject({
+      live: true,
+      caption: "ADE",
+      recording: null,
+      ownerLabel: null,
+    });
+  });
+
+  it("reports nothing for a tool with no state", () => {
+    for (const tool of ["browser", "app-control", "ios"] as const) {
+      expect(workLiveSource(tool, empty)).toEqual({
+        live: false,
+        ownerLabel: null,
+        caption: null,
+        handoff: null,
+        recording: null,
+      });
+    }
   });
 });

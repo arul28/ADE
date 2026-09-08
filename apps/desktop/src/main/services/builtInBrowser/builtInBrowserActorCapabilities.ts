@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { pathsEqual } from "../shared/pathCompare";
 
 const CAPABILITY_BYTES = 32;
 
@@ -75,7 +76,10 @@ function sameCapabilityScope(
 ): boolean {
   return left.chatSessionId === right.chatSessionId
     && left.laneId === right.laneId
-    && left.projectRoot === right.projectRoot
+    // Two spellings of one directory are one scope: `path.resolve` does not
+    // fold drive-letter case on Windows, so `===` would mint a second token.
+    && (left.projectRoot === right.projectRoot
+      || pathsEqual(left.projectRoot, right.projectRoot))
     && left.tabCollection === right.tabCollection;
 }
 
@@ -97,6 +101,13 @@ export type BrowserActorCapabilityIssuer = {
    * Present only when this process owns the registry above. Callers use it to
    * stay on their existing synchronous path — an agent launch in Electron main
    * must not gain a suspension point just because the daemon needs one.
+   *
+   * The cost of this fork is an implicit ordering rule in `agentChatService`
+   * (`prepareBrowserActorCapability` must run before `buildAgentRuntimeEnv`),
+   * which is why it is kept deliberately rather than collapsed into `issue`:
+   * the extra `await` would land inside a launch stretch whose synchronous
+   * dispatch ordering is load-bearing. See the CONSTRAINT note on
+   * `prepareBrowserActorCapability`.
    */
   issueSync?: (capability: BuiltInBrowserActorCapability) => string;
   issue: (capability: BuiltInBrowserActorCapability) => Promise<string | null>;

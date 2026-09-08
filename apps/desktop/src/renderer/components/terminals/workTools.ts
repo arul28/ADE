@@ -29,6 +29,20 @@ export type WorkToolDefinition = {
    * tool has no live status to report — never as a stand-in for one.
    */
   blurb: string;
+  /**
+   * The one compact fact the active header shows beside the tool's name.
+   *
+   * On the definition rather than in a `if (tool === …)` cascade at the header:
+   * three of the seven tools answer this differently and the rule belongs with
+   * the tool. Omitted means "your status line", which is what most tools want.
+   */
+  contextLabel?: (context: WorkToolHeaderContext) => string | null;
+};
+
+/** What a `contextLabel` rule may read. */
+export type WorkToolHeaderContext = {
+  lane: { branchRef?: string | null; name?: string | null } | null;
+  status: { line: string | null } | null;
 };
 
 export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
@@ -55,6 +69,8 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     icon: GitBranch,
     color: "#34d399",
     blurb: "Stage, commit, and read diffs",
+    // The branch, not the dirty count: the count is already the status line.
+    contextLabel: ({ lane }) => lane?.branchRef ?? null,
   },
   {
     id: "files",
@@ -62,6 +78,7 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     icon: FolderOpen,
     color: "#fbbf24",
     blurb: "Browse and edit the lane worktree",
+    contextLabel: ({ lane }) => lane?.name ?? null,
   },
   {
     id: "ios",
@@ -92,6 +109,13 @@ const WORK_TOOL_DEFINITIONS_BY_ID = new Map<WorkSidebarTab, WorkToolDefinition>(
 
 export function workToolDefinition(id: WorkSidebarTab): WorkToolDefinition | null {
   return WORK_TOOL_DEFINITIONS_BY_ID.get(id) ?? null;
+}
+
+/** The header's one fact for a tool: its own rule, or its status line. */
+export function workToolContextLabel(id: WorkSidebarTab, context: WorkToolHeaderContext): string | null {
+  const definition = WORK_TOOL_DEFINITIONS_BY_ID.get(id);
+  if (definition?.contextLabel) return definition.contextLabel(context);
+  return context.status?.line ?? null;
 }
 
 export function workToolLabel(id: WorkSidebarTab): string {

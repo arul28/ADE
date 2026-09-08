@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppControlSession,
+  BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
   IosSimulatorSession,
   LaneSummary,
@@ -8,15 +9,22 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
+import { browserHostLabel } from "../../lib/browserUrl";
 import { boundMachineLanePrs, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   EMPTY_WORK_TOOL_ERRORS,
   pruneWorkToolBrowserErrors,
   reduceWorkToolBrowserErrors,
   workToolBrowserErrorCount,
+  workToolErrorSuffix,
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
-import { workToolAvailability, type WorkToolContext } from "./workTools";
+import {
+  asBuiltInBrowserStatus,
+  isAppControlSessionLive,
+  useNativeToolSessions,
+} from "./useNativeToolSessions";
+import type { WorkToolAvailability, WorkToolContext, WorkToolDefinition } from "./workTools";
 
 /**
  * What a tool has to say about itself on the picker card and in the activity
@@ -56,6 +64,17 @@ export type WorkToolStatus = {
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
 
 const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: false };
+
+/**
+ * A status line, on top of `IDLE`'s defaults.
+ *
+ * Every builder below used to restate `errorCount: 0, errored: false` by hand,
+ * so a new optional field meant thirteen edits. Spreading the idle shape states
+ * the defaults once and leaves each builder saying only what is different.
+ */
+function statusLine(line: string | null, live: boolean, extra?: Partial<WorkToolStatus>): WorkToolStatus {
+  return { ...IDLE, line, live, ...extra };
+}
 
 /** True when a tool's dot should read as a problem rather than as activity. */
 export function workToolHasError(status: WorkToolStatus | undefined): boolean {
@@ -97,6 +116,33 @@ export function workToolDotColor(state: WorkToolDotState, toolColor: string): st
   }
 }
 
+/**
+ * The one line a tool gets, wherever it is shown.
+ *
+ * The picker card and the header's activity dots both answer "what is this tool
+ * doing", and they used to answer it with two different spellings — one with a
+ * blurb fallback, one without; one that appended the error suffix, one that
+ * gated it and then regexed the separator back off. This is the single rule:
+ * an unavailable tool says why, an available one says its status (or its blurb
+ * when it has measured nothing yet) plus any error tally.
+ */
+export function workToolSummary(
+  definition: WorkToolDefinition,
+  status: WorkToolStatus | undefined,
+  availability: WorkToolAvailability,
+): { line: string; tooltipLabel: string } {
+  const line = availability.available
+    ? `${status?.line ?? definition.blurb}${workToolErrorSuffix(status?.errorCount ?? 0)}`
+    : availability.reason;
+  return { line, tooltipLabel: `${definition.label} — ${line}` };
+}
+
+/**
+ * How this pane shortens a host: keep `www.`, append a non-root path, and fall
+ * back to the raw string for anything `new URL` refuses.
+ */
+const HOST_LABEL_OPTIONS = { stripWww: false, includePath: true, fallbackToRaw: true } as const;
+
 /** How long the picker is allowed to show skeleton lines before committing. */
 const STATUS_SETTLE_MS = 300;
 
@@ -104,24 +150,16 @@ function pluralize(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
-function shortHost(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (!parsed.host) return null;
-    const path = parsed.pathname === "/" ? "" : parsed.pathname;
-    return `${parsed.host}${path}`;
-  } catch {
-    return url;
-  }
-}
-
 export function browserStatusLine(
-  status: BuiltInBrowserStatus | null,
+  rawStatus: BuiltInBrowserStatus | null,
   laneId: string | null,
   errorCount = 0,
 ): WorkToolStatus {
-  if (!status || status.tabs.length === 0) return { line: "No tabs", live: false, errorCount: 0, errored: false };
+  // Exported and called with whatever a feed handed the caller, including the
+  // web client's shape-breaking "unsupported" stub — so the array is checked
+  // here too rather than trusted from the type.
+  const status = asBuiltInBrowserStatus(rawStatus);
+  if (!status || status.tabs.length === 0) return statusLine("No tabs", false);
   const activeTab = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0];
   const held = status.tabs.some((tab) => tab.ownerLaneId != null)
     || status.ownerLaneId != null;
@@ -133,7 +171,10 @@ export function browserStatusLine(
   // ownership word off the end of this line.
   const label = status.tabs.length > 1
     ? pluralize(status.tabs.length, "tab", "tabs")
-    : shortHost(activeTab?.url ?? status.url)
+    // The pane's one host-shortening rule, shared with the tab pill and the
+    // picker card so a tab cannot read `example.com` in one and
+    // `www.example.com/x` in the other.
+    : browserHostLabel(activeTab?.url ?? status.url, HOST_LABEL_OPTIONS)
       ?? activeTab?.title
       ?? pluralize(status.tabs.length, "tab", "tabs");
   // A login handoff outranks every ownership suffix: while it is open the agent
@@ -147,25 +188,25 @@ export function browserStatusLine(
     : held
       ? " · other lane"
       : "";
-  return { line: `${label}${suffix}`, live: true, errorCount, errored: false, attention: handedOff };
+  return statusLine(`${label}${suffix}`, true, { errorCount, attention: handedOff });
 }
 
 export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   if (!lane?.status) return IDLE;
   const { ahead, behind, dirty, rebaseInProgress } = lane.status;
-  if (rebaseInProgress) return { line: "Rebasing", live: true, errorCount: 0, errored: false };
+  if (rebaseInProgress) return statusLine("Rebasing", true);
   const parts: string[] = [];
   if (ahead > 0) parts.push(`${ahead} ahead`);
   if (behind > 0) parts.push(`${behind} behind`);
   // "dirty" rather than "uncommitted changes": this is a status slot, not a
   // sentence, and at two columns the sentence became "3 ahead · uncommitt…".
   parts.push(dirty ? "dirty" : "clean");
-  return { line: parts.join(" · "), live: dirty || ahead > 0, errorCount: 0, errored: false };
+  return statusLine(parts.join(" · "), dirty || ahead > 0);
 }
 
 export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolStatus {
   const pr = prs?.[0];
-  if (!pr) return { line: "No PR", live: false, errorCount: 0, errored: false };
+  if (!pr) return statusLine("No PR", false);
   const checks = pr.checksStatus;
   const detail = checks === "pending"
     ? "checks"
@@ -174,44 +215,38 @@ export function prStatusLine(prs: readonly PrSummary[] | undefined): WorkToolSta
       : checks === "passing"
         ? "passing"
         : pr.state;
-  return {
-    line: `#${pr.githubPrNumber} · ${detail}`,
-    live: checks === "pending",
-    errorCount: 0,
+  return statusLine(`#${pr.githubPrNumber} · ${detail}`, checks === "pending", {
     errored: checks === "failing",
-  };
+  });
 }
 
 export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
-  if (!session) return { line: "Not booted", live: false, errorCount: 0, errored: false };
+  if (!session) return statusLine("Not booted", false);
   // The dot already says "booted"; the words are for the device name, which is
   // the part that is long ("iPhone 17 Pro Max") and the part you asked for.
   const device = session.deviceName?.trim() || "Simulator";
-  return { line: device, live: true, errorCount: 0, errored: false };
+  return statusLine(device, true);
 }
 
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
-  if (!session) return { line: "No app", live: false, errorCount: 0, errored: false };
+  if (!session) return statusLine("No app", false);
   const label = session.label?.trim() || "App";
-  return {
-    line: label,
-    live: session.status !== "stopped" && session.status !== "exited",
-    errorCount: 0,
+  return statusLine(label, isAppControlSessionLive(session), {
     // App Control has no pushed console/network tally today, so its red dot is
     // driven by the one error state its session reports.
     errored: session.status === "failed",
-  };
+  });
 }
 
 export function terminalStatusLine(
   titles: readonly string[] | null,
 ): WorkToolStatus {
   if (titles == null) return IDLE;
-  if (titles.length === 0) return { line: "No shells", live: false, errorCount: 0, errored: false };
+  if (titles.length === 0) return statusLine("No shells", false);
   // Shell titles are unbounded ("npm run dev -w apps/desktop"), and appending
   // even one of them turned this into "Shells attache…" at 526px. The count is
   // the whole status; the tab strip below names them.
-  return { line: pluralize(titles.length, "shell", "shells"), live: true, errorCount: 0, errored: false };
+  return statusLine(pluralize(titles.length, "shell", "shells"), true);
 }
 
 /**
@@ -261,23 +296,41 @@ export function useWorkToolStatuses(args: {
     offline,
   } = args;
 
-  const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
-  const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
-  const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
   const [settled, setSettled] = useState(false);
-
-  // A tool that cannot run here is never asked how it is doing: a remote
-  // project has no local browser view to describe, and the web client's native
-  // namespaces are stubs that would answer "unsupported" forever.
-  const canReadBrowser = workToolAvailability("browser", context).available;
-  const canReadIos = workToolAvailability("ios", context).available;
-  const canReadAppControl = workToolAvailability("app-control", context).available;
 
   const runtimePinKey = runtimePin?.key ?? null;
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
+
+  // The error tally is pushed by the service on change and zeroed on a
+  // main-frame navigation, so the badge clears itself without a poll.
+  const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
+    if (event.type === "diagnostics") {
+      setBrowserErrors((current) => reduceWorkToolBrowserErrors(current, event));
+      return;
+    }
+    const next = asBuiltInBrowserStatus((event as { status?: unknown }).status);
+    // A closed tab must not keep a dot red for a page nobody can reach.
+    if (next) setBrowserErrors((current) => pruneWorkToolBrowserErrors(current, next));
+  }, []);
+
+  // One subscription set for the whole pane, shared with the live corner card:
+  // the capability gate, the "unsupported stub" boundary check and the feed
+  // teardown all live in one place rather than one copy per consumer.
+  const { browserStatus, iosSession, appControlSession, canBrowser } = useNativeToolSessions({
+    enabled,
+    context,
+    browserViewRoot,
+    runtimePin,
+    offline,
+    onBrowserEvent,
+  });
+
+  useEffect(() => {
+    if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
+  }, [canBrowser, enabled, offline]);
 
   // One grace window, not one per read: the picker commits its lines after
   // 300ms whatever the slowest namespace is doing, so a wedged machine can
@@ -288,99 +341,6 @@ export function useWorkToolStatuses(args: {
     const timer = window.setTimeout(() => setSettled(true), STATUS_SETTLE_MS);
     return () => window.clearTimeout(timer);
   }, [enabled, laneId, runtimePinKey, terminalOwnerSessionId]);
-
-  useEffect(() => {
-    if (!enabled || offline || !canReadBrowser) {
-      setBrowserStatus(null);
-      setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
-      return undefined;
-    }
-    const browser = window.ade?.builtInBrowser;
-    if (!browser?.getStatus || !browser.onEvent) return undefined;
-    let cancelled = false;
-    const scope = browserViewRoot ? { projectRoot: browserViewRoot } : {};
-    void browser.getStatus(scope, runtimePinRef.current)
-      .then((status) => {
-        if (!cancelled) setBrowserStatus(status ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setBrowserStatus(null);
-      });
-    const unsubscribe = browser.onEvent((event) => {
-      // The error tally is pushed by the service on change and zeroed on a
-      // main-frame navigation, so the badge clears itself without a poll.
-      if (event.type === "diagnostics") {
-        setBrowserErrors((current) => reduceWorkToolBrowserErrors(current, event));
-        return;
-      }
-      const next = (event as { status?: BuiltInBrowserStatus }).status;
-      if (next) {
-        setBrowserStatus(next);
-        // A closed tab must not keep a dot red for a page nobody can reach.
-        setBrowserErrors((current) => pruneWorkToolBrowserErrors(current, next));
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [browserViewRoot, canReadBrowser, enabled, offline, runtimePinKey]);
-
-  useEffect(() => {
-    if (!enabled || offline || !canReadIos) {
-      setIosSession(null);
-      return undefined;
-    }
-    const iosSimulator = window.ade?.iosSimulator;
-    if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
-    let cancelled = false;
-    void iosSimulator.getStatus(runtimePinRef.current)
-      .then((status) => {
-        if (!cancelled) setIosSession(status.activeSession ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setIosSession(null);
-      });
-    const unsubscribe = iosSimulator.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        setIosSession(event.session ?? null);
-      } else if (event.type === "session-released") {
-        setIosSession(null);
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [canReadIos, enabled, offline, runtimePinKey]);
-
-  useEffect(() => {
-    if (!enabled || offline || !canReadAppControl) {
-      setAppControlSession(null);
-      return undefined;
-    }
-    const appControl = window.ade?.appControl;
-    if (!appControl?.getStatus || !appControl.onEvent) return undefined;
-    let cancelled = false;
-    void appControl.getStatus(runtimePinRef.current)
-      .then((status) => {
-        if (!cancelled) setAppControlSession(status.activeSession ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setAppControlSession(null);
-      });
-    const unsubscribe = appControl.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        setAppControlSession(event.session ?? null);
-      } else if (event.type === "session-stopped") {
-        setAppControlSession(null);
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [canReadAppControl, enabled, offline, runtimePinKey]);
 
   // Attached shells have no dedicated status event, so the list is re-read
   // whenever one could have changed: a session is created/deleted, or a PTY
@@ -437,7 +397,7 @@ export function useWorkToolStatuses(args: {
     // BOOLEAN, not a tally, and a real count means a git read the pane would
     // then have to keep fresh. So the card states what it does rather than
     // padding the slot with the marketing blurb.
-    files: { line: "Lane worktree", live: false, errorCount: 0, errored: false },
+    files: statusLine("Lane worktree", false),
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
     // Machine-scoped, like every other PR render path: lane ids are not unique

@@ -8,7 +8,10 @@ import {
   type BuiltInBrowserRemoteRequestAck,
 } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import { DesktopBridgeUnavailableError } from "./desktopBridgeClient";
-import type { BuiltInBrowserDesktopBridgeClient } from "./desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  type BuiltInBrowserDesktopBridgeClient,
+} from "./desktopBridgeMethods";
 
 /**
  * `ade browser open` on a machine that has no desktop attached.
@@ -110,6 +113,11 @@ export function createRemoteBrowserForwarder(args: {
       requestId: request.requestId,
       url: request.url,
       acknowledged: ack?.accepted === true,
+      // The desktop acks the moment it takes the request, even when the port
+      // still needs a human "Allow" — a first-use approval cannot be answered
+      // inside the 5s ack window, and without this the CLI printed a failure
+      // for a request that was about to succeed.
+      ...(ack?.awaitingApproval === true ? { awaitingApproval: true } : {}),
       desktopLabel: ack?.desktopLabel ?? null,
       reason: ack?.reason ?? null,
     };
@@ -133,6 +141,7 @@ export function createRemoteBrowserForwarder(args: {
           requestId,
           desktopLabel: stringOrNull(record.desktopLabel) ?? "ADE Desktop",
           accepted: record.accepted !== false,
+          ...(record.awaitingApproval === true ? { awaitingApproval: true } : {}),
           reason: stringOrNull(record.reason),
         }),
       };
@@ -161,7 +170,7 @@ export function withRemoteBrowserForwarding(
 ): BuiltInBrowserDesktopBridgeClient {
   return new Proxy(bridge, {
     get(target, property, receiver) {
-      if (property === "acknowledgeRemoteRequest") {
+      if (property === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD) {
         return (input?: unknown) => forwarder.acknowledgeRemoteRequest(input);
       }
       if (typeof property === "string" && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(property)) {

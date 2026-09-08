@@ -115,6 +115,13 @@ export type WorkToolsGetLaneStateArgs = {
 export type WorkToolsReadObservationPreviewArgs = {
   /** Path taken verbatim from a `WorkToolsObservation`. */
   path: string;
+  /**
+   * The caller's own lane, injected by `adeRpcServer`'s `work_tools` scoping —
+   * never supplied by the caller. The aggregator re-reads the observation's
+   * sidecar and refuses one owned by a different lane, because a path is not a
+   * permission. Absent for user clients, which are unscoped.
+   */
+  callerLaneId?: string | null;
 };
 
 export type WorkToolsObservationPreview = {

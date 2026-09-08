@@ -35,6 +35,15 @@ const MAX_WINDOW_SEGMENTS = 3;
 
 export type AppControlLaunchRecent = { command: string; cwd: string | null };
 
+/**
+ * The app picker's width budget.
+ *
+ * Named because it is a decision, not a style: wide enough for a real app name,
+ * narrow enough to leave the 280px pane room for the status and the ⋯ menu —
+ * and expressed in px for the reason in the comment at its use site.
+ */
+export const APP_PICKER_WIDTH_CLASS = "h-[24px] min-w-[120px] max-w-[240px]";
+
 function windowSegmentLabel(target: AppControlTarget): string {
   const title = (target.title ?? "").trim();
   if (title) return title;
@@ -122,8 +131,10 @@ export function AppControlToolbar({
         triggerLabel={appLabel}
         // Fixed px, never a percentage: the trigger's own width is what sizes
         // its (content-sized, shrink-0) wrapper, so a `%` max-width resolved
-        // against itself and collapsed "Playground" down to "P".
-        triggerClassName="h-[24px] min-w-[120px] max-w-[240px]"
+        // against itself and collapsed "Playground" down to "P". The budget is
+        // an exported constant so it can be stated once rather than asserted as
+        // a substring of a `class` attribute.
+        triggerClassName={APP_PICKER_WIDTH_CLASS}
         menuClassName="w-[268px]"
         open={pickerOpen}
         onOpenChange={onPickerOpenChange}

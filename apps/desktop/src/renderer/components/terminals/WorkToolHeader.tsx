@@ -4,22 +4,27 @@ import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
-import { WORK_TOOL_DEFINITIONS, workToolAvailability, type WorkToolContext } from "./workTools";
+import { OVERSHOOT_EASE } from "../../lib/motion";
+import {
+  WORK_TOOL_DEFINITIONS,
+  workToolAvailability,
+  workToolDefinition,
+  type WorkToolContext,
+} from "./workTools";
 import {
   workToolDotColor,
   workToolDotState,
-  workToolHasError,
+  workToolSummary,
   type WorkToolDotState,
   type WorkToolStatusMap,
 } from "./useWorkToolStatuses";
-import { workToolErrorSuffix } from "./workToolErrors";
 
 /** Shared-element id linking a tool's activity dot to its header icon halo. */
 function toolMarkerLayoutId(tool: WorkSidebarTab): string {
   return `work-tool-marker:${tool}`;
 }
 
-const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
+const OVERSHOOT = OVERSHOOT_EASE;
 
 const CLOSE_BUTTON_CLASS = cn(
   "ade-shell-control inline-flex h-full w-9 shrink-0 items-center justify-center self-stretch rounded-none",
@@ -66,9 +71,10 @@ export function WorkToolHeader({
   onClose: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
-  const definition = WORK_TOOL_DEFINITIONS.find((entry) => entry.id === tool)
-    ?? WORK_TOOL_DEFINITIONS[0];
-  const Icon = definition.icon;
+  // The catalogue's own indexed lookup, not a scan with a `?? [0]` tail: that
+  // fallback rendered "Terminal" — its icon, its colour — for any id the map
+  // does not know, a wrong answer where the type says the case cannot happen.
+  const definition = workToolDefinition(tool);
 
   // Only tools that are (a) not the one on screen, (b) usable here, and (c)
   // actually doing something. A dot for an idle tool would be noise; a dot for
@@ -82,6 +88,11 @@ export function WorkToolHeader({
     && workToolAvailability(entry.id, context).available
     && workToolDotState(statuses[entry.id]) !== "idle"
   ));
+
+  // Unreachable given `WorkSidebarTab`, but the map is the truth and rendering
+  // the terminal's identity for an unknown id is a worse answer than nothing.
+  if (!definition) return null;
+  const Icon = definition.icon;
 
   return (
     <div className="ade-pane-chrome flex min-h-[36px] shrink-0 items-stretch border-b border-white/[0.08]">
@@ -152,9 +163,13 @@ export function WorkToolHeader({
             const status = statuses[entry.id];
             const dotState = workToolDotState(status);
             const dotColor = workToolDotColor(dotState, entry.color);
-            const suffix = workToolHasError(status) ? workToolErrorSuffix(status?.errorCount ?? 0) : "";
-            const detail = status?.line ? `${status.line}${suffix}` : suffix.replace(/^ · /, "");
-            const label = detail ? `${entry.label} — ${detail}` : entry.label;
+            // Same summary the picker card shows, so the dot's tooltip and the
+            // card can never describe one tool two ways.
+            const { tooltipLabel: label } = workToolSummary(
+              entry,
+              status,
+              workToolAvailability(entry.id, context),
+            );
             return (
               <PaneTooltip key={entry.id} label={label} side="bottom">
                 <button

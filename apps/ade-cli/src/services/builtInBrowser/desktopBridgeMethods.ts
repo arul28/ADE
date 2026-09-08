@@ -1,4 +1,8 @@
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
+import {
+  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
+  type BuiltInBrowserRuntimeStatus,
+} from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
 
 export const BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM = "__adeDesktopBridgeAuth";
 export const BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM = "__adeBrowserActorCapability";
@@ -45,10 +49,6 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "requestOriginAccess",
   "claim",
   "startHandoff",
-  // `endHandoff` is on the bridge only so the desktop renderer's own `Hand back`
-  // can reach a locally-pinned runtime. `adeRpcServer` gates it to user clients,
-  // so an agent cannot end a sign-in the human is still in the middle of.
-  "endHandoff",
   "waitForHandoff",
   "startSession",
   "listSessions",
@@ -97,6 +97,25 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
 export type BuiltInBrowserDesktopBridgeMethod =
   (typeof BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS)[number];
 
+/**
+ * Methods the runtime daemon serves itself rather than proxying to Electron.
+ *
+ * `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method and never
+ * reaches the desktop bridge: it is how a desktop elsewhere tells THIS machine
+ * that it took a forwarded `ade browser open`. Named once here so the three
+ * sites that special-case it (the action allowlist, `adeRpcServer`'s scoping
+ * chain, and `remoteBrowserForwarder`) all point at the same constant instead
+ * of three bare string comparisons.
+ */
+export const BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD = "acknowledgeRemoteRequest";
+
+export type BuiltInBrowserAcknowledgeRemoteRequestArgs = {
+  requestId: string;
+  desktopLabel?: string;
+  accepted?: boolean;
+  reason?: string | null;
+};
+
 export type BuiltInBrowserDesktopBridgeClient = {
   [Method in BuiltInBrowserDesktopBridgeMethod]:
     BuiltInBrowserService[Method] extends (...args: infer Args) => unknown
@@ -107,21 +126,34 @@ export type BuiltInBrowserDesktopBridgeClient = {
     input: BuiltInBrowserActorCapabilityRequest,
   ) => Promise<{ token: string }>;
   revokeActorCapability: (input: { chatSessionId: string }) => Promise<{ revoked: boolean }>;
+  /**
+   * Read-only Work-tools mirror. Bridge auth only — see
+   * `BuiltInBrowserRuntimeStatus` for why serving it without an actor
+   * capability grants nothing.
+   */
+  getStatusForRuntime: () => Promise<BuiltInBrowserRuntimeStatus>;
+  acknowledgeRemoteRequest: (
+    input: BuiltInBrowserAcknowledgeRemoteRequestArgs,
+  ) => { ok: boolean };
   dispose: () => void;
 };
 
-const BUILT_IN_BROWSER_ACTOR_CAPABILITY_METHOD_SET = new Set<string>([
+const BUILT_IN_BROWSER_BRIDGE_SERVED_METHOD_SET = new Set<string>([
   BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
   BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
+  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
 ]);
 
 /**
- * True for the capability lifecycle methods above. They are deliberately kept
- * out of `isBuiltInBrowserDesktopBridgeMethod` so the bridge server never
- * dispatches them onto `BuiltInBrowserService`.
+ * True for the methods the bridge server answers itself: the two capability
+ * lifecycle calls and the read-only runtime status. All three are deliberately
+ * kept out of `isBuiltInBrowserDesktopBridgeMethod` so the bridge server never
+ * dispatches them onto `BuiltInBrowserService`, and all three are gated on
+ * bridge authentication alone — the daemon calling them has no chat and so can
+ * never hold an actor capability.
  */
-export function isBuiltInBrowserActorCapabilityMethod(value: string): boolean {
-  return BUILT_IN_BROWSER_ACTOR_CAPABILITY_METHOD_SET.has(value);
+export function isBuiltInBrowserBridgeServedMethod(value: string): boolean {
+  return BUILT_IN_BROWSER_BRIDGE_SERVED_METHOD_SET.has(value);
 }
 
 const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHOD_SET = new Set<string>(

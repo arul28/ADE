@@ -144,9 +144,7 @@ struct WorkToolsSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       } else {
-        Text(state?.browser == nil
-          ? "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
-          : "No tabs are open in this lane.")
+        Text(state?.browser == nil ? browserUnavailableMessage : "No tabs are open in this lane.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -208,6 +206,22 @@ struct WorkToolsSheet: View {
     state?.browser?.tabs.compactMap(\.handoffReason).first
   }
 
+  /// Why there is no browser to show. The desktop distinguishes three cases
+  /// (`WorkToolsUnavailableReason`) and only one of them is "open ADE on your
+  /// Mac" — telling a user to open an app that is already open, because the
+  /// read failed, sends them chasing the wrong thing. An unknown or absent
+  /// reason falls back to the common case rather than inventing a diagnosis.
+  private var browserUnavailableMessage: String {
+    switch state?.browserUnavailable {
+    case "unsupported":
+      return "The browser isn't available on this machine."
+    case "error":
+      return "Couldn't read the browser's state."
+    default:
+      return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
+    }
+  }
+
   private var browserSubtitle: String? {
     guard let tabs = state?.browser?.tabs, !tabs.isEmpty else { return nil }
     return tabs.count == 1 ? "1 tab" : "\(tabs.count) tabs"
@@ -252,12 +266,23 @@ struct WorkToolsSheet: View {
     loadedFramePath = path
   }
 
+  /// Ceiling on a decoded observation frame. These are desktop-resolution PNG
+  /// screenshots, so a real one lands well under this; 8 MiB clears even a
+  /// Retina full-screen capture while bounding what a malformed or oversized
+  /// payload can make the phone allocate. This decode runs on every poll while
+  /// the sheet is open, so an unbounded one is a repeatable allocation.
+  private static let observationPreviewMaxBytes = 8 * 1024 * 1024
+
   /// Splits a `data:<mime>;base64,<payload>` URL. The host only ever sends this
-  /// shape, but a malformed one must produce no image rather than a crash.
+  /// shape, but a malformed one must produce no image rather than a crash — and
+  /// the size is checked before the bytes are allocated.
   static func decodeDataUrl(_ dataUrl: String) -> Data? {
-    guard let commaIndex = dataUrl.firstIndex(of: ","), dataUrl.hasPrefix("data:") else { return nil }
+    guard dataUrl.hasPrefix("data:"), let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
     let payload = String(dataUrl[dataUrl.index(after: commaIndex)...])
-    return Data(base64Encoded: payload)
+    return WorkChatAttachmentImagePreview.base64DecodedImageData(
+      payload,
+      maxBytes: observationPreviewMaxBytes
+    )
   }
 }
 
@@ -267,7 +292,7 @@ private struct WorkToolsTabRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
       HStack(spacing: 6) {
-        Text(tab.title?.isEmpty == false ? tab.title! : "Untitled tab")
+        Text(displayTitle)
           .font(.subheadline.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -286,7 +311,7 @@ private struct WorkToolsTabRow: View {
           .lineLimit(1)
           .truncationMode(.middle)
       }
-      if let owner = tab.ownerChatSessionId, !owner.isEmpty {
+      if tab.ownerChatSessionId?.isEmpty == false {
         Text("Claimed by a chat in this lane")
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
@@ -294,5 +319,10 @@ private struct WorkToolsTabRow: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
+  }
+
+  private var displayTitle: String {
+    if let title = tab.title, !title.isEmpty { return title }
+    return "Untitled tab"
   }
 }

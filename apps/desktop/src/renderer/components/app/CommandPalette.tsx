@@ -74,6 +74,7 @@ import {
   type WorkFilterMenuKey,
 } from "./commandPaletteWork";
 import { requestWorkTool } from "../terminals/workToolRequests";
+import type { WorkToolContext } from "../terminals/workTools";
 import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -133,6 +134,48 @@ type Command = {
   closeOnRun?: boolean;
   run: () => void | Promise<void>;
 };
+
+/**
+ * The palette's default list is three sections whose ORDER varies (see
+ * `commandsLeadPaletteResults`). Both the rendered nodes and the flat keyboard
+ * index are derived from a single ordered array of these, so there is exactly
+ * one place that knows what comes first.
+ */
+type PaletteSectionKey = "threads" | "commands" | "entities";
+
+type PaletteSection = { key: PaletteSectionKey; count: number };
+
+/**
+ * Visit each section in order with the flat index its first row occupies.
+ * Sections are visited left to right and the caller never sees the running
+ * counter, so a builder cannot be declared in one order and consumed in another.
+ */
+function walkPaletteSections<T>(
+  sections: readonly PaletteSection[],
+  visit: (section: PaletteSection, startIndex: number) => T,
+): T[] {
+  const out: T[] = [];
+  let startIndex = 0;
+  for (const section of sections) {
+    out.push(visit(section, startIndex));
+    startIndex += section.count;
+  }
+  return out;
+}
+
+/** Which section owns a flat index, and where inside it that index lands. */
+function paletteSectionAt(
+  sections: readonly PaletteSection[],
+  index: number,
+): { section: PaletteSection; offset: number } | null {
+  let startIndex = 0;
+  for (const section of sections) {
+    const offset = index - startIndex;
+    if (offset >= 0 && offset < section.count) return { section, offset };
+    startIndex += section.count;
+  }
+  return null;
+}
 
 type BrowseRow = {
   id: string;
@@ -640,6 +683,18 @@ export function CommandPalette({
       window.removeEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
   }, [mode, onOpenChange, open]);
 
+  // Capability flags, never a platform sniff — the same three the Work tools
+  // pane gates its picker on. The palette must agree with the pane about which
+  // tools exist here, so both read `workToolAvailability` from this one shape.
+  const workToolContext = useMemo<WorkToolContext>(
+    () => ({
+      isRemoteProject: projectBinding?.kind === "remote",
+      supportsIosSimulator: isMacPlatform(),
+      isWebClient: isWebClientMode(),
+    }),
+    [projectBinding],
+  );
+
   const commands: Command[] = useMemo(() => {
     const next: Command[] = [
       {
@@ -775,6 +830,7 @@ export function CommandPalette({
       ...buildWorkToolCommands({
         navigate,
         openTool: requestWorkTool,
+        context: workToolContext,
       }),
       {
         id: "action-create-lane",
@@ -889,6 +945,7 @@ export function CommandPalette({
     startProjectClone,
     startProjectCreate,
     startProjectRemote,
+    workToolContext,
   ]);
 
   const parsedWorkQuery = useMemo(() => parseWorkSearchQuery(q), [q]);
@@ -1032,23 +1089,38 @@ export function CommandPalette({
     [workResults],
   );
 
-  // Flat keyboard index layout: threads, then commands, then entity results.
   // Threads lead because the palette is the Work sidebar's search now — with an
   // empty query the thing you most likely came here for is a chat you were just
-  // in, not a command. When a query matches no thread the section disappears
-  // and commands lead on their own, so the first row is always a live target.
-  const threadCount = visibleWorkResults.length;
-  const commandCount = filtered.length;
-  const totalFlat = threadCount + commandCount + flatEntities.length;
-  // Typing a command's full title puts its group first — see
-  // `commandsLeadPaletteResults`. Both the render order and this flat keyboard
-  // index read the same flag, so ↓↓↵ always runs the row you are looking at.
+  // in, not a command. Typing a command's full title flips it, see
+  // `commandsLeadPaletteResults`. An empty section renders nothing and claims no
+  // indices, so the first row is always a live target.
+  //
+  // This array is the ONE statement of that order. The rendered nodes and the
+  // flat keyboard index are both produced by walking it (`walkPaletteSections`),
+  // so ↓↓↵ always runs the row you are looking at — there is no second copy of
+  // the ordering to drift.
   const commandsLead = commandsLeadPaletteResults(
     q,
     filtered.map((command) => command.title),
   );
-  const commandStartIndex = commandsLead ? 0 : threadCount;
-  const threadStartIndex = commandsLead ? commandCount : 0;
+  const paletteSections = useMemo<PaletteSection[]>(() => {
+    const threads: PaletteSection = {
+      key: "threads",
+      count: visibleWorkResults.length,
+    };
+    const commands: PaletteSection = { key: "commands", count: filtered.length };
+    const entities: PaletteSection = {
+      key: "entities",
+      count: flatEntities.length,
+    };
+    return commandsLead
+      ? [commands, threads, entities]
+      : [threads, commands, entities];
+  }, [commandsLead, filtered.length, flatEntities.length, visibleWorkResults.length]);
+  const totalFlat = paletteSections.reduce(
+    (sum, section) => sum + section.count,
+    0,
+  );
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1574,19 +1646,23 @@ export function CommandPalette({
 
   const activateFlat = useCallback(
     (index: number) => {
-      if (index >= threadStartIndex && index < threadStartIndex + threadCount) {
-        const result = visibleWorkResults[index - threadStartIndex];
+      // Same walk the renderer does, so the offset resolved here is the offset
+      // that produced the row on screen.
+      const hit = paletteSectionAt(paletteSections, index);
+      if (!hit) return;
+      if (hit.section.key === "threads") {
+        const result = visibleWorkResults[hit.offset];
         if (!result) return;
         if (result.type === "thread") activateThread(result.match.entry);
         else activateResult(result.item);
         return;
       }
-      if (index >= commandStartIndex && index < commandStartIndex + commandCount) {
-        const command = filtered[index - commandStartIndex];
+      if (hit.section.key === "commands") {
+        const command = filtered[hit.offset];
         if (command) runCommand(command);
         return;
       }
-      const entity = flatEntities[index - threadCount - commandCount];
+      const entity = flatEntities[hit.offset];
       if (!entity) return;
       if (entity.type === "result") activateResult(entity.item);
       else toggleExpandKind(entity.kind);
@@ -1594,13 +1670,10 @@ export function CommandPalette({
     [
       activateResult,
       activateThread,
-      commandCount,
-      commandStartIndex,
       filtered,
       flatEntities,
+      paletteSections,
       runCommand,
-      threadCount,
-      threadStartIndex,
       toggleExpandKind,
       visibleWorkResults,
     ],
@@ -2567,11 +2640,11 @@ export function CommandPalette({
                       ) : (
                         <ul ref={listRef} className="py-2">
                           {(() => {
-                            let flatIndex = 0;
-                            // Each builder consumes `flatIndex` as it runs, so
-                            // these are called in RENDER order (below), never
-                            // declared in one order and spread in another.
-                            const buildThreadNodes = () =>
+                            // Each builder is handed the flat index of its own
+                            // first row and derives every row index from it, so
+                            // nothing here depends on the order the builders
+                            // happen to be declared in.
+                            const buildThreadNodes = (startIndex: number) =>
                               visibleWorkResults.length > 0
                                 ? [
                                     <li key="threads">
@@ -2581,8 +2654,8 @@ export function CommandPalette({
                                           : "Recent threads"}
                                       </div>
                                       <ul>
-                                        {visibleWorkResults.map((result) => {
-                                          const index = flatIndex++;
+                                        {visibleWorkResults.map((result, rowIndex) => {
+                                          const index = startIndex + rowIndex;
                                           if (result.type === "content") {
                                             return (
                                               <SearchResultRow
@@ -2632,63 +2705,81 @@ export function CommandPalette({
                                     </li>,
                                   ]
                                 : [];
-                            const buildCommandNodes = () => grouped.map((group) => (
-                              <li key={group.label}>
-                                <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                  {group.label}
-                                </div>
-                                <ul>
-                                  {group.items.map((command) => {
-                                    const index = flatIndex++;
-                                    const isSelected = index === selectedIdx;
-                                    return (
-                                      <li key={command.id}>
-                                        <button
-                                          type="button"
-                                          data-cmd-item
-                                          className={cn(
-                                            "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                                            isSelected
-                                              ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-                                              : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
-                                          )}
-                                          onMouseEnter={() =>
-                                            setSelectedIdx(index)
-                                          }
-                                          onClick={() => runCommand(command)}
-                                        >
-                                          <div className="min-w-0">
-                                            <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                              {command.title}
-                                            </div>
-                                            {command.hint ? (
-                                              <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-                                                {command.hint}
-                                              </div>
-                                            ) : null}
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            {command.shortcut ? (
-                                              <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
-                                                {command.shortcut}
-                                              </span>
-                                            ) : null}
-                                            <ArrowRight
-                                              size={14}
-                                              weight="regular"
-                                              className="text-[var(--color-muted-fg)]"
-                                            />
-                                          </div>
-                                        </button>
-                                      </li>
-                                    );
-                                  })}
-                                </ul>
-                              </li>
-                            ));
 
-                            const buildEntityNodes = () => entitySections.map(
-                              (section) => {
+                            const buildCommandNodes = (startIndex: number) => {
+                              // The groups are consecutive slices of `filtered`,
+                              // so a group's first flat index is the running sum
+                              // of the groups before it.
+                              let cursor = startIndex;
+                              const groupStarts = grouped.map((group) => {
+                                const start = cursor;
+                                cursor += group.items.length;
+                                return start;
+                              });
+                              return grouped.map((group, groupIndex) => (
+                                <li key={group.label}>
+                                  <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                    {group.label}
+                                  </div>
+                                  <ul>
+                                    {group.items.map((command, itemIndex) => {
+                                      const index =
+                                        (groupStarts[groupIndex] ?? startIndex) +
+                                        itemIndex;
+                                      const isSelected = index === selectedIdx;
+                                      return (
+                                        <li key={command.id}>
+                                          <button
+                                            type="button"
+                                            data-cmd-item
+                                            className={cn(
+                                              "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                                              isSelected
+                                                ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
+                                                : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+                                            )}
+                                            onMouseEnter={() =>
+                                              setSelectedIdx(index)
+                                            }
+                                            onClick={() => runCommand(command)}
+                                          >
+                                            <div className="min-w-0">
+                                              <div className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                                {command.title}
+                                              </div>
+                                              {command.hint ? (
+                                                <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
+                                                  {command.hint}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              {command.shortcut ? (
+                                                <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
+                                                  {command.shortcut}
+                                                </span>
+                                              ) : null}
+                                              <ArrowRight
+                                                size={14}
+                                                weight="regular"
+                                                className="text-[var(--color-muted-fg)]"
+                                              />
+                                            </div>
+                                          </button>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                </li>
+                              ));
+                            };
+
+                            const buildEntityNodes = (startIndex: number) => {
+                              // A section claims one index per visible row plus
+                              // one for its "show more" row — the same shape
+                              // `flatEntities` is flattened into.
+                              let cursor = startIndex;
+                              const layout = entitySections.map((section) => {
                                 const expanded = expandedKinds.has(
                                   section.kind,
                                 );
@@ -2701,63 +2792,69 @@ export function CommandPalette({
                                 const showMore =
                                   !expanded &&
                                   section.rows.length > ENTITY_SECTION_PREVIEW;
-                                const hiddenCount =
-                                  section.total - ENTITY_SECTION_PREVIEW;
-                                return (
-                                  <li key={`entity:${section.kind}`}>
-                                    <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                      {section.label}
-                                    </div>
-                                    <ul>
-                                      {visible.map((item) => {
-                                        const index = flatIndex++;
-                                        return (
-                                          <SearchResultRow
-                                            key={item.id}
-                                            item={item}
-                                            query={entityQuery}
-                                            index={index}
-                                            isSelected={index === selectedIdx}
+                                const start = cursor;
+                                cursor += visible.length + (showMore ? 1 : 0);
+                                return { section, visible, showMore, start };
+                              });
+                              return layout.map(
+                                ({ section, visible, showMore, start }) => {
+                                  const hiddenCount =
+                                    section.total - ENTITY_SECTION_PREVIEW;
+                                  return (
+                                    <li key={`entity:${section.kind}`}>
+                                      <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                        {section.label}
+                                      </div>
+                                      <ul>
+                                        {visible.map((item, rowIndex) => {
+                                          const index = start + rowIndex;
+                                          return (
+                                            <SearchResultRow
+                                              key={item.id}
+                                              item={item}
+                                              query={entityQuery}
+                                              index={index}
+                                              isSelected={index === selectedIdx}
+                                              onHover={setSelectedIdx}
+                                              onActivate={activateResult}
+                                            />
+                                          );
+                                        })}
+                                        {showMore ? (
+                                          <ShowMoreRow
+                                            key={`more:${section.kind}`}
+                                            kind={section.kind}
+                                            hiddenCount={hiddenCount}
+                                            index={start + visible.length}
+                                            isSelected={
+                                              start + visible.length ===
+                                              selectedIdx
+                                            }
                                             onHover={setSelectedIdx}
-                                            onActivate={activateResult}
+                                            onToggle={toggleExpandKind}
                                           />
-                                        );
-                                      })}
-                                      {showMore
-                                        ? (() => {
-                                            const index = flatIndex++;
-                                            return (
-                                              <ShowMoreRow
-                                                key={`more:${section.kind}`}
-                                                kind={section.kind}
-                                                hiddenCount={hiddenCount}
-                                                index={index}
-                                                isSelected={
-                                                  index === selectedIdx
-                                                }
-                                                onHover={setSelectedIdx}
-                                                onToggle={toggleExpandKind}
-                                              />
-                                            );
-                                          })()
-                                        : null}
-                                    </ul>
-                                  </li>
-                                );
-                              },
-                            );
+                                        ) : null}
+                                      </ul>
+                                    </li>
+                                  );
+                                },
+                              );
+                            };
 
-                            return commandsLead
-                              ? [
-                                  ...buildCommandNodes(),
-                                  ...buildThreadNodes(),
-                                  ...buildEntityNodes(),
-                                ]
-                              : [
-                                  ...buildThreadNodes(),
-                                  ...buildCommandNodes(),
-                                  ...buildEntityNodes(),
-                                ];
+                            // ONE ordering, walked once: `paletteSections` is
+                            // the same array `activateFlat` resolves against.
+                            return walkPaletteSections(
+                              paletteSections,
+                              (section, startIndex) => {
+                                if (section.key === "threads") {
+                                  return buildThreadNodes(startIndex);
+                                }
+                                if (section.key === "commands") {
+                                  return buildCommandNodes(startIndex);
+                                }
+                                return buildEntityNodes(startIndex);
+                              },
+                            ).flat();
                           })()}
                         </ul>
                       )}

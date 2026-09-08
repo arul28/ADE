@@ -1,11 +1,13 @@
+import type {
+  AgentActionTraceEntry,
+  AgentDomSnapshot,
+  AgentElementSnapshot,
+  AgentFrame,
+} from "./agentObservation";
+
 export type BuiltInBrowserProvider = "cdp";
 
-export type BuiltInBrowserFrame = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
+export type BuiltInBrowserFrame = AgentFrame;
 
 export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
   visible: boolean;
@@ -88,6 +90,13 @@ export type BuiltInBrowserTab = {
    * reads "you own this tab".
    */
   handoff: BuiltInBrowserTabHandoff | null;
+  /**
+   * Present only on an identity-scoped read (`ade browser status` from an
+   * agent): the tab has no owner, so it is visible but not yet drivable. The
+   * agent has to `claim` it first. Tabs owned by a *different* chat stay hidden
+   * entirely — this field never means "someone else's tab".
+   */
+  claimable?: true;
 };
 
 /** Why a login handoff ended — carried on the `handoff-end` trace entry. */
@@ -387,24 +396,7 @@ export type BuiltInBrowserAgentActionResult = {
   session: BuiltInBrowserSession | null;
 };
 
-export type BuiltInBrowserElementSnapshot = {
-  index: number;
-  handle?: string | null;
-  framePath?: number[];
-  shadowPath?: string[];
-  tagName: string | null;
-  role: string | null;
-  label: string | null;
-  text: string | null;
-  value: string | null;
-  placeholder: string | null;
-  selector: string | null;
-  testId: string | null;
-  href: string | null;
-  disabled: boolean | null;
-  frame: BuiltInBrowserFrame;
-  center: { x: number; y: number };
-};
+export type BuiltInBrowserElementSnapshot = AgentElementSnapshot;
 
 export type BuiltInBrowserObservationElementMap = {
   filePath: string;
@@ -416,15 +408,7 @@ export type BuiltInBrowserObservationElementMap = {
   dataUrl?: string;
 };
 
-export type BuiltInBrowserDomSnapshot = {
-  url: string | null;
-  title: string | null;
-  capturedAt: string;
-  viewport: BuiltInBrowserFrame;
-  scroll: { x: number; y: number };
-  elementCount: number;
-  elements: BuiltInBrowserElementSnapshot[];
-};
+export type BuiltInBrowserDomSnapshot = AgentDomSnapshot;
 
 export type BuiltInBrowserConsoleDiagnostic = {
   level: "debug" | "info" | "warning" | "error";
@@ -462,21 +446,7 @@ export type BuiltInBrowserObservationNetworkLog = {
   recent: BuiltInBrowserNetworkLogEntry[];
 };
 
-export type BuiltInBrowserActionTraceEntry = {
-  id: string;
-  tabId: string;
-  sessionId: string | null;
-  action: string;
-  status: "ok" | "error";
-  startedAt: string;
-  endedAt: string;
-  durationMs: number;
-  before: { url: string | null; title: string | null };
-  after: { url: string | null; title: string | null };
-  target: Record<string, unknown> | null;
-  observationId: string | null;
-  error: string | null;
-};
+export type BuiltInBrowserActionTraceEntry = AgentActionTraceEntry & { tabId: string };
 
 export type BuiltInBrowserTraceResult = {
   tabId: string;
@@ -548,6 +518,13 @@ export type BuiltInBrowserEventPayload =
       tabId: string;
       recording: BuiltInBrowserRecordingStatus | null;
       frameCount: number;
+      /**
+       * Set only when something other than the agent ended the recording: a
+       * login handoff suspended capture, or the recording hit its wall-clock
+       * cap. Either way the agent that armed it learns the recording stopped
+       * without having called `stopRecording`.
+       */
+      endedBy?: "handoff" | "max_duration";
       updatedAt: string;
     }
   /**

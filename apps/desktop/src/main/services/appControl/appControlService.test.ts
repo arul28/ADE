@@ -421,7 +421,10 @@ describe("appControlService", () => {
     ]);
   });
 
-  it("emits a diagnostics event on each new console error and failed request", async () => {
+  // The target of App Control is an app under active debugging, so an error
+  // loop used to produce one IPC event per console.error to every window. The
+  // tally is coalesced on a trailing edge; a reset publishes immediately.
+  it("coalesces diagnostics events across a burst of console errors and failed requests", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
     const events: AppControlEventPayload[] = [];
@@ -450,7 +453,12 @@ describe("appControlService", () => {
       params: { requestId: "r1", response: { url: "http://app.test/api", status: 500 } },
     });
 
+    // Nothing published yet: the burst is still inside the coalescing window.
+    expect(events.filter((event) => event.type === "diagnostics")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(250);
+
     const diagnostics = events.filter((event) => event.type === "diagnostics");
+    expect(diagnostics).toHaveLength(1);
     expect(diagnostics.at(-1)).toMatchObject({
       type: "diagnostics",
       sessionId,
@@ -468,6 +476,7 @@ describe("appControlService", () => {
       method: "Network.responseReceived",
       params: { requestId: "r2", response: { url: "http://app.test/ok", status: 200 } },
     });
+    await vi.advanceTimersByTimeAsync(250);
     expect(events.filter((event) => event.type === "diagnostics")).toHaveLength(before);
 
     // A main-frame navigation is a fresh page, so its predecessor's errors stop

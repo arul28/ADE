@@ -1,17 +1,23 @@
 /**
- * Pure formatting helpers for the App Control panel's trace surfaces.
+ * Pure formatting helpers for an agent-driven surface's trace.
  *
  * Kept dependency-free (no React, no `window`) so the bottom status line, the
  * trace drawer and the tests all read the same rules, and so "what does this
  * row say" can be asserted without rendering a panel.
+ *
+ * Typed against the SHARED `AgentActionTraceEntry` / `AgentElementSnapshot`
+ * rather than the App Control aliases: nothing here reads a surface-specific
+ * field (`cdpTargetId`, `tabId`), so the browser panel's trace can use these
+ * rows verbatim — which was the whole cost of declaring the two shapes twice.
  */
 
 import type {
-  AppControlActionTraceEntry,
+  AgentActionTraceEntry,
+  AgentElementSnapshot,
   AppControlDiagnostics,
-  AppControlElementSnapshot,
 } from "../../../shared/types";
 import { parseObservationElementHandle } from "../../../shared/agentObservation";
+import { formatRelativeTimeAgo } from "../lanes/branchPickerSearch";
 
 /** ①..⑳ (U+2460..U+2473). Past that a badge reads better as a plain number. */
 const CIRCLED_ONE = 0x2460;
@@ -49,18 +55,11 @@ export function formatTraceDuration(durationMs: number): string {
 /**
  * Relative age of a trace entry. Deliberately coarse: the drawer is scanned,
  * not read, and a ticking "37s ago" would repaint the whole list every second.
+ *
+ * The renderer's fifth copy of this arithmetic; re-exported from the one that
+ * is already exported and tested rather than written out again.
  */
-export function formatRelativeTime(iso: string | null | undefined, nowMs: number): string {
-  if (!iso) return "";
-  const at = Date.parse(iso);
-  if (!Number.isFinite(at)) return "";
-  const deltaMs = Math.max(0, nowMs - at);
-  if (deltaMs < 5_000) return "just now";
-  if (deltaMs < 60_000) return `${Math.floor(deltaMs / 1_000)}s ago`;
-  if (deltaMs < 3_600_000) return `${Math.floor(deltaMs / 60_000)}m ago`;
-  if (deltaMs < 86_400_000) return `${Math.floor(deltaMs / 3_600_000)}h ago`;
-  return `${Math.floor(deltaMs / 86_400_000)}d ago`;
-}
+export const formatRelativeTime = formatRelativeTimeAgo;
 
 const ACTION_LABELS: Record<string, string> = {
   click: "click",
@@ -101,8 +100,8 @@ function numberField(target: Record<string, unknown> | null, key: string): numbe
  * frame; coordinates lose because they say the least.
  */
 export function traceTargetLabel(
-  entry: AppControlActionTraceEntry,
-  elements: AppControlElementSnapshot[] = [],
+  entry: AgentActionTraceEntry,
+  elements: AgentElementSnapshot[] = [],
 ): string {
   const target = entry.target;
   const handle = stringField(target, "handle");
@@ -133,7 +132,7 @@ export function traceTargetLabel(
 }
 
 /** The short human name for an observed element, or null when it has none. */
-export function elementSummary(element: AppControlElementSnapshot): string | null {
+export function elementSummary(element: AgentElementSnapshot): string | null {
   const candidate = element.label
     ?? element.text
     ?? element.placeholder
@@ -158,9 +157,9 @@ export type TraceRow = {
 
 /** One drawer row: action, target, duration, status. Failed rows carry why. */
 export function formatTraceRow(
-  entry: AppControlActionTraceEntry,
+  entry: AgentActionTraceEntry,
   nowMs: number,
-  elements: AppControlElementSnapshot[] = [],
+  elements: AgentElementSnapshot[] = [],
 ): TraceRow {
   return {
     id: entry.id,
@@ -178,9 +177,9 @@ export function formatTraceRow(
  * no trace so the caller can render a hint instead of an empty label.
  */
 export function formatLastActionLine(
-  entry: AppControlActionTraceEntry | null | undefined,
+  entry: AgentActionTraceEntry | null | undefined,
   nowMs: number,
-  elements: AppControlElementSnapshot[] = [],
+  elements: AgentElementSnapshot[] = [],
 ): string | null {
   if (!entry) return null;
   const row = formatTraceRow(entry, nowMs, elements);
@@ -209,8 +208,8 @@ export function countNetworkFailures(diagnostics: AppControlDiagnostics | null |
  * passed, because the element is what the user can see on the frame.
  */
 export function traceCursorPoint(
-  entry: AppControlActionTraceEntry,
-  elements: AppControlElementSnapshot[] = [],
+  entry: AgentActionTraceEntry,
+  elements: AgentElementSnapshot[] = [],
 ): { x: number; y: number } | null {
   const target = entry.target;
   const handleIndex = observeIndexForHandle(stringField(target, "handle"))

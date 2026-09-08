@@ -18,6 +18,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { pbkdf2Sync } from "node:crypto";
+import {
+  resolveTrustedWindowsTool,
+  TrustedWindowsToolError,
+} from "../../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 const KEY_SALT = "saltysalt";
 const KEY_LENGTH = 16;
@@ -28,6 +32,13 @@ const LINUX_KEY_ITERATIONS = 1;
 const LINUX_FALLBACK_PASSPHRASE = "peanuts";
 const WINDOWS_KEY_LENGTH = 32;
 const DPAPI_PREFIX = Buffer.from("DPAPI");
+/**
+ * PowerShell cold start plus a Defender on-access scan is the documented worst
+ * case (`windows-quirks.md` §7). Without a ceiling a wedged PowerShell hangs the
+ * import forever; this runs in a utility process, so the only cost of waiting is
+ * the import itself.
+ */
+const WINDOWS_DPAPI_TIMEOUT_MS = 30_000;
 
 export type ChromiumKeyFailureReason = "key_unavailable" | "unsupported" | "read_failed";
 
@@ -100,7 +111,7 @@ function readMacKeychainSecretViaSecurity(service: string, account: string): str
     const stdout = execFileSync(
       "/usr/bin/security",
       ["find-generic-password", "-s", service, "-a", account, "-w"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
     );
     const value = stdout.replace(/(?:\r?\n)+$/, "");
     return value.length > 0 ? value : null;
@@ -124,7 +135,7 @@ function readLinuxSecretViaSecretTool(application: string): string | null {
     ["lookup", "application", application],
   ];
   for (const args of attempts) {
-    const result = spawnSync("secret-tool", args, { encoding: "utf8" });
+    const result = spawnSync("secret-tool", args, { encoding: "utf8", windowsHide: true });
     if (result.error || result.status !== 0) continue;
     const value = (result.stdout ?? "").replace(/(?:\r?\n)+$/, "");
     if (value.length > 0) return value;
@@ -148,14 +159,31 @@ const WINDOWS_DPAPI_SCRIPT =
  * material.
  */
 function unwrapWindowsDpapiKey(wrapped: Buffer): Buffer {
-  const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
-  const powershell = windowsRoot
-    ? `${windowsRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-    : "powershell.exe";
+  // Never `SystemRoot`/`WINDIR`/PATH: all three are caller-controlled, and this
+  // is the one process on the machine that gets DPAPI key material on its
+  // stdin. `resolveTrustedWindowsTool` goes through the kernel's GLOBALROOT
+  // alias and canonical-path check instead.
+  let powershell: string;
+  try {
+    powershell = resolveTrustedWindowsTool("powershell");
+  } catch (cause) {
+    throw new ChromiumKeyError(
+      "key_unavailable",
+      cause instanceof TrustedWindowsToolError
+        ? "Windows would not hand ADE a trusted PowerShell to unwrap the browser key."
+        : "Windows could not unwrap the browser key.",
+      cause,
+    );
+  }
   const result = spawnSync(
     powershell,
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", WINDOWS_DPAPI_SCRIPT],
-    { input: wrapped.toString("base64"), encoding: "utf8" },
+    {
+      input: wrapped.toString("base64"),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: WINDOWS_DPAPI_TIMEOUT_MS,
+    },
   );
   if (result.error || result.status !== 0) {
     throw new ChromiumKeyError("key_unavailable", "Windows could not unwrap the browser key.", result.error);

@@ -1,5 +1,6 @@
 import type { AppNavigationTarget } from "../../shared/types/core";
 import type { BrowserLinkOpenMode } from "../../shared/types/config";
+import { completeBrowserUrl } from "./browserUrl";
 import { isMacRuntimeTarget } from "./platform";
 import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget";
 
@@ -69,31 +70,13 @@ export function openAdeDeeplink(url: string | undefined | null): void {
   );
 }
 
-// Coordination flag used by ChatBuiltInBrowserPanel to suppress the empty-state
-// default-tab creation when a link-click navigation is racing the panel mount.
-// Set synchronously here BEFORE the navigate IPC fires, then consumed (cleared)
-// by the panel's default-tab effect on the next render. Without this, the panel
-// can mount, observe getStatus() returning tabs: [], and create a Google tab
-// before the link-click's navigate IPC arrives — yielding two tabs.
-let pendingBuiltInBrowserNavigation = false;
-
-export function markPendingBuiltInBrowserNavigation(): void {
-  pendingBuiltInBrowserNavigation = true;
-}
-
-export function consumePendingBuiltInBrowserNavigation(): boolean {
-  if (!pendingBuiltInBrowserNavigation) return false;
-  pendingBuiltInBrowserNavigation = false;
-  return true;
-}
-
+/**
+ * "127.0.0.1:8080" → "http://127.0.0.1:8080", and anything already complete
+ * straight through. The completion rules themselves live in `lib/browserUrl`,
+ * shared with the omnibox and the clipboard chip.
+ */
 export function normalizeBrowserUrlInput(url: string | undefined | null): string | null {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return null;
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) return trimmed;
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)) return `http://${trimmed}`;
-  if (/^[^\s/]+\.[^\s]+/.test(trimmed)) return `https://${trimmed}`;
-  return trimmed;
+  return completeBrowserUrl(url, { fallback: "passthrough" });
 }
 
 export function canOpenInAdeBrowser(url: string | undefined | null): boolean {
@@ -123,10 +106,6 @@ export function openUrlInAdeBrowser(url: string | undefined | null): void {
     return;
   }
 
-  // Mark the navigation as pending BEFORE dispatching the event so the panel —
-  // which the event causes to mount via TerminalsPage — sees the flag in its
-  // first default-tab effect and skips creating a Google tab.
-  markPendingBuiltInBrowserNavigation();
   const openEvent = new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
     detail: { url: normalized },
     cancelable: true,
@@ -143,14 +122,12 @@ export function navigateUrlInAdeBrowser(
 ): void {
   const browser = typeof window !== "undefined" ? window.ade?.builtInBrowser : undefined;
   if (!browser) {
-    consumePendingBuiltInBrowserNavigation();
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
     return;
   }
 
   void browser.navigate({ url, ...options }).catch(() => {
-    consumePendingBuiltInBrowserNavigation();
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
   });
@@ -209,16 +186,22 @@ export function openLinkFromUi(
   modifiers?: LinkOpenModifiers | null,
 ): void {
   if (!url) return;
+  // Normalize once, for both branches. A terminal link is often written the way
+  // a dev server prints it — `127.0.0.1:8080`, `[::1]:5173` — and handing that
+  // raw to the OS opener made `new URL(...)` throw in main, which the renderer
+  // then swallowed: the click did nothing at all, with no error, for every
+  // scheme-less link once the preference was "In system browser".
+  const normalized = completeBrowserUrl(url, { fallback: "passthrough" }) ?? url;
   const target = resolveLinkOpenTarget({
     mode: linkOpenMode,
     modifiers,
     isMac: isMacRuntimeTarget(),
   });
-  if (target === "external" || !canOpenInAdeBrowser(url)) {
-    openExternalUrl(url);
+  if (target === "external" || !canOpenInAdeBrowser(normalized)) {
+    openExternalUrl(normalized);
     return;
   }
-  openUrlInAdeBrowser(url);
+  openUrlInAdeBrowser(normalized);
 }
 
 export function openExternalUrl(url: string | undefined | null): void {

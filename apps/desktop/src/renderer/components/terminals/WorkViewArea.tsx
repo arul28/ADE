@@ -1,5 +1,6 @@
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { STANDARD_EASE } from "../../lib/motion";
 import {
   ArrowClockwise,
   ArrowUp,
@@ -740,7 +741,7 @@ function ClosedCliSessionSurface({
   );
 }
 
-const CLI_PR_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+const CLI_PR_PANE_FADE = { duration: 0.16, ease: STANDARD_EASE } as const;
 const CLI_FLOATING_PANE_CARD_CLASS =
   "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
 
@@ -1365,7 +1366,7 @@ export function WorkViewArea({
           initial={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
           animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
           exit={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
-          transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+          transition={{ duration: 0.3, ease: STANDARD_EASE }}
         >
           {workAreaContent}
         </motion.div>

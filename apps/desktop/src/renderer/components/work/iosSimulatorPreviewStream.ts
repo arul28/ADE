@@ -42,7 +42,13 @@ type ActiveLease = {
 };
 
 let active: ActiveLease | null = null;
-let pending: Promise<ActiveLease | null> | null = null;
+/**
+ * The open in flight, tagged with the device it is opening.
+ *
+ * Untagged, a device switch during an open would await the PREVIOUS device's
+ * lease and attach to it — the card labelled B streaming A, indefinitely.
+ */
+let pending: { udid: string; promise: Promise<ActiveLease | null> } | null = null;
 
 function desktopCaptureConstraints(sourceId: string): MediaStreamConstraints {
   // Same shape the iOS panel uses; Chromium's desktop capture goes through the
@@ -66,8 +72,10 @@ function pickSource(
   if (sources.length === 0) return null;
   const name = device.name?.trim().toLowerCase();
   if (name) {
-    const byName = sources.find((source) => source.name?.toLowerCase().includes(name));
-    if (byName) return byName;
+    // A named device that matches nothing gets NOTHING. The old `sources[0]`
+    // tail captured whichever simulator window happened to be first, which is
+    // how the card ended up showing device A's screen under device B's name.
+    return sources.find((source) => source.name?.toLowerCase().includes(name)) ?? null;
   }
   return sources[0] ?? null;
 }
@@ -83,7 +91,10 @@ async function openLease(device: { udid: string; name?: string | null }): Promis
     // Only start a host stream nobody else is running. Starting a second one
     // would make our release responsible for stopping a stream the panel is
     // painting from.
-    if (!streamStatus?.running) {
+    // `running` alone is not enough: a stream running for a DIFFERENT device is
+    // not a stream of the device being asked for, and skipping the start there
+    // is what left the card capturing the other simulator's window.
+    if (!streamStatus?.running || streamStatus.deviceUdid !== device.udid) {
       await iosSimulator.startStream(
         { deviceUdid: device.udid, backend: "simulator-window-capture", fps: PREVIEW_FPS },
       );
@@ -130,12 +141,18 @@ export async function acquireIosSimulatorPreviewStream(
   if (active && active.deviceUdid === device.udid) {
     return attach(active);
   }
-  if (!pending) {
-    pending = openLease(device).finally(() => {
-      pending = null;
-    });
+  if (pending && pending.udid !== device.udid) {
+    // Somebody else's open; ours has to be its own.
+    pending = null;
   }
-  const lease = await pending;
+  if (!pending) {
+    const udid = device.udid;
+    const promise = openLease(device).finally(() => {
+      if (pending?.udid === udid) pending = null;
+    });
+    pending = { udid, promise };
+  }
+  const lease = await pending.promise;
   if (!lease) return null;
   // Two callers racing the same open share the one lease that landed.
   if (active && active !== lease && active.deviceUdid === lease.deviceUdid) {

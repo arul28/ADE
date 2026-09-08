@@ -15,6 +15,8 @@ export default defineConfig({
     "main/piSdkWorker": "src/main/services/chat/piSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
+    "main/loginImportReadWorker":
+      "src/main/services/builtInBrowser/loginImport/loginImportReadWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
   },

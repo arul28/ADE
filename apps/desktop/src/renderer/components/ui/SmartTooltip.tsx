@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
+import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from "./tooltipPosition";
 
 export type SmartTooltipContent = {
   /** Button/action name */
@@ -20,9 +21,6 @@ export type SmartTooltipContent = {
   docUrl?: string;
 };
 
-type TooltipSide = "top" | "bottom" | "left" | "right";
-type TooltipCoordinates = { x: number; y: number; side: TooltipSide };
-
 type SmartTooltipProps = {
   children: React.ReactElement;
   content: SmartTooltipContent;
@@ -40,91 +38,14 @@ const HOVER_DELAY = 320;
 const HIDE_DELAY = 140;
 const GAP = 6;
 const VIEWPORT_PAD = 10;
-const TOOLTIP_TRANSFORMS: Record<TooltipSide, string> = {
-  top: "translate(-50%, -100%)",
-  bottom: "translate(-50%, 0)",
-  right: "translate(0, -50%)",
-  left: "translate(-100%, -50%)",
-};
-
-function clampToRange(value: number, min: number, max: number, fallback: number): number {
-  if (min > max) return fallback;
-  return Math.min(Math.max(value, min), max);
-}
-
-function flipSide(preferredSide: TooltipSide, fits: {
-  top: boolean;
-  bottom: boolean;
-  right: boolean;
-  left: boolean;
-}): TooltipSide {
-  switch (preferredSide) {
-    case "top":
-      return !fits.top && fits.bottom ? "bottom" : "top";
-    case "bottom":
-      return !fits.bottom && fits.top ? "top" : "bottom";
-    case "right":
-      return !fits.right && fits.left ? "left" : "right";
-    case "left":
-      return !fits.left && fits.right ? "right" : "left";
-    default: {
-      const _exhaustive: never = preferredSide;
-      return _exhaustive;
-    }
-  }
-}
-
-function placeTooltip(
-  preferredSide: TooltipSide,
-  trigger: DOMRect,
-  tooltip: DOMRect,
-  vw: number,
-  vh: number,
-): TooltipCoordinates {
-  const topY = trigger.top - GAP;
-  const bottomY = trigger.bottom + GAP;
-  const rightX = trigger.right + GAP;
-  const leftX = trigger.left - GAP;
-  const cx = trigger.left + trigger.width / 2;
-  const cy = trigger.top + trigger.height / 2;
-  const side = flipSide(preferredSide, {
-    top: topY - tooltip.height >= VIEWPORT_PAD,
-    bottom: bottomY + tooltip.height <= vh - VIEWPORT_PAD,
-    right: rightX + tooltip.width <= vw - VIEWPORT_PAD,
-    left: leftX - tooltip.width >= VIEWPORT_PAD,
-  });
-
-  switch (side) {
-    case "top":
-      return {
-        side,
-        x: clampToRange(cx, VIEWPORT_PAD + tooltip.width / 2, vw - VIEWPORT_PAD - tooltip.width / 2, vw / 2),
-        y: clampToRange(topY, VIEWPORT_PAD + tooltip.height, vh - VIEWPORT_PAD, vh / 2),
-      };
-    case "bottom":
-      return {
-        side,
-        x: clampToRange(cx, VIEWPORT_PAD + tooltip.width / 2, vw - VIEWPORT_PAD - tooltip.width / 2, vw / 2),
-        y: clampToRange(bottomY, VIEWPORT_PAD, vh - VIEWPORT_PAD - tooltip.height, vh / 2),
-      };
-    case "right":
-      return {
-        side,
-        x: clampToRange(rightX, VIEWPORT_PAD, vw - VIEWPORT_PAD - tooltip.width, vw / 2),
-        y: clampToRange(cy, VIEWPORT_PAD + tooltip.height / 2, vh - VIEWPORT_PAD - tooltip.height / 2, vh / 2),
-      };
-    case "left":
-      return {
-        side,
-        x: clampToRange(leftX, VIEWPORT_PAD + tooltip.width, vw - VIEWPORT_PAD, vw / 2),
-        y: clampToRange(cy, VIEWPORT_PAD + tooltip.height / 2, vh - VIEWPORT_PAD - tooltip.height / 2, vh / 2),
-      };
-    default: {
-      const _exhaustive: never = side;
-      return _exhaustive;
-    }
-  }
-}
+/**
+ * Placement is `tooltipPosition.ts` — the same tested, flip-then-shift module
+ * the pane tooltip uses. This component used to carry its own `flipSide` /
+ * `clampToRange` / `placeTooltip` trio with a weaker guarantee (it could land
+ * on top of the trigger) and a different pad, so one placement bug had to be
+ * fixed in two places. `GAP` and `VIEWPORT_PAD` are passed through unchanged so
+ * the pixels this tooltip lands on do not move.
+ */
 
 export function SmartTooltip({
   children,
@@ -139,7 +60,7 @@ export function SmartTooltip({
   const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState<TooltipCoordinates | null>(null);
+  const [coords, setCoords] = useState<TooltipPlacement | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -213,13 +134,23 @@ export function SmartTooltip({
     const trigger = triggerRef.current;
     const tooltip = tooltipRef.current;
     if (!trigger || !tooltip) return;
-    const next = placeTooltip(
+    const triggerBox = trigger.getBoundingClientRect();
+    const tooltipBox = tooltip.getBoundingClientRect();
+    const next = computeTooltipPosition({
       preferredSide,
-      trigger.getBoundingClientRect(),
-      tooltip.getBoundingClientRect(),
-      window.innerWidth,
-      window.innerHeight,
-    );
+      trigger: {
+        top: triggerBox.top,
+        left: triggerBox.left,
+        right: triggerBox.right,
+        bottom: triggerBox.bottom,
+        width: triggerBox.width,
+        height: triggerBox.height,
+      },
+      tooltip: { width: tooltipBox.width, height: tooltipBox.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      gap: GAP,
+      pad: VIEWPORT_PAD,
+    });
     setCoords((prev) => (
       prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
     ));
@@ -283,7 +214,6 @@ export function SmartTooltip({
                 zIndex: 9999,
                 left: coords?.x ?? 0,
                 top: coords?.y ?? 0,
-                transform: coords ? TOOLTIP_TRANSFORMS[coords.side] : undefined,
                 visibility: coords ? "visible" : "hidden",
                 // Only allow pointer events when there's a link to click; otherwise preserve
                 // the original click-through behaviour.

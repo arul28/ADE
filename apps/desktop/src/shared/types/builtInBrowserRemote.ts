@@ -32,6 +32,17 @@ export type BuiltInBrowserRemoteRequestAck = {
   /** Absolute machine name of the desktop that opened it. */
   desktopLabel: string;
   accepted: boolean;
+  /**
+   * The desktop took the request but is waiting on a human.
+   *
+   * The first agent use of a (machine, port) pair needs a person to approve the
+   * port forward, and nobody answers a prompt inside a 5s ack window — so the
+   * desktop acks straight away with this set, the requester prints "waiting for
+   * approval" and exits 0, and the navigation happens whenever the human gets
+   * to it. `accepted` is true because the request WAS taken; only the page has
+   * not loaded yet.
+   */
+  awaitingApproval?: boolean;
   /** Why it was refused (approval denied, no forward), when `accepted` is false. */
   reason?: string | null;
 };
@@ -42,6 +53,8 @@ export type BuiltInBrowserForwardedToDesktop = {
   requestId: string;
   url: string;
   acknowledged: boolean;
+  /** A desktop took it and is waiting for a human to approve the port. */
+  awaitingApproval?: boolean;
   desktopLabel: string | null;
   reason: string | null;
 };

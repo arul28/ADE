@@ -11,10 +11,10 @@ import {
 import {
   workToolDotColor,
   workToolDotState,
+  workToolSummary,
   type WorkToolDotState,
   type WorkToolStatusMap,
 } from "./useWorkToolStatuses";
-import { workToolErrorSuffix } from "./workToolErrors";
 
 /**
  * Two columns above 340px of pane, one below.
@@ -49,12 +49,15 @@ export function WorkToolPicker({
   context,
   statuses,
   loading,
+  pickerShortcut,
   onPick,
 }: {
   activeTool: WorkSidebarTab | null;
   context: WorkToolContext;
   statuses: WorkToolStatusMap;
   loading: boolean;
+  /** The pane's rebindable "back to tools" chord, shown in the footer. */
+  pickerShortcut?: string;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
   const reasonIdPrefix = useId();
@@ -77,10 +80,9 @@ export function WorkToolPicker({
             : "idle";
           // Appended to whatever the tool was already saying rather than
           // replacing it: "localhost:3000 · 3 errors" tells you both what is
-          // open and that it is unhappy.
-          const line = availability.available
-            ? `${status?.line ?? definition.blurb}${workToolErrorSuffix(status?.errorCount ?? 0)}`
-            : availability.reason;
+          // open and that it is unhappy. Shared with the header's dot tooltips
+          // so one tool cannot describe itself two ways in one pane.
+          const { line, tooltipLabel } = workToolSummary(definition, status, availability);
           const showSkeleton = loading && availability.available && status?.line == null;
           const Icon = definition.icon;
           const isActive = activeTool === definition.id;
@@ -95,7 +97,7 @@ export function WorkToolPicker({
               // repeats a line you can already read is a panel over the NEXT
               // card for no reason; a tooltip over a truncated one is the rest
               // of the sentence.
-              label={`${definition.label} — ${line}`}
+              label={tooltipLabel}
               side="bottom"
               onlyWhenClipped
               disabled={showSkeleton}
@@ -173,7 +175,7 @@ export function WorkToolPicker({
           than as an eighth card. */}
       <div className="mt-auto shrink-0 border-t border-white/[0.06] px-3 py-2">
         <p className="truncate text-[11px] leading-4 text-muted-fg/70">
-          Esc returns here · {PALETTE_HINT}
+          {pickerShortcut ?? "Esc"} returns here · {PALETTE_HINT}
         </p>
       </div>
     </div>

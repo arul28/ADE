@@ -1,38 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import {
-  ArrowClockwise,
-  ArrowLeft,
-  ArrowRight,
-  ArrowsLeftRight,
-  ArrowSquareOut,
-  Bug,
-  Camera,
-  CaretDown,
-  CaretLeft,
-  CaretRight,
   Check,
-  ClipboardText,
-  CursorClick,
-  DeviceMobile,
-  DotsThreeVertical,
-  Globe,
-  ImageSquare,
-  LockSimple,
-  LockSimpleOpen,
-  MagnifyingGlass,
-  Hand,
-  Monitor,
-  Play,
-  Plus,
-  Pulse,
-  Robot,
-  Selection,
-  ShieldCheck,
-  SignIn,
-  SpinnerGap,
-  Stop,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -56,41 +25,42 @@ import type {
   BuiltInBrowserTabHandoff,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserZoomResult,
+  DevServersArgs,
 } from "../../../shared/types/builtInBrowser";
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
+import { browserToolbarLayout } from "./builtInBrowserToolbar";
 import {
-  BUILT_IN_BROWSER_RECORDING_FRAME_RATES,
   activeEmulationPresetId,
-  browserLetterboxFrame,
-  browserTabLabel,
-  browserToolbarLayout,
-  clampBrowserViewBounds,
-  clipboardUrlCandidate,
   deviceMenuPresets,
-  devServerChipLabel,
-  emulationCaption,
   emulationDisplayLabel,
   emulationSizeLabel,
   findErrorMessage,
-  findMatchLabel,
+  simulatorEmulationPreset,
+  stepZoomFactor,
+  type BrowserFindState,
+  type BuiltInBrowserRecordingFrameRate,
+} from "./browserToolbarLabels";
+import {
+  browserLetterboxFrame,
+  type BrowserViewFrame,
+} from "./browserViewGeometry";
+import {
+  devServerChipLabel,
   mergeDevServer,
   normalizeDevServer,
   normalizeDevServers,
-  normalizeRecordingFps,
-  recordingPillLabel,
-  simulatorEmulationPreset,
-  splitUrlForDisplay,
-  stepZoomFactor,
-  urlLockKind,
-  zoomPercentLabel,
   type BrowserDevServer,
-  type BrowserFindState,
-  type BrowserViewFrame,
-  type BuiltInBrowserRecordingFrameRate,
-} from "./builtInBrowserToolbar";
+} from "./browserDevServers";
+import {
+  browserUrlOrigin,
+  clipboardUrlCandidate,
+  completeBrowserUrl,
+  splitBrowserUrlForDisplay,
+  urlLockKind,
+} from "../../lib/browserUrl";
+import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
-import { formatBytes } from "../../lib/format";
 import { useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
   parseLoopbackUrl,
@@ -101,93 +71,36 @@ import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInB
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
+  commitTunnelApproval,
   reconcileTabTunnels,
   setTabTunnel,
+  tunnelApprovalDecision,
   tunnelAwareUrl,
   type TabTunnelMap,
+  type TunnelApprovalAnswer,
+  type TunnelApprovalState,
 } from "./browserRemoteTunnels";
-import {
-  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
-  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
-  ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
-  ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
-} from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
-
-type BrowserFrame = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-type BrowserBounds = BrowserFrame & {
-  visible: boolean;
-  /** The letterbox fit factor, forwarded to CDP's device-metrics `scale`. */
-  scale: number;
-};
-
-type CaptureMediaBounds = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  scaleX: number;
-  scaleY: number;
-};
-
-type BrowserCaptureSelection = {
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  bounds: CaptureMediaBounds;
-};
-
-type BuiltInBrowserContextItem = {
-  kind: "built_in_browser_element" | "built_in_browser_capture" | "built_in_browser_selection" | (string & {});
-  id: string;
-  sessionId?: string | null;
-  url: string | null;
-  title: string | null;
-  selector: string | null;
-  text: string | null;
-  role?: string | null;
-  tagName?: string | null;
-  frame: BrowserFrame | null;
-  metadata: Record<string, unknown>;
-  screenshotDataUrl?: string | null;
-  selectedAt: string;
-  [key: string]: unknown;
-};
-
-type BuiltInBrowserScreenshot = {
-  path?: string | null;
-  filePath?: string | null;
-  data?: string | null;
-  dataUrl?: string | null;
-  screenshotDataUrl?: string | null;
-  mimeType?: string | null;
-  filename?: string | null;
-  width?: number | null;
-  height?: number | null;
-  capturedAt?: string | null;
-  item?: BuiltInBrowserContextItem | null;
-  contextItem?: BuiltInBrowserContextItem | null;
-  [key: string]: unknown;
-};
-
-/**
- * The tab fields the main process is growing, read defensively.
- *
- * `faviconUrl` and `isLaunchpad` are owned by the browser service and land
- * separately from this panel; against a main process that predates them the
- * strip simply falls back to the globe and the launchpad keys off "no URL".
- */
-type BrowserTab = BuiltInBrowserTab & {
-  faviconUrl?: string | null;
-  isLaunchpad?: boolean;
-};
+import {
+  useNativeBrowserViewBounds,
+  type BrowserBounds,
+} from "./browser/useNativeBrowserViewBounds";
+import { BrowserFindBar } from "./browser/BrowserFindBar";
+import { BrowserHandoffBar } from "./browser/BrowserHandoffBar";
+import { BrowserOverflowMenu } from "./browser/BrowserOverflowMenu";
+import { BrowserProfilePanel } from "./browser/BrowserProfilePanel";
+import { BrowserStage } from "./browser/BrowserStage";
+import { BrowserTabStrip } from "./browser/BrowserTabStrip";
+import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
+import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "./browser/browserChrome";
+import type {
+  BrowserCaptureSelection,
+  BrowserFrame,
+  BrowserTab,
+  BuiltInBrowserContextItem,
+  BuiltInBrowserScreenshot,
+  CaptureMediaBounds,
+} from "./browser/browserPanelTypes";
 
 type BuiltInBrowserStatus = {
   supported: boolean;
@@ -233,7 +146,6 @@ type BuiltInBrowserApi = {
     permission?: string | null;
   }) => Promise<{ removed: number; permissions: BuiltInBrowserPermissionDecision[] }>;
   setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-  attachWebview?: (args: { tabId: string; webContentsId: number } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
   navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
   createTab?: (args?: { url?: string | null; activate?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
   switchTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
@@ -298,10 +210,11 @@ type BuiltInBrowserApi = {
     pin?: OpenProjectBinding | null,
   ) => Promise<BuiltInBrowserStopRecordingResult>;
   /** Added by the browser service; absent on an older main process. */
-  getDevServers?: (
-    args?: BuiltInBrowserProjectScopeArgs,
-    pin?: OpenProjectBinding | null,
-  ) => Promise<unknown>;
+  /**
+   * Dev-server discovery reads THIS machine's PTY output, so it takes no pin —
+   * a lane is the only scope it has.
+   */
+  getDevServers?: (args?: DevServersArgs) => Promise<unknown>;
   onEvent: (
     cb: (event: BuiltInBrowserEventPayload) => void,
     pin?: OpenProjectBinding | null,
@@ -336,15 +249,6 @@ type PendingTunnelApproval = {
   decide: (decision: "once" | "always" | "deny") => void;
 };
 
-type BrowserWebviewElement = HTMLElement & {
-  capturePage?: () => Promise<{
-    getSize?: () => { width: number; height: number };
-    isEmpty?: () => boolean;
-    toDataURL?: () => string;
-  }>;
-  getWebContentsId?: () => number;
-};
-
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
   /** Override project tab routing. `null` selects the personal-chat tab collection. */
@@ -365,97 +269,26 @@ type BrowserCrop = {
   frame: BrowserFrame;
 };
 
-const BOUNDS_SETTLE_MS = 1_200;
-const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
-/** How long forced bounds keep flowing after a drag ends, in ms. */
-const BOUNDS_DRAG_SETTLE_MS = 400;
 /** Live find, without a request per keystroke. */
 const FIND_DEBOUNCE_MS = 150;
-/** Fade-out for the snapshot underlay once the live view is back. */
-const UNDERLAY_FADE_MS = 120;
-/** A snapshot older than this is repainted before the next menu opens. */
-const UNDERLAY_MAX_AGE_MS = 20_000;
-const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tooltip"]);
-const OVERLAY_MOTION_EVENTS = ["animationend", "animationiteration", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
-const OVERLAY_CANDIDATE_SELECTOR = [
-  '[role="alertdialog"]',
-  '[role="dialog"]',
-  '[role="listbox"]',
-  '[role="menu"]',
-  '[role="tooltip"]',
-  '[aria-modal="true"]',
-  "[data-radix-popper-content-wrapper]",
-  "[data-radix-dialog-content]",
-  "[data-radix-menu-content]",
-  "[data-radix-popover-content]",
-  "[data-radix-select-content]",
-  "[data-side][data-align]",
-  ".fixed",
-  ".absolute",
-  ".sticky",
-  '[style*="position"]',
-].join(",");
-// Renderer-owned <webview> nodes lose their backing webContents when the panel unmounts.
-// Keep tabs owned by the main browser service so tab state survives Work sidebar tab switches.
-const USE_RENDERER_BROWSER_WEBVIEWS = false;
+/*
+  Why the tabs are not renderer <webview> nodes.
 
-/** House reveal for bars that slide in under the toolbar. */
-const REVEAL_TRANSITION = { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
-/** The `layoutId` spring the tools rail uses for its sliding indicator. */
-const TAB_INDICATOR_SPRING = { type: "spring", stiffness: 520, damping: 38, mass: 0.7 } as const;
-const TAB_INDICATOR_LAYOUT_ID = "ade-browser-tab-indicator";
+  A renderer-owned <webview> loses its backing webContents when the panel
+  unmounts, and this panel unmounts every time the Work sidebar shows a
+  different tool. Tabs are owned by the main browser service instead, and this
+  panel positions that service's WebContentsView over its own bounds — which is
+  what lets a tab survive a tool switch, a second window, and a chat that moves
+  between panes.
+*/
+
+/** How long the load bar takes to snap shut once the page finishes. */
+export const PROGRESS_FINISH_MS = 360;
+/** After a page settles, wait this long before taking the warm underlay frame. */
+const UNDERLAY_SETTLE_SNAPSHOT_MS = 600;
+
 /** Ports worth a one-shot probe for the empty state's "your dev server" chip. */
 const DEV_SERVER_PROBE_PORTS = [3000, 5173, 4321, 8080, 8000] as const;
-
-/** Shared control geometry, so the URL field and the menu buttons read as one row. */
-const TOOLBAR_CONTROL = "h-7 rounded-[7px] border text-[11px]";
-const TOOLBAR_IDLE = "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/90";
-const TOOLBAR_ON = "border-[color-mix(in_srgb,var(--color-accent)_32%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/92";
-const TOOLBAR_FOCUS = "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
-const TOOLBAR_MOTION = "transition-colors duration-[120ms] ease-out disabled:cursor-not-allowed disabled:opacity-40";
-
-const MENU_CONTENT_CLASS = cn(
-  "z-[140] min-w-[228px] max-w-[min(280px,calc(100vw-16px))] select-none overflow-hidden",
-  "rounded-[var(--radius-lg)] border border-white/[0.08]",
-  "bg-[var(--color-popup-bg,var(--color-card))] p-1 font-sans text-[11.5px] text-fg/82",
-  "shadow-[var(--shadow-popup,0_24px_64px_-24px_rgba(0,0,0,0.8))]",
-);
-const MENU_ITEM_CLASS = cn(
-  "flex cursor-pointer select-none items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 outline-none",
-  "transition-colors duration-[120ms] ease-out data-[highlighted]:bg-white/[0.07] data-[highlighted]:text-fg",
-  "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40",
-);
-const MENU_LABEL_CLASS = "px-2 pb-1 pt-1.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/60";
-const MENU_SEPARATOR_CLASS = "my-1 h-px bg-white/[0.06]";
-
-/**
- * A switch inside a menu row.
- *
- * DevTools and the network log are states you leave on, and a row that just
- * said "Off" made you guess whether clicking it turned it on or confirmed it
- * was off. Radix's checkbox item supplies the semantics; this is its face.
- */
-function MenuSwitch({ checked }: { checked: boolean }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "relative inline-flex h-[14px] w-[24px] shrink-0 items-center rounded-full border",
-        "transition-colors duration-[120ms] ease-out",
-        checked
-          ? "border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
-          : "border-white/[0.12] bg-white/[0.06]",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute h-[10px] w-[10px] rounded-full bg-white/90 transition-all duration-[120ms] ease-out",
-          checked ? "left-[11px]" : "left-[1.5px]",
-        )}
-      />
-    </span>
-  );
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -479,12 +312,6 @@ function errorMessage(error: unknown): string {
 
 function getBrowserApi(): BuiltInBrowserApi | null {
   return (window.ade as unknown as { builtInBrowser?: BuiltInBrowserApi }).builtInBrowser ?? null;
-}
-
-function shouldUseRendererBrowserWebviews(
-  api: BuiltInBrowserApi | null,
-): api is BuiltInBrowserApi & Required<Pick<BuiltInBrowserApi, "attachWebview">> {
-  return USE_RENDERER_BROWSER_WEBVIEWS && typeof api?.attachWebview === "function";
 }
 
 function requireBrowserApi(): BuiltInBrowserApi {
@@ -513,12 +340,9 @@ function normalizeUrlForNavigation(value: string): NormalizedNavigationUrl {
       reason: "Unsupported URL — the built-in browser only opens http(s) URLs.",
     };
   }
-  if (/^https?:/i.test(trimmed)) return { ok: true, url: trimmed };
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)) {
-    return { ok: true, url: `http://${trimmed}` };
-  }
-  if (/^[^\s/]+\.[^\s]+/.test(trimmed)) return { ok: true, url: `https://${trimmed}` };
-  return { ok: true, url: `https://www.google.com/search?q=${encodeURIComponent(trimmed)}` };
+  // Anything that is not already a URL becomes a search: an omnibox that
+  // silently does nothing with typed words is worse than one that guesses.
+  return { ok: true, url: completeBrowserUrl(trimmed, { fallback: "search", scheme: "http" }) ?? trimmed };
 }
 
 function normalizeFrame(value: unknown): BrowserFrame | null {
@@ -748,186 +572,6 @@ function frameLabel(frame: BrowserFrame | null): string | null {
   return `${Math.round(frame.x)}, ${Math.round(frame.y)} · ${Math.round(frame.width)}×${Math.round(frame.height)}`;
 }
 
-/** Origin of a page URL, or null for `about:blank` and non-http schemes. */
-function browserUrlOrigin(value: string | null | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const text = value.trim();
-  if (!text || text === "about:blank") return null;
-  try {
-    const parsed = new URL(text);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
-  } catch {
-    return null;
-  }
-}
-
-function shortSessionId(sessionId: string | null): string | null {
-  if (!sessionId) return null;
-  return sessionId.length <= 8 ? sessionId : `${sessionId.slice(0, 4)}…${sessionId.slice(-3)}`;
-}
-
-function shortOwnerId(value: string | null): string | null {
-  if (!value) return null;
-  return value.length <= 10 ? value : `${value.slice(0, 5)}…${value.slice(-4)}`;
-}
-
-function browserTabOwnerLabel(tab: BuiltInBrowserTab): string | null {
-  // During a login handoff the tab is the human's, so the strip must not keep
-  // advertising an agent owner it has just been taken away from.
-  if (tab.handoff) return "you own this tab";
-  const lane = shortOwnerId(tab.ownerLaneId);
-  const chat = shortSessionId(tab.ownerChatSessionId);
-  if (lane && chat) return `${lane} · ${chat}`;
-  return lane ?? chat;
-}
-
-function boundsEqual(a: BrowserBounds | null, b: BrowserBounds): boolean {
-  return Boolean(
-    a
-    && a.x === b.x
-    && a.y === b.y
-    && a.width === b.width
-    && a.height === b.height
-    && a.visible === b.visible
-    && a.scale === b.scale,
-  );
-}
-
-/**
- * Where the native view goes, in window pixels.
- *
- * `container` is the pane's content box: the frame's own rect is what it was
- * laid out at, which lags a pointer-driven resize by a frame or two, so the
- * measurement is trimmed to the box that actually clips it before it crosses
- * the bridge. Without that the page keeps its old width and paints over the
- * chat and the window edge for the length of the drag.
- */
-function measureNativeBrowserBounds(
-  element: HTMLElement,
-  container?: HTMLElement | null,
-): Omit<BrowserBounds, "scale"> {
-  const rect = element.getBoundingClientRect();
-  let zoomFactor = 1;
-  try {
-    const factor = window.ade.zoom.getFactor();
-    if (Number.isFinite(factor) && factor > 0) zoomFactor = factor;
-  } catch {
-    // Browser bounds still work at Electron's default zoom.
-  }
-  const style = window.getComputedStyle(element);
-  const containerRect = container?.isConnected ? container.getBoundingClientRect() : null;
-  const clamped = clampBrowserViewBounds(
-    { x: rect.left + window.scrollX, y: rect.top + window.scrollY, width: rect.width, height: rect.height },
-    {
-      left: containerRect ? containerRect.left + window.scrollX : 0,
-      top: containerRect ? containerRect.top + window.scrollY : 0,
-      right: Math.min(
-        containerRect ? containerRect.right + window.scrollX : Number.POSITIVE_INFINITY,
-        window.innerWidth + window.scrollX,
-      ),
-      bottom: Math.min(
-        containerRect ? containerRect.bottom + window.scrollY : Number.POSITIVE_INFINITY,
-        window.innerHeight + window.scrollY,
-      ),
-    },
-  );
-  const visible = (
-    element.isConnected
-    && style.display !== "none"
-    && style.visibility !== "hidden"
-    && clamped.width >= 16
-    && clamped.height >= 16
-  );
-  return {
-    x: Math.max(0, Math.round(clamped.x * zoomFactor)),
-    y: Math.max(0, Math.round(clamped.y * zoomFactor)),
-    width: Math.max(0, Math.round(clamped.width * zoomFactor)),
-    height: Math.max(0, Math.round(clamped.height * zoomFactor)),
-    visible,
-  };
-}
-
-function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
-  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-}
-
-type BrowserOverlayRect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
-
-function rectIntersection(a: BrowserOverlayRect, b: BrowserOverlayRect): BrowserOverlayRect | null {
-  const left = Math.max(a.left, b.left);
-  const right = Math.min(a.right, b.right);
-  const top = Math.max(a.top, b.top);
-  const bottom = Math.min(a.bottom, b.bottom);
-  const width = right - left;
-  const height = bottom - top;
-  if (width <= 0 || height <= 0) return null;
-  return { bottom, height, left, right, top, width };
-}
-
-function isBrowserOverlayCandidate(element: HTMLElement): boolean {
-  const style = window.getComputedStyle(element);
-  if (
-    style.display === "none"
-    || style.visibility === "hidden"
-    || style.opacity === "0"
-    || style.pointerEvents === "none"
-    || element.hidden
-    || element.getAttribute("aria-hidden") === "true"
-  ) {
-    return false;
-  }
-  const rect = element.getBoundingClientRect();
-  if (rect.width < 4 || rect.height < 4) return false;
-  const role = element.getAttribute("role");
-  if (role && OVERLAY_ROLES.has(role)) return true;
-  if (element.getAttribute("aria-modal") === "true") return true;
-  if (
-    element.matches(
-      "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]",
-    )
-  ) {
-    return true;
-  }
-  return style.position === "fixed" || style.position === "absolute" || style.position === "sticky";
-}
-
-function overlayCandidateOwnsPoint(element: HTMLElement, x: number, y: number): boolean {
-  if (typeof document.elementFromPoint !== "function") return true;
-  const topElement = document.elementFromPoint(x, y);
-  return topElement === element || (topElement != null && element.contains(topElement));
-}
-
-function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: DOMRect): boolean {
-  const overlap = rectIntersection(surfaceRect, element.getBoundingClientRect());
-  if (!overlap) return false;
-  const points = [
-    [overlap.left + overlap.width / 2, overlap.top + overlap.height / 2],
-    [overlap.left + 1, overlap.top + 1],
-    [overlap.right - 1, overlap.top + 1],
-    [overlap.left + 1, overlap.bottom - 1],
-    [overlap.right - 1, overlap.bottom - 1],
-  ];
-  return points.some(([x, y]) => overlayCandidateOwnsPoint(element, x, y));
-}
-
-function collectBrowserOverlayCandidates(surface: HTMLElement): HTMLElement[] {
-  return Array.from(document.body.querySelectorAll<HTMLElement>(OVERLAY_CANDIDATE_SELECTOR)).filter((element) => {
-    if (element === surface || surface.contains(element) || element.contains(surface)) return false;
-    return isBrowserOverlayCandidate(element);
-  });
-}
-
-function browserSurfaceHasExternalOverlay(surface: HTMLElement): boolean {
-  if (!surface.isConnected || !document.body) return false;
-  const surfaceRect = surface.getBoundingClientRect();
-  if (surfaceRect.width < 4 || surfaceRect.height < 4) return false;
-  for (const element of collectBrowserOverlayCandidates(surface)) {
-    const elementRect = element.getBoundingClientRect();
-    if (rectsOverlap(surfaceRect, elementRect) && overlayCandidatePaintsOverSurface(element, surfaceRect)) return true;
-  }
-  return false;
-}
-
 function clampBrowserFrame(frame: BrowserFrame, width: number, height: number): BrowserFrame {
   const cropWidth = Math.max(1, Math.min(width, Math.round(frame.width)));
   const cropHeight = Math.max(1, Math.min(height, Math.round(frame.height)));
@@ -1047,11 +691,7 @@ async function cropBrowserScreenshot(
  * was asked for, and the first use of a new port needs a human grant even on a
  * machine already trusted for port-forwarding, because the agent picks the port.
  */
-export function ChatBuiltInBrowserPanel(props: ChatBuiltInBrowserPanelProps) {
-  return <BuiltInBrowserPanelView {...props} />;
-}
-
-function BuiltInBrowserPanelView({
+export function ChatBuiltInBrowserPanel({
   sessionId,
   projectRootOverride,
   onAddContext,
@@ -1069,8 +709,7 @@ function BuiltInBrowserPanelView({
   const projectRoot = projectRootOverride === undefined
     ? chatScope.rootPath
     : projectRootOverride;
-  // Every pin-aware `builtInBrowser.*` call below reads this. `attachWebview`
-  // is deliberately absent from that set: it wires a <webview> in THIS window.
+  // Every pin-aware `builtInBrowser.*` call below reads this.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1078,20 +717,20 @@ function BuiltInBrowserPanelView({
   const browserStageRef = useRef<HTMLDivElement | null>(null);
   /** The DOM frame the native view is positioned onto, letterbox included. */
   const browserViewportRef = useRef<HTMLDivElement | null>(null);
-  const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
-  const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());
-  const browserWebviewAttachKeysRef = useRef<Map<string, string>>(new Map());
-  const pendingWebviewNavigationsRef = useRef<Map<string, string>>(new Map());
   const captureImageRef = useRef<HTMLImageElement | null>(null);
-  const latestBoundsRef = useRef<BrowserBounds | null>(null);
   const statusRef = useRef<BuiltInBrowserStatus | null>(null);
   const selectedItemRef = useRef<BuiltInBrowserContextItem | null>(null);
   const captureModeRef = useRef(false);
   /** True while the launchpad owns the surface, so no view paints over it. */
   const launchpadVisibleRef = useRef(false);
-  const browserInputSuppressedRef = useRef(false);
-  const browserOverlayOccludedRef = useRef(false);
-  const browserViewSuppressionCountRef = useRef(0);
+  /*
+    Suppression is ref-only on purpose.
+
+    Its one React reader was the <webview> layout effect, which was dead and is
+    now deleted — every remaining reader (`reportBounds`, the underlay, the
+    occlusion observer) runs outside the render closure. Mirroring it into state
+    re-rendered the whole panel on every menu open for nobody's benefit.
+  */
   const autoAttachedContextIdsRef = useRef(new Set<string>());
   const editingUrlRef = useRef(false);
   const apiAvailable = Boolean(getBrowserApi());
@@ -1105,8 +744,6 @@ function BuiltInBrowserPanelView({
   const [, setLastScreenshot] = useState<BuiltInBrowserScreenshot | null>(null);
   const [captureBase, setCaptureBase] = useState<BuiltInBrowserScreenshot | null>(null);
   const [captureSelection, setCaptureSelection] = useState<BrowserCaptureSelection | null>(null);
-  const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
-  const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileDiagnostics, setProfileDiagnostics] = useState<BuiltInBrowserProfileDiagnostics | null>(null);
@@ -1142,18 +779,6 @@ function BuiltInBrowserPanelView({
   const [paneWidth, setPaneWidth] = useState<number | null>(null);
   const [progressPhase, setProgressPhase] = useState<"idle" | "loading" | "finishing">("idle");
   const progressPhaseRef = useRef<"idle" | "loading" | "finishing">("idle");
-  /**
-   * The frozen frame shown while a menu covers the browser.
-   *
-   * A WebContentsView paints above the renderer, so every popover has to hide
-   * it — which used to leave a black rectangle behind the menu. The last frame
-   * is captured, painted at the view's exact bounds, and only then is the live
-   * view hidden, so the page appears to stay put underneath the menu.
-   */
-  const [underlay, setUnderlay] = useState<{ dataUrl: string; visible: boolean } | null>(null);
-  const underlaySnapshotRef = useRef<{ dataUrl: string; capturedAt: number } | null>(null);
-  const underlayCaptureRef = useRef<Promise<void> | null>(null);
-  const underlayFadeTimerRef = useRef<number | null>(null);
   const [viewFrame, setViewFrame] = useState<BrowserViewFrame>({ left: 1, top: 1, width: 0, height: 0, scale: 1 });
   /** Read by `reportBounds`, which runs outside this render's closure. */
   const viewScaleRef = useRef(1);
@@ -1164,7 +789,7 @@ function BuiltInBrowserPanelView({
   const [pendingApproval, setPendingApproval] = useState<PendingTunnelApproval | null>(null);
   // Approvals answered "Allow once" live only as long as this pane does; the
   // "Always" set is persisted per lane alongside the rest of its view state.
-  const sessionApprovedTunnelsRef = useRef(new Set<string>());
+  const sessionApprovedTunnelsRef = useRef<ReadonlySet<string>>(new Set<string>());
   const remotePin = runtimePin?.kind === "remote" ? runtimePin : null;
   const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
     () => (projectRootOverride === null
@@ -1174,11 +799,16 @@ function BuiltInBrowserPanelView({
         : {}),
     [projectRoot, projectRootOverride],
   );
+  const browserScopeRef = useRef<BuiltInBrowserProjectScopeArgs>(browserScope);
+  browserScopeRef.current = browserScope;
   const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BuiltInBrowserProjectScopeArgs => (
     ({ ...args, ...browserScope }) as T & BuiltInBrowserProjectScopeArgs
   ), [browserScope]);
   const remotePinRef = useRef<Extract<OpenProjectBinding, { kind: "remote" }> | null>(remotePin);
   remotePinRef.current = remotePin;
+
+  /** Mirrors `pendingApproval` so the bar can be replaced without a nested setState. */
+  const pendingApprovalRef = useRef<PendingTunnelApproval | null>(null);
 
   const readAlwaysTunnelKeys = useCallback((): string[] => {
     const store = useAppStore.getState();
@@ -1199,6 +829,21 @@ function BuiltInBrowserPanelView({
   }, [contextLaneId, projectRoot]);
 
   /**
+   * Record an answer. The rule for what each answer changes lives in
+   * `browserRemoteTunnels`, tested without a DOM; this only moves the result
+   * into the ref and the persisted list.
+   */
+  const applyTunnelAnswer = useCallback((key: string, answer: TunnelApprovalAnswer) => {
+    const before: TunnelApprovalState = {
+      sessionApproved: sessionApprovedTunnelsRef.current,
+      alwaysKeys: readAlwaysTunnelKeys(),
+    };
+    const after = commitTunnelApproval(before, key, answer);
+    sessionApprovedTunnelsRef.current = after.sessionApproved;
+    if (after.alwaysKeys !== before.alwaysKeys) rememberAlwaysTunnelKey(key);
+  }, [readAlwaysTunnelKeys, rememberAlwaysTunnelKey]);
+
+  /**
    * Gate one (machine, port) pair behind a human.
    *
    * The pinned machine already carries a `portForward` grant, but that grant is
@@ -1209,40 +854,67 @@ function BuiltInBrowserPanelView({
   const ensureTunnelApproval = useCallback(async (
     remotePort: number,
     machineLabel: string,
-    options: { human: boolean },
+    options: { human: boolean; onAsk?: () => void },
   ): Promise<boolean> => {
     const pin = remotePinRef.current;
     if (!pin) return true;
     const key = remoteTunnelApprovalKey(pin.targetId, remotePort);
-    if (options.human) {
-      sessionApprovedTunnelsRef.current.add(key);
+    const decision = tunnelApprovalDecision({
+      key,
+      human: options.human,
+      sessionApproved: sessionApprovedTunnelsRef.current,
+      alwaysKeys: readAlwaysTunnelKeys(),
+    });
+    if (decision === "allow") {
+      // A human-typed URL self-approves, and the port stays approved for the
+      // rest of this pane's life rather than re-asking on the next hop.
+      if (options.human) applyTunnelAnswer(key, "once");
       return true;
     }
-    if (sessionApprovedTunnelsRef.current.has(key)) return true;
-    if (readAlwaysTunnelKeys().includes(key)) return true;
+    options.onAsk?.();
     return await new Promise<boolean>((resolve) => {
-      setPendingApproval((previous) => {
-        // A second request for the same port while one bar is up joins it
-        // rather than stacking a second bar the human has to answer twice.
-        previous?.decide("deny");
-        return {
-          key,
-          remotePort,
-          machineLabel,
-          decide: (decision) => {
+      /*
+        Replace the open bar OUTSIDE the state updater.
+
+        `setPendingApproval(previous => { previous?.decide("deny"); ... })` ran a
+        nested `setPendingApproval(null)` from inside an updater React is free to
+        invoke eagerly and again during render — which could apply the nested
+        null AFTER this updater's return value and leave `pendingApproval` null
+        with a promise nobody would ever resolve. A ref makes the replacement an
+        ordinary statement.
+      */
+      const previous = pendingApprovalRef.current;
+      previous?.decide("deny");
+      const next: PendingTunnelApproval = {
+        key,
+        remotePort,
+        machineLabel,
+        decide: (answer) => {
+          if (pendingApprovalRef.current === next) {
+            pendingApprovalRef.current = null;
             setPendingApproval(null);
-            if (decision === "deny") {
-              resolve(false);
-              return;
-            }
-            sessionApprovedTunnelsRef.current.add(key);
-            if (decision === "always") rememberAlwaysTunnelKey(key);
-            resolve(true);
-          },
-        };
-      });
+          }
+          applyTunnelAnswer(key, answer);
+          resolve(answer !== "deny");
+        },
+      };
+      pendingApprovalRef.current = next;
+      setPendingApproval(next);
     });
-  }, [readAlwaysTunnelKeys, rememberAlwaysTunnelKey]);
+  }, [applyTunnelAnswer, readAlwaysTunnelKeys]);
+
+  /*
+    An unanswered bar must not outlive the pane.
+
+    The Work sidebar unmounts this panel whenever another tool is shown, and an
+    approval promise left hanging would keep the remote request's async chain
+    alive forever. Unmount is a refusal, not an approval.
+  */
+  useEffect(() => () => {
+    const pending = pendingApprovalRef.current;
+    pendingApprovalRef.current = null;
+    pending?.decide("deny");
+  }, []);
 
   /**
    * Everything a loopback URL needs before it can load on a remote pin: the
@@ -1252,7 +924,7 @@ function BuiltInBrowserPanelView({
    */
   const prepareRemoteNavigation = useCallback(async (
     url: string,
-    options: { human: boolean },
+    options: { human: boolean; onAsk?: () => void },
   ): Promise<{ ok: boolean; tunnel: RemoteLoopbackTunnel | null; reason: string | null }> => {
     const pin = remotePinRef.current;
     if (!pin) return { ok: true, tunnel: null, reason: null };
@@ -1273,10 +945,6 @@ function BuiltInBrowserPanelView({
     return { ok: true, tunnel: localized.forward, reason: null };
   }, [ensureTunnelApproval]);
 
-  const syncBrowserInputSuppressedState = useCallback(() => {
-    setBrowserInputSuppressed(browserInputSuppressedRef.current || browserOverlayOccludedRef.current);
-  }, []);
-
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
   const tabIdsSignature = useMemo(() => browserTabs.map((tab) => tab.id).join("|"), [browserTabs]);
   const activeTabId = status?.activeTabId ?? browserTabs[0]?.id ?? null;
@@ -1288,6 +956,9 @@ function BuiltInBrowserPanelView({
   const inspecting = Boolean(status?.inspecting);
   /** Nothing open: the chrome has to stop describing a page that is gone. */
   const hasTab = browserTabs.length > 0;
+  /** Read by the zoom claim, which runs outside this render's closure. */
+  const hasTabRef = useRef(hasTab);
+  hasTabRef.current = hasTab;
   const selectionFrame = frameLabel(selectedItem?.frame ?? null);
   const activeTab = useMemo(
     () => browserTabs.find((tab) => tab.id === activeTabId) ?? null,
@@ -1357,6 +1028,25 @@ function BuiltInBrowserPanelView({
     return () => window.clearTimeout(timer);
   }, [attachmentAck]);
 
+  /**
+   * Record which tab is looking at another machine, ref first.
+   *
+   * `applyStatus` runs from an IPC callback that can land before React has
+   * re-rendered, and it reads this map to build the omnibox string — so a map
+   * that only existed in state showed the raw `127.0.0.1:<ephemeral>` forward
+   * for a cycle after every tunneled navigation, which is the one thing the
+   * display rule exists to prevent.
+   */
+  const rememberTabTunnel = useCallback((
+    tabId: string | null,
+    tunnel: RemoteLoopbackTunnel | null,
+  ) => {
+    const next = setTabTunnel(tabTunnelsRef.current, tabId, tunnel);
+    if (next === tabTunnelsRef.current) return;
+    tabTunnelsRef.current = next;
+    setTabTunnels(next);
+  }, []);
+
   const applyStatus = useCallback((value: unknown) => {
     const normalized = normalizeStatus(value, statusRef.current);
     statusRef.current = normalized;
@@ -1367,7 +1057,11 @@ function BuiltInBrowserPanelView({
     // Tabs that closed, or left the forwarded origin for a real site, stop
     // being described as the pinned machine's.
     if (Object.keys(tabTunnelsRef.current).length > 0) {
-      setTabTunnels((prev) => reconcileTabTunnels(prev, normalized.tabs));
+      const reconciled = reconcileTabTunnels(tabTunnelsRef.current, normalized.tabs);
+      if (reconciled !== tabTunnelsRef.current) {
+        tabTunnelsRef.current = reconciled;
+        setTabTunnels(reconciled);
+      }
     }
     if (!editingUrlRef.current) {
       // Nothing open means nothing to show: the field goes back to its
@@ -1444,63 +1138,6 @@ function BuiltInBrowserPanelView({
     return contextItem;
   }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
 
-  const reportBounds = useCallback((visibleOverride?: boolean, options?: { force?: boolean }) => {
-    const api = getBrowserApi();
-    const surface = browserSurfaceRef.current;
-    const element = browserViewportRef.current ?? surface;
-    if (!api || !element) return;
-    if (shouldUseRendererBrowserWebviews(api)) {
-      const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false, scale: 1 };
-      if (boundsEqual(latestBoundsRef.current, hidden)) return;
-      latestBoundsRef.current = hidden;
-      api.setBounds(withBrowserScope(hidden), runtimePinRef.current).catch((error: unknown) => {
-        setMessage({ tone: "error", text: `Could not hide browser fallback: ${errorMessage(error)}` });
-      });
-      return;
-    }
-    const measured = measureNativeBrowserBounds(element, element === surface ? panelRef.current : surface);
-    const next: BrowserBounds = {
-      ...measured,
-      // How much the letterbox had to shrink to fit. Main turns this into CDP's
-      // device-metrics `scale`, so a device larger than the pane is drawn
-      // smaller rather than cropped at the pane's edge.
-      scale: viewScaleRef.current,
-      visible: visibleOverride ?? (
-        !browserInputSuppressedRef.current
-        && !browserOverlayOccludedRef.current
-        && !captureModeRef.current
-        // The view is composited above this renderer, so a launchpad under a
-        // still-visible view would be a page nobody can see or click.
-        && !launchpadVisibleRef.current
-        && measured.visible
-      ),
-    };
-    // A dropped or rejected `setBounds` would otherwise be cached as applied and
-    // never retried, so a drag re-sends unconditionally.
-    if (!options?.force && boundsEqual(latestBoundsRef.current, next)) return;
-    latestBoundsRef.current = next;
-    api.setBounds(withBrowserScope(next), runtimePinRef.current).catch((error: unknown) => {
-      setMessage({ tone: "error", text: `Could not position browser: ${errorMessage(error)}` });
-    });
-  }, [withBrowserScope]);
-
-  const hideNativeBrowserView = useCallback(async () => {
-    const api = getBrowserApi();
-    if (!api) return;
-    const last = latestBoundsRef.current;
-    const hidden = {
-      x: last?.x ?? 0,
-      y: last?.y ?? 0,
-      width: last?.width ?? 0,
-      height: last?.height ?? 0,
-      visible: false,
-      scale: last?.scale ?? 1,
-    };
-    latestBoundsRef.current = hidden;
-    await api.stopInspect(browserScope, runtimePinRef.current).catch(() => {});
-    await api.setBounds(withBrowserScope(hidden), runtimePinRef.current).catch(() => {});
-  }, [browserScope, withBrowserScope]);
-
   /**
    * Capture the frame the underlay paints, without touching the UI.
    *
@@ -1508,269 +1145,54 @@ function BuiltInBrowserPanelView({
    * that finished loading a moment ago — repaints instantly rather than after
    * an IPC round trip the human would see as a black flash.
    */
-  const refreshUnderlaySnapshot = useCallback((): Promise<void> => {
+  const captureUnderlayFrame = useCallback(async (): Promise<string | null> => {
     const api = getBrowserApi();
-    if (!api?.captureScreenshot || captureModeRef.current) return Promise.resolve();
-    if (underlayCaptureRef.current) return underlayCaptureRef.current;
-    const pending = Promise.resolve(api.captureScreenshot(browserScope, runtimePinRef.current))
-      .then((result) => {
-        const shot = normalizeScreenshot(result, statusRef.current);
-        const dataUrl = shot?.dataUrl ?? shot?.screenshotDataUrl ?? null;
-        if (!dataUrl) return;
-        underlaySnapshotRef.current = { dataUrl, capturedAt: Date.now() };
-        setUnderlay((current) => (current ? { dataUrl, visible: current.visible } : current));
-      })
-      .catch(() => {
-        // A page that refuses a capture just falls back to the last frame, or
-        // to the pane background — never to an error the human did not cause.
-      })
-      .finally(() => {
-        underlayCaptureRef.current = null;
-      });
-    underlayCaptureRef.current = pending;
-    return pending;
+    if (!api?.captureScreenshot) return null;
+    const result = await api.captureScreenshot(browserScope, runtimePinRef.current);
+    const shot = normalizeScreenshot(result, statusRef.current);
+    return shot?.dataUrl ?? shot?.screenshotDataUrl ?? null;
   }, [browserScope]);
 
-  const showUnderlay = useCallback(() => {
-    if (underlayFadeTimerRef.current != null) {
-      window.clearTimeout(underlayFadeTimerRef.current);
-      underlayFadeTimerRef.current = null;
-    }
-    const cached = underlaySnapshotRef.current;
-    if (cached) setUnderlay({ dataUrl: cached.dataUrl, visible: true });
-    if (!cached || Date.now() - cached.capturedAt > UNDERLAY_MAX_AGE_MS) {
-      void refreshUnderlaySnapshot().then(() => {
-        const fresh = underlaySnapshotRef.current;
-        if (!fresh) return;
-        if (!browserOverlayOccludedRef.current && !browserInputSuppressedRef.current) return;
-        setUnderlay({ dataUrl: fresh.dataUrl, visible: true });
-      });
-    }
-  }, [refreshUnderlaySnapshot]);
+  const pushBrowserBounds = useCallback(async (bounds: BrowserBounds): Promise<void> => {
+    const api = requireBrowserApi();
+    await api.setBounds(withBrowserScope(bounds), runtimePinRef.current);
+  }, [withBrowserScope]);
 
-  const hideUnderlay = useCallback(() => {
-    if (underlayFadeTimerRef.current != null) {
-      window.clearTimeout(underlayFadeTimerRef.current);
-      underlayFadeTimerRef.current = null;
-    }
-    setUnderlay((current) => (current ? { ...current, visible: false } : current));
-    underlayFadeTimerRef.current = window.setTimeout(() => {
-      underlayFadeTimerRef.current = null;
-      setUnderlay(null);
-    }, UNDERLAY_FADE_MS + 20);
+  const stopBrowserInspect = useCallback(async (): Promise<void> => {
+    const api = requireBrowserApi();
+    await api.stopInspect(browserScope, runtimePinRef.current);
+  }, [browserScope]);
+
+  const reportBoundsError = useCallback((text: string) => {
+    setMessage({ tone: "error", text: `Could not position browser: ${text}` });
   }, []);
 
-  useEffect(() => () => {
-    if (underlayFadeTimerRef.current != null) window.clearTimeout(underlayFadeTimerRef.current);
-  }, []);
+  /*
+    Bounds, occlusion and the frozen-frame underlay.
 
-  useEffect(() => {
-    let restoreFrame: number | null = null;
-    let dragFrame: number | null = null;
-    let dragUntil = 0;
-    let lastDragReportAt = 0;
-    const cancelRestoreFrame = () => {
-      if (restoreFrame == null) return;
-      window.cancelAnimationFrame(restoreFrame);
-      restoreFrame = null;
-    };
-    const cancelDragFrame = () => {
-      if (dragFrame == null) return;
-      window.cancelAnimationFrame(dragFrame);
-      dragFrame = null;
-    };
-    /**
-     * Keep pushing bounds for as long as the splitter is moving.
-     *
-     * The settle loop only ran after the drag ended, so a pane dragged narrow
-     * left the view at its old width for the whole gesture — and if the final
-     * update was ever coalesced away it stayed there.
-     */
-    const pumpDragBounds = () => {
-      const tick = () => {
-        dragFrame = null;
-        // Wall-clock rather than the frame timestamp: the throttle is about how
-        // often the main process is asked to move a view, not about frames.
-        const now = window.performance.now();
-        if (now - lastDragReportAt >= BOUNDS_SETTLE_MIN_FRAME_MS) {
-          lastDragReportAt = now;
-          reportBounds(undefined, { force: true });
-        }
-        if (browserViewSuppressionCountRef.current > 0 || now < dragUntil) {
-          dragFrame = window.requestAnimationFrame(tick);
-        }
-      };
-      if (dragFrame == null) dragFrame = window.requestAnimationFrame(tick);
-    };
-    const suppressInput = () => {
-      cancelRestoreFrame();
-      browserViewSuppressionCountRef.current += 1;
-      browserInputSuppressedRef.current = true;
-      syncBrowserInputSuppressedState();
-      showUnderlay();
-      reportBounds(false);
-      pumpDragBounds();
-    };
-    const restoreInput = () => {
-      browserViewSuppressionCountRef.current = Math.max(0, browserViewSuppressionCountRef.current - 1);
-      if (browserViewSuppressionCountRef.current > 0) return;
-      browserInputSuppressedRef.current = false;
-      syncBrowserInputSuppressedState();
-      cancelRestoreFrame();
-      // Bounds land first, then the frozen frame fades: swapping the order
-      // would show one frame of the stale geometry.
-      dragUntil = window.performance.now() + BOUNDS_DRAG_SETTLE_MS;
-      pumpDragBounds();
-      restoreFrame = window.requestAnimationFrame(() => {
-        restoreFrame = null;
-        reportBounds(undefined, { force: true });
-        if (!browserOverlayOccludedRef.current) hideUnderlay();
-      });
-    };
-    window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
-    window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
-    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, suppressInput);
-    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, restoreInput);
-    return () => {
-      window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
-      window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
-      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, suppressInput);
-      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, restoreInput);
-      cancelRestoreFrame();
-      cancelDragFrame();
-    };
-  }, [hideUnderlay, reportBounds, showUnderlay, syncBrowserInputSuppressedState]);
-
-  useEffect(() => {
-    const element = browserSurfaceRef.current;
-    if (!element || typeof MutationObserver === "undefined") return undefined;
-    let animationFrame: number | null = null;
-    const cancelFrame = () => {
-      if (animationFrame == null) return;
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = null;
-    };
-    const setOverlayOccluded = (next: boolean) => {
-      if (browserOverlayOccludedRef.current === next) return;
-      browserOverlayOccludedRef.current = next;
-      syncBrowserInputSuppressedState();
-      // Paint the frozen frame before the live view goes, and only drop it once
-      // the live view is back — otherwise the menu opens over a black hole.
-      if (next) showUnderlay();
-      reportBounds(next ? false : undefined, { force: true });
-      if (!next && !browserInputSuppressedRef.current) hideUnderlay();
-    };
-    const checkForOverlay = () => {
-      animationFrame = null;
-      setOverlayOccluded(browserSurfaceHasExternalOverlay(element));
-      refreshObservedOverlays();
-    };
-    const scheduleCheck = () => {
-      if (animationFrame != null) return;
-      animationFrame = window.requestAnimationFrame(checkForOverlay);
-    };
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleCheck);
-    const observedOverlays = new Set<HTMLElement>();
-    const refreshObservedOverlays = () => {
-      if (!resizeObserver || !document.body) return;
-      const nextOverlays = new Set(collectBrowserOverlayCandidates(element));
-      for (const overlay of observedOverlays) {
-        if (nextOverlays.has(overlay)) continue;
-        resizeObserver.unobserve(overlay);
-        observedOverlays.delete(overlay);
-      }
-      for (const overlay of nextOverlays) {
-        if (observedOverlays.has(overlay)) continue;
-        resizeObserver.observe(overlay);
-        observedOverlays.add(overlay);
-      }
-    };
-    const observer = new MutationObserver(scheduleCheck);
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ["aria-hidden", "aria-modal", "class", "data-state", "hidden", "role", "style"],
-      childList: true,
-      subtree: true,
-    });
-    scheduleCheck();
-    window.addEventListener("resize", scheduleCheck);
-    window.addEventListener("scroll", scheduleCheck, true);
-    for (const eventName of OVERLAY_MOTION_EVENTS) {
-      document.addEventListener(eventName, scheduleCheck, true);
-    }
-    return () => {
-      observer.disconnect();
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleCheck);
-      window.removeEventListener("scroll", scheduleCheck, true);
-      for (const eventName of OVERLAY_MOTION_EVENTS) {
-        document.removeEventListener(eventName, scheduleCheck, true);
-      }
-      cancelFrame();
-      browserOverlayOccludedRef.current = false;
-    };
-  }, [hideUnderlay, reportBounds, showUnderlay, syncBrowserInputSuppressedState]);
-
-  useLayoutEffect(() => {
-    const element = browserSurfaceRef.current;
-    if (!element) return undefined;
-    let animationFrame: number | null = null;
-    let settleFrame: number | null = null;
-    let settleUntil = 0;
-    let lastSettleReportAt = 0;
-    const scheduleReport = () => {
-      if (animationFrame != null) return;
-      animationFrame = window.requestAnimationFrame(() => {
-        animationFrame = null;
-        reportBounds();
-      });
-    };
-    const scheduleSettledReport = () => {
-      scheduleReport();
-      settleUntil = window.performance.now() + BOUNDS_SETTLE_MS;
-      if (settleFrame != null) return;
-      const tick = (now: number) => {
-        settleFrame = null;
-        if (now - lastSettleReportAt >= BOUNDS_SETTLE_MIN_FRAME_MS) {
-          lastSettleReportAt = now;
-          reportBounds();
-        }
-        if (now < settleUntil) {
-          settleFrame = window.requestAnimationFrame(tick);
-        }
-      };
-      settleFrame = window.requestAnimationFrame(tick);
-    };
-    const handleSubtreeTransition = (event: Event) => {
-      const target = event.target;
-      if (target instanceof Node && element.contains(target)) scheduleSettledReport();
-    };
-    scheduleSettledReport();
-    const observer = new ResizeObserver(scheduleSettledReport);
-    observer.observe(element);
-    // The letterbox frame resizes without the surface changing size, and the
-    // pane changes size without the surface having settled yet — both have to
-    // re-position the view.
-    for (const extra of [browserViewportRef.current, browserStageRef.current, panelRef.current]) {
-      if (extra && extra !== element) observer.observe(extra);
-    }
-    window.addEventListener("resize", scheduleSettledReport);
-    element.addEventListener("transitionend", handleSubtreeTransition);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", scheduleSettledReport);
-      element.removeEventListener("transitionend", handleSubtreeTransition);
-      if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
-      if (settleFrame != null) window.cancelAnimationFrame(settleFrame);
-      const last = latestBoundsRef.current;
-      const api = getBrowserApi();
-      if (api && last) {
-        api.stopInspect(browserScope, runtimePinRef.current).catch(() => {});
-        latestBoundsRef.current = { ...last, visible: false };
-        api.setBounds(withBrowserScope({ ...last, visible: false }), runtimePinRef.current).catch(() => {});
-      }
-    };
-  }, [browserScope, reportBounds, withBrowserScope]);
+    Three ref-driven machines with no JSX of their own: they measure this
+    panel's DOM frame, decide when the composited view is allowed to be seen,
+    and freeze a frame under every popover that has to hide it.
+  */
+  const {
+    reportBounds,
+    hideNativeBrowserView,
+    refreshUnderlaySnapshot,
+    underlay,
+  } = useNativeBrowserViewBounds({
+    surfaceRef: browserSurfaceRef,
+    stageRef: browserStageRef,
+    viewportRef: browserViewportRef,
+    panelRef,
+    viewScaleRef,
+    captureModeRef,
+    launchpadVisibleRef,
+    enabled: apiAvailable,
+    setBounds: pushBrowserBounds,
+    stopInspect: stopBrowserInspect,
+    captureFrame: captureUnderlayFrame,
+    onError: reportBoundsError,
+  });
 
   useEffect(() => {
     const api = getBrowserApi();
@@ -1879,8 +1301,34 @@ function BuiltInBrowserPanelView({
       void (async () => {
         let accepted = false;
         let reason: string | null = null;
+        const acknowledge = async (payload: {
+          accepted: boolean;
+          awaitingApproval?: boolean;
+          reason: string | null;
+        }) => {
+          await api.acknowledgeRemoteRequest?.(
+            { requestId: request.requestId, desktopLabel: THIS_MACHINE_NAME, ...payload },
+            pin,
+          ).catch(() => {});
+        };
+        /*
+          The requester gives up after 5 seconds, and nobody answers an approval
+          bar in 5 seconds. So the moment a bar goes up the desktop says "I took
+          this, a person is deciding" — the CLI prints that and exits 0 — and
+          the page loads whenever the person gets to it. The real outcome is
+          still acked afterwards: by then it usually lands on a requestId nobody
+          is waiting on, which the daemon drops, but when the human WAS fast it
+          is the answer the CLI gets.
+        */
+        let awaitingAcked = false;
         try {
-          const prepared = await prepareRemoteNavigation(request.url, { human: false });
+          const prepared = await prepareRemoteNavigation(request.url, {
+            human: false,
+            onAsk: () => {
+              awaitingAcked = true;
+              void acknowledge({ accepted: true, awaitingApproval: true, reason: null });
+            },
+          });
           if (cancelled) return;
           if (!prepared.ok) {
             reason = prepared.reason;
@@ -1894,11 +1342,13 @@ function BuiltInBrowserPanelView({
               }),
               pin,
             );
-            await refreshStatus();
+            // Before the refresh, not after: the refresh applies a status the
+            // omnibox is rendered from, and it has to already know this tab is
+            // showing the pinned machine.
             if (prepared.tunnel) {
-              const tunnel = prepared.tunnel;
-              setTabTunnels((prev) => setTabTunnel(prev, statusRef.current?.activeTabId ?? null, tunnel));
+              rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
             }
+            await refreshStatus();
             accepted = true;
           }
         } catch (error) {
@@ -1906,106 +1356,16 @@ function BuiltInBrowserPanelView({
         }
         if (cancelled) return;
         if (!accepted && reason) setMessage({ tone: "error", text: reason });
-        await api.acknowledgeRemoteRequest?.(
-          { requestId: request.requestId, desktopLabel: THIS_MACHINE_NAME, accepted, reason },
-          pin,
-        ).catch(() => {});
+        // Nothing new to say when the request needed no prompt and succeeded —
+        // that is exactly what the pre-ack already claimed.
+        if (!awaitingAcked || !accepted) await acknowledge({ accepted, reason });
       })();
     }, pin);
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [prepareRemoteNavigation, refreshStatus, remotePin, withBrowserScope]);
-
-  useEffect(() => () => {
-    for (const cleanup of browserWebviewAttachCleanupRef.current.values()) cleanup();
-    for (const webview of browserWebviewsRef.current.values()) webview.remove();
-    browserWebviewAttachCleanupRef.current.clear();
-    browserWebviewsRef.current.clear();
-    browserWebviewAttachKeysRef.current.clear();
-  }, []);
-
-  useLayoutEffect(() => {
-    const api = getBrowserApi();
-    const host = browserSurfaceRef.current;
-    if (!shouldUseRendererBrowserWebviews(api) || !host) return;
-
-    const tabIds = new Set(browserTabs.map((tab) => tab.id));
-    for (const [tabId, cleanup] of browserWebviewAttachCleanupRef.current) {
-      if (tabIds.has(tabId)) continue;
-      cleanup();
-      browserWebviewAttachCleanupRef.current.delete(tabId);
-      browserWebviewAttachKeysRef.current.delete(tabId);
-      const webview = browserWebviewsRef.current.get(tabId);
-      if (webview) {
-        webview.remove();
-        browserWebviewsRef.current.delete(tabId);
-      }
-    }
-
-    const attachVisibleWebview = (tabId: string, webview: BrowserWebviewElement) => {
-      let webContentsId: number | undefined;
-      try {
-        webContentsId = webview.getWebContentsId?.();
-      } catch {
-        return;
-      }
-      if (!webContentsId || webContentsId <= 0) return;
-      const attachKey = `${tabId}:${webContentsId}`;
-      if (browserWebviewAttachKeysRef.current.get(tabId) === attachKey) return;
-      browserWebviewAttachKeysRef.current.set(tabId, attachKey);
-      void api.attachWebview?.(withBrowserScope({ tabId, webContentsId }))
-        .then((nextStatus) => applyStatus(nextStatus))
-        .catch((error: unknown) => {
-          browserWebviewAttachKeysRef.current.delete(tabId);
-          setMessage({ tone: "error", text: `Could not attach ADE browser webview: ${errorMessage(error)}` });
-        });
-    };
-
-    for (const tab of browserTabs) {
-      let webview = browserWebviewsRef.current.get(tab.id);
-      if (!webview) {
-        const nextWebview = document.createElement("webview") as BrowserWebviewElement;
-        nextWebview.className = "absolute inset-0 h-full w-full";
-        nextWebview.style.backgroundColor = "#05070b";
-        nextWebview.style.border = "0";
-        nextWebview.style.display = "none";
-        nextWebview.style.height = "100%";
-        nextWebview.style.width = "100%";
-        nextWebview.setAttribute("partition", statusRef.current?.partition || "persist:ade-browser");
-        nextWebview.setAttribute("webpreferences", "contextIsolation=yes,nodeIntegration=no,sandbox=yes");
-        browserWebviewsRef.current.set(tab.id, nextWebview);
-        webview = nextWebview;
-
-        const attach = () => attachVisibleWebview(tab.id, nextWebview);
-        nextWebview.addEventListener("dom-ready", attach);
-        browserWebviewAttachCleanupRef.current.set(tab.id, () => {
-          nextWebview.removeEventListener("dom-ready", attach);
-        });
-      }
-
-      if (webview.parentElement !== host) {
-        host.appendChild(webview);
-      }
-
-      const pendingUrl = pendingWebviewNavigationsRef.current.get(tab.id) ?? null;
-      const fallbackUrl = tab.id === activeTabId ? statusRef.current?.url ?? "" : "";
-      const initialUrl = pendingUrl ?? tab.url ?? fallbackUrl ?? "about:blank";
-      if ((pendingUrl || !browserWebviewAttachKeysRef.current.has(tab.id)) && webview.getAttribute("src") !== initialUrl) {
-        webview.setAttribute("src", initialUrl.length > 0 ? initialUrl : "about:blank");
-      }
-      if (pendingUrl) {
-        pendingWebviewNavigationsRef.current.delete(tab.id);
-      }
-
-      const isActive = tab.id === activeTabId;
-      webview.style.display = isActive ? "flex" : "none";
-      webview.style.visibility = isActive && captureBase ? "hidden" : "visible";
-      webview.style.pointerEvents = isActive && !captureBase && !browserInputSuppressed ? "auto" : "none";
-      webview.setAttribute("aria-hidden", isActive ? "false" : "true");
-    }
-  }, [activeTabId, applyStatus, browserInputSuppressed, browserTabs, tabIdsSignature, captureBase, webviewNavigationNonce, withBrowserScope]);
+  }, [prepareRemoteNavigation, refreshStatus, rememberTabTunnel, remotePin, withBrowserScope]);
 
   const runBusy = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -2025,60 +1385,6 @@ function BuiltInBrowserPanelView({
     setCaptureSelection(null);
     window.requestAnimationFrame(() => reportBounds());
   }, [reportBounds]);
-
-  const navigateRendererWebview = useCallback((tabId: string, url: string): boolean => {
-    const webview = browserWebviewsRef.current.get(tabId);
-    if (!webview) {
-      pendingWebviewNavigationsRef.current.set(tabId, url);
-      setWebviewNavigationNonce((value) => value + 1);
-      return true;
-    }
-    if (webview.getAttribute("src") !== url) {
-      webview.setAttribute("src", url);
-    }
-    setWebviewNavigationNonce((value) => value + 1);
-    return true;
-  }, []);
-
-  const attachActiveRendererWebview = useCallback(async (): Promise<boolean> => {
-    const api = getBrowserApi();
-    if (!shouldUseRendererBrowserWebviews(api) || !activeTabId) return false;
-    const webview = browserWebviewsRef.current.get(activeTabId);
-    if (!webview) return false;
-    let webContentsId: number | undefined;
-    try {
-      webContentsId = webview.getWebContentsId?.();
-    } catch {
-      return false;
-    }
-    if (!webContentsId || webContentsId <= 0) return false;
-    const attachKey = `${activeTabId}:${webContentsId}`;
-    if (browserWebviewAttachKeysRef.current.get(activeTabId) !== attachKey) {
-      browserWebviewAttachKeysRef.current.set(activeTabId, attachKey);
-      const nextStatus = await api.attachWebview(withBrowserScope({ tabId: activeTabId, webContentsId }));
-      applyStatus(nextStatus);
-    }
-    return true;
-  }, [activeTabId, applyStatus, withBrowserScope]);
-
-  const captureActiveRendererWebview = useCallback(async (): Promise<BuiltInBrowserScreenshot | null> => {
-    if (!activeTabId) return null;
-    const webview = browserWebviewsRef.current.get(activeTabId);
-    if (!webview?.capturePage) return null;
-    const image = await webview.capturePage();
-    if (!image?.toDataURL || image.isEmpty?.()) return null;
-    const dataUrl = image.toDataURL();
-    const size = image.getSize?.() ?? { width: 0, height: 0 };
-    if (!dataUrl || size.width <= 0 || size.height <= 0) return null;
-    return {
-      capturedAt: new Date().toISOString(),
-      width: size.width,
-      height: size.height,
-      dataUrl,
-      mimeType: "image/png",
-      filename: "built-in-browser-screenshot.png",
-    };
-  }, [activeTabId]);
 
   /*
    * There is deliberately no "open Google when the pane is empty" effect.
@@ -2101,19 +1407,6 @@ function BuiltInBrowserPanelView({
       void runBusy("navigate", async () => {
         if (captureModeRef.current) restoreLiveBrowserView();
         const api = requireBrowserApi();
-        if (shouldUseRendererBrowserWebviews(api)) {
-          let tabId: string | null = activeTabId;
-          if (!tabId) {
-            if (!api.createTab) throw new Error("This ADE build does not support browser tab creation.");
-            const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true }), runtimePinRef.current), statusRef.current);
-            applyStatus(nextStatus);
-            tabId = nextStatus.activeTabId;
-          }
-          if (!tabId) throw new Error("ADE browser could not create a tab.");
-          navigateRendererWebview(tabId, nextUrl);
-          setUrlInput(nextUrl);
-          return;
-        }
         // The human typed this, so no approval bar — but a loopback URL on a
         // remote pin still has to be tunneled before it means anything here.
         const prepared = await prepareRemoteNavigation(nextUrl, { human: true });
@@ -2123,14 +1416,14 @@ function BuiltInBrowserPanelView({
         }
         await api.navigate(withBrowserScope({ url: nextUrl }), runtimePinRef.current);
         setUrlInput(nextUrl);
-        await refreshStatus();
+        // Before the refresh: see `rememberTabTunnel`.
         if (prepared.tunnel) {
-          const tunnel = prepared.tunnel;
-          setTabTunnels((prev) => setTabTunnel(prev, statusRef.current?.activeTabId ?? null, tunnel));
+          rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
         }
+        await refreshStatus();
       });
     },
-    [activeTabId, applyStatus, navigateRendererWebview, prepareRemoteNavigation, refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope],
+    [prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope],
   );
 
   const handleNavigate = useCallback(
@@ -2196,7 +1489,11 @@ function BuiltInBrowserPanelView({
       if (!api.endHandoff) {
         throw new Error("This ADE build does not support handing the browser back.");
       }
-      await api.endHandoff(withBrowserScope({ endedBy }), runtimePinRef.current);
+      // Deliberately un-pinned. The handed-off tab is THIS Electron process's
+      // own WebContentsView; the daemon round trip cannot reach it, and the
+      // bridge refuses a user client for having no chat capability. Preload
+      // routes this one call straight to local IPC.
+      await api.endHandoff(withBrowserScope({ endedBy }));
       setHandoffOfferSilencedOrigin(null);
       await refreshStatus();
     });
@@ -2289,15 +1586,8 @@ function BuiltInBrowserPanelView({
         return;
       }
       const api = requireBrowserApi();
-      await attachActiveRendererWebview();
-      let screenshot: BuiltInBrowserScreenshot | null = null;
-      try {
-        const result = await api.captureScreenshot(browserScope, runtimePinRef.current);
-        screenshot = normalizeScreenshot(result, statusRef.current);
-      } catch (error) {
-        screenshot = await captureActiveRendererWebview();
-        if (!screenshot) throw error;
-      }
+      const result = await api.captureScreenshot(browserScope, runtimePinRef.current);
+      const screenshot = normalizeScreenshot(result, statusRef.current);
       if (!screenshot) throw new Error("Browser screenshot capture did not return an image.");
       if (!(screenshot.dataUrl ?? screenshot.screenshotDataUrl) || !screenshot.width || !screenshot.height) {
         throw new Error("Browser screenshot capture did not include crop-ready image data.");
@@ -2309,7 +1599,7 @@ function BuiltInBrowserPanelView({
       await hideNativeBrowserView();
       setMessage({ tone: "info", text: "Drag a browser region to attach the screenshot crop and nearby page context." });
     });
-  }, [attachActiveRendererWebview, browserScope, captureActiveRendererWebview, hideNativeBrowserView, onAddContext, restoreLiveBrowserView, runBusy]);
+  }, [browserScope, hideNativeBrowserView, onAddContext, restoreLiveBrowserView, runBusy]);
 
   const addBrowserCaptureContext = useCallback(async (frame: BrowserFrame) => {
     if (!captureBase) return;
@@ -2522,8 +1812,17 @@ function BuiltInBrowserPanelView({
     });
   }, []);
 
+  /**
+   * Hand the OS the URL that is really loaded, not the one on display.
+   *
+   * On a tunneled tab those differ: the omnibox shows the remote origin the
+   * human asked for (`http://localhost:3000` on machine B) while the page is
+   * actually the local forward. Handing the display URL to this machine's
+   * opener loads THIS box's port 3000 — a different project's dev server, or an
+   * admin console — under the belief that it is the same page.
+   */
   const handleOpenExternal = useCallback(() => {
-    const url = currentUrl.trim();
+    const url = (statusRef.current?.url ?? currentUrl).trim();
     if (!url) return;
     void window.ade.app.openExternal(url).catch((error: unknown) => {
       setMessage({ tone: "error", text: `Could not open URL externally: ${errorMessage(error)}` });
@@ -2603,7 +1902,9 @@ function BuiltInBrowserPanelView({
   const handleApplyResponsive = useCallback(() => {
     const width = Number.parseInt(responsiveWidth, 10);
     const height = Number.parseInt(responsiveHeight, 10);
-    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    // `> 0`, not just finite: `0 × 768` used to banner "Browser is emulating
+    // 0×768" while the device pill showed the size main had clamped it to.
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
       setMessage({ tone: "error", text: "Enter a width and a height to size the browser." });
       return;
     }
@@ -2715,9 +2016,11 @@ function BuiltInBrowserPanelView({
    * ⌘F on an open bar re-focuses and selects, the way every other find bar
    * behaves: the second press is "search for something else", not a no-op.
    */
+  const findFocusFrameRef = useRef<number | null>(null);
   const openFind = useCallback(() => {
     setFindOpen(true);
     const focusInput = () => {
+      findFocusFrameRef.current = null;
       const input = findInputRef.current;
       if (!input) return;
       input.focus();
@@ -2726,7 +2029,32 @@ function BuiltInBrowserPanelView({
     if (findInputRef.current) focusInput();
     // The bar animates in, so a first open focuses on the next frame rather
     // than into a zero-height container.
-    window.requestAnimationFrame(focusInput);
+    if (findFocusFrameRef.current != null) window.cancelAnimationFrame(findFocusFrameRef.current);
+    findFocusFrameRef.current = window.requestAnimationFrame(focusInput);
+  }, []);
+
+  /*
+    Match counts belong to one page.
+
+    Nothing cleared them on a navigation or a tab switch, so the bar went on
+    claiming "3 of 12" over a page with no matches at all — and a switch away
+    from the Browser tool unmounted the panel without ever ending the find
+    session, leaving Chromium's highlight burnt into the tab.
+  */
+  useEffect(() => {
+    setFindState(null);
+    setFindError(null);
+  }, [activeTabId, status?.url]);
+
+  useEffect(() => () => {
+    if (findFocusFrameRef.current != null) window.cancelAnimationFrame(findFocusFrameRef.current);
+    const api = getBrowserApi();
+    void api?.stopFindInPage?.(
+      { ...browserScopeRef.current, action: "clearSelection" as const },
+      runtimePinRef.current,
+    ).catch(() => {
+      // The tab may already be gone; there is nothing left to clear.
+    });
   }, []);
 
   /* ── DevTools, network log ──────────────────────────────────────────────── */
@@ -2897,23 +2225,39 @@ function BuiltInBrowserPanelView({
     if (key === "f") {
       event.preventDefault();
       openFind();
-      return;
     }
-    if (key === "=" || key === "+") {
-      event.preventDefault();
-      handleZoomStep(1);
-      return;
-    }
-    if (key === "-" || key === "_") {
-      event.preventDefault();
-      handleZoomStep(-1);
-      return;
-    }
-    if (key === "0") {
-      event.preventDefault();
-      handleZoomReset();
-    }
-  }, [closeFind, findOpen, handleZoomReset, handleZoomStep, openFind]);
+    /*
+      Page zoom is deliberately NOT bound here. CmdOrCtrl +=/−/0 are registered
+      as native View-menu accelerators, and Electron consumes an accelerator in
+      the browser process before this keydown ever fires — so a binding here
+      would pass every jsdom test and do nothing in the packaged app. The menu's
+      zoom command is claimed below instead.
+    */
+  }, [closeFind, findOpen, openFind]);
+
+  /**
+   * Take the app's zoom chords while this pane owns the keyboard.
+   *
+   * "Owns" includes focus being nowhere in the DOM: clicking into the page
+   * moves focus to the native view, which is a different WebContents entirely,
+   * so `document.activeElement` falls back to the body. Focus sitting in the
+   * chat composer, or any other pane, declines and the whole ADE UI zooms as
+   * before.
+   */
+  useEffect(() => {
+    if (!apiAvailable) return undefined;
+    return claimAppZoomCommands((command) => {
+      const panel = panelRef.current;
+      if (!panel || !hasTabRef.current) return false;
+      const active = document.activeElement;
+      const ownsKeyboard = active == null || active === document.body || panel.contains(active);
+      if (!ownsKeyboard) return false;
+      if (command === "in") handleZoomStep(1);
+      else if (command === "out") handleZoomStep(-1);
+      else handleZoomReset();
+      return true;
+    });
+  }, [apiAvailable, handleZoomReset, handleZoomStep]);
 
   /* ── Ambient reads ──────────────────────────────────────────────────────── */
 
@@ -2962,7 +2306,7 @@ function BuiltInBrowserPanelView({
     const api = getBrowserApi();
     if (!api?.getDevServers || remotePin) return undefined;
     let cancelled = false;
-    void Promise.resolve(api.getDevServers(browserScope, runtimePinRef.current))
+    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }))
       .then((value) => {
         if (cancelled) return;
         const discovered = normalizeDevServers(value);
@@ -2976,7 +2320,7 @@ function BuiltInBrowserPanelView({
     return () => {
       cancelled = true;
     };
-  }, [browserScope, remotePin]);
+  }, [contextLaneId, remotePin]);
 
   /*
     The port probe, as a fallback rather than an alternative.
@@ -3055,7 +2399,7 @@ function BuiltInBrowserPanelView({
       chips.push({
         key: "clipboard",
         label: "Paste a link",
-        hint: splitUrlForDisplay(clipboardUrl)?.host ?? null,
+        hint: splitBrowserUrlForDisplay(clipboardUrl)?.host ?? null,
         icon: "clipboard",
         onSelect: () => handleSuggestion(clipboardUrl),
       });
@@ -3090,13 +2434,18 @@ function BuiltInBrowserPanelView({
   }, []);
 
   const deviceLabel = useMemo(() => emulationDisplayLabel(emulation), [emulation]);
+  // `recording` and `selectedItem` are fresh objects on every browser event, so
+  // depending on them made this memo recompute constantly while looking like it
+  // did not. The layout only ever reads them as booleans.
+  const isRecording = Boolean(recording);
+  const hasSelection = Boolean(selectedItem);
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
-    hasSelection: Boolean(selectedItem),
-    recording: Boolean(recording),
+    hasSelection,
+    recording: isRecording,
     deviceLabel,
     urlFocused: editingUrl,
-  }), [deviceLabel, editingUrl, paneWidth, recording, selectedItem]);
-  const urlDisplay = useMemo(() => splitUrlForDisplay(currentUrl), [currentUrl]);
+  }), [deviceLabel, editingUrl, hasSelection, isRecording, paneWidth]);
+  const urlDisplay = useMemo(() => splitBrowserUrlForDisplay(currentUrl), [currentUrl]);
   // Only while the field shows exactly what is loaded: mid-edit the person's
   // own text is the truth, and dimming half of it would be a lie.
   const showUrlOverlay = !editingUrl && urlDisplay != null && urlInput === currentUrl;
@@ -3200,7 +2549,7 @@ function BuiltInBrowserPanelView({
     const timer = window.setTimeout(() => {
       progressPhaseRef.current = "idle";
       setProgressPhase("idle");
-    }, 360);
+    }, PROGRESS_FINISH_MS);
     return () => window.clearTimeout(timer);
   }, [loading]);
 
@@ -3210,7 +2559,7 @@ function BuiltInBrowserPanelView({
     if (loading || !currentUrl || !apiAvailable) return undefined;
     const timer = window.setTimeout(() => {
       void refreshUnderlaySnapshot();
-    }, 600);
+    }, UNDERLAY_SETTLE_SNAPSHOT_MS);
     return () => window.clearTimeout(timer);
   }, [apiAvailable, currentUrl, loading, refreshUnderlaySnapshot]);
 
@@ -3327,149 +2676,22 @@ function BuiltInBrowserPanelView({
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
-        <div className="relative flex h-[28px] min-w-0 shrink-0 select-none items-center overflow-hidden bg-white/[0.02]">
-          <div
-            ref={tabStripRef}
-            onScroll={syncTabStripFades}
-            role="tablist"
-            aria-label="ADE browser tabs"
-            className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto px-1.5"
-          >
-            {browserTabs.map((tab) => {
-              const active = tab.id === activeTabId;
-              // A tunneled tab falls back to the REMOTE origin, never the forward
-              // port, when the page has no title of its own.
-              const tabUrl = tunnelAwareUrl(tab.url, tabTunnels[tab.id] ?? null) || null;
-              const label = browserTabLabel(tab, tabUrl);
-              const ownerLabel = browserTabOwnerLabel(tab);
-              const ownerTitle = tab.handoff
-                ? `You own this tab until you hand it back · ${tab.handoff.reason}`
-                : ownerLabel
-                  ? `Agent holds this tab · ${ownerLabel}`
-                  : null;
-              return (
-                <div
-                  key={tab.id}
-                  className={cn(
-                    "group/tab relative inline-flex h-[22px] max-w-[188px] min-w-[92px] shrink-0 items-center",
-                    "gap-1.5 rounded-[7px] px-2 text-[10.5px]",
-                    "transition-colors duration-[120ms] ease-out",
-                    active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
-                  )}
-                  title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
-                >
-                  {active ? (
-                    reduceMotion ? (
-                      <span
-                        aria-hidden="true"
-                        className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
-                      />
-                    ) : (
-                      <motion.span
-                        aria-hidden="true"
-                        layoutId={TAB_INDICATOR_LAYOUT_ID}
-                        className="absolute inset-0 rounded-[7px] border border-white/[0.09] bg-white/[0.07]"
-                        transition={TAB_INDICATOR_SPRING}
-                      />
-                    )
-                  ) : null}
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => {
-                      if (!active) handleSwitchTab(tab.id);
-                    }}
-                    className={cn(
-                      "relative inline-flex min-w-0 flex-1 items-center gap-1.5 text-left",
-                      TOOLBAR_FOCUS,
-                    )}
-                  >
-                    {tab.isLoading ? (
-                      <SpinnerGap size={11} className="shrink-0 animate-spin text-sky-300/75" />
-                    ) : tab.faviconUrl && !failedFavicons[tab.id] ? (
-                      <motion.img
-                        key={tab.faviconUrl}
-                        src={tab.faviconUrl}
-                        alt=""
-                        aria-hidden="true"
-                        draggable={false}
-                        initial={reduceMotion ? false : { opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ duration: 0.12, ease: "easeOut" }}
-                        onError={() => setFailedFavicons((previous) => (
-                          previous[tab.id] ? previous : { ...previous, [tab.id]: true }
-                        ))}
-                        className="h-[11px] w-[11px] shrink-0 rounded-[2px] object-contain"
-                      />
-                    ) : (
-                      <Globe size={11} className={cn("shrink-0", active ? "text-fg/70" : "text-muted-fg/50")} />
-                    )}
-                    <span className="min-w-0 truncate leading-none">{label}</span>
-                    {tab.recording ? (
-                      <span
-                        aria-label="Recording"
-                        title="Recording this tab"
-                        className="h-[5px] w-[5px] shrink-0 rounded-full bg-rose-400 shadow-[0_0_0_2.5px_rgba(251,113,133,0.18)]"
-                      />
-                    ) : null}
-                    {ownerLabel ? (
-                      <Robot
-                        size={11}
-                        weight="duotone"
-                        aria-label={ownerTitle ?? undefined}
-                        className="shrink-0 text-cyan-200/70"
-                      />
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Close ${label}`}
-                    className={cn(
-                      "relative -mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
-                      "text-muted-fg/45 opacity-0 transition-colors duration-[120ms] ease-out",
-                      "hover:bg-white/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
-                      TOOLBAR_FOCUS,
-                    )}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleCloseTab(tab.id);
-                    }}
-                  >
-                    <X size={9} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          {tabStripFades.start ? (
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute left-0 top-0 h-full w-5 bg-gradient-to-r from-[var(--color-bg)] to-transparent"
-            />
-          ) : null}
-          {tabStripFades.end ? (
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute right-8 top-0 h-full w-5 bg-gradient-to-l from-[var(--color-bg)] to-transparent"
-            />
-          ) : null}
-          <button
-            type="button"
-            disabled={Boolean(busy) || !apiAvailable}
-            onClick={handleNewTab}
-            className={cn(
-              "mr-1.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px]",
-              "text-muted-fg/55 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
-              "disabled:cursor-not-allowed disabled:opacity-45",
-              TOOLBAR_FOCUS,
-            )}
-            title="New tab"
-            aria-label="New tab"
-          >
-            {busy === "new-tab" ? <SpinnerGap size={11} className="animate-spin" /> : <Plus size={11} />}
-          </button>
-        </div>
+        <BrowserTabStrip
+          stripRef={tabStripRef}
+          tabs={browserTabs}
+          activeTabId={activeTabId}
+          tabTunnels={tabTunnels}
+          failedFavicons={failedFavicons}
+          setFailedFavicons={setFailedFavicons}
+          fades={tabStripFades}
+          reduceMotion={reduceMotion}
+          busy={busy}
+          apiAvailable={apiAvailable}
+          onScroll={syncTabStripFades}
+          onSwitchTab={handleSwitchTab}
+          onCloseTab={handleCloseTab}
+          onNewTab={handleNewTab}
+        />
 
         {pendingApproval ? (
           <div
@@ -3503,514 +2725,86 @@ function BuiltInBrowserPanelView({
           </div>
         ) : null}
 
-        <div
-          ref={toolbarRowRef}
-          data-testid="browser-toolbar-row"
-          className="flex h-9 min-w-0 shrink-0 select-none items-center gap-1 overflow-hidden border-b border-white/[0.08] bg-white/[0.02] px-1.5"
-        >
-          <div className="inline-flex h-7 shrink-0 items-center overflow-hidden rounded-[7px] border border-white/[0.08] bg-black/25">
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable || !hasTab || !canGoBack}
-              onClick={handleBack}
-              className={cn("inline-flex h-full w-7 items-center justify-center text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-              title="Go back"
-              aria-label="Go back"
-            >
-              {busy === "back" ? <SpinnerGap size={13} className="animate-spin" /> : <ArrowLeft size={13} />}
-            </button>
-            {toolbar.showForward ? (
-              <button
-                type="button"
-                disabled={Boolean(busy) || !apiAvailable || !hasTab || !canGoForward}
-                onClick={handleForward}
-                className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-                title="Go forward"
-                aria-label="Go forward"
-              >
-                {busy === "forward" ? <SpinnerGap size={13} className="animate-spin" /> : <ArrowRight size={13} />}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable || !hasTab}
-              onClick={loading ? handleStop : handleReload}
-              className={cn("inline-flex h-full w-7 items-center justify-center border-l border-white/[0.06] text-fg/65 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-              title={loading ? "Stop loading" : "Reload"}
-              aria-label={loading ? "Stop loading" : "Reload"}
-            >
-              {busy === "reload" || busy === "stop" ? (
-                <SpinnerGap size={13} className="animate-spin" />
-              ) : loading ? (
-                <Stop size={13} weight="fill" />
-              ) : (
-                <ArrowClockwise size={13} />
-              )}
-            </button>
-          </div>
-
-          <form
-            onSubmit={handleNavigate}
-            className={cn(
-              "flex min-w-0 flex-1 items-center gap-1.5 bg-black/25 pl-2",
-              TOOLBAR_CONTROL,
-              "border-white/[0.08] focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
-            )}
-          >
-            {lockKind === "none" ? null : lockKind === "secure" ? (
-              <LockSimple
-                size={11}
-                weight="fill"
-                aria-label="Secure connection"
-                className="shrink-0 text-emerald-300/70"
-              />
-            ) : (
-              <LockSimpleOpen
-                size={11}
-                aria-label="Not a secure connection"
-                className="shrink-0 text-amber-300/70"
-              />
-            )}
-            {activeTabTunnel ? (
-              <span
-                className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-sky-400/25 bg-sky-500/12 px-1 text-[9.5px] font-medium text-sky-100/85"
-                title={`Tunneled to port ${activeTabTunnel.tunnel.remotePort} on ${activeTabTunnel.tunnel.machineLabel}`}
-              >
-                {activeTabTunnel.tunnel.machineLabel}
-              </span>
-            ) : null}
-            <span className="relative flex h-full min-w-0 flex-1 items-center">
-              <input
-                ref={urlInputRef}
-                value={urlInput}
-                onChange={(event) => setUrlInput(event.target.value)}
-                onFocus={handleUrlFocus}
-                onKeyDown={handleUrlKeyDown}
-                onBlur={() => {
-                  setEditingUrl(false);
-                  if (!urlInput.trim()) setUrlInput(currentUrl);
-                }}
-                placeholder="Search or enter address"
-                aria-label="ADE browser URL"
-                // Always `flex: 1 1 0` with no intrinsic floor: the field is the
-                // one control on this row that is allowed to take what is left,
-                // and the row above has already made sure that is enough.
-                className={cn(
-                  "h-full w-0 min-w-0 flex-1 basis-0 truncate bg-transparent pr-2 text-[11px] outline-none placeholder:text-muted-fg/40",
-                  showUrlOverlay ? "text-transparent caret-fg/80" : "text-fg/85",
-                )}
-              />
-              {/*
-                Arc/Zen reading order: the host is what answers "where am I?",
-                the path is detail. The real input stays underneath so selection,
-                typing and the caret behave exactly as before.
-              */}
-              {showUrlOverlay && urlDisplay ? (
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-y-0 left-0 right-2 flex items-center overflow-hidden whitespace-nowrap text-[11px] leading-none"
-                >
-                  <span className="shrink-0 text-fg/90">{urlDisplay.host}</span>
-                  {urlDisplay.rest ? (
-                    <span className="min-w-0 truncate text-muted-fg/55">{urlDisplay.rest}</span>
-                  ) : null}
-                </span>
-              ) : null}
-            </span>
-            {/*
-              The submit affordance is a hint, never the mechanism: Enter has
-              always opened what is typed. So it shrinks to a bare ▶ in a narrow
-              pane and steps out of the way entirely while the field is focused,
-              where it would otherwise be eating the width of the thing the
-              person is typing into.
-            */}
-            {toolbar.openAffordance === "none" ? null : (
-              <button
-                type="submit"
-                data-testid="browser-url-submit"
-                disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
-                className={cn(
-                  "inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-[6px] border-l border-white/[0.06] text-fg/75 hover:bg-white/[0.06]",
-                  toolbar.openAffordance === "label" ? "px-1.5 text-[10px] font-medium" : "w-7",
-                  TOOLBAR_MOTION,
-                  TOOLBAR_FOCUS,
-                )}
-                aria-label="Open URL"
-              >
-                {busy === "navigate" ? <SpinnerGap size={12} className="animate-spin" /> : <Play size={12} weight="fill" />}
-                {toolbar.openAffordance === "label" ? "Open" : null}
-              </button>
-            )}
-          </form>
-
-          {recording ? (
-            <button
-              type="button"
-              onClick={handleStopRecording}
-              disabled={busy === "recording"}
-              title="Stop recording"
-              aria-label={`Stop recording · ${recordingPillLabel(recording, recordingClock) ?? ""}`}
-              className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 px-2 font-mono text-[10px] font-medium",
-                TOOLBAR_CONTROL,
-                "border-rose-400/30 bg-rose-500/14 text-rose-100/90 hover:bg-rose-500/22",
-                TOOLBAR_MOTION,
-                TOOLBAR_FOCUS,
-              )}
-            >
-              <span
-                aria-hidden="true"
-                className="h-[6px] w-[6px] rounded-full bg-rose-400 [animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none"
-              />
-              {`REC ${recordingPillLabel(recording, recordingClock) ?? ""}`}
-            </button>
-          ) : null}
-
-          {toolbar.showDevice ? (
-            <DropdownMenu.Root open={deviceMenuOpen} onOpenChange={setDeviceMenuOpen}>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  disabled={!apiAvailable || !hasTab}
-                  aria-label={`Browser device preset — ${deviceLabel}`}
-                  className={cn(
-                    "inline-flex shrink-0 items-center gap-1 font-medium",
-                    toolbar.showLabels ? "px-2" : "w-7 justify-center",
-                    TOOLBAR_CONTROL,
-                    emulation ? TOOLBAR_ON : TOOLBAR_IDLE,
-                    TOOLBAR_MOTION,
-                    TOOLBAR_FOCUS,
-                  )}
-                >
-                  {emulation?.mobile ? <DeviceMobile size={12} /> : <Monitor size={12} />}
-                  {toolbar.showLabels ? (
-                    <>
-                      <span className="max-w-[104px] truncate">{deviceLabel}</span>
-                      <CaretDown size={9} className="shrink-0 opacity-60" />
-                    </>
-                  ) : null}
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  align="end"
-                  sideOffset={6}
-                  collisionPadding={8}
-                  className={MENU_CONTENT_CLASS}
-                >
-                  {deviceMenuItems}
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-          ) : null}
-
-          {toolbar.showCamera ? (
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable || !hasTab}
-              onClick={handleCameraClick}
-              className={cn(
-                "inline-flex w-7 shrink-0 items-center justify-center",
-                TOOLBAR_CONTROL,
-                captureBase || recording ? TOOLBAR_ON : TOOLBAR_IDLE,
-                TOOLBAR_MOTION,
-                TOOLBAR_FOCUS,
-              )}
-              title="Screenshot · Shift-click to record"
-              aria-label={captureBase ? "Cancel screenshot" : "Screenshot · Shift-click to record"}
-            >
-              {busy === "screenshot" || busy === "recording" ? (
-                <SpinnerGap size={13} className="animate-spin" />
-              ) : captureBase ? (
-                <ImageSquare size={13} />
-              ) : (
-                <Camera size={13} />
-              )}
-            </button>
-          ) : null}
-
-          {toolbar.showInspect ? (
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable || !hasTab}
-              onClick={handleInspectToggle}
-              className={cn(
-                "inline-flex shrink-0 items-center gap-1 font-medium",
-                toolbar.showLabels ? "px-2" : "w-7 justify-center",
-                TOOLBAR_CONTROL,
-                inspecting ? TOOLBAR_ON : TOOLBAR_IDLE,
-                TOOLBAR_MOTION,
-                TOOLBAR_FOCUS,
-              )}
-              title={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
-              aria-label={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
-            >
-              {busy === "inspect-on" || busy === "inspect-off" ? <SpinnerGap size={12} className="animate-spin" /> : <CursorClick size={12} />}
-              {toolbar.showLabels ? (inspecting ? "Inspecting" : "Inspect") : null}
-            </button>
-          ) : null}
-
-          {selectedItem && toolbar.showAttach ? (
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable || !onAddContext}
-              onClick={handleAttachSelection}
-              className={cn(
-                "inline-flex shrink-0 items-center gap-1 px-2 font-medium",
-                TOOLBAR_CONTROL,
-                TOOLBAR_IDLE,
-                TOOLBAR_MOTION,
-                TOOLBAR_FOCUS,
-              )}
-              title="Insert the selected browser element as context"
-            >
-              {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <Selection size={12} />}
-              Attach
-            </button>
-          ) : null}
-
-          <DropdownMenu.Root open={overflowOpen} onOpenChange={setOverflowOpen}>
-            <DropdownMenu.Trigger asChild>
-              <button
-                type="button"
-                disabled={!apiAvailable}
-                title="More browser options"
-                aria-label="More browser options"
-                className={cn(
-                  "inline-flex w-7 shrink-0 items-center justify-center",
-                  TOOLBAR_CONTROL,
-                  TOOLBAR_IDLE,
-                  TOOLBAR_MOTION,
-                  TOOLBAR_FOCUS,
-                )}
-              >
-                <DotsThreeVertical size={14} weight="bold" />
-              </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content align="end" sideOffset={6} className={MENU_CONTENT_CLASS}>
-                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Zoom</DropdownMenu.Label>
-                <div className="flex items-center gap-1 px-2 pb-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleZoomStep(-1)}
-                    aria-label="Zoom out"
-                    className="ade-shell-control inline-flex h-6 w-6 items-center justify-center text-[12px] font-medium"
-                  >
-                    −
-                  </button>
-                  <span className="min-w-[46px] text-center font-mono text-[10.5px] text-fg/80">
-                    {zoomPercentLabel(zoomFactor)}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleZoomStep(1)}
-                    aria-label="Zoom in"
-                    className="ade-shell-control inline-flex h-6 w-6 items-center justify-center text-[12px] font-medium"
-                  >
-                    +
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleZoomReset}
-                    className="ade-shell-control ml-auto inline-flex h-6 items-center px-2 text-[10px] font-medium"
-                    data-variant="ghost"
-                  >
-                    Reset
-                  </button>
-                </div>
-
-                {/*
-                  Everything the toolbar had to drop at this width lives here,
-                  so a 300px pane loses the buttons but never the abilities.
-                */}
-                {toolbar.showInspect && toolbar.showCamera && toolbar.showDevice ? null : (
-                  <>
-                    <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                    {toolbar.showInspect ? null : (
-                      <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleInspectToggle}>
-                        <CursorClick size={12} className="shrink-0 opacity-70" />
-                        <span className="min-w-0 flex-1 truncate">
-                          {inspecting ? "Stop inspecting" : "Inspect an element"}
-                        </span>
-                      </DropdownMenu.Item>
-                    )}
-                    {toolbar.showCamera ? null : (
-                      <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleAttachScreenshot}>
-                        <Camera size={12} className="shrink-0 opacity-70" />
-                        <span className="min-w-0 flex-1 truncate">Screenshot a region</span>
-                      </DropdownMenu.Item>
-                    )}
-                    {toolbar.showDevice ? null : (
-                      <DropdownMenu.Sub>
-                        <DropdownMenu.SubTrigger className={MENU_ITEM_CLASS}>
-                          {emulation?.mobile ? (
-                            <DeviceMobile size={12} className="shrink-0 opacity-70" />
-                          ) : (
-                            <Monitor size={12} className="shrink-0 opacity-70" />
-                          )}
-                          <span className="min-w-0 flex-1 truncate">Device</span>
-                          <span className="shrink-0 text-[9.5px] text-muted-fg/70">
-                            {deviceLabel}
-                          </span>
-                        </DropdownMenu.SubTrigger>
-                        <DropdownMenu.Portal>
-                          <DropdownMenu.SubContent
-                            sideOffset={4}
-                            collisionPadding={8}
-                            className={MENU_CONTENT_CLASS}
-                          >
-                            {deviceMenuItems}
-                          </DropdownMenu.SubContent>
-                        </DropdownMenu.Portal>
-                      </DropdownMenu.Sub>
-                    )}
-                  </>
-                )}
-
-                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => openFind()}>
-                  <MagnifyingGlass size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Find on page</span>
-                  <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">⌘F</span>
-                </DropdownMenu.Item>
-                {/*
-                  DevTools and the network log are states, not commands, so they
-                  read as switches — an "Off" label on a row you click is a
-                  question about what the click will do.
-                */}
-                <DropdownMenu.CheckboxItem
-                  className={MENU_ITEM_CLASS}
-                  checked={devToolsOpen}
-                  onCheckedChange={handleToggleDevTools}
-                  onSelect={(event) => event.preventDefault()}
-                >
-                  <Bug size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">DevTools</span>
-                  <MenuSwitch checked={devToolsOpen} />
-                </DropdownMenu.CheckboxItem>
-                <DropdownMenu.CheckboxItem
-                  className={MENU_ITEM_CLASS}
-                  checked={networkLogging}
-                  onCheckedChange={handleToggleNetworkLogging}
-                  onSelect={(event) => event.preventDefault()}
-                >
-                  <Pulse size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Network log</span>
-                  <MenuSwitch checked={networkLogging} />
-                </DropdownMenu.CheckboxItem>
-                {networkLogging ? (
-                  <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "pl-7")} onSelect={handleExportHar}>
-                    <span className="min-w-0 flex-1 truncate">Export HAR</span>
-                  </DropdownMenu.Item>
-                ) : null}
-
-                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Recording</DropdownMenu.Label>
-                <DropdownMenu.RadioGroup
-                  value={String(recordingFps)}
-                  onValueChange={(value) => setRecordingFps(normalizeRecordingFps(Number(value)))}
-                >
-                  {BUILT_IN_BROWSER_RECORDING_FRAME_RATES.map((fps) => (
-                    <DropdownMenu.RadioItem
-                      key={fps}
-                      value={String(fps)}
-                      className={MENU_ITEM_CLASS}
-                      onSelect={(event) => event.preventDefault()}
-                    >
-                      <Check
-                        size={11}
-                        weight="bold"
-                        aria-hidden="true"
-                        className={cn(
-                          "shrink-0 text-[var(--color-accent)]",
-                          recordingFps === fps ? "opacity-100" : "opacity-0",
-                        )}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{`${fps} fps`}</span>
-                    </DropdownMenu.RadioItem>
-                  ))}
-                </DropdownMenu.RadioGroup>
-
-                {/*
-                  "Links open in:" is a standing preference; "Open this page in
-                  system browser" is a thing you do once. They used to sit next
-                  to each other reading as two spellings of the same row, so the
-                  preference keeps the heading and the action moves to the end.
-                */}
-                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                <DropdownMenu.Label className={MENU_LABEL_CLASS}>Links open in</DropdownMenu.Label>
-                <DropdownMenu.RadioGroup
-                  value={linkMode}
-                  onValueChange={(value) => handleLinkModeChange(value === "external" ? "external" : "in-app")}
-                >
-                  <DropdownMenu.RadioItem value="in-app" className={MENU_ITEM_CLASS}>
-                    <Check
-                      size={11}
-                      weight="bold"
-                      aria-hidden="true"
-                      className={cn(
-                        "shrink-0 text-[var(--color-accent)]",
-                        linkMode === "in-app" ? "opacity-100" : "opacity-0",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">In ADE</span>
-                  </DropdownMenu.RadioItem>
-                  <DropdownMenu.RadioItem value="external" className={MENU_ITEM_CLASS}>
-                    <Check
-                      size={11}
-                      weight="bold"
-                      aria-hidden="true"
-                      className={cn(
-                        "shrink-0 text-[var(--color-accent)]",
-                        linkMode === "external" ? "opacity-100" : "opacity-0",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">System browser</span>
-                  </DropdownMenu.RadioItem>
-                </DropdownMenu.RadioGroup>
-                <p className="px-2 pb-1.5 pt-0.5 text-[9.5px] leading-[13px] text-muted-fg/70">
-                  ⌘-click always opens outside.
-                </p>
-
-                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleToggleProfile}>
-                  <ShieldCheck size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Profile…</span>
-                </DropdownMenu.Item>
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => setImportOpen(true)}>
-                  <SignIn size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Import logins…</span>
-                </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  className={MENU_ITEM_CLASS}
-                  disabled={!currentUrl}
-                  onSelect={handleOpenExternal}
-                >
-                  <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
-                  <span className="min-w-0 flex-1 truncate">Open this page in system browser</span>
-                </DropdownMenu.Item>
-                {selectedItem ? (
-                  <>
-                    <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                    <DropdownMenu.Label className={MENU_LABEL_CLASS}>Selection</DropdownMenu.Label>
-                    {onInsertDraft ? (
-                      <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleInsertSelectionDraft}>
-                        <span className="min-w-0 flex-1 truncate">Insert into the message</span>
-                      </DropdownMenu.Item>
-                    ) : null}
-                    <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handleClearSelection}>
-                      <span className="min-w-0 flex-1 truncate">Clear selection</span>
-                      {selectionFrame ? (
-                        <span className="shrink-0 font-mono text-[9px] text-muted-fg/60">{selectionFrame}</span>
-                      ) : null}
-                    </DropdownMenu.Item>
-                  </>
-                ) : null}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        </div>
+        <BrowserToolbarRow
+          rowRef={toolbarRowRef}
+          toolbar={toolbar}
+          busy={busy}
+          apiAvailable={apiAvailable}
+          hasTab={hasTab}
+          canGoBack={canGoBack}
+          canGoForward={canGoForward}
+          loading={loading}
+          onBack={handleBack}
+          onForward={handleForward}
+          onReload={handleReload}
+          onStop={handleStop}
+          onNavigate={handleNavigate}
+          lockKind={lockKind}
+          activeTabTunnel={activeTabTunnel}
+          urlInputRef={urlInputRef}
+          urlInput={urlInput}
+          setUrlInput={setUrlInput}
+          setEditingUrl={setEditingUrl}
+          onUrlFocus={handleUrlFocus}
+          onUrlKeyDown={handleUrlKeyDown}
+          currentUrl={currentUrl}
+          showUrlOverlay={showUrlOverlay}
+          urlDisplay={urlDisplay}
+          recording={recording}
+          recordingClock={recordingClock}
+          onStopRecording={handleStopRecording}
+          deviceMenuOpen={deviceMenuOpen}
+          setDeviceMenuOpen={setDeviceMenuOpen}
+          deviceLabel={deviceLabel}
+          emulation={emulation}
+          deviceMenuItems={deviceMenuItems}
+          hasCaptureBase={Boolean(captureBase)}
+          onCameraClick={handleCameraClick}
+          inspecting={inspecting}
+          onInspectToggle={handleInspectToggle}
+          hasSelection={hasSelection}
+          canAddContext={Boolean(onAddContext)}
+          onAttachSelection={handleAttachSelection}
+          overflow={(
+            <BrowserOverflowMenu
+              open={overflowOpen}
+              onOpenChange={setOverflowOpen}
+              apiAvailable={apiAvailable}
+              toolbar={toolbar}
+              busy={busy}
+              zoomFactor={zoomFactor}
+              onZoomStep={handleZoomStep}
+              onZoomReset={handleZoomReset}
+              inspecting={inspecting}
+              onInspectToggle={handleInspectToggle}
+              onAttachScreenshot={handleAttachScreenshot}
+              emulation={emulation}
+              deviceLabel={deviceLabel}
+              deviceMenuItems={deviceMenuItems}
+              onOpenFind={openFind}
+              devToolsOpen={devToolsOpen}
+              onToggleDevTools={handleToggleDevTools}
+              networkLogging={networkLogging}
+              onToggleNetworkLogging={handleToggleNetworkLogging}
+              onExportHar={handleExportHar}
+              recordingFps={recordingFps}
+              setRecordingFps={setRecordingFps}
+              linkMode={linkMode}
+              onLinkModeChange={handleLinkModeChange}
+              onToggleProfile={handleToggleProfile}
+              onOpenLoginImport={() => setImportOpen(true)}
+              currentUrl={currentUrl}
+              onOpenExternal={handleOpenExternal}
+              hasSelection={hasSelection}
+              canAddContext={Boolean(onAddContext)}
+              onAttachSelection={handleAttachSelection}
+              canInsertDraft={Boolean(onInsertDraft)}
+              onInsertSelectionDraft={handleInsertSelectionDraft}
+              onClearSelection={handleClearSelection}
+              selectionFrame={selectionFrame}
+            />
+          )}
+        />
 
         {/*
           Determinate-feeling progress: it races out, waits at 90%, then snaps
@@ -4037,169 +2831,27 @@ function BuiltInBrowserPanelView({
           </AnimatePresence>
         </div>
 
-        <AnimatePresence initial={false}>
-          {findOpen ? (
-            <motion.div
-              key="ade-browser-find"
-              initial={reduceMotion ? false : { height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-              transition={REVEAL_TRANSITION}
-              /*
-                Escape belongs to whichever thing is on top. The find bar claims
-                it here so the pane's own capture-phase handler — which closes
-                the entire tool — skips anything inside a declared scope; the
-                input also stops the event itself, so the bar is safe in a shell
-                that has not learned the attribute yet.
-              */
-              data-ade-escape-scope="find"
-              data-testid="browser-find-bar"
-              className="shrink-0 overflow-hidden border-b border-white/[0.08] bg-white/[0.015]"
-            >
-              <form
-                role="search"
-                aria-label="Find in this page"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  findStep(findText, true);
-                }}
-                className="flex min-w-0 select-none items-center gap-1.5 overflow-hidden px-1.5 py-1.5"
-              >
-                <MagnifyingGlass size={12} className="shrink-0 text-muted-fg/55" />
-                <input
-                  ref={findInputRef}
-                  value={findText}
-                  onChange={(event) => {
-                    setFindText(event.target.value);
-                    queueFind(event.target.value);
-                  }}
-                  onKeyDownCapture={(event) => {
-                    if (event.key !== "Escape") return;
-                    // Escape closes the bar and nothing else. It used to reach
-                    // the pane's handler and take the whole Browser tool down
-                    // with it, which is a very expensive way to dismiss a
-                    // six-character input.
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.nativeEvent.stopImmediatePropagation();
-                    closeFind();
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") return;
-                    // Shift-Enter walks backwards, the way every find bar does.
-                    event.preventDefault();
-                    findStep(findText, !event.shiftKey);
-                  }}
-                  placeholder="Find on page"
-                  aria-label="Find on page"
-                  className="h-6 min-w-0 flex-1 bg-transparent text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/40"
-                />
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className={cn(
-                    "min-w-0 shrink-0 truncate text-[10px]",
-                    findError ? "font-sans text-amber-100/80" : "font-mono text-muted-fg/75",
-                  )}
-                >
-                  {findError ?? findMatchLabel(findState) ?? ""}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => findStep(findText, false)}
-                  disabled={!findText.trim()}
-                  title="Previous match"
-                  aria-label="Previous match"
-                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-                >
-                  <CaretLeft size={11} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => findStep(findText, true)}
-                  disabled={!findText.trim()}
-                  title="Next match"
-                  aria-label="Next match"
-                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-                >
-                  <CaretRight size={11} />
-                </button>
-                <button
-                  type="button"
-                  onClick={closeFind}
-                  title="Close find bar"
-                  aria-label="Close find bar"
-                  className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg/85", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-                >
-                  <X size={11} />
-                </button>
-              </form>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        <BrowserFindBar
+          open={findOpen}
+          reduceMotion={reduceMotion}
+          inputRef={findInputRef}
+          findText={findText}
+          setFindText={setFindText}
+          queueFind={queueFind}
+          findStep={findStep}
+          closeFind={closeFind}
+          findError={findError}
+          findState={findState}
+        />
 
-        {/*
-          Login handoff bar. The one place the pane speaks for the agent rather
-          than about it: the agent said out loud that it cannot sign in, so this
-          asks the person directly and hands the tab straight back when they are
-          done. Amber, not red — a handoff is a request, not a failure.
-        */}
-        <AnimatePresence initial={false}>
-          {handoff ? (
-            <motion.div
-              key="ade-browser-handoff"
-              data-testid="browser-handoff-bar"
-              initial={reduceMotion ? false : { height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-              transition={REVEAL_TRANSITION}
-              className="shrink-0 overflow-hidden border-b border-amber-300/16 bg-amber-500/[0.075]"
-            >
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex min-w-0 items-center gap-2 overflow-hidden px-2.5 py-1.5 text-[11px] text-amber-100/85"
-              >
-                {showHandoffHandBackOffer ? (
-                  <>
-                    <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
-                    <span className="min-w-0 break-words">Signed in?</span>
-                    <button
-                      type="button"
-                      onClick={() => handleHandBack("auto-offer")}
-                      disabled={busy === "hand-back"}
-                      className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      Hand back now
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleKeepHandoffControl}
-                      className="shrink-0 rounded border border-white/[0.08] px-1.5 py-0.5 text-[10px] font-medium text-amber-100/70 hover:bg-white/[0.06]"
-                    >
-                      Keep control
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <Hand size={12} weight="duotone" className="shrink-0" aria-hidden />
-                    <span className="min-w-0 break-words">
-                      Agent needs you to sign in · &ldquo;{handoff.reason}&rdquo;
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleHandBack("human")}
-                      disabled={busy === "hand-back"}
-                      className="ml-auto shrink-0 rounded border border-amber-300/25 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-50/90 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      Hand back
-                    </button>
-                  </>
-                )}
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        <BrowserHandoffBar
+          handoff={handoff}
+          reduceMotion={reduceMotion}
+          showHandBackOffer={showHandoffHandBackOffer}
+          busy={busy}
+          onHandBack={handleHandBack}
+          onKeepControl={handleKeepHandoffControl}
+        />
 
         {message ? (
           <div
@@ -4225,271 +2877,42 @@ function BuiltInBrowserPanelView({
         ) : null}
 
         {profileOpen ? (
-          <div className="grid max-h-[190px] shrink-0 grid-cols-[minmax(220px,0.9fr)_minmax(280px,1.1fr)] overflow-hidden border-b border-emerald-300/12 bg-emerald-950/15 text-[10px]">
-            <section className="min-w-0 border-r border-white/[0.06] px-2.5 py-2">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-100/90">
-                <ShieldCheck size={13} />
-                Global authenticated profile
-                <button
-                  type="button"
-                  onClick={() => void refreshProfileSecurity().catch((error: unknown) => {
-                    setMessage({ tone: "error", text: errorMessage(error) });
-                  })}
-                  disabled={profileBusy}
-                  className="ml-auto rounded border border-white/[0.08] px-1.5 py-0.5 text-[9px] text-fg/65 hover:bg-white/[0.06] disabled:opacity-40"
-                >
-                  Refresh
-                </button>
-              </div>
-              {profileDiagnostics ? (
-                <div className="mt-1.5 space-y-1 text-muted-fg/70">
-                  <div>
-                    {profileDiagnostics.cookieCount} cookies · {profileDiagnostics.persistentCookieCount} persistent · {profileDiagnostics.sessionCookieCount} session
-                  </div>
-                  <div>
-                    Cache {profileDiagnostics.cacheSizeBytes == null ? "unavailable" : formatBytes(profileDiagnostics.cacheSizeBytes)} · {profileDiagnostics.persistedPermissionDecisionCount} remembered permissions
-                  </div>
-                  <div>
-                    Last safe flush {profileDiagnostics.lastStorageFlushAt
-                      ? new Date(profileDiagnostics.lastStorageFlushAt).toLocaleString()
-                      : "not yet recorded this run"}
-                  </div>
-                  <div className="truncate" title={profileDiagnostics.cookieDomains.join(", ")}>
-                    Signed-in domains: {profileDiagnostics.cookieDomains.length > 0
-                      ? profileDiagnostics.cookieDomains.slice(0, 8).join(", ")
-                      : "none detected"}
-                    {profileDiagnostics.cookieDomains.length > 8
-                      ? ` +${profileDiagnostics.cookieDomains.length - 8}`
-                      : ""}
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-2 text-muted-fg/55">Loading profile diagnostics…</div>
-              )}
-            </section>
-            <section className="min-w-0 overflow-y-auto px-2.5 py-2">
-              <div className="flex items-center gap-2 text-[11px] font-medium text-fg/82">
-                Remembered site permissions
-                {permissionDecisions.length > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => clearRememberedPermission()}
-                    disabled={profileBusy}
-                    className="ml-auto rounded border border-rose-300/15 px-1.5 py-0.5 text-[9px] text-rose-100/70 hover:bg-rose-500/10 disabled:opacity-40"
-                  >
-                    Clear all
-                  </button>
-                ) : null}
-              </div>
-              {permissionDecisions.length > 0 ? (
-                <div className="mt-1.5 space-y-1">
-                  {permissionDecisions.map((decision) => (
-                    <div
-                      key={`${decision.origin}:${decision.embeddingOrigin ?? ""}:${decision.permission}`}
-                      className="flex min-w-0 items-center gap-2 rounded border border-white/[0.05] bg-black/15 px-1.5 py-1"
-                    >
-                      <span className={cn(
-                        "rounded px-1 py-0.5 text-[8px] font-semibold uppercase",
-                        decision.decision === "allow"
-                          ? "bg-emerald-400/10 text-emerald-100/70"
-                          : "bg-rose-400/10 text-rose-100/70",
-                      )}>
-                        {decision.decision}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate" title={`${decision.origin} · ${decision.permission}`}>
-                        {decision.origin} · {decision.permission}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => clearRememberedPermission(decision)}
-                        disabled={profileBusy}
-                        className="shrink-0 rounded px-1 py-0.5 text-[9px] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="mt-2 text-muted-fg/55">No remembered allow or block decisions.</div>
-              )}
-            </section>
-          </div>
+          <BrowserProfilePanel
+            diagnostics={profileDiagnostics}
+            permissionDecisions={permissionDecisions}
+            busy={profileBusy}
+            onRefresh={() => void refreshProfileSecurity().catch((error: unknown) => {
+              setMessage({ tone: "error", text: errorMessage(error) });
+            })}
+            onClearPermission={clearRememberedPermission}
+          />
         ) : null}
 
-        {/*
-          The native view is a rectangle the compositor puts on top of this
-          renderer, so the rounded corners and the hairline have to come from
-          the host it is positioned inside — and its bounds are inset by that
-          hairline so the border is never painted over.
-        */}
-        <div
-          ref={browserSurfaceRef}
-          className="relative flex min-h-[160px] min-w-0 flex-1 flex-col overflow-hidden rounded-[6px] border border-white/[0.08] bg-[var(--color-bg)]"
-        >
-          <div ref={browserStageRef} className="relative min-h-0 min-w-0 flex-1">
-            <motion.div
-              ref={browserViewportRef}
-              aria-hidden="true"
-              className="pointer-events-none absolute overflow-hidden rounded-[5px]"
-              initial={false}
-              animate={{
-                left: viewFrame.left,
-                top: viewFrame.top,
-                width: viewFrame.width,
-                height: viewFrame.height,
-              }}
-              transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-              onAnimationComplete={() => reportBounds(undefined, { force: true })}
-            >
-              <AnimatePresence initial={false}>
-                {underlay ? (
-                  <motion.img
-                    key="ade-browser-underlay"
-                    data-testid="browser-underlay"
-                    src={underlay.dataUrl}
-                    alt=""
-                    draggable={false}
-                    initial={{ opacity: 1 }}
-                    animate={{ opacity: underlay.visible ? 1 : 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: UNDERLAY_FADE_MS / 1000, ease: "easeOut" }}
-                    className="h-full w-full object-cover object-top"
-                  />
-                ) : null}
-              </AnimatePresence>
-            </motion.div>
-
-            {captureImageDataUrl && captureBase?.width && captureBase.height ? (
-              <div
-                className="absolute inset-0 cursor-crosshair select-none bg-black"
-                onPointerDown={handleBrowserCapturePointerDown}
-                onPointerMove={handleBrowserCapturePointerMove}
-                onPointerUp={finishBrowserCapture}
-                onPointerCancel={cancelBrowserCapture}
-              >
-                <img
-                  ref={captureImageRef}
-                  src={captureImageDataUrl}
-                  alt=""
-                  draggable={false}
-                  className="h-full w-full object-contain"
-                />
-                <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-sky-300/18 bg-black/65 px-2 py-1 text-[11px] font-medium text-sky-50/85">
-                  Drag to attach a browser crop with page context
-                </div>
-                {captureSelection && activeCaptureFrame ? (
-                  <div
-                    className="pointer-events-none absolute border border-sky-200 bg-sky-400/14 shadow-[0_0_0_9999px_rgba(0,0,0,0.42)]"
-                    style={{
-                      left: captureSelection.bounds.left + (activeCaptureFrame.x * captureSelection.bounds.scaleX),
-                      top: captureSelection.bounds.top + (activeCaptureFrame.y * captureSelection.bounds.scaleY),
-                      width: Math.max(1, activeCaptureFrame.width * captureSelection.bounds.scaleX),
-                      height: Math.max(1, activeCaptureFrame.height * captureSelection.bounds.scaleY),
-                    }}
-                  />
-                ) : null}
-              </div>
-            ) : showLaunchpad || !apiAvailable ? (
-              /*
-                The launchpad, not an empty state: a browser with no page is a
-                browser waiting for an address, so it offers the addresses this
-                machine actually has instead of apologising for being empty.
-              */
-              <motion.div
-                data-testid="browser-launchpad"
-                initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                className="absolute inset-0 flex select-none flex-col items-center justify-center gap-2.5 px-5 text-center"
-              >
-                <Globe size={26} weight="duotone" className="text-[var(--color-accent)]/35" />
-                <div className="text-[12.5px] font-medium text-fg/80">
-                  {apiAvailable ? "Open a page" : "ADE browser unavailable"}
-                </div>
-                {apiAvailable ? (
-                  <>
-                    {launchpadChips.length > 0 ? (
-                      <div
-                        role="group"
-                        aria-label="Suggested pages"
-                        className="flex max-w-full flex-wrap items-center justify-center gap-1.5"
-                      >
-                        {launchpadChips.map((chip, index) => (
-                          <motion.button
-                            key={chip.key}
-                            type="button"
-                            onClick={chip.onSelect}
-                            initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.18, ease: "easeOut", delay: reduceMotion ? 0 : index * 0.02 }}
-                            className={cn(
-                              "inline-flex h-6 max-w-full items-center gap-1.5 rounded-full border border-white/[0.09] bg-card/60 px-2.5",
-                              "text-[10.5px] font-medium text-fg/78",
-                              "transition-colors duration-[120ms] ease-out hover:border-white/[0.18] hover:bg-card",
-                              TOOLBAR_FOCUS,
-                            )}
-                          >
-                            {chip.icon === "clipboard" ? (
-                              <ClipboardText size={11} className="shrink-0 opacity-70" />
-                            ) : (
-                              <span
-                                aria-hidden="true"
-                                className="h-[5px] w-[5px] shrink-0 rounded-full bg-emerald-400 shadow-[0_0_0_2.5px_rgba(52,211,153,0.16)]"
-                              />
-                            )}
-                            <span className="min-w-0 truncate">{chip.label}</span>
-                            {chip.hint ? (
-                              <span className="min-w-0 shrink truncate text-muted-fg/60">{chip.hint}</span>
-                            ) : null}
-                          </motion.button>
-                        ))}
-                      </div>
-                    ) : null}
-                    <div className="max-w-[340px] text-[10.5px] leading-[15px] text-muted-fg/70">
-                      Type an address above, or let an agent open one with{" "}
-                      <span className="font-mono text-fg/65">ade browser open</span>.
-                    </div>
-                  </>
-                ) : (
-                  <div className="max-w-[340px] text-[11px] leading-5 text-muted-fg/60">
-                    This renderer does not expose window.ade.builtInBrowser.
-                  </div>
-                )}
-              </motion.div>
-            ) : null}
-          </div>
-
-          {/*
-            The caption is the honest label on a letterboxed view: the page is
-            being rendered at these CSS pixels, whatever the pane happens to be.
-          */}
-          {letterboxed ? (
-            <div className="flex h-[26px] shrink-0 select-none items-center justify-center gap-2 border-t border-white/[0.06] bg-white/[0.015]">
-              <span
-                data-testid="browser-emulation-caption"
-                className="font-mono text-[10px] tracking-[0.02em] text-muted-fg/75"
-              >
-                {emulationCaption(emulation, viewFrame.scale)}
-              </span>
-              <button
-                type="button"
-                onClick={handleRotateEmulation}
-                disabled={busy === "emulation"}
-                title="Rotate"
-                aria-label="Rotate the emulated device"
-                className={cn(
-                  "inline-flex h-[18px] w-[18px] items-center justify-center rounded-[5px] text-muted-fg/60",
-                  "hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-40",
-                  TOOLBAR_MOTION,
-                  TOOLBAR_FOCUS,
-                )}
-              >
-                <ArrowsLeftRight size={11} />
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <BrowserStage
+          surfaceRef={browserSurfaceRef}
+          stageRef={browserStageRef}
+          viewportRef={browserViewportRef}
+          captureImageRef={captureImageRef}
+          viewFrame={viewFrame}
+          reduceMotion={reduceMotion}
+          onViewportAnimationComplete={() => reportBounds(undefined, { force: true })}
+          underlay={underlay}
+          captureImageDataUrl={captureImageDataUrl}
+          captureBase={captureBase}
+          captureSelection={captureSelection}
+          activeCaptureFrame={activeCaptureFrame}
+          onCapturePointerDown={handleBrowserCapturePointerDown}
+          onCapturePointerMove={handleBrowserCapturePointerMove}
+          onCapturePointerUp={finishBrowserCapture}
+          onCapturePointerCancel={cancelBrowserCapture}
+          showLaunchpad={showLaunchpad}
+          apiAvailable={apiAvailable}
+          launchpadChips={launchpadChips}
+          letterboxed={letterboxed}
+          emulation={emulation}
+          busy={busy}
+          onRotateEmulation={handleRotateEmulation}
+        />
 
       </div>
       <BrowserLoginImportDialog

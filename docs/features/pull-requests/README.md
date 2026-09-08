@@ -174,8 +174,8 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `githubPrStackService.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
-| `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
+| `prIssueResolver.ts` | **Does not exist.** Listed here historically; there is no such file in `apps/desktop/src/main/services/prs/`. See the issue-resolution note below. |
+| `prRebaseResolver.ts` | **Does not exist.** Same as above. |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
 
 AI review runs live in `apps/desktop/src/main/services/review/reviewService.ts`.
@@ -1770,13 +1770,19 @@ ADE supports agent-driven resolution of PR issues for two scopes:
 - `comments` — unresolved review threads (non-outdated)
 - `both` — combined
 
-`prIssueResolver.ts` assembles a structured prompt from live PR
-state (failing checks + workflow run detail, unresolved threads with
-compact summaries, changed files, recent commits) and launches a
-chat agent session scoped to the lane worktree. The session gets
-workflow tools to re-pull checks/threads/comments, re-trigger failed
-GitHub Actions check runs, post replies on review threads, and mark
-review threads resolved.
+> **Not implemented.** The rest of this section describes the intended design,
+> not shipped behavior. `prIssueResolver.ts` does not exist, and neither do the
+> `pr*` workflow tools it would hand the session — those names are listed in
+> `workflowTools.ts` but have no implementation in any tool registry (see
+> [chat/tool-system.md](../chat/tool-system.md#pr-issue-resolution)).
+> `getPrIssueResolutionAvailability()` in `apps/desktop/src/shared/prIssueResolution.ts`
+> is real and tested but has no non-test caller.
+
+The design was: assemble a structured prompt from live PR state (failing checks
++ workflow run detail, unresolved threads with compact summaries, changed files,
+recent commits) and launch a chat agent session scoped to the lane worktree, with
+tools to re-pull checks/threads/comments, re-trigger failed GitHub Actions check
+runs, post replies on review threads, and mark review threads resolved.
 
 The generated prompt frames each session as one bounded resolution
 round: the agent makes a coherent set of fixes for the current

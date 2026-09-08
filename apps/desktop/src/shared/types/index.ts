@@ -16,6 +16,7 @@ export * from "./chatMentions";
 export * from "./cto";
 export * from "./computerUseArtifacts";
 export * from "./iosSimulator";
+export * from "./agentObservation";
 export * from "./appControl";
 export * from "./builtInBrowser";
 export * from "./builtInBrowserLoginImport";

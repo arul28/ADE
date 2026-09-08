@@ -2,26 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { AnimatePresence, motion, useMotionValue, useReducedMotion } from "motion/react";
 import { X } from "@phosphor-icons/react";
 import type {
-  AppControlSession,
+  AppControlEventPayload,
   BuiltInBrowserActionTraceEntry,
+  BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
-  IosSimulatorSession,
+  IosSimulatorEventPayload,
   OpenProjectBinding,
 } from "../../../shared/types";
 import {
   selectActiveProjectRoot,
-  useAppStore,
   selectActiveProjectStateKey,
+  selectLaneWorkViewState,
+  selectWorkViewState,
+  useAppStore,
   type WorkSidebarTab,
 } from "../../state/appStore";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
+import { workToolDefinition, type WorkToolContext } from "../terminals/workTools";
 import {
-  workToolAvailability,
-  workToolDefinition,
-  type WorkToolContext,
-} from "../terminals/workTools";
+  useNativeToolSessions,
+  type NativeToolFeedScope,
+} from "../terminals/useNativeToolSessions";
 import {
   acquireIosSimulatorPreviewStream,
   type IosSimulatorPreviewLease,
@@ -43,7 +47,9 @@ import {
   workLiveCardPositionFromRect,
   workLiveCardRect,
   workLivePreviewMaxWidth,
+  workLiveScrubFrameKey,
   workLiveScrubIndex,
+  workLiveSource,
   type WorkLiveActivity,
   type WorkLiveCardPosition,
   type WorkLiveScreenTool,
@@ -76,9 +82,9 @@ const TIMELINE_HEIGHT = 2;
 const CARD_HEIGHT = MEDIA_HEIGHT + HEADER_HEIGHT + FOOTER_HEIGHT + TIMELINE_HEIGHT;
 /** How often a frame-rate feed is allowed to move the "most recent tool" clock. */
 const ACTIVITY_COMMIT_MS = 500;
-/** t3's mini-player entry, in ADE's overshoot curve. */
-const ENTER = { duration: 0.2, ease: [0.22, 1, 0.36, 1] as const };
-const EXIT = { duration: 0.14, ease: [0.4, 0, 0.2, 1] as const };
+/** t3's mini-player entry, in ADE's emphasized curve. */
+const ENTER = { duration: 0.2, ease: EMPHASIZED_EASE } as const;
+const EXIT = exitTransition;
 const PREVIEW_FPS = 12;
 /**
  * A 1x1 transparent GIF. An `<img>` with no `src` draws the broken-image glyph
@@ -87,26 +93,6 @@ const PREVIEW_FPS = 12;
  * gets a `src` if you scrub.
  */
 const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-
-type LiveHandoff = { label: string; detail: string | null } | null;
-
-/**
- * Feature detection, not a type assertion: the handoff field is being added by
- * another unit and may not exist in this build. An absent field renders
- * nothing rather than an "unknown" chip.
- */
-function detectHandoff(value: unknown): LiveHandoff {
-  if (!value || typeof value !== "object") return null;
-  const handoff = (value as { handoff?: unknown }).handoff;
-  if (!handoff || typeof handoff !== "object") return null;
-  const record = handoff as { reason?: unknown; label?: unknown; state?: unknown; status?: unknown };
-  for (const candidate of [record.reason, record.label, record.state, record.status]) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return { label: "Needs you", detail: candidate.trim() };
-    }
-  }
-  return { label: "Needs you", detail: null };
-}
 
 /**
  * What "the browser did something" means, as a string.
@@ -117,7 +103,7 @@ function detectHandoff(value: unknown): LiveHandoff {
  * by the event the dismissal caused.
  */
 function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
-  if (!status) return "";
+  if (!status || !Array.isArray(status.tabs)) return "";
   const tab = status.tabs.find((entry) => entry.id === status.activeTabId) ?? status.tabs[0] ?? null;
   if (!tab) return `${status.tabs.length}`;
   return [
@@ -152,16 +138,23 @@ export function WorkLiveCornerCard({
   const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
-  const storedPosition = useAppStore((state) => (
-    projectStateKey ? state.workViewByProject?.[projectStateKey]?.workLiveCardPosition ?? null : null
-  ));
+  // Through the store's own selectors rather than a hand-built `"<p>::<lane>"`
+  // key: the key shape and the normalizers are the store's business, and
+  // spelling them here is how the two copies drifted in the first place.
+  const storedPosition = useAppStore(
+    useMemo(() => {
+      const select = selectWorkViewState(projectStateKey);
+      return (state: Parameters<typeof select>[0]) => select(state).workLiveCardPosition ?? null;
+    }, [projectStateKey]),
+  );
   // Dismissals are LANE-scoped: silencing the browser preview while you read
   // one lane's diff must not silence it in the lane you switch to next.
-  const storedDismissals = useAppStore((state) => (
-    projectStateKey && laneId
-      ? state.laneWorkViewByScope?.[`${projectStateKey}::${laneId}`]?.workLiveCardDismissed ?? null
-      : null
-  ));
+  const storedDismissals = useAppStore(
+    useMemo(() => {
+      const select = selectLaneWorkViewState(projectStateKey, laneId);
+      return (state: Parameters<typeof select>[0]) => select(state).workLiveCardDismissed ?? null;
+    }, [laneId, projectStateKey]),
+  );
 
   const context = useMemo<WorkToolContext>(() => ({
     isRemoteProject,
@@ -173,9 +166,6 @@ export function WorkLiveCornerCard({
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
-  const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
-  const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
-  const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [lastTrace, setLastTrace] = useState<BuiltInBrowserActionTraceEntry | null>(null);
   const [appControlAction, setAppControlAction] = useState<{ caption: string; at: number } | null>(null);
   const [activityAt, setActivityAt] = useState<Record<WorkLiveScreenTool, number>>({
@@ -186,7 +176,10 @@ export function WorkLiveCornerCard({
   /** Only used when there is no project to persist into (a projectless Work surface). */
   const [localPosition, setLocalPosition] = useState<WorkLiveCardPosition | null>(null);
   const [localDismissals, setLocalDismissals] = useState<Record<string, number> | null>(null);
-  const [scrubIndex, setScrubIndex] = useState<number | null>(null);
+  // Held by trace ID, not by index: a new action shifts the whole buffer left,
+  // and an index would then caption a different action than the picture the
+  // pointer is still parked on.
+  const [scrubFrameId, setScrubFrameId] = useState<string | null>(null);
   const [hovering, setHovering] = useState(false);
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
   const [bottomReserve, setBottomReserve] = useState(0);
@@ -197,6 +190,28 @@ export function WorkLiveCornerCard({
   const imageRef = useRef<HTMLImageElement | null>(null);
   const scrubImageRef = useRef<HTMLImageElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  /**
+   * Callback refs, not object refs.
+   *
+   * `AnimatePresence` defaults to `mode="sync"`, so on a tool switch the
+   * OUTGOING section is still mounted while the incoming one attaches its ref.
+   * React then runs the outgoing node's detach — which with an object ref is an
+   * unconditional `ref.current = null`, killing the live thumbnail that had
+   * just been attached. Clearing only when the node leaving is the one being
+   * held makes the ordering irrelevant.
+   */
+  const setImageRef = useCallback((node: HTMLImageElement | null) => {
+    if (node) imageRef.current = node;
+    else if (imageRef.current && !imageRef.current.isConnected) imageRef.current = null;
+  }, []);
+  const setScrubImageRef = useCallback((node: HTMLImageElement | null) => {
+    if (node) scrubImageRef.current = node;
+    else if (scrubImageRef.current && !scrubImageRef.current.isConnected) scrubImageRef.current = null;
+  }, []);
+  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    if (node) videoRef.current = node;
+    else if (videoRef.current && !videoRef.current.isConnected) videoRef.current = null;
+  }, []);
   /** Latest frame not yet painted; drained by one rAF so 12fps costs one paint. */
   const pendingFrameRef = useRef<string | null>(null);
   const frameRafRef = useRef<number | null>(null);
@@ -240,6 +255,12 @@ export function WorkLiveCornerCard({
 
   useEffect(() => () => {
     if (activityCommitRef.current != null) window.clearTimeout(activityCommitRef.current);
+    // Here rather than in the browser feed's teardown: an App Control-only card
+    // paints frames too, and used to leave one scheduled rAF behind at unmount.
+    if (frameRafRef.current != null) {
+      window.cancelAnimationFrame(frameRafRef.current);
+      frameRafRef.current = null;
+    }
   }, []);
 
   const paintFrame = useCallback((tool: WorkLiveScreenTool, dataUrl: string) => {
@@ -255,160 +276,108 @@ export function WorkLiveCornerCard({
     });
   }, []);
 
-  const canBrowser = workToolAvailability("browser", context).available;
-  const canIos = workToolAvailability("ios", context).available;
-  const canAppControl = workToolAvailability("app-control", context).available;
-
   /* ── Feeds ─────────────────────────────────────────────────────────────── */
 
-  useEffect(() => {
-    if (!active || !canBrowser) {
-      setBrowserStatus(null);
-      return undefined;
-    }
-    const browser = window.ade?.builtInBrowser;
-    if (!browser?.getStatus || !browser.onEvent) return undefined;
-    let cancelled = false;
-    const scope = browserViewRoot ? { projectRoot: browserViewRoot } : {};
-    void browser.getStatus(scope, runtimePinRef.current)
-      .then((status) => {
-        if (cancelled) return;
-        setBrowserStatus(status ?? null);
-        // For a DISMISSED browser, the state it was already in when this card
-        // mounted is not activity: seeding the signature is what stops a
-        // dismissal from lasting only until the next remount. When it is not
-        // dismissed the seed is skipped, so the first status still brings the
-        // card up for a browser that was already running.
-        if (dismissalsRef.current?.browser) {
-          browserSignatureRef.current = browserActivitySignature(status ?? null);
-        }
-      })
-      .catch(() => {});
-    const unsubscribe = browser.onEvent((event) => {
-      if (event.type === "status" || event.type === "open-request") {
-        setBrowserStatus(event.status);
-        const signature = browserActivitySignature(event.status);
-        // An "open-request" is somebody asking for the browser, so it always
-        // counts; a plain status only counts when something actually changed.
-        if (event.type === "open-request" || signature !== browserSignatureRef.current) {
-          browserSignatureRef.current = signature;
-          bump("browser");
-        }
-        return;
-      }
-      if (event.type === "trace") {
-        setLastTrace(event.entry);
+  const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
+    // For a DISMISSED browser, the state it was already in when this card
+    // mounted is not activity: seeding the signature is what stops a dismissal
+    // from lasting only until the next remount. When it is not dismissed the
+    // seed is skipped, so the first status still brings the card up for a
+    // browser that was already running.
+    if (dismissalsRef.current?.browser) browserSignatureRef.current = browserActivitySignature(status);
+  }, []);
+
+  const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
+    if (event.type === "status" || event.type === "open-request") {
+      const signature = browserActivitySignature(event.status);
+      // An "open-request" is somebody asking for the browser, so it always
+      // counts; a plain status only counts when something actually changed.
+      if (event.type === "open-request" || signature !== browserSignatureRef.current) {
+        browserSignatureRef.current = signature;
         bump("browser");
-        // The buffer advances on ACTIONS, not frames: ten near-identical
-        // pictures 80ms apart are not something anybody can scrub through.
+      }
+      return;
+    }
+    if (event.type === "trace") {
+      setLastTrace(event.entry);
+      bump("browser");
+      // The buffer advances on ACTIONS, not frames: ten near-identical
+      // pictures 80ms apart are not something anybody can scrub through.
+      setScrubBuffer((current) => commitWorkLiveScrubFrame(current, {
+        id: event.entry.id,
+        dataUrl: liveFrameRef.current,
+        caption: formatWorkLiveActionCaption(event.entry.action, event.entry.target),
+        at: Date.parse(event.entry.endedAt) || Date.now(),
+      }));
+      return;
+    }
+    if (event.type === "preview-frame") {
+      paintFrame("browser", event.dataUrl);
+    }
+  }, [bump, paintFrame]);
+
+  const onAppControlEvent = useCallback((event: AppControlEventPayload, scope: NativeToolFeedScope) => {
+    if (event.type === "session-started" || event.type === "session-updated") {
+      const session = event.session ?? null;
+      bump("app-control");
+      // App Control has no `trace` event; it announces an action by moving
+      // `lastTraceEntryId`. Snapshot the frame at THAT instant and let the
+      // words catch up — the picture is the perishable half.
+      const traceId = session?.lastTraceEntryId ?? null;
+      if (traceId && traceId !== appControlTraceIdRef.current) {
+        appControlTraceIdRef.current = traceId;
+        const at = Date.now();
         setScrubBuffer((current) => commitWorkLiveScrubFrame(current, {
-          id: event.entry.id,
+          id: traceId,
           dataUrl: liveFrameRef.current,
-          caption: formatWorkLiveActionCaption(event.entry.action, event.entry.target),
-          at: Date.parse(event.entry.endedAt) || Date.now(),
+          caption: null,
+          at,
         }));
-        return;
+        void window.ade?.appControl?.getTrace?.({ limit: 1 }, runtimePinRef.current)
+          .then((result) => {
+            const entry = result?.entries?.[result.entries.length - 1] ?? null;
+            if (!scope.isActive() || !entry || entry.id !== traceId) return;
+            const caption = formatWorkLiveActionCaption(entry.action, entry.target);
+            setAppControlAction({ caption, at: Date.parse(entry.endedAt) || at });
+            setScrubBuffer((current) => updateWorkLiveScrubCaption(current, traceId, caption));
+          })
+          .catch(() => {});
       }
-      if (event.type === "preview-frame") {
-        paintFrame("browser", event.dataUrl);
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-      if (frameRafRef.current != null) {
-        window.cancelAnimationFrame(frameRafRef.current);
-        frameRafRef.current = null;
-      }
-    };
-  }, [active, browserViewRoot, bump, canBrowser, paintFrame, runtimePin?.key]);
-
-  useEffect(() => {
-    if (!active || !canAppControl) {
-      setAppControlSession(null);
-      return undefined;
+      return;
     }
-    const appControl = window.ade?.appControl;
-    if (!appControl?.getStatus || !appControl.onEvent) return undefined;
-    let cancelled = false;
-    void appControl.getStatus(runtimePinRef.current)
-      .then((status) => {
-        if (!cancelled) setAppControlSession(status.activeSession ?? null);
-      })
-      .catch(() => {});
-    const unsubscribe = appControl.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        const session = event.session ?? null;
-        setAppControlSession(session);
-        bump("app-control");
-        // App Control has no `trace` event; it announces an action by moving
-        // `lastTraceEntryId`. Snapshot the frame at THAT instant and let the
-        // words catch up — the picture is the perishable half.
-        const traceId = session?.lastTraceEntryId ?? null;
-        if (traceId && traceId !== appControlTraceIdRef.current) {
-          appControlTraceIdRef.current = traceId;
-          const at = Date.now();
-          setScrubBuffer((current) => commitWorkLiveScrubFrame(current, {
-            id: traceId,
-            dataUrl: liveFrameRef.current,
-            caption: null,
-            at,
-          }));
-          void appControl.getTrace?.({ limit: 1 }, runtimePinRef.current)
-            .then((result) => {
-              const entry = result?.entries?.[result.entries.length - 1] ?? null;
-              if (cancelled || !entry || entry.id !== traceId) return;
-              const caption = formatWorkLiveActionCaption(entry.action, entry.target);
-              setAppControlAction({ caption, at: Date.parse(entry.endedAt) || at });
-              setScrubBuffer((current) => updateWorkLiveScrubCaption(current, traceId, caption));
-            })
-            .catch(() => {});
-        }
-        return;
-      }
-      if (event.type === "session-stopped") {
-        setAppControlSession(null);
-        return;
-      }
-      if (event.type === "frame") {
-        // App Control needs no start call — the panel's screencast is already
-        // running and this is a second reader of the same event stream.
-        bump("app-control");
-        paintFrame("app-control", `data:${event.frame.mimeType};base64,${event.frame.data}`);
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [active, bump, canAppControl, paintFrame, runtimePin?.key]);
-
-  useEffect(() => {
-    if (!active || !canIos) {
-      setIosSession(null);
-      return undefined;
+    if (event.type === "frame") {
+      // Painted, but deliberately NOT counted as activity. The panel's
+      // screencast runs at 30fps for the life of the session, independent of
+      // this card: bumping on it made the × unusable (the next frame undid the
+      // dismissal 33ms later) and let App Control win the most-recent-activity
+      // tie-break forever. Real activity is a session event or a new trace id.
+      paintFrame("app-control", `data:${event.frame.mimeType};base64,${event.frame.data}`);
     }
-    const iosSimulator = window.ade?.iosSimulator;
-    if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
-    let cancelled = false;
-    void iosSimulator.getStatus(runtimePinRef.current)
-      .then((status) => {
-        if (!cancelled) setIosSession(status.activeSession ?? null);
-      })
-      .catch(() => {});
-    const unsubscribe = iosSimulator.onEvent((event) => {
-      if (event.type === "session-started" || event.type === "session-updated") {
-        setIosSession(event.session ?? null);
-        bump("ios");
-      } else if (event.type === "session-released") {
-        setIosSession(null);
-      }
-    }, runtimePinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [active, bump, canIos, runtimePin?.key]);
+  }, [bump, paintFrame]);
+
+  const onIosEvent = useCallback((event: IosSimulatorEventPayload) => {
+    if (event.type === "session-started" || event.type === "session-updated") bump("ios");
+  }, [bump]);
+
+  // One shared subscription set with the Work tools pane: the capability gate,
+  // the web-client boundary check and the teardown all live in one place.
+  const {
+    browserStatus,
+    iosSession,
+    appControlSession,
+    canBrowser,
+    canIos,
+    canAppControl,
+  } = useNativeToolSessions({
+    enabled: active,
+    context,
+    browserViewRoot,
+    runtimePin,
+    onBrowserStatusSettled,
+    onBrowserEvent,
+    onAppControlEvent,
+    onIosEvent,
+  });
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
@@ -417,28 +386,30 @@ export function WorkLiveCornerCard({
     return browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
   }, [browserStatus]);
 
+  // Every per-tool question the card asks — live, owner, caption, handoff,
+  // recording — answered once, by the adapter map beside the tool list.
+  const sourceState = useMemo(() => ({
+    browserTab: activeBrowserTab,
+    appControlSession,
+    iosSession,
+  }), [activeBrowserTab, appControlSession, iosSession]);
+
+  const sources = useMemo(() => ({
+    browser: workLiveSource("browser", sourceState),
+    "app-control": workLiveSource("app-control", sourceState),
+    ios: workLiveSource("ios", sourceState),
+  }), [sourceState]);
+
   const activities = useMemo<WorkLiveActivity[]>(() => [
-    {
-      tool: "browser",
-      lastActivityAt: activityAt.browser,
-      available: canBrowser,
-      live: Boolean(activeBrowserTab),
-    },
+    { tool: "browser", lastActivityAt: activityAt.browser, available: canBrowser, live: sources.browser.live },
     {
       tool: "app-control",
       lastActivityAt: activityAt["app-control"],
       available: canAppControl,
-      live: Boolean(appControlSession)
-        && appControlSession?.status !== "stopped"
-        && appControlSession?.status !== "exited",
+      live: sources["app-control"].live,
     },
-    {
-      tool: "ios",
-      lastActivityAt: activityAt.ios,
-      available: canIos,
-      live: Boolean(iosSession),
-    },
-  ], [activeBrowserTab, activityAt, appControlSession, canAppControl, canBrowser, canIos, iosSession]);
+    { tool: "ios", lastActivityAt: activityAt.ios, available: canIos, live: sources.ios.live },
+  ], [activityAt, canAppControl, canBrowser, canIos, sources]);
 
   const dismissals = useMemo(
     () => normalizeWorkLiveCardDismissals(projectStateKey && laneId ? storedDismissals : localDismissals),
@@ -450,7 +421,7 @@ export function WorkLiveCornerCard({
   );
   dismissalsRef.current = dismissals;
 
-  const fits = workLiveCardFits(hostSize);
+  const fits = workLiveCardFits(hostSize, bottomReserve);
   const visible = active && tool != null && fits;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
@@ -604,7 +575,7 @@ export function WorkLiveCornerCard({
     pendingFrameRef.current = null;
     appControlTraceIdRef.current = null;
     setScrubBuffer([]);
-    setScrubIndex(null);
+    setScrubFrameId(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
   }, [tool, visible]);
@@ -630,8 +601,8 @@ export function WorkLiveCornerCard({
       offsetX: event.clientX - bounds.left,
       width: bounds.width,
     });
-    setScrubIndex(index);
-    const frame = index == null ? null : scrubBuffer[index];
+    const frame = index == null ? null : scrubBuffer[index] ?? null;
+    setScrubFrameId(frame ? workLiveScrubFrameKey(frame) : null);
     // Painted onto the overlay, never onto the live image: the live feed keeps
     // running underneath, which is what makes leaving a 120ms crossfade back to
     // now rather than a jump to a stale frame.
@@ -639,20 +610,24 @@ export function WorkLiveCornerCard({
   }, [scrubBuffer]);
 
   const handlePointerLeave = useCallback(() => {
-    setScrubIndex(null);
+    setScrubFrameId(null);
     setHovering(false);
   }, []);
 
   /* ── Copy ──────────────────────────────────────────────────────────────── */
 
   const definition = tool ? workToolDefinition(tool) : null;
-  const scrubbedFrame = scrubIndex == null ? null : scrubBuffer[scrubIndex] ?? null;
-  const ownerLabel = useMemo(() => {
-    if (tool === "browser") return activeBrowserTab?.ownerChatSessionId ? "agent" : null;
-    if (tool === "app-control") return appControlSession?.chatSessionId ? "agent" : null;
-    if (tool === "ios") return iosSession?.chatSessionId ? "agent" : null;
-    return null;
-  }, [activeBrowserTab, appControlSession, iosSession, tool]);
+  const source = tool ? sources[tool] : null;
+  // Resolved by ID on every render: the ring buffer shifts left when a new
+  // action lands, so the frame the pointer is parked on must be re-found rather
+  // than re-indexed — otherwise the caption starts describing a different
+  // action than the picture still on screen.
+  const scrubbedFrame = useMemo(() => (
+    scrubFrameId == null
+      ? null
+      : scrubBuffer.find((frame) => workLiveScrubFrameKey(frame) === scrubFrameId) ?? null
+  ), [scrubBuffer, scrubFrameId]);
+  const ownerLabel = source?.ownerLabel ?? null;
 
   const caption = useMemo(() => {
     if (scrubbedFrame) {
@@ -660,36 +635,20 @@ export function WorkLiveCornerCard({
         ? `${scrubbedFrame.caption} · ${formatWorkLiveAge(nowTick - scrubbedFrame.at)}`
         : formatWorkLiveAge(nowTick - scrubbedFrame.at);
     }
+    // The tool's own most recent ACTION outranks whatever it is showing: "click
+    // 'Sign in' · 2s" is the news, the page title is the context.
     if (tool === "browser" && lastTrace) {
       const label = formatWorkLiveActionCaption(lastTrace.action, lastTrace.target);
       return `${label} · ${formatWorkLiveAge(nowTick - (Date.parse(lastTrace.endedAt) || nowTick))}`;
     }
-    if (tool === "browser") return activeBrowserTab?.title ?? activeBrowserTab?.url ?? null;
     if (tool === "app-control" && appControlAction) {
       return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
     }
-    if (tool === "app-control") return appControlSession?.label ?? null;
-    if (tool === "ios") return iosSession?.appName ?? iosSession?.deviceName ?? null;
-    return null;
-  }, [
-    activeBrowserTab,
-    appControlAction,
-    appControlSession,
-    iosSession,
-    lastTrace,
-    nowTick,
-    scrubbedFrame,
-    tool,
-  ]);
+    return source?.caption ?? null;
+  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, source, tool]);
 
-  const handoff = useMemo(() => {
-    if (tool === "browser") return detectHandoff(activeBrowserTab);
-    if (tool === "app-control") return detectHandoff(appControlSession);
-    if (tool === "ios") return detectHandoff(iosSession);
-    return null;
-  }, [activeBrowserTab, appControlSession, iosSession, tool]);
-
-  const recording = tool === "browser" ? activeBrowserTab?.recording ?? null : null;
+  const handoff = source?.handoff ?? null;
+  const recording = source?.recording ?? null;
 
   const handleDismiss = useCallback(() => {
     if (!tool) return;
@@ -725,7 +684,10 @@ export function WorkLiveCornerCard({
 
   const Icon = definition?.icon ?? null;
   const hue = definition?.color ?? "var(--color-accent)";
-  const timelineIndex = scrubIndex ?? scrubBuffer.length - 1;
+  // The highlighted slot follows the frame the pointer holds, so an eviction
+  // moves the highlight with the picture instead of leaving it behind.
+  const scrubbedIndex = scrubbedFrame ? scrubBuffer.indexOf(scrubbedFrame) : -1;
+  const timelineIndex = scrubbedIndex >= 0 ? scrubbedIndex : scrubBuffer.length - 1;
   const scrubbable = scrubBuffer.length > 1;
 
   return (
@@ -747,7 +709,7 @@ export function WorkLiveCornerCard({
             onDragStart={() => {
               draggingRef.current = true;
               suppressClickRef.current = true;
-              setScrubIndex(null);
+              setScrubFrameId(null);
             }}
             onDragEnd={() => {
               draggingRef.current = false;
@@ -848,21 +810,21 @@ export function WorkLiveCornerCard({
               */}
               {tool === "ios" ? (
                 <video
-                  ref={videoRef}
+                  ref={setVideoRef}
                   muted
                   playsInline
                   className="h-full w-full object-contain"
                 />
               ) : (
                 <img
-                  ref={imageRef}
+                  ref={setImageRef}
                   alt=""
                   src={BLANK_FRAME}
                   className="h-full w-full object-contain"
                 />
               )}
               <img
-                ref={scrubImageRef}
+                ref={setScrubImageRef}
                 alt=""
                 aria-hidden="true"
                 src={BLANK_FRAME}

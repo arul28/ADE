@@ -15,6 +15,12 @@ import {
   stageAttachmentBytes,
   stageAttachmentCopy,
 } from "../../../shared/chatAttachmentStagingFs";
+import {
+  isSystemSettingsPaneId,
+  SYSTEM_SETTINGS_PANE_URLS,
+  type AppOpenSystemSettingsPaneResult,
+} from "../../../shared/types/systemSettings";
+import { createBuiltInBrowserIpcArgParsers } from "./builtInBrowserIpcArgs";
 import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
 import type {
   KeepAwakeFixResult,
@@ -2725,361 +2731,44 @@ export function registerIpc({
     return win;
   };
 
-  const invalidBuiltInBrowserArg = (channel: string, reason: string): never => {
-    getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason });
-    throw new Error(`Invalid built-in browser payload: ${reason}`);
-  };
-
-  const builtInBrowserRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
-    if (value == null) {
-      if (required) invalidBuiltInBrowserArg(channel, "payload object is required");
-      return {};
-    }
-    if (!isRecord(value)) invalidBuiltInBrowserArg(channel, "payload must be an object");
-    return value as Record<string, unknown>;
-  };
-
-  const builtInBrowserNumber = (
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    options: { min?: number; max?: number } = {},
-  ): number => {
-    const value = record[field];
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      invalidBuiltInBrowserArg(channel, `${field} must be a finite number`);
-    }
-    const numberValue = value as number;
-    if (options.min != null && numberValue < options.min) invalidBuiltInBrowserArg(channel, `${field} is below the minimum`);
-    if (options.max != null && numberValue > options.max) invalidBuiltInBrowserArg(channel, `${field} is above the maximum`);
-    return numberValue;
-  };
-
-  const parseBuiltInBrowserBoundsArgs = (value: unknown, channel: string): BuiltInBrowserBoundsArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const visibleValue = record.visible;
-    if (typeof visibleValue !== "boolean") invalidBuiltInBrowserArg(channel, "visible must be a boolean");
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
-      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
-      width: builtInBrowserNumber(record, "width", channel, { min: 0, max: 100_000 }),
-      height: builtInBrowserNumber(record, "height", channel, { min: 0, max: 100_000 }),
-      visible: visibleValue as boolean,
-      ...(record.scale === undefined || record.scale === null
-        ? {}
-        : { scale: builtInBrowserNumber(record, "scale", channel, { min: 0.05, max: 1 }) }),
-    };
-  };
-
-  const parseBuiltInBrowserAttachWebviewArgs = (value: unknown, channel: string): BuiltInBrowserAttachWebviewArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    return { ...parseBuiltInBrowserProjectScopeArgs(record, channel), tabId, webContentsId };
-  };
-
-  const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const urlValue = record.url;
-    if (typeof urlValue !== "string" || !urlValue.trim()) {
-      invalidBuiltInBrowserArg(channel, "url must be a non-empty string");
-    }
-    const url = urlValue as string;
-    if (url.length > 4096 || url.includes("\0")) {
-      invalidBuiltInBrowserArg(channel, "url is invalid");
-    }
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const newTab = record.newTab === true ? true : undefined;
-    const openPanel = optionalBoolean(record.openPanel);
-    return { url, tabId, newTab, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  function optionalBuiltInBrowserString(
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    maxLength: number,
-  ): string | null | undefined {
-    const value = record[field];
-    if (value == null) return undefined;
-    if (typeof value !== "string") return invalidBuiltInBrowserArg(channel, `${field} must be a string`);
-    const trimmed = value.trim();
-    if (!trimmed.length) return null;
-    if (trimmed.length > maxLength || trimmed.includes("\0")) return invalidBuiltInBrowserArg(channel, `${field} is invalid`);
-    return trimmed;
-  }
-
-  function optionalBoolean(value: unknown): boolean | undefined {
-    if (value === true) return true;
-    if (value === false) return false;
-    return undefined;
-  }
-
-  function optionalBuiltInBrowserNumber(
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    options: { min?: number; max?: number } = {},
-  ): number | undefined {
-    if (record[field] == null) return undefined;
-    return builtInBrowserNumber(record, field, channel, options);
-  }
-
-  const parseBuiltInBrowserProjectScopeArgs = (
-    record: Record<string, unknown>,
-    channel: string,
-  ): BuiltInBrowserProjectScopeArgs => {
-    const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
-    const tabCollection = optionalBuiltInBrowserString(record, "tabCollection", channel, 16);
-    if (tabCollection && tabCollection !== "personal") {
-      return invalidBuiltInBrowserArg(channel, "tabCollection is invalid");
-    }
-    if (tabCollection === "personal" && projectRoot) {
-      return invalidBuiltInBrowserArg(channel, "tabCollection and projectRoot cannot both be set");
-    }
-    return {
-      ...(projectRoot ? { projectRoot } : {}),
-      ...(tabCollection === "personal" ? { tabCollection } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserProjectScopeInput = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserProjectScopeArgs =>
-    parseBuiltInBrowserProjectScopeArgs(builtInBrowserRecord(value, channel, false), channel);
-
-  const parseBuiltInBrowserClearPermissionsArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserClearPermissionsArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const origin = optionalBuiltInBrowserString(record, "origin", channel, 2048);
-    const permission = optionalBuiltInBrowserString(record, "permission", channel, 128);
-    return {
-      ...(origin ? { origin } : {}),
-      ...(permission ? { permission } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
-    const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
-    const force = optionalBoolean(record.force);
-    const leaseTtlMs = optionalBuiltInBrowserNumber(record, "leaseTtlMs", channel, {
-      min: 1_000,
-      max: 60 * 60_000,
-    });
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(laneId ? { laneId } : {}),
-      ...(chatSessionId ? { chatSessionId } : {}),
-      ...(force !== undefined ? { force } : {}),
-      ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserTabTargetRecord = (
-    record: Record<string, unknown>,
-    channel: string,
-  ): BuiltInBrowserTabTargetArgs => {
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
-    return {
-      ...parseBuiltInBrowserClaimArgs(record, channel),
-      ...(sessionId ? { sessionId } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserTabTargetArgs = (value: unknown, channel: string): BuiltInBrowserTabTargetArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    return parseBuiltInBrowserTabTargetRecord(record, channel);
-  };
-
-  const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    const openPanel = optionalBoolean(record.openPanel);
-    return { ...parseBuiltInBrowserClaimArgs(record, channel), tabId, openPanel };
-  };
-
-  const parseBuiltInBrowserCreateTabArgs = (value: unknown, channel: string): BuiltInBrowserCreateTabArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
-    const activate = record.activate === false ? false : undefined;
-    const openPanel = optionalBoolean(record.openPanel);
-    return { url, activate, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    return { url, tabId, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const includeScreenshot = record.includeScreenshot === false ? false : undefined;
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
-      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
-      includeScreenshot,
-    };
-  };
-
-  const parseBuiltInBrowserSetEmulationArgs = (value: unknown, channel: string): BuiltInBrowserSetEmulationArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const preset = record.preset === null
-      ? null
-      : optionalBuiltInBrowserString(record, "preset", channel, 64);
-    const userAgent = optionalBuiltInBrowserString(record, "userAgent", channel, 512);
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(preset === undefined ? {} : { preset }),
-      ...(record.width == null ? {} : { width: builtInBrowserNumber(record, "width", channel, { min: 1, max: 20_000 }) }),
-      ...(record.height == null ? {} : { height: builtInBrowserNumber(record, "height", channel, { min: 1, max: 20_000 }) }),
-      ...(record.deviceScaleFactor == null
-        ? {}
-        : { deviceScaleFactor: builtInBrowserNumber(record, "deviceScaleFactor", channel, { min: 0.1, max: 10 }) }),
-      ...(optionalBoolean(record.mobile) === undefined ? {} : { mobile: optionalBoolean(record.mobile) }),
-      ...(userAgent === undefined ? {} : { userAgent }),
-    };
-  };
-
-  const parseBuiltInBrowserSetZoomArgs = (value: unknown, channel: string): BuiltInBrowserSetZoomArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(record.factor == null ? {} : { factor: builtInBrowserNumber(record, "factor", channel, { min: 0.05, max: 20 }) }),
-      ...(optionalBoolean(record.reset) === undefined ? {} : { reset: optionalBoolean(record.reset) }),
-    };
-  };
-
-  const parseBuiltInBrowserFindInPageArgs = (value: unknown, channel: string): BuiltInBrowserFindInPageArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const text = optionalBuiltInBrowserString(record, "text", channel, 2048);
-    if (!text) return invalidBuiltInBrowserArg(channel, "text must be a non-empty string");
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      text,
-      ...(optionalBoolean(record.forward) === undefined ? {} : { forward: optionalBoolean(record.forward) }),
-      ...(optionalBoolean(record.matchCase) === undefined ? {} : { matchCase: optionalBoolean(record.matchCase) }),
-      ...(optionalBoolean(record.findNext) === undefined ? {} : { findNext: optionalBoolean(record.findNext) }),
-      ...(record.timeoutMs == null
-        ? {}
-        : { timeoutMs: builtInBrowserNumber(record, "timeoutMs", channel, { min: 250, max: 30_000 }) }),
-    };
-  };
-
-  const parseBuiltInBrowserStopFindInPageArgs = (value: unknown, channel: string): BuiltInBrowserStopFindInPageArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const action = optionalBuiltInBrowserString(record, "action", channel, 32);
-    if (action && action !== "clearSelection" && action !== "keepSelection" && action !== "activateSelection") {
-      return invalidBuiltInBrowserArg(channel, "action is invalid");
-    }
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(action ? { action: action as BuiltInBrowserStopFindInPageArgs["action"] } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserSetDevToolsArgs = (value: unknown, channel: string): BuiltInBrowserSetDevToolsArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const open = optionalBoolean(record.open);
-    if (open === undefined) return invalidBuiltInBrowserArg(channel, "open must be a boolean");
-    const mode = optionalBuiltInBrowserString(record, "mode", channel, 16);
-    if (mode && mode !== "right" && mode !== "bottom" && mode !== "detach") {
-      return invalidBuiltInBrowserArg(channel, "mode is invalid");
-    }
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      open,
-      ...(mode ? { mode: mode as BuiltInBrowserSetDevToolsArgs["mode"] } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserSetNetworkLoggingArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserSetNetworkLoggingArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const enabled = optionalBoolean(record.enabled);
-    if (enabled === undefined) return invalidBuiltInBrowserArg(channel, "enabled must be a boolean");
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      enabled,
-      ...(optionalBoolean(record.clear) === undefined ? {} : { clear: optionalBoolean(record.clear) }),
-    };
-  };
-
-  const parseBuiltInBrowserNetworkLogArgs = (value: unknown, channel: string): BuiltInBrowserNetworkLogArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const filter = optionalBuiltInBrowserString(record, "filter", channel, 512);
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(record.limit == null ? {} : { limit: builtInBrowserNumber(record, "limit", channel, { min: 1, max: 500 }) }),
-      ...(filter ? { filter } : {}),
-      ...(optionalBoolean(record.failedOnly) === undefined ? {} : { failedOnly: optionalBoolean(record.failedOnly) }),
-    };
-  };
-
-  const parseBuiltInBrowserExportHarArgs = (value: unknown, channel: string): BuiltInBrowserExportHarArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const filter = optionalBuiltInBrowserString(record, "filter", channel, 512);
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(filter ? { filter } : {}),
-      ...(optionalBoolean(record.failedOnly) === undefined ? {} : { failedOnly: optionalBoolean(record.failedOnly) }),
-    };
-  };
-
-  const parseBuiltInBrowserStartPreviewStreamArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserStartPreviewStreamArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(record.fps == null ? {} : { fps: builtInBrowserNumber(record, "fps", channel, { min: 1, max: 24 }) }),
-      ...(record.maxWidth == null
-        ? {}
-        : { maxWidth: builtInBrowserNumber(record, "maxWidth", channel, { min: 80, max: 1_280 }) }),
-    };
-  };
-
-  const parseBuiltInBrowserStopPreviewStreamArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserStopPreviewStreamArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserStartRecordingArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserStartRecordingArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const caption = optionalBuiltInBrowserString(record, "caption", channel, 500);
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      ...(record.fps == null ? {} : { fps: builtInBrowserNumber(record, "fps", channel, { min: 30, max: 60 }) }),
-      ...(caption ? { caption } : {}),
-    };
-  };
-
+  // Payload validation lives in `builtInBrowserIpcArgs.ts` — pure functions of
+  // `(value, channel)` that can be unit tested without an `ipcMain`. Only the
+  // rejection log stays here, because only the registry has the context.
+  const {
+    invalidBuiltInBrowserArg,
+    builtInBrowserRecord,
+    builtInBrowserNumber,
+    parseBuiltInBrowserBoundsArgs,
+    parseBuiltInBrowserAttachWebviewArgs,
+    parseBuiltInBrowserNavigateArgs,
+    optionalBuiltInBrowserString,
+    optionalBoolean,
+    optionalBuiltInBrowserNumber,
+    parseBuiltInBrowserProjectScopeArgs,
+    parseBuiltInBrowserProjectScopeInput,
+    parseBuiltInBrowserClearPermissionsArgs,
+    parseBuiltInBrowserClaimArgs,
+    parseBuiltInBrowserTabTargetRecord,
+    parseBuiltInBrowserTabTargetArgs,
+    parseBuiltInBrowserTabArgs,
+    parseBuiltInBrowserCreateTabArgs,
+    parseBuiltInBrowserOpenPanelArgs,
+    parseBuiltInBrowserSelectPointArgs,
+    parseBuiltInBrowserSetEmulationArgs,
+    parseBuiltInBrowserSetZoomArgs,
+    parseBuiltInBrowserFindInPageArgs,
+    parseBuiltInBrowserStopFindInPageArgs,
+    parseBuiltInBrowserSetDevToolsArgs,
+    parseBuiltInBrowserSetNetworkLoggingArgs,
+    parseBuiltInBrowserNetworkLogArgs,
+    parseBuiltInBrowserExportHarArgs,
+    parseBuiltInBrowserStartPreviewStreamArgs,
+    parseBuiltInBrowserStopPreviewStreamArgs,
+    parseBuiltInBrowserStartRecordingArgs,
+  } = createBuiltInBrowserIpcArgParsers({
+    onInvalid: (channel, reason) =>
+      getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason }),
+  });
   const invalidAppControlArg = (channel: string, reason: string): never => {
     getCtx().logger.warn("ipc.app_control.invalid_args", { channel, reason });
     throw new Error(`Invalid App Control payload: ${reason}`);
@@ -3802,6 +3491,36 @@ export function registerIpc({
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
     await openExternalUrl(arg?.url);
   });
+
+  /**
+   * Deep-link into an OS settings pane by id. The renderer cannot do this
+   * itself: `x-apple.systempreferences:` is not in the external-URL scheme
+   * allowlist, and widening that allowlist to fix one button would let any
+   * renderer-supplied string reach `shell.openExternal`. Resolving a small
+   * enum to a vetted constant here keeps the allowlist closed.
+   */
+  ipcMain.handle(
+    IPC.appOpenSystemSettingsPane,
+    async (_event, arg: { paneId?: unknown }): Promise<AppOpenSystemSettingsPaneResult> => {
+      const paneId = arg?.paneId;
+      if (!isSystemSettingsPaneId(paneId)) {
+        getCtx().logger.warn("app.open_system_settings_pane_unknown", {
+          paneId: typeof paneId === "string" ? paneId : null,
+        });
+        return { opened: false };
+      }
+      try {
+        await shell.openExternal(SYSTEM_SETTINGS_PANE_URLS[paneId]);
+        return { opened: true };
+      } catch (error) {
+        getCtx().logger.warn("app.open_system_settings_pane_failed", {
+          paneId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return { opened: false };
+      }
+    },
+  );
 
   const resolveRendererSuppliedPath = (rawPath: string, projectRoot: string): string => {
     let inputPath = rawPath;
@@ -9359,9 +9078,9 @@ export function registerIpc({
     const record = builtInBrowserRecord(arg, channel, true);
     const sourceId = record.sourceId;
     if (typeof sourceId !== "string" || sourceId.trim().length === 0) {
-      invalidBuiltInBrowserArg(channel, "sourceId must be a non-empty string");
+      return invalidBuiltInBrowserArg(channel, "sourceId must be a non-empty string");
     }
-    return (sourceId as string).trim();
+    return sourceId.trim();
   };
 
   ipcMain.handle(IPC.builtInBrowserLoginImportCapabilities, async (event) => {

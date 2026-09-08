@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppControlStatus, BuiltInBrowserStatus } from "../../../../desktop/src/shared/types";
+import type { AppControlStatus } from "../../../../desktop/src/shared/types";
+import type {
+  BuiltInBrowserRuntimeStatus,
+  BuiltInBrowserRuntimeTabStatus,
+} from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
+import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import { createWorkToolsStateService } from "./workToolsStateService";
 
 /** A 1x1 PNG. Enough for the preview reader to accept and encode. */
@@ -11,52 +16,29 @@ const PNG_BYTES = Buffer.from(
   "base64",
 );
 
-function browserStatus(overrides: Partial<BuiltInBrowserStatus> = {}): BuiltInBrowserStatus {
+function browserStatus(
+  overrides: Partial<BuiltInBrowserRuntimeStatus> = {},
+): BuiltInBrowserRuntimeStatus {
   return {
-    attached: true,
-    partition: "persist:ade",
-    storageProfileKey: "global",
-    collectionKey: "project",
-    collectionProjectRoot: null,
-    persistentProfile: true,
-    visible: true,
-    bounds: { x: 0, y: 0, width: 100, height: 100 },
     activeTabId: "tab-1",
     tabs: [],
-    url: null,
-    title: null,
-    isLoading: false,
-    canGoBack: false,
-    canGoForward: false,
-    isInspecting: false,
-    hasSelection: false,
-    ownerLaneId: null,
-    ownerChatSessionId: null,
-    ownerClaimedAt: null,
-    ownerLeaseExpiresAt: null,
     ...overrides,
-  } as BuiltInBrowserStatus;
+  };
 }
 
-function tab(overrides: Partial<BuiltInBrowserStatus["tabs"][number]> = {}): BuiltInBrowserStatus["tabs"][number] {
+function tab(
+  overrides: Partial<BuiltInBrowserRuntimeTabStatus> = {},
+): BuiltInBrowserRuntimeTabStatus {
   return {
     id: "tab-1",
     url: "https://example.test/",
     title: "Example",
-    isLoading: false,
-    canGoBack: false,
-    canGoForward: false,
     ownerLaneId: null,
     ownerChatSessionId: null,
-    ownerClaimedAt: null,
-    ownerLeaseExpiresAt: null,
-    zoomFactor: 1,
-    devToolsOpen: false,
-    emulation: null,
-    networkLogging: false,
-    recording: null,
+    recording: false,
+    handoff: null,
     ...overrides,
-  } as BuiltInBrowserStatus["tabs"][number];
+  };
 }
 
 function appControlStatus(session: Partial<NonNullable<AppControlStatus["activeSession"]>> | null): AppControlStatus {
@@ -144,7 +126,7 @@ describe("workToolsStateService", () => {
       getBrowserStatus: async () => browserStatus({
         activeTabId: "tab-1",
         tabs: [
-          tab({ id: "tab-1", ownerChatSessionId: "chat-9", recording: { startedAt: "now", fps: 30 } }),
+          tab({ id: "tab-1", ownerChatSessionId: "chat-9", recording: true }),
           // Claimed by a different lane: belongs to that lane's pane, not ours.
           tab({ id: "tab-2", ownerLaneId: "lane-other", title: "Other" }),
           tab({ id: "tab-3", ownerLaneId: "lane-1", title: "Mine" }),
@@ -302,6 +284,68 @@ describe("workToolsStateService", () => {
     const service = createWorkToolsStateService({ projectRoot });
     await expect(service.readObservationPreview({ path: notAnImage })).resolves.toBeNull();
     service.dispose();
+  });
+
+  it("refuses another lane's observation preview when the caller names its lane", async () => {
+    const mine = writeObservation({
+      kind: "browser",
+      id: "obs-mine",
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      ownerLaneId: "lane-1",
+    });
+    const theirs = writeObservation({
+      kind: "browser",
+      id: "obs-theirs",
+      capturedAt: "2026-01-01T00:01:00.000Z",
+      ownerLaneId: "lane-2",
+    });
+    const service = createWorkToolsStateService({ projectRoot });
+    // The sidecar is the authority, re-read here: a path is not a permission,
+    // and the caller could have learned or guessed one from another lane.
+    await expect(
+      service.readObservationPreview({ path: theirs, callerLaneId: "lane-1" }),
+    ).resolves.toBeNull();
+    await expect(
+      service.readObservationPreview({ path: mine, callerLaneId: "lane-1" }),
+    ).resolves.toMatchObject({ mimeType: "image/png" });
+    // A user client sends no lane and stays unscoped.
+    await expect(service.readObservationPreview({ path: theirs })).resolves.toMatchObject({
+      mimeType: "image/png",
+    });
+    service.dispose();
+  });
+
+  it("warns when a desktop IS attached and refuses, and stays quiet when there is none", async () => {
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const logger = { debug, info: vi.fn(), warn, error: vi.fn() } as never;
+
+    const refused = createWorkToolsStateService({
+      projectRoot,
+      logger,
+      getBrowserStatus: async () => {
+        throw new Error("Built-in browser automation needs a chat capability");
+      },
+    });
+    const refusedState = await refused.getLaneState({ laneId: "lane-1" });
+    expect(refusedState.browserUnavailable).toBe("desktop_not_attached");
+    // A refusal is a real fault: it renders as the same empty state on every
+    // phone, so a debug line would make it invisible (it did).
+    expect(warn).toHaveBeenCalledWith("work_tools.browser_status_failed", expect.anything());
+    refused.dispose();
+
+    warn.mockClear();
+    const headless = createWorkToolsStateService({
+      projectRoot,
+      logger,
+      getBrowserStatus: async () => {
+        throw new DesktopBridgeUnavailableError("/tmp/bridge.sock", "no desktop is listening");
+      },
+    });
+    await headless.getLaneState({ laneId: "lane-1" });
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith("work_tools.browser_status_unavailable", expect.anything());
+    headless.dispose();
   });
 
   it("stops emitting after dispose", () => {

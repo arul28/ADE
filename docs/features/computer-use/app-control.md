@@ -48,7 +48,7 @@ node, so App Control keeps working inside the headless `ade` daemon.
 ### Shared types
 
 - `apps/desktop/src/shared/types/appControl.ts` — the type contract:
-  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active App Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
+  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`; provenance of an element, distinct from `AppControlDriver` below), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active App Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
   - capture: `AppControlScreenshot`, `AppControlScreen`, `AppControlElement`, `AppControlFrame`, `AppControlSnapshot`, `AppControlSnapshotProvider`, `AppControlScreencastFrame`.
   - coordinate spaces: `AppControlCoordinateSpace` is `"screenshot"` for bitmap pixels or `"viewport"` for CDP CSS viewport coordinates. Live renderer clicks use viewport coordinates so CDP input lands on the actual element under the pointer.
   - context: `AppControlContextItem` (`kind: "app_control_element"`), `AppControlSourceMatch`, `AppControlInspectResult`, `AppControlSelectResult`.
@@ -113,10 +113,10 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - `status`, `actions` (list every callable `app_control` action)
   - `launch`, `connect`, `focus`, `minimize`, `stop`
   - `screenshot`, `snapshot`, `inspect`, `select`
-  - `click`, `type`, `scroll`, `key` (`inspect`, `select`, `click`, `hover`, and `scroll` accept `--coords screenshot|viewport`)
-  - `observe`, `click`, `hover`, `fill`, `clear`, `press`, `type`, `key`, `scroll`, `wait`, `trace`, `proof` — the agent loop, with the same flags as `ade browser` (`--session`, `--handle` / `--selector` / `--text-match` / `--test-id` / `--element` / `--x --y`, `--map`, `--fast`, `--no-observe`)
+  - `observe`, `click`, `hover`, `fill`, `clear`, `press`, `type`, `key`, `scroll`, `wait`, `trace`, `proof` — the agent loop, with the same flags as `ade browser` (`--session`, `--handle` / `--selector` / `--text-match` / `--test-id` / `--element` / `--x --y`, `--map`, `--fast`, `--no-observe`). `inspect`, `select`, `click`, `hover`, and `scroll` also accept `--coords screenshot|viewport`. There is no second, lower-level `click`/`type`/`key`/`scroll` command: the CLI routes every one of these to the `agent*` action. The service's primitive `click` / `typeText` / `scroll` / `dispatchKey` are the renderer's live-frame path and are not reachable from the CLI.
   - `windows`, `switch-window`, `drivers`
-  - `targets`, `attach`
+  - `targets`, `attach-target` — list and attach to a specific CDP target. (`attach` is an alias of `connect`, not of `attach-target`.)
+  - `claim`
   - `logs`, `terminal write`, `terminal signal` — operate on the active App Control launch terminal
 - `ade terminal <sub>`: `list`, `active`, `read`, `write`, `signal` — control the in-chat terminal owned by a chat session.
 
@@ -194,22 +194,40 @@ browser, so an agent drives an Electron app exactly the way it drives a page.
 5. Attaches diagnostics: buffered console entries, failed/4xx-5xx network
    requests, and the in-flight request count. These ride on the long-lived
    screencast client (`Runtime`/`Log`/`Network` domains), so no extra socket is
-   opened per observation.
+   opened per observation. The `diagnostics` **event** is coalesced on a 250 ms
+   trailing edge rather than emitted per console error or per failed request —
+   a page that logs in a loop would otherwise fan one event per line out to
+   every subscribed renderer and CLI listener. A reset (navigation, session
+   reset) still publishes immediately, so a cleared list is never stale.
 6. Writes `<id>.png`, optional `<id>.map.png`, and `<id>.json` under
    `<projectRoot>/.ade/cache/app-control-observations/<sessionId>/`, prunes the
    directory to the latest 3 observations, and sweeps records older than 30
-   minutes from other sessions.
+   minutes from every session directory under the cache root, including the
+   current one.
 
 Actions are `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentType`,
 `agentPress`, `agentScroll`, and `agentWait`. Each one:
 
-- Resolves its target from a handle, `selector`, `text`, `testId`,
-  `elementIndex`, or raw `x`/`y` (click, hover, and scroll only). A handle is
-  resolved by reading the saved observation JSON, so a pruned or foreign-session
-  handle fails with a clear error instead of clicking the wrong thing.
-- Scrolls the element into view and focuses it, and refuses a disabled target.
-  `fill` and `clear` additionally require an editable target, and `fill` only
-  types an explicit `value` (`text` is reserved for matching).
+`agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentPress` and
+`agentWait` resolve a target:
+
+- From a handle, `selector`, `text`, `testId`, `elementIndex`, or raw `x`/`y`
+  (click and hover only). A handle is resolved by reading the saved observation
+  JSON, so a pruned or foreign-session handle fails with a clear error instead
+  of clicking the wrong thing.
+- The element is scrolled into view and focused, and a disabled target is
+  refused. `fill` and `clear` additionally require an editable target, and
+  `fill` only types an explicit `value` (`text` is reserved for matching).
+
+Two of them do **not** take a target, and this is deliberate — it matches the
+built-in browser's `typeText`:
+
+- `agentType` inserts text at whatever currently has focus. It has no target
+  fields at all. Pair it with `agentClick` or `agentFill` first.
+- `agentScroll` is coordinate-only: it normalizes `x`/`y` and accepts no handle
+  or selector.
+
+All of them then:
 - Dispatches CDP `Input.*` against the session's current window target.
 - Records a bounded per-session trace entry (last 80 kept) with the action,
   status, duration, a redacted target bag, and the resulting observation id.
@@ -220,7 +238,12 @@ Actions are `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentType`,
 `getTrace({ sessionId?, limit? })` returns the newest entries for the active
 session. `windows()` lists the session's debuggable window targets and
 `switchWindow({ targetId })` re-attaches to one of them — which resets the trace,
-because handles minted against the previous document no longer resolve.
+because handles minted against the previous document no longer resolve. That is
+enforced, not merely expected: a saved handle records the `cdpTargetId` it was
+minted against, and `readObservationElementHandle` refuses one from a different
+window with "App Control element handle belongs to a different window. Observe
+again after switching windows." Without the check a stale handle silently
+matched — and clicked — the equivalent element in the *new* window.
 
 `ade app-control proof --caption "..."` runs an `observe` and hands the resulting
 screenshot to `ingest_computer_use_artifacts` with `backendName: "ade-app-control"`,
@@ -234,11 +257,16 @@ mirroring `ade browser proof`.
   implemented driver, and the default for `launch` and `connect`.
 - `computer_use` — OS-level control for non-Electron apps. Typed and listed by
   `listDrivers()` / `ade app-control drivers` so callers can discover it, but
-  always `status: "unavailable"` today: on Windows and Linux the reason is
-  "Native app control is macOS only.", and on macOS it is "The computer-use App
-  Control driver is not implemented in this build." Passing
-  `driver: "computer_use"` to `launch` or `connect` fails with that reason
-  instead of silently falling back to CDP.
+  always `status: "unavailable"` today. On macOS the reason is "The computer-use
+  App Control driver is not implemented in this build."; everywhere else it
+  states both facts in one sentence — "…not implemented in this build; native
+  app control would be macOS only." — because saying only the second told a
+  Windows user the feature would work if they switched to a Mac. It would not:
+  on macOS the same driver is equally unimplemented. (Note the spelling: the
+  driver is `computer_use` with an underscore. The hyphenated `computer-use` is
+  a member of the separate `AppControlProvider` union — see "Provider model".)
+  Passing `driver: "computer_use"` to `launch` or `connect` fails with that
+  reason instead of silently falling back to CDP.
 
 ## Chat-owned terminal model
 
@@ -252,11 +280,17 @@ The App Control launch terminal is a regular ADE chat terminal — it inserts a 
 
 ## Provider model
 
+A **provider** is the provenance of an element or point — where the snapshot
+ADE is acting on came from. A **driver** (see above) is how input is dispatched.
+They are separate unions with one confusingly similar member: the driver
+`computer_use` (underscore) and the provider `computer-use` (hyphen) are not the
+same thing, and only the driver is a real, listed capability. The Drivers
+section above is the current story for OS-level control.
+
 `AppControlStatus.providers` reports availability per `AppControlProvider`:
 
 - `cdp` — Chrome DevTools Protocol against an Electron renderer. Fully supported; this is what `launch` / `connect` drive.
 - `os-accessibility` — placeholder for future macOS AX-based control of non-Electron apps. Currently `available: false`.
-- `computer-use` — placeholder for delegating to Claude `computer_use` / Ghost OS-style backends.
 - `external` — when an external automation tool (Playwright, agent-browser) holds the connection.
 
 Only one App Control session is active per project at a time. Re-launching/connecting with `force: true` cleans up the previous session first.

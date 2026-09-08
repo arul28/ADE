@@ -72,6 +72,57 @@ describe("PaneTooltip", () => {
     expect(screen.getByRole("tooltip").textContent).toContain("localhost:3000/a/very/long/path");
   });
 
+  it("does not pop open on a mouse click of the control it describes", () => {
+    // A `<button>` takes focus AFTER `pointerdown`, so `onPointerDown={hide}`
+    // followed by an unguarded `onFocus={show}` ran in exactly the wrong order
+    // and the tooltip appeared on the click meant to dismiss it.
+    const { container } = render(
+      <PaneTooltip label="Back to tools">
+        <button type="button">tools</button>
+      </PaneTooltip>,
+    );
+    const wrapper = container.firstElementChild as HTMLElement;
+    const button = screen.getByRole("button");
+    // jsdom has no `:focus-visible`; a mouse focus is one that does not match.
+    button.matches = ((selector: string) => selector !== ":focus-visible") as HTMLElement["matches"];
+
+    fireEvent.pointerDown(wrapper);
+    fireEvent.focus(button);
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("still appears on keyboard focus, immediately", () => {
+    render(
+      <PaneTooltip label="Back to tools">
+        <button type="button">tools</button>
+      </PaneTooltip>,
+    );
+    const button = screen.getByRole("button");
+    button.matches = (() => true) as HTMLElement["matches"];
+
+    fireEvent.focus(button);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("describes the focusable control, not the layout wrapper", () => {
+    const { container } = render(
+      <PaneTooltip label="Back to tools">
+        <button type="button" aria-describedby="own-hint">tools</button>
+      </PaneTooltip>,
+    );
+    const wrapper = container.firstElementChild as HTMLElement;
+
+    fireEvent.pointerEnter(wrapper);
+    act(() => { vi.advanceTimersByTime(500); });
+    const tooltip = screen.getByRole("tooltip");
+    const described = screen.getByRole("button").getAttribute("aria-describedby") ?? "";
+    expect(described.split(" ")).toContain(tooltip.id);
+    // The caller's own description survives.
+    expect(described.split(" ")).toContain("own-hint");
+    expect(wrapper.getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("leaves with the pointer", () => {
     const { container } = render(
       <PaneTooltip label="Back to tools" shortcut="Escape">

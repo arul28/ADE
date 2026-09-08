@@ -9,31 +9,10 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
+import { makeBuiltInBrowserStatus, makeBuiltInBrowserTab } from "./__fixtures__/builtInBrowserStatus";
 
-const browserStatus = {
-  attached: true,
-  partition: "persist:ade-browser",
-  visible: true,
-  bounds: { x: 10, y: 20, width: 640, height: 360 },
-  activeTabId: "tab-1",
-  tabs: [
-    {
-      id: "tab-1",
-      url: "https://example.test/",
-      title: "Example",
-      isLoading: false,
-      canGoBack: false,
-      canGoForward: false,
-    },
-  ],
-  url: "https://example.test/",
-  title: "Example",
-  isLoading: false,
-  canGoBack: false,
-  canGoForward: false,
-  isInspecting: false,
-  hasSelection: false,
-};
+const browserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus();
 
 /**
  * A ResizeObserver the test can actually resize.
@@ -124,8 +103,8 @@ const REMOTE_PIN = {
 } as const;
 
 /** The mounted status, with the fields a test needs to vary. */
-function statusWith(overrides: Record<string, unknown>): Record<string, unknown> {
-  return { ...browserStatus, ...overrides };
+function statusWith(overrides: Partial<BuiltInBrowserStatus>): BuiltInBrowserStatus {
+  return makeBuiltInBrowserStatus(overrides);
 }
 
 function installBrowserApi() {
@@ -157,7 +136,6 @@ function installBrowserApi() {
     }),
     clearPermissions: vi.fn().mockResolvedValue({ removed: 1, permissions: [] }),
     setBounds: vi.fn().mockResolvedValue(browserStatus),
-    attachWebview: vi.fn().mockResolvedValue(browserStatus),
     navigate: vi.fn().mockResolvedValue(browserStatus),
     createTab: vi.fn().mockResolvedValue(browserStatus),
     switchTab: vi.fn().mockResolvedValue(browserStatus),
@@ -238,7 +216,7 @@ function installBrowserApi() {
             profileName: "Default",
             status: "ready",
             reason: null,
-            settingsPaneUrl: null,
+            settingsPaneId: null,
           },
           {
             id: "safari:main",
@@ -249,7 +227,7 @@ function installBrowserApi() {
             profileName: "Main",
             status: "needs_full_disk_access",
             reason: "Let ADE read Safari's cookies by granting Full Disk Access.",
-            settingsPaneUrl: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+            settingsPaneId: "macos-full-disk-access",
           },
         ],
         capabilities: { platform: "darwin", anySupported: true, browsers: [] },
@@ -300,6 +278,7 @@ function installBrowserApi() {
       },
       app: {
         openExternal: vi.fn(),
+        openSystemSettingsPane: vi.fn().mockResolvedValue({ opened: true }),
         revealPath: vi.fn().mockResolvedValue(undefined),
         readClipboardText: vi.fn().mockResolvedValue(""),
       },
@@ -435,8 +414,9 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     await waitFor(() => expect(api.getStatus).toHaveBeenCalledTimes(2));
 
-    expect(api.attachWebview).not.toHaveBeenCalled();
     expect(api.createTab).not.toHaveBeenCalled();
+    // Tabs are the main service's WebContentsViews, never renderer <webview>
+    // nodes — a remount must not build a second, renderer-owned browser.
     expect(document.querySelector("webview")).toBeNull();
   });
 
@@ -474,6 +454,42 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(screen.queryByText(/Agent wants to reach port/)).toBeNull();
   });
 
+  it("hands the OS the loaded URL, not the tunneled origin on display", async () => {
+    const { api } = installBrowserApi();
+    const openExternal = (window.ade.app as unknown as { openExternal: ReturnType<typeof vi.fn> })
+      .openExternal;
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+
+    // What the tab really loads is the local forward; what the omnibox shows is
+    // the remote origin the human asked for.
+    api.getStatus.mockResolvedValue(statusWith({
+      url: "http://127.0.0.1:52413/app",
+      tabs: [makeBuiltInBrowserTab({ url: "http://127.0.0.1:52413/app" })],
+    }));
+
+    const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
+    fireEvent.focus(urlInput);
+    fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
+    fireEvent.blur(urlInput);
+    fireEvent.click(screen.getByLabelText("Open URL"));
+
+    // The pill is the tab admitting it is looking at another machine; from here
+    // `currentUrl` is the remote origin while `status.url` is the forward.
+    expect(await screen.findByTitle("Tunneled to port 3000 on Mac Studio")).toBeTruthy();
+    // And the omnibox never shows the ephemeral forward port, not even for the
+    // one status cycle between the navigate and the refresh.
+    await waitFor(() => expect(urlInput.value).toBe("http://localhost:3000/app"));
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Open this page in system browser"));
+
+    // Handing over the DISPLAY url would load THIS machine's port 3000 — a
+    // different project's dev server — under the belief it is the same page.
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith("http://127.0.0.1:52413/app"));
+  });
+
   it("asks for a human grant before an agent's forwarded open reaches a new port", async () => {
     const { api } = installBrowserApi();
 
@@ -508,6 +524,37 @@ describe("ChatBuiltInBrowserPanel", () => {
         REMOTE_PIN,
       );
     });
+  });
+
+  it("acknowledges the moment the bar goes up, so the 5s CLI wait does not lapse", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-3",
+      url: "http://127.0.0.1:9999/",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(await screen.findByText("Agent wants to reach port 9999 on Mac Studio")).toBeTruthy();
+    // Nobody answers an approval bar inside the requester's 5s ack window, so
+    // the desktop says "taken, a person is deciding" and the CLI exits 0.
+    await waitFor(() => {
+      expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "bbr-3",
+          accepted: true,
+          awaitingApproval: true,
+        }),
+        REMOTE_PIN,
+      );
+    });
+    expect(api.navigate).not.toHaveBeenCalled();
   });
 
   it("acknowledges a refusal so the waiting CLI stops guessing", async () => {
@@ -918,6 +965,49 @@ describe("ChatBuiltInBrowserPanel", () => {
     });
   });
 
+  it("drops stale match counts on a navigation and ends the find session on unmount", async () => {
+    const { api, emit } = installBrowserApi();
+
+    const view = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Find on page"));
+    fireEvent.change(await screen.findByLabelText("Find on page"), { target: { value: "checkout" } });
+    emit({
+      type: "found-in-page",
+      tabId: "tab-1",
+      requestId: 1,
+      activeMatchOrdinal: 3,
+      matches: 12,
+      finalUpdate: true,
+      foundAt: "2026-09-07T00:00:00.000Z",
+    });
+    expect(await screen.findByText("3 of 12")).toBeTruthy();
+
+    // A different page has different matches, and almost certainly not twelve.
+    emit({
+      type: "status",
+      status: statusWith({
+        url: "https://other.test/",
+        tabs: [makeBuiltInBrowserTab({ url: "https://other.test/" })],
+      }),
+    });
+    await waitFor(() => expect(screen.queryByText("3 of 12")).toBeNull());
+
+    api.stopFindInPage.mockClear();
+    view.unmount();
+
+    // Leaving the Browser tool with the bar open used to leave Chromium's find
+    // highlight burnt into the tab forever.
+    await waitFor(() => {
+      expect(api.stopFindInPage).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "clearSelection" }),
+        null,
+      );
+    });
+  });
+
   it("shows a REC pill from the tab state and stops the recording when it is clicked", async () => {
     const { api } = installBrowserApi();
     const recordingStatus = {
@@ -982,6 +1072,27 @@ describe("ChatBuiltInBrowserPanel", () => {
     ).toBeTruthy();
     // A blocked source offers the fix, never a dead "Choose".
     expect(screen.getByText("Open System Settings")).toBeTruthy();
+  });
+
+  it("opens the Full Disk Access pane by id, not through the external-URL opener", async () => {
+    installBrowserApi();
+    const app = window.ade.app as unknown as {
+      openExternal: ReturnType<typeof vi.fn>;
+      openSystemSettingsPane: ReturnType<typeof vi.fn>;
+    };
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await openMenu("More browser options");
+    fireEvent.click(await screen.findByText("Import logins…"));
+    fireEvent.click(await screen.findByText("Open System Settings"));
+
+    await waitFor(() => {
+      expect(app.openSystemSettingsPane).toHaveBeenCalledWith("macos-full-disk-access");
+    });
+    // `x-apple.systempreferences:` is rejected by the external-URL allowlist,
+    // so routing it there made the one remediation button a guaranteed no-op.
+    expect(app.openExternal).not.toHaveBeenCalled();
   });
 
   it("writes browser.linkOpenMode when the link mode is changed", async () => {
@@ -1326,6 +1437,43 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(screen.queryByLabelText("Select an element in the ADE browser")).toBeNull();
     });
 
+    it("keeps Attach selection reachable from the menu once the button is shed", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      // `selectedItem` is a panel-side enrichment of the wire status, not a
+      // field of `BuiltInBrowserStatus`, so it rides alongside the fixture.
+      emit({
+        type: "status",
+        status: {
+          ...statusWith({ hasSelection: true }),
+          selectedItem: {
+            id: "sel-1",
+            kind: "built_in_browser_element",
+            url: "https://example.test/",
+            title: "Example",
+            selector: "#cta",
+            text: "Buy",
+            frame: null,
+            metadata: {},
+            selectedAt: "2026-09-07T00:00:00.000Z",
+          },
+        },
+      });
+      await screen.findByText("Attach");
+
+      // Attach is the FIRST control the row sheds, and re-attaching an
+      // already-attached selection has no other entry point.
+      setToolbarWidth(300);
+      expect(screen.queryByText("Attach")).toBeNull();
+
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("Attach selection"));
+
+      await waitFor(() => expect(api.selectCurrent).toHaveBeenCalled());
+    });
+
     it("hands the width back as the pane widens again", async () => {
       installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
@@ -1596,7 +1744,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           url: null,
           tabs: [
             browserStatus.tabs[0],
-            { id: "tab-2", url: null, title: null, isLaunchpad: true, isLoading: false },
+            makeBuiltInBrowserTab({ id: "tab-2", url: null, title: null, isLaunchpad: true }),
           ],
         }),
       });
@@ -1605,6 +1753,20 @@ describe("ChatBuiltInBrowserPanel", () => {
       // The address bar is empty, so there is no connection to make a claim about.
       expect(screen.queryByLabelText("Secure connection")).toBeNull();
       expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+    });
+
+    it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      // `browserScope` is `{projectRoot} | {tabCollection} | {}` and never
+      // carries a laneId, so the registry's lane filter never ran. Discovery is
+      // also a fact about THIS machine's PTYs, so it takes no runtime pin.
+      await waitFor(() => expect(api.getDevServers).toHaveBeenCalled());
+      const [args, ...rest] = api.getDevServers.mock.calls[0];
+      expect(args).toHaveProperty("laneId");
+      expect(args).not.toHaveProperty("projectRoot");
+      expect(rest).toEqual([]);
     });
 
     it("probes the usual ports when discovery comes back empty", async () => {

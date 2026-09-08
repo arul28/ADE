@@ -1,6 +1,7 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BuiltInBrowserNetworkLogEntry } from "../../../shared/types";
 import {
   BUILT_IN_BROWSER_EMULATION_PRESETS,
@@ -17,6 +18,7 @@ import {
   normalizeBuiltInBrowserRecordingFps,
   normalizeBuiltInBrowserHeaders,
   normalizeNetworkLogLimit,
+  redactBuiltInBrowserUrl,
   resolveBuiltInBrowserUploadPaths,
 } from "./builtInBrowserCapabilities";
 
@@ -249,42 +251,111 @@ describe("built-in browser HAR export", () => {
 });
 
 describe("built-in browser upload roots", () => {
-  const projectRoot = path.resolve("/tmp/ade-project");
-  const roots = builtInBrowserUploadRoots({
-    projectRoot,
-    observationRoot: path.join(projectRoot, ".ade", "cache", "browser-observations"),
-    adeHome: path.resolve("/tmp/ade-home"),
-    tmpDir: os.tmpdir(),
+  let sandbox = "";
+  let projectRoot = "";
+  let observationRoot = "";
+
+  beforeAll(() => {
+    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-upload-")));
+    projectRoot = path.join(sandbox, "project");
+    observationRoot = path.join(projectRoot, ".ade", "cache", "browser-observations");
+    fs.mkdirSync(path.join(projectRoot, ".ade", "tmp"), { recursive: true });
+    fs.mkdirSync(observationRoot, { recursive: true });
+    fs.mkdirSync(path.join(sandbox, "secrets"), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, "ostmp"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "shot.png"), "shot");
+    fs.writeFileSync(path.join(projectRoot, ".ade", "tmp", "a.txt"), "a");
+    fs.writeFileSync(path.join(observationRoot, "obs.json"), "{}");
+    fs.writeFileSync(path.join(sandbox, "secrets", "id_ed25519"), "PRIVATE KEY");
   });
 
-  it("accepts worktree, ADE scratch and OS temp paths", () => {
-    expect(resolveBuiltInBrowserUploadPaths([path.join(projectRoot, "shot.png")], roots))
+  afterAll(() => {
+    if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  // A private stand-in for `os.tmpdir()`: the real one contains the sandbox, so
+  // using it would make every "outside the roots" case accidentally allowed.
+  const roots = (): string[] => builtInBrowserUploadRoots({
+    projectRoot,
+    observationRoot,
+    tmpDir: path.join(sandbox, "ostmp"),
+  });
+
+  it("accepts worktree, ADE scratch and observation-cache paths", () => {
+    expect(resolveBuiltInBrowserUploadPaths([path.join(projectRoot, "shot.png")], roots()))
       .toEqual([path.join(projectRoot, "shot.png")]);
-    expect(resolveBuiltInBrowserUploadPaths([path.join(projectRoot, ".ade", "tmp", "a.txt")], roots))
+    expect(resolveBuiltInBrowserUploadPaths([path.join(projectRoot, ".ade", "tmp", "a.txt")], roots()))
       .toEqual([path.join(projectRoot, ".ade", "tmp", "a.txt")]);
-    expect(resolveBuiltInBrowserUploadPaths([path.join(os.tmpdir(), "b.txt")], roots))
-      .toEqual([path.join(os.tmpdir(), "b.txt")]);
-    expect(resolveBuiltInBrowserUploadPaths([path.resolve("/tmp/ade-home/tmp/c.txt")], roots))
-      .toEqual([path.resolve("/tmp/ade-home/tmp/c.txt")]);
+    expect(resolveBuiltInBrowserUploadPaths([path.join(observationRoot, "obs.json")], roots()))
+      .toEqual([path.join(observationRoot, "obs.json")]);
+  });
+
+  it("accepts a path that does not exist yet, leaving readability to the caller", () => {
+    expect(resolveBuiltInBrowserUploadPaths([path.join(projectRoot, "later.png")], roots()))
+      .toEqual([path.join(projectRoot, "later.png")]);
   });
 
   it("rejects paths outside every allowed root, including traversal escapes", () => {
-    expect(() => resolveBuiltInBrowserUploadPaths([path.resolve("/etc/passwd")], roots))
+    expect(() => resolveBuiltInBrowserUploadPaths([path.join(sandbox, "secrets", "id_ed25519")], roots()))
       .toThrow(/outside the allowed roots/);
-    expect(() => resolveBuiltInBrowserUploadPaths([`${projectRoot}/../secrets.env`], roots))
+    expect(() => resolveBuiltInBrowserUploadPaths([`${projectRoot}/../secrets/id_ed25519`], roots()))
       .toThrow(/outside the allowed roots/);
   });
 
+  // Regression: a symlink an agent can write inside the project root used to
+  // pass the lexical containment check and upload its target to the page.
+  it("rejects a symlink inside an allowed root that points outside it", () => {
+    const link = path.join(projectRoot, ".ade", "tmp", "report.txt");
+    fs.symlinkSync(path.join(sandbox, "secrets", "id_ed25519"), link);
+    try {
+      expect(() => resolveBuiltInBrowserUploadPaths([link], roots()))
+        .toThrow(/outside the allowed roots/);
+    } finally {
+      fs.rmSync(link, { force: true });
+    }
+  });
+
   it("rejects empty lists, blank entries and null bytes", () => {
-    expect(() => resolveBuiltInBrowserUploadPaths([], roots)).toThrow(/at least one file path/);
-    expect(() => resolveBuiltInBrowserUploadPaths(["  "], roots)).toThrow(/non-empty strings/);
-    expect(() => resolveBuiltInBrowserUploadPaths([`${projectRoot}/a\0b`], roots))
+    expect(() => resolveBuiltInBrowserUploadPaths([], roots())).toThrow(/at least one file path/);
+    expect(() => resolveBuiltInBrowserUploadPaths(["  "], roots())).toThrow(/non-empty strings/);
+    expect(() => resolveBuiltInBrowserUploadPaths([`${projectRoot}/a\0b`], roots()))
       .toThrow(/null bytes/);
   });
 
   it("refuses everything when no root is configured", () => {
     expect(() => resolveBuiltInBrowserUploadPaths([path.join(projectRoot, "a.png")], []))
       .toThrow(/no allowed file root/);
+  });
+});
+
+describe("built-in browser url redaction", () => {
+  it("redacts credential-bearing query values and leaves the rest alone", () => {
+    const redacted = new URL(
+      redactBuiltInBrowserUrl("https://app.test/auth/callback?code=abc123&state=xyz&next=/home"),
+    );
+    expect(redacted.searchParams.get("code")).toBe(BUILT_IN_BROWSER_REDACTED_HEADER_VALUE);
+    expect(redacted.searchParams.get("state")).toBe(BUILT_IN_BROWSER_REDACTED_HEADER_VALUE);
+    expect(redacted.searchParams.get("next")).toBe("/home");
+    expect(redactBuiltInBrowserUrl("https://app.test/api?page=2")).toBe("https://app.test/api?page=2");
+    expect(redactBuiltInBrowserUrl("about:blank")).toBe("about:blank");
+    expect(redactBuiltInBrowserUrl("not a url?token=secret")).toBe("not a url?token=secret");
+  });
+});
+
+describe("built-in browser HAR query redaction", () => {
+  it("replaces credential query values in the exported HAR", () => {
+    const har = buildBuiltInBrowserHar({
+      entries: [networkEntry({ url: "https://app.test/cb?code=abc123&page=2" })],
+      pageUrl: "https://app.test/cb",
+      pageTitle: "Callback",
+      creatorVersion: "1.2.3",
+      exportedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const entry = har.log.entries[0] as { request: { queryString: Array<{ name: string; value: string }> } };
+    expect(entry.request.queryString).toEqual([
+      { name: "code", value: BUILT_IN_BROWSER_REDACTED_HEADER_VALUE },
+      { name: "page", value: "2" },
+    ]);
   });
 });
 

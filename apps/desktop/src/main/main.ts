@@ -1650,11 +1650,23 @@ app.whenReady().then(async () => {
       }
       broadcast(IPC.builtInBrowserEvent, payload);
     },
-    // `browser.autoOpenDevServer`, read live from whichever project is in the
-    // foreground: the setting is per project, and the browser service outlives
-    // any single project context.
-    isDevServerAutoOpenEnabled: () =>
-      getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true,
+    // `browser.autoOpenDevServer` is per project, and the browser service is
+    // process-wide — so resolve the setting from the project that owns the lane
+    // the ready line was printed in, not from whichever window happens to be in
+    // front. Reading the foreground project meant a project that had opted out
+    // still got auto-opened tabs while another project was focused.
+    isDevServerAutoOpenEnabled: async (record) => {
+      const laneId = record.source.laneId;
+      if (laneId) {
+        for (const ctx of projectContexts.values()) {
+          const lane = await ctx.laneService?.getSummary(laneId, { includeStatus: false })
+            .catch(() => null);
+          if (!lane) continue;
+          return ctx.projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
+        }
+      }
+      return getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
+    },
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can

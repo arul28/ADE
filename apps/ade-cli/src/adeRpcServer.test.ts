@@ -1153,7 +1153,7 @@ describe("adeRpcServer", () => {
 
   it("routes app/navigate through the runtime navigation service", async () => {
     const { runtime } = createRuntime();
-    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    const navigate = vi.fn(async (_args?: Record<string, unknown>) => ({ ok: true, mode: "desktop", windowId: 7 }));
     runtime.appNavigationService = { navigate };
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
     await initialize(handler, { role: "cto" });
@@ -1199,7 +1199,7 @@ describe("adeRpcServer", () => {
 
   it("rejects malformed app/navigate targets before calling the runtime service", async () => {
     const { runtime } = createRuntime();
-    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    const navigate = vi.fn(async (_args?: Record<string, unknown>) => ({ ok: true, mode: "desktop", windowId: 7 }));
     runtime.appNavigationService = { navigate };
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
     await initialize(handler, { role: "cto" });
@@ -1222,7 +1222,7 @@ describe("adeRpcServer", () => {
 
   it("rejects app/navigate file targets that are not repo-relative", async () => {
     const { runtime } = createRuntime();
-    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    const navigate = vi.fn(async (_args?: Record<string, unknown>) => ({ ok: true, mode: "desktop", windowId: 7 }));
     runtime.appNavigationService = { navigate };
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
     await initialize(handler, { role: "cto" });
@@ -1259,7 +1259,7 @@ describe("adeRpcServer", () => {
 
   it("rejects app/navigate commit targets with malformed shas", async () => {
     const { runtime } = createRuntime();
-    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    const navigate = vi.fn(async (_args?: Record<string, unknown>) => ({ ok: true, mode: "desktop", windowId: 7 }));
     runtime.appNavigationService = { navigate };
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
     await initialize(handler, { role: "cto" });
@@ -4751,6 +4751,132 @@ describe("adeRpcServer", () => {
       tabCollection: undefined,
       [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: clientActorToken,
     });
+  });
+
+  it("lets the three forwardable browser methods through when this machine cannot mint a capability", async () => {
+    // Headless regression. On a box running only `ade serve` the capability
+    // issuer asks the desktop bridge for a token and there is no bridge, so an
+    // agent arrives with a chatSessionId and no `ADE_BROWSER_ACTOR_TOKEN`.
+    // Before the carve-out the gate denied the call outright, `forwardIfNoDesktop`
+    // was never entered, and the whole remote-forwarding path was dead code.
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-headless" ? { id: "chat-headless", laneId: "lane-1" } : null
+    ));
+    const navigate = vi.fn(async (_args?: Record<string, unknown>) => ({
+      status: "forwarded_to_desktop",
+      requestId: "bbr-1",
+      url: "https://x.test/",
+      acknowledged: true,
+      desktopLabel: "Studio",
+      reason: null,
+    }));
+    const createTab = vi.fn(async () => ({ status: "forwarded_to_desktop" }));
+    const showPanel = vi.fn(async () => ({ status: "forwarded_to_desktop" }));
+    const observe = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.builtInBrowserService = { navigate, createTab, showPanel, observe };
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "agent-headless",
+      role: "agent",
+      chatSessionId: "chat-headless",
+    });
+
+    const opened = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "navigate",
+      args: { url: "https://x.test/" },
+    });
+    expect(opened?.isError).toBeUndefined();
+    // No capability param: there is none to send, and the bridge — if a desktop
+    // ever answers here — still refuses a capability-less call itself.
+    expect(navigate).toHaveBeenCalledWith({
+      url: "https://x.test/",
+      chatSessionId: "chat-headless",
+      laneId: undefined,
+      projectRoot: undefined,
+      tabCollection: undefined,
+      force: false,
+    });
+    expect(navigate.mock.calls[0]?.[0]).not.toHaveProperty(BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM);
+
+    for (const action of ["createTab", "showPanel"]) {
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "built_in_browser",
+        action,
+        args: { url: "https://x.test/" },
+      });
+      expect(result?.isError).toBeUndefined();
+    }
+    expect(createTab).toHaveBeenCalledTimes(1);
+    expect(showPanel).toHaveBeenCalledTimes(1);
+
+    // Everything else still needs the capability: these act on a live tab and
+    // no desktop elsewhere can satisfy them on this machine's behalf.
+    const observed = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "observe",
+      args: {},
+    });
+    expect(observed.isError).toBe(true);
+    expect(observe).not.toHaveBeenCalled();
+
+    // And a caller with no chat session at all is still denied everywhere.
+    const unboundHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(unboundHandler, { callerId: "agent-nobody", role: "agent" });
+    const unbound = await callTool(unboundHandler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "navigate",
+      args: { url: "https://x.test/" },
+    });
+    expect(unbound.isError).toBe(true);
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopes work_tools to the caller's own lane and refuses agent writes", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const getLaneState = vi.fn(async (args: unknown) => args);
+    const setActiveTool = vi.fn(() => ({ ok: true }));
+    const readObservationPreview = vi.fn(async (args: unknown) => args);
+    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // Asking for another lane's state returns the caller's own lane instead.
+    const state = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "getLaneState",
+      args: { laneId: "lane-b" },
+    });
+    expect(state?.isError).toBeUndefined();
+    expect(getLaneState).toHaveBeenCalledWith({ laneId: "lane-a" });
+
+    // A preview read carries the caller's lane so the aggregator can re-check
+    // the observation sidecar's owner.
+    const preview = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "readObservationPreview",
+      args: { path: "/tmp/obs.png" },
+    });
+    expect(preview?.isError).toBeUndefined();
+    expect(readObservationPreview).toHaveBeenCalledWith({
+      path: "/tmp/obs.png",
+      callerLaneId: "lane-a",
+    });
+
+    // Flipping what the human's pane shows is not an agent's move.
+    const write = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "setActiveTool",
+      args: { laneId: "lane-a", tool: "browser" },
+    });
+    expect(write.isError).toBe(true);
+    expect(setActiveTool).not.toHaveBeenCalled();
   });
 
   it("denies unbound and elevated local callers without a browser actor capability", async () => {

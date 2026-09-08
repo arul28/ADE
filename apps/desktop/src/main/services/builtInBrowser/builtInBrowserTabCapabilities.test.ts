@@ -429,6 +429,32 @@ describe("built-in browser favicons", () => {
   });
 });
 
+// Regression: the owner filter hid every unclaimed tab from an identity-scoped
+// read, so `ade browser status` printed 0 tabs against a pane the human could
+// see full — with no tab id to claim and no `--all`, so `browser open` silently
+// started another tab.
+describe("built-in browser claimable tabs", () => {
+  it("shows unowned tabs as claimable and still hides another chat's tabs", async () => {
+    const { service } = await serviceWithTab();
+    const unowned = service.getStatus().activeTabId!;
+
+    const mineStatus = await service.createTab({ url: LOCAL_URL, activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const mine = mineStatus.tabs.at(-1)!.id;
+    const theirsStatus = await service.createTab({ url: LOCAL_URL, activate: false, laneId: "lane-2", chatSessionId: "chat-2" });
+    const theirs = theirsStatus.tabs.at(-1)!.id;
+
+    const scoped = service.getStatus({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const byId = new Map(scoped.tabs.map((tab) => [tab.id, tab]));
+    expect([...byId.keys()].sort()).toEqual([mine, unowned].sort());
+    expect(byId.get(unowned)?.claimable).toBe(true);
+    expect(byId.get(mine)?.claimable).toBeUndefined();
+    expect(byId.has(theirs)).toBe(false);
+
+    // An unscoped read (the renderer) is unchanged: no `claimable` anywhere.
+    expect(service.getStatus().tabs.every((tab) => tab.claimable === undefined)).toBe(true);
+  });
+});
+
 describe("built-in browser dev-server auto-open", () => {
   it("opens one background tab per (lane, port) and reports it as an event", async () => {
     const registry = createDevServerRegistry();
@@ -468,6 +494,41 @@ describe("built-in browser dev-server auto-open", () => {
       isDevServerAutoOpenEnabled: () => false,
     });
     registry.record({ port: 3000, url: "http://localhost:3000/", laneId: "lane-2" });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    expect(service.getStatus().tabs).toEqual([]);
+    expect(collector.events.find((entry) => entry.type === "dev-server-detected"))
+      .toMatchObject({ autoOpened: false, tabId: null });
+  });
+
+  // The detection is triggered by whatever a terminal PRINTED, and an agent
+  // controls its own terminal — so an unclaimed auto-open let a printed ready
+  // line navigate the shared, globally-authenticated profile with no owner and
+  // no origin grant. Every auto-open now goes through a lane claim.
+  it("opens the tab claimed for the detecting lane", async () => {
+    const registry = createDevServerRegistry();
+    const service = createBuiltInBrowserService({
+      onEvent: () => {},
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+    });
+    registry.record({ port: 5174, url: "http://localhost:5174/", laneId: "lane-owner", sessionId: "sess-1" });
+    await vi.waitFor(() => expect(service.getStatus().tabs).toHaveLength(1));
+    expect(service.getStatus().tabs[0]?.ownerLaneId).toBe("lane-owner");
+  });
+
+  it("only chips a detection with no lane to claim for", async () => {
+    const registry = createDevServerRegistry();
+    const collector = collectEvents();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+    });
+    registry.record({ port: 5175, url: "http://localhost:5175/", laneId: null, sessionId: "sess-1" });
     await vi.waitFor(() =>
       expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
 
@@ -737,6 +798,26 @@ describe("built-in browser network log", () => {
     expect(entry.timings.durationMs).toBeTypeOf("number");
   });
 
+  // Regression: the log stored request URLs verbatim, so an IdP callback wrote
+  // the authorization code into getNetworkLog and into the exported HAR.
+  it("redacts credential query parameters in the recorded URL", async () => {
+    const { service, tabId } = await serviceWithTab();
+    await service.setNetworkLogging({ tabId, enabled: true });
+    fakes.webContentsInstances[0]!.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "req-oauth",
+      type: "Document",
+      request: {
+        method: "GET",
+        url: "http://localhost:5173/auth/callback?code=authz-code-123&state=nonce-abc&next=/home",
+        headers: {},
+      },
+    });
+    const entry = (await service.getNetworkLog({ tabId })).entries[0]!;
+    expect(entry.url).not.toContain("authz-code-123");
+    expect(entry.url).not.toContain("nonce-abc");
+    expect(entry.url).toContain("next=%2Fhome");
+  });
+
   it("supports failure and substring filters", async () => {
     const { service, tabId } = await serviceWithTab();
     await recordOneRequest(service, tabId);
@@ -809,6 +890,54 @@ describe("built-in browser uploads", () => {
   });
 });
 
+// One tracing idiom for the whole capability surface. Before this the split was
+// arbitrary — setEmulation traced and setZoom did not, findInPage traced and
+// stopFindInPage did not — and the hand-traced ones landed entries with
+// `sessionId: null` that never moved `session.lastTraceEntryId`, so `ade browser
+// proof` and the corner card disagreed about where a session got to.
+describe("built-in browser capability tracing", () => {
+  it("traces every tab capability against the session and advances its cursor", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const started = service.startSession({ tabId });
+    const sessionId = started.session!.id;
+    const target = { tabId, sessionId };
+
+    await service.setEmulation({ ...target, preset: "off" });
+    await service.setZoom({ ...target, factor: 1.5 });
+    await service.findInPage({ ...target, text: "hello" }).catch(() => {});
+    await service.stopFindInPage(target);
+    await service.setNetworkLogging({ ...target, enabled: true });
+    await service.setDevTools({ ...target, open: false });
+    await service.exportHar(target);
+    await service.setNetworkLogging({ ...target, enabled: false });
+
+    const entries = service.getTrace(target).entries;
+    expect(entries.map((entry) => entry.action)).toEqual([
+      "setEmulation",
+      "setZoom",
+      "findInPage",
+      "stopFindInPage",
+      "setNetworkLogging",
+      "setDevTools",
+      "exportHar",
+      "setNetworkLogging",
+    ]);
+    expect(entries.every((entry) => entry.sessionId === sessionId)).toBe(true);
+    const sessions = service.listSessions({ tabId }).sessions;
+    expect(sessions.find((entry) => entry.id === sessionId)?.lastTraceEntryId)
+      .toBe(entries.at(-1)?.id);
+  });
+
+  // A pure read of a buffer the caller already owns must not pad the trace.
+  it("leaves no trace entry for getNetworkLog", async () => {
+    const { service, tabId } = await serviceWithTab();
+    await service.setNetworkLogging({ tabId, enabled: true });
+    const before = service.getTrace({ tabId }).entries.length;
+    await service.getNetworkLog({ tabId });
+    expect(service.getTrace({ tabId }).entries).toHaveLength(before);
+  });
+});
+
 describe("built-in browser recording", () => {
   function stubRecorderFactory(calls: string[] = []) {
     return async () => ({
@@ -866,6 +995,47 @@ describe("built-in browser recording", () => {
     await service.startRecording({ tabId });
     await expect(service.startRecording({ tabId })).rejects.toThrow(/already recording/);
     await service.stopRecording({ tabId });
+  });
+
+  // Blocker regression: a handoff suspended ownership but not the agent's own
+  // capture surfaces, so the human's sign-in was recorded and the IdP callback
+  // (authorization code and all) stayed in the network log the agent read back.
+  it("stops recording and network logging when a login handoff starts", async () => {
+    const calls: string[] = [];
+    const { service, tabId, collector } = await serviceWithTab({
+      createTabRecorder: stubRecorderFactory(calls),
+    });
+    service.claim({ tabId, laneId: "lane-1", chatSessionId: "chat-1" });
+    await service.setNetworkLogging({ tabId, enabled: true });
+    fakes.webContentsInstances[0]!.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "req-before",
+      request: { method: "GET", url: "http://localhost:5173/before", headers: {} },
+    });
+    await service.startRecording({ tabId });
+
+    service.startHandoff({ tabId, laneId: "lane-1", chatSessionId: "chat-1", reason: "sign in to Okta" });
+
+    expect(calls).toEqual(["start", "abort"]);
+    const tab = service.getStatus().tabs.find((entry) => entry.id === tabId)!;
+    expect(tab.recording).toBeNull();
+    expect(tab.networkLogging).toBe(false);
+    expect(collector.events.some((event) =>
+      event.type === "recording" && event.recording === null && event.endedBy === "handoff")).toBe(true);
+
+    // Anything the human's sign-in does after this point must not be captured,
+    // and the buffered log is dropped rather than handed back on return.
+    fakes.webContentsInstances[0]!.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "req-during-handoff",
+      request: { method: "GET", url: "http://localhost:5173/callback?code=secret", headers: {} },
+    });
+    service.endHandoff({ tabId });
+
+    const log = await service.getNetworkLog({ tabId, laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(log.enabled).toBe(false);
+    expect(log.recordedCount).toBe(0);
+    // Nothing re-arms on hand-back: the agent has to ask again.
+    await expect(service.stopRecording({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }))
+      .rejects.toThrow(/is not recording/);
   });
 
   it("rejects an unsupported frame rate", async () => {

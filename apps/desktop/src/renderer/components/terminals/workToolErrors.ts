@@ -66,7 +66,7 @@ export function pruneWorkToolBrowserErrors(
 ): WorkToolErrorsByTab {
   const keys = Object.keys(prev);
   if (keys.length === 0) return prev;
-  const liveTabIds = new Set((status?.tabs ?? []).map((tab) => tab.id));
+  const liveTabIds = new Set((Array.isArray(status?.tabs) ? status.tabs : []).map((tab) => tab.id));
   if (keys.every((key) => liveTabIds.has(key))) return prev;
   const next: Record<string, WorkToolErrorCounts> = {};
   for (const key of keys) {
@@ -84,7 +84,10 @@ export function workToolBrowserErrorCount(
   errors: WorkToolErrorsByTab,
   status: BuiltInBrowserStatus | null,
 ): number {
-  const tabId = status?.activeTabId ?? status?.tabs[0]?.id ?? null;
+  // `tabs` is optional at runtime even though the type says otherwise: the
+  // hosted web client's stub namespace resolves an "unsupported" object with no
+  // tab list, cast into this type by the adapter.
+  const tabId = status?.activeTabId ?? (Array.isArray(status?.tabs) ? status.tabs[0]?.id : null) ?? null;
   if (!tabId) return 0;
   const counts = errors[tabId];
   if (!counts) return 0;

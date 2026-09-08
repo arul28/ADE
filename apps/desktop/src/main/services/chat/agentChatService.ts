@@ -562,7 +562,7 @@ import {
 } from "../ai/tools/orchestrationTools";
 import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
-import { createWorkflowTools } from "../ai/tools/workflowTools";
+import { workflowToolNames } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { CTO_INTRO_ONBOARDING_STEP, CTO_INTRO_PROMPT } from "../cto/ctoPromptContent";
@@ -8739,6 +8739,20 @@ export function createAgentChatService(args: {
    * previous desktop process. A failure (no desktop, headless machine) leaves
    * the token absent rather than blocking the launch, and `ade browser` then
    * reports that the bridge is not running.
+   *
+   * CONSTRAINT — why the `issueSync` fork stays: the obvious cleanup (drop
+   * `issueSync`, make `buildAgentRuntimeEnv` async, await `issue` inline) adds
+   * an `await` inside the synchronous stretch of agent launch that this
+   * service's dispatch ordering depends on. That ordering is load-bearing and
+   * asserted by the launch tests around it, so the sync path is kept and paid
+   * for with the preamble below.
+   *
+   * ORDERING — every `buildAgentRuntimeEnv(managed)` call site must be preceded
+   * by `const ready = prepareBrowserActorCapability(managed); if (ready) await
+   * ready;` in the same launch. Forget it and the env silently ships without
+   * `ADE_BROWSER_ACTOR_TOKEN` on daemon-hosted chats — an omission that
+   * compiles and reviews clean. `agentChatBrowserActorOrdering.test.ts` fails
+   * when a new call site appears without a preamble.
    */
   const prepareBrowserActorCapability = (
     managed: ManagedChatSession,
@@ -10091,15 +10105,10 @@ export function createAgentChatService(args: {
 
     const sessionId = `preview:${laneId}`;
     const toolNames = new Set<string>();
-    const workflowTools = createWorkflowTools({
-      laneService,
-      prService: prService ?? undefined,
-      computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-      onReportCompletion: null,
-      sessionId,
-      laneId,
-    });
-    for (const toolName of Object.keys(workflowTools)) {
+    for (const toolName of workflowToolNames({
+      hasPrService: Boolean(prService),
+      hasComputerUseArtifactBroker: Boolean(computerUseArtifactBrokerRef),
+    })) {
       toolNames.add(toolName);
     }
 

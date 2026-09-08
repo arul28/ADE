@@ -26,7 +26,10 @@ import {
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
   AutomationIngressEventRecord,
@@ -890,7 +893,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // served by the runtime daemon itself, so a desktop that took a forwarded
   // `ade browser open` can tell the machine that asked. Absent on a desktop's
   // own service object, where `listAllowedAdeActionNames` filters it out.
-  built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS, "acknowledgeRemoteRequest"],
+  built_in_browser: [
+    ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
+    BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  ],
   automations: [
     "list",
     "get",

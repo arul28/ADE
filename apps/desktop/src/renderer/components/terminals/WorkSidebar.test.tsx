@@ -16,6 +16,7 @@ import type {
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { makeBuiltInBrowserStatus } from "../chat/__fixtures__/builtInBrowserStatus";
 
 const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
 
@@ -300,29 +301,16 @@ const appControlContextItem: AppControlContextItem = {
   selectedAt: "2026-05-13T00:00:00.000Z",
 };
 
-const defaultBrowserStatus: BuiltInBrowserStatus = {
+const defaultBrowserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus({
   attached: false,
-  partition: "persist:ade-browser",
-  storageProfileKey: "global",
   collectionKey: "window",
-  collectionProjectRoot: null,
-  persistentProfile: true,
   visible: false,
   bounds: { x: 0, y: 0, width: 0, height: 0 },
   activeTabId: null,
   tabs: [],
   url: null,
   title: null,
-  isLoading: false,
-  canGoBack: false,
-  canGoForward: false,
-  isInspecting: false,
-  hasSelection: false,
-  ownerLaneId: null,
-  ownerChatSessionId: null,
-  ownerClaimedAt: null,
-  ownerLeaseExpiresAt: null,
-};
+});
 
 function installAdeMock(options: {
   appControlSession?: AppControlSession | null;

@@ -290,6 +290,30 @@ describe("appControlService agent actions", () => {
     }
   });
 
+  // Regression: `switchWindow` cleared only the trace, so a handle minted in
+  // window A still resolved against window B's DOM and clicked whatever matched
+  // there — silently, with an `ok` trace entry — while the docs and the skill
+  // both promise the handle stops resolving.
+  it("refuses a handle minted against a different window after switchWindow", async () => {
+    mockState.httpResponses.push([target("a"), target("b")]);
+    const service = createAppControlService({ projectRoot, logger: createLogger() });
+    try {
+      await service.connect({ cdpPort: 12345, projectRoot, force: true });
+      mockState.runtimeValues.push(collectorSnapshot([saveButton()]));
+      const observation = await service.observe();
+      const handle = observation.dom?.elements[0]?.handle;
+      expect(handle).toBeTruthy();
+
+      mockState.httpResponses.push([target("a"), target("b")], [target("a"), target("b")]);
+      await service.switchWindow({ targetId: "b" });
+
+      await expect(service.agentClick({ handle, observe: false, waitAfterMs: 0 }))
+        .rejects.toThrow(/different window/i);
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("refuses to act on a disabled target and records the failure in the trace", async () => {
     const service = await connectedService();
     try {
@@ -370,9 +394,7 @@ describe("appControlService agent actions", () => {
       );
       const computerUse = drivers.drivers.find((entry) => entry.driver === "computer_use");
       expect(computerUse).toEqual(expect.objectContaining({ status: "unavailable", implemented: false }));
-      expect(computerUse?.reason).toMatch(
-        process.platform === "darwin" ? /not implemented in this build/i : /macOS only/i,
-      );
+      expect(computerUse?.reason).toMatch(/not implemented in this build/i);
 
       mockState.httpResponses.push([target("a")]);
       await expect(service.connect({ cdpPort: 12345, projectRoot, force: true, driver: "computer_use" }))
@@ -384,6 +406,8 @@ describe("appControlService agent actions", () => {
     }
   });
 
+  // The Windows-facing copy must not imply the feature works on a Mac: the
+  // driver is unimplemented on every platform in this build.
   it("gates the computer_use driver on platform when App Control is not on macOS", async () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -392,8 +416,10 @@ describe("appControlService agent actions", () => {
       const computerUse = service.listDrivers().drivers.find((entry) => entry.driver === "computer_use");
       expect(computerUse).toEqual(expect.objectContaining({
         status: "unavailable",
-        reason: "Native app control is macOS only.",
+        implemented: false,
       }));
+      expect(computerUse?.reason).toMatch(/not implemented in this build/i);
+      expect(computerUse?.reason).toMatch(/macOS only/i);
     } finally {
       service.dispose();
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });

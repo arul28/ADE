@@ -19,7 +19,11 @@ import {
   type WorkProjectViewState,
   type WorkSidebarTab,
 } from "../../state/appStore";
-import { WORK_TOOL_DEFINITIONS } from "../terminals/workTools";
+import {
+  WORK_TOOL_DEFINITIONS,
+  workToolAvailability,
+  type WorkToolContext,
+} from "../terminals/workTools";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import {
@@ -516,12 +520,22 @@ export type WorkToolPaletteCommand = {
 export function buildWorkToolCommands({
   navigate,
   openTool,
+  context,
 }: {
   navigate: (path: string) => void;
   openTool: (tool: WorkSidebarTab | null) => void;
+  /**
+   * The same capability flags the picker gates its cards on. A command that
+   * lands on a card reading "macOS only" or "Desktop app only" is a dead row,
+   * so an unavailable tool is not offered here either — the picker still shows
+   * the dimmed card WITH its reason, which is where that answer belongs.
+   */
+  context: WorkToolContext;
 }): WorkToolPaletteCommand[] {
   return [
-    ...WORK_TOOL_DEFINITIONS.map((definition) => ({
+    ...WORK_TOOL_DEFINITIONS.filter(
+      (definition) => workToolAvailability(definition.id, context).available,
+    ).map((definition) => ({
       id: `work-tools-${definition.id}`,
       title: `Tools: ${definition.label}`,
       hint: definition.blurb,

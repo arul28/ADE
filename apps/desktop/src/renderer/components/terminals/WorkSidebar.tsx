@@ -5,11 +5,9 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowsClockwise, Play, Terminal as TerminalIcon, WarningCircle } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { ArrowsClockwise } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   AppControlContextItem,
@@ -34,26 +32,26 @@ import {
 import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
+import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
-import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
-import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
-import { ChatPrPane } from "../chat/ChatPrPane";
-import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
+import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
-import { FilesTab } from "../files/FilesTab";
-import { LaneDiffPane } from "../lanes/LaneDiffPane";
-import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
-import { settingsRouteFor } from "../settings/settingsManifest";
 import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
-import { isAvailableWorkSidebarTab, isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
-import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
+import {
+  isAvailableWorkSidebarTab,
+  workToolContextLabel,
+  type WorkToolContext,
+} from "./workTools";
+import {
+  WORK_TOOL_COMPONENTS,
+  type PrRefreshAction,
+  type WorkToolPanelProps,
+} from "./workToolPanels";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -101,7 +99,6 @@ function escapeIsClaimedInside(target: Element): boolean {
 }
 
 /** See `ChatPrPane.onRegisterRefresh`. */
-type PrRefreshAction = { run: () => void; syncing: boolean };
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
@@ -181,73 +178,6 @@ function hideBuiltInBrowserView(projectRoot: string | null): void {
   }).catch(() => {});
 }
 
-function WarningBanner({ message }: { message: string }) {
-  return (
-    <div className="flex shrink-0 items-start gap-2 border-b border-amber-400/15 bg-amber-500/[0.055] px-3 py-2 text-[11px] leading-4 text-amber-100/85">
-      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
-      <span>{message}</span>
-    </div>
-  );
-}
-
-/**
- * The pane's empty state, in the terminal drawer's own language.
- *
- * A bare sentence centred in 600px of black reads as a failure — that is what
- * "Continue this OpenCode CLI session before opening an attached terminal." was
- * doing here while the drawer three lines below had a proper icon, headline and
- * button. Same anatomy in both places: a duotone glyph, a headline you can act
- * on, one line of explanation, then whatever actions exist.
- */
-function WorkToolEmptyState({
-  title,
-  message,
-  actions,
-  hint,
-}: {
-  title: string;
-  message: string;
-  actions?: ReactNode;
-  hint?: ReactNode;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
-      <TerminalIcon size={22} weight="duotone" className="text-fg/25" />
-      <div className="flex flex-col gap-1">
-        <p className="font-sans text-[13px] font-semibold text-fg/80">{title}</p>
-        <p className="max-w-[240px] font-sans text-[11.5px] leading-[17px] text-muted-fg">{message}</p>
-      </div>
-      {actions}
-      {hint}
-    </div>
-  );
-}
-
-/** The one line that tells you these shells are also an agent surface. */
-function TerminalCliHint() {
-  return (
-    <p className="font-sans text-[11px] leading-4 text-muted-fg/65">
-      Agents read and drive these shells with{" "}
-      <code className="rounded bg-white/[0.05] px-1 py-px font-mono text-[10.5px] text-fg/70">ade terminal</code>
-    </p>
-  );
-}
-
-const TERMINAL_EMPTY_PRIMARY_CLASS = cn(
-  "inline-flex h-8 items-center gap-2 rounded-md border border-violet-400/24 bg-violet-500/[0.10] px-3",
-  "font-sans text-[12px] font-medium text-fg/88 transition-colors",
-  "hover:border-violet-400/40 hover:bg-violet-500/[0.16] hover:text-fg",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-  "disabled:cursor-default disabled:opacity-45",
-);
-
-const TERMINAL_EMPTY_SECONDARY_CLASS = cn(
-  "inline-flex h-8 items-center rounded-md border border-white/[0.10] px-3 font-sans text-[12px]",
-  "font-medium text-muted-fg transition-colors hover:border-white/20 hover:text-fg",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-  "disabled:cursor-default disabled:opacity-45",
-);
-
 export function WorkSidebar({
   active = true,
   laneId,
@@ -277,7 +207,6 @@ export function WorkSidebar({
    */
   runtimePin?: OpenProjectBinding | null;
 }) {
-  const navigate = useNavigate();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
@@ -348,11 +277,31 @@ export function WorkSidebar({
     };
   }, [active, browserViewRoot, effectiveTool]);
 
-  const terminalOwnerSessionIdForStatus = useMemo(() => {
-    if (activeSession && isChatToolType(activeSession.toolType)) return activeSession.id;
-    return contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
+  /**
+   * Who owns the shells, asked twice for two different reasons.
+   *
+   * `status` is for the picker line and the activity dot: a chat session, or
+   * whatever the context target is. `pane` additionally counts a RUNNING agent
+   * CLI session, because the pane can host that session's shells even though it
+   * is not a chat — deriving the pane's answer from the status one showed
+   * foreign chats an "open a chat…" empty state instead of a terminal. The two
+   * rules differ in exactly one clause, stated once here.
+   */
+  const { statusOwnerSessionId, paneOwnerSessionId } = useMemo(() => {
+    const fromContext = contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
       ? contextTarget.sessionId
       : null;
+    if (!activeSession) return { statusOwnerSessionId: fromContext, paneOwnerSessionId: fromContext };
+    if (isChatToolType(activeSession.toolType)) {
+      return { statusOwnerSessionId: activeSession.id, paneOwnerSessionId: activeSession.id };
+    }
+    const runningCliSession = activeSession.status === "running"
+      && activeSession.ptyId
+      && isPtyContextInsertableToolType(activeSession.toolType);
+    return {
+      statusOwnerSessionId: fromContext,
+      paneOwnerSessionId: runningCliSession ? activeSession.id : null,
+    };
   }, [activeSession, contextTarget]);
 
   // Status now spans every tool, not just the one on screen: the picker cards
@@ -368,7 +317,7 @@ export function WorkSidebar({
     laneId,
     lane: activeLane,
     runtimePin,
-    terminalOwnerSessionId: terminalOwnerSessionIdForStatus,
+    terminalOwnerSessionId: statusOwnerSessionId,
     browserViewRoot,
     pinnedMachineId: pinnedMachine?.machineId ?? null,
     offline: pinnedMachineOffline,
@@ -390,27 +339,6 @@ export function WorkSidebar({
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
-  // Terminal ownership is an identity question, not a permission one: any chat
-  // or running agent-CLI session can host attached terminals, including one on
-  // another machine. Deriving it from `contextTarget` conflated the two and
-  // showed foreign chats an "open a chat..." empty state instead of a terminal.
-  const terminalOwnerSessionId = useMemo(() => {
-    if (activeSession) {
-      if (isChatToolType(activeSession.toolType)) return activeSession.id;
-      if (
-        activeSession.status === "running"
-        && activeSession.ptyId
-        && isPtyContextInsertableToolType(activeSession.toolType)
-      ) {
-        return activeSession.id;
-      }
-      return null;
-    }
-    return contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
-      ? contextTarget.sessionId
-      : null;
-  }, [activeSession, contextTarget]);
-
   // The PR tool's refresh, surrendered by `ChatPrPane` when it renders without
   // its own title bar. Held here so the shell header can place it.
   const [prRefreshAction, setPrRefreshAction] = useState<PrRefreshAction | null>(null);
@@ -549,273 +477,90 @@ export function WorkSidebar({
     });
   }, [insertIntoPty, withContextTarget]);
 
-  const content = useMemo(() => {
-    if (!active || !effectiveTool) return null;
-    if (effectiveTool === "terminal") {
-      if (!laneId) {
-        return (
-          <WorkToolEmptyState
-            title="No lane selected"
-            message="Pick a lane or open a Work session and its shells appear here."
-          />
-        );
-      }
-      if (!terminalOwnerSessionId) {
-        // An ENDED session is the common case here — you left a CLI running,
-        // it finished, and the pane still has to be useful. It gets the one
-        // action that makes shells possible again instead of a sentence
-        // telling you to go and find that action yourself.
-        const endedSession = activeSession?.status && activeSession.status !== "running"
-          ? activeSession
-          : null;
-        if (endedSession) {
-          return (
-            <WorkToolEmptyState
-              title="This session has ended"
-              // `formatToolTypeLabel` already ends in "session" for the CLI
-              // tools ("OpenCode CLI session"), so no second "session" here.
-              message={`Resume this ${formatToolTypeLabel(endedSession.toolType)} to attach shells to it again.`}
-              actions={(
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={resumeEndedSession}
-                    disabled={resumingSession}
-                    className={TERMINAL_EMPTY_PRIMARY_CLASS}
-                  >
-                    <Play size={13} weight="fill" />
-                    <span>{resumingSession ? "Resuming…" : "Resume session"}</span>
-                  </button>
-                  {/* `onClose`, not `closePane`: this branch only renders for
-                      the terminal tool, where there is no browser view to park. */}
-                  <button type="button" onClick={onClose} className={TERMINAL_EMPTY_SECONDARY_CLASS}>
-                    Close
-                  </button>
-                </div>
-              )}
-              hint={<TerminalCliHint />}
-            />
-          );
-        }
-        return (
-          <WorkToolEmptyState
-            title="Start a shell in this lane"
-            message="Shells attach to a chat or a running agent CLI session. Open one and they land here."
-            hint={<TerminalCliHint />}
-          />
-        );
-      }
-      if (pinnedMachineOffline) {
-        return (
-          <WorkToolEmptyState
-            title={`${pinnedMachineName} is offline`}
-            message="Its shells are still there. They come back when the machine answers again."
-          />
-        );
-      }
-      return (
-        <ChatTerminalDrawer
-          // Remount on a machine change so a foreign machine's tabs can never
-          // paint into the machine you just switched to.
-          key={`work-terminal:${runtimePin?.key ?? "bound"}:${terminalOwnerSessionId}`}
-          variant="panel"
-          open
-          onToggle={onClose}
-          laneId={laneId}
-          chatSessionId={terminalOwnerSessionId}
-          runtimePin={runtimePin}
-          emptyMessage="Shells you open here stay attached to this session."
-        />
-      );
+  const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
+    setSelectedPath(path);
+    setSelectedMode(mode);
+    setSelectedCommit(null);
+  }, []);
+  const selectCommit = useCallback((commit: GitCommitSummary | null) => {
+    setSelectedCommit(commit);
+    if (commit) {
+      setSelectedPath(null);
+      setSelectedMode(null);
     }
+  }, []);
+  const clearDiffSelection = useCallback(() => {
+    setSelectedPath(null);
+    setSelectedMode(null);
+    setSelectedCommit(null);
+  }, []);
 
-    // A surface that cannot drive the tool shows what the desktop is doing with
-    // it instead. Checked before the native panels so neither one mounts a
-    // stubbed namespace it would only fail against.
-    if (
-      (effectiveTool === "browser" || effectiveTool === "app-control")
-      && isReadOnlyWorkTool(effectiveTool, toolContext)
-    ) {
-      return <WorkToolReadOnlyView tool={effectiveTool} laneId={laneId} />;
-    }
-
-    if (effectiveTool === "browser") {
-      return (
-        <div className="flex h-full min-h-0 flex-col">
-          {warningReason ? <WarningBanner message={warningReason} /> : null}
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ChatBuiltInBrowserPanel
-              key={`work-browser:${runtimePin?.key ?? "bound"}`}
-              sessionId={panelSessionId}
-              runtimePin={runtimePin}
-              onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
-              onAddContext={canInsertContext ? addBuiltInBrowserContext : undefined}
-              onInsertDraft={canInsertContext ? insertDraft : undefined}
-            />
-          </div>
-        </div>
-      );
-    }
-
-    if (!laneId) {
-      return (
-        <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-muted-fg">
-          Select a lane or open a Work session to use the sidebar.
-        </div>
-      );
-    }
-
-    if (effectiveTool === "git") {
-      if (pinnedMachineOffline) {
-        return (
-          <WorkToolEmptyState
-            title={`${pinnedMachineName} is offline`}
-            message="Git for this lane lives on that machine, so there is nothing to read from here yet."
-          />
-        );
-      }
-      const hasDiffSelection = Boolean(selectedPath || selectedCommit);
-      return (
-        <div className="flex h-full min-h-0 flex-col">
-          <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
-            <LaneGitActionsPane
-              key={`work-git:${runtimePin?.key ?? "bound"}:${laneId}`}
-              laneId={laneId}
-              runtimePin={runtimePin}
-              autoRebaseEnabled={false}
-              onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-              onSelectFile={(path, mode) => {
-                setSelectedPath(path);
-                setSelectedMode(mode);
-                setSelectedCommit(null);
-              }}
-              onSelectCommit={(commit) => {
-                setSelectedCommit(commit);
-                if (commit) {
-                  setSelectedPath(null);
-                  setSelectedMode(null);
-                }
-              }}
-              onClearDiffSelection={() => {
-                setSelectedPath(null);
-                setSelectedMode(null);
-                setSelectedCommit(null);
-              }}
-              selectedPath={selectedPath}
-              selectedMode={selectedMode}
-              selectedCommit={selectedCommit}
-              selectedCommitSha={selectedCommit?.sha ?? null}
-            />
-          </div>
-          {hasDiffSelection ? (
-            <div className="min-h-0 flex-1 border-t border-white/[0.08]">
-              <LaneDiffPane
-                laneId={laneId}
-                runtimePin={runtimePin}
-                selectedPath={selectedPath}
-                selectedFileMode={selectedMode}
-                selectedCommit={selectedCommit}
-                liveSync
-              />
-            </div>
-          ) : null}
-        </div>
-      );
-    }
-
-    if (effectiveTool === "pr") {
-      return (
-        <div className="flex h-full min-h-0 flex-col">
-          <ChatPrPane
-            key={`work-pr:${runtimePin?.key ?? "bound"}:${laneId}`}
-            laneId={laneId}
-            branchName={activeLane?.branchRef ?? null}
-            sessionTitle={activeSession?.title ?? null}
-            sessionId={panelSessionId}
-            runtimePin={runtimePin}
-            onClose={() => onToolChange(null)}
-            // The shell header above already says "Pull request" and owns the
-            // close button; the pane's refresh moves up into it.
-            chromeless
-            onRegisterRefresh={setPrRefreshAction}
-          />
-        </div>
-      );
-    }
-
-    if (effectiveTool === "files") {
-      return (
-        <FilesTab
-          key={`work-files:${runtimePin?.key ?? "bound"}`}
-          preferredLaneId={laneId}
-          pin={runtimePin}
-          embedded
-        />
-      );
-    }
-
-    const panel = effectiveTool === "ios" ? (
-      <ChatIosSimulatorPanel
-        key={`work-ios:${runtimePin?.key ?? "bound"}`}
-        sessionId={panelSessionId}
-        laneId={laneId}
-        runtimePin={runtimePin}
-        projectRoot={laneRoot}
-        controlDisabledReason={null}
-        ignoreChatOwnership
-        onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
-        onAddContext={canInsertContext ? addIosContext : undefined}
-        onInsertDraft={canInsertContext ? insertDraft : undefined}
-      />
-    ) : (
-      <ChatAppControlPanel
-        key={`work-appcontrol:${runtimePin?.key ?? "bound"}`}
-        sessionId={panelSessionId}
-        laneId={laneId}
-        runtimePin={runtimePin}
-        projectRoot={laneRoot}
-        controlDisabledReason={null}
-        onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
-        onAddContext={canInsertContext ? addAppControlContext : undefined}
-        onInsertDraft={canInsertContext ? insertDraft : undefined}
-      />
-    );
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        {warningReason ? <WarningBanner message={warningReason} /> : null}
-        <div className="min-h-0 flex-1 overflow-auto px-3 py-3">{panel}</div>
-      </div>
-    );
-  }, [
-    activeLane?.branchRef,
+  // One props object for every tool panel, and one lookup to pick the panel.
+  // The cascade this replaces was a 270-line memo with a hand-written 28-entry
+  // dependency array that could never actually memoize.
+  const toolProps = useMemo<WorkToolPanelProps>(() => ({
+    laneId,
+    laneRoot,
+    activeLane,
+    activeSession: activeSession ?? null,
+    runtimePin,
+    panelSessionId,
+    terminalOwnerSessionId: paneOwnerSessionId,
+    toolContext,
+    pinnedMachineOffline,
+    pinnedMachineName,
+    warningReason,
+    canInsertContext,
+    shouldPersistPanelAttachment,
+    resumingSession,
+    selectedPath,
+    selectedMode,
+    selectedCommit,
+    onSelectFile: selectFile,
+    onSelectCommit: selectCommit,
+    onClearDiffSelection: clearDiffSelection,
+    onAddAttachment: addAttachment,
+    onAddBuiltInBrowserContext: addBuiltInBrowserContext,
+    onAddAppControlContext: addAppControlContext,
+    onAddIosContext: addIosContext,
+    onInsertDraft: insertDraft,
+    onResumeEndedSession: resumeEndedSession,
+    onRegisterPrRefresh: setPrRefreshAction,
+    onToolChange,
+    onClose,
+  }), [
+    activeLane,
+    activeSession,
     addAppControlContext,
     addAttachment,
     addBuiltInBrowserContext,
     addIosContext,
-    panelSessionId,
     canInsertContext,
+    clearDiffSelection,
     insertDraft,
     laneId,
-    warningReason,
-    shouldPersistPanelAttachment,
     laneRoot,
-    navigate,
+    onClose,
     onToolChange,
+    panelSessionId,
+    pinnedMachineName,
+    pinnedMachineOffline,
+    resumeEndedSession,
+    resumingSession,
+    runtimePin,
+    selectCommit,
+    selectFile,
     selectedCommit,
     selectedMode,
     selectedPath,
-    setPrRefreshAction,
-    active,
-    effectiveTool,
-    activeSession,
-    onClose,
-    pinnedMachineName,
-    resumeEndedSession,
-    resumingSession,
-    pinnedMachineOffline,
-    runtimePin,
-    terminalOwnerSessionId,
+    paneOwnerSessionId,
+    shouldPersistPanelAttachment,
+    toolContext,
+    warningReason,
   ]);
+
+  const ToolPanel = active && effectiveTool ? WORK_TOOL_COMPONENTS[effectiveTool] : null;
+  const content = ToolPanel ? <ToolPanel {...toolProps} /> : null;
 
   const selectTool = useCallback((next: WorkSidebarTab | null) => {
     if (effectiveTool === "browser" && next !== "browser") hideBuiltInBrowserView(browserViewRoot);
@@ -866,17 +611,17 @@ export function WorkSidebar({
 
   // Browser: the page you are on. Terminal: how many shells. Git: the branch.
   // One compact fact, so the header answers "which one of these am I looking
-  // at" without duplicating the panel's own chrome.
-  const headerContextLabel = useMemo(() => {
-    if (!effectiveTool) return null;
-    if (effectiveTool === "git") return activeLane?.branchRef ?? null;
-    if (effectiveTool === "files") return activeLane?.name ?? null;
-    return statuses[effectiveTool]?.line ?? null;
-  }, [activeLane, effectiveTool, statuses]);
+  // at" without duplicating the panel's own chrome. The per-tool rule lives on
+  // the tool's own catalogue entry, next to its label and its icon.
+  const headerContextLabel = useMemo(() => (
+    effectiveTool
+      ? workToolContextLabel(effectiveTool, { lane: activeLane, status: statuses[effectiveTool] ?? null })
+      : null
+  ), [activeLane, effectiveTool, statuses]);
 
   const transition = reduceMotion
     ? { duration: 0 }
-    : { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
+    : revealTransition;
 
   return (
     <aside
@@ -945,6 +690,7 @@ export function WorkSidebar({
                 context={toolContext}
                 statuses={statuses}
                 loading={statusesLoading}
+                pickerShortcut={pickerBinding}
                 onPick={selectTool}
               />
             )}

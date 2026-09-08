@@ -900,7 +900,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedTabGroupIds: [],
       workFocusSessionsHidden: false,
       workSidebarOpen: false,
-      workSidebarTab: "git" as const,
+      // From the real default rather than by hand: the by-hand copies drifted
+      // when `workSidebarTab` was renamed and kept a key the type no longer has.
+      workSidebarTool: createDefaultWorkProjectViewState().workSidebarTool,
       workSidebarWidthPct: 36,
       laneSessionOrder: {},
       pinnedSessionIds: [],
@@ -989,7 +991,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedTabGroupIds: [],
       workFocusSessionsHidden: false,
       workSidebarOpen: false,
-      workSidebarTab: "git" as const,
+      // From the real default rather than by hand: the by-hand copies drifted
+      // when `workSidebarTab` was renamed and kept a key the type no longer has.
+      workSidebarTool: createDefaultWorkProjectViewState().workSidebarTool,
       workSidebarWidthPct: 36,
       laneSessionOrder: {},
       pinnedSessionIds: [],

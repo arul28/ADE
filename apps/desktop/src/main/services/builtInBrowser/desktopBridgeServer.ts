@@ -18,6 +18,10 @@ import {
   BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
+  type BuiltInBrowserRuntimeStatus,
+} from "../../../shared/types/builtInBrowserRuntimeStatus";
 import type { Logger } from "../logging/logger";
 import {
   issueBuiltInBrowserActorCapability,
@@ -198,6 +202,37 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
       revokeBuiltInBrowserActorCapability(requestedChatSessionId);
       return { revoked: true };
+    }
+    // Read-only Work-tools mirror. Bridge auth only, exactly like the two
+    // capability methods above and for the same reason: the caller is the
+    // runtime daemon itself, which has no chat and therefore can never hold an
+    // actor capability. It gets a deliberately narrow projection (see
+    // `BuiltInBrowserRuntimeStatus`) that carries no cookies, no observation
+    // bytes and no way to act on a tab, so serving it without a capability
+    // grants nothing the daemon could not already infer from its own events.
+    if (name === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD) {
+      const status = service.getStatus({});
+      const runtimeStatus: BuiltInBrowserRuntimeStatus = {
+        activeTabId: status.activeTabId,
+        tabs: status.tabs.map((tab) => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          ownerLaneId: tab.ownerLaneId,
+          ownerChatSessionId: tab.ownerChatSessionId,
+          recording: tab.recording != null,
+          handoff: tab.handoff
+            ? {
+              reason: tab.handoff.reason,
+              previousOwner: {
+                laneId: tab.handoff.previousOwner.laneId,
+                chatSessionId: tab.handoff.previousOwner.chatSessionId,
+              },
+            }
+            : null,
+        })),
+      };
+      return runtimeStatus;
     }
     if (
       name === "getProfileDiagnostics"

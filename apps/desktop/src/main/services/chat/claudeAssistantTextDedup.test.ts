@@ -96,7 +96,7 @@ vi.mock("../ai/tools/universalTools", () => ({
     bash: { description: "stub", parameters: {}, execute: vi.fn() },
   })),
 }));
-vi.mock("../ai/tools/workflowTools", () => ({ createWorkflowTools: vi.fn(() => []) }));
+vi.mock("../ai/tools/workflowTools", () => ({ workflowToolNames: vi.fn(() => []) }));
 vi.mock("../ai/tools/linearTools", () => ({ createLinearTools: vi.fn(() => []) }));
 vi.mock("../ai/tools/ctoOperatorTools", () => ({ createCtoOperatorTools: vi.fn(() => []) }));
 vi.mock("../ai/tools/systemPrompt", () => ({

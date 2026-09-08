@@ -72,7 +72,11 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
+} from "./services/builtInBrowser/desktopBridgeMethods";
+import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -2801,7 +2805,21 @@ function scopeBuiltInBrowserAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
   const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  if (!callerChatSessionId || !browserActorToken) {
+  // Headless machines cannot mint an actor capability: the issuer asks the
+  // desktop bridge for one, and on a box running only `ade serve` that socket
+  // is not listening. Without this carve-out the capability gate denies the
+  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // forwarding path (publish `built_in_browser_remote_request`, wait for a
+  // pinned desktop to ack) is unreachable. Only the three "put this URL on a
+  // screen" methods are exempt — they are exactly the forwardable set. This is
+  // not a privilege grant: if a desktop IS attached here, `desktopBridgeServer`
+  // still refuses a capability-less call, so the authority stays on the side
+  // that owns the browser.
+  const forwardableWithoutCapability =
+    !browserActorToken
+    && Boolean(callerChatSessionId)
+    && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(action);
+  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability)) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -2830,8 +2848,52 @@ function scopeBuiltInBrowserAdeActionArgs(
     projectRoot: undefined,
     tabCollection: undefined,
     force: false,
-    [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken,
+    ...(browserActorToken
+      ? { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken }
+      : {}),
   };
+}
+
+/**
+ * `work_tools` is the read-only mirror of the Work tools pane. The allowlist
+ * comment always said "read-only for everyone except the desktop that owns the
+ * pane", but nothing enforced it: `getLaneState` and `readObservationPreview`
+ * took a caller-supplied `laneId`/`path`, and `setActiveTool` was writable by
+ * anyone. So an agent in lane A could read lane B's latest observation path and
+ * then its bytes, and could flip what every paired phone believed the human had
+ * open. This is the enforcement the comment described.
+ */
+function scopeWorkToolsAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  isUserClient: boolean,
+  workToolsArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:work_tools.${action}`;
+  if (action === "setActiveTool") {
+    // Writing the pane's active tool is the human's move on their own desktop.
+    // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
+    if (!isUserClient) {
+      scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
+    }
+    return workToolsArgs;
+  }
+  if (action === "getLaneState") {
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    // A bound agent reads its OWN lane, whatever it asked for. An unbound
+    // caller has no lane to be forced to and keeps the argument it supplied.
+    return sessionLaneId ? { ...workToolsArgs, laneId: sessionLaneId } : workToolsArgs;
+  }
+  if (action === "readObservationPreview") {
+    // The path check itself lives in the aggregator (`resolvePathWithinRoot`
+    // plus an extension allow-list). What it could not know is who is asking,
+    // so the caller's lane travels with the request and the aggregator refuses
+    // a sidecar owned by a different one.
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    return sessionLaneId ? { ...workToolsArgs, callerLaneId: sessionLaneId } : workToolsArgs;
+  }
+  return workToolsArgs;
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
@@ -3985,7 +4047,10 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (domain === "built_in_browser" && action === "acknowledgeRemoteRequest") {
+    } else if (
+      domain === "built_in_browser"
+      && action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+    ) {
       // Not a browser action. This machine has no desktop attached, so a
       // `browser open` here was published to whichever desktop holds a remote
       // pin on this lane; this is that desktop saying it took it. It reaches
@@ -4002,6 +4067,14 @@ async function runTool(args: {
         argsList,
         hasScalarArg,
         rawObjectArgs,
+      );
+    } else if (!callerIsCto && domain === "work_tools") {
+      scopedObjectArgs = scopeWorkToolsAdeActionArgs(
+        runtime,
+        session,
+        action,
+        isUserClient,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (domain === "built_in_browser" && action === "endHandoff") {
       // Hand-back is the human's move, not the agent's. The desktop renderer

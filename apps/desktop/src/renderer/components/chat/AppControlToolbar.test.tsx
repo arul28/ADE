@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { AppControlToolbar } from "./AppControlToolbar";
+import { APP_PICKER_WIDTH_CLASS, AppControlToolbar } from "./AppControlToolbar";
 
 afterEach(cleanup);
 
@@ -41,21 +41,23 @@ function renderToolbar(appLabel: string) {
 }
 
 describe("AppControlToolbar app picker", () => {
-  it("gives the trigger a pixel width budget rather than a self-referential percentage", () => {
-    // The shipped bug: `max-w-[46%]` resolved against the trigger's own
-    // content-sized wrapper and collapsed the label to its first letter.
+  // The width budget is locked as an exported constant rather than asserted as
+  // a substring of a `class` attribute: jsdom does no layout, so a class check
+  // could never prove the bug it cited (a percentage resolving against a
+  // content-sized wrapper), and it broke on any restyle.
+  it("uses the named width budget, which is in px and not a percentage", () => {
+    expect(APP_PICKER_WIDTH_CLASS).not.toMatch(/max-w-\[\d+%\]/);
     renderToolbar("Playground");
     const trigger = screen.getByLabelText("App Control launch target");
-    expect(trigger.className).toContain("min-w-[120px]");
-    expect(trigger.className).toContain("max-w-[240px]");
-    expect(trigger.className).not.toMatch(/max-w-\[\d+%\]/);
+    expect(trigger.className).toContain(APP_PICKER_WIDTH_CLASS);
   });
 
-  it("truncates a long app label with an ellipsis instead of clipping it", () => {
-    renderToolbar("A very long Electron application label indeed");
-    const label = screen.getByText("A very long Electron application label indeed");
-    expect(label.className).toContain("truncate");
-    expect(label.className).toContain("min-w-0");
+  it("renders a long app label in full rather than truncating the text itself", () => {
+    const label = "A very long Electron application label indeed";
+    renderToolbar(label);
+    // The ellipsis is CSS; what must be true in the DOM is that the whole
+    // string is present, so a screen reader and a tooltip both get it.
+    expect(screen.getByLabelText("App Control launch target").textContent).toBe(label);
   });
 
   it("shows a short label in full", () => {

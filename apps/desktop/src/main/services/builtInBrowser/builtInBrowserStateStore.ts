@@ -9,9 +9,17 @@ import type { Logger } from "../logging/logger";
  * ADE used to force onto every new tab. v2 exists only to drop that default on
  * read once: without it, "new tab no longer loads google" would still be
  * undone on the next launch by a restored tab.
+ *
+ * v3 changed how a project collection key is derived: the hash now runs over
+ * `pathKey(resolve(projectRoot))` instead of the raw string, so `C:\Users\dev`
+ * and `c:\users\dev` stop producing two invisible collections on Windows. The
+ * old key cannot be recomputed from the file (only the digest was stored), so a
+ * v2 read keeps the unhashed `window`/`personal` collections and drops the
+ * `project-*` ones — one launch of restored tabs, once.
  */
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const LEGACY_STATE_VERSION = 1;
+const REKEYED_COLLECTION_STATE_VERSION = 2;
 
 /**
  * Home pages ADE itself put there. A google *search* URL is a real thing the
@@ -150,10 +158,14 @@ function loadState(filePath: string): { entries: Array<[string, StoredCollection
     const parsed = JSON.parse(fsSync.readFileSync(filePath, "utf8")) as unknown;
     if (!isRecord(parsed) || !isRecord(parsed.collections)) return { entries: [], migrated: false };
     const migrated = parsed.version === LEGACY_STATE_VERSION;
-    if (parsed.version !== STATE_VERSION && !migrated) return { entries: [], migrated: false };
+    const rekeyed = parsed.version === REKEYED_COLLECTION_STATE_VERSION;
+    if (parsed.version !== STATE_VERSION && !migrated && !rekeyed) return { entries: [], migrated: false };
     const entries = Object.entries(parsed.collections)
       .map(([key, value]): [string, StoredCollection] | null => {
         if (!isPersistentCollectionKey(key) || !isRecord(value) || !Array.isArray(value.tabs)) return null;
+        // Project keys written before v3 hash a different input, so they would
+        // restore into a collection nothing ever looks at.
+        if ((migrated || rekeyed) && key.startsWith("project-")) return null;
         const tabs = value.tabs
           .map((tab) => isRecord(tab) ? restorableBrowserUrl(tab.url) : null)
           .filter((url): url is string => Boolean(url))
@@ -171,7 +183,7 @@ function loadState(filePath: string): { entries: Array<[string, StoredCollection
       })
       .filter((entry): entry is [string, StoredCollection] => Boolean(entry))
       .slice(0, MAX_COLLECTIONS);
-    return { entries, migrated };
+    return { entries, migrated: migrated || rekeyed };
   } catch {
     return { entries: [], migrated: false };
   }

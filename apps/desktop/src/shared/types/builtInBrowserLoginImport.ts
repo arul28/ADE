@@ -1,3 +1,5 @@
+import type { SystemSettingsPaneId } from "./systemSettings";
+
 /**
  * Contract for importing existing browser logins (cookies only) into ADE's
  * global authenticated browser profile.
@@ -75,10 +77,12 @@ export type BrowserLoginImportSource = {
   /** Human-readable explanation when `status !== "ready"`. */
   reason: string | null;
   /**
-   * macOS System Settings pane to open for `needs_full_disk_access`. Only the
-   * pane token crosses IPC; the renderer never builds an arbitrary URL.
+   * OS settings pane the renderer can offer to open for
+   * `needs_full_disk_access`. An id, not a URL: `x-apple.systempreferences:` is
+   * outside the external-URL scheme allowlist, so main resolves the id against
+   * `SYSTEM_SETTINGS_PANE_URLS` and calls `shell.openExternal` itself.
    */
-  settingsPaneUrl: string | null;
+  settingsPaneId: SystemSettingsPaneId | null;
 };
 
 export type BrowserLoginImportListSourcesResult = {
@@ -107,7 +111,7 @@ export type BrowserLoginImportFailure = {
   sourceId: string;
   status: BrowserLoginImportBlockedReason;
   reason: string;
-  settingsPaneUrl: string | null;
+  settingsPaneId: SystemSettingsPaneId | null;
 };
 
 export type BrowserLoginImportListDomainsResult =
@@ -139,10 +143,4 @@ export type BrowserLoginImportResult =
 export type BrowserLoginImportListDomainsArgs = { sourceId: string };
 export type BrowserLoginImportArgs = { sourceId: string; domains: string[] };
 
-/**
- * macOS Full Disk Access pane. Kept beside the contract so main and renderer
- * agree on the exact token; the renderer hands it to `shell.openExternal`
- * through the existing external-URL bridge rather than composing one.
- */
-export const MACOS_FULL_DISK_ACCESS_SETTINGS_URL =
-  "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles";
+

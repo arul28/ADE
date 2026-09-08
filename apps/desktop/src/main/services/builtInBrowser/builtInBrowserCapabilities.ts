@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolvePathWithinRoot } from "../shared/utils";
 import type {
   BuiltInBrowserNetworkHeader,
   BuiltInBrowserNetworkLogArgs,
@@ -34,7 +35,59 @@ export const BUILT_IN_BROWSER_REDACTED_HEADERS: ReadonlySet<string> = new Set([
   "proxy-authorization",
   "cookie",
   "set-cookie",
+  // `location` carries the OAuth `code` on every IdP redirect, which is the
+  // whole sign-in in one header; the other two are the same class of secret.
+  "location",
+  "www-authenticate",
+  "x-csrf-token",
 ]);
+
+/**
+ * Query parameters whose value is a credential rather than a request detail.
+ *
+ * Redacting only headers left the bigger hole open: an IdP callback, a
+ * magic-link, and a presigned URL all carry the secret in the query string, and
+ * a HAR export explodes every parameter into the file by name and value.
+ */
+export const BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS: ReadonlySet<string> = new Set([
+  "code",
+  "access_token",
+  "id_token",
+  "token",
+  "state",
+  "session",
+  "sig",
+  "signature",
+  "api_key",
+  "refresh_token",
+  "client_secret",
+]);
+
+export function isRedactedBuiltInBrowserQueryParam(name: string): boolean {
+  return BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS.has(name.trim().toLowerCase());
+}
+
+/**
+ * Same URL with credential-bearing query values replaced. Returns the input
+ * unchanged when it does not parse or carries nothing to redact, so a log entry
+ * never turns into `"[redacted by ADE]"` wholesale and lose its identity.
+ */
+export function redactBuiltInBrowserUrl(url: string): string {
+  if (!url.includes("?")) return url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  let changed = false;
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (!isRedactedBuiltInBrowserQueryParam(name)) continue;
+    parsed.searchParams.set(name, BUILT_IN_BROWSER_REDACTED_HEADER_VALUE);
+    changed = true;
+  }
+  return changed ? parsed.toString() : url;
+}
 
 export function clampBuiltInBrowserZoomFactor(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -245,7 +298,10 @@ function harHeaders(headers: readonly BuiltInBrowserNetworkHeader[]): Array<{ na
 function harQueryString(url: string): Array<{ name: string; value: string }> {
   try {
     const parsed = new URL(url);
-    return [...parsed.searchParams.entries()].map(([name, value]) => ({ name, value }));
+    return [...parsed.searchParams.entries()].map(([name, value]) => ({
+      name,
+      value: isRedactedBuiltInBrowserQueryParam(name) ? BUILT_IN_BROWSER_REDACTED_HEADER_VALUE : value,
+    }));
   } catch {
     return [];
   }
@@ -256,13 +312,13 @@ function harQueryString(url: string): Array<{ name: string; value: string }> {
 /**
  * `uploadFile` hands real filesystem paths to a page's `<input type=file>`, so
  * a bad target would exfiltrate arbitrary files to whatever site the tab is on.
- * Only the project worktree, ADE's own scratch dirs, and the OS temp dir are
- * allowed, and each candidate must resolve inside one of them.
+ * Only the project worktree, its `.ade/tmp` scratch dir, the tab's observation
+ * cache, and the OS temp dir are allowed, and each candidate must resolve
+ * inside one of them.
  */
 export function builtInBrowserUploadRoots(args: {
   projectRoot: string | null;
   observationRoot: string | null;
-  adeHome: string | null;
   tmpDir: string;
 }): string[] {
   const roots = new Set<string>();
@@ -273,18 +329,23 @@ export function builtInBrowserUploadRoots(args: {
   add(args.projectRoot);
   if (args.projectRoot) add(path.join(args.projectRoot, ".ade", "tmp"));
   add(args.observationRoot);
-  if (args.adeHome) add(path.join(args.adeHome, "tmp"));
   add(args.tmpDir);
   return [...roots];
 }
 
-function isPathInsideRoot(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  if (relative === "") return true;
-  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
-  return !relative.split(path.sep).includes("..");
-}
-
+/**
+ * Resolve every candidate against the real filesystem layout and keep only the
+ * ones that land inside an allowed root.
+ *
+ * The containment check has to realpath: an agent can write inside the project
+ * root by design, so `ln -s ~/.ssh/id_ed25519 .ade/tmp/report.txt` would pass a
+ * lexical `path.relative` test and upload the private key to whatever origin
+ * the tab is on. `resolvePathWithinRoot` walks the candidate segment by segment
+ * through `realpath`, and is the same helper the rest of the main process uses
+ * (it also handles the Windows `\\?\` spellings a hand-rolled compare misses).
+ *
+ * Returns the resolved real paths, which are what CDP is handed.
+ */
 export function resolveBuiltInBrowserUploadPaths(
   rawPaths: readonly unknown[],
   roots: readonly string[],
@@ -303,30 +364,52 @@ export function resolveBuiltInBrowserUploadPaths(
     if (value.includes("\0")) {
       throw new Error("Browser upload paths cannot contain null bytes.");
     }
-    const resolved = path.resolve(value.trim());
-    const allowed = normalizedRoots.some((root) => isPathInsideRoot(root, resolved));
-    if (!allowed) {
-      throw new Error(
-        `Browser upload path is outside the allowed roots (${normalizedRoots.join(", ")}): ${resolved}`,
-      );
+    const candidate = value.trim();
+    for (const root of normalizedRoots) {
+      try {
+        // `allowMissing` keeps the "not a readable file" error at the caller,
+        // where it names the path; a missing root just fails this root.
+        return resolvePathWithinRoot(root, candidate, { allowMissing: true });
+      } catch {
+        // Outside this root (or the root does not exist) — try the next one.
+      }
     }
-    return resolved;
+    throw new Error(
+      `Browser upload path is outside the allowed roots (${normalizedRoots.join(", ")}): ${path.resolve(candidate)}`,
+    );
   });
 }
 
 /* ── Recording ────────────────────────────────────────────────────────────── */
 
 export const BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS = [30, 60] as const;
-export const BUILT_IN_BROWSER_MAX_RECORDING_FRAMES = 60 * 60 * 5; // ~5 min at 60fps
 
-export function normalizeBuiltInBrowserRecordingFps(value: unknown): 30 | 60 {
-  if (value == null) return 30;
+export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS)[number];
+
+/**
+ * Wall-clock cap on a single recording, enforced by the session's own timer.
+ *
+ * A recording is a `getDisplayMedia` capture of a live tab writing to the
+ * project's scratch dir; an agent that forgets to call `stopRecording` (or dies
+ * mid-run) would otherwise capture until the app quits. Five minutes is long
+ * enough for any "show me this flow" and short enough that the forgotten case
+ * costs a bounded file.
+ */
+export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
+
+/** Frame budget the wall-clock cap implies at the highest supported rate. */
+export const BUILT_IN_BROWSER_MAX_RECORDING_FRAMES =
+  (BUILT_IN_BROWSER_MAX_RECORDING_MS / 1_000) * Math.max(...BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS);
+
+const RECORDING_FPS_ERROR = `Browser recording fps must be ${BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS.join(" or ")}.`;
+
+export function normalizeBuiltInBrowserRecordingFps(value: unknown): BuiltInBrowserRecordingFps {
+  if (value == null) return BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS[0];
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error("Browser recording fps must be 30 or 60.");
+    throw new Error(RECORDING_FPS_ERROR);
   }
   const rounded = Math.round(value);
-  if (rounded !== 30 && rounded !== 60) {
-    throw new Error("Browser recording fps must be 30 or 60.");
-  }
-  return rounded;
+  const match = BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS.find((option) => option === rounded);
+  if (match == null) throw new Error(RECORDING_FPS_ERROR);
+  return match;
 }

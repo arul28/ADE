@@ -126,6 +126,7 @@ import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
   readAutomationsEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
+import { DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -3588,7 +3589,13 @@ function readBrowserSessionsArgs(args: string[]): JsonObject {
   };
 }
 
-function readBrowserObservationArgs(args: string[]): JsonObject {
+/**
+ * The flags that shape an observation but say nothing about which tab it is of.
+ * Split out so `browser proof` can take the target back without a denylist of
+ * these key names — a denylist that had to be edited in lockstep with the
+ * reader, and would have silently leaked a sixth flag into `exportHar`.
+ */
+function readBrowserObservationOnlyArgs(args: string[]): JsonObject {
   const keepCount = readNumberOption(args, ["--keep", "--keep-count"]);
   const includeDom = readFlag(args, ["--dom", "--include-dom", "--elements"]);
   const skipDom = readFlag(args, ["--no-dom", "--no-elements"]);
@@ -3597,7 +3604,6 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
   const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
   const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
   return {
-    ...readBrowserOwnedTabTargetArgs(args),
     ...(keepCount == null ? {} : { keepCount }),
     ...(includeDom ? { includeDom: true } : {}),
     ...(skipDom ? { includeDom: false } : {}),
@@ -3605,6 +3611,13 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
     ...(skipDiagnostics ? { includeDiagnostics: false } : {}),
     ...(includeElementMap ? { includeElementMap: true } : {}),
     ...(maxElements == null ? {} : { maxElements }),
+  };
+}
+
+function readBrowserObservationArgs(args: string[]): JsonObject {
+  return {
+    ...readBrowserOwnedTabTargetArgs(args),
+    ...readBrowserObservationOnlyArgs(args),
   };
 }
 
@@ -11271,66 +11284,67 @@ function buildAppControlPlan(args: string[]): CliPlan {
   };
 }
 
-const BROWSER_SESSION_ACTION_MODES = new Set([
-  "observe",
-  "snapshot",
-  "hover",
-  "drag",
-  "select-option",
-  "choose",
-  "option",
-  "upload",
-  "upload-file",
-  "emulate",
-  "device",
-  "zoom",
-  "find",
-  "find-in-page",
-  "find-stop",
-  "stop-find",
-  "devtools",
-  "dev-tools",
-  "network",
-  "net",
-  "har",
-  "export-har",
-  "record",
-  "click",
-  "type",
-  "type-text",
-  "fill",
-  "clear",
-  "clear-field",
-  "clear-input",
-  "clear-value",
-  "key",
-  "press",
-  "dispatch-key",
-  "scroll",
-  "wheel",
-  "wait",
-  "wait-for",
-  "trace",
-  "action-trace",
-  "timeline",
-  "proof",
-  "promote",
-  "reload",
-  "refresh",
-  "back",
-  "forward",
-  "screenshot",
-  "capture",
-  "select",
-  "select-point",
-  "point",
-]);
+/**
+ * Every `ade browser` subcommand that also works as
+ * `ade browser session <id> <cmd>`, keyed by canonical name, with its aliases.
+ *
+ * ONE table. `isBrowserSessionActionMode` is derived from it and
+ * `buildBrowserPlan` matches through `isBrowserSubcommand`, so an alias cannot
+ * be accepted by the planner and rejected by the session router. It was: seven
+ * aliases (`search-page`, `inspector`, `requests`, `drag-and-drop`,
+ * `attach-file`, `recording`, `emulation`) were reachable as
+ * `ade browser <alias>` but died with "Unknown browser session command" under
+ * `ade browser session <id> <alias>` because the hand-maintained Set never got
+ * them. Add an alias here and both sides get it.
+ */
+const BROWSER_SESSION_SUBCOMMANDS = {
+  observe: ["observe", "snapshot"],
+  click: ["click"],
+  type: ["type", "type-text"],
+  fill: ["fill"],
+  // `clear` is deliberately ambiguous at the CLI: with an element target it
+  // clears a field, without one it clears the selection. `buildBrowserPlan`
+  // keeps that branch written out because the disambiguation is a flag test,
+  // not an alias; the aliases still live here so session mode accepts them.
+  clear: ["clear", "clear-field", "clear-input", "clear-value"],
+  key: ["key", "press", "dispatch-key"],
+  scroll: ["scroll", "wheel"],
+  wait: ["wait", "wait-for"],
+  emulate: ["emulate", "device", "emulation"],
+  zoom: ["zoom"],
+  findStop: ["find-stop", "stop-find"],
+  find: ["find", "find-in-page", "search-page"],
+  devtools: ["devtools", "dev-tools", "inspector"],
+  network: ["network", "net", "requests"],
+  har: ["har", "export-har"],
+  hover: ["hover"],
+  drag: ["drag", "drag-and-drop"],
+  selectOption: ["select-option", "choose", "option"],
+  upload: ["upload", "upload-file", "attach-file"],
+  record: ["record", "recording"],
+  trace: ["trace", "action-trace", "timeline"],
+  proof: ["proof", "promote"],
+  reload: ["reload", "refresh"],
+  back: ["back"],
+  forward: ["forward"],
+  screenshot: ["screenshot", "capture"],
+  selectPoint: ["select", "select-point", "point"],
+} as const satisfies Record<string, readonly string[]>;
+
+type BrowserSessionSubcommand = keyof typeof BROWSER_SESSION_SUBCOMMANDS;
+
+function isBrowserSubcommand(sub: string, command: BrowserSessionSubcommand): boolean {
+  return (BROWSER_SESSION_SUBCOMMANDS[command] as readonly string[]).includes(sub);
+}
+
+const BROWSER_SESSION_ACTION_MODES = new Set<string>(
+  Object.values(BROWSER_SESSION_SUBCOMMANDS).flat(),
+);
 
 function isBrowserSessionActionMode(value: string): boolean {
   return BROWSER_SESSION_ACTION_MODES.has(value);
 }
 
-const DEFAULT_BROWSER_HANDOFF_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * `ade browser handoff` — the agent says out loud that it cannot get past this
@@ -11358,7 +11372,7 @@ function buildBrowserHandoffPlan(args: string[]): CliPlan {
   const timeoutMsValue = readNumberOption(args, ["--timeout-ms"]);
   const timeoutMs = timeoutValue
     ? parseSnoozeDurationMs(timeoutValue)
-    : timeoutMsValue ?? DEFAULT_BROWSER_HANDOFF_TIMEOUT_MS;
+    : timeoutMsValue ?? DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS;
   const target = readBrowserTabTargetArgs(args);
   // Everything left over after the flags is the reason, so
   // `ade browser handoff sign in to staging` works without quoting.
@@ -11561,22 +11575,26 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
     const agentOwnedCall = Boolean(claimArgs.laneId || claimArgs.chatSessionId);
+    // One payload, built once. `--device` only appends an emulation step; the
+    // navigate itself is identical, and writing it twice meant every change to
+    // `activate` / `openPanel` / `reuseOwnedTab` had to be made in both copies.
+    const navigateStep = actionStep("result", "built_in_browser", "navigate", {
+      url,
+      tabId,
+      newTab: newTab && !activeTab ? true : undefined,
+      activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
+      reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
+      openPanel: showPanel || (!noPanel && !agentOwnedCall),
+      ...claimArgs,
+      ...genericArgs,
+    });
     if (openDevice) {
       // Navigate first, then apply emulation to whichever tab that resolved to.
       return {
         kind: "execute",
         label: "browser open",
         steps: [
-          actionStep("result", "built_in_browser", "navigate", {
-            url,
-            tabId,
-            newTab: newTab && !activeTab ? true : undefined,
-            activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
-            reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
-            openPanel: showPanel || (!noPanel && !agentOwnedCall),
-            ...claimArgs,
-            ...genericArgs,
-          }),
+          navigateStep,
           {
             key: "emulation",
             method: "ade/actions/call",
@@ -11602,22 +11620,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ],
       };
     }
-    return {
-      kind: "execute",
-      label: "browser open",
-      steps: [
-        actionStep("result", "built_in_browser", "navigate", {
-          url,
-          tabId,
-          newTab: newTab && !activeTab ? true : undefined,
-          activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
-          reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
-          openPanel: showPanel || (!noPanel && !agentOwnedCall),
-          ...claimArgs,
-          ...genericArgs,
-        }),
-      ],
-    };
+    return { kind: "execute", label: "browser open", steps: [navigateStep] };
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
@@ -11692,7 +11695,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "observe" || sub === "snapshot")
+  if (isBrowserSubcommand(sub, "observe"))
     return {
       kind: "execute",
       label: "browser observe",
@@ -11736,7 +11739,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "type" || sub === "type-text") {
+  if (isBrowserSubcommand(sub, "type")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const text = readValue(args, ["--text"]) ?? args.join(" ");
     if (!text.trim()) throw new CliUsageError("browser type requires text.");
@@ -11810,7 +11813,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "key" || sub === "press" || sub === "dispatch-key") {
+  if (isBrowserSubcommand(sub, "key")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
     const key = readValue(args, ["--key"]) ?? firstPositional(args);
@@ -11832,7 +11835,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "scroll" || sub === "wheel") {
+  if (isBrowserSubcommand(sub, "scroll")) {
     const deltaX = readNumberOption(args, ["--dx", "--delta-x"]) ?? 0;
     const deltaY = readNumberOption(args, ["--dy", "--delta-y"]) ?? 0;
     if (deltaX === 0 && deltaY === 0)
@@ -11856,7 +11859,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "wait" || sub === "wait-for") {
+  if (isBrowserSubcommand(sub, "wait")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
     const url = readValue(args, ["--url"]);
@@ -11884,7 +11887,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "emulate" || sub === "device" || sub === "emulation") {
+  if (isBrowserSubcommand(sub, "emulate")) {
     const off = readFlag(args, ["--off", "--reset", "--clear", "--no-device", "--desktop"]);
     const device = readValue(args, ["--device", "--preset", "--emulate"]);
     const width = readNumberOption(args, ["--width"]);
@@ -11947,7 +11950,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "find-stop" || sub === "stop-find") {
+  if (isBrowserSubcommand(sub, "findStop")) {
     const action = readValue(args, ["--action", "--selection"]);
     return {
       kind: "execute",
@@ -11965,7 +11968,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "find" || sub === "find-in-page" || sub === "search-page") {
+  if (isBrowserSubcommand(sub, "find")) {
     const explicitText = readValue(args, ["--text", "--query", "--find"]);
     const matchCase = readFlag(args, ["--match-case", "--case-sensitive"]);
     const backward = readFlag(args, ["--backward", "--previous", "--prev"]);
@@ -11994,7 +11997,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "devtools" || sub === "dev-tools" || sub === "inspector") {
+  if (isBrowserSubcommand(sub, "devtools")) {
     const close = readFlag(args, ["--close", "--off", "--hide"]);
     const open = readFlag(args, ["--open", "--on", "--show"]);
     const mode = readValue(args, ["--mode", "--dock", "--position"]);
@@ -12024,7 +12027,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "network" || sub === "net" || sub === "requests") {
+  if (isBrowserSubcommand(sub, "network")) {
     const enable = readFlag(args, ["--on", "--enable", "--start", "--record"]);
     const disable = readFlag(args, ["--off", "--disable", "--stop"]);
     const failedOnly = readFlag(args, ["--failed", "--errors", "--failures"]);
@@ -12070,7 +12073,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "har" || sub === "export-har") {
+  if (isBrowserSubcommand(sub, "har")) {
     const failedOnly = readFlag(args, ["--failed", "--errors"]);
     const filter = readValue(args, ["--filter", "--match", "--grep"]);
     return {
@@ -12119,7 +12122,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "drag" || sub === "drag-and-drop") {
+  if (isBrowserSubcommand(sub, "drag")) {
     const destination = readBrowserDragDestinationArgs(args);
     const x = readNumberOption(args, ["--x", "--from-x"]);
     const y = readNumberOption(args, ["--y", "--from-y"]);
@@ -12155,7 +12158,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "select-option" || sub === "choose" || sub === "option") {
+  if (isBrowserSubcommand(sub, "selectOption")) {
     const value = readValue(args, ["--value", "--option-value"]);
     // `--label` and `--index` already alias the element target flags, so the
     // option selectors get their own unambiguous names.
@@ -12190,7 +12193,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "upload" || sub === "upload-file" || sub === "attach-file") {
+  if (isBrowserSubcommand(sub, "upload")) {
     const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--upload"]);
     const targetArgs = readBrowserClickTargetArgs(args);
     if (Object.keys(targetArgs).length === 0) {
@@ -12216,7 +12219,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "record" || sub === "recording") {
+  if (isBrowserSubcommand(sub, "record")) {
     const mode = (firstPositional(args) ?? "status").toLowerCase();
     if (mode === "start" || mode === "begin") {
       const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
@@ -12290,7 +12293,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     }
     throw new CliUsageError(`Unknown browser record command: ${mode}. Use start or stop.`);
   }
-  if (sub === "trace" || sub === "action-trace" || sub === "timeline")
+  if (isBrowserSubcommand(sub, "trace"))
     return {
       kind: "execute",
       label: "browser trace",
@@ -12303,29 +12306,19 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "proof" || sub === "promote") {
+  if (isBrowserSubcommand(sub, "proof")) {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
     const ownerBase = readProofOwnerBase(args);
     const includeHar = readFlag(args, ["--har", "--with-har"]);
-    const observationArgs = readBrowserObservationArgs(args);
+    // `--tab` and the lane claim are read once and used by both steps, rather
+    // than re-read from an argv the observation reader has already consumed.
+    const harTargetArgs: JsonObject = readBrowserOwnedTabTargetArgs(args);
     const observeArgs = collectGenericObjectArgs(args, {
-      ...observationArgs,
+      ...harTargetArgs,
+      ...readBrowserObservationOnlyArgs(args),
       includeDom: false,
     });
-    // `--tab` and the lane claim were already consumed by the observation
-    // reader, so the HAR step reuses the same resolved target rather than
-    // re-reading flags that are no longer in argv.
-    const observationOnlyKeys = new Set([
-      "keepCount",
-      "includeDom",
-      "includeDiagnostics",
-      "includeElementMap",
-      "maxElements",
-    ]);
-    const harTargetArgs: JsonObject = Object.fromEntries(
-      Object.entries(observationArgs).filter(([key]) => !observationOnlyKeys.has(key)),
-    );
     return {
       kind: "execute",
       label: "browser proof",
@@ -12394,7 +12387,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "reload" || sub === "refresh")
+  if (isBrowserSubcommand(sub, "reload"))
     return {
       kind: "execute",
       label: "browser reload",
@@ -12446,7 +12439,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "screenshot" || sub === "capture")
+  if (isBrowserSubcommand(sub, "screenshot"))
     return {
       kind: "execute",
       label: "browser screenshot",
@@ -12459,7 +12452,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "select" || sub === "select-point" || sub === "point") {
+  if (isBrowserSubcommand(sub, "selectPoint")) {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
@@ -16685,7 +16678,29 @@ async function resolveDesktopSocketProjectId(
       automaticProjectRegistrationParams(projectRoot),
     );
     return isRecord(registered) ? asString(registered.projectId) : null;
-  } catch {
+  } catch (error) {
+    // A genuinely legacy desktop socket has no `projects.add` at all, and
+    // staying a pass-through is correct there. Anything else — a permission
+    // refusal, a stale registry, a disk error — means `activeProjectId` is
+    // silently null and every later `ade/actions/call` fails with the raw
+    // "requires params.projectId" this helper exists to prevent. Say so once
+    // rather than reproducing the unhelpful error with no explanation.
+    // `SocketJsonRpcClient` keeps only the message, not the JSON-RPC code, so
+    // "this socket has never heard of projects.add" can only be recognised by
+    // its text. Both spellings the two socket servers use are matched; anything
+    // else is treated as a real failure and reported.
+    const message = error instanceof Error ? error.message : String(error);
+    const isLegacySocket = /(?:method not found|unexpected method)/i.test(message);
+    if (!isLegacySocket) {
+      try {
+        process.stderr.write(
+          `ade: could not register this project with the desktop (${formatDiagnosticError(error)}). `
+          + "Project-scoped commands may fail until ADE Desktop is restarted.\n",
+        );
+      } catch {
+        // Stderr may be gone; a diagnostic must never break the command.
+      }
+    }
     return null;
   }
 }
@@ -22459,9 +22474,15 @@ function formatBrowserStatus(value: unknown): string {
       ["url", status.url],
       [
         "opened",
-        status.acknowledged === true
-          ? `on ${desktop ?? "the attached desktop"} via tunnel`
-          : "no desktop is attached to this machine; open ADE Desktop with this lane pinned",
+        // A first-use tunnel port needs a human "Allow" on the desktop, which
+        // cannot happen inside the 5s ack window. The desktop acks immediately
+        // with `awaitingApproval` instead of leaving the CLI to print a
+        // failure for a request that is very much alive.
+        status.awaitingApproval === true
+          ? `waiting for approval on ${desktop ?? "the attached desktop"} — reaching this port needs a yes in ADE`
+          : status.acknowledged === true
+            ? `on ${desktop ?? "the attached desktop"} via tunnel`
+            : "no desktop is attached to this machine; open ADE Desktop with this lane pinned",
       ],
       ["request", status.requestId],
       ["note", reason],
@@ -22469,7 +22490,14 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
+  // `claimable` marks a tab the human opened that no chat owns. It is visible
+  // so an agent can discover it instead of starting a duplicate tab, but every
+  // action on it still fails until the caller claims it — so the owner column
+  // says exactly that, with the command that fixes it.
   const ownerForTab = (tab: Record<string, unknown>): string => {
+    if (tab.claimable === true) {
+      return `not yours — ade browser claim --tab ${asString(tab.id) ?? "<id>"}`;
+    }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
     return [lane, chat].filter(Boolean).join(" / ");

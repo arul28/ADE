@@ -99,10 +99,35 @@ import type {
 import { BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
+import { pathKey } from "../shared/pathCompare";
+import {
+  AGENT_DOM_COLLECTOR_FUNCTION,
+  AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
+  keyEventForAgentInput,
+  parseObservationElementHandle,
+  sanitizeObservationPathSegment,
+} from "../../../shared/agentObservation";
+import {
+  agentActionTargetForTrace,
+  agentElementLocatePayload as elementLocatePayload,
+  agentHasElementTarget as hasElementTarget,
+  applyAgentObservationHandles as applyObservationHandles,
+  finiteNumber,
+  normalizeAgentDomSnapshot as normalizeDomSnapshot,
+  normalizeAgentElementSnapshot as normalizeElementSnapshot,
+  normalizeAgentFrame as normalizeFrame,
+  optionalFiniteNumber,
+  stringOrNull,
+} from "../../../shared/agentObservationNormalizers";
+import {
+  pruneAgentObservationCacheRoot as pruneObservationCacheRoot,
+  pruneAgentObservationDirectory as pruneObservationDirectory,
+} from "../shared/agentObservationCache";
 import {
   BUILT_IN_BROWSER_PARTITION,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import { awaitFoundInPage } from "./builtInBrowserFind";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
@@ -121,6 +146,7 @@ import {
 } from "./builtInBrowserStateStore";
 import {
   BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
+  BUILT_IN_BROWSER_MAX_RECORDING_MS,
   BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT,
   buildBuiltInBrowserHar,
   builtInBrowserUploadRoots,
@@ -130,6 +156,7 @@ import {
   normalizeBuiltInBrowserRecordingFps,
   normalizeBuiltInBrowserHeaders,
   normalizeNetworkLogLimit,
+  redactBuiltInBrowserUrl,
   resolveBuiltInBrowserUploadPaths,
   type BuiltInBrowserNetworkLogStore,
 } from "./builtInBrowserCapabilities";
@@ -456,6 +483,21 @@ function normalizedProjectRoot(value: string | null | undefined): string | null 
   return trimmed.length ? trimmed : null;
 }
 
+/**
+ * Comparison key for a project root.
+ *
+ * The daemon, a shell cwd and Electron all spell the same directory
+ * differently — drive-letter case, mixed separators — and a raw `===` just
+ * misses, which shows up as "no ADE browser window is open for project …" or,
+ * worse, a second collection whose key the renderer never uses. `pathKey` is
+ * the repo's platform-aware answer (see `windows-quirks.md` §1); it does not
+ * resolve, so the value is resolved first.
+ */
+function projectRootKey(value: string | null | undefined): string | null {
+  const normalized = normalizedProjectRoot(value);
+  return normalized ? pathKey(path.resolve(normalized)) : null;
+}
+
 function collectionForProjectRoot(
   projectRoot: string | null | undefined,
   kind: "personal" | "window" = "window",
@@ -467,7 +509,10 @@ function collectionForProjectRoot(
       projectRoot: null,
     };
   }
-  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  // Hash the comparison key, not the raw spelling: two spellings of one
+  // directory must land in one collection. Changing this input is why the
+  // persisted STATE_VERSION moved to 3.
+  const key = createHash("sha256").update(projectRootKey(normalized) ?? normalized).digest("hex").slice(0, 16);
   return {
     key: `project-${key}`,
     projectRoot: normalized,
@@ -519,11 +564,17 @@ export function createBuiltInBrowserService(args: {
    */
   devServers?: DevServerRegistry | null;
   /**
-   * `browser.autoOpenDevServer` for the project. Defaults to enabled — the
-   * setting exists so a person who does not want ADE opening tabs can say so,
-   * not so the feature has to be discovered before it works.
+   * `browser.autoOpenDevServer` for the project the detection came from.
+   * Defaults to enabled — the setting exists so a person who does not want ADE
+   * opening tabs can say so, not so the feature has to be discovered before it
+   * works.
+   *
+   * The record is passed because this service is process-wide while the setting
+   * is per project: resolving it from the foreground project meant a project
+   * that had opted out still got tabs whenever another project's window was in
+   * front, and vice versa.
    */
-  isDevServerAutoOpenEnabled?: (() => boolean | Promise<boolean>) | null;
+  isDevServerAutoOpenEnabled?: ((record: DevServerRecord) => boolean | Promise<boolean>) | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -624,9 +675,9 @@ export function createBuiltInBrowserService(args: {
     normalizedProjectRoot(args.getProjectRootForWindow?.(win));
 
   const projectRootsMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
-    const normalizedLeft = normalizedProjectRoot(left);
-    const normalizedRight = normalizedProjectRoot(right);
-    return Boolean(normalizedLeft && normalizedLeft === normalizedRight);
+    const leftKey = projectRootKey(left);
+    const rightKey = projectRootKey(right);
+    return Boolean(leftKey && leftKey === rightKey);
   };
 
   const projectRootFromInput = (input: unknown): string | null => {
@@ -843,14 +894,13 @@ export function createBuiltInBrowserService(args: {
     autoOpenedDevServers.add(key);
     let enabled = true;
     try {
-      enabled = (await args.isDevServerAutoOpenEnabled?.()) ?? true;
+      enabled = (await args.isDevServerAutoOpenEnabled?.(record)) ?? true;
     } catch {
       enabled = true;
     }
-    const service = enabled ? devServerTargetService(laneId) : null;
-    if (!service) {
-      // Still tell surfaces about it: the launchpad chips and the corner card
-      // want the server even when nothing was opened for it.
+    // Still tell surfaces about it even when nothing opened: the launchpad chips
+    // and the corner card want the server either way.
+    const emitChipOnly = (): void => {
       args.onEvent?.({
         type: "dev-server-detected",
         server: record,
@@ -859,24 +909,42 @@ export function createBuiltInBrowserService(args: {
         status: activeService().getStatus(),
         detectedAt: record.detectedAt,
       }, null);
+    };
+    const service = enabled ? devServerTargetService(laneId) : null;
+    if (!service) {
+      emitChipOnly();
       return;
     }
-    // Claiming the tab for the lane is what lets the next detection find "the
-    // pane this lane is already using" — but a claim also puts the open through
-    // the agent-origin gate, and a localhost origin that has been granted a
-    // privileged permission would raise a native prompt. An unattended
-    // background open must never do that, so in that one case the tab opens
-    // unclaimed rather than interrupting anyone.
-    const claimWouldPrompt = laneId != null
-      && agentAccessController.isUrlAccessRequiredSync(record.url, { laneId, chatSessionId: null });
-    // Background tab, no panel request, no focus steal: the person finds out
-    // from the corner card, not by having their pane yanked.
-    const status = await service.createTab({
-      url: record.url,
-      activate: false,
-      openPanel: false,
-      ...(laneId && !claimWouldPrompt ? { laneId } : {}),
-    });
+    // The detection is triggered by whatever a terminal *printed*, and an agent
+    // controls its own terminal — so an unclaimed auto-open would let a printed
+    // ready line navigate the shared, globally-authenticated browser profile
+    // with no owner and no origin grant. Every auto-open therefore goes through
+    // a lane claim, which is what puts it in front of the agent-access gate;
+    // when there is no lane to claim for, or the claim is refused, the person
+    // gets a launchpad chip and clicks it themselves.
+    if (!laneId) {
+      emitChipOnly();
+      return;
+    }
+    let status: BuiltInBrowserStatus;
+    try {
+      // Background tab, no panel request, no focus steal: the person finds out
+      // from the corner card, not by having their pane yanked.
+      status = await service.createTab({
+        url: record.url,
+        activate: false,
+        openPanel: false,
+        laneId,
+      });
+    } catch (error) {
+      args.getLogger?.().debug("built_in_browser.dev_server_auto_open_denied", {
+        port: record.port,
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      emitChipOnly();
+      return;
+    }
     const openedTabId = status.tabs.at(-1)?.id ?? null;
     args.onEvent?.({
       type: "dev-server-detected",
@@ -1308,8 +1376,8 @@ function createBuiltInBrowserWindowService(args: {
     }
     return path.join(
       observationRootPath,
-      sanitizePathSegment(args.collection.key),
-      sanitizePathSegment(tab.id),
+      sanitizeObservationPathSegment(args.collection.key),
+      sanitizeObservationPathSegment(tab.id),
     );
   };
 
@@ -1666,6 +1734,26 @@ function createBuiltInBrowserWindowService(args: {
     claimTabOwnerFromInput(tab, input);
   };
 
+  /**
+   * Resolve the tab a capability targets AND clear the agent-consent gate, in
+   * one call.
+   *
+   * These two steps were written out separately at every capability, and
+   * nothing enforced the pair: a new capability that resolved a tab and forgot
+   * `prepareAgentReadTabAsync` compiled, reviewed clean, and silently skipped
+   * consent. Binding them means a capability cannot obtain a tab without also
+   * asking. Agent *actions* (which drive the page) go through
+   * `runTracedAgentAction`/`prepareAgentActionTab` instead — a stricter gate.
+   */
+  const prepareTabCapability = async (
+    input: BuiltInBrowserTabTargetArgs,
+    args: { emptyMessage: string; consentReason: string },
+  ): Promise<BrowserTabState> => {
+    const tab = targetTabFromInput(input, args.emptyMessage);
+    await prepareAgentReadTabAsync(tab, input, args.consentReason);
+    return tab;
+  };
+
   const copyTabOwner = (from: BrowserTabState | null, to: BrowserTabState): void => {
     if (!from) return;
     to.ownerLaneId = from.ownerLaneId;
@@ -1694,6 +1782,13 @@ function createBuiltInBrowserWindowService(args: {
     if (laneId) return ownerLaneId === laneId && !ownerChatSessionId;
     return false;
   };
+
+  /** No lease and no handoff waiting to be handed back: free for the taking. */
+  const isUnownedTab = (tab: BrowserTabState): boolean =>
+    !tab.ownerLaneId
+    && !tab.ownerChatSessionId
+    && !tab.handoff?.previousOwner.laneId
+    && !tab.handoff?.previousOwner.chatSessionId;
 
   const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
     pruneDestroyedTabs();
@@ -1747,7 +1842,7 @@ function createBuiltInBrowserWindowService(args: {
    * the Work pane's red dot is push-driven: nothing polls `observe` to find out
    * whether a page is broken.
    */
-  const emitTabDiagnostics = (tab: BrowserTabState): void => {
+  const publishTabDiagnostics = (tab: BrowserTabState): void => {
     emit({
       type: "diagnostics",
       tabId: tab.id,
@@ -1757,12 +1852,43 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
+  /**
+   * Coalesced tally publish, matching App Control's identical surface.
+   *
+   * A page in an error loop (a `console.error` inside a render, a failing
+   * retry) produced one IPC event per error, fanned out to every window, to
+   * move the same red dot. 250 ms is the debounce the Work-tools state service
+   * already uses for this class of signal.
+   */
+  const DIAGNOSTICS_COALESCE_MS = 250;
+  const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const emitTabDiagnostics = (tab: BrowserTabState): void => {
+    if (diagnosticsTimers.has(tab.id)) return;
+    const timer = setTimeout(() => {
+      diagnosticsTimers.delete(tab.id);
+      publishTabDiagnostics(tab);
+    }, DIAGNOSTICS_COALESCE_MS);
+    timer.unref?.();
+    diagnosticsTimers.set(tab.id, timer);
+  };
+
+  const cancelPendingTabDiagnostics = (tabId: string): void => {
+    const timer = diagnosticsTimers.get(tabId);
+    if (!timer) return;
+    clearTimeout(timer);
+    diagnosticsTimers.delete(tabId);
+  };
+
   /** A navigation is a fresh page, so its predecessor's errors stop counting. */
   const resetTabDiagnosticCounts = (tab: BrowserTabState): void => {
     if (tab.consoleErrorCount === 0 && tab.failedRequestCount === 0) return;
     tab.consoleErrorCount = 0;
     tab.failedRequestCount = 0;
-    emitTabDiagnostics(tab);
+    // A reset is a state transition, not a storm: publish it now, and cancel a
+    // coalesced emit so the old tally cannot land after the zero.
+    cancelPendingTabDiagnostics(tab.id);
+    publishTabDiagnostics(tab);
   };
 
   const pushConsoleDiagnostic = (
@@ -1920,6 +2046,47 @@ function createBuiltInBrowserWindowService(args: {
         trace,
         session: sessionEntry ? sessionSnapshot(sessionEntry) : result.session,
       };
+    } catch (error) {
+      const trace = finishActionTrace(tab, traceDraft, "error", {
+        sessionId: sessionEntry?.id ?? null,
+        error,
+      });
+      touchSession(sessionEntry, { lastTraceEntryId: trace.id });
+      throw error;
+    }
+  };
+
+  /**
+   * Trace a capability that reads or configures a tab rather than driving the
+   * page — emulation, zoom, find, DevTools, network logging, recording.
+   *
+   * Same shape as {@link runTracedAgentAction} minus the agent-action consent
+   * gate and the result decoration, and it stamps the same `sessionId` and
+   * advances the same `session.lastTraceEntryId`. Before this existed the three
+   * hand-traced capabilities landed entries with `sessionId: null` that never
+   * moved the session cursor, so `ade browser proof` and the Work-tab corner
+   * card disagreed about where a session got to depending on which capability
+   * was used.
+   *
+   * THE RULE for a new capability: it drives the page → `runTracedAgentAction`;
+   * it reads or configures the tab → this. The only capabilities that leave no
+   * entry at all are `getStatus`, `getTrace` and `getNetworkLog`, which read a
+   * buffer the caller already owns and change nothing — an entry per call there
+   * would only pad the trace the corner card and `ade browser proof` render.
+   */
+  const runTracedTabCapability = async <T>(
+    tab: BrowserTabState,
+    action: string,
+    input: BuiltInBrowserTabTargetArgs,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const sessionEntry = sessionFromInput(input);
+    const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
+    try {
+      const result = await fn();
+      const trace = finishActionTrace(tab, traceDraft, "ok", { sessionId: sessionEntry?.id ?? null });
+      touchSession(sessionEntry, { lastTraceEntryId: trace.id });
+      return result;
     } catch (error) {
       const trace = finishActionTrace(tab, traceDraft, "error", {
         sessionId: sessionEntry?.id ?? null,
@@ -2535,12 +2702,22 @@ function createBuiltInBrowserWindowService(args: {
       chatSessionId: stringOrNull(record.chatSessionId),
     };
     if (!identity.laneId && !identity.chatSessionId) return status;
+    const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
     const visibleTabIds = new Set(
-      tabs
-        .filter((tab) => !tab.webContents.isDestroyed() && tabMatchesOwnerInput(tab, identity))
+      liveTabs.filter((tab) => tabMatchesOwnerInput(tab, identity)).map((tab) => tab.id),
+    );
+    // A tab nobody owns is not a secret — hiding it left `ade browser status`
+    // reporting 0 tabs against a pane the human can see full, with no tab id to
+    // claim and no `--all`, so `browser open` silently started another tab.
+    // Tabs owned by a *different* chat stay hidden.
+    const claimableTabIds = new Set(
+      liveTabs
+        .filter((tab) => !visibleTabIds.has(tab.id) && isUnownedTab(tab))
         .map((tab) => tab.id),
     );
-    const scopedTabs = status.tabs.filter((tab) => visibleTabIds.has(tab.id));
+    const scopedTabs = status.tabs
+      .filter((tab) => visibleTabIds.has(tab.id) || claimableTabIds.has(tab.id))
+      .map((tab) => (claimableTabIds.has(tab.id) ? { ...tab, claimable: true as const } : tab));
     if (status.activeTabId && visibleTabIds.has(status.activeTabId)) {
       return { ...status, tabs: scopedTabs };
     }
@@ -2672,6 +2849,63 @@ function createBuiltInBrowserWindowService(args: {
     emitStatus();
   };
 
+  /**
+   * Stop the agent's capture surfaces for the duration of a login handoff.
+   *
+   * A handoff exists precisely because the human is about to type a password,
+   * a TOTP code, or walk an OAuth redirect. `assertHandoffAllowsAgentAction`
+   * only refuses *new* agent calls; a recording and a network log armed before
+   * the handoff keep running through the sign-in and are readable again the
+   * moment the tab comes back. So both sinks are closed here, and the buffered
+   * log is dropped — an IdP callback carries the authorization code in its URL.
+   *
+   * Nothing re-arms on hand-back: an agent that wants to record again has to
+   * ask again, which is the only version of this the human can reason about.
+   */
+  const suspendAgentCaptureForHandoff = (tab: BrowserTabState): void => {
+    // Flip the flags first and synchronously: `startHandoff` must not return
+    // while a CDP network frame or a video chunk can still land in a buffer.
+    const recording = tab.recording;
+    const wasLoggingNetwork = tab.networkLoggingEnabled;
+    tab.recording = null;
+    tab.networkLoggingEnabled = false;
+    if (recording) {
+      // `abort` leaves the partial file in the tab's scratch directory rather
+      // than promoting it to a result: it is not proof of anything the agent did.
+      try {
+        recording.abort();
+      } catch (error) {
+        logger()?.debug("built_in_browser.handoff_recording_abort_failed", { err: errorMessage(error) });
+      }
+      emit({
+        type: "recording",
+        tabId: tab.id,
+        recording: null,
+        frameCount: 0,
+        endedBy: "handoff",
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    if (wasLoggingNetwork) {
+      tab.networkLog.clear();
+      tab.networkLogPending.clear();
+      releaseDebuggerHold(tab, "network");
+      const wc = tab.webContents;
+      if (!wc.isDestroyed()) {
+        void sendDebuggerCommand(wc, "Network.disable").catch((error) => {
+          logger()?.debug("built_in_browser.handoff_network_disable_failed", { err: errorMessage(error) });
+        });
+      }
+    }
+    if (recording || wasLoggingNetwork) {
+      logger()?.info("built_in_browser.handoff_capture_suspended", {
+        tabId: tab.id,
+        recording: Boolean(recording),
+        networkLogging: wasLoggingNetwork,
+      });
+    }
+  };
+
   function startHandoff(input: BuiltInBrowserStartHandoffArgs): BuiltInBrowserHandoffResult {
     const reason = stringOrNull(input.reason);
     if (!reason) {
@@ -2722,6 +2956,7 @@ function createBuiltInBrowserWindowService(args: {
     // The human is about to be redirected through an identity provider, so it
     // would block exactly the sign-in the agent asked for.
     tab.agentNavigationGuard = null;
+    suspendAgentCaptureForHandoff(tab);
     handoff.timer = setTimeout(() => {
       if (tab.handoff !== handoff) return;
       endHandoffInternal(tab, "timeout");
@@ -3182,8 +3417,10 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested access to reload this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before reloading.",
+      consentReason: "The agent requested access to reload this browser tab.",
+    });
     reclaimTabForHumanNavigation(tab, input);
     armAgentNavigationGuard(tab, input);
     tab.webContents.reload();
@@ -3192,8 +3429,10 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested backward navigation in this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before navigating back.",
+      consentReason: "The agent requested backward navigation in this browser tab.",
+    });
     reclaimTabForHumanNavigation(tab, input);
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
@@ -3203,8 +3442,10 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested forward navigation in this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before navigating forward.",
+      consentReason: "The agent requested forward navigation in this browser tab.",
+    });
     reclaimTabForHumanNavigation(tab, input);
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
@@ -3214,8 +3455,10 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before stopping a load.",
+      consentReason: "The agent requested access to stop this browser tab.",
+    });
     const wc = tab.webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
@@ -3223,8 +3466,10 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting inspect.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested DOM inspection for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before starting inspect.",
+      consentReason: "The agent requested DOM inspection for this browser tab.",
+    });
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
@@ -3304,8 +3549,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested a screenshot of this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before capturing a screenshot.",
+      consentReason: "The agent requested a screenshot of this browser tab.",
+    });
     const wc = tab.webContents;
     try {
       return await capturePageScreenshot(wc);
@@ -3319,8 +3566,10 @@ function createBuiltInBrowserWindowService(args: {
 
   async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
     const sessionEntry = sessionFromInput(input);
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before observing.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested page content from this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before observing.",
+      consentReason: "The agent requested page content from this browser tab.",
+    });
     const screenshot = await captureScreenshot({ tabId: tab.id });
     const dom = input.includeDom === false
       ? null
@@ -3408,7 +3657,7 @@ function createBuiltInBrowserWindowService(args: {
       if (hasElementTarget(input)) {
         await focusElementTarget(tab, input, { select: false });
       }
-      const event = keyEventForInput(key);
+      const event = keyEventForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
           type: "keyDown",
@@ -3557,6 +3806,8 @@ function createBuiltInBrowserWindowService(args: {
     // here — the single choke point for close, crash-prune and dispose — rather
     // than leaving the chat's hand raised against a tab that no longer exists.
     endHandoffForClosedTab(tab);
+    // Nothing may publish a tally for a tab that is going away.
+    cancelPendingTabDiagnostics(tab.id);
     if (tab.recording) {
       tab.recording.abort();
       tab.recording = null;
@@ -3653,12 +3904,13 @@ function createBuiltInBrowserWindowService(args: {
   async function setEmulation(
     input: BuiltInBrowserSetEmulationArgs,
   ): Promise<BuiltInBrowserEmulationResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before setting device emulation.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested device emulation for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before setting device emulation.",
+      consentReason: "The agent requested device emulation for this browser tab.",
+    });
     const next = resolveBuiltInBrowserEmulation(input);
     const wc = tab.webContents;
-    const traceDraft = beginActionTrace(tab, "setEmulation", input as Record<string, unknown>);
-    try {
+    await runTracedTabCapability(tab, "setEmulation", input, async () => {
       if (next) {
         // Chromium reverts every Emulation.* override when the CDP session that
         // set it detaches, so an override has to own a debugger hold for as long
@@ -3681,11 +3933,7 @@ function createBuiltInBrowserWindowService(args: {
         await withTemporaryDebugger(wc, () => sendEmulationCommands(wc, null));
       }
       tab.emulation = next;
-      finishActionTrace(tab, traceDraft, "ok");
-    } catch (error) {
-      finishActionTrace(tab, traceDraft, "error", { error });
-      throw error;
-    }
+    });
     emitStatus();
     return {
       tabId: tab.id,
@@ -3698,13 +3946,17 @@ function createBuiltInBrowserWindowService(args: {
   /* ── Zoom ──────────────────────────────────────────────────────────────── */
 
   async function setZoom(input: BuiltInBrowserSetZoomArgs): Promise<BuiltInBrowserZoomResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before zooming.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested a zoom change for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before zooming.",
+      consentReason: "The agent requested a zoom change for this browser tab.",
+    });
     const factor = input.reset === true
       ? BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR
       : clampBuiltInBrowserZoomFactor(input.factor);
-    applyTabZoom(tab, factor);
-    tab.zoomFactor = factor;
+    await runTracedTabCapability(tab, "setZoom", input, async () => {
+      applyTabZoom(tab, factor);
+      tab.zoomFactor = factor;
+    });
     emitStatus();
     return {
       tabId: tab.id,
@@ -3731,8 +3983,10 @@ function createBuiltInBrowserWindowService(args: {
   async function findInPage(
     input: BuiltInBrowserFindInPageArgs,
   ): Promise<BuiltInBrowserFindInPageResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before searching it.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested an in-page text search.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before searching it.",
+      consentReason: "The agent requested an in-page text search.",
+    });
     const text = stringOrNull(input.text);
     if (!text) throw new Error("Find text is required.");
     const wc = tab.webContents;
@@ -3740,110 +3994,15 @@ function createBuiltInBrowserWindowService(args: {
       MAX_FIND_IN_PAGE_TIMEOUT_MS,
       Math.max(250, optionalFiniteNumber(input.timeoutMs) ?? DEFAULT_FIND_IN_PAGE_TIMEOUT_MS),
     );
-    const traceDraft = beginActionTrace(tab, "findInPage", input as Record<string, unknown>);
-    try {
-      // Chromium streams `found-in-page`: incremental results first, and a
-      // `finalUpdate` only once the whole document has been walked — which for
-      // a find that is superseded by the next keystroke never arrives at all.
-      // Waiting for `finalUpdate` therefore timed out on searches that had
-      // already produced correct counts. Resolve on the first result for this
-      // request instead, and keep every later update flowing as an event.
-      const result = await new Promise<Electron.Result>((resolve, reject) => {
-        let requestId: number | null = null;
-        // A synchronous emit lands before `wc.findInPage` has even returned the
-        // id, so hold that first result until there is an id to compare with.
-        let pendingBeforeRequestId: Electron.Result | null = null;
-        let lastResult: Electron.Result | null = null;
-        let settled = false;
-        const timer = setTimeout(() => {
-          const arrived = lastResult ?? pendingBeforeRequestId;
-          finish();
-          // Never surface a raw timeout when results actually arrived: the find
-          // bar has counts on screen, and an error banner over working counts
-          // is the bug this replaced.
-          if (arrived) {
-            resolve(arrived);
-            return;
-          }
-          reject(new Error(`Timed out waiting for browser find results after ${timeoutMs}ms.`));
-        }, timeoutMs);
-        const listener = (_event: unknown, found: Electron.Result): void => {
-          if (requestId == null) {
-            pendingBeforeRequestId = found;
-            return;
-          }
-          if (found.requestId !== requestId) return;
-          lastResult = found;
-          finish();
-          resolve(found);
-        };
-        function adoptRequestId(nextRequestId: number): void {
-          if (settled) return;
-          requestId = nextRequestId;
-        }
-        function finish(): void {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          tab.findWaiters.delete(adoptRequestId);
-          try {
-            (wc as unknown as { off: (event: string, fn: unknown) => void }).off?.("found-in-page", listener);
-          } catch {
-            // ignore listener detach races
-          }
-        }
-        try {
-          wc.on("found-in-page", listener as never);
-          // Electron's `findNext` is NOT "advance to the next match" — it is
-          // assigned straight onto Chromium's `FindOptions::new_session`
-          // (`dict.Get("findNext", &options->new_session)`), so `true` STARTS
-          // a session and `false` continues one. Electron's own docs invert
-          // this. Chromium then drops a continuation that has no live session
-          // (`FindRequestManager::FindInternal` → `AdvanceQueue` and return)
-          // without ever sending anything to the renderer: the request id
-          // comes back, no `found-in-page` is emitted, and the caller sat
-          // there until the 5s timeout. Verified live on Electron 41 — this
-          // path answers in ~3ms, the old one never answered at all.
-          //
-          // So every find we issue starts a session. Blink resumes from the
-          // document's current selection, which is what makes a repeat search
-          // advance; clearing the selection first is therefore what "new
-          // search" means (first match), and leaving it is "find next".
-          if (input.findNext !== true) {
-            try {
-              wc.stopFindInPage("clearSelection");
-            } catch {
-              // A tab with no live find session throws nothing useful here.
-            }
-          }
-          requestId = wc.findInPage(text, {
-            forward: input.forward !== false,
-            findNext: true,
-            matchCase: input.matchCase === true,
-          });
-          // Chromium delays a new session for a query under 4 characters by
-          // 400ms, and a second find inside that window RESETS the delayed
-          // task — the earlier request id is discarded and never answered.
-          // A find bar being typed into hits this constantly, so an in-flight
-          // waiter follows the request that superseded it rather than waiting
-          // out its own timeout on a request Chromium threw away.
-          for (const adopt of tab.findWaiters) adopt(requestId);
-          tab.findWaiters.add(adoptRequestId);
-          tab.findRequestId = requestId;
-          // Replay a result that raced ahead of the request id. Read through a
-          // callback so TypeScript does not narrow away the listener's write.
-          const buffered = ((): Electron.Result | null => pendingBeforeRequestId)();
-          if (buffered && (buffered.requestId == null || buffered.requestId === requestId)) {
-            lastResult = buffered;
-            finish();
-            resolve(buffered);
-          }
-        } catch (error) {
-          finish();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
+    return runTracedTabCapability(tab, "findInPage", input, async () => {
+      const result = await awaitFoundInPage(wc, tab.findWaiters, {
+        text,
+        forward: input.forward !== false,
+        matchCase: input.matchCase === true,
+        findNext: input.findNext === true,
+        timeoutMs,
       });
-      finishActionTrace(tab, traceDraft, "ok");
+      tab.findRequestId = result.requestId;
       return {
         tabId: tab.id,
         text,
@@ -3853,26 +4012,27 @@ function createBuiltInBrowserWindowService(args: {
         finalUpdate: Boolean(result.finalUpdate),
         status: scopeStatusForInput(getStatus(), input),
       };
-    } catch (error) {
-      finishActionTrace(tab, traceDraft, "error", { error });
-      throw error;
-    }
+    });
   }
 
   async function stopFindInPage(
     input: BuiltInBrowserStopFindInPageArgs = {},
   ): Promise<BuiltInBrowserStopFindInPageResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a find.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested to stop an in-page text search.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before stopping a find.",
+      consentReason: "The agent requested to stop an in-page text search.",
+    });
     const action = input.action === "keepSelection" || input.action === "activateSelection"
       ? input.action
       : "clearSelection";
-    try {
-      tab.webContents.stopFindInPage(action);
-    } catch (error) {
-      logger()?.debug("built_in_browser.stop_find_failed", { err: errorMessage(error) });
-    }
-    tab.findRequestId = null;
+    await runTracedTabCapability(tab, "stopFindInPage", input, async () => {
+      try {
+        tab.webContents.stopFindInPage(action);
+      } catch (error) {
+        logger()?.debug("built_in_browser.stop_find_failed", { err: errorMessage(error) });
+      }
+      tab.findRequestId = null;
+    });
     return {
       tabId: tab.id,
       stopped: true,
@@ -3885,14 +4045,15 @@ function createBuiltInBrowserWindowService(args: {
   async function setDevTools(
     input: BuiltInBrowserSetDevToolsArgs,
   ): Promise<BuiltInBrowserDevToolsResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before toggling DevTools.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested DevTools for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before toggling DevTools.",
+      consentReason: "The agent requested DevTools for this browser tab.",
+    });
     const wc = tab.webContents;
     const mode: BuiltInBrowserDevToolsMode = input.mode === "bottom" || input.mode === "detach"
       ? input.mode
       : "right";
-    const traceDraft = beginActionTrace(tab, "setDevTools", input as Record<string, unknown>);
-    try {
+    await runTracedTabCapability(tab, "setDevTools", input, async () => {
       if (input.open) {
         // DevTools and the CDP debugger cannot own the same target, so opening
         // DevTools would silently kill an in-flight network log. Recording is
@@ -3912,11 +4073,7 @@ function createBuiltInBrowserWindowService(args: {
         wc.closeDevTools();
         tab.devToolsMode = null;
       }
-      finishActionTrace(tab, traceDraft, "ok");
-    } catch (error) {
-      finishActionTrace(tab, traceDraft, "error", { error });
-      throw error;
-    }
+    });
     // DevTools is a human affordance; leave a breadcrumb whenever it is driven
     // from an agent-bound call so the audit trail shows who opened it.
     logger()?.info("built_in_browser.devtools_toggled", {
@@ -3957,7 +4114,10 @@ function createBuiltInBrowserWindowService(args: {
       const entry: BuiltInBrowserNetworkLogEntry = {
         id: requestId,
         method: stringOrNull(request.method),
-        url: stringOrNull(request.url) ?? "about:blank",
+        // Redacted at the point of capture, not at read time: the log is read
+        // back through `getNetworkLog`, `exportHar`, and any observation the
+        // proof drawer promotes, and a miss on one of those leaks the token.
+        url: redactBuiltInBrowserUrl(stringOrNull(request.url) ?? "about:blank"),
         status: null,
         statusText: null,
         mimeType: null,
@@ -4033,26 +4193,30 @@ function createBuiltInBrowserWindowService(args: {
   async function setNetworkLogging(
     input: BuiltInBrowserSetNetworkLoggingArgs,
   ): Promise<BuiltInBrowserNetworkLoggingResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before changing network logging.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested network logging for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before changing network logging.",
+      consentReason: "The agent requested network logging for this browser tab.",
+    });
     const wc = tab.webContents;
-    if (input.enabled) {
-      if (input.clear !== false) {
-        tab.networkLog.clear();
-        tab.networkLogPending.clear();
+    await runTracedTabCapability(tab, "setNetworkLogging", input, async () => {
+      if (input.enabled) {
+        if (input.clear !== false) {
+          tab.networkLog.clear();
+          tab.networkLogPending.clear();
+        }
+        await acquireDebuggerHold(tab, "network");
+        try {
+          await sendDebuggerCommand(wc, "Network.enable", {
+            maxTotalBufferSize: 1_000_000,
+            maxResourceBufferSize: 500_000,
+          });
+        } catch (error) {
+          releaseDebuggerHold(tab, "network");
+          throw error;
+        }
+        tab.networkLoggingEnabled = true;
+        return;
       }
-      await acquireDebuggerHold(tab, "network");
-      try {
-        await sendDebuggerCommand(wc, "Network.enable", {
-          maxTotalBufferSize: 1_000_000,
-          maxResourceBufferSize: 500_000,
-        });
-      } catch (error) {
-        releaseDebuggerHold(tab, "network");
-        throw error;
-      }
-      tab.networkLoggingEnabled = true;
-    } else {
       if (tab.networkLoggingEnabled) {
         await sendDebuggerCommand(wc, "Network.disable").catch((error) => {
           logger()?.debug("built_in_browser.network_disable_failed", { err: errorMessage(error) });
@@ -4061,7 +4225,7 @@ function createBuiltInBrowserWindowService(args: {
       tab.networkLoggingEnabled = false;
       tab.networkLogPending.clear();
       releaseDebuggerHold(tab, "network");
-    }
+    });
     emitStatus();
     return {
       tabId: tab.id,
@@ -4074,8 +4238,10 @@ function createBuiltInBrowserWindowService(args: {
   async function getNetworkLog(
     input: BuiltInBrowserNetworkLogArgs = {},
   ): Promise<BuiltInBrowserNetworkLogResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reading its network log.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested the network log for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before reading its network log.",
+      consentReason: "The agent requested the network log for this browser tab.",
+    });
     const all = tab.networkLog.list();
     const matched = filterBuiltInBrowserNetworkLog(all, input);
     const limit = normalizeNetworkLogLimit(input.limit);
@@ -4092,8 +4258,10 @@ function createBuiltInBrowserWindowService(args: {
   async function exportHar(
     input: BuiltInBrowserExportHarArgs = {},
   ): Promise<BuiltInBrowserExportHarResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before exporting a HAR.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested a HAR export for this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before exporting a HAR.",
+      consentReason: "The agent requested a HAR export for this browser tab.",
+    });
     if (!observationRelativeBasePath) {
       throw new Error("Browser HAR export is unavailable because no scratch root is configured.");
     }
@@ -4104,24 +4272,27 @@ function createBuiltInBrowserWindowService(args: {
       );
     }
     const exportedAt = new Date().toISOString();
-    const har = buildBuiltInBrowserHar({
-      entries,
-      pageUrl: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL()),
-      pageTitle: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
-      creatorVersion: app.getVersion?.() ?? "0.0.0",
-      exportedAt,
+    const scratchRoot = observationRelativeBasePath;
+    return runTracedTabCapability(tab, "exportHar", input, async () => {
+      const har = buildBuiltInBrowserHar({
+        entries,
+        pageUrl: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL()),
+        pageTitle: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
+        creatorVersion: app.getVersion?.() ?? "0.0.0",
+        exportedAt,
+      });
+      const dir = observationDirectory(tab);
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = path.join(dir, `network-${Date.now()}.har`);
+      await fs.writeFile(filePath, `${JSON.stringify(har, null, 2)}\n`, "utf8");
+      return {
+        tabId: tab.id,
+        filePath,
+        relativePath: path.relative(scratchRoot, filePath),
+        entryCount: entries.length,
+        exportedAt,
+      };
     });
-    const dir = observationDirectory(tab);
-    await fs.mkdir(dir, { recursive: true });
-    const filePath = path.join(dir, `network-${Date.now()}.har`);
-    await fs.writeFile(filePath, `${JSON.stringify(har, null, 2)}\n`, "utf8");
-    return {
-      tabId: tab.id,
-      filePath,
-      relativePath: path.relative(observationRelativeBasePath, filePath),
-      entryCount: entries.length,
-      exportedAt,
-    };
   }
 
   /* ── Extra page actions ────────────────────────────────────────────────── */
@@ -4255,7 +4426,6 @@ function createBuiltInBrowserWindowService(args: {
       const roots = builtInBrowserUploadRoots({
         projectRoot: args.collection.projectRoot,
         observationRoot: observationRootPath,
-        adeHome: null,
         tmpDir: os.tmpdir(),
       });
       const paths = resolveBuiltInBrowserUploadPaths(input.paths as readonly unknown[], roots);
@@ -4391,13 +4561,15 @@ function createBuiltInBrowserWindowService(args: {
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
   const recordingDirectory = (tab: BrowserTabState, recordingId: string): string =>
-    path.join(observationDirectory(tab), RECORDING_CACHE_DIR, sanitizePathSegment(recordingId));
+    path.join(observationDirectory(tab), RECORDING_CACHE_DIR, sanitizeObservationPathSegment(recordingId));
 
   async function startRecording(
     input: BuiltInBrowserStartRecordingArgs,
   ): Promise<BuiltInBrowserStartRecordingResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before recording.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested a screen recording of this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before recording.",
+      consentReason: "The agent requested a screen recording of this browser tab.",
+    });
     if (tab.recording) {
       throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
     }
@@ -4405,14 +4577,30 @@ function createBuiltInBrowserWindowService(args: {
     const caption = stringOrNull(input.caption);
     const recordingId = `rec-${Date.now()}-${randomUUID()}`;
     const directory = recordingDirectory(tab, recordingId);
-    const session: BuiltInBrowserRecordingSession = await createBuiltInBrowserRecordingSession({
-      id: recordingId,
-      directory,
-      fps,
-      caption,
-      createRecorder: tabRecorderFactory(tab),
-      logger: logger(),
-    });
+    const session: BuiltInBrowserRecordingSession = await runTracedTabCapability(
+      tab,
+      "startRecording",
+      input,
+      () => createBuiltInBrowserRecordingSession({
+        id: recordingId,
+        directory,
+        fps,
+        caption,
+        createRecorder: tabRecorderFactory(tab),
+        logger: logger(),
+        // The cap is the session's own, not the caller's: an agent that forgets
+        // `stopRecording` (or dies mid-run) must not capture until the app quits.
+        maxDurationMs: BUILT_IN_BROWSER_MAX_RECORDING_MS,
+        onMaxDurationReached: () => {
+          void finishRecording(tab, session, "max_duration").catch((error) => {
+            logger()?.warn("built_in_browser.recording_max_duration_stop_failed", {
+              tabId: tab.id,
+              err: errorMessage(error),
+            });
+          });
+        },
+      }),
+    );
     tab.recording = session;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({
@@ -4433,20 +4621,45 @@ function createBuiltInBrowserWindowService(args: {
   async function stopRecording(
     input: BuiltInBrowserStopRecordingArgs = {},
   ): Promise<BuiltInBrowserStopRecordingResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a recording.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested to stop a browser screen recording.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before stopping a recording.",
+      consentReason: "The agent requested to stop a browser screen recording.",
+    });
     const session = tab.recording;
     if (!session) throw new Error(`Browser tab ${tab.id} is not recording.`);
-    tab.recording = null;
+    const result = await runTracedTabCapability(tab, "stopRecording", input, () =>
+      finishRecording(tab, session, null));
+    return { ...result, status: scopeStatusForInput(getStatus(), input) };
+  }
+
+  /**
+   * Finalize a recording and publish it. Shared by the agent's `stopRecording`
+   * and by the session's own max-duration timer, so an auto-stopped recording
+   * lands the same file and the same event — with `endedBy` naming what ended it.
+   */
+  const finishRecording = async (
+    tab: BrowserTabState,
+    session: BuiltInBrowserRecordingSession,
+    endedBy: "max_duration" | null,
+  ): Promise<Omit<BuiltInBrowserStopRecordingResult, "status">> => {
+    if (tab.recording === session) tab.recording = null;
     const result = await session.stop();
     emit({
       type: "recording",
       tabId: tab.id,
       recording: null,
       frameCount: result.frameCount,
+      ...(endedBy ? { endedBy } : {}),
       updatedAt: new Date().toISOString(),
     });
     emitStatus();
+    if (endedBy) {
+      logger()?.info("built_in_browser.recording_auto_stopped", {
+        tabId: tab.id,
+        endedBy,
+        durationMs: result.durationMs,
+      });
+    }
     return {
       tabId: tab.id,
       path: result.filePath,
@@ -4460,9 +4673,8 @@ function createBuiltInBrowserWindowService(args: {
       mimeType: result.mimeType,
       caption: session.caption,
       manifestPath: result.manifestPath,
-      status: scopeStatusForInput(getStatus(), input),
     };
-  }
+  };
 
   const tabRecorderFactory = (tab: BrowserTabState): BuiltInBrowserRecorderFactory => {
     if (args.createTabRecorder) return args.createTabRecorder;
@@ -4534,8 +4746,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.");
-    await prepareAgentReadTabAsync(tab, input, "The agent requested element inspection in this browser tab.");
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before selecting a point.",
+      consentReason: "The agent requested element inspection in this browser tab.",
+    });
     const wc = tab.webContents;
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
@@ -4965,7 +5179,7 @@ function createBuiltInBrowserWindowService(args: {
     wc: WebContents,
     payload: Record<string, unknown>,
   ): Promise<unknown> => {
-    const expression = `(${BROWSER_DOM_FUNCTION})(${JSON.stringify(payload)})`;
+    const expression = `(${AGENT_DOM_COLLECTOR_FUNCTION})(${JSON.stringify(payload)})`;
     const response = await withTemporaryDebugger(wc, async () => {
       await sendDebuggerCommand(wc, "Runtime.enable");
       return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
@@ -4985,7 +5199,7 @@ function createBuiltInBrowserWindowService(args: {
     wc: WebContents,
     payload: Record<string, unknown>,
   ): Promise<void> => {
-    const expression = `(${ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`;
+    const expression = `(${AGENT_ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`;
     const response = await withTemporaryDebugger(wc, async () => {
       await sendDebuggerCommand(wc, "Runtime.enable");
       return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
@@ -5170,13 +5384,13 @@ function createBuiltInBrowserWindowService(args: {
     tab: BrowserTabState,
     handle: string,
   ): Promise<BuiltInBrowserElementSnapshot> => {
-    const parsed = parseElementHandle(handle);
+    const parsed = parseObservationElementHandle(handle);
     if (!parsed) {
       throw new Error("Browser element handle must look like obs-...:e:<index>.");
     }
     const jsonPath = path.join(
       observationDirectory(tab),
-      `${sanitizePathSegment(parsed.observationId)}.json`,
+      `${sanitizeObservationPathSegment(parsed.observationId)}.json`,
     );
     let parsedObservation: unknown;
     try {
@@ -5283,7 +5497,7 @@ function createBuiltInBrowserWindowService(args: {
     await fs.writeFile(jsonPath, `${JSON.stringify({ ...observation, filePath, relativePath }, null, 2)}\n`, "utf8");
     observation.cleanup = await pruneObservationDirectory(dir, keepCount);
     void pruneObservationCacheRoot(
-      path.join(observationRootPath!, sanitizePathSegment(args.collection.key)),
+      path.join(observationRootPath!, sanitizeObservationPathSegment(args.collection.key)),
       DEFAULT_OBSERVATION_MAX_AGE_MS,
     ).catch((error) => {
       logger()?.debug("built_in_browser.observation_stale_prune_failed", {
@@ -5507,19 +5721,6 @@ function toElectronRect(frame: BuiltInBrowserFrame): Electron.Rectangle {
   };
 }
 
-function finiteNumber(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function optionalFiniteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function normalizePositiveInteger(value: unknown): number | null {
-  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : null;
-  return raw != null && raw > 0 ? raw : null;
-}
-
 function normalizeObservationKeepCount(value: unknown): number {
   const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_OBSERVATION_KEEP_COUNT;
   return Math.max(1, Math.min(MAX_OBSERVATION_KEEP_COUNT, raw));
@@ -5650,56 +5851,37 @@ function tabSnapshotForTrace(tab: BrowserTabState): { url: string | null; title:
   };
 }
 
+/**
+ * Bounded, redacted description of what a browser action targeted.
+ *
+ * The shared helper owns the locator keys and the typed-secret rule (`typeText`
+ * text becomes a length); everything below is genuinely browser-only — drag
+ * destinations, emulation presets, recording settings, upload path counts, and
+ * the handoff bookends.
+ */
 function actionTargetForTrace(action: string, input: Record<string, unknown>): Record<string, unknown> | null {
-  const target: Record<string, unknown> = {};
-  const copyString = (key: string): void => {
-    const value = stringOrNull(input[key]);
-    if (value) target[key] = value;
-  };
-  const copyNumber = (key: string): void => {
-    const value = optionalFiniteNumber(input[key]);
-    if (value != null) target[key] = value;
-  };
-  for (const key of [
-    "selector", "testId", "handle", "button", "key", "url", "loadState",
-    "toSelector", "toTestId", "toHandle", "label", "preset", "mode",
-  ]) copyString(key);
-  for (const key of [
-    "elementIndex", "x", "y", "deltaX", "deltaY", "clickCount", "timeoutMs", "networkIdleMs",
-    "toElementIndex", "toX", "toY", "steps", "index", "factor", "fps", "width", "height",
-  ]) copyNumber(key);
-  for (const key of ["open", "enabled", "mobile", "matchCase", "forward"]) {
-    if (typeof input[key] === "boolean") target[key] = input[key];
-  }
-  if (action === "uploadFile" && Array.isArray(input.paths)) {
-    // Never copy the paths themselves into a trace an agent can read back.
-    target.pathCount = input.paths.length;
-  }
-  if (action === "selectOption" && typeof input.value === "string") {
-    target.value = input.value.slice(0, 300);
-  }
-  if (typeof input.text === "string") {
-    if (action === "typeText") {
-      target.textLength = input.text.length;
-    } else if (action === "fill") {
-      target.text = input.text.slice(0, 300);
-    } else {
-      target.text = input.text.slice(0, 300);
-    }
-  }
-  if (action === "fill") {
-    const fillValue = typeof input.value === "string" ? input.value : (typeof input.text === "string" ? input.text : null);
-    if (fillValue != null) target.valueLength = fillValue.length;
-  }
-  // A login handoff is the one gap in a trace where the agent did nothing at
-  // all, so the entries have to explain themselves: why the human was asked,
-  // and how the tab came back.
-  if (action === "handoff-start" || action === "handoff-end") {
-    copyString("reason");
-    copyString("endedBy");
-    copyNumber("durationMs");
-  }
-  return Object.keys(target).length ? target : null;
+  return agentActionTargetForTrace(action, input, {
+    stringKeys: ["toSelector", "toTestId", "toHandle", "label", "preset", "mode"],
+    numberKeys: ["toElementIndex", "toX", "toY", "steps", "index", "factor", "fps", "width", "height"],
+    booleanKeys: ["open", "enabled", "mobile", "matchCase", "forward"],
+    decorate: (target, { copyString, copyNumber }) => {
+      if (action === "uploadFile" && Array.isArray(input.paths)) {
+        // Never copy the paths themselves into a trace an agent can read back.
+        target.pathCount = input.paths.length;
+      }
+      if (action === "selectOption" && typeof input.value === "string") {
+        target.value = input.value.slice(0, 300);
+      }
+      // A login handoff is the one gap in a trace where the agent did nothing at
+      // all, so the entries have to explain themselves: why the human was asked,
+      // and how the tab came back.
+      if (action === "handoff-start" || action === "handoff-end") {
+        copyString("reason");
+        copyString("endedBy");
+        copyNumber("durationMs");
+      }
+    },
+  });
 }
 
 function requestIdFromWebRequestDetails(details: Record<string, unknown>): string | null {
@@ -5712,144 +5894,12 @@ function requestIdFromWebRequestDetails(details: Record<string, unknown>): strin
   return null;
 }
 
-function sanitizePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "unknown";
-}
-
 function decodeDataUrl(dataUrl: string): { buffer: Buffer; mimeType: string } {
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
   if (!match) throw new Error("Browser observation screenshot is not a base64 data URL.");
   return {
     mimeType: match[1] || "image/png",
     buffer: Buffer.from(match[2] ?? "", "base64"),
-  };
-}
-
-function parseElementHandle(handle: string): { observationId: string; index: number } | null {
-  const match = /^(obs-[^:]+):e:(\d+)$/.exec(handle.trim());
-  if (!match) return null;
-  const observationId = match[1] ?? "";
-  if (sanitizePathSegment(observationId) !== observationId) return null;
-  const index = Number.parseInt(match[2] ?? "", 10);
-  if (!Number.isFinite(index) || index < 1) return null;
-  return { observationId, index };
-}
-
-function applyObservationHandles(
-  dom: BuiltInBrowserDomSnapshot,
-  observationId: string,
-): BuiltInBrowserDomSnapshot {
-  return {
-    ...dom,
-    elements: dom.elements.map((element) => ({
-      ...element,
-      handle: `${observationId}:e:${element.index}`,
-    })),
-  };
-}
-
-async function pruneObservationDirectory(
-  dir: string,
-  keepCount: number,
-): Promise<{ keepCount: number; keptCount: number; deletedCount: number }> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return { keepCount, keptCount: 0, deletedCount: 0 };
-  }
-  const observations = entries
-    .filter((entry) => entry.endsWith(".json"))
-    .sort()
-    .reverse();
-  const stale = observations.slice(keepCount);
-  let deletedCount = 0;
-  for (const jsonName of stale) {
-    const base = jsonName.slice(0, -".json".length);
-    let deletedObservation = false;
-    for (const filename of [`${base}.json`, `${base}.png`, `${base}.map.png`]) {
-      try {
-        await fs.rm(path.join(dir, filename), { force: true });
-        deletedObservation = true;
-      } catch {
-        // best effort cleanup
-      }
-    }
-    if (deletedObservation) deletedCount += 1;
-  }
-  return {
-    keepCount,
-    keptCount: Math.min(observations.length, keepCount),
-    deletedCount,
-  };
-}
-
-async function pruneObservationCacheRoot(
-  profileDir: string,
-  maxAgeMs: number,
-): Promise<void> {
-  let tabDirs: string[];
-  try {
-    tabDirs = await fs.readdir(profileDir);
-  } catch {
-    return;
-  }
-  const cutoff = Date.now() - maxAgeMs;
-  for (const tabDir of tabDirs) {
-    const dir = path.join(profileDir, tabDir);
-    const stat = await fs.stat(dir).catch(() => null);
-    if (!stat) continue;
-    if (!stat.isDirectory()) continue;
-    const entries = await fs.readdir(dir).catch(() => []);
-    for (const entry of entries) {
-      if (!entry.endsWith(".json") && !entry.endsWith(".png")) continue;
-      const filePath = path.join(dir, entry);
-      const fileStat = await fs.stat(filePath).catch(() => null);
-      if (!fileStat || fileStat.mtimeMs >= cutoff) continue;
-      await fs.rm(filePath, { force: true }).catch(() => {});
-    }
-    const remaining = await fs.readdir(dir).catch(() => []);
-    if (remaining.length === 0) {
-      await fs.rmdir(dir).catch(() => {});
-    }
-  }
-}
-
-function keyEventForInput(input: string): Record<string, unknown> {
-  const normalized = input.length === 1 ? input : input.trim();
-  const named: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
-    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
-    Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-    Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
-    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
-    ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
-    ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
-    ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
-  };
-  const special = named[normalized];
-  if (special) return special;
-  const char = normalized.slice(0, 1);
-  const upper = char.toUpperCase();
-  return {
-    key: char,
-    code: /^[a-z]$/i.test(char) ? `Key${upper}` : char,
-    windowsVirtualKeyCode: upper.charCodeAt(0),
-    text: char,
-    unmodifiedText: char,
-  };
-}
-
-function normalizeFrame(value: unknown): BuiltInBrowserFrame {
-  const record = isRecord(value) ? value : {};
-  return {
-    x: finiteNumber(record.x),
-    y: finiteNumber(record.y),
-    width: Math.max(0, finiteNumber(record.width)),
-    height: Math.max(0, finiteNumber(record.height)),
   };
 }
 
@@ -5876,35 +5926,6 @@ function clipFrameToViewport(
     y,
     width: Math.max(0, right - x),
     height: Math.max(0, bottom - y),
-  };
-}
-
-function stringOrNull(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : null;
-}
-
-function hasElementTarget(input: BuiltInBrowserElementTargetArgs): boolean {
-  return Boolean(
-    stringOrNull(input.selector)
-    || stringOrNull(input.text)
-    || stringOrNull(input.testId)
-    || normalizePositiveInteger(input.elementIndex) != null
-    || stringOrNull(input.handle)
-  );
-}
-
-function elementLocatePayload(input: BuiltInBrowserElementTargetArgs): Record<string, unknown> {
-  const selector = stringOrNull(input.selector);
-  const text = stringOrNull(input.text);
-  const testId = stringOrNull(input.testId);
-  const elementIndex = normalizePositiveInteger(input.elementIndex);
-  return {
-    ...(selector ? { selector } : {}),
-    ...(text ? { text } : {}),
-    ...(testId ? { testId } : {}),
-    ...(elementIndex == null ? {} : { elementIndex }),
   };
 }
 
@@ -5942,76 +5963,6 @@ function normalizeNodeMetadata(value: unknown): NodeMetadata {
     url: stringOrNull(record.url),
     title: stringOrNull(record.title),
     metadata,
-  };
-}
-
-function normalizeElementSnapshot(value: unknown): BuiltInBrowserElementSnapshot | null {
-  if (!isRecord(value)) return null;
-  const frame = normalizeFrame(value.frame);
-  const centerRecord = isRecord(value.center) ? value.center : {};
-  const index = normalizePositiveInteger(value.index) ?? 0;
-  const framePath = normalizeNumberArray(value.framePath);
-  const shadowPath = normalizeStringArray(value.shadowPath);
-  if (frame.width <= 0 || frame.height <= 0) return null;
-  return {
-    index,
-    handle: stringOrNull(value.handle),
-    ...(framePath ? { framePath } : {}),
-    ...(shadowPath ? { shadowPath } : {}),
-    tagName: stringOrNull(value.tagName),
-    role: stringOrNull(value.role),
-    label: stringOrNull(value.label),
-    text: stringOrNull(value.text),
-    value: stringOrNull(value.value),
-    placeholder: stringOrNull(value.placeholder),
-    selector: stringOrNull(value.selector),
-    testId: stringOrNull(value.testId),
-    href: stringOrNull(value.href),
-    disabled: typeof value.disabled === "boolean" ? value.disabled : null,
-    frame,
-    center: {
-      x: finiteNumber(centerRecord.x, frame.x + frame.width / 2),
-      y: finiteNumber(centerRecord.y, frame.y + frame.height / 2),
-    },
-  };
-}
-
-function normalizeNumberArray(value: unknown): number[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries = value
-    .map((entry) => typeof entry === "number" && Number.isFinite(entry) ? Math.floor(entry) : null)
-    .filter((entry): entry is number => entry != null && entry >= 0);
-  return entries.length ? entries : undefined;
-}
-
-function normalizeStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries = value
-    .map((entry) => stringOrNull(entry))
-    .filter((entry): entry is string => Boolean(entry));
-  return entries.length ? entries : undefined;
-}
-
-function normalizeDomSnapshot(value: unknown): BuiltInBrowserDomSnapshot | null {
-  if (!isRecord(value)) return null;
-  const viewport = normalizeFrame(value.viewport);
-  const scrollRecord = isRecord(value.scroll) ? value.scroll : {};
-  const elements = Array.isArray(value.elements)
-    ? value.elements
-        .map(normalizeElementSnapshot)
-        .filter((entry): entry is BuiltInBrowserElementSnapshot => Boolean(entry))
-    : [];
-  return {
-    url: stringOrNull(value.url),
-    title: stringOrNull(value.title),
-    capturedAt: stringOrNull(value.capturedAt) ?? new Date().toISOString(),
-    viewport,
-    scroll: {
-      x: finiteNumber(scrollRecord.x),
-      y: finiteNumber(scrollRecord.y),
-    },
-    elementCount: normalizePositiveInteger(value.elementCount) ?? elements.length,
-    elements,
   };
 }
 
@@ -6304,359 +6255,6 @@ function inspectOverlayInstallScript(bindingName: string): string {
 `;
 }
 
-const BROWSER_DOM_FUNCTION = String.raw`
-function(inputArg) {
-  const input = inputArg && typeof inputArg === "object" ? inputArg : {};
-  const maxElements = Math.max(1, Math.min(200, Number(input.maxElements) || 80));
-  const locate = input.locate && typeof input.locate === "object" ? input.locate : null;
-  const shouldFocus = input.focus === true;
-  const shouldSelect = input.select === true;
-  const shouldClear = input.clear === true;
-  const editableRequired = input.editableRequired === true;
-  const interactiveSelector = [
-    "a[href]",
-    "button",
-    "input",
-    "select",
-    "textarea",
-    "summary",
-    "[contenteditable='true']",
-    "[role='button']",
-    "[role='link']",
-    "[role='menuitem']",
-    "[role='tab']",
-    "[role='checkbox']",
-    "[role='radio']",
-    "[role='switch']",
-    "[tabindex]:not([tabindex='-1'])",
-    "[onclick]"
-  ].join(",");
-  const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
-  const lowerText = (value) => normalizeText(value).toLowerCase();
-  const arrayEquals = (left, right) => {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((entry, index) => entry === right[index]);
-  };
-  const numberPath = (value) => Array.isArray(value)
-    ? value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 0).map((entry) => Math.floor(entry))
-    : null;
-  const stringPath = (value) => Array.isArray(value)
-    ? value.map((entry) => normalizeText(entry)).filter(Boolean)
-    : null;
-  const escapeIdent = (value) => {
-    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(String(value));
-    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-  };
-  const quoteAttr = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-  const selectorFor = (node) => {
-    const parts = [];
-    let current = node;
-    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 6) {
-      let part = current.localName || current.tagName.toLowerCase();
-      const testId = current.getAttribute("data-testid")
-        || current.getAttribute("data-test-id")
-        || current.getAttribute("data-cy");
-      if (current.id) {
-        part += "#" + escapeIdent(current.id);
-        parts.unshift(part);
-        break;
-      }
-      if (testId) {
-        part += "[data-testid=\"" + quoteAttr(testId) + "\"]";
-        parts.unshift(part);
-        break;
-      }
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter((candidate) => candidate.localName === current.localName);
-        if (siblings.length > 1) {
-          part += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
-        }
-      }
-      parts.unshift(part);
-      current = parent;
-    }
-    return parts.join(" > ");
-  };
-  const rectFor = (node, ctx) => {
-    const rect = node && typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
-    if (!rect) return null;
-    return {
-      x: rect.x + ctx.offsetX,
-      y: rect.y + ctx.offsetY,
-      left: rect.left + ctx.offsetX,
-      top: rect.top + ctx.offsetY,
-      right: rect.right + ctx.offsetX,
-      bottom: rect.bottom + ctx.offsetY,
-      width: rect.width,
-      height: rect.height
-    };
-  };
-  const isDisplayed = (node, ctx) => {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE || typeof node.getBoundingClientRect !== "function") return false;
-    const rect = rectFor(node, ctx);
-    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-    const style = (ctx.win || window).getComputedStyle(node);
-    if (!style || style.display === "none" || style.visibility === "hidden") return false;
-    if (style.pointerEvents === "none") return false;
-    return Number(style.opacity || "1") > 0.01;
-  };
-  const intersectsViewport = (node, ctx) => {
-    const rect = rectFor(node, ctx);
-    if (!rect) return false;
-    return rect.right >= 0 && rect.bottom >= 0 && rect.left <= window.innerWidth && rect.top <= window.innerHeight;
-  };
-  const labelledByText = (node) => {
-    const ids = normalizeText(node.getAttribute("aria-labelledby"));
-    if (!ids) return "";
-    const doc = node.ownerDocument || document;
-    return ids
-      .split(/\s+/)
-      .map((id) => normalizeText(doc.getElementById(id)?.textContent))
-      .filter(Boolean)
-      .join(" ");
-  };
-  const labelFor = (node) => {
-    const id = node.getAttribute("id");
-    const doc = node.ownerDocument || document;
-    const explicitLabel = id
-      ? normalizeText(doc.querySelector("label[for=\"" + quoteAttr(id) + "\"]")?.textContent)
-      : "";
-    const implicitLabel = normalizeText(node.closest("label")?.textContent);
-    return normalizeText(
-      node.getAttribute("aria-label")
-      || labelledByText(node)
-      || explicitLabel
-      || implicitLabel
-      || node.getAttribute("placeholder")
-      || node.getAttribute("title")
-      || node.getAttribute("alt")
-      || node.getAttribute("name")
-      || node.innerText
-      || node.textContent
-    ).slice(0, 300) || null;
-  };
-  const testIdFor = (node) => node.getAttribute("data-testid")
-    || node.getAttribute("data-test-id")
-    || node.getAttribute("data-cy")
-    || null;
-  const valueFor = (node) => {
-    const tag = node && node.tagName ? node.tagName.toLowerCase() : "";
-    if (tag !== "input" && tag !== "textarea" && tag !== "select") return null;
-    if (tag === "input" && String(node.type || "").toLowerCase() === "password") return null;
-    return String(node.value || "").slice(0, 300) || null;
-  };
-  const disabledFor = (node) => "disabled" in node ? Boolean(node.disabled) : null;
-  const describe = (node, index, ctx) => {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
-    const rect = rectFor(node, ctx);
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-    const text = normalizeText(node.innerText || node.textContent).slice(0, 300) || null;
-    const label = labelFor(node);
-    const tagName = node.tagName ? node.tagName.toLowerCase() : null;
-    return {
-      index,
-      framePath: ctx.framePath.length ? ctx.framePath : undefined,
-      shadowPath: ctx.shadowPath.length ? ctx.shadowPath : undefined,
-      tagName,
-      role: node.getAttribute("role"),
-      label,
-      text,
-      value: valueFor(node),
-      placeholder: normalizeText(node.getAttribute("placeholder")).slice(0, 300) || null,
-      selector: selectorFor(node),
-      testId: testIdFor(node),
-      href: tagName === "a" ? node.href : null,
-      disabled: disabledFor(node),
-      frame: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      center: { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
-    };
-  };
-  const actionableElement = (node) => {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
-    return node.matches(interactiveSelector) ? node : node.closest(interactiveSelector) || node;
-  };
-  const contexts = [];
-  const collectContexts = (root, doc, win, offsetX, offsetY, framePath, shadowPath, depth) => {
-    if (!root || typeof root.querySelectorAll !== "function" || depth > 4) return;
-    const ctx = { root, doc, win, offsetX, offsetY, framePath, shadowPath };
-    contexts.push(ctx);
-    for (const host of Array.from(root.querySelectorAll("*"))) {
-      if (host.shadowRoot) {
-        collectContexts(host.shadowRoot, host.ownerDocument || doc, win, offsetX, offsetY, framePath, shadowPath.concat(selectorFor(host)), depth + 1);
-      }
-    }
-    const frames = Array.from(root.querySelectorAll("iframe,frame"));
-    frames.forEach((frameElement, index) => {
-      let childDocument = null;
-      try {
-        childDocument = frameElement.contentDocument;
-      } catch {
-        childDocument = null;
-      }
-      if (!childDocument || !childDocument.documentElement) return;
-      if (!isDisplayed(frameElement, ctx) || !intersectsViewport(frameElement, ctx)) return;
-      const frameRect = rectFor(frameElement, ctx);
-      if (!frameRect) return;
-      collectContexts(
-        childDocument,
-        childDocument,
-        childDocument.defaultView || win,
-        frameRect.x,
-        frameRect.y,
-        framePath.concat(index),
-        shadowPath,
-        depth + 1
-      );
-    });
-  };
-  collectContexts(document, document, window, 0, 0, [], [], 0);
-  const locateFramePath = locate ? numberPath(locate.framePath) : null;
-  const locateShadowPath = locate ? stringPath(locate.shadowPath) : null;
-  const contextMatches = (ctx) => {
-    if (locateFramePath && !arrayEquals(ctx.framePath, locateFramePath)) return false;
-    if (locateShadowPath && !arrayEquals(ctx.shadowPath, locateShadowPath)) return false;
-    return true;
-  };
-  const stableElements = () => {
-    const seen = new Set();
-    const elements = [];
-    for (const ctx of contexts) {
-      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
-        const node = actionableElement(raw);
-        if (!node || seen.has(node) || !isDisplayed(node, ctx) || !intersectsViewport(node, ctx)) continue;
-        seen.add(node);
-        elements.push({ node, ctx });
-      }
-    }
-    elements.sort((a, b) => {
-      const ar = rectFor(a.node, a.ctx);
-      const br = rectFor(b.node, b.ctx);
-      if (!ar || !br) return 0;
-      return ar.top - br.top || ar.left - br.left || ar.width * ar.height - br.width * br.height;
-    });
-    return elements;
-  };
-  const stable = stableElements();
-  const elements = stable
-    .slice(0, maxElements)
-    .map((entry, index) => describe(entry.node, index + 1, entry.ctx))
-    .filter(Boolean);
-  const snapshot = {
-    url: location.href,
-    title: document.title,
-    capturedAt: new Date().toISOString(),
-    viewport: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
-    scroll: { x: window.scrollX, y: window.scrollY },
-    elementCount: stable.length,
-    elements
-  };
-
-  const findBySelector = (selector) => {
-    let invalidSelector = false;
-    for (const ctx of contexts) {
-      if (!contextMatches(ctx)) continue;
-      try {
-        const found = ctx.root.querySelector(selector);
-        if (found) return { node: actionableElement(found), ctx };
-      } catch (error) {
-        invalidSelector = true;
-      }
-    }
-    return invalidSelector ? { error: "Invalid browser click selector: " + String(selector) } : null;
-  };
-  const findByTestId = (testId) => {
-    const quoted = quoteAttr(testId);
-    const selector = "[data-testid=\"" + quoted + "\"],[data-test-id=\"" + quoted + "\"],[data-cy=\"" + quoted + "\"]";
-    for (const ctx of contexts) {
-      if (!contextMatches(ctx)) continue;
-      const found = ctx.root.querySelector(selector);
-      if (found) return { node: actionableElement(found), ctx };
-    }
-    return null;
-  };
-  const searchableText = (node) => lowerText([
-    labelFor(node),
-    node.getAttribute("placeholder"),
-    node.getAttribute("title"),
-    node.getAttribute("alt"),
-    node.getAttribute("name"),
-    node.innerText,
-    node.textContent,
-    valueFor(node)
-  ].filter(Boolean).join(" "));
-  const findByText = (text) => {
-    const needle = lowerText(text);
-    if (!needle) return null;
-    const candidates = [];
-    const seen = new Set();
-    for (const ctx of contexts) {
-      if (!contextMatches(ctx)) continue;
-      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
-        const node = actionableElement(raw);
-        if (!node || seen.has(node) || !isDisplayed(node, ctx)) continue;
-        seen.add(node);
-        candidates.push({ node, ctx });
-      }
-    }
-    const exact = candidates.find((entry) => searchableText(entry.node) === needle);
-    return exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
-  };
-  const targetFromLocate = () => {
-    if (!locate) return null;
-    if (typeof locate.selector === "string" && locate.selector.trim()) return findBySelector(locate.selector.trim());
-    if (typeof locate.testId === "string" && locate.testId.trim()) return findByTestId(locate.testId.trim());
-    if (typeof locate.text === "string" && locate.text.trim()) return findByText(locate.text.trim());
-    if (Number.isFinite(Number(locate.elementIndex))) {
-      const index = Math.max(1, Math.floor(Number(locate.elementIndex)));
-      const entry = stable[index - 1];
-      if (!entry) return { error: "No browser element exists at index " + index + "." };
-      return entry;
-    }
-    return null;
-  };
-  const rawTarget = targetFromLocate();
-  if (rawTarget && rawTarget.error) return { snapshot, target: null, error: rawTarget.error };
-  let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
-  const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
-  if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
-    target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-  }
-  if (target && !isDisplayed(target, targetContext)) target = null;
-  if (target && shouldFocus) {
-    const tagName = target.tagName ? target.tagName.toLowerCase() : "";
-    const editable = target.isContentEditable
-      || tagName === "input"
-      || tagName === "textarea"
-      || tagName === "select";
-    const readOnly = "readOnly" in target ? Boolean(target.readOnly) : false;
-    const disabled = "disabled" in target ? Boolean(target.disabled) : false;
-    if (editableRequired && (!editable || readOnly || disabled)) {
-      return { snapshot, target: null, error: "Matching browser element is not editable." };
-    }
-    if (typeof target.focus === "function") target.focus({ preventScroll: true });
-    if (shouldSelect && typeof target.select === "function") target.select();
-    if (shouldClear) {
-      if ("value" in target) {
-        target.value = "";
-        target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-        target.dispatchEvent(new Event("change", { bubbles: true }));
-      } else if (target.isContentEditable) {
-        target.textContent = "";
-        target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-      }
-    }
-  }
-  const describedTarget = target ? describe(target, 0, targetContext) : null;
-  return {
-    readyState: document.readyState,
-    snapshot,
-    target: describedTarget,
-    error: locate && !describedTarget ? "No matching browser element was found." : null
-  };
-}
-`;
-
 /**
  * Resolves the element the page actually has focused, descending through open
  * shadow roots and same-origin iframes so `focusElementTarget` results inside
@@ -6720,86 +6318,6 @@ function selectBrowserOption(element, payload) {
     label: (match.label || match.textContent || "").trim(),
     index: match.index,
   };
-}
-`;
-
-const ELEMENT_MAP_OVERLAY_FUNCTION = String.raw`
-function(inputArg) {
-  const input = inputArg && typeof inputArg === "object" ? inputArg : {};
-  const overlayId = "__ade_browser_element_map_overlay__";
-  const existing = document.getElementById(overlayId);
-  if (existing) existing.remove();
-  if (input.clear === true) return { ok: true, cleared: true };
-  const elements = Array.isArray(input.elements) ? input.elements : [];
-  if (!elements.length || !document.body) return { ok: true, count: 0 };
-  const root = document.createElement("div");
-  root.id = overlayId;
-  root.setAttribute("aria-hidden", "true");
-  Object.assign(root.style, {
-    position: "fixed",
-    inset: "0",
-    zIndex: "2147483647",
-    pointerEvents: "none",
-    font: "12px/1.2 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-    color: "#f8fafc",
-  });
-  const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
-  const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
-  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
-  let count = 0;
-  for (const element of elements) {
-    if (!element || typeof element !== "object") continue;
-    const frame = element.frame && typeof element.frame === "object" ? element.frame : {};
-    const x = clamp(number(frame.x), 0, viewportWidth);
-    const y = clamp(number(frame.y), 0, viewportHeight);
-    const right = clamp(number(frame.x) + number(frame.width), 0, viewportWidth);
-    const bottom = clamp(number(frame.y) + number(frame.height), 0, viewportHeight);
-    const width = Math.max(1, right - x);
-    const height = Math.max(1, bottom - y);
-    if (width <= 1 || height <= 1) continue;
-    const index = String(element.index || count + 1);
-    const box = document.createElement("div");
-    Object.assign(box.style, {
-      position: "fixed",
-      left: x + "px",
-      top: y + "px",
-      width: width + "px",
-      height: height + "px",
-      zIndex: "1",
-      boxSizing: "border-box",
-      border: "2px solid #0ea5e9",
-      background: "rgba(14, 165, 233, 0.12)",
-      boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.88), 0 0 0 4px rgba(14, 165, 233, 0.18)",
-      borderRadius: "4px",
-    });
-    const label = document.createElement("div");
-    label.textContent = index;
-    Object.assign(label.style, {
-      position: "fixed",
-      left: clamp(x, 0, viewportWidth - 28) + "px",
-      top: clamp(y - 18, 0, viewportHeight - 18) + "px",
-      zIndex: "2",
-      minWidth: "18px",
-      height: "18px",
-      padding: "0 5px",
-      boxSizing: "border-box",
-      borderRadius: "9px",
-      background: "#0284c7",
-      color: "white",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontWeight: "700",
-      letterSpacing: "0",
-      boxShadow: "0 1px 5px rgba(15, 23, 42, 0.5)",
-    });
-    root.appendChild(box);
-    root.appendChild(label);
-    count += 1;
-  }
-  document.body.appendChild(root);
-  return { ok: true, count };
 }
 `;
 

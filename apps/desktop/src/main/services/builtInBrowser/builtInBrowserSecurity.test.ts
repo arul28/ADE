@@ -306,6 +306,27 @@ describe("built-in browser actor capabilities", () => {
     });
   });
 
+  // Two spellings of one directory are one scope. `path.resolve` does not fold
+  // drive-letter case on Windows, so a bare `===` minted a second token — and
+  // the first one stopped resolving mid-session.
+  it("treats differently-spelled paths for one directory as the same scope", () => {
+    const first = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      projectRoot: path.resolve("/project/app"),
+      tabCollection: null,
+    });
+    const second = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      projectRoot: `${path.resolve("/project/app")}${path.sep}`,
+      tabCollection: null,
+    });
+
+    expect(second).toBe(first);
+    expect(resolveBuiltInBrowserActorCapability(first)).not.toBeNull();
+  });
+
   it("revokes a chat capability when its owning session closes", () => {
     const token = issueBuiltInBrowserActorCapability({
       chatSessionId: "chat-1",

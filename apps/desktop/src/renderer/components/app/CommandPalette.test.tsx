@@ -11,7 +11,10 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
-import { commandsLeadPaletteResults } from "./commandPaletteWork";
+import {
+  buildWorkToolCommands,
+  commandsLeadPaletteResults,
+} from "./commandPaletteWork";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import {
   SESSION_TONE_DOT_CLASS,
@@ -39,6 +42,8 @@ function deferred<T>() {
 }
 
 const PROJECT_ROOT = "/Users/admin/Projects/ADE";
+
+const PALETTE_PLACEHOLDER = "Search commands, projects, and threads\u2026";
 
 function seedStore(overrides: Record<string, unknown> = {}) {
   useAppStore.setState({
@@ -1674,6 +1679,155 @@ describe("CommandPalette", () => {
         threadsHeading.compareDocumentPosition(commandsHeading)
           & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
+    });
+
+    it("offers only the Work tools this surface can actually run", () => {
+      const titlesFor = (context: {
+        isRemoteProject: boolean;
+        supportsIosSimulator: boolean;
+        isWebClient: boolean;
+      }) =>
+        buildWorkToolCommands({
+          navigate: () => {},
+          openTool: () => {},
+          context,
+        }).map((command) => command.title);
+
+      const local = titlesFor({
+        isRemoteProject: false,
+        supportsIosSimulator: true,
+        isWebClient: false,
+      });
+      expect(local).toContain("Tools: iOS Simulator");
+      expect(local).toContain("Tools: Browser");
+
+      // No simulator here, so the command that lands on a "macOS only" card is
+      // not offered at all.
+      expect(
+        titlesFor({
+          isRemoteProject: false,
+          supportsIosSimulator: false,
+          isWebClient: false,
+        }),
+      ).not.toContain("Tools: iOS Simulator");
+
+      // A remote project's work happens on the other machine.
+      const remote = titlesFor({
+        isRemoteProject: true,
+        supportsIosSimulator: true,
+        isWebClient: false,
+      });
+      expect(remote).not.toContain("Tools: Browser");
+      expect(remote).not.toContain("Tools: iOS Simulator");
+      expect(remote).not.toContain("Tools: App Control");
+      expect(remote).not.toContain("Tools: Pull request");
+      expect(remote).toContain("Tools: Git");
+      // The picker is the fallback for every one of those, so it never goes.
+      expect(remote).toContain("Tools: Show picker");
+
+      // The hosted client can WATCH the browser and App Control, so those stay;
+      // the simulator pane is a video stream with nothing to report.
+      const web = titlesFor({
+        isRemoteProject: false,
+        supportsIosSimulator: true,
+        isWebClient: true,
+      });
+      expect(web).toContain("Tools: Browser");
+      expect(web).toContain("Tools: App Control");
+      expect(web).not.toContain("Tools: iOS Simulator");
+    });
+
+    /**
+     * The flat keyboard index IS the DOM order of the rendered rows — the
+     * palette's own `scrollToSelected` indexes `[data-cmd-item]` by it. So the
+     * contract is checkable without reading a single style, and without
+     * predicting anything: clicking the k-th row runs that row's own handler,
+     * while ↓×k then Enter runs whatever the flat index resolves to. They must
+     * agree. Checked in both `commandsLead` states, since that flag is the only
+     * thing that reorders the sections.
+     */
+    async function openWithQuery(query: string) {
+      render(
+        <MemoryRouter>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+      const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
+      fireEvent.change(input, { target: { value: query } });
+      await screen.findByText("Work results");
+      await screen.findByText("Work tools");
+      return input;
+    }
+
+    function paletteRows(): Element[] {
+      return Array.from(document.body.querySelectorAll("[data-cmd-item]"));
+    }
+
+    function currentLocation(): string {
+      return screen.getByTestId("location").textContent ?? "";
+    }
+
+    /** True when the k-th rendered row belongs to the threads section. */
+    async function rowIsThread(query: string, rowIndex: number) {
+      await openWithQuery(query);
+      const isThread = paletteRows()[rowIndex]?.closest("[data-thread-id]") != null;
+      cleanup();
+      return isThread;
+    }
+
+    async function expectKeyboardOrderMatchesRenderOrder(query: string) {
+      await openWithQuery(query);
+      // Enough rows to cross the thread/command boundary either way; capped so
+      // a broad query cannot turn this into dozens of mounts.
+      const rowCount = Math.min(paletteRows().length, 6);
+      cleanup();
+      expect(rowCount).toBeGreaterThan(2);
+
+      const destinations: string[] = [];
+      for (let target = 0; target < rowCount; target += 1) {
+        await openWithQuery(query);
+        const row = paletteRows()[target];
+        expect(row).toBeTruthy();
+        fireEvent.click(row!);
+        const clicked = currentLocation();
+        cleanup();
+
+        const input = await openWithQuery(query);
+        for (let step = 0; step < target; step += 1) {
+          fireEvent.keyDown(input, { key: "ArrowDown" });
+        }
+        fireEvent.keyDown(input, { key: "Enter" });
+        const keyed = currentLocation();
+        cleanup();
+
+        expect(keyed).toBe(clicked);
+        destinations.push(keyed);
+      }
+      // Guards against a vacuous pass where every row happens to be inert.
+      expect(new Set(destinations).size).toBeGreaterThan(1);
+    }
+
+    it("walks the rendered rows in order when commands lead", async () => {
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+      ]);
+
+      // Sanity: this really is the commands-lead layout, so the traversal check
+      // is not silently exercising the threads-lead one twice.
+      expect(await rowIsThread("Tools: Browser", 0)).toBe(false);
+      await expectKeyboardOrderMatchesRenderOrder("Tools: Browser");
+    });
+
+    it("walks the rendered rows in order when threads lead", async () => {
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+      ]);
+
+      expect(await rowIsThread("browser", 0)).toBe(true);
+      await expectKeyboardOrderMatchesRenderOrder("browser");
     });
   });
 });

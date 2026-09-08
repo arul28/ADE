@@ -678,7 +678,7 @@ vi.mock("../ai/tools/universalTools", () => ({
 }));
 
 vi.mock("../ai/tools/workflowTools", () => ({
-  createWorkflowTools: vi.fn(() => []),
+  workflowToolNames: vi.fn(() => []),
 }));
 
 vi.mock("../ai/tools/linearTools", () => ({

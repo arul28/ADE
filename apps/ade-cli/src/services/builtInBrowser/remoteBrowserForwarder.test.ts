@@ -30,6 +30,54 @@ function makeBridge(overrides: Record<string, unknown> = {}): BuiltInBrowserDesk
 }
 
 describe("remote browser forwarder", () => {
+  it("carries `awaitingApproval` back so the CLI does not report a live request as failed", async () => {
+    // A first-use tunnel port needs a human "Allow" on the desktop, which
+    // cannot land inside the 5s ack window. The desktop acks immediately as
+    // awaiting-approval and navigates later; without this the CLI printed
+    // "no desktop is attached" for a request that was about to succeed.
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        const request = payload.event as { requestId: string };
+        queueMicrotask(() => {
+          forwarder.acknowledgeRemoteRequest({
+            requestId: request.requestId,
+            desktopLabel: "Studio",
+            accepted: true,
+            awaitingApproval: true,
+          });
+        });
+      },
+      logger,
+      ackTimeoutMs: 500,
+    });
+    const bridge = withRemoteBrowserForwarding(makeBridge(), forwarder);
+
+    const result = await bridge.navigate({ url: "http://localhost:3000/" } as never) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      status: "forwarded_to_desktop",
+      acknowledged: true,
+      awaitingApproval: true,
+      desktopLabel: "Studio",
+    });
+  });
+
+  it("omits `awaitingApproval` when the desktop navigated straight away", async () => {
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        const request = payload.event as { requestId: string };
+        queueMicrotask(() => {
+          forwarder.acknowledgeRemoteRequest({ requestId: request.requestId, accepted: true });
+        });
+      },
+      logger,
+      ackTimeoutMs: 500,
+    });
+    const bridge = withRemoteBrowserForwarding(makeBridge(), forwarder);
+    const result = await bridge.navigate({ url: "http://localhost:3000/" } as never) as Record<string, unknown>;
+    expect(result.acknowledged).toBe(true);
+    expect(result).not.toHaveProperty("awaitingApproval");
+  });
+
   it("forwards a headless `browser open` as a runtime event and reports the ack", async () => {
     const events: Record<string, unknown>[] = [];
     const forwarder = createRemoteBrowserForwarder({

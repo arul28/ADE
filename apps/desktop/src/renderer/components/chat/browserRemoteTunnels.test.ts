@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteLoopbackTunnel } from "../../../shared/remoteLoopbackUrl";
 import {
+  commitTunnelApproval,
   reconcileTabTunnels,
   setTabTunnel,
+  tunnelApprovalDecision,
   tunnelAwareUrl,
   TAB_TUNNEL_ARM_GRACE_MS,
   type TabTunnelMap,
+  type TunnelApprovalState,
 } from "./browserRemoteTunnels";
 
 const TUNNEL: RemoteLoopbackTunnel = {
@@ -100,5 +103,73 @@ describe("tunnelAwareUrl", () => {
     // A stale mapping must never rewrite an unrelated page.
     expect(tunnelAwareUrl("https://example.test/", { tunnel: TUNNEL, armedAt: NOW }))
       .toBe("https://example.test/");
+  });
+});
+
+describe("tunnelApprovalDecision", () => {
+  const KEY = "target-studio:3000";
+  const empty: TunnelApprovalState = { sessionApproved: new Set<string>(), alwaysKeys: [] };
+
+  it("lets a human-typed URL straight through: typing it IS the approval", () => {
+    expect(tunnelApprovalDecision({ ...empty, key: KEY, human: true })).toBe("allow");
+  });
+
+  it("asks the first time an agent names a port, even on a trusted machine", () => {
+    expect(tunnelApprovalDecision({ ...empty, key: KEY, human: false })).toBe("ask");
+  });
+
+  it("does not re-ask for a port already allowed once this session", () => {
+    expect(tunnelApprovalDecision({
+      sessionApproved: new Set([KEY]),
+      alwaysKeys: [],
+      key: KEY,
+      human: false,
+    })).toBe("allow");
+  });
+
+  it("honours a persisted always-grant across panes", () => {
+    expect(tunnelApprovalDecision({
+      sessionApproved: new Set<string>(),
+      alwaysKeys: [KEY],
+      key: KEY,
+      human: false,
+    })).toBe("allow");
+  });
+
+  it("scopes a grant to its own port, not to the machine", () => {
+    // Approving a dev server on 3000 is not approving an admin console on 8080.
+    expect(tunnelApprovalDecision({
+      sessionApproved: new Set([KEY]),
+      alwaysKeys: [KEY],
+      key: "target-studio:8080",
+      human: false,
+    })).toBe("ask");
+  });
+});
+
+describe("commitTunnelApproval", () => {
+  const KEY = "target-studio:3000";
+  const empty: TunnelApprovalState = { sessionApproved: new Set<string>(), alwaysKeys: [] };
+
+  it("remembers 'once' for the session but writes nothing persistent", () => {
+    const next = commitTunnelApproval(empty, KEY, "once");
+    expect(next.sessionApproved.has(KEY)).toBe(true);
+    expect(next.alwaysKeys).toEqual([]);
+  });
+
+  it("remembers 'always' in both places, so the next pane does not re-ask", () => {
+    const next = commitTunnelApproval(empty, KEY, "always");
+    expect(next.sessionApproved.has(KEY)).toBe(true);
+    expect(next.alwaysKeys).toEqual([KEY]);
+  });
+
+  it("records nothing on a denial: refusing once is not a standing rule", () => {
+    expect(commitTunnelApproval(empty, KEY, "deny")).toBe(empty);
+  });
+
+  it("returns the same state when the answer changes nothing", () => {
+    const granted: TunnelApprovalState = { sessionApproved: new Set([KEY]), alwaysKeys: [KEY] };
+    expect(commitTunnelApproval(granted, KEY, "always")).toBe(granted);
+    expect(commitTunnelApproval(granted, KEY, "once")).toBe(granted);
   });
 });

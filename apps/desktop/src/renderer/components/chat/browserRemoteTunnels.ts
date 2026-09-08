@@ -84,6 +84,66 @@ export function setTabTunnel(
   return { ...current, [id]: { tunnel, armedAt: now } };
 }
 
+/* ── Approval policy ──────────────────────────────────────────────────────── */
+
+/**
+ * Which (machine, port) pairs a caller may reach, as a decision rather than a
+ * tangle of React callbacks.
+ *
+ * The pinned machine already carries a machine-wide `portForward` grant, but
+ * that grant is about the *machine*: a lane approved for a dev server on 3000
+ * has not approved an admin console on 8080, and it is the *agent* that names
+ * the port. So the first agent use of a port needs a person. A URL the human
+ * typed does not — they just said it out loud by typing it.
+ *
+ * This lives here, next to the tab-tunnel reducer, so the rule is testable
+ * without mounting a panel that positions a native browser view.
+ */
+export type TunnelApprovalState = {
+  /** Answered "Allow once"; lives only as long as the pane does. */
+  sessionApproved: ReadonlySet<string>;
+  /** Answered "Always for this lane"; persisted with the rest of the view state. */
+  alwaysKeys: readonly string[];
+};
+
+export type TunnelApprovalDecision = "allow" | "ask";
+
+export function tunnelApprovalDecision(
+  input: TunnelApprovalState & { key: string; human: boolean },
+): TunnelApprovalDecision {
+  if (input.human) return "allow";
+  if (input.sessionApproved.has(input.key)) return "allow";
+  return input.alwaysKeys.includes(input.key) ? "allow" : "ask";
+}
+
+export type TunnelApprovalAnswer = "once" | "always" | "deny";
+
+/**
+ * The state after a human (or a human-typed URL) answered.
+ *
+ * `"deny"` records nothing: a refusal is about this request, not a standing
+ * rule, so the next one asks again. Identity-preserving when nothing changed,
+ * so a repeat "Allow once" does not churn the persisted list.
+ */
+export function commitTunnelApproval(
+  state: TunnelApprovalState,
+  key: string,
+  answer: TunnelApprovalAnswer,
+): TunnelApprovalState {
+  if (answer === "deny") return state;
+  const sessionApproved = state.sessionApproved.has(key)
+    ? state.sessionApproved
+    : new Set([...state.sessionApproved, key]);
+  if (answer === "once") {
+    return sessionApproved === state.sessionApproved ? state : { ...state, sessionApproved };
+  }
+  const alwaysKeys = state.alwaysKeys.includes(key)
+    ? state.alwaysKeys
+    : [...state.alwaysKeys, key];
+  if (sessionApproved === state.sessionApproved && alwaysKeys === state.alwaysKeys) return state;
+  return { sessionApproved, alwaysKeys };
+}
+
 /** The URL to show for a tab: the remote origin when tunneled, else as-is. */
 export function tunnelAwareUrl(
   url: string | null | undefined,

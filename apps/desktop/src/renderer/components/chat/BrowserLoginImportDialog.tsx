@@ -20,6 +20,9 @@ import type {
   BrowserLoginImportResult,
   BrowserLoginImportSource,
 } from "../../../shared/types/builtInBrowserLoginImport";
+import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
+import { isMacRuntimeTarget } from "../../lib/platform";
+import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 
 /**
@@ -43,7 +46,7 @@ type LoginImportApi = {
 
 type Step = "sources" | "domains" | "done";
 
-const REVEAL = { duration: 0.18, ease: [0.4, 0, 0.2, 1] as const };
+const REVEAL = { duration: 0.18, ease: STANDARD_EASE };
 
 /** The three steps, named the way the dialog talks about them. */
 const STEPS: ReadonlyArray<{ id: Step; label: string }> = [
@@ -187,10 +190,27 @@ export function BrowserLoginImportDialog({
     }
   }, [onImported, selected, sourceId]);
 
-  const openSettingsPane = useCallback((paneUrl: string) => {
-    void window.ade.app.openExternal(paneUrl).catch(() => {
+  /*
+    System Settings opens through a purpose-built main-side IPC, never through
+    `openExternal`. The pane address is an `x-apple.systempreferences:` URL, and
+    the external-link allowlist accepts only http(s) and mailto — so the one
+    remediation button on the Full Disk Access path used to reject every single
+    time. Main owns the URL; the renderer only names which pane it wants.
+  */
+  const openSettingsPane = useCallback((paneId: SystemSettingsPaneId) => {
+    const failed = () => {
       setError("Could not open System Settings. Open Privacy & Security › Full Disk Access yourself.");
-    });
+    };
+    const open = window.ade.app.openSystemSettingsPane;
+    if (typeof open !== "function") {
+      failed();
+      return;
+    }
+    void open(paneId)
+      .then((result) => {
+        if (!result?.opened) failed();
+      })
+      .catch(failed);
   }, []);
 
   const visibleDomains = useMemo(() => {
@@ -460,13 +480,13 @@ function SourceList({
   busy: boolean;
   pendingSourceId: string | null;
   onPick: (source: BrowserLoginImportSource) => void;
-  onOpenSettings: (paneUrl: string) => void;
+  onOpenSettings: (paneId: SystemSettingsPaneId) => void;
 }) {
   if (busy && sources.length === 0) {
     return (
       <div className="flex items-center gap-2 py-6 text-[11px] text-muted-fg">
         <SpinnerGap size={13} className="animate-spin" />
-        Looking for browsers on this Mac…
+        {`Looking for browsers on this ${isMacRuntimeTarget() ? "Mac" : "computer"}…`}
       </div>
     );
   }
@@ -484,6 +504,7 @@ function SourceList({
         const ready = source.status === "ready";
         const reason = sourceReason(source);
         const Glyph = browserGlyph(source);
+        const settingsPaneId = source.settingsPaneId;
         return (
           <li key={source.id}>
             <div
@@ -523,10 +544,10 @@ function SourceList({
                   ) : null}
                   Choose
                 </button>
-              ) : source.settingsPaneUrl ? (
+              ) : settingsPaneId ? (
                 <button
                   type="button"
-                  onClick={() => onOpenSettings(source.settingsPaneUrl as string)}
+                  onClick={() => onOpenSettings(settingsPaneId)}
                   className="ade-shell-control inline-flex h-6 shrink-0 items-center gap-1.5 px-2.5 text-[10.5px] font-medium"
                 >
                   <Gear size={11} />

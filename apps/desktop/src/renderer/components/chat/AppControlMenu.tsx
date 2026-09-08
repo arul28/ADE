@@ -10,6 +10,11 @@ import {
 import { CaretDown, Check } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "../ui/cn";
+import {
+  MENU_ITEM_CLASS,
+  MENU_LABEL_CLASS,
+  MENU_SURFACE_CLASS,
+} from "../ui/paneMenuTokens";
 
 /** The house overshoot curve — same one `ade-popover-in` uses in index.css. */
 const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
@@ -17,10 +22,15 @@ const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
 /**
  * A small dropdown for the App Control toolbar.
  *
- * Hand-rolled rather than Radix on purpose: the toolbar lives inside a pane
- * that can be 280px wide, the menus need to host inline forms (a launch
- * command, a CDP port) as well as items, and a portal would escape the pane's
- * stacking context and float over the live frame of a *different* tool.
+ * Hand-rolled rather than Radix for ONE reason: these menus host inline forms —
+ * a launch command, a CDP port — and a Radix menu owns typeahead, focus and
+ * Escape in ways a text field inside it has to fight. (Radix without a Portal
+ * renders inline, so "a portal would escape the pane's stacking context" is an
+ * argument against `DropdownMenu.Portal`, not against Radix; a menu that is
+ * only items should still use it.)
+ *
+ * The paint comes from `ui/paneMenuTokens`, shared with the browser pane's
+ * Radix menu, so the two implementations at least look like one product.
  */
 export function AppControlMenu({
   triggerLabel,
@@ -52,13 +62,19 @@ export function AppControlMenu({
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
+  // The parent's setter is called from the EVENT HANDLER, never from inside a
+  // `useState` updater. React runs updaters during the render phase (twice
+  // under StrictMode), so notifying the parent from in there updated a
+  // different component mid-render — "Cannot update a component while
+  // rendering a different component" — and fired `onOpenChange` twice per
+  // click on the one menu that is mounted controlled.
+  const openRef = useRef(open);
+  openRef.current = open;
   const setOpen = useCallback((next: boolean | ((value: boolean) => boolean)) => {
-    setUncontrolledOpen((value) => {
-      const resolved = typeof next === "function" ? next(controlledOpen ?? value) : next;
-      onOpenChange?.(resolved);
-      return resolved;
-    });
-  }, [controlledOpen, onOpenChange]);
+    const resolved = typeof next === "function" ? next(openRef.current) : next;
+    setUncontrolledOpen(resolved);
+    onOpenChange?.(resolved);
+  }, [onOpenChange]);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
@@ -145,8 +161,11 @@ export function AppControlMenu({
             transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: OVERSHOOT }}
             style={{ transformOrigin: "top" }}
             className={cn(
+              MENU_SURFACE_CLASS,
+              // Positioning and sizing are this menu's own: it is anchored
+              // inside the pane rather than portalled, precisely so it cannot
+              // float over another tool's live frame.
               "absolute top-[calc(100%+4px)] z-30 flex max-h-[320px] w-[248px] flex-col overflow-auto",
-              "rounded-[var(--radius-md)] border border-white/[0.1] bg-card/95 p-1 shadow-[var(--shadow-popup)]",
               "backdrop-blur-[var(--blur-popup)]",
               align === "end" ? "right-0" : "left-0",
               menuClassName,
@@ -195,8 +214,10 @@ export function AppControlMenuItem({
         title={disabled ? disabledReason ?? undefined : hint ?? undefined}
         onClick={onSelect}
         className={cn(
-          "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[11.5px]",
-          "transition-colors duration-[120ms] ease-out",
+          MENU_ITEM_CLASS,
+          // A `<button>` has no `data-highlighted`, so the shared item class's
+          // Radix hooks are inert here and the hover state is added on top.
+          "w-full text-left",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
           tone === "danger"
             ? "text-rose-200/85 hover:bg-rose-500/12"
@@ -217,9 +238,5 @@ export function AppControlMenuItem({
 
 /** A small caps label separating groups of items. */
 export function AppControlMenuLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-2 pb-1 pt-1.5 text-[9px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
-      {children}
-    </div>
-  );
+  return <div className={MENU_LABEL_CLASS}>{children}</div>;
 }

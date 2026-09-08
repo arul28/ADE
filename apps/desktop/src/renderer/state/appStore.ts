@@ -18,6 +18,12 @@ import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
+  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardPosition,
+  type WorkLiveCardDismissals,
+  type WorkLiveCardPosition,
+} from "./workLiveCardState";
+import {
   EMPTY_WORK_SESSION_FILTERS,
   normalizeWorkSessionFilters,
   type WorkSessionFilters,
@@ -211,7 +217,7 @@ export type WorkProjectViewState = {
    * Fractions rather than pixels so resizing the column keeps it in place
    * instead of stranding it off the edge.
    */
-  workLiveCardPosition?: { xPct: number; yPct: number } | null;
+  workLiveCardPosition?: WorkLiveCardPosition | null;
   /**
    * Per-tool "×" dismissals of that same card, keyed by tool id, valued with
    * the activity stamp the card was showing when it was closed. Lane-scoped in
@@ -219,7 +225,7 @@ export type WorkProjectViewState = {
    * preview in one lane says nothing about the next one. Optional for the same
    * reason as the position — absent means nobody has ever closed it.
    */
-  workLiveCardDismissed?: Record<string, number> | null;
+  workLiveCardDismissed?: WorkLiveCardDismissals | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
@@ -352,32 +358,6 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "pr"
   ) return value;
   return null;
-}
-
-/**
- * Persistence-level twin of the card's own normalizer (kept local for the same
- * reason as {@link normalizeWorkLiveCardPosition}: the store must not import a
- * component module). Drops unknown tool ids and non-positive stamps, so a
- * hand-edited blob cannot hide the card forever.
- */
-function normalizeWorkLiveCardDismissals(value: unknown): Record<string, number> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const next: Record<string, number> = {};
-  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
-    if (key !== "browser" && key !== "app-control" && key !== "ios") continue;
-    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
-    next[key] = stamp;
-  }
-  return Object.keys(next).length > 0 ? next : null;
-}
-
-function normalizeWorkLiveCardPosition(value: unknown): { xPct: number; yPct: number } | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as { xPct?: unknown; yPct?: unknown };
-  const xPct = typeof candidate.xPct === "number" && Number.isFinite(candidate.xPct) ? candidate.xPct : null;
-  const yPct = typeof candidate.yPct === "number" && Number.isFinite(candidate.yPct) ? candidate.yPct : null;
-  if (xPct == null || yPct == null) return null;
-  return { xPct: Math.max(0, Math.min(1, xPct)), yPct: Math.max(0, Math.min(1, yPct)) };
 }
 
 function normalizeWorkSidebarWidthPct(value: unknown): number {
@@ -764,11 +744,55 @@ function pickDismissMapForRoots(map: Record<string, true>, roots: readonly (stri
   return next;
 }
 
-function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneId: string | null | undefined): string {
+/**
+ * The one spelling of the `"<project>::<lane>"` key `laneWorkViewByScope` is
+ * stored under.
+ *
+ * Exported because the shape is the store's private storage layout and it was
+ * being rebuilt by hand in two components, with two different trim rules.
+ * Returns "" when either half is missing, which callers read as "no lane scope,
+ * fall back to the project scope".
+ */
+export function laneWorkViewScopeKey(
+  projectRoot: string | null | undefined,
+  laneId: string | null | undefined,
+): string {
   const projectKey = normalizeProjectKey(projectRoot);
   const normalizedLaneId = typeof laneId === "string" ? laneId.trim() : "";
   if (!projectKey || !normalizedLaneId) return "";
   return `${projectKey}::${normalizedLaneId}`;
+}
+
+/** Back-compat alias for the store's internal call sites. */
+const normalizeLaneWorkScopeKey = laneWorkViewScopeKey;
+
+/**
+ * Reactive twins of `getWorkViewState` / `getLaneWorkViewState`.
+ *
+ * The getters are imperative — a component that needs to RE-RENDER when the
+ * pane's stored state changes has to subscribe, which is why two of them were
+ * reaching into `state.workViewByProject[key]` directly and re-normalizing the
+ * result by hand. These run the same key resolution and the same defaults, and
+ * are safe to pass straight to `useAppStore`.
+ */
+export function selectWorkViewState(projectRoot: string | null | undefined) {
+  return (state: AppState): WorkProjectViewState => {
+    const key = resolveProjectStateKey(state, projectRoot);
+    if (!key) return createDefaultWorkProjectViewState();
+    return state.workViewByProject[key] ?? createDefaultWorkProjectViewState();
+  };
+}
+
+export function selectLaneWorkViewState(
+  projectRoot: string | null | undefined,
+  laneId: string | null | undefined,
+) {
+  return (state: AppState): WorkProjectViewState => {
+    const projectKey = resolveProjectStateKey(state, projectRoot);
+    const key = laneWorkViewScopeKey(projectKey, laneId);
+    if (!key) return createDefaultWorkProjectViewState();
+    return state.laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
+  };
 }
 
 function removeWorkViewStateForProject(

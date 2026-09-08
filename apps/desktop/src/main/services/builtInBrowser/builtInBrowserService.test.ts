@@ -2647,6 +2647,19 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
           }),
         ],
       });
+
+      // The tally is coalesced: three error signals above, one `diagnostics`
+      // event once the window closes. A page in an error loop used to emit one
+      // IPC event per error to every window, all moving the same red dot.
+      const diagnosticsEvents = () =>
+        collector.events.filter((event) => event.type === "diagnostics" && event.tabId === tabId);
+      expect(diagnosticsEvents()).toHaveLength(0);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(diagnosticsEvents()).toHaveLength(1);
+      expect(diagnosticsEvents().at(-1)).toMatchObject({
+        consoleErrorCount: 1,
+        failedRequestCount: 2,
+      });
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

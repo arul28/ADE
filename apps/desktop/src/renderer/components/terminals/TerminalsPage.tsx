@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { paneTransition } from "../../lib/motion";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
@@ -1492,7 +1493,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             // shrinks smoothly with it — no instant reflow / black flash on close.
             <motion.div
               key="work-tools-sidebar"
-              {...{ [WORK_SIDEBAR_PANE_ATTR]: "" }}
+              data-work-sidebar-pane=""
               className="min-h-0 min-w-0 basis-0 overflow-hidden"
               // 55% is the taste ceiling; the `max()` keeps the pane's own
               // 280px floor reachable in a window too narrow for both, which is
@@ -1501,7 +1502,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               initial={{ flexGrow: 0 }}
               animate={{ flexGrow: work.workSidebarWidthPct }}
               exit={{ flexGrow: 0 }}
-              transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
+              transition={paneTransition}
             >
               <WorkSidebar
                 active={active}

@@ -10,6 +10,7 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
@@ -636,6 +637,13 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
+      // `getStatus` is the one member of this namespace whose *shape* is load
+      // bearing: the Work tools pane and the corner card treat the browser as a
+      // read-only tool and call it on the web client too, then read
+      // `status.tabs`. A bare `{ supported: false }` handed them `undefined`
+      // and crashed the Work tab on render, so the unavailable answer is a real
+      // `BuiltInBrowserStatus` that happens to describe an empty browser.
+      getStatus: async () => unsupportedBuiltInBrowserStatus(),
       // Dev-server discovery reads this machine's PTY output. A phone or a web
       // tab has none, so the honest answer is an empty list rather than the
       // desktop's — the launchpad simply shows no chips.
@@ -867,7 +875,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
     sourceId,
     status: "unsupported" as const,
     reason: "Login import needs the ADE desktop app on the machine holding the browser.",
-    settingsPaneUrl: null,
+    settingsPaneId: null,
   });
   return {
     capabilities: async () => ({ platform: "other" as const, anySupported: false, browsers: [] }),
@@ -878,6 +886,46 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
     }),
     listDomains: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
     import: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
+  };
+}
+
+/**
+ * The built-in browser, described honestly as "not here".
+ *
+ * Every field of `BuiltInBrowserStatus` is present so callers can read it the
+ * way they read the desktop's — `supported: false` is the flag they check, not
+ * a licence to omit the rest of the record.
+ */
+export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+  supported: false;
+  available: false;
+  state: "unsupported";
+} {
+  return {
+    supported: false,
+    available: false,
+    state: "unsupported",
+    attached: false,
+    partition: "",
+    storageProfileKey: "global",
+    collectionKey: "",
+    collectionProjectRoot: null,
+    persistentProfile: true,
+    visible: false,
+    bounds: { x: 0, y: 0, width: 0, height: 0 },
+    activeTabId: null,
+    tabs: [],
+    url: null,
+    title: null,
+    isLoading: false,
+    canGoBack: false,
+    canGoForward: false,
+    isInspecting: false,
+    hasSelection: false,
+    ownerLaneId: null,
+    ownerChatSessionId: null,
+    ownerClaimedAt: null,
+    ownerLeaseExpiresAt: null,
   };
 }
 

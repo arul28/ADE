@@ -4,28 +4,31 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
 import { useAppStore } from "../../state/appStore";
+import type { BuiltInBrowserStatus } from "../../../shared/types";
+import {
+  makeBuiltInBrowserStatus,
+  makeBuiltInBrowserTab,
+} from "../chat/__fixtures__/builtInBrowserStatus";
 
 type BrowserEventListener = (event: unknown) => void;
 
 const browserListeners = new Set<BrowserEventListener>();
+const appControlListeners = new Set<BrowserEventListener>();
 const startPreviewStream = vi.fn(async () => ({ tabId: "tab-1", fps: 12, maxWidth: 480, subscribers: 1 }));
 const stopPreviewStream = vi.fn(async () => ({ tabId: "tab-1", fps: 12, maxWidth: 480, subscribers: 0 }));
 
-const BROWSER_STATUS = {
-  attached: true,
+const BROWSER_STATUS: BuiltInBrowserStatus = makeBuiltInBrowserStatus({
   visible: false,
   activeTabId: "tab-1",
   tabs: [
-    {
+    makeBuiltInBrowserTab({
       id: "tab-1",
       url: "https://example.test/login",
       title: "Sign in",
       ownerChatSessionId: "chat-1",
-      recording: null,
-      handoff: null,
-    },
+    }),
   ],
-};
+});
 
 function emitBrowserEvent(event: unknown): void {
   act(() => {
@@ -33,8 +36,22 @@ function emitBrowserEvent(event: unknown): void {
   });
 }
 
+function emitAppControlEvent(event: unknown): void {
+  act(() => {
+    for (const listener of appControlListeners) listener(event);
+  });
+}
+
+const APP_CONTROL_SESSION = { status: "connected", label: "Playground", chatSessionId: null };
+
+/** One screencast frame, the 30fps feed that used to count as "activity". */
+function appControlFrame() {
+  return { type: "frame", frame: { mimeType: "image/jpeg", data: "AAAA" } };
+}
+
 beforeEach(() => {
   browserListeners.clear();
+  appControlListeners.clear();
   startPreviewStream.mockClear();
   stopPreviewStream.mockClear();
   // jsdom has no ResizeObserver; the card sizes itself from one.
@@ -61,7 +78,14 @@ beforeEach(() => {
       startPreviewStream,
       stopPreviewStream,
     },
-    appControl: { getStatus: vi.fn(async () => ({ activeSession: null })), onEvent: () => () => {} },
+    appControl: {
+      getStatus: vi.fn(async () => ({ activeSession: null })),
+      onEvent: (cb: BrowserEventListener) => {
+        appControlListeners.add(cb);
+        return () => appControlListeners.delete(cb);
+      },
+      getTrace: vi.fn(async () => ({ entries: [] })),
+    },
     iosSimulator: { getStatus: vi.fn(async () => ({ activeSession: null })), onEvent: () => () => {} },
   };
   useAppStore.setState({ projectBinding: null });
@@ -178,7 +202,7 @@ describe("WorkLiveCornerCard", () => {
 
 const PROJECT_ROOT = "/p/live-card";
 
-function useProject(): void {
+function seedProject(): void {
   useAppStore.setState({
     project: { rootPath: PROJECT_ROOT } as never,
     projectBinding: null,
@@ -224,7 +248,7 @@ async function showCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>
 
 describe("WorkLiveCornerCard placement", () => {
   it("restores a persisted position instead of always parking bottom-right", async () => {
-    useProject();
+    seedProject();
     useAppStore.setState({
       workViewByProject: {
         [PROJECT_ROOT]: { workLiveCardPosition: { xPct: 0.5, yPct: 0.25 } } as never,
@@ -237,7 +261,7 @@ describe("WorkLiveCornerCard placement", () => {
   });
 
   it("clamps a stored position that would hang outside the column", async () => {
-    useProject();
+    seedProject();
     useAppStore.setState({
       workViewByProject: {
         [PROJECT_ROOT]: { workLiveCardPosition: { xPct: 0, yPct: 0 } } as never,
@@ -251,7 +275,7 @@ describe("WorkLiveCornerCard placement", () => {
 
 describe("WorkLiveCornerCard dismissal", () => {
   it("persists the dismissal for the lane and survives a remount", async () => {
-    useProject();
+    seedProject();
     const { unmount } = await showCard();
 
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
@@ -272,7 +296,7 @@ describe("WorkLiveCornerCard dismissal", () => {
   });
 
   it("keeps a dismissal scoped to its own lane", async () => {
-    useProject();
+    seedProject();
     const { unmount } = await showCard();
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
@@ -285,9 +309,45 @@ describe("WorkLiveCornerCard dismissal", () => {
   });
 });
 
+describe("WorkLiveCornerCard App Control dismissal", () => {
+  async function showAppControlCard() {
+    seedProject();
+    const view = renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
+    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
+    const card = await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
+    return { ...view, card };
+  }
+
+  it("stays dismissed while the screencast keeps painting", async () => {
+    await showAppControlCard();
+    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
+    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
+
+    // The panel's screencast runs for the life of the session, independent of
+    // this card. Counting its frames as activity made the × unusable: the next
+    // frame arrived ~33ms later and the card came back 500ms after that.
+    for (let i = 0; i < 20; i += 1) emitAppControlEvent(appControlFrame());
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
+  });
+
+  it("comes back when the session actually does something", async () => {
+    await showAppControlCard();
+    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
+    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
+
+    emitAppControlEvent({
+      type: "session-updated",
+      session: { ...APP_CONTROL_SESSION, lastTraceEntryId: "trace-9" },
+    });
+    expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+});
+
 describe("WorkLiveCornerCard scrubbing", () => {
   it("shows the hovered frame's caption and snaps back to live on leave", async () => {
-    useProject();
+    seedProject();
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
     emitBrowserEvent(traceEvent("trace-2", "fill", "Email"));
@@ -311,7 +371,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
   });
 
   it("offers no scrubbing until there are two frames to scrub between", async () => {
-    useProject();
+    seedProject();
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
     card.getBoundingClientRect = () => ({
@@ -324,7 +384,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
   });
 
   it("activates the tool when the card's chrome is clicked, but not its ×", async () => {
-    useProject();
+    seedProject();
     const { card, onPick } = await showCard();
     fireEvent.click(card.querySelector("header") as HTMLElement);
     expect(onPick).toHaveBeenCalledWith("browser");

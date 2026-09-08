@@ -1,9 +1,26 @@
+import type {
+  AgentActionTraceEntry,
+  AgentDomSnapshot,
+  AgentElementSnapshot,
+  AgentFrame,
+} from "./agentObservation";
+
 export type AppControlAppKind = "electron";
 
+/**
+ * Where a piece of information about the app came FROM — the provenance of an
+ * element, a snapshot, or a selection.
+ *
+ * Not to be confused with {@link AppControlDriver}, which is how ADE dispatches
+ * input. The two unions share member names and differ in spelling on purpose:
+ * provenance is hyphenated (`computer-use`), the driver is underscored
+ * (`computer_use`, the wire value `ade app-control --driver` takes).
+ */
 export type AppControlProvider = "cdp" | "os-accessibility" | "computer-use" | "external";
 
 /**
- * How ADE actually drives the controlled app.
+ * How ADE actually drives the controlled app — see {@link AppControlProvider}
+ * for the provenance union with the near-identical member names.
  *
  * - `cdp` — Chrome DevTools Protocol against an Electron renderer. Implemented.
  * - `computer_use` — OS-level screen/keyboard/mouse control for non-Electron
@@ -25,12 +42,7 @@ export type AppControlDriversResult = {
   drivers: AppControlDriverCapability[];
 };
 
-export type AppControlFrame = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
+export type AppControlFrame = AgentFrame;
 
 export type AppControlCoordinateSpace = "screenshot" | "viewport";
 
@@ -306,34 +318,9 @@ export type AppControlObservationCleanup = {
   deletedCount: number;
 };
 
-export type AppControlElementSnapshot = {
-  index: number;
-  handle?: string | null;
-  framePath?: number[];
-  shadowPath?: string[];
-  tagName: string | null;
-  role: string | null;
-  label: string | null;
-  text: string | null;
-  value: string | null;
-  placeholder: string | null;
-  selector: string | null;
-  testId: string | null;
-  href: string | null;
-  disabled: boolean | null;
-  frame: AppControlFrame;
-  center: { x: number; y: number };
-};
+export type AppControlElementSnapshot = AgentElementSnapshot;
 
-export type AppControlDomSnapshot = {
-  url: string | null;
-  title: string | null;
-  capturedAt: string;
-  viewport: AppControlFrame;
-  scroll: { x: number; y: number };
-  elementCount: number;
-  elements: AppControlElementSnapshot[];
-};
+export type AppControlDomSnapshot = AgentDomSnapshot;
 
 export type AppControlObservationElementMap = {
   filePath: string;
@@ -453,21 +440,7 @@ export type AppControlAgentWaitArgs = AppControlAgentActionArgs & AppControlElem
   networkIdleMs?: number | null;
 };
 
-export type AppControlActionTraceEntry = {
-  id: string;
-  sessionId: string | null;
-  cdpTargetId: string | null;
-  action: string;
-  status: "ok" | "error";
-  startedAt: string;
-  endedAt: string;
-  durationMs: number;
-  before: { url: string | null; title: string | null };
-  after: { url: string | null; title: string | null };
-  target: Record<string, unknown> | null;
-  observationId: string | null;
-  error: string | null;
-};
+export type AppControlActionTraceEntry = AgentActionTraceEntry & { cdpTargetId: string | null };
 
 export type AppControlTraceArgs = AppControlSessionTargetArgs & {
   limit?: number | null;

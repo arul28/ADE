@@ -1,4 +1,8 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type {
+  AppOpenSystemSettingsPaneResult,
+  SystemSettingsPaneId,
+} from "../shared/types/systemSettings";
 import type { LocalizedRemoteUrl } from "../shared/remoteLoopbackUrl";
 import type {
   BuiltInBrowserRemoteRequest,
@@ -897,6 +901,9 @@ declare global {
         ) => () => void;
         onNavigate: (cb: (request: AppNavigationRequest) => void) => () => void;
         openExternal: (url: string) => Promise<void>;
+        openSystemSettingsPane: (
+          paneId: SystemSettingsPaneId,
+        ) => Promise<AppOpenSystemSettingsPaneResult>;
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
@@ -2630,7 +2637,6 @@ declare global {
       };
       localhost: {
         probePort: (port: number) => Promise<boolean>;
-        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;

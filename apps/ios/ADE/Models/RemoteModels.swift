@@ -6143,14 +6143,18 @@ struct WorkToolsBrowserTab: Codable, Identifiable, Equatable {
 /// A screenshot the desktop already wrote to disk. `path` is opaque: it is
 /// handed straight back to `workTools.readObservationPreview`, which is the
 /// only thing allowed to turn it into bytes.
+///
+/// The host also sends `capturedAt`; nothing on the phone renders a timestamp
+/// for a frame, so it is not decoded. Codable ignores unknown keys, so adding
+/// it back is a one-line change if a surface ever needs it.
 struct WorkToolsObservation: Codable, Equatable {
   var path: String
-  var capturedAt: String
   var caption: String?
 }
 
+/// The host also sends `activeTabId`; the phone marks the active tab from
+/// `WorkToolsBrowserTab.active` instead, so it is not decoded.
 struct WorkToolsBrowserState: Codable, Equatable {
-  var activeTabId: String?
   var tabs: [WorkToolsBrowserTab]
   var latestObservation: WorkToolsObservation?
 }
@@ -6162,20 +6166,22 @@ struct WorkToolsAppControlState: Codable, Equatable {
   var latestObservation: WorkToolsObservation?
 }
 
+/// The host also sends `activeToolUpdatedAt` and `capturedAt`; the phone shows
+/// live state rather than "as of" timestamps, so neither is decoded.
 struct WorkToolsLaneState: Codable, Equatable {
   var laneId: String
   /// Which pane the desktop has open. Nil when no desktop has published one.
   var activeTool: String?
-  var activeToolUpdatedAt: String?
   /// Nil when no desktop is attached to the machine — see `browserUnavailable`.
   var browser: WorkToolsBrowserState?
+  /// Why `browser` is nil. Mirrors the desktop's `WorkToolsUnavailableReason`
+  /// (`desktop_not_attached` | `unsupported` | `error`) and is kept as a raw
+  /// string so a newer reason falls back instead of failing to decode.
   var browserUnavailable: String?
   var appControl: WorkToolsAppControlState?
-  var capturedAt: String
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {
   var dataUrl: String
   var mimeType: String
-  var byteLength: Int
 }

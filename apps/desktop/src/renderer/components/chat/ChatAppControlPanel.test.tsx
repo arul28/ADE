@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type {
   AppControlActionTraceEntry,
   AppControlContextItem,
@@ -205,6 +205,14 @@ const drivers: AppControlDriversResult = {
   ],
 };
 
+const appControlEventListeners = new Set<(event: unknown) => void>();
+
+function emitAppControlEvent(event: unknown): void {
+  act(() => {
+    for (const listener of appControlEventListeners) listener(event);
+  });
+}
+
 function installAdeMock({
   status = idleStatus,
   targetList = [],
@@ -219,7 +227,10 @@ function installAdeMock({
       getStatus: vi.fn().mockResolvedValue(status),
       getSnapshot: vi.fn().mockResolvedValue(snapshot),
       listTargets: vi.fn().mockResolvedValue(targetList),
-      onEvent: vi.fn(() => () => {}),
+      onEvent: vi.fn((cb: (event: unknown) => void) => {
+        appControlEventListeners.add(cb);
+        return () => appControlEventListeners.delete(cb);
+      }),
       attachToTarget: vi.fn().mockResolvedValue(connectedSession),
       switchWindow: vi.fn().mockResolvedValue({
         sessionId: connectedSession.id,
@@ -289,6 +300,7 @@ function stubImageBounds(image: HTMLImageElement): void {
 describe("ChatAppControlPanel", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
+    appControlEventListeners.clear();
   });
 
   afterEach(() => {
@@ -685,5 +697,70 @@ describe("ChatAppControlPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show action trace" }));
     const row = await screen.findByTitle("No matching App Control element was found.");
     expect(row.textContent).toContain("failed");
+  });
+
+  /**
+   * "The app stopped responding" is a DROPPED session's screen. A deliberate
+   * Stop used to land on it too — the gate was "there is a stale frame and no
+   * live one", which is also true one beat after you chose Stop — so the pane
+   * offered Reconnect for a session you had just ended.
+   */
+  function emitLiveFrame(): void {
+    // `session-updated` first: the frame handler drops frames whose CDP target
+    // is not the one the panel is tracking.
+    emitAppControlEvent({ type: "session-updated", session: connectedSession });
+    emitAppControlEvent({
+      type: "frame",
+      frame: {
+        cdpTargetId: "target-1",
+        mimeType: "image/png",
+        data: transparentPngDataUrl.split(",")[1],
+        width: 100,
+        height: 80,
+        viewportWidth: 100,
+        viewportHeight: 80,
+        scale: 1,
+        scaleX: 1,
+        scaleY: 1,
+      },
+    });
+  }
+
+  it("returns to the empty state after a deliberate Stop, not to the disconnect screen", async () => {
+    const api = installAdeMock({ status: connectedStatus });
+    // No static screenshot, so the only frame in play is the live one — which
+    // is the situation the disconnect screen is actually about.
+    api.appControl.getSnapshot.mockRejectedValue(new Error("no snapshot"));
+    render(<ChatAppControlPanel sessionId="chat-stop" laneId="lane-1" projectRoot="/repo" />);
+    await screen.findByRole("button", { name: "App Control actions" });
+
+    emitLiveFrame();
+    // A stale frame now exists — the precondition the old gate keyed on.
+    api.appControl.getStatus.mockResolvedValue(idleStatus);
+    emitAppControlEvent({ type: "session-stopped", previousSession: connectedSession });
+
+    await waitFor(() => {
+      expect(screen.queryByText("The app stopped responding")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: /Reconnect/ })).toBeNull();
+  });
+
+  it("still shows the disconnect screen when the session ends in an error", async () => {
+    const failedSession: AppControlSession = {
+      ...connectedSession,
+      status: "failed",
+      lastError: "ADE Test stopped responding.",
+    };
+    const api = installAdeMock({ status: connectedStatus });
+    api.appControl.getSnapshot.mockRejectedValue(new Error("no snapshot"));
+    render(<ChatAppControlPanel sessionId="chat-dropped" laneId="lane-1" projectRoot="/repo" />);
+    await screen.findByRole("button", { name: "App Control actions" });
+
+    emitLiveFrame();
+    api.appControl.getStatus.mockResolvedValue({ ...connectedStatus, activeSession: failedSession });
+    emitAppControlEvent({ type: "session-updated", session: failedSession });
+
+    expect(await screen.findByText("The app stopped responding")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Reconnect/ })).toBeTruthy();
   });
 });
