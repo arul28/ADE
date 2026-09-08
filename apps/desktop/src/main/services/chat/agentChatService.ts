@@ -18891,7 +18891,7 @@ export function createAgentChatService(args: {
    * app-server's own `turn/aborted` landing after a local interrupt already
    * settled — finds nothing and cannot resolve the same card twice.
    *
-   * `preserveRecoverablePlanApprovals` is for the paths where the runtime died
+   * `planApprovals: "preserve-cards"` is for the paths where the runtime died
    * rather than the user ending the turn. A plan approval outlives its runtime
    * by design: `respondToInput` rebuilds it from the transcript and stages the
    * follow-up, so a crash or an idle teardown has to leave that card clickable.
@@ -18901,8 +18901,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     options: {
-      preserveRecoverablePlanApprovals?: boolean;
-      retainPlanApprovals?: boolean;
+      planApprovals?: "retain-waiters" | "preserve-cards";
     } = {},
   ): void => {
     const resolvedItemIds = new Set<string>();
@@ -18928,19 +18927,19 @@ export function createAgentChatService(args: {
       // A completed Codex turn still owns unanswered plan cards. Keep the
       // waiter so persist can write `awaitingInput` and the user can answer
       // without rebuilding from the transcript. Teardown uses
-      // `preserveRecoverablePlanApprovals` instead: drop the waiter on a dying
-      // process, keep the card.
+      // `preserve-cards` instead: drop the waiter on a dying process, keep
+      // the transcript card.
       if (
-        options.retainPlanApprovals
+        options.planApprovals === "retain-waiters"
         && pending.kind === "plan_approval"
         && !stagedItemIds.has(itemId)
       ) continue;
       runtime.approvals.delete(itemId);
       // The entry goes either way — the runtime holding it is finished. What
-      // the flag preserves is the *card*, by withholding its receipt, which is
-      // what `respondToInput` needs to rebuild it from the transcript.
+      // preserve-cards keeps is the *card*, by withholding its receipt, which
+      // is what `respondToInput` needs to rebuild it from the transcript.
       if (
-        options.preserveRecoverablePlanApprovals
+        options.planApprovals === "preserve-cards"
         && pending.kind === "plan_approval"
         && !stagedItemIds.has(itemId)
       ) continue;
@@ -19043,7 +19042,7 @@ export function createAgentChatService(args: {
         runtime.pending,
         `Codex app-server runtime was torn down (${openCodeReason}).`,
       );
-      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
+      settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
       runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
@@ -30518,7 +30517,7 @@ export function createAgentChatService(args: {
     const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
     markSessionIdleWithFreshCache(managed);
     drainPendingPlanFollowups(managed, runtime);
-    settleCodexPendingInputs(managed, runtime, { retainPlanApprovals: true });
+    settleCodexPendingInputs(managed, runtime, { planApprovals: "retain-waiters" });
 
     const error = asRecord(turn.error);
     const errorMessage = stringOrNull(error?.message);
@@ -31046,7 +31045,7 @@ export function createAgentChatService(args: {
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
-      settleCodexPendingInputs(managed, runtime, { retainPlanApprovals: true });
+      settleCodexPendingInputs(managed, runtime, { planApprovals: "retain-waiters" });
 
       if (status === "failed" && turn?.error?.message) {
         emitCodexErrorOnce(managed, runtime, {
@@ -31873,7 +31872,7 @@ export function createAgentChatService(args: {
     // live turn is waiting on.
     const settleThisRuntimesCardsIfStillCurrent = (): void => {
       if (managed.runtime && managed.runtime !== runtime) return;
-      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
+      settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
     };
 
     proc.on("error", (error) => {

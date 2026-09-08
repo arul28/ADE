@@ -55,6 +55,7 @@ export function pendingApprovalOwnsQuestionKeys(approval: PendingApproval | null
 }
 
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {
+  const unresolved: PendingApproval[] = [];
   const resolved = new Set<string>();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]?.event as Record<string, unknown> | undefined;
@@ -63,12 +64,12 @@ export function latestPendingApproval(events: AgentChatEventEnvelope[]): Pending
       resolved.add(event.itemId);
       continue;
     }
-    if (!event || event.type !== "approval_request" || typeof event.itemId !== "string") continue;
+    if (event.type !== "approval_request" || typeof event.itemId !== "string") continue;
     if (resolved.has(event.itemId)) continue;
     const request = requestFromApprovalEvent(event);
     const description = typeof event.description === "string" ? event.description : "Approve this tool request?";
     const mode = isApprovalMode(request) ? "approval" : "question";
-    return {
+    unresolved.push({
       itemId: event.itemId,
       description,
       // Permission grants (write/network/external scope) keep the typed
@@ -80,9 +81,13 @@ export function latestPendingApproval(events: AgentChatEventEnvelope[]): Pending
       ),
       mode,
       ...(request ? { request } : {}),
-    };
+    });
   }
-  return null;
+  // A later steering card must not hide a live blocker: capture/send follow the
+  // newest non-steering waiter, matching desktop's steering vs pending split.
+  return unresolved.find((approval) => !isSteeringPendingRequest(approval.request))
+    ?? unresolved[0]
+    ?? null;
 }
 
 function optionMatches(input: string, option: PendingInputOption, index: number): boolean {

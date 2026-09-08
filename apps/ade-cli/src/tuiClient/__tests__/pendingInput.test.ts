@@ -325,6 +325,49 @@ describe("pendingInput", () => {
     }));
   });
 
+  it("prefers a blocking Codex waiter over a later steering card", () => {
+    const blocking: PendingInputRequest = {
+      ...baseRequest,
+      requestId: "req-block",
+      itemId: "item-block",
+    };
+    const steering: PendingInputRequest = {
+      ...baseRequest,
+      requestId: "req-steer",
+      itemId: "item-steer",
+      blocking: false,
+    };
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "approval_request",
+          itemId: "item-block",
+          kind: "tool_call",
+          description: "Approve this command?",
+          detail: { request: blocking },
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "approval_request",
+          itemId: "item-steer",
+          kind: "tool_call",
+          description: "Want more tests?",
+          detail: { request: steering },
+        },
+      },
+    ];
+    const approval = latestPendingApproval(events);
+    expect(approval).toEqual(expect.objectContaining({ itemId: "item-block" }));
+    expect(pendingApprovalCapturesPrompt(approval)).toBe(true);
+  });
+
   it("tracks arrow-key selection across multi-question input", () => {
     const request: PendingInputRequest = {
       ...baseRequest,

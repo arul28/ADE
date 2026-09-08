@@ -1978,13 +1978,17 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
     follow-ups. Only queue-clearing modes (`stop_and_clear`,
     `stop_and_clear_and_background`) and the explicit **Dismiss & settle**
     transaction settle cards.
-  - **Runtime-death paths pass `preserveRecoverablePlanApprovals: true`**
+  - **Runtime-death paths pass `planApprovals: "preserve-cards"`**
     (`teardownRuntime`, `proc` error/exit). A plan approval outlives its runtime
     by design: the entry is dropped because the runtime holding it is finished,
     but its *receipt is withheld*, which is what lets `respondToInput` rebuild
     the card from the transcript via `latestTranscriptPlanApprovalRequest` and
     stage the follow-up. Every other kind dies with the process and still needs
     its receipt.
+  - **A completed turn passes `planApprovals: "retain-waiters"`.** The
+    app-server is still alive; unanswered plan cards stay in `runtime.approvals`
+    so persist can write `awaitingInput`. Steering and other turn-bound waiters
+    are settled. Runtime-death uses `preserve-cards` instead.
   - **The `proc` error/exit handlers settle only while they are still the
     current runtime** (`!managed.runtime || managed.runtime === runtime`). The
     approvals they settle belong to that runtime, but the local cards belong to
