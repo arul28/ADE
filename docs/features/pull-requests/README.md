@@ -174,7 +174,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `githubPrStackService.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `prIssueResolver.ts` | **Does not exist.** Listed here historically; there is no such file in `apps/desktop/src/main/services/prs/`. See the issue-resolution note below. |
+| `prIssueResolver.ts` | **Does not exist** in `apps/desktop/src/main/services/prs/`. The agent-facing PR tools it would have driven are live elsewhere — see the issue-resolution note below. |
 | `prRebaseResolver.ts` | **Does not exist.** Same as above. |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
 
@@ -1770,19 +1770,23 @@ ADE supports agent-driven resolution of PR issues for two scopes:
 - `comments` — unresolved review threads (non-outdated)
 - `both` — combined
 
-> **Not implemented.** The rest of this section describes the intended design,
-> not shipped behavior. `prIssueResolver.ts` does not exist, and neither do the
-> `pr*` workflow tools it would hand the session — those names are listed in
-> `workflowTools.ts` but have no implementation in any tool registry (see
-> [chat/tool-system.md](../chat/tool-system.md#pr-issue-resolution)).
-> `getPrIssueResolutionAvailability()` in `apps/desktop/src/shared/prIssueResolution.ts`
-> is real and tested but has no non-test caller.
+> **The launcher is unbuilt; the tools are not.** `prIssueResolver.ts` and
+> `launchPrIssueResolutionChat` do not exist, so nothing auto-starts a
+> resolution chat from a failing PR. But the tools such a chat would use are
+> live today as `pr_*` RPC tools dispatched from
+> `apps/ade-cli/src/adeRpcServer.ts` — `pr_get_checks`,
+> `pr_get_review_comments`, `pr_rerun_failed_checks`,
+> `pr_reply_to_review_thread`, `pr_resolve_review_thread` — and an agent (or the
+> TUI) can call them directly. `pr_get_check_log` and
+> `pr_refresh_issue_inventory` are named but unimplemented. See
+> [chat/tool-system.md](../chat/tool-system.md#pr-issue-resolution).
 
-The design was: assemble a structured prompt from live PR state (failing checks
-+ workflow run detail, unresolved threads with compact summaries, changed files,
-recent commits) and launch a chat agent session scoped to the lane worktree, with
-tools to re-pull checks/threads/comments, re-trigger failed GitHub Actions check
-runs, post replies on review threads, and mark review threads resolved.
+The intended launcher design was: assemble a structured prompt from live PR
+state (failing checks + workflow run detail, unresolved threads with compact
+summaries, changed files, recent commits) and launch a chat agent session scoped
+to the lane worktree, with tools to re-pull checks/threads/comments, re-trigger
+failed GitHub Actions check runs, post replies on review threads, and mark
+review threads resolved — the last four of which already work.
 
 The generated prompt frames each session as one bounded resolution
 round: the agent makes a coherent set of fixes for the current

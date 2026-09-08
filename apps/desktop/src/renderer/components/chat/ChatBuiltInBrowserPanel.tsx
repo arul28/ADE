@@ -2248,7 +2248,18 @@ export function ChatBuiltInBrowserPanel({
     if (!apiAvailable) return undefined;
     return claimAppZoomCommands((command) => {
       const panel = panelRef.current;
-      if (!panel || !hasTabRef.current) return false;
+      if (!panel || !panel.isConnected || !hasTabRef.current) return false;
+      /*
+        A mounted panel is not necessarily a visible one.
+
+        `ProjectSurface` keeps inactive project tabs mounted behind `inert` +
+        `opacity: 0`, and `ProjectRouteContent` keeps the Work page mounted
+        after you navigate away from it. Today the `active &&` guard in
+        `WorkSidebar` unmounts this panel in both cases — but "focus is nowhere
+        in the DOM" is true of a hidden pane too, so relying on that alone would
+        make a hidden browser steal the app's zoom the day that guard changes.
+      */
+      if (panel.closest("[inert]")) return false;
       const active = document.activeElement;
       const ownsKeyboard = active == null || active === document.body || panel.contains(active);
       if (!ownsKeyboard) return false;

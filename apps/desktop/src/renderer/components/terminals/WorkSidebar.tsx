@@ -559,6 +559,21 @@ export function WorkSidebar({
     warningReason,
   ]);
 
+  // `active &&` must keep UNMOUNTING the tool, never hide it with CSS.
+  //
+  // Two things outside this file depend on the unmount rather than on the pane
+  // merely being invisible: the browser panel releases its page-zoom claim
+  // (`lib/appZoomCommands`) in an effect cleanup, and it parks the native
+  // `WebContentsView` on the way out. A hidden-but-mounted pane has the same
+  // blur state as a focused one, so a CSS hide here would leave an off-screen
+  // browser eating the app's ⌘/Ctrl +=/−/0.
+  //
+  // `active` arrives as `active && isWorkRoute` (`App.tsx:436` mounts
+  // `TerminalsPage` directly, not through `routeProps`), so all four ways of
+  // leaving — switching tools, closing the pane, leaving the work route, and
+  // leaving the project tab — unmount the panel before anything hides it. That
+  // is why no panel is ever mounted inside an `inert` subtree today, and it is
+  // the invariant a CSS hide here would quietly break.
   const ToolPanel = active && effectiveTool ? WORK_TOOL_COMPONENTS[effectiveTool] : null;
   const content = ToolPanel ? <ToolPanel {...toolProps} /> : null;
 

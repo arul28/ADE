@@ -10,17 +10,34 @@
 // that called one got "tool not found" while the system prompt advertised it.
 //
 // The names are the only part that was ever used, so the names are all that is
-// left. Of them, exactly two are backed by something that runs:
+// left.
 //
-//   createLane, createPrFromLane  -> live, in `ctoOperatorTools.ts`
-//   reportCompletion, captureScreenshot, and every pr* name
-//                                 -> no implementation in any registry
+// CAREFUL — "no camelCase implementation" does NOT mean "the capability does
+// not exist". Most of these names have a live snake_case twin on the agent/RPC
+// tool surface in `apps/ade-cli/src/adeRpcServer.ts`. A reviewer who greps only
+// the camelCase spellings in this tree concludes PR tooling is unbuilt and is
+// wrong; that mistake reached ARCHITECTURE.md once already. The mapping:
 //
-// The system prompt therefore only ever describes the first two; a bullet for
-// the others earned the model a tool-not-found error. The remaining consumer of
-// this list is `agentChatService.previewSessionToolNames`, which itself has no
-// non-test caller today, so treat the list as descriptive rather than load-
-// bearing and verify against a live registry before relying on it.
+//   createLane, createPrFromLane   -> live here, in `ctoOperatorTools.ts`
+//
+//   prGetChecks, prGetReviewComments, prRerunFailedChecks,
+//   prReplyToReviewThread, prResolveReviewThread
+//                                  -> live as `pr_get_checks`,
+//                                     `pr_get_review_comments`, etc. in
+//                                     `adeRpcServer.ts` (registration ~:1109,
+//                                     allowlist ~:1399, dispatch ~:5415). Real
+//                                     handlers, also called from the TUI.
+//
+//   prReplyToComment, prGetCheckLog, prRefreshIssueInventory,
+//   reportCompletion, captureScreenshot
+//                                  -> no implementation under EITHER spelling
+//
+// So the system prompt only ever describes tools from the first two groups; a
+// bullet for one of the last group earned the model a tool-not-found error.
+// The remaining consumer of this list is
+// `agentChatService.previewSessionToolNames`, which itself has no non-test
+// caller today, so treat the list as descriptive rather than load-bearing and
+// check BOTH spellings against a live registry before concluding anything.
 //
 // If a workflow tool should become callable, wire it into one of the runtime
 // tool maps in `agentChatService` (see `createCtoRuntimeToolMap`) rather than

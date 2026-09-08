@@ -139,23 +139,33 @@ in `workflowTools.ts`.
 
 ### PR issue resolution
 
-**This workflow is not wired up.** The design was: a chat is launched to fix
-failing CI checks and unresolved review threads, and gets the `pr*` tools in its
-palette. None of that runs today, and the gap is wider than the tools:
+The **tools work**; the **automatic launcher does not**. Keep those apart — they
+fail in opposite directions.
 
-- The nine `pr*` names have no implementation in any tool registry (see the
-  table above), so the palette they would be added to is empty.
-- `launchPrIssueResolutionChat` does not exist anywhere in the repo, and neither
-  does the `apps/desktop/src/main/services/prs/prIssueResolver.ts` this section
-  used to cite.
+An agent working a PR can already re-pull checks and review threads, re-trigger
+failed GitHub Actions runs, reply on review threads, and resolve them. Those are
+the five live `pr_*` RPC tools in the table above, dispatched from
+`apps/ade-cli/src/adeRpcServer.ts` and exercised by the TUI. Nothing about that
+path is speculative.
+
+What does not exist is the surface that was supposed to *launch* such a chat for
+you off a failing PR:
+
+- `launchPrIssueResolutionChat` is not defined anywhere in the repo.
+- `apps/desktop/src/main/services/prs/prIssueResolver.ts` does not exist, and
+  neither do `prRebaseResolver.ts` or `githubPrStackService.ts`. (`prs/` does
+  have `githubStackStore.ts`, `prCommentMutations.ts`, `integrationPlanning.ts`
+  and others — see [ARCHITECTURE.md](../../ARCHITECTURE.md).)
 - `getPrIssueResolutionAvailability()` in
-  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, but has no
-  non-test caller — nothing asks it whether the workflow is available.
+  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, and is
+  currently callerless: its one caller lived inside the dead
+  `prRefreshIssueInventory` body that was removed. It belongs to the unbuilt
+  inventory tool and is waiting for it, not left over from a deleted feature.
 
-Treat the module as a staged building block, not a feature. Wiring it up means
-implementing the tools somewhere a registry reaches (see `ctoOperatorTools.ts`
-for the shape that works) and adding a launch path, not just calling the
-availability helper.
+So: driving a PR from an agent is supported today by calling the `pr_*` tools
+directly. Building the one-click "resolve this PR's issues" flow means adding a
+launcher and implementing `pr_refresh_issue_inventory` — not reimplementing the
+tools that already work.
 
 ### Proof capture
 
@@ -282,9 +292,15 @@ Additional exposure rules:
 
 - **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
   exact tool-name matches (including `createLane`, `createPrFromLane`,
-  `TodoWrite`, `TodoRead`, and the nine `pr*` names). Renaming any of these
-  silently strips the corresponding prompt guidance. Keep name changes
-  synchronized. Note that all **six** live callers in `agentChatService`
+  `TodoWrite`, `TodoRead`, and the fourteen entries of `PR_ISSUE_TOOL_NAMES` —
+  seven camelCase spellings and their seven snake_case counterparts). Renaming
+  any of these silently strips the corresponding prompt guidance. Keep name
+  changes synchronized. Note the two kinds of branch are not equally risky: the
+  PR section *filters* names the caller already passed and echoes the result, so
+  a dead entry in that Set is inert. An `includes(X)` gate that emits a bullet
+  describing a capability is the dangerous shape — that is how the prompt came
+  to advertise `captureScreenshot` and `reportCompletion`, neither of which
+  existed. Note that all **six** live callers in `agentChatService`
   (`:7678` codex-app-server, `:7718` opencode, `:13117` pi-sdk, `:24653`
   claude-code-cli, `:32675` claude-agent-sdk-query, `:42167` droid-sdk) pass no
   `toolNames` at all, so every one of these branches is inert in a real

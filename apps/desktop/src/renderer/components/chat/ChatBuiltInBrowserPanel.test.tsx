@@ -4,6 +4,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import {
+  consumeAppZoomCommand,
+  resetAppZoomCommandsForTests,
+} from "../../lib/appZoomCommands";
+import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -1005,6 +1009,75 @@ describe("ChatBuiltInBrowserPanel", () => {
         expect.objectContaining({ action: "clearSelection" }),
         null,
       );
+    });
+  });
+
+  describe("page zoom", () => {
+    afterEach(() => resetAppZoomCommandsForTests());
+
+    it("takes the View-menu zoom command while the pane owns the keyboard", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      // Clicking into the page moves focus to the native view, a different
+      // WebContents entirely, so activeElement falls back to the body.
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(consumeAppZoomCommand("in")).toBe(true);
+
+      await waitFor(() => {
+        expect(api.setZoom).toHaveBeenCalledWith(
+          expect.objectContaining({ factor: 1.1 }),
+          null,
+        );
+      });
+    });
+
+    it("declines while focus sits outside the pane, so the app zooms instead", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      const outside = document.createElement("input");
+      document.body.appendChild(outside);
+      outside.focus();
+
+      expect(consumeAppZoomCommand("in")).toBe(false);
+      expect(api.setZoom).not.toHaveBeenCalled();
+      outside.remove();
+    });
+
+    it("declines from a mounted-but-inert pane, so a hidden browser cannot steal the chord", async () => {
+      const { api } = installBrowserApi();
+      const { container } = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      /*
+        Defence in depth, not a reachable state today.
+
+        Three separate `active` chains unmount this panel before it can be
+        hidden — a tool switch (`WorkSidebar`: `active && effectiveTool`), a
+        route change (`App.tsx`: `<TerminalsPage active={active && isWorkRoute}>`)
+        and leaving the project tab (`ProjectSurface`). But the app's habit is
+        to keep hidden surfaces MOUNTED behind `inert` + `opacity: 0`, and
+        "focus is nowhere in the DOM" is true of a hidden pane exactly as it is
+        of one the user just clicked into. If any of those three guards became a
+        CSS hide, this is what stops a parked browser eating the app's zoom.
+      */
+      (container.parentElement ?? container).setAttribute("inert", "");
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      expect(consumeAppZoomCommand("in")).toBe(false);
+      expect(api.setZoom).not.toHaveBeenCalled();
+    });
+
+    it("releases the claim when the pane unmounts", async () => {
+      installBrowserApi();
+      const view = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      view.unmount();
+
+      expect(consumeAppZoomCommand("in")).toBe(false);
     });
   });
 
