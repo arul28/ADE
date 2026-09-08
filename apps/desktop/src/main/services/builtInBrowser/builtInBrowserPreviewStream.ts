@@ -82,6 +82,8 @@ export type BuiltInBrowserPreviewStreams = {
   stop: (tabId: string) => BuiltInBrowserPreviewStreamResult;
   /** Tears a tab's loop down regardless of subscriber count (tab closed/destroyed). */
   stopTab: (tabId: string) => void;
+  /** Whether anybody is watching this tab right now. */
+  hasWatchers: (tabId: string) => boolean;
   dispose: () => void;
   /** Test/diagnostic view of the loops currently running. */
   snapshot: () => { tabId: string; subscribers: number; fps: number; maxWidth: number; skipped: number }[];
@@ -210,6 +212,11 @@ export function createBuiltInBrowserPreviewStreams(
     },
 
     stopTab,
+
+    hasWatchers(tabId) {
+      const state = streams.get(tabId);
+      return Boolean(state && state.subscribers > 0);
+    },
 
     dispose() {
       disposed = true;

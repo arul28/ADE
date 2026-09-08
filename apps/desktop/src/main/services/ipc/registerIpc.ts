@@ -241,6 +241,7 @@ import type {
   BuiltInBrowserStartRecordingArgs,
   BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   ReviewListRunsArgs,
@@ -9259,10 +9260,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.builtInBrowserStopFindInPage, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopFindInPage, { windowMs: 10_000, max: 200 });
-    return ensureBuiltInBrowser().stopFindInPage(
-      parseBuiltInBrowserStopFindInPageArgs(arg, IPC.builtInBrowserStopFindInPage),
-      win,
-    );
+    const input = parseBuiltInBrowserStopFindInPageArgs(arg, IPC.builtInBrowserStopFindInPage);
+    // Same shape as `captureScreenshot` above, for the same reason: the find
+    // bar's own unmount is what ends a find, and unmounting because the last
+    // tab closed must not surface as an IPC error nobody can act on.
+    try {
+      return await ensureBuiltInBrowser().stopFindInPage(input, win);
+    } catch (error) {
+      if (isBuiltInBrowserNoTabError(error)) {
+        return {
+          tabId: "",
+          stopped: false,
+          status: ensureBuiltInBrowser().getStatus(input, win),
+        } satisfies BuiltInBrowserStopFindInPageResult;
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.builtInBrowserSetDevTools, async (event, arg) => {

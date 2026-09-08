@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import {
   AppWindow,
-  DotsThree,
+  DotsThreeVertical,
   Link as LinkIcon,
   Play,
   SpinnerGap,
@@ -395,11 +395,10 @@ export function AppControlToolbar({
 
         <AppControlMenu
           ariaLabel="App Control actions"
-          triggerIcon={<DotsThree size={14} weight="bold" />}
+          triggerIcon={<DotsThreeVertical size={14} weight="bold" />}
           showCaret={false}
           align="end"
           triggerClassName="h-[24px] w-[24px] justify-center px-0"
-          menuClassName="w-[232px]"
         >
           {renderOverflow}
         </AppControlMenu>

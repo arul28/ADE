@@ -1019,6 +1019,24 @@ describe("ChatBuiltInBrowserPanel", () => {
     });
   });
 
+  it("does not ask an empty pane to end a find it never started", async () => {
+    // Closing the last tab unmounts this panel, and the cleanup then ran
+    // against a pane with no tab at all — which came back as a
+    // `BuiltInBrowserNoTabError` on the console every time somebody closed
+    // their last tab.
+    const { api, emit } = installBrowserApi();
+    const view = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await screen.findByTestId("browser-toolbar-row");
+
+    emit({ type: "status", status: statusWith({ activeTabId: null, tabs: [], url: null }) });
+    // The pane's own empty state is the proof the status landed.
+    await screen.findByText("Open a page");
+
+    api.stopFindInPage.mockClear();
+    view.unmount();
+    expect(api.stopFindInPage).not.toHaveBeenCalled();
+  });
+
   describe("page zoom", () => {
     afterEach(() => resetAppZoomCommandsForTests());
 
@@ -1218,7 +1236,7 @@ describe("ChatBuiltInBrowserPanel", () => {
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
 
     await openMenu("More browser options");
-    fireEvent.click(await screen.findByText("System browser"));
+    fireEvent.click(await screen.findByText("In system browser"));
 
     await waitFor(() => {
       expect(window.ade.projectConfig.save).toHaveBeenCalledWith(

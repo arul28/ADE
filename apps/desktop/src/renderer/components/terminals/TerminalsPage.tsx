@@ -73,6 +73,7 @@ import {
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { clearSessionWokeMarker, renameSession } from "./sessionLifecycleActions";
 import {
+  beginWorkSidebarSplitterDrag,
   clampWorkSidebarWidthPct,
   MAX_WORK_SIDEBAR_WIDTH_PCT,
   MIN_WORK_SIDEBAR_WIDTH_PCT,
@@ -1332,6 +1333,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const deltaPct = ((startX - moveEvent.clientX) / totalWidth) * 100;
       scheduleWidth(startWidthPct + deltaPct);
     };
+    const endDragIsolation = beginWorkSidebarSplitterDrag(event.currentTarget);
     const onUp = () => {
       if (animationFrame != null) {
         window.cancelAnimationFrame(animationFrame);
@@ -1340,13 +1342,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       applyWidth(pendingWidthPct);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      endDragIsolation();
       if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
       work.setWorkSidebarWidthPct(pendingWidthPct);
     };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
     applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);

@@ -766,8 +766,17 @@ export type BuiltInBrowserStopFindInPageArgs = BuiltInBrowserTabTargetArgs & {
 };
 
 export type BuiltInBrowserStopFindInPageResult = {
+  /** Empty when there was no tab to stop a find on. */
   tabId: string;
-  stopped: true;
+  /**
+   * False means "there was nothing to stop", not "it failed".
+   *
+   * The find bar's teardown races tab closure by construction — closing the
+   * last tab unmounts the panel, whose cleanup then asks an empty pane to end a
+   * find — so an empty pane answers rather than throwing, the same way
+   * `captureScreenshot` answers `{ ok: false, reason: "no_tab" }`.
+   */
+  stopped: boolean;
   status: BuiltInBrowserStatus;
 };
 
@@ -1007,6 +1016,19 @@ export const BUILT_IN_BROWSER_PREVIEW_DEFAULT_MAX_WIDTH = 480;
 export const BUILT_IN_BROWSER_PREVIEW_MAX_WIDTH_LIMIT = 1_280;
 /** JPEG quality for preview frames — small enough to shuttle at 12fps. */
 export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
+/**
+ * Geometry for a tab that is being previewed while the panel is showing
+ * something else.
+ *
+ * The view has to stay attached and visible to keep a compositor surface (a
+ * detached or hidden `WebContentsView` captures nothing at all), so it is parked
+ * this far past the right edge of the window's content rect, where the window
+ * clips it away. The size floors only apply to a panel that was never opened —
+ * a zero-sized view would capture an empty image.
+ */
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
 
 export type BuiltInBrowserStartPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
   /** Defaults to the collection's active tab. */

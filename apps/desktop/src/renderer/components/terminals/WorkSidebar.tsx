@@ -566,6 +566,13 @@ export function WorkSidebar({
 
   const selectTool = useCallback((next: WorkSidebarTab | null) => {
     if (effectiveTool === "browser" && next !== "browser") hideBuiltInBrowserView(browserViewRoot);
+    // Take focus BEFORE the swap, not after: the card that was clicked is about
+    // to unmount, and when it does the browser drops focus onto <body> — where
+    // the pane's Escape handler never hears it, because the keydown is not
+    // dispatched inside the pane at all. Claiming it here means the incoming
+    // panel's own mount-time autofocus (a terminal, a URL field) still runs
+    // afterwards and still wins.
+    sidebarRef.current?.focus({ preventScroll: true });
     onToolChange(next);
   }, [browserViewRoot, effectiveTool, onToolChange]);
 
@@ -588,17 +595,18 @@ export function WorkSidebar({
   // not knowable from here. Shift+Escape is the pane's way out instead, and the
   // "Back to tools" tooltip says so wherever a terminal is on screen.
   const terminalPickerBinding = `Shift+${pickerBinding}`;
-  const handleKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    const target = event.target as Node | null;
-    // Capture phase, so this runs before xterm's own key handling — but only
-    // for keys pressed inside this pane, and never while a modal layer is up.
-    if (!target || !sidebarRef.current?.contains(target)) return;
+  /**
+   * The pane's Escape, applied to one keystroke.
+   *
+   * Shared by the pane's own capture handler and the `<body>` fallback below,
+   * so the two can never disagree about what counts as a claim.
+   */
+  const applyPickerBinding = useCallback((event: KeyboardEvent, targetElement: Element | null) => {
     if (aModalLayerIsOpen()) return;
-    const targetElement = target instanceof Element ? target : target.parentElement;
     if (targetElement && escapeIsClaimedInside(targetElement)) return;
     const insideTerminal = targetElement?.closest(".xterm") != null;
     const binding = insideTerminal ? terminalPickerBinding : pickerBinding;
-    if (!eventMatchesBinding(event.nativeEvent, binding)) return;
+    if (!eventMatchesBinding(event, binding)) return;
     event.preventDefault();
     event.stopPropagation();
     // At the picker there is nothing to go back to, so Escape means "dismiss".
@@ -610,6 +618,49 @@ export function WorkSidebar({
     }
     selectTool(null);
   }, [closePane, effectiveTool, pickerBinding, selectTool, terminalPickerBinding]);
+
+  const handleKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    const target = event.target as Node | null;
+    // Capture phase, so this runs before xterm's own key handling — but only
+    // for keys pressed inside this pane, and never while a modal layer is up.
+    if (!target || !sidebarRef.current?.contains(target)) return;
+    const targetElement = target instanceof Element ? target : target.parentElement;
+    applyPickerBinding(event.nativeEvent, targetElement);
+  }, [applyPickerBinding]);
+
+  /**
+   * Which surface the pointer last committed to.
+   *
+   * Focus is the usual answer to "whose key is this", but a click on a control
+   * that then unmounts leaves focus on `<body>`, which belongs to nobody. The
+   * last pointer-down is the honest tiebreaker for that one case, and it is
+   * recomputed on every pointer-down anywhere, so clicking the composer hands
+   * the keyboard back immediately.
+   */
+  const paneHasPointerRef = useRef(false);
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      paneHasPointerRef.current = target instanceof Node
+        ? Boolean(sidebarRef.current?.contains(target))
+        : false;
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
+  // Only ever for keystrokes that landed on `<body>`: anything with a real
+  // focus target is handled by the pane's own capture handler above (or belongs
+  // to whatever does have focus), so there is no double handling.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target !== document.body) return;
+      if (!paneHasPointerRef.current) return;
+      applyPickerBinding(event, null);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [applyPickerBinding]);
 
   // Browser: the page you are on. Terminal: how many shells. Git: the branch.
   // One compact fact, so the header answers "which one of these am I looking
@@ -629,12 +680,15 @@ export function WorkSidebar({
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
+      // Focusable only programmatically (`selectTool`), and never ringed for
+      // it: this is a focus fallback, not a stop on the tab order.
+      tabIndex={-1}
       // `min-w-0` + `overflow-hidden`, never a pixel `min-width`: a minimum on
       // the pane makes it wider than the column flexbox gave it, and the
       // overflow is then clipped by the window — which is how the ✕ and the
       // browser's ⋮ ended up unreachable. The drag is what enforces 280px
       // (`clampWorkSidebarWidthPct`); the pane itself just never escapes.
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85 outline-none"
     >
       {effectiveTool ? (
         <WorkToolHeader

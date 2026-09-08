@@ -295,7 +295,65 @@ export function workLiveScrubIndex(args: {
 /* ── Captions ─────────────────────────────────────────────────────────────── */
 
 /**
- * `click 'Sign in'` — the verb plus whatever the action was aimed at.
+ * What the agent just did, in words a person reads rather than the API name.
+ *
+ * The trace stores the method that ran — `stopFindInPage`, `dispatchKey`,
+ * `setNetworkLogging` — and the card was printing it raw, so the footer of a
+ * live preview said "stopFindInPage · 1s". These are the names ADE's own trace
+ * emits today (browser and App Control both); anything not listed falls through
+ * to the camelCase split below, so a new capability reads as "Set network log"
+ * rather than as nothing at all.
+ */
+const WORK_LIVE_ACTION_CAPTIONS: Readonly<Record<string, string>> = {
+  navigate: "Opened",
+  click: "Clicked",
+  fill: "Typed",
+  type: "Typed",
+  typeText: "Typed",
+  clear: "Cleared",
+  press: "Pressed",
+  dispatchKey: "Pressed",
+  hover: "Hovered",
+  scroll: "Scrolled",
+  drag: "Dragged",
+  selectOption: "Selected",
+  uploadFile: "Uploaded",
+  wait: "Waited",
+  screenshot: "Captured",
+  findInPage: "Searched",
+  stopFindInPage: "Closed find",
+  setEmulation: "Changed device",
+  setZoom: "Zoomed",
+  setDevTools: "Toggled DevTools",
+  setNetworkLogging: "Toggled network log",
+  exportHar: "Exported HAR",
+  startRecording: "Started recording",
+  stopRecording: "Stopped recording",
+  "handoff-start": "Handed over",
+  "handoff-end": "Handed back",
+};
+
+/** `setNetworkLogging` → `Set network logging`; `handoff-end` → `Handoff end`. */
+function sentenceCaseAction(action: string): string {
+  const words = action
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!words) return "Action";
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** The human caption for one trace action name. */
+export function workLiveActionVerb(action: string): string {
+  const key = action.trim();
+  if (!key) return "Action";
+  return WORK_LIVE_ACTION_CAPTIONS[key] ?? sentenceCaseAction(key);
+}
+
+/**
+ * `Clicked 'Sign in'` — the verb plus whatever the action was aimed at.
  *
  * Reads the target the same way the trace records it (selector / text / testId),
  * quotes only what came from the page, and gives up rather than printing a raw
@@ -305,7 +363,7 @@ export function formatWorkLiveActionCaption(
   action: string,
   target: Record<string, unknown> | null | undefined,
 ): string {
-  const verb = action.trim() || "action";
+  const verb = workLiveActionVerb(action);
   const label = actionTargetLabel(target);
   return label ? `${verb} '${label}'` : verb;
 }

@@ -719,6 +719,32 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
   });
 
+  it("parks a previewed tab's view instead of detaching it when the panel hides", async () => {
+    // The corner card's whole premise. A WebContentsView that has been removed
+    // from the window has no compositor surface, so `capturePage()` comes back
+    // empty and the preview stream emits nothing at all — the card sat on its
+    // blank placeholder while cheerfully reporting "Live". A watched tab
+    // therefore stays attached, parked outside the window's content rect.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+    expect(win.contentView.children).toHaveLength(1);
+    const tabId = service.getStatus().activeTabId;
+    expect(tabId).toBeTruthy();
+
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+    expect(win.contentView.children).toHaveLength(1);
+
+    // Last watcher out: the view goes back to being detached, so a hidden panel
+    // nobody is previewing costs nothing.
+    service.stopPreviewStream({ tabId });
+    expect(win.contentView.children).toHaveLength(0);
+  });
+
   it("keeps a visible browser view attached to its owner window when another ADE window focuses", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const winA = fakeBrowserWindow();

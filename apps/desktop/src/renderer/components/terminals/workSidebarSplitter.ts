@@ -97,3 +97,50 @@ export function nextWorkSidebarWidthPctForKey(
       return null;
   }
 }
+
+/**
+ * Put the document into "the splitter is being dragged" mode, and hand back the
+ * one call that undoes it.
+ *
+ * `user-select: none` on `<body>` is not enough on its own. It is an INHERITED
+ * property, and inheritance loses to any value a descendant declares for
+ * itself — every `select-text` surface in the chat column keeps selecting while
+ * you drag across it, which is exactly the smear this fixes. Suppressing hit
+ * testing for the duration is what actually stops it: with `pointer-events:
+ * none` on the body no element can become a selection anchor, while the
+ * document-level `mousemove`/`mouseup` listeners the drag runs on still fire.
+ *
+ * The cursor goes on `<html>` for the same reason — the body is no longer a hit
+ * target, so a cursor declared on it would not be consulted.
+ *
+ * Every property is restored to the exact inline value it had, so a drag that
+ * starts while something else has parked a cursor there leaves it as it found
+ * it.
+ */
+export function beginWorkSidebarSplitterDrag(handle: HTMLElement | null): () => void {
+  const doc = handle?.ownerDocument ?? (typeof document === "undefined" ? null : document);
+  const body = doc?.body ?? null;
+  const root = doc?.documentElement ?? null;
+  if (!body || !root) return () => {};
+  const previous = {
+    rootCursor: root.style.cursor,
+    bodyCursor: body.style.cursor,
+    bodyUserSelect: body.style.userSelect,
+    bodyPointerEvents: body.style.pointerEvents,
+    handleUserSelect: handle?.style.userSelect ?? "",
+  };
+  root.style.cursor = "col-resize";
+  body.style.cursor = "col-resize";
+  body.style.userSelect = "none";
+  body.style.pointerEvents = "none";
+  // The handle is the one element still under the pointer conceptually; a
+  // double-click on it must not select the pane's chrome either.
+  if (handle) handle.style.userSelect = "none";
+  return () => {
+    root.style.cursor = previous.rootCursor;
+    body.style.cursor = previous.bodyCursor;
+    body.style.userSelect = previous.bodyUserSelect;
+    body.style.pointerEvents = previous.bodyPointerEvents;
+    if (handle) handle.style.userSelect = previous.handleUserSelect;
+  };
+}

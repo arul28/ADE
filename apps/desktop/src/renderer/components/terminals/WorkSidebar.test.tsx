@@ -893,6 +893,70 @@ describe("WorkSidebar pane chrome", () => {
     expect(onTabChange).toHaveBeenCalledWith(null);
   });
 
+  it("keeps Escape working after a picker card is clicked", () => {
+    // The card that was clicked unmounts with the picker, and the browser then
+    // drops focus onto <body> — where a keydown is never dispatched inside the
+    // pane, so the pane's capture handler never saw it. Escape did nothing at
+    // all, which is the one keystroke a pane you just opened has to honour.
+    const onToolChange = vi.fn();
+    const tree = (tool: WorkSidebarTab | null) => withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={tool}
+        onToolChange={onToolChange}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    ));
+    const { container, rerender } = render(tree(null));
+
+    const aside = container.querySelector("aside")!;
+    fireEvent.click(cardFor("Git"));
+    expect(onToolChange).toHaveBeenCalledWith("git");
+    expect(document.activeElement).toBe(aside);
+
+    // The pane is controlled, so the parent's answer to that pick is the tool
+    // being on screen — which is the state Escape has to get you out of.
+    rerender(tree("git"));
+    fireEvent.keyDown(aside, { key: "Escape" });
+    expect(onToolChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("takes Escape from <body> when the pane was the last thing clicked", () => {
+    // The belt to the focus braces above: whatever drops focus — an unmounting
+    // card, a panel that blurs itself — a keystroke that lands on <body> still
+    // belongs to the surface the pointer last committed to.
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const inside = container.querySelector("aside")!.querySelector("div")!;
+    fireEvent.pointerDown(inside);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves a <body> Escape alone when the pointer last went somewhere else", () => {
+    const onTabChange = vi.fn();
+    renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // The composer, say: its Escape is its own, and the pane must not race it.
+    fireEvent.pointerDown(document.body);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
   it("leaves plain Escape to the terminal and takes Shift+Escape instead", () => {
     const onTabChange = vi.fn();
     const { container } = renderSidebar({

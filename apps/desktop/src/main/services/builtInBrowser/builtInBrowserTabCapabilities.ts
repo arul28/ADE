@@ -251,6 +251,14 @@ export type BuiltInBrowserTabCapabilityDeps = {
   getEmulationViewScale: () => number;
   /** The project this collection belongs to; an upload root. */
   getCollectionProjectRoot: () => string | null;
+  /**
+   * A tab gained or lost its last preview subscriber.
+   *
+   * The service decides what that means for the view — a watched tab has to stay
+   * attached to the window to keep a compositor surface — so it re-runs its own
+   * attach pass rather than this module reaching into the view.
+   */
+  onPreviewWatchersChanged?: (tabId: string) => void;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
   targetTabFromInput: (
     input: BuiltInBrowserTabTargetArgs | undefined,
@@ -1069,7 +1077,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     input: BuiltInBrowserStartPreviewStreamArgs = {},
   ): BuiltInBrowserPreviewStreamResult {
     const tab = targetTabFromInput(input, "No active browser tab to preview.");
-    return previewStreams.start(tab.id, { fps: input.fps, maxWidth: input.maxWidth });
+    const result = previewStreams.start(tab.id, { fps: input.fps, maxWidth: input.maxWidth });
+    // Before the first tick, not after: the service parks the view so the very
+    // first capture has a surface to read.
+    if (result.subscribers === 1) deps.onPreviewWatchersChanged?.(tab.id);
+    return result;
   }
 
   function stopPreviewStream(
@@ -1081,7 +1093,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tabId) {
       return { tabId: "", fps: 0, maxWidth: 0, subscribers: 0 };
     }
-    return previewStreams.stop(tabId);
+    const result = previewStreams.stop(tabId);
+    // Only the last one out unparks the view; a second watcher is still looking.
+    if (result.subscribers === 0) deps.onPreviewWatchersChanged?.(tabId);
+    return result;
   }
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
@@ -1303,6 +1318,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     stopPreviewStreamsForTab: (tabId: string): void => {
       previewStreams.stopTab(tabId);
     },
+    /**
+     * Whether a preview stream is watching this tab.
+     *
+     * The service asks before it detaches a tab's view: a watched tab has to
+     * stay attached to keep a compositor surface, or every capture comes back
+     * empty.
+     */
+    hasPreviewWatchers: (tabId: string): boolean => previewStreams.hasWatchers(tabId),
     /**
      * Teardown for everything this module owns, called when the window service
      * disposes. Two named methods rather than handing the service the whole

@@ -311,7 +311,9 @@ export function BrowserOverflowMenu({
                   linkMode === "external" ? "opacity-100" : "opacity-0",
                 )}
               />
-              <span className="min-w-0 flex-1 truncate">System browser</span>
+              {/* "In system browser", to pair with "In ADE" above it and to
+                  match the same choice in Settings → General → Links. */}
+              <span className="min-w-0 flex-1 truncate">In system browser</span>
             </DropdownMenu.RadioItem>
           </DropdownMenu.RadioGroup>
           <p className="px-2 pb-1.5 pt-0.5 text-[9.5px] leading-[13px] text-muted-fg/70">

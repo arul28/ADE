@@ -5,6 +5,7 @@ import {
   WORK_LIVE_SCRUB_BUFFER_SIZE,
   commitWorkLiveScrubFrame,
   formatWorkLiveActionCaption,
+  workLiveActionVerb,
   formatWorkLiveAge,
   isWorkLiveScreenTool,
   clampWorkLiveCardRect,
@@ -224,18 +225,29 @@ describe("workLiveScrubIndex", () => {
 
 describe("captions", () => {
   it("quotes what the action was aimed at", () => {
-    expect(formatWorkLiveActionCaption("click", { text: "Sign in" })).toBe("click 'Sign in'");
+    expect(formatWorkLiveActionCaption("click", { text: "Sign in" })).toBe("Clicked 'Sign in'");
   });
 
   it("prefers the visible text over a selector", () => {
     expect(formatWorkLiveActionCaption("click", { selector: "#a > .b", text: "Sign in" }))
-      .toBe("click 'Sign in'");
+      .toBe("Clicked 'Sign in'");
   });
 
   it("falls back to the bare verb with no usable target", () => {
-    expect(formatWorkLiveActionCaption("reload", null)).toBe("reload");
-    expect(formatWorkLiveActionCaption("reload", { elementIndex: 3 })).toBe("reload");
-    expect(formatWorkLiveActionCaption("reload", { text: "   " })).toBe("reload");
+    expect(formatWorkLiveActionCaption("reload", null)).toBe("Reload");
+    expect(formatWorkLiveActionCaption("reload", { elementIndex: 3 })).toBe("Reload");
+    expect(formatWorkLiveActionCaption("reload", { text: "   " })).toBe("Reload");
+  });
+
+  it("says what an action did rather than naming the method that did it", () => {
+    // The footer of a live preview read "stopFindInPage · 1s".
+    expect(workLiveActionVerb("stopFindInPage")).toBe("Closed find");
+    expect(workLiveActionVerb("navigate")).toBe("Opened");
+    expect(workLiveActionVerb("fill")).toBe("Typed");
+    expect(workLiveActionVerb("handoff-end")).toBe("Handed back");
+    // Anything the table has not met yet still reads as words.
+    expect(workLiveActionVerb("someNewAction")).toBe("Some new action");
+    expect(workLiveActionVerb("  ")).toBe("Action");
   });
 
   it("truncates a target too long for the card", () => {

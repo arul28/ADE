@@ -1595,9 +1595,15 @@ export function ChatBuiltInBrowserPanel({
 
   useEffect(() => () => {
     if (findFocusFrameRef.current != null) window.cancelAnimationFrame(findFocusFrameRef.current);
+    // Closing the LAST tab unmounts this panel, so the cleanup runs with an
+    // empty pane — and a find that never existed does not need ending. Main
+    // tolerates the call either way; not making it is what keeps the ordinary
+    // path free of a round trip that can only answer "there was nothing".
+    const tabId = statusRef.current?.activeTabId ?? null;
+    if (!tabId) return;
     const api = getBrowserApi();
     void api?.stopFindInPage?.(
-      { ...browserScopeRef.current, action: "clearSelection" as const },
+      { ...browserScopeRef.current, tabId, action: "clearSelection" as const },
       runtimePinRef.current,
     ).catch(() => {
       // The tab may already be gone; there is nothing left to clear.

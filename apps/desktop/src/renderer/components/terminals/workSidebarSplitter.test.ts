@@ -1,5 +1,8 @@
+/* @vitest-environment jsdom */
+
 import { describe, expect, it } from "vitest";
 import {
+  beginWorkSidebarSplitterDrag,
   clampWorkSidebarWidthPct,
   MAX_WORK_SIDEBAR_WIDTH_PCT,
   MIN_WORK_SIDEBAR_PANE_PX,
@@ -87,5 +90,39 @@ describe("nextWorkSidebarWidthPctForKey", () => {
   it("declines keys that are not the separator's", () => {
     expect(nextWorkSidebarWidthPctForKey("Enter", 36, container)).toBeNull();
     expect(nextWorkSidebarWidthPctForKey("ArrowUp", 36, container)).toBeNull();
+  });
+});
+
+describe("beginWorkSidebarSplitterDrag", () => {
+  it("suppresses hit testing and selection for the drag, then restores what it found", () => {
+    // `user-select: none` on the body alone never worked: it is inherited, and
+    // every `select-text` surface in the chat column declares its own value,
+    // which wins. Dropping hit testing is what actually stops the smear.
+    document.body.style.cursor = "text";
+    const handle = document.createElement("div");
+    document.body.appendChild(handle);
+
+    const end = beginWorkSidebarSplitterDrag(handle);
+    expect(document.documentElement.style.cursor).toBe("col-resize");
+    expect(document.body.style.userSelect).toBe("none");
+    expect(document.body.style.pointerEvents).toBe("none");
+    expect(handle.style.userSelect).toBe("none");
+
+    end();
+    expect(document.documentElement.style.cursor).toBe("");
+    expect(document.body.style.userSelect).toBe("");
+    expect(document.body.style.pointerEvents).toBe("");
+    expect(handle.style.userSelect).toBe("");
+    // Restored to what it was, not blanked: the drag borrowed the cursor.
+    expect(document.body.style.cursor).toBe("text");
+    handle.remove();
+    document.body.style.cursor = "";
+  });
+
+  it("falls back to the ambient document when it is handed no handle", () => {
+    const end = beginWorkSidebarSplitterDrag(null);
+    expect(document.body.style.pointerEvents).toBe("none");
+    end();
+    expect(document.body.style.pointerEvents).toBe("");
   });
 });

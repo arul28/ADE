@@ -94,6 +94,11 @@ import type {
   BuiltInBrowserUploadFileArgs,
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
+import {
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+} from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
@@ -1436,6 +1441,15 @@ function createBuiltInBrowserWindowService(args: {
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
+  /**
+   * "Is anybody previewing this tab?", answered by the capability module.
+   *
+   * A holder rather than a direct call because `tabCapabilities` is built at the
+   * bottom of this factory, long after `attachViewsToCurrentWindow` is defined;
+   * until it exists the answer is simply "no", which is the pre-preview
+   * behaviour.
+   */
+  let hasPreviewWatchers: (tabId: string) => boolean = () => false;
   let tabs: BrowserTabState[] = [];
   let browserSessions: BrowserSessionState[] = [];
   let activeTabId: string | null = null;
@@ -2641,6 +2655,33 @@ function createBuiltInBrowserWindowService(args: {
     return tab;
   };
 
+  /**
+   * Where a tab nobody is looking at but somebody is *previewing* gets put.
+   *
+   * A `WebContentsView` that has been removed from the window — or merely
+   * `setVisible(false)` — has no compositor surface, and with no surface every
+   * capture path fails: `capturePage()` resolves an empty image and CDP
+   * `Page.captureScreenshot` never answers at all. That is fatal for the Work
+   * tab's corner card, whose whole job is to picture a browser the panel is NOT
+   * showing.
+   *
+   * Parking it one window-width to the right keeps the view attached and
+   * visible — so Chromium keeps compositing it — while the window's own content
+   * rect clips it away completely. Only tabs with a live preview subscriber pay
+   * for this; everything else is still detached outright.
+   */
+  const parkedPreviewRect = (panelRect: Electron.Rectangle): Electron.Rectangle => {
+    const contentWidth = win && !win.isDestroyed() ? win.getContentBounds().width : 0;
+    return {
+      x: Math.max(0, contentWidth) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: 0,
+      // A panel that was never opened has zero bounds, and a zero-sized view
+      // captures nothing; the floor is what makes the first preview paint.
+      width: Math.max(panelRect.width, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH),
+      height: Math.max(panelRect.height, BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT),
+    };
+  };
+
   const attachViewsToCurrentWindow = (): void => {
     if (!win || win.isDestroyed()) return;
     const electronRect = toElectronRect(bounds);
@@ -2653,6 +2694,17 @@ function createBuiltInBrowserWindowService(args: {
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
+        if (hasPreviewWatchers(tab.id)) {
+          if (!win.contentView.children.includes(tab.view)) {
+            win.contentView.addChildView(tab.view);
+          }
+          tab.view.setBounds(parkedPreviewRect(electronRect));
+          tab.view.setVisible(true);
+          // Still not the active tab: parked means composited, not attended, so
+          // it stays muted like any other background tab.
+          applyTabLifecycle(tab, false);
+          continue;
+        }
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
@@ -4694,9 +4746,15 @@ function createBuiltInBrowserWindowService(args: {
     observationRelativeBasePath,
     traceAutoEndedRecording,
     getCollectionProjectRoot: () => args.collection.projectRoot,
+    // A tab that gains or loses its last watcher has to be re-placed: parked
+    // just outside the window while somebody previews it, detached once nobody
+    // does. `attachViewsToCurrentWindow` is the one place that decides that.
+    onPreviewWatchersChanged: () => attachViewsToCurrentWindow(),
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,
   });
+
+  hasPreviewWatchers = (tabId) => tabCapabilities.hasPreviewWatchers(tabId);
 
   const tabRestorationPromise = args.waitForProfileMigration()
     .then(restorePersistedTabs)

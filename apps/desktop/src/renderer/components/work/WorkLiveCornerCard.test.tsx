@@ -139,6 +139,36 @@ describe("WorkLiveCornerCard", () => {
     ));
   });
 
+  it("paints a preview frame that arrives through the provider's fan-out", async () => {
+    // The regression this covers: the card opens no subscriptions of its own,
+    // so a `preview-frame` reaches its `<img>` only if the provider fans the
+    // event out to the handler set the card registered. When that fan-out was
+    // broken the card still said "Live" and still called `startPreviewStream`
+    // — it just never repainted, which is invisible to every other assertion
+    // here.
+    renderCard();
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    const card = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+    await waitFor(() => expect(startPreviewStream).toHaveBeenCalled());
+
+    const frame = "data:image/jpeg;base64,ZnJhbWUtb25l";
+    emitBrowserEvent({
+      type: "preview-frame",
+      tabId: "tab-1",
+      dataUrl: frame,
+      width: 480,
+      height: 300,
+      capturedAt: new Date().toISOString(),
+    });
+
+    // Painted through one rAF, so the assertion has to wait for it.
+    await waitFor(() => {
+      const live = card.querySelector("img");
+      expect(live?.getAttribute("src")).toBe(frame);
+    });
+  });
+
   it("never starts a browser feed for a pane with no tab", async () => {
     // A browser whose last tab just closed still reports status, and the card
     // still comes up for it. Asking that pane for frames is asking it to
@@ -187,7 +217,7 @@ describe("WorkLiveCornerCard", () => {
         target: { text: "Sign in" },
       },
     });
-    expect(await screen.findByTitle(/click 'Sign in'/)).toBeTruthy();
+    expect(await screen.findByTitle(/Clicked 'Sign in'/)).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
@@ -357,7 +387,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
     emitBrowserEvent(traceEvent("trace-2", "fill", "Email"));
-    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+    expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     card.getBoundingClientRect = () => ({
       x: 0, y: 0, left: 0, top: 0, right: 260, bottom: 211, width: 260, height: 211,
@@ -366,14 +396,14 @@ describe("WorkLiveCornerCard scrubbing", () => {
 
     // Left edge is the oldest of the two remembered actions.
     scrubTo(card, 0);
-    expect(await screen.findByTitle(/click 'Sign in'/)).toBeTruthy();
+    expect(await screen.findByTitle(/Clicked 'Sign in'/)).toBeTruthy();
 
     // Right edge is the newest.
     scrubTo(card, 260);
-    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+    expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     fireEvent.pointerLeave(card);
-    expect(await screen.findByTitle(/fill 'Email'/)).toBeTruthy();
+    expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
   });
 
   it("offers no scrubbing until there are two frames to scrub between", async () => {
@@ -386,7 +416,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     });
     scrubTo(card, 130);
     expect(await screen.findByText("Live")).toBeTruthy();
-    expect(screen.getByTitle(/click 'Sign in'/)).toBeTruthy();
+    expect(screen.getByTitle(/Clicked 'Sign in'/)).toBeTruthy();
   });
 
   it("activates the tool when the card's chrome is clicked, but not its ×", async () => {

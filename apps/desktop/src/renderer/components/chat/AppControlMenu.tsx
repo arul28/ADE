@@ -13,7 +13,9 @@ import { cn } from "../ui/cn";
 import {
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
+  MENU_SCROLL_CLASS,
   MENU_SURFACE_CLASS,
+  MENU_WIDTH_CLASS,
 } from "../ui/paneMenuTokens";
 
 /** The house overshoot curve — same one `ade-popover-in` uses in index.css. */
@@ -138,7 +140,9 @@ export function AppControlMenu({
           "inline-flex min-w-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[11px] font-medium",
           "text-fg/85 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-          "disabled:cursor-not-allowed disabled:opacity-45",
+          // 40, not 45: the same disabled weight `MENU_ITEM_CLASS` gives the
+          // browser menu next door.
+          "disabled:cursor-not-allowed disabled:opacity-40",
           open && "bg-white/[0.06]",
           triggerClassName,
         )}
@@ -165,7 +169,9 @@ export function AppControlMenu({
               // Positioning and sizing are this menu's own: it is anchored
               // inside the pane rather than portalled, precisely so it cannot
               // float over another tool's live frame.
-              "absolute top-[calc(100%+4px)] z-30 flex max-h-[320px] w-[248px] flex-col overflow-auto",
+              "absolute top-[calc(100%+4px)] z-30 flex flex-col",
+              MENU_WIDTH_CLASS,
+              MENU_SCROLL_CLASS,
               "backdrop-blur-[var(--blur-popup)]",
               align === "end" ? "right-0" : "left-0",
               menuClassName,
@@ -222,7 +228,7 @@ export function AppControlMenuItem({
           tone === "danger"
             ? "text-rose-200/85 hover:bg-rose-500/12"
             : "text-fg/85 hover:bg-white/[0.06]",
-          disabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
+          disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
         )}
       >
         {icon ? <span className="shrink-0 text-muted-fg/75">{icon}</span> : null}

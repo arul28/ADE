@@ -27,10 +27,33 @@ export const MENU_SURFACE_CLASS = cn(
   "shadow-[var(--shadow-popup,0_24px_64px_-24px_rgba(0,0,0,0.8))]",
 );
 
+/**
+ * One width for both menus. Radix's portalled content may grow past it for a
+ * long item; the anchored App Control menu is exactly it, because it is inside
+ * the pane and has nowhere to grow into.
+ */
+export const MENU_MIN_WIDTH_CLASS = "min-w-[228px]";
+export const MENU_WIDTH_CLASS = "w-[228px]";
+
+/**
+ * How tall a pane menu gets before it scrolls.
+ *
+ * Viewport-aware rather than a fixed 320px: on a short window that constant was
+ * shorter than App Control's own overflow menu, so the last item — "Stop", the
+ * one you reach for in a hurry — was cut in half with nothing to say it was
+ * there. `overflow-y-auto` and NOT `scrollbar-none`, so the app's global
+ * scrollbar paint is the affordance that says the list continues.
+ */
+export const MENU_SCROLL_CLASS = cn(
+  "max-h-[min(70vh,480px)] overflow-y-auto overflow-x-hidden overscroll-contain",
+);
+
 /** The portalled variant: the surface plus the browser menu's own sizing. */
 export const MENU_CONTENT_CLASS = cn(
   MENU_SURFACE_CLASS,
-  "z-[140] min-w-[228px] max-w-[min(280px,calc(100vw-16px))] overflow-hidden",
+  MENU_MIN_WIDTH_CLASS,
+  MENU_SCROLL_CLASS,
+  "z-[140] max-w-[min(280px,calc(100vw-16px))]",
 );
 
 export const MENU_ITEM_CLASS = cn(
