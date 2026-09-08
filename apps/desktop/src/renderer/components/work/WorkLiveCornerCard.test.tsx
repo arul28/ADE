@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
+import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
 import type { BuiltInBrowserStatus } from "../../../shared/types";
 import {
@@ -98,15 +99,20 @@ afterEach(() => {
 
 function renderCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>[0]> = {}) {
   const onPick = vi.fn();
+  const props = {
+    active: true,
+    laneId: "lane-1" as string | null,
+    activeTool: "git" as Parameters<typeof WorkLiveCornerCard>[0]["activeTool"],
+    runtimePin: null,
+    onPick,
+    ...overrides,
+  };
+  // The feeds come from the page's provider in production; the card opens no
+  // subscriptions of its own, so the test has to supply the same owner.
   const view = render(
-    <WorkLiveCornerCard
-      active
-      laneId="lane-1"
-      activeTool="git"
-      runtimePin={null}
-      onPick={onPick}
-      {...overrides}
-    />,
+    <NativeToolFeedsProvider active={props.active} runtimePin={props.runtimePin}>
+      <WorkLiveCornerCard {...props} />
+    </NativeToolFeedsProvider>,
   );
   return { ...view, onPick };
 }

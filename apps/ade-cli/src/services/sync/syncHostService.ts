@@ -232,6 +232,7 @@ import {
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
@@ -1091,6 +1092,16 @@ type SyncHostServiceArgs = {
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /**
+   * Read-only Work-tools mirror for iOS and the hosted web client.
+   *
+   * Only used on the fallback path below, where this service builds its own
+   * remote-command service; production (`syncService.ts`) injects an already
+   * built one. Threaded anyway so the two paths advertise the same action set —
+   * `workTools.*` is in `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, and an
+   * optional action that is never advertised is one a phone can never adopt.
+   */
+  workToolsStateService?: WorkToolsStateService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -2129,6 +2140,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    workToolsStateService: args.workToolsStateService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     projectConfigService: args.projectConfigService,

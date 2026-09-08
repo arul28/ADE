@@ -33,6 +33,16 @@ export type BuiltInBrowserRuntimeTabStatus = {
 export type BuiltInBrowserRuntimeStatus = {
   activeTabId: string | null;
   tabs: BuiltInBrowserRuntimeTabStatus[];
+  /**
+   * Set when the desktop is attached to this machine but has no window open for
+   * the project the asking daemon serves.
+   *
+   * The alternative — answering out of whatever window is frontmost — is worse
+   * than answering nothing: it hides the asking project's tabs and renders
+   * another project's tab titles and URLs on a phone bound to this one. `tabs`
+   * is empty whenever this is set.
+   */
+  unavailable: "desktop_not_attached_for_project" | null;
 };
 
 /** Bridge method name for {@link BuiltInBrowserRuntimeStatus}. */

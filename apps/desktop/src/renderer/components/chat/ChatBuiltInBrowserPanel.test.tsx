@@ -15,6 +15,7 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
 import { makeBuiltInBrowserStatus, makeBuiltInBrowserTab } from "./__fixtures__/builtInBrowserStatus";
+import { dismissToast, getToasts } from "../app/toast/toastStore";
 
 const browserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus();
 
@@ -188,9 +189,12 @@ function installBrowserApi() {
       entryCount: 0,
       status: browserStatus,
     }),
-    getDevServers: vi.fn().mockResolvedValue([
-      { url: "http://localhost:5173", port: 5173, command: "npm run dev" },
-    ]),
+    // `{ servers }`, which is what `DevServersResult` declares and what the
+    // service actually returns — the mock used to hand back a bare array and
+    // only passed because the normalizer accepted either.
+    getDevServers: vi.fn().mockResolvedValue({
+      servers: [{ url: "http://localhost:5173", port: 5173, command: "npm run dev" }],
+    }),
     exportHar: vi.fn(),
     startRecording: vi.fn(),
     stopRecording: vi.fn().mockResolvedValue({
@@ -375,6 +379,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The toast store is module state, so a toast raised by one case is visible
+  // to the next one's assertions unless it is cleared here.
+  for (const toast of getToasts()) dismissToast(toast.id);
   for (const timer of frameTimers.values()) clearTimeout(timer);
   frameTimers.clear();
   vi.unstubAllGlobals();
@@ -1101,6 +1108,43 @@ describe("ChatBuiltInBrowserPanel", () => {
     fireEvent.click(pill);
 
     await waitFor(() => expect(api.stopRecording).toHaveBeenCalled());
+  });
+
+  it("says why a recording it did not stop stopped, and clears the pill", async () => {
+    const { api, emit } = installBrowserApi();
+    const recordingStatus = {
+      ...browserStatus,
+      tabs: [{
+        ...browserStatus.tabs[0],
+        recording: { startedAt: new Date(Date.now() - 42_000).toISOString(), fps: 60 },
+      }],
+    };
+    api.getStatus.mockResolvedValue(recordingStatus);
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await screen.findByTitle("Stop recording");
+
+    // The wall-clock cap fired in main. Before this the pill simply vanished and
+    // the clip was quietly short, with nothing anywhere saying why.
+    api.getStatus.mockResolvedValue(browserStatus);
+    emit({ type: "recording", tabId: "tab-1", recording: null, frameCount: 0, endedBy: "max_duration" });
+
+    await waitFor(() => expect(
+      getToasts().some((toast) => toast.title === "Recording stopped"
+        && toast.message === "5-minute limit reached. The clip was saved."),
+    ).toBe(true));
+    await waitFor(() => expect(screen.queryByTitle("Stop recording")).toBeNull());
+  });
+
+  it("stays quiet when the recording was stopped on purpose", async () => {
+    const { api, emit } = installBrowserApi();
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await screen.findByRole("tab");
+
+    emit({ type: "recording", tabId: "tab-1", recording: null, frameCount: 120 });
+
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+    expect(getToasts().some((toast) => toast.title === "Recording stopped")).toBe(false);
   });
 
   it("starts a recording at the chosen frame rate on Shift-click", async () => {
@@ -1844,7 +1888,7 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     it("probes the usual ports when discovery comes back empty", async () => {
       const { api, emit } = installBrowserApi();
-      api.getDevServers.mockResolvedValue([]);
+      api.getDevServers.mockResolvedValue({ servers: [] });
       (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
         .ade.localhost.probePort.mockImplementation(async (port: number) => port === 5173);
 

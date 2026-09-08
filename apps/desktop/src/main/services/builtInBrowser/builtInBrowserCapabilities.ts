@@ -394,6 +394,22 @@ export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_
  * mid-run) would otherwise capture until the app quits. Five minutes is long
  * enough for any "show me this flow" and short enough that the forgotten case
  * costs a bounded file.
+ *
+ * What the caller sees when it fires: the recording is finalized exactly as a
+ * `stopRecording` would have finalized it — same file, same manifest — and the
+ * agent is told through two channels rather than a return value it never
+ * asked for. A `recording` event carries `endedBy: "max_duration"` (so the
+ * pane can say why the REC pill vanished), and a `stopRecording`-shaped entry
+ * with the same `endedBy` lands in the tab's action trace, which is where the
+ * skill tells an agent to look. A later `stopRecording` then throws
+ * `Browser tab <id> is not recording.` A login hand-off is the other automatic
+ * ending (`endedBy: "handoff"`), and unlike this one it ABORTS rather than
+ * finalizes — see `suspendAgentCaptureForHandoff`. Neither resumes; an agent
+ * that wants more has to start a new recording.
+ *
+ * CHANGING THE NUMBER: the pane's "5-minute limit reached" toast carries its own
+ * copy of this value (`renderer/components/chat/browserToolbarLabels.ts`) because
+ * this module is main-process-only and the cap is not on the wire. Change both.
  */
 export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
 

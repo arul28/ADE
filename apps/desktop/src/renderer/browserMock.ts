@@ -5337,7 +5337,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       claim: resolvedArg({} as any),
       showPanel: resolvedArg({} as any),
       setBounds: resolvedArg({} as any),
-      attachWebview: resolvedArg({} as any),
       navigate: resolvedArg({} as any),
       createTab: resolvedArg({} as any),
       switchTab: resolvedArg({} as any),

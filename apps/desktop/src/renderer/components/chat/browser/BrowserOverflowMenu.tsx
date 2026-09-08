@@ -6,7 +6,6 @@
  * menu grows whenever the row shrinks and would otherwise dominate the file it
  * shared. The device list is passed in, since the toolbar hosts it too.
  */
-import type { ReactNode } from "react";
 import {
   ArrowSquareOut,
   Bug,
@@ -24,8 +23,6 @@ import {
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { BrowserLinkOpenMode } from "../../../../shared/types";
-import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
-import type { BrowserToolbarLayout } from "../builtInBrowserToolbar";
 import {
   BUILT_IN_BROWSER_RECORDING_FRAME_RATES,
   normalizeRecordingFps,
@@ -44,23 +41,18 @@ import {
   TOOLBAR_FOCUS,
   TOOLBAR_IDLE,
   TOOLBAR_MOTION,
+  type BrowserChromeShared,
 } from "./browserChrome";
 
 export type BrowserOverflowMenuProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  apiAvailable: boolean;
-  toolbar: BrowserToolbarLayout;
-  busy: string | null;
+  /** Everything this menu and the toolbar row both need, built once by the panel. */
+  shared: BrowserChromeShared;
   zoomFactor: number;
   onZoomStep: (direction: 1 | -1) => void;
   onZoomReset: () => void;
-  inspecting: boolean;
-  onInspectToggle: () => void;
   onAttachScreenshot: () => void;
-  emulation: BuiltInBrowserEmulationState | null;
-  deviceLabel: string;
-  deviceMenuItems: ReactNode;
   onOpenFind: () => void;
   devToolsOpen: boolean;
   onToggleDevTools: () => void;
@@ -75,9 +67,6 @@ export type BrowserOverflowMenuProps = {
   onOpenLoginImport: () => void;
   currentUrl: string;
   onOpenExternal: () => void;
-  hasSelection: boolean;
-  canAddContext: boolean;
-  onAttachSelection: () => void;
   canInsertDraft: boolean;
   onInsertSelectionDraft: () => void;
   onClearSelection: () => void;
@@ -87,18 +76,11 @@ export type BrowserOverflowMenuProps = {
 export function BrowserOverflowMenu({
   open,
   onOpenChange,
-  apiAvailable,
-  toolbar,
-  busy,
+  shared,
   zoomFactor,
   onZoomStep,
   onZoomReset,
-  inspecting,
-  onInspectToggle,
   onAttachScreenshot,
-  emulation,
-  deviceLabel,
-  deviceMenuItems,
   onOpenFind,
   devToolsOpen,
   onToggleDevTools,
@@ -113,14 +95,22 @@ export function BrowserOverflowMenu({
   onOpenLoginImport,
   currentUrl,
   onOpenExternal,
-  hasSelection,
-  canAddContext,
-  onAttachSelection,
   canInsertDraft,
   onInsertSelectionDraft,
   onClearSelection,
   selectionFrame,
 }: BrowserOverflowMenuProps) {
+  const {
+    toolbar,
+    busy,
+    apiAvailable,
+    inspecting,
+    onInspectToggle,
+    emulation,
+    deviceLabel,
+    deviceMenuItems,
+    selection,
+  } = shared;
   return (
     <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
       <DropdownMenu.Trigger asChild>
@@ -343,7 +333,7 @@ export function BrowserOverflowMenu({
             <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate">Open this page in system browser</span>
           </DropdownMenu.Item>
-          {hasSelection ? (
+          {selection.has ? (
             <>
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
               <DropdownMenu.Label className={MENU_LABEL_CLASS}>Selection</DropdownMenu.Label>
@@ -357,8 +347,8 @@ export function BrowserOverflowMenu({
               {toolbar.showAttach ? null : (
                 <DropdownMenu.Item
                   className={MENU_ITEM_CLASS}
-                  disabled={Boolean(busy) || !apiAvailable || !canAddContext}
-                  onSelect={onAttachSelection}
+                  disabled={Boolean(busy) || !apiAvailable || !selection.canAdd}
+                  onSelect={selection.onAttach}
                 >
                   <Selection size={12} className="shrink-0 opacity-70" />
                   <span className="min-w-0 flex-1 truncate">Attach selection</span>

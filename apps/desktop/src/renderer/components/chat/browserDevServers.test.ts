@@ -24,12 +24,15 @@ describe("dev servers", () => {
   });
 
   it("de-duplicates a list and survives a shape it has never seen", () => {
-    expect(normalizeDevServers([
-      { port: 5_173 },
-      { url: "http://localhost:5173" },
-      null,
-    ])).toEqual([{ url: "http://localhost:5173", port: 5_173, source: null }]);
+    expect(normalizeDevServers({
+      servers: [
+        { port: 5_173 },
+        { url: "http://localhost:5173" },
+        null,
+      ] as never,
+    })).toEqual([{ url: "http://localhost:5173", port: 5_173, source: null }]);
     expect(normalizeDevServers(undefined)).toEqual([]);
+    expect(normalizeDevServers({ servers: [] })).toEqual([]);
   });
 
   it("adds a newly detected server and enriches one it already knew", () => {

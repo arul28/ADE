@@ -6642,6 +6642,23 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * A login-import read sits behind an OS credential prompt with no timeout by
+   * design. Quitting ADE while one is up would otherwise leave an orphaned
+   * `Electron (ELECTRON_RUN_AS_NODE)` process still holding that prompt, since
+   * Node does not reap non-detached children when the parent exits on macOS.
+   */
+  const terminateLoginImportWorkersBestEffort = (): void => {
+    try {
+      const { terminateLoginImportReadWorkers } = require(
+        "./services/builtInBrowser/loginImport/loginImportReadWorkerClient",
+      );
+      terminateLoginImportReadWorkers();
+    } catch {
+      // ignore if module not loaded
+    }
+  };
+
   const disposeSharedTranscriptionService = (): void => {
     try {
       sharedTranscriptionService?.dispose();
@@ -6720,6 +6737,7 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
+    terminateLoginImportWorkersBestEffort();
   };
 
   const finalizeAppExit = (exitCode: number): void => {

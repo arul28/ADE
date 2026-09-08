@@ -211,8 +211,21 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     // bytes and no way to act on a tab, so serving it without a capability
     // grants nothing the daemon could not already infer from its own events.
     if (name === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD) {
-      const status = service.getStatus({});
+      // Project-scoped, not frontmost-window-scoped. The daemon asking is bound
+      // to one project; answering out of whichever window is active would hide
+      // its own tabs and leak another project's tab titles and URLs onto a
+      // phone bound to this one.
+      const status = service.getStatusForProjectScope(normalizedString(rawParams.projectRoot));
+      if (!status) {
+        const noWindow: BuiltInBrowserRuntimeStatus = {
+          activeTabId: null,
+          tabs: [],
+          unavailable: "desktop_not_attached_for_project",
+        };
+        return noWindow;
+      }
       const runtimeStatus: BuiltInBrowserRuntimeStatus = {
+        unavailable: null,
         activeTabId: status.activeTabId,
         tabs: status.tabs.map((tab) => ({
           id: tab.id,

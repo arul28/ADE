@@ -76,10 +76,12 @@ Computer use and proof are separate acts. Capturing the screen is something an
 agent does to see; filing a proof-drawer record is something it does on purpose,
 for a reviewer. Only an explicit proof call writes a record:
 
-- **`captureScreenshot`** (`apps/desktop/src/main/services/ai/tools/workflowTools.ts`)
-  is not a callable tool: `workflowTools.ts` exports names, not implementations,
-  and no tool registry ever received one. It never touched the broker. Agents
-  use `ade proof capture --caption "…"` for reviewer-facing proof.
+- **`captureScreenshot`** (formerly in
+  `apps/desktop/src/main/services/ai/tools/workflowTools.ts`) is not a callable
+  tool and never was: that module exported names, not implementations, and no
+  tool registry ever received one. It never touched the broker, and the module
+  itself has now been deleted. Agents use `ade proof capture --caption "…"` for
+  reviewer-facing proof.
 - **`screenshot_environment` / `record_environment`** take a `proof` flag. It is
   false by default, and `ade proof capture` / `ade proof record` are what set it
   true. A bare call — an agent looking at the screen, or an automation run using

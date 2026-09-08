@@ -691,7 +691,6 @@ import type {
   AppControlTraceResult,
   AppControlTypeTextArgs,
   AppControlWindowsResult,
-  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
@@ -2464,9 +2463,6 @@ declare global {
         setBounds: (
           args: BuiltInBrowserBoundsArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<BuiltInBrowserStatus>;
-        attachWebview: (
-          args: BuiltInBrowserAttachWebviewArgs,
         ) => Promise<BuiltInBrowserStatus>;
         /** Resolve a loopback URL onto a forward to the pinned machine. */
         localizeRemoteUrl: (

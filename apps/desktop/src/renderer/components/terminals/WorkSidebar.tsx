@@ -18,7 +18,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
-import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -29,12 +29,10 @@ import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
-import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
-import { isMacPlatform } from "../../lib/platform";
-import { isWebClientMode } from "../../lib/webClientMode";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
@@ -42,11 +40,8 @@ import { PaneTooltip } from "../ui/PaneTooltip";
 import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
-import {
-  isAvailableWorkSidebarTab,
-  workToolContextLabel,
-  type WorkToolContext,
-} from "./workTools";
+import { useNativeToolFeeds } from "./NativeToolFeedsContext";
+import { isAvailableWorkSidebarTab, workToolContextLabel } from "./workTools";
 import {
   WORK_TOOL_COMPONENTS,
   type PrRefreshAction,
@@ -210,24 +205,24 @@ export function WorkSidebar({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
-  const projectRoot = useAppStore(selectActiveProjectRoot);
   const keybindings = useAppStore((state) => state.keybindings);
   const reduceMotion = useReducedMotion() ?? false;
-  // The browser view is owned by THIS window's main process. A pin on another
-  // checkout of this computer still drives that view, just under the pinned
-  // checkout's tab collection, so hiding it on leave has to follow the pin. A
-  // pin on another machine never opens a view here — the panel explains that
-  // instead of driving a browser nobody in this window can see.
-  const browserViewRoot = runtimePin?.kind === "local" ? runtimePin.rootPath : projectRoot;
-  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const sidebarRef = useRef<HTMLElement | null>(null);
-  // Capability flags, never a platform sniff: the hosted web client renders this
-  // same component with stubbed native namespaces.
-  const toolContext = useMemo<WorkToolContext>(() => ({
-    isRemoteProject,
-    supportsIosSimulator: isMacPlatform(),
-    isWebClient: isWebClientMode(),
-  }), [isRemoteProject]);
+  // The capability gate, the browser view's collection scope and the offline
+  // guard all come from the page's feed provider rather than being recomputed
+  // here: the corner card reads the same three values, and computing them twice
+  // is how the two surfaces ended up disagreeing about `offline`.
+  //
+  // `browserViewRoot`: the browser view is owned by THIS window's main process.
+  // A pin on another checkout of this computer still drives that view, just
+  // under the pinned checkout's tab collection, so hiding it on leave has to
+  // follow the pin. A pin on another machine never opens a view here — the
+  // panel explains that instead of driving a browser nobody can see.
+  const {
+    context: toolContext,
+    browserViewRoot,
+    offline: pinnedMachineOffline,
+  } = useNativeToolFeeds();
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
   // non-sequitur, and the picker says why the card is dimmed.
@@ -237,7 +232,6 @@ export function WorkSidebar({
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
   // back to the machine's slice of the cross-machine union.
-  const pinnedMachine = useMachineEntryForBinding(runtimePin);
   const pinnedLanes = useLanesForPin(runtimePin);
   const scopedLanes = pinnedLanes ?? lanes;
   const activeLane = useMemo(
@@ -245,9 +239,6 @@ export function WorkSidebar({
     [laneId, scopedLanes],
   );
   const laneRoot = activeLane?.worktreePath ?? null;
-  // Pinned calls have no local fallback, so a machine that is not answering
-  // gets one plain line instead of a wall of rejected IPC.
-  const pinnedMachineOffline = Boolean(runtimePin) && pinnedMachine?.online === false;
   const pinnedMachineName = runtimePin ? machineNameForBinding(runtimePin) : null;
 
   useEffect(() => {
@@ -313,14 +304,10 @@ export function WorkSidebar({
     appControlSession,
   } = useWorkToolStatuses({
     enabled: active,
-    context: toolContext,
     laneId,
     lane: activeLane,
     runtimePin,
     terminalOwnerSessionId: statusOwnerSessionId,
-    browserViewRoot,
-    pinnedMachineId: pinnedMachine?.machineId ?? null,
-    offline: pinnedMachineOffline,
   });
 
   function resolveToolAttributionReason(): string | null {

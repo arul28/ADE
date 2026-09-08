@@ -64,7 +64,7 @@ export function normalizeAgentFrame(value: unknown): AgentFrame {
   };
 }
 
-export function normalizeNumberArray(value: unknown): number[] | undefined {
+function normalizeNumberArray(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const entries = value
     .map((entry) => (typeof entry === "number" && Number.isFinite(entry) ? Math.floor(entry) : null))
@@ -72,7 +72,7 @@ export function normalizeNumberArray(value: unknown): number[] | undefined {
   return entries.length ? entries : undefined;
 }
 
-export function normalizeStringArray(value: unknown): string[] | undefined {
+function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const entries = value
     .map((entry) => stringOrNull(entry))
@@ -168,6 +168,41 @@ export function agentElementLocatePayload(input: AgentElementTargetInput): Recor
   };
 }
 
+/**
+ * `agentElementLocatePayload` plus the handle-resolution fallback.
+ *
+ * This is where the real branching lives — the precedence
+ * `selector` → `testId` → `label ?? text ?? value ?? placeholder` →
+ * `elementIndex`, each carrying the element's `framePath`/`shadowPath` context
+ * — and therefore what decides which locator an agent's opaque `handle`
+ * resolves to. It was forked character-for-character across the browser and App
+ * Control, differing only in the owner type threaded to the reader, which is
+ * exactly the drift this module exists to stop: one surface gaining an `href`
+ * fallback, or reordering `testId` above `selector`, would silently change what
+ * the same handle means depending on who asked.
+ *
+ * The owner-specific part is the `readElement` closure. Nothing else differs.
+ */
+export async function resolveAgentElementLocatePayload(
+  input: AgentElementTargetInput,
+  readElement: (handle: string) => Promise<AgentElementSnapshot>,
+): Promise<Record<string, unknown>> {
+  const direct = agentElementLocatePayload(input);
+  if (Object.keys(direct).length > 0) return direct;
+  const handle = stringOrNull(input.handle);
+  if (!handle) return direct;
+  const element = await readElement(handle);
+  const text = element.label ?? element.text ?? element.value ?? element.placeholder;
+  const context = {
+    ...(element.framePath ? { framePath: element.framePath } : {}),
+    ...(element.shadowPath ? { shadowPath: element.shadowPath } : {}),
+  };
+  if (element.selector) return { ...context, selector: element.selector };
+  if (element.testId) return { ...context, testId: element.testId };
+  if (text) return { ...context, text };
+  return { ...context, elementIndex: element.index };
+}
+
 /* ── Trace target ─────────────────────────────────────────────────────────── */
 
 /**
@@ -176,14 +211,14 @@ export function agentElementLocatePayload(input: AgentElementTargetInput): Recor
  * differently (`type` in App Control, `typeText` in the browser), so the rule
  * lists both rather than living in two forked function bodies.
  */
-export const AGENT_TEXT_ENTRY_ACTIONS: ReadonlySet<string> = new Set(["type", "typeText"]);
+const AGENT_TEXT_ENTRY_ACTIONS: ReadonlySet<string> = new Set(["type", "typeText"]);
 
 /** Locator/coordinate keys every agent-driveable surface copies verbatim. */
-export const AGENT_TRACE_STRING_KEYS = [
+const AGENT_TRACE_STRING_KEYS = [
   "selector", "testId", "handle", "button", "key", "url", "loadState",
 ] as const;
 
-export const AGENT_TRACE_NUMBER_KEYS = [
+const AGENT_TRACE_NUMBER_KEYS = [
   "elementIndex", "x", "y", "deltaX", "deltaY", "clickCount", "timeoutMs", "networkIdleMs",
 ] as const;
 

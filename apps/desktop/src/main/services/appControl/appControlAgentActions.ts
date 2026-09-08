@@ -35,17 +35,26 @@ import {
   parseObservationElementHandle,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
+// Aliased at the import, not re-exported through `appControlObservations`, so
+// the shared origin is visible at the use site — same idiom the browser service
+// uses for the same three symbols.
+import {
+  agentHasElementTarget as hasElementTarget,
+  applyAgentObservationHandles as applyObservationHandles,
+  resolveAgentElementLocatePayload,
+} from "../../../shared/agentObservationNormalizers";
+import {
+  pruneAgentObservationCacheRoot as pruneObservationCacheRoot,
+  pruneAgentObservationDirectory as pruneObservationDirectory,
+} from "../shared/agentObservationCache";
 import {
   APP_CONTROL_OBSERVATION_CACHE_DIR,
   APP_CONTROL_OBSERVATION_MAX_AGE_MS,
   MAX_APP_CONTROL_TRACE_ENTRIES,
   MAX_ELEMENT_MAP_ELEMENTS,
   actionTargetForTrace,
-  applyObservationHandles,
   decodeObservationDataUrl,
-  elementLocatePayload,
   finiteNumber,
-  hasElementTarget,
   isRecord,
   normalizeActionObserveDelayMs,
   normalizeDomSnapshot,
@@ -58,8 +67,6 @@ import {
   normalizeWaitTimeoutMs,
   observationDirectory,
   optionalFiniteNumber,
-  pruneObservationCacheRoot,
-  pruneObservationDirectory,
   stringOrNull,
 } from "./appControlObservations";
 import type { Logger } from "../logging/logger";
@@ -398,25 +405,12 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     return element;
   };
 
-  const elementLocatePayloadForInput = async (
+  const elementLocatePayloadForInput = (
     session: AppControlSession,
     input: AppControlElementTargetArgs,
-  ): Promise<Record<string, unknown>> => {
-    const direct = elementLocatePayload(input);
-    if (Object.keys(direct).length > 0) return direct;
-    const handle = stringOrNull(input.handle);
-    if (!handle) return direct;
-    const element = await readObservationElementHandle(session, handle);
-    const text = element.label ?? element.text ?? element.value ?? element.placeholder;
-    const context = {
-      ...(element.framePath ? { framePath: element.framePath } : {}),
-      ...(element.shadowPath ? { shadowPath: element.shadowPath } : {}),
-    };
-    if (element.selector) return { ...context, selector: element.selector };
-    if (element.testId) return { ...context, testId: element.testId };
-    if (text) return { ...context, text };
-    return { ...context, elementIndex: element.index };
-  };
+  ): Promise<Record<string, unknown>> =>
+    resolveAgentElementLocatePayload(input, (handle) =>
+      readObservationElementHandle(session, handle));
 
   const locateElementTarget = async (
     client: TClient,

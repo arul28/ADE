@@ -443,7 +443,6 @@ export const IPC = {
   builtInBrowserLoginImportImport: "ade.builtInBrowser.loginImport.import",
   builtInBrowserShowPanel: "ade.builtInBrowser.showPanel",
   builtInBrowserSetBounds: "ade.builtInBrowser.setBounds",
-  builtInBrowserAttachWebview: "ade.builtInBrowser.attachWebview",
   builtInBrowserNavigate: "ade.builtInBrowser.navigate",
   builtInBrowserCreateTab: "ade.builtInBrowser.createTab",
   builtInBrowserSwitchTab: "ade.builtInBrowser.switchTab",

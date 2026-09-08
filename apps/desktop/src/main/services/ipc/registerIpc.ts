@@ -220,7 +220,6 @@ import type {
   AppControlSnapshotArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
-  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
@@ -2739,7 +2738,6 @@ export function registerIpc({
     builtInBrowserRecord,
     builtInBrowserNumber,
     parseBuiltInBrowserBoundsArgs,
-    parseBuiltInBrowserAttachWebviewArgs,
     parseBuiltInBrowserNavigateArgs,
     optionalBuiltInBrowserString,
     optionalBoolean,
@@ -9141,11 +9139,6 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
     return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds), win);
-  });
-
-  ipcMain.handle(IPC.builtInBrowserAttachWebview, async (event, arg) => {
-    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserAttachWebview, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().attachWebview(parseBuiltInBrowserAttachWebviewArgs(arg, IPC.builtInBrowserAttachWebview), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {

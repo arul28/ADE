@@ -11,7 +11,6 @@
  * @module ipc/builtInBrowserIpcArgs
  */
 import type {
-  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserClaimArgs,
   BuiltInBrowserClearPermissionsArgs,
@@ -34,10 +33,10 @@ import type {
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
 } from "../../../shared/types/builtInBrowser";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+// The shared one, not a tenth copy. The two bodies agreed on every input, which
+// is exactly how a divergence goes unnoticed later. `agentObservationNormalizers`
+// is dependency-free by design, so importing it here adds nothing to the module.
+import { isRecord } from "../../../shared/agentObservationNormalizers";
 
 /**
  * Spread helper for "include this key only when the parse produced a value".
@@ -104,14 +103,6 @@ export function createBuiltInBrowserIpcArgParsers(args: {
         ? {}
         : { scale: builtInBrowserNumber(record, "scale", channel, { min: 0.05, max: 1 }) }),
     };
-  };
-
-  const parseBuiltInBrowserAttachWebviewArgs = (value: unknown, channel: string): BuiltInBrowserAttachWebviewArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    return { ...parseBuiltInBrowserProjectScopeArgs(record, channel), tabId, webContentsId };
   };
 
   const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
@@ -420,7 +411,6 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     builtInBrowserRecord,
     builtInBrowserNumber,
     parseBuiltInBrowserBoundsArgs,
-    parseBuiltInBrowserAttachWebviewArgs,
     parseBuiltInBrowserNavigateArgs,
     optionalBuiltInBrowserString,
     optionalBoolean,

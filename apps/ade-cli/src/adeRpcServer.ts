@@ -2862,6 +2862,21 @@ function scopeBuiltInBrowserAdeActionArgs(
  * anyone. So an agent in lane A could read lane B's latest observation path and
  * then its bytes, and could flip what every paired phone believed the human had
  * open. This is the enforcement the comment described.
+ *
+ * Two things this function does NOT decide:
+ * - A CTO-role caller never reaches here at all (the dispatch guard is
+ *   `!callerIsCto && domain === "work_tools"`). The CTO thread is a deliberate
+ *   cross-lane role — same carve-out `external-sessions` takes — so it reads
+ *   every lane's pane on purpose.
+ * - "Not a user client" and "has a resolvable lane" are NOT complements.
+ *   `isUserClientSession` is false as soon as any of
+ *   `runId`/`stepId`/`attemptId`/`chatSessionId` is set, while
+ *   `resolveChatSessionLaneId` needs a `chatSessionId` whose session record the
+ *   daemon can still resolve. The gap between them — an orchestration step, an
+ *   automation attempt, a chat whose session record is gone after a daemon
+ *   restart — is agent-shaped with no lane, and it is DENIED rather than passed
+ *   through unscoped. Passing it through is what let such a caller read any
+ *   lane's tab list and any lane's observation bytes.
  */
 function scopeWorkToolsAdeActionArgs(
   runtime: AdeRuntime,
@@ -2879,19 +2894,28 @@ function scopeWorkToolsAdeActionArgs(
     }
     return workToolsArgs;
   }
-  if (action === "getLaneState") {
+  if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
-    // A bound agent reads its OWN lane, whatever it asked for. An unbound
-    // caller has no lane to be forced to and keeps the argument it supplied.
-    return sessionLaneId ? { ...workToolsArgs, laneId: sessionLaneId } : workToolsArgs;
-  }
-  if (action === "readObservationPreview") {
+    if (!isUserClient && !sessionLaneId) {
+      scopeAccessDenied(
+        "work_tools reads need a resolvable lane for this caller",
+        method,
+      );
+    }
+    // `callerLaneId` is the aggregator's ownership check, so it is never the
+    // caller's to supply — stripped unconditionally, including on the
+    // user-client path where it would otherwise have survived by accident.
+    const { callerLaneId: _callerSupplied, ...rest } = workToolsArgs;
+    if (action === "getLaneState") {
+      // A bound agent reads its OWN lane, whatever it asked for. A user client
+      // has no lane to be forced to and keeps the argument it supplied.
+      return sessionLaneId ? { ...rest, laneId: sessionLaneId } : rest;
+    }
     // The path check itself lives in the aggregator (`resolvePathWithinRoot`
     // plus an extension allow-list). What it could not know is who is asking,
     // so the caller's lane travels with the request and the aggregator refuses
     // a sidecar owned by a different one.
-    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
-    return sessionLaneId ? { ...workToolsArgs, callerLaneId: sessionLaneId } : workToolsArgs;
+    return sessionLaneId ? { ...rest, callerLaneId: sessionLaneId } : rest;
   }
   return workToolsArgs;
 }
@@ -4077,11 +4101,15 @@ async function runTool(args: {
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (domain === "built_in_browser" && action === "endHandoff") {
-      // Hand-back is the human's move, not the agent's. The desktop renderer
-      // reaches this through a locally-pinned runtime when the user presses
-      // `Hand back`; an agent asking for it would be ending the sign-in it
-      // itself asked a person to perform, so it is refused outright rather than
-      // scoped. `startHandoff` / `waitForHandoff` stay on the normal path.
+      // Tripwire, not a live path. Hand-back is the human's move, not the
+      // agent's: `endHandoff` is NOT on the desktop-bridge allowlist, and
+      // `ADE_ACTION_ALLOWLIST.built_in_browser` is spread straight from that
+      // list, so `runTool` rejects the action before this branch can run. The
+      // desktop renderer reaches hand-back through local IPC and ignores any
+      // runtime pin. This stays so that if `endHandoff` is ever put back on the
+      // bridge allowlist it lands user-clients-only rather than open — an agent
+      // asking for it would be ending the sign-in it itself asked a person to
+      // perform. `startHandoff` / `waitForHandoff` stay on the normal path.
       if (!isUserClient) {
         builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
       }

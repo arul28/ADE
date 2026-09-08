@@ -12,6 +12,7 @@ import {
   formatRecordingElapsed,
   normalizeRecordingFps,
   recordingElapsedMs,
+  recordingEndedByLabel,
   recordingPillLabel,
   simulatorEmulationPreset,
   stepZoomFactor,
@@ -74,6 +75,26 @@ describe("recordingPillLabel", () => {
 
   it("is null when nothing is recording", () => {
     expect(recordingPillLabel(null)).toBeNull();
+  });
+});
+
+describe("recordingEndedByLabel", () => {
+  it("says nothing for a recording that was stopped on purpose", () => {
+    // `stopRecording` is the common case and needs no explanation; the toast is
+    // only for a REC pill that vanished without anyone asking.
+    expect(recordingEndedByLabel(undefined)).toBeNull();
+    expect(recordingEndedByLabel(null)).toBeNull();
+    expect(recordingEndedByLabel("human")).toBeNull();
+  });
+
+  it("says whether there is a file, which is the question a vanished pill raises", () => {
+    // The cap FINALIZES the recording, so there is something to go and find.
+    expect(recordingEndedByLabel("max_duration"))
+      .toBe("5-minute limit reached. The clip was saved.");
+    // A handoff ABORTS it — nothing is published and it does not resume, so a
+    // line that stopped at "stopped" would send someone hunting for nothing.
+    expect(recordingEndedByLabel("handoff"))
+      .toBe("Sign-in took the tab. The partial clip was discarded and recording does not resume.");
   });
 });
 

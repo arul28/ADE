@@ -7,9 +7,14 @@ import { createBuiltInBrowserService } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 
 /**
- * Service-level coverage for the tab capability surface added alongside the
- * agent actions: emulation, zoom, find, DevTools, the opt-in network log/HAR,
- * upload-root validation and the recording lifecycle.
+ * Service-level coverage for `builtInBrowserTabCapabilities.ts`: emulation,
+ * zoom, find, DevTools, the opt-in network log/HAR, upload-root validation and
+ * the recording lifecycle.
+ *
+ * Driven through `createBuiltInBrowserService` rather than
+ * `createBuiltInBrowserTabCapabilities` directly, on purpose: the seam between
+ * them is what a regression would break, and constructing the deps object by
+ * hand would assert the mock instead of the wiring.
  */
 
 const fakes = vi.hoisted(() => {
@@ -470,8 +475,18 @@ describe("built-in browser dev-server auto-open", () => {
     await vi.waitFor(() => expect(service.getStatus().tabs).toHaveLength(1));
 
     expect(service.getStatus().tabs[0]?.url).toBe("http://localhost:5173/");
-    const event = collector.events.find((entry) => entry.type === "dev-server-detected");
-    expect(event).toMatchObject({
+    // Two events by design: the launchpad chip fires first and unconditionally
+    // (the claim below it can block on a human), then the enriched one once the
+    // tab is actually open. Consumers key on the port, so the second refines
+    // the first rather than duplicating it.
+    const chips = collector.events.filter((entry) => entry.type === "dev-server-detected");
+    expect(chips[0]).toMatchObject({
+      type: "dev-server-detected",
+      autoOpened: false,
+      tabId: null,
+      server: { port: 5173, source: { laneId: "lane-1", sessionId: "sess-1" } },
+    });
+    expect(chips.at(-1)).toMatchObject({
       type: "dev-server-detected",
       autoOpened: true,
       server: { port: 5173, source: { laneId: "lane-1", sessionId: "sess-1" } },

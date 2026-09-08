@@ -4879,6 +4879,78 @@ describe("adeRpcServer", () => {
     expect(setActiveTool).not.toHaveBeenCalled();
   });
 
+  it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
+    // `isUserClientSession` and `resolveChatSessionLaneId` are not complements:
+    // an orchestration step identified only by `runId`, or a chat whose session
+    // record the daemon can no longer resolve, is neither a user client nor a
+    // lane. That gap used to fall through UNSCOPED, so such a caller read any
+    // lane's tab list and then any lane's observation preview bytes.
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation(() => null);
+    const getLaneState = vi.fn(async (args: unknown) => args);
+    const readObservationPreview = vi.fn(async (args: unknown) => args);
+    const setActiveTool = vi.fn(() => ({ ok: true }));
+    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+
+    const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    for (const [action, args] of [
+      ["getLaneState", { laneId: "lane-b" }],
+      ["readObservationPreview", { path: "/tmp/obs.png", callerLaneId: "lane-b" }],
+    ] as const) {
+      const denied = await callTool(stepHandler, "run_ade_action", {
+        domain: "work_tools",
+        action,
+        args,
+      });
+      expect(denied.isError).toBe(true);
+    }
+    expect(getLaneState).not.toHaveBeenCalled();
+    expect(readObservationPreview).not.toHaveBeenCalled();
+
+    // Same shape for a bound chat the daemon cannot resolve to a lane.
+    const staleHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(staleHandler, { callerId: "agent-x", role: "agent", chatSessionId: "chat-gone" });
+    const stale = await callTool(staleHandler, "run_ade_action", {
+      domain: "work_tools",
+      action: "getLaneState",
+      args: { laneId: "lane-b" },
+    });
+    expect(stale.isError).toBe(true);
+    expect(getLaneState).not.toHaveBeenCalled();
+  });
+
+  it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
+    // `callerLaneId` IS the aggregator's ownership check, so it is never the
+    // caller's to supply — including on the user-client path, where it used to
+    // survive by accident.
+    const fixture = createRuntime();
+    const getLaneState = vi.fn(async (args: unknown) => args);
+    const readObservationPreview = vi.fn(async (args: unknown) => args);
+    const setActiveTool = vi.fn(() => ({ ok: true }));
+    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "desktop-1", role: "agent" });
+    const preview = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "readObservationPreview",
+      args: { path: "/tmp/obs.png", callerLaneId: "lane-b" },
+    });
+    expect(preview?.isError).toBeUndefined();
+    expect(readObservationPreview).toHaveBeenCalledWith({ path: "/tmp/obs.png" });
+
+    // A user client is still unscoped otherwise — iOS, the web client and the
+    // desktop all read whichever lane their UI is showing.
+    const state = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "getLaneState",
+      args: { laneId: "lane-b" },
+    });
+    expect(state?.isError).toBeUndefined();
+    expect(getLaneState).toHaveBeenCalledWith({ laneId: "lane-b" });
+  });
+
   it("denies unbound and elevated local callers without a browser actor capability", async () => {
     const fixture = createRuntime();
     const getStatus = vi.fn(async () => ({ ok: true }));

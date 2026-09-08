@@ -26,7 +26,7 @@ export type BuiltInBrowserFindResult = {
  */
 export type BuiltInBrowserFindWaiters = Set<(requestId: number) => void>;
 
-export type AwaitFoundInPageArgs = {
+type AwaitFoundInPageArgs = {
   text: string;
   forward: boolean;
   matchCase: boolean;

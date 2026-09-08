@@ -3,6 +3,9 @@ import {
   browserLetterboxFrame,
   clampBrowserViewBounds,
   emulationCaption,
+  isBrowserOverlayCandidate,
+  rectIntersection,
+  type BrowserOverlayCandidate,
 } from "./browserViewGeometry";
 
 describe("browserLetterboxFrame", () => {
@@ -86,5 +89,127 @@ describe("emulationCaption", () => {
     // a warning about nothing.
     expect(emulationCaption({ width: 393, height: 852 }, 0.999)).toBe("393 × 852");
     expect(emulationCaption({ width: 393, height: 852 }, 1)).toBe("393 × 852");
+  });
+});
+
+function rect(left: number, top: number, width: number, height: number) {
+  return { left, top, width, height, right: left + width, bottom: top + height };
+}
+
+describe("rectIntersection", () => {
+  it("returns the overlapping box of two crossing rects", () => {
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(60, 40, 100, 100)))
+      .toEqual({ left: 60, top: 40, right: 100, bottom: 100, width: 40, height: 60 });
+  });
+
+  it("returns the inner rect when one fully contains the other", () => {
+    const inner = rect(20, 30, 10, 10);
+    expect(rectIntersection(rect(0, 0, 100, 100), inner)).toEqual(inner);
+    // Containment is symmetric: the surface may be the smaller of the two.
+    expect(rectIntersection(inner, rect(0, 0, 100, 100))).toEqual(inner);
+  });
+
+  it("returns the rect itself when both are identical", () => {
+    const same = rect(5, 5, 50, 50);
+    expect(rectIntersection(same, same)).toEqual(same);
+  });
+
+  it("treats a shared edge as no overlap rather than a zero-area rect", () => {
+    // A pane flush against the browser surface must not hide the native view:
+    // zero-area contact would blank the page for a rectangle nobody can see.
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(100, 0, 40, 100))).toBeNull();
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(0, 100, 100, 40))).toBeNull();
+  });
+
+  it("treats a zero-sized rect inside another as no overlap", () => {
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(50, 50, 0, 0))).toBeNull();
+  });
+
+  it("returns null for disjoint rects on either axis", () => {
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(200, 0, 50, 50))).toBeNull();
+    expect(rectIntersection(rect(0, 0, 100, 100), rect(0, 200, 50, 50))).toBeNull();
+    expect(rectIntersection(rect(200, 200, 50, 50), rect(0, 0, 100, 100))).toBeNull();
+  });
+});
+
+function candidate(overrides: Partial<BrowserOverlayCandidate> = {}): BrowserOverlayCandidate {
+  return {
+    rect: { width: 200, height: 120 },
+    role: null,
+    position: "static",
+    pointerEvents: "auto",
+    display: "block",
+    visibility: "visible",
+    opacity: "1",
+    hidden: false,
+    ariaHidden: false,
+    ariaModal: false,
+    matchesOverlaySelector: false,
+    ...overrides,
+  };
+}
+
+describe("isBrowserOverlayCandidate", () => {
+  it("ignores an in-flow element that is merely present", () => {
+    expect(isBrowserOverlayCandidate(candidate())).toBe(false);
+  });
+
+  it("ignores anything that cannot be seen or clicked", () => {
+    // Each of these is a popover that has already closed, or a decorative
+    // layer: hiding the live view for one costs a frame of frozen page.
+    expect(isBrowserOverlayCandidate(candidate({ display: "none", position: "fixed" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ visibility: "hidden", position: "fixed" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ opacity: "0", position: "fixed" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ pointerEvents: "none", position: "fixed" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ hidden: true, position: "fixed" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ ariaHidden: true, position: "fixed" }))).toBe(false);
+  });
+
+  it("keeps a partly transparent overlay", () => {
+    // Only a fully transparent layer is invisible; a fading menu still paints.
+    expect(isBrowserOverlayCandidate(candidate({ opacity: "0.4", position: "fixed" }))).toBe(true);
+  });
+
+  it("ignores anything smaller than a few pixels on either axis", () => {
+    expect(isBrowserOverlayCandidate(candidate({ rect: { width: 3, height: 400 }, role: "dialog" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ rect: { width: 400, height: 3 }, role: "dialog" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ rect: { width: 4, height: 4 }, role: "dialog" }))).toBe(true);
+  });
+
+  it("accepts every overlay role, and no other role", () => {
+    for (const role of ["alertdialog", "dialog", "listbox", "menu", "tooltip"]) {
+      expect(isBrowserOverlayCandidate(candidate({ role }))).toBe(true);
+    }
+    expect(isBrowserOverlayCandidate(candidate({ role: "button" }))).toBe(false);
+    expect(isBrowserOverlayCandidate(candidate({ role: "" }))).toBe(false);
+  });
+
+  it("accepts an aria-modal element whatever its role", () => {
+    expect(isBrowserOverlayCandidate(candidate({ ariaModal: true }))).toBe(true);
+  });
+
+  it("accepts a popover library's content box", () => {
+    expect(isBrowserOverlayCandidate(candidate({ matchesOverlaySelector: true }))).toBe(true);
+  });
+
+  it("accepts anything taken out of flow, and nothing left in it", () => {
+    for (const position of ["fixed", "absolute", "sticky"]) {
+      expect(isBrowserOverlayCandidate(candidate({ position }))).toBe(true);
+    }
+    for (const position of ["static", "relative"]) {
+      expect(isBrowserOverlayCandidate(candidate({ position }))).toBe(false);
+    }
+  });
+
+  it("puts invisibility ahead of every accepting branch", () => {
+    // A closed Radix menu keeps its role and its data attribute; the display
+    // check is what stops it from freezing the view for the rest of the page.
+    expect(isBrowserOverlayCandidate(candidate({
+      role: "menu",
+      ariaModal: true,
+      matchesOverlaySelector: true,
+      position: "fixed",
+      display: "none",
+    }))).toBe(false);
   });
 });

@@ -45,8 +45,17 @@ export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
  * process and the daemon proxies it over `desktop-bridge.sock`, so "no desktop
  * attached to this machine" is a normal, non-error state that clients must
  * render as absence rather than as a failure.
+ *
+ * `desktop_not_attached_for_project` is the narrower version of that: a desktop
+ * IS running on this machine, it just has no window open for this project. It is
+ * a separate reason because "open ADE on your Mac" is the wrong instruction for
+ * a user whose ADE is already open — they need to open THIS project.
  */
-export type WorkToolsUnavailableReason = "desktop_not_attached" | "unsupported" | "error";
+export type WorkToolsUnavailableReason =
+  | "desktop_not_attached"
+  | "desktop_not_attached_for_project"
+  | "unsupported"
+  | "error";
 
 export type WorkToolsBrowserTab = {
   id: string;

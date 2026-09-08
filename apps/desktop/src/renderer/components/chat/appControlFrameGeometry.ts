@@ -33,7 +33,7 @@ export type MappedPoint = {
   topPct: number;
 };
 
-export type FrameRect = { left: number; top: number; width: number; height: number };
+type FrameRect = { left: number; top: number; width: number; height: number };
 
 /**
  * The dimensions the panel is actually painting, live frame first.

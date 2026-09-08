@@ -24,7 +24,7 @@ export type BrowserViewFrame = {
   scale: number;
 };
 
-export type BrowserViewBox = {
+type BrowserViewBox = {
   left: number;
   top: number;
   right: number;
@@ -103,4 +103,102 @@ export function emulationCaption(
   const size = `${Math.round(emulation.width)} × ${Math.round(emulation.height)}`;
   if (typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0 || scale >= 0.995) return size;
   return `${size} · fit ${Math.round(scale * 100)}%`;
+}
+
+/** Fade-out for the snapshot underlay once the live view is back, in ms. */
+export const UNDERLAY_FADE_MS = 120;
+
+/** The half of a `DOMRect` that is arithmetic rather than layout. */
+export type BrowserViewRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+};
+
+/**
+ * The overlapping part of two rects, or null when they do not overlap.
+ *
+ * Zero-area contact is not an overlap: two panes that share an edge, or a
+ * collapsed popover sitting exactly on the surface's boundary, must not count
+ * as something painting over the native view — hiding the view for them would
+ * blank the page for a rectangle nobody can see.
+ */
+export function rectIntersection(a: BrowserViewRect, b: BrowserViewRect): BrowserViewRect | null {
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return { bottom, height, left, right, top, width };
+}
+
+/** The ARIA roles that always mean "this paints over the page". */
+const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tooltip"]);
+
+/**
+ * Everything the overlay predicate needs, read off the DOM by its caller.
+ *
+ * The hook does the `getComputedStyle` and attribute reads; the decision they
+ * feed is arithmetic and string comparison, so it lives here where it can be
+ * exercised without a compositor.
+ */
+export type BrowserOverlayCandidate = {
+  /** The candidate's own box; only its size decides candidacy. */
+  rect: Pick<BrowserViewRect, "height" | "width">;
+  /** `role` attribute, or null when it has none. */
+  role: string | null;
+  /** Computed `position`. */
+  position: string;
+  /** Computed `pointer-events`. */
+  pointerEvents: string;
+  /** Computed `display`. */
+  display: string;
+  /** Computed `visibility`. */
+  visibility: string;
+  /** Computed `opacity`, as the string the computed style reports. */
+  opacity: string;
+  /** The `hidden` property. */
+  hidden: boolean;
+  /** `aria-hidden="true"`. */
+  ariaHidden: boolean;
+  /** `aria-modal="true"`. */
+  ariaModal: boolean;
+  /** Matched one of the popover-library content selectors. */
+  matchesOverlaySelector: boolean;
+};
+
+/**
+ * Could this element be painting over the native browser view?
+ *
+ * Deliberately generous: a false positive costs one frozen frame, a false
+ * negative shows a menu over a black rectangle. Anything invisible or
+ * click-through is excluded first, then anything smaller than a few pixels,
+ * and what remains qualifies by role, by modality, by being a popover
+ * library's content box, or simply by being taken out of flow.
+ */
+export function isBrowserOverlayCandidate(candidate: BrowserOverlayCandidate): boolean {
+  if (
+    candidate.display === "none"
+    || candidate.visibility === "hidden"
+    || candidate.opacity === "0"
+    || candidate.pointerEvents === "none"
+    || candidate.hidden
+    || candidate.ariaHidden
+  ) {
+    return false;
+  }
+  if (candidate.rect.width < 4 || candidate.rect.height < 4) return false;
+  if (candidate.role && OVERLAY_ROLES.has(candidate.role)) return true;
+  if (candidate.ariaModal) return true;
+  if (candidate.matchesOverlaySelector) return true;
+  return (
+    candidate.position === "fixed"
+    || candidate.position === "absolute"
+    || candidate.position === "sticky"
+  );
 }

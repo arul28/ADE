@@ -1,3 +1,13 @@
+import { createPendingRequestChannel } from "./pendingRequestChannel";
+
+/**
+ * "Open the Linear quick view for this issue" — a one-shot request channel.
+ *
+ * Asked for by deeplinks, the command palette and session cards; answered by
+ * the top bar's `LinearQuickViewButton`, which may not have mounted yet when
+ * the request arrives. The mechanics are `createPendingRequestChannel`; only
+ * the payload and its normalization are this module's.
+ */
 export type LinearIssueQuickViewRequest = {
   issueIdentifier: string;
   branch?: string | null;
@@ -5,9 +15,7 @@ export type LinearIssueQuickViewRequest = {
   requestedAt: number;
 };
 
-const LINEAR_ISSUE_QUICK_VIEW_EVENT = "ade:linear-issue-quick-view";
-
-let pendingRequest: LinearIssueQuickViewRequest | null = null;
+const channel = createPendingRequestChannel<LinearIssueQuickViewRequest>("linear-quick-view");
 
 function normalizeRequest(
   request: Omit<LinearIssueQuickViewRequest, "requestedAt"> & { requestedAt?: number },
@@ -28,28 +36,20 @@ export function requestLinearIssueQuickView(
 ): void {
   const normalized = normalizeRequest(request);
   if (!normalized) return;
-  pendingRequest = normalized;
-  window.dispatchEvent(new CustomEvent<LinearIssueQuickViewRequest>(LINEAR_ISSUE_QUICK_VIEW_EVENT, {
-    detail: normalized,
-  }));
+  channel.request(normalized);
 }
 
 export function consumePendingLinearIssueQuickViewRequest(): LinearIssueQuickViewRequest | null {
-  const request = pendingRequest;
-  pendingRequest = null;
-  return request;
+  return channel.takePending();
 }
 
 export function subscribeLinearIssueQuickViewRequests(
   onRequest: (request: LinearIssueQuickViewRequest) => void,
 ): () => void {
-  const listener = (event: Event) => {
-    const request = event instanceof CustomEvent ? event.detail as LinearIssueQuickViewRequest | null : null;
-    if (request) {
-      pendingRequest = null;
-      onRequest(request);
-    }
-  };
-  window.addEventListener(LINEAR_ISSUE_QUICK_VIEW_EVENT, listener);
-  return () => window.removeEventListener(LINEAR_ISSUE_QUICK_VIEW_EVENT, listener);
+  return channel.subscribe((request) => {
+    // This subscriber owns the request now; drop the hold so a later mount
+    // cannot drain it again and re-open a quick view nobody asked for.
+    channel.clearPending();
+    onRequest(request);
+  });
 }

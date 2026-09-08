@@ -49,7 +49,7 @@ export type LoginImportReadResponse =
  * Runs beside the read rather than at the call site because the error classes
  * cannot cross a process boundary — only this `{status, reason}` pair can.
  */
-export function classifyLoginImportReadFailure(
+function classifyLoginImportReadFailure(
   error: unknown,
 ): { status: BrowserLoginImportBlockedReason; reason: string } {
   if (error instanceof SafariCookieReadError) {

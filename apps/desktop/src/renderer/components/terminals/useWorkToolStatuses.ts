@@ -19,12 +19,9 @@ import {
   workToolErrorSuffix,
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
-import {
-  asBuiltInBrowserStatus,
-  isAppControlSessionLive,
-  useNativeToolSessions,
-} from "./useNativeToolSessions";
-import type { WorkToolAvailability, WorkToolContext, WorkToolDefinition } from "./workTools";
+import { asBuiltInBrowserStatus, isAppControlSessionLive } from "./useNativeToolSessions";
+import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
+import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
 
 /**
  * What a tool has to say about itself on the picker card and in the activity
@@ -260,19 +257,11 @@ export function terminalStatusLine(
  */
 export function useWorkToolStatuses(args: {
   enabled: boolean;
-  /** Capability gate — an unavailable tool is never read from. */
-  context: WorkToolContext;
   laneId: string | null;
   lane: LaneSummary | null;
   runtimePin: OpenProjectBinding | null;
   /** Chat/CLI session that owns the attached terminals, if any. */
   terminalOwnerSessionId: string | null;
-  /** Project root the browser view is collection-scoped to. */
-  browserViewRoot: string | null;
-  /** Machine the pane is pinned to, or null for this tab's own machine. */
-  pinnedMachineId: string | null;
-  /** True when the pinned machine is not answering; skip every pinned read. */
-  offline: boolean;
 }): {
   statuses: WorkToolStatusMap;
   loading: boolean;
@@ -284,17 +273,7 @@ export function useWorkToolStatuses(args: {
   iosSession: IosSimulatorSession | null;
   appControlSession: AppControlSession | null;
 } {
-  const {
-    enabled,
-    context,
-    laneId,
-    lane,
-    runtimePin,
-    terminalOwnerSessionId,
-    browserViewRoot,
-    pinnedMachineId,
-    offline,
-  } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
@@ -316,17 +295,19 @@ export function useWorkToolStatuses(args: {
     if (next) setBrowserErrors((current) => pruneWorkToolBrowserErrors(current, next));
   }, []);
 
-  // One subscription set for the whole pane, shared with the live corner card:
-  // the capability gate, the "unsupported stub" boundary check and the feed
-  // teardown all live in one place rather than one copy per consumer.
-  const { browserStatus, iosSession, appControlSession, canBrowser } = useNativeToolSessions({
-    enabled,
-    context,
-    browserViewRoot,
-    runtimePin,
+  // The page's one subscription set, shared with the live corner card: the
+  // capability gate, the "unsupported stub" boundary check, the offline guard
+  // and the feed teardown all live in `NativeToolFeedsProvider`. This hook adds
+  // one handler to its fan-out; it opens nothing of its own.
+  const {
+    browserStatus,
+    iosSession,
+    appControlSession,
+    canBrowser,
     offline,
-    onBrowserEvent,
-  });
+    pinnedMachineId,
+  } = useNativeToolFeeds();
+  useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
   useEffect(() => {
     if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);

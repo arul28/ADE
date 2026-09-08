@@ -5941,6 +5941,14 @@ describe("CTO-gated Linear sync commands", () => {
         ...base.deviceRegistryService,
         upsertPeerMetadata: vi.fn(),
       },
+      // `workTools.*` is registered only when the aggregator exists. Production
+      // always builds it (`bootstrap.ts`), so a fixture without it would make
+      // the loop below assert an action the host legitimately never advertised.
+      workToolsStateService: {
+        getLaneState: vi.fn(async () => ({ laneId: "lane-1" })),
+        readObservationPreview: vi.fn(async () => ({ ok: true })),
+        setActiveTool: vi.fn(() => ({ ok: true })),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -5985,6 +5993,8 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
+        "workTools.getLaneState",
+        "workTools.readObservationPreview",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),

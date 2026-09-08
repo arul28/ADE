@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import type { ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import type {
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { makeBuiltInBrowserStatus } from "../chat/__fixtures__/builtInBrowserStatus";
 
 const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
@@ -347,6 +349,20 @@ function installAdeMock(options: {
   return { terminalWrite, resumeSession };
 }
 
+/**
+ * The feeds come from the page's provider in production; the pane opens no
+ * subscriptions of its own, so every render site here has to supply the owner.
+ */
+function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
+  return (
+    <MemoryRouter>
+      <NativeToolFeedsProvider active runtimePin={runtimePin}>
+        {children}
+      </NativeToolFeedsProvider>
+    </MemoryRouter>
+  );
+}
+
 function renderSidebar(args: {
   tab: WorkSidebarTab;
   contextTarget: WorkSidebarContextTarget | null;
@@ -357,22 +373,21 @@ function renderSidebar(args: {
   onTabChange?: (tab: WorkSidebarTab | null) => void;
   runtimePin?: OpenProjectBinding | null;
 }) {
-  return render(
-    <MemoryRouter>
-      <WorkSidebar
-        active
-        laneId={args.laneId ?? "lane-1"}
-        lanes={args.lanes ?? [lane]}
-        activeSession={args.activeSession === undefined ? activeSession : args.activeSession}
-        tool={args.tab}
-        onToolChange={args.onTabChange ?? vi.fn()}
-        onClose={vi.fn()}
-        contextTarget={args.contextTarget}
-        contextDisabledReason={args.contextDisabledReason ?? null}
-        runtimePin={args.runtimePin ?? null}
-      />
-    </MemoryRouter>,
-  );
+  const runtimePin = args.runtimePin ?? null;
+  return render(withFeeds(runtimePin, (
+    <WorkSidebar
+      active
+      laneId={args.laneId ?? "lane-1"}
+      lanes={args.lanes ?? [lane]}
+      activeSession={args.activeSession === undefined ? activeSession : args.activeSession}
+      tool={args.tab}
+      onToolChange={args.onTabChange ?? vi.fn()}
+      onClose={vi.fn()}
+      contextTarget={args.contextTarget}
+      contextDisabledReason={args.contextDisabledReason ?? null}
+      runtimePin={runtimePin}
+    />
+  )));
 }
 
 /** A picker card, found by the tool name it renders. */
@@ -810,21 +825,19 @@ describe("WorkSidebar live tool status", () => {
 
   it("re-reads attached shells when a session appears, without remounting the pane", async () => {
     const live = installLiveTerminalMock();
-    const { container } = render(
-      <MemoryRouter>
-        <WorkSidebar
-          active
-          laneId="lane-1"
-          lanes={[lane]}
-          activeSession={null}
-          tool="terminal"
-          onToolChange={vi.fn()}
-          onClose={vi.fn()}
-          contextTarget={{ kind: "chat", sessionId: "chat-1" }}
-          contextDisabledReason={null}
-        />
-      </MemoryRouter>,
-    );
+    const { container } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={null}
+        tool="terminal"
+        onToolChange={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
 
     // The defect: the header committed to this and never moved again.
     await waitFor(() => expect(screen.getByText("No shells")).toBeTruthy());
@@ -945,21 +958,19 @@ describe("WorkSidebar pane chrome", () => {
 
   it("closes the pane on Escape at the picker, where there is nothing to go back to", () => {
     const onClose = vi.fn();
-    const { container } = render(
-      <MemoryRouter>
-        <WorkSidebar
-          active
-          laneId="lane-1"
-          lanes={[lane]}
-          activeSession={activeSession}
-          tool={null}
-          onToolChange={vi.fn()}
-          onClose={onClose}
-          contextTarget={{ kind: "chat", sessionId: "chat-1" }}
-          contextDisabledReason={null}
-        />
-      </MemoryRouter>,
-    );
+    const { container } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        onToolChange={vi.fn()}
+        onClose={onClose}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
 
     fireEvent.keyDown(container.querySelector("aside")!.querySelector("div")!, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();

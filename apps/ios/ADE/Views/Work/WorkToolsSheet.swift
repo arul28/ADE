@@ -217,6 +217,11 @@ struct WorkToolsSheet: View {
       return "The browser isn't available on this machine."
     case "error":
       return "Couldn't read the browser's state."
+    case "desktop_not_attached_for_project":
+      // Distinct from the default on purpose: ADE Desktop *is* running, it
+      // just doesn't have this project open, so "open ADE on your Mac" would
+      // send the user to look at an app that is already in front of them.
+      return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs."
     default:
       return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
     }

@@ -30,11 +30,6 @@ export type BuiltInBrowserProjectScopeArgs = {
   tabCollection?: "personal";
 };
 
-export type BuiltInBrowserAttachWebviewArgs = BuiltInBrowserProjectScopeArgs & {
-  tabId: string;
-  webContentsId: number;
-};
-
 export type BuiltInBrowserClaimArgs = BuiltInBrowserProjectScopeArgs & {
   tabId?: string | null;
   laneId?: string | null;
@@ -524,7 +519,7 @@ export type BuiltInBrowserEventPayload =
        * cap. Either way the agent that armed it learns the recording stopped
        * without having called `stopRecording`.
        */
-      endedBy?: "handoff" | "max_duration";
+      endedBy?: BuiltInBrowserRecordingEndedBy;
       updatedAt: string;
     }
   /**
@@ -891,6 +886,19 @@ export type BuiltInBrowserRecordingStatus = {
   startedAt: string;
   fps: number;
 };
+
+/**
+ * What ended a recording the agent did not stop itself.
+ *
+ * `max_duration` finalizes the file (the wall-clock cap fired —
+ * `BUILT_IN_BROWSER_MAX_RECORDING_MS`); `handoff` aborts it, because a partial
+ * capture taken while a human was typing a password is not proof of anything the
+ * agent did. Both are surfaced twice: on the `recording` event as `endedBy`, so
+ * a pane can explain why the REC pill vanished, and as a `stopRecording`-shaped
+ * action-trace entry carrying the same value, so `ade browser trace` explains it
+ * to the agent.
+ */
+export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration";
 
 export type BuiltInBrowserStartRecordingArgs = BuiltInBrowserTabTargetArgs & {
   /** 30 or 60; anything else is rejected. */

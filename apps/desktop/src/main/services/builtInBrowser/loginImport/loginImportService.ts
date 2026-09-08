@@ -16,7 +16,6 @@
  * @module loginImport/loginImportService
  */
 import os from "node:os";
-import path from "node:path";
 import { session as electronSession, type Session } from "electron";
 
 import type {
@@ -217,6 +216,27 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
     return args.readSource ? args.readSource(request) : readLoginImportSourceInWorker(request);
   };
 
+  /**
+   * Reads in flight, keyed by source.
+   *
+   * The read cache is only written *after* a read completes, so two overlapping
+   * `listDomains` calls for the same source would each spawn a worker and each
+   * raise a Keychain prompt — breaking the consent-once invariant this module
+   * claims. The renderer happens to disable its buttons while busy, but the
+   * invariant belongs to the layer that owns it, not to a button's `disabled`.
+   */
+  const inFlightReads = new Map<string, Promise<LoginImportReadResponse>>();
+
+  const readSourceOnce = (entry: ResolvedSource): Promise<LoginImportReadResponse> => {
+    const existing = inFlightReads.get(entry.source.id);
+    if (existing) return existing;
+    const pending = readSource(entry).finally(() => {
+      inFlightReads.delete(entry.source.id);
+    });
+    inFlightReads.set(entry.source.id, pending);
+    return pending;
+  };
+
   /** Reads a source, reusing a recent read so consent is asked for once. */
   const loadSource = async (
     sourceId: string,
@@ -241,7 +261,11 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
     const cached = readCache.get(sourceId);
     if (cached && now() - cached.readAt < READ_CACHE_TTL_MS) return { ok: true, entry: cached };
 
-    const read = await readSource(resolved);
+    const read = await readSourceOnce(resolved);
+    // A second caller that awaited the same read must not overwrite the cache
+    // entry the first one just wrote with a fresher `readAt`.
+    const settled = readCache.get(sourceId);
+    if (settled && now() - settled.readAt < READ_CACHE_TTL_MS) return { ok: true, entry: settled };
     if (!read.ok) {
       logger()?.warn("built_in_browser.login_import.read_failed", {
         sourceId,

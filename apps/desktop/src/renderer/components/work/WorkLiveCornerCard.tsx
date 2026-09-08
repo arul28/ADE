@@ -10,22 +10,20 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import {
-  selectActiveProjectRoot,
   selectActiveProjectStateKey,
   selectLaneWorkViewState,
   selectWorkViewState,
   useAppStore,
   type WorkSidebarTab,
 } from "../../state/appStore";
-import { isMacPlatform } from "../../lib/platform";
-import { isWebClientMode } from "../../lib/webClientMode";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
-import { workToolDefinition, type WorkToolContext } from "../terminals/workTools";
+import { workToolDefinition } from "../terminals/workTools";
+import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
 import {
-  useNativeToolSessions,
-  type NativeToolFeedScope,
-} from "../terminals/useNativeToolSessions";
+  useNativeToolFeedHandlers,
+  useNativeToolFeeds,
+} from "../terminals/NativeToolFeedsContext";
 import {
   acquireIosSimulatorPreviewStream,
   type IosSimulatorPreviewLease,
@@ -133,9 +131,7 @@ export function WorkLiveCornerCard({
   onPick: (tool: WorkSidebarTab) => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
-  const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   // Through the store's own selectors rather than a hand-built `"<p>::<lane>"`
@@ -156,13 +152,6 @@ export function WorkLiveCornerCard({
     }, [laneId, projectStateKey]),
   );
 
-  const context = useMemo<WorkToolContext>(() => ({
-    isRemoteProject,
-    supportsIosSimulator: isMacPlatform(),
-    isWebClient: isWebClientMode(),
-  }), [isRemoteProject]);
-
-  const browserViewRoot = runtimePin?.kind === "local" ? runtimePin.rootPath : projectRoot;
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -359,25 +348,26 @@ export function WorkLiveCornerCard({
     if (event.type === "session-started" || event.type === "session-updated") bump("ios");
   }, [bump]);
 
-  // One shared subscription set with the Work tools pane: the capability gate,
-  // the web-client boundary check and the teardown all live in one place.
+  // The page's one subscription set, shared with the Work tools pane: the
+  // capability gate, the web-client boundary check, the offline guard and the
+  // teardown all live in `NativeToolFeedsProvider`. The card contributes
+  // handlers to its fan-out and opens nothing of its own — which is also how it
+  // inherited the offline guard it used to be missing.
   const {
     browserStatus,
     iosSession,
     appControlSession,
+    browserViewRoot,
     canBrowser,
     canIos,
     canAppControl,
-  } = useNativeToolSessions({
-    enabled: active,
-    context,
-    browserViewRoot,
-    runtimePin,
+  } = useNativeToolFeeds();
+  useNativeToolFeedHandlers(useMemo(() => ({
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
-  });
+  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 

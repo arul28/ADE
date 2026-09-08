@@ -217,7 +217,17 @@ three different owners:
   over `desktop-bridge.sock`). With no desktop attached to the machine there is
   no browser to describe: the state reports `browser: null` with
   `browserUnavailable: "desktop_not_attached"`, which clients render as absence,
-  not as an error.
+  not as an error. The bridge socket is **machine-wide** while the daemon asking
+  is **project-scoped**, so the daemon's `getStatusForRuntime` call carries its
+  own `projectRoot` — it is not exempt from the runtime-scope rewrite; only the
+  two capability-lifecycle methods are — and the desktop answers out of that
+  project's window collection rather than whichever window happens to be
+  frontmost. With two project windows open that is the difference between a
+  phone showing its own lane's tabs and showing the other project's. When no
+  window is open for that project the daemon gets
+  `browserUnavailable: "desktop_not_attached_for_project"` instead of another
+  project's tab titles and URLs; clients word that case differently, because ADE
+  Desktop *is* running — it just does not have this project open.
 - `appControl` is **read in-process** from the daemon's own App Control service,
   so it survives a desktop that has quit.
 
@@ -229,13 +239,25 @@ two roots only, rejects non-image extensions, and caps a preview at 10 MiB. A
 routine poll or a `work_tools_state_changed` event therefore never carries an
 image.
 
+`work_tools` reads are lane-scoped **deny-by-default**. `getLaneState` and
+`readObservationPreview` are denied outright when the caller is not a user
+client and no lane can be resolved from its chat session — an orchestration
+step identified only by `runId`/`stepId`/`attemptId`, or a bound chat whose
+session record the daemon cannot resolve, previously fell through unscoped and
+could read any lane's tab list and any lane's observation bytes. A
+caller-supplied `callerLaneId` is stripped unconditionally rather than being
+trusted on the fall-through. User clients (desktop, iOS, hosted web) carry
+neither a `chatSessionId` nor a run identity, so they keep the unscoped path. A
+CTO-role caller is exempt from the scoping wholesale — the same deliberate
+cross-lane role as `external-sessions`.
+
 Surfaces:
 
 | Surface | Action / entry point | Behaviour |
 | --- | --- | --- |
 | Desktop | `work_tools.setActiveTool`, `work_tools.getLaneState` runtime actions via `window.ade.workTools` | Owns the pane; publishes the active tool. |
 | Hosted web | `workTools.getLaneState` / `workTools.readObservationPreview` remote commands | `WorkToolReadOnlyView` replaces the browser and App Control panels. `isReadOnlyWorkTool` in `workTools.tsx` is the capability gate; `setActiveTool` is a no-op so a web tab cannot overwrite the desktop's truth. The iOS Simulator tool stays unavailable — its pane is a live video stream with nothing describable to mirror. |
-| iOS | same two remote commands, gated on `SyncService.supportsWorkToolsState` | `WorkToolsRow` shows "Tools · Browser active · 3 tabs ›" above the chat transcript and opens `WorkToolsSheet`: active-tool card with the last frame, then the tab list, then App Control. Pull to refresh; a 3 s poll runs only while the sheet is open. |
+| iOS | same two remote commands, gated on `SyncService.supportsWorkToolsState` | `WorkToolsRow` shows "Tools · Browser active · 3 tabs ›" above the chat transcript and opens `WorkToolsSheet`: active-tool card with the last frame, then the tab list, then App Control. Pull to refresh; the sheet polls every 3 s while it is open, and the row polls every 10 s but **skips its tick while the sheet is up** — the sheet is presented from the row, so the row stays mounted underneath it and would otherwise duplicate the same read (and the same frame decode) for a summary line nobody can see. |
 
 Both remote commands are `viewerAllowed` and live in
 `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a brain that predates them —
@@ -1211,7 +1233,18 @@ Three rules are specific to the schedule itself:
   native dependencies and no screen-recording permission prompt. A
   recording reaches the proof drawer only when `startRecording` was given
   a caption. Tab state reports `zoomFactor`, `devToolsOpen`, `emulation`,
-  `networkLogging` and `recording`.
+  `networkLogging` and `recording`. A recording is capped at **5 minutes**
+  of wall clock so an agent that forgets `stopRecording` (or dies
+  mid-run) cannot capture until the app quits; the cap finalizes the file
+  the same way an explicit stop does. A login handoff also ends an
+  in-flight recording, aborting it to scratch rather than promoting it,
+  and turns network logging off with the buffered log cleared — neither
+  re-arms on hand-back. Both non-agent endings publish `endedBy` on the
+  `recording` event (`"max_duration"` or `"handoff"`) and write a
+  `stopRecording`-shaped tab-trace entry, so the agent that armed the
+  recording can find out why it stopped. (The handoff's own
+  `handoff-ended` event carries a separate `endedBy` from a different
+  union: `human`, `auto-offer`, `tab-closed`, `timeout`.)
 - **Localhost shortcuts in the work log.** When an agent's tool output
   surfaces a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL, the chat
   work-log block renders a sky-toned strip above the tool-call panels.

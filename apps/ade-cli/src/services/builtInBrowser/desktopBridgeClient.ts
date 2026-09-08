@@ -7,6 +7,7 @@ import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/bu
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserBridgeServedMethod,
+  isBuiltInBrowserUnscopedBridgeMethod,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -186,11 +187,12 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       });
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
-    // Bridge-served methods must not be rewritten to the daemon's own project
-    // root. Capability issuance carries the scope of the chat being launched,
-    // which may be a personal (project-less) chat or a lane in another project;
-    // `getStatusForRuntime` is deliberately unscoped so the Work-tools mirror
-    // sees the same collection the pane does.
+    // The two capability-lifecycle methods must not be rewritten to the
+    // daemon's own project root: they carry the scope of the chat being
+    // launched, which may be a personal (project-less) chat or a lane in
+    // another project. Everything else — including `getStatusForRuntime` —
+    // takes the daemon's scope, so the Work-tools mirror reads the collection
+    // of the project this daemon serves rather than the frontmost window's.
     const scoped = opts.applyRuntimeScope ? withRuntimeScope(params) : params;
     return {
       ...(scoped && typeof scoped === "object" && !Array.isArray(scoped)
@@ -202,7 +204,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
 
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const requestParams = authenticatedParams(params, {
-      applyRuntimeScope: !isBuiltInBrowserBridgeServedMethod(method),
+      applyRuntimeScope: !isBuiltInBrowserUnscopedBridgeMethod(method),
     });
     const c = await ensureClient();
     const timeoutMs = bridgeCallTimeoutMs(method, requestParams);

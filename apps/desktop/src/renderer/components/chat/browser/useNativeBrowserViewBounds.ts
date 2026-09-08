@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
-import { clampBrowserViewBounds } from "../browserViewGeometry";
+import {
+  clampBrowserViewBounds,
+  isBrowserOverlayCandidate,
+  rectIntersection,
+  UNDERLAY_FADE_MS,
+  type BrowserViewRect,
+} from "../browserViewGeometry";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -35,11 +41,8 @@ const BOUNDS_SETTLE_MS = 1_200;
 const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
 /** How long forced bounds keep flowing after a drag ends, in ms. */
 const BOUNDS_DRAG_SETTLE_MS = 400;
-/** Fade-out for the snapshot underlay once the live view is back. */
-export const UNDERLAY_FADE_MS = 120;
 /** A snapshot older than this is repainted before the next menu opens. */
 const UNDERLAY_MAX_AGE_MS = 20_000;
-const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tooltip"]);
 const OVERLAY_MOTION_EVENTS = ["animationend", "animationiteration", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
 const OVERLAY_CANDIDATE_SELECTOR = [
   '[role="alertdialog"]',
@@ -130,44 +133,31 @@ function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
-type BrowserOverlayRect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
+/** The popover libraries' own content boxes, which are always overlays. */
+const OVERLAY_CONTENT_SELECTOR = "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]";
 
-function rectIntersection(a: BrowserOverlayRect, b: BrowserOverlayRect): BrowserOverlayRect | null {
-  const left = Math.max(a.left, b.left);
-  const right = Math.min(a.right, b.right);
-  const top = Math.max(a.top, b.top);
-  const bottom = Math.min(a.bottom, b.bottom);
-  const width = right - left;
-  const height = bottom - top;
-  if (width <= 0 || height <= 0) return null;
-  return { bottom, height, left, right, top, width };
-}
-
-function isBrowserOverlayCandidate(element: HTMLElement): boolean {
+/**
+ * Read the overlay decision's inputs off a live element.
+ *
+ * The only part of this that touches the DOM: a computed style, four
+ * attributes and a rect. The decision itself is `isBrowserOverlayCandidate` in
+ * `browserViewGeometry`, so it can be tested without a compositor.
+ */
+function readBrowserOverlayCandidate(element: HTMLElement): boolean {
   const style = window.getComputedStyle(element);
-  if (
-    style.display === "none"
-    || style.visibility === "hidden"
-    || style.opacity === "0"
-    || style.pointerEvents === "none"
-    || element.hidden
-    || element.getAttribute("aria-hidden") === "true"
-  ) {
-    return false;
-  }
-  const rect = element.getBoundingClientRect();
-  if (rect.width < 4 || rect.height < 4) return false;
-  const role = element.getAttribute("role");
-  if (role && OVERLAY_ROLES.has(role)) return true;
-  if (element.getAttribute("aria-modal") === "true") return true;
-  if (
-    element.matches(
-      "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]",
-    )
-  ) {
-    return true;
-  }
-  return style.position === "fixed" || style.position === "absolute" || style.position === "sticky";
+  return isBrowserOverlayCandidate({
+    rect: element.getBoundingClientRect(),
+    role: element.getAttribute("role"),
+    position: style.position,
+    pointerEvents: style.pointerEvents,
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+    hidden: element.hidden,
+    ariaHidden: element.getAttribute("aria-hidden") === "true",
+    ariaModal: element.getAttribute("aria-modal") === "true",
+    matchesOverlaySelector: element.matches(OVERLAY_CONTENT_SELECTOR),
+  });
 }
 
 function overlayCandidateOwnsPoint(element: HTMLElement, x: number, y: number): boolean {
@@ -176,7 +166,7 @@ function overlayCandidateOwnsPoint(element: HTMLElement, x: number, y: number): 
   return topElement === element || (topElement != null && element.contains(topElement));
 }
 
-function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: DOMRect): boolean {
+function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: BrowserViewRect): boolean {
   const overlap = rectIntersection(surfaceRect, element.getBoundingClientRect());
   if (!overlap) return false;
   const points = [
@@ -192,7 +182,7 @@ function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: DO
 function collectBrowserOverlayCandidates(surface: HTMLElement): HTMLElement[] {
   return Array.from(document.body.querySelectorAll<HTMLElement>(OVERLAY_CANDIDATE_SELECTOR)).filter((element) => {
     if (element === surface || surface.contains(element) || element.contains(surface)) return false;
-    return isBrowserOverlayCandidate(element);
+    return readBrowserOverlayCandidate(element);
   });
 }
 

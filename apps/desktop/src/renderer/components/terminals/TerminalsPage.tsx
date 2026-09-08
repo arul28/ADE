@@ -8,6 +8,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
   clearPendingWorkToolRequest,
@@ -1450,88 +1451,97 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workViewWithSidebar = useMemo(
     () => (
-      <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
-        <div
-          ref={workContentPaneRef}
-          className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
-          style={{ flexGrow: 100 - work.workSidebarWidthPct }}
-        >
-          {workViewArea}
-          {/*
-            One card per Work page, floating over the chat column. It shows the
-            screen tool you are NOT looking at, so its notion of "active" is the
-            tools pane's tool — and a closed pane means no tool is active, so
-            anything may show.
-          */}
-          <WorkLiveCornerCard
-            active={active}
-            laneId={activeLaneId}
-            activeTool={workSidebarVisible ? workSidebarTool : null}
-            runtimePin={activeWorkSessionRuntimePin}
-            onPick={setWorkSidebarTool}
-          />
-        </div>
-        {/* Resize handle stays a row-level sibling so its width math is correct. */}
-        {workSidebarVisible ? (
+      /*
+        One feed provider per Work page. The tools pane and the corner card both
+        read the browser / App Control / simulator feeds, and mounting the hook
+        in each of them opened two of everything — six `getStatus` round-trips,
+        six subscriptions, and two `offline` values that disagreed. The provider
+        is the single owner; both children read `useNativeToolFeeds()`.
+      */
+      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
+        <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
           <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize tools pane"
-            aria-valuenow={Math.round(work.workSidebarWidthPct)}
-            aria-valuemin={MIN_WORK_SIDEBAR_WIDTH_PCT}
-            aria-valuemax={MAX_WORK_SIDEBAR_WIDTH_PCT}
-            aria-valuetext={`Tools pane ${Math.round(work.workSidebarWidthPct)}% of the window`}
-            tabIndex={0}
-            onMouseDown={handleWorkSidebarResizeMouseDown}
-            onKeyDown={handleWorkSidebarResizeKeyDown}
-            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 focus-visible:bg-[var(--color-accent)]/45 focus-visible:outline-none active:bg-[var(--color-accent)]/40"
-          />
-        ) : null}
-        <AnimatePresence initial={false}>
-          {workSidebarVisible ? (
-            // The panel slides via animated flex-grow so the content pane grows/
-            // shrinks smoothly with it — no instant reflow / black flash on close.
-            <motion.div
-              key="work-tools-sidebar"
-              data-work-sidebar-pane=""
-              className="min-h-0 min-w-0 basis-0 overflow-hidden"
-              // 55% is the taste ceiling; the `max()` keeps the pane's own
-              // 280px floor reachable in a window too narrow for both, which is
-              // the case where the ceiling would otherwise clip its close button.
-              style={{ maxWidth: "max(55%, 280px)" }}
-              initial={{ flexGrow: 0 }}
-              animate={{ flexGrow: work.workSidebarWidthPct }}
-              exit={{ flexGrow: 0 }}
-              transition={paneTransition}
-            >
-              <WorkSidebar
-                active={active}
-                laneId={activeLaneId}
-                lanes={sortedLanes}
-                activeSession={activeWorkSession}
-                tool={workSidebarTool}
-                onToolChange={setWorkSidebarTool}
-                onClose={closeWorkSidebar}
-                contextTarget={contextTarget}
-                contextDisabledReason={contextDisabledReason}
-                runtimePin={activeWorkSessionRuntimePin}
-              />
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-        {activeLaneDeleteProgress ? (
-          <div
-            className="absolute inset-0 z-30 flex items-center justify-center bg-bg/75 backdrop-blur-[2px]"
-            aria-live="polite"
-            aria-busy="true"
+            ref={workContentPaneRef}
+            className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+            style={{ flexGrow: 100 - work.workSidebarWidthPct }}
           >
-            <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
-              <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
-              {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
-            </div>
+            {workViewArea}
+            {/*
+              One card per Work page, floating over the chat column. It shows the
+              screen tool you are NOT looking at, so its notion of "active" is the
+              tools pane's tool — and a closed pane means no tool is active, so
+              anything may show.
+            */}
+            <WorkLiveCornerCard
+              active={active}
+              laneId={activeLaneId}
+              activeTool={workSidebarVisible ? workSidebarTool : null}
+              runtimePin={activeWorkSessionRuntimePin}
+              onPick={setWorkSidebarTool}
+            />
           </div>
-        ) : null}
-      </div>
+          {/* Resize handle stays a row-level sibling so its width math is correct. */}
+          {workSidebarVisible ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize tools pane"
+              aria-valuenow={Math.round(work.workSidebarWidthPct)}
+              aria-valuemin={MIN_WORK_SIDEBAR_WIDTH_PCT}
+              aria-valuemax={MAX_WORK_SIDEBAR_WIDTH_PCT}
+              aria-valuetext={`Tools pane ${Math.round(work.workSidebarWidthPct)}% of the window`}
+              tabIndex={0}
+              onMouseDown={handleWorkSidebarResizeMouseDown}
+              onKeyDown={handleWorkSidebarResizeKeyDown}
+              className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 focus-visible:bg-[var(--color-accent)]/45 focus-visible:outline-none active:bg-[var(--color-accent)]/40"
+            />
+          ) : null}
+          <AnimatePresence initial={false}>
+            {workSidebarVisible ? (
+              // The panel slides via animated flex-grow so the content pane grows/
+              // shrinks smoothly with it — no instant reflow / black flash on close.
+              <motion.div
+                key="work-tools-sidebar"
+                data-work-sidebar-pane=""
+                className="min-h-0 min-w-0 basis-0 overflow-hidden"
+                // 55% is the taste ceiling; the `max()` keeps the pane's own
+                // 280px floor reachable in a window too narrow for both, which is
+                // the case where the ceiling would otherwise clip its close button.
+                style={{ maxWidth: "max(55%, 280px)" }}
+                initial={{ flexGrow: 0 }}
+                animate={{ flexGrow: work.workSidebarWidthPct }}
+                exit={{ flexGrow: 0 }}
+                transition={paneTransition}
+              >
+                <WorkSidebar
+                  active={active}
+                  laneId={activeLaneId}
+                  lanes={sortedLanes}
+                  activeSession={activeWorkSession}
+                  tool={workSidebarTool}
+                  onToolChange={setWorkSidebarTool}
+                  onClose={closeWorkSidebar}
+                  contextTarget={contextTarget}
+                  contextDisabledReason={contextDisabledReason}
+                  runtimePin={activeWorkSessionRuntimePin}
+                />
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+          {activeLaneDeleteProgress ? (
+            <div
+              className="absolute inset-0 z-30 flex items-center justify-center bg-bg/75 backdrop-blur-[2px]"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
+                {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </NativeToolFeedsProvider>
     ),
     [
       activeLaneId,

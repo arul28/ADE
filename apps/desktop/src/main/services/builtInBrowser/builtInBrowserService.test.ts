@@ -951,42 +951,6 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
-  it("rejects attached webviews from outside the global browser profile", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
-
-    service.attachToWindow(browserWin);
-    await service.createTab({ url: "https://example.test", activate: true }, browserWin);
-
-    const status = service.getStatus(browserWin);
-    const tabId = status.activeTabId;
-    if (!tabId) throw new Error("Expected an active browser tab");
-
-    const foreignView = new fakes.WebContentsView({
-      webPreferences: { partition: "persist:foreign-browser" },
-    });
-    await expect(service.attachWebview({
-      tabId,
-      webContentsId: foreignView.webContents.id,
-    }, browserWin)).rejects.toThrow(/partition does not match/);
-
-    const matchingView = new fakes.WebContentsView({
-      webPreferences: { partition: status.partition },
-    });
-    await expect(service.attachWebview({
-      tabId,
-      webContentsId: matchingView.webContents.id,
-    }, browserWin)).resolves.toMatchObject({
-      activeTabId: tabId,
-    });
-  });
-
   it("routes project-scoped bridge calls to the matching project window", async () => {
     const projectRootByWindow = new Map<number, string>();
     const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
@@ -1023,6 +987,65 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha-two.example.test/");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" }).tabs).toHaveLength(1);
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" }).url).toBe("https://beta.example.test/");
+  });
+
+  it("answers getStatusForProjectScope from the asking project, not the frontmost window", async () => {
+    // The runtime daemon is project-scoped and the desktop bridge socket is
+    // machine-wide, so an unscoped answer here showed project B's phone the
+    // tabs of whichever window happened to be frontmost — hiding its own and
+    // leaking another project's titles and URLs.
+    const projectRootByWindow = new Map<number, string>();
+    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        (
+          windowsByProjectRoot.get(projectRoot) as unknown as
+            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
+        ) ?? null,
+    });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
+    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
+    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
+    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWinB);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWinB);
+    // Alpha is the frontmost window from here on.
+    service.attachToWindow(browserWinA);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
+
+    const beta = service.getStatusForProjectScope("/Users/ade/project-beta");
+    expect(beta?.tabs.map((tab) => tab.url)).toEqual(["https://beta.example.test/"]);
+    const alpha = service.getStatusForProjectScope("/Users/ade/project-alpha");
+    expect(alpha?.tabs.map((tab) => tab.url)).toEqual(["https://alpha.example.test/"]);
+    // Alpha is still the active window: a background status poll must not have
+    // moved the pane the human is looking at.
+    expect(service.getStatus().tabs.map((tab) => tab.url)).toEqual(["https://alpha.example.test/"]);
+  });
+
+  it("returns null from getStatusForProjectScope when no window serves the project", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWin);
+
+    // `null`, not beta's tabs: the daemon renders its own "not open here" state
+    // rather than another project's browsing.
+    expect(service.getStatusForProjectScope("/Users/ade/project-alpha")).toBeNull();
+    // A project-less daemon keeps the frontmost-window behaviour.
+    expect(service.getStatusForProjectScope(null)?.tabs).toHaveLength(1);
   });
 
   it("does not fall back to the active project for unmatched project-scoped bridge calls", async () => {

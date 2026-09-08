@@ -156,6 +156,28 @@ export function isBuiltInBrowserBridgeServedMethod(value: string): boolean {
   return BUILT_IN_BROWSER_BRIDGE_SERVED_METHOD_SET.has(value);
 }
 
+/**
+ * Methods whose params must NOT be rewritten to the daemon's own project scope.
+ *
+ * This is deliberately a different set from `isBuiltInBrowserBridgeServedMethod`.
+ * The two capability-lifecycle calls carry the scope of the chat being launched
+ * — which may be a personal (project-less) chat, or a lane in another project —
+ * so overwriting `projectRoot` with the daemon's own would mint a capability for
+ * the wrong collection. `getStatusForRuntime` is the opposite case: the daemon
+ * is project-scoped and its Work-tools mirror must read THAT project's window
+ * collection, not whichever window happens to be frontmost on the machine, so it
+ * takes the scope rewrite like every proxied method.
+ */
+const BUILT_IN_BROWSER_UNSCOPED_BRIDGE_METHOD_SET = new Set<string>([
+  BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
+  BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
+]);
+
+/** True for methods that carry their own scope — see the set's doc comment. */
+export function isBuiltInBrowserUnscopedBridgeMethod(value: string): boolean {
+  return BUILT_IN_BROWSER_UNSCOPED_BRIDGE_METHOD_SET.has(value);
+}
+
 const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHOD_SET = new Set<string>(
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 );

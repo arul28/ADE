@@ -76,3 +76,49 @@ export type BrowserTab = BuiltInBrowserTab & {
   faviconUrl?: string | null;
   isLaunchpad?: boolean;
 };
+
+/**
+ * The status and event shapes the PANEL reads, which are not the ones the
+ * preload declares.
+ *
+ * `shared/types/builtInBrowser.ts` describes what a CURRENT main process sends.
+ * These describe what the panel is willing to render: the fields the UI needs,
+ * plus an index signature, because the panel may be talking to an older main
+ * process that has not grown a field yet — or to the web-client stub, which
+ * sends almost none of them. `normalizeStatus` is what turns the first into the
+ * second; nothing in the panel reads a raw payload.
+ */
+export type BuiltInBrowserStatus = {
+  supported: boolean;
+  partition?: string | null;
+  visible: boolean;
+  activeTabId: string | null;
+  tabs: BrowserTab[];
+  url: string | null;
+  title: string | null;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
+  inspecting: boolean;
+  selectedItem: BuiltInBrowserContextItem | null;
+  lastError?: string | null;
+  [key: string]: unknown;
+};
+
+export type BuiltInBrowserEventPayload = {
+  type?: string;
+  status?: unknown;
+  item?: unknown;
+  selection?: unknown;
+  selectedItem?: unknown;
+  screenshot?: unknown;
+  url?: unknown;
+  title?: unknown;
+  canGoBack?: unknown;
+  canGoForward?: unknown;
+  loading?: unknown;
+  inspecting?: unknown;
+  error?: unknown;
+  message?: unknown;
+  [key: string]: unknown;
+};

@@ -11,14 +11,18 @@ import type {
 import { workToolAvailability, type WorkToolContext } from "./workTools";
 
 /**
- * The three native tool feeds, opened once.
+ * The three native tool feeds.
  *
  * The Work tools pane and the floating live-preview card both need to know what
  * the browser, App Control and the simulator are doing — the pane to fill its
  * status lines and activity dots, the card to decide which tool to picture.
  * They used to open the same three subscriptions independently, with two
- * spellings of the capability gate and two definitions of "live"; this is the
- * single copy both read from.
+ * spellings of the capability gate and two definitions of "live".
+ *
+ * This hook is not the sharing mechanism, it is what gets shared: mount it once
+ * and mounting it again opens a second set of subscriptions. `NativeToolFeeds
+ * Provider` is the single owner — Work code reads `useNativeToolFeeds()`, never
+ * this hook directly.
  *
  * Each feed is one `getStatus` plus one `onEvent` subscription. Nothing here
  * polls, and a tool the capability gate says cannot run here is never asked.

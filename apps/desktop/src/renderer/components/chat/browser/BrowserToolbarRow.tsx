@@ -7,7 +7,7 @@
  * against one component than against a slab in the middle of the panel. The ⋮
  * menu arrives as `overflow` so the row stays about the row.
  */
-import type { Dispatch, FormEvent, KeyboardEvent, MouseEvent, MutableRefObject, ReactNode, SetStateAction } from "react";
+import type { FormEvent, KeyboardEvent, MouseEvent, MutableRefObject, ReactNode } from "react";
 import {
   ArrowClockwise,
   ArrowLeft,
@@ -26,11 +26,7 @@ import {
   Stop,
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import type {
-  BuiltInBrowserEmulationState,
-  BuiltInBrowserRecordingStatus,
-} from "../../../../shared/types/builtInBrowser";
-import type { BrowserToolbarLayout } from "../builtInBrowserToolbar";
+import type { BuiltInBrowserRecordingStatus } from "../../../../shared/types/builtInBrowser";
 import { recordingPillLabel } from "../browserToolbarLabels";
 import type { TabTunnelEntry } from "../browserRemoteTunnels";
 import type { BrowserUrlDisplay, BrowserUrlLockKind } from "../../../lib/browserUrl";
@@ -42,13 +38,45 @@ import {
   TOOLBAR_IDLE,
   TOOLBAR_MOTION,
   TOOLBAR_ON,
+  type BrowserChromeShared,
 } from "./browserChrome";
+
+/**
+ * The omnibox, as one value.
+ *
+ * The row used to take thirteen separate props for this field, three of them
+ * raw `setState` setters — so the child wrote the parent's state directly and
+ * the rule "blur restores the current URL when the box is empty" lived in the
+ * child while every other sequencing rule lived in the parent. Now the row
+ * reports intent (`onChange`, `onEndEdit`) and the panel decides what that
+ * means.
+ */
+export type BrowserUrlFieldProps = {
+  inputRef: MutableRefObject<HTMLInputElement | null>;
+  /** What is in the box right now. */
+  value: string;
+  /** The page the tab is actually on, which is not always what is typed. */
+  currentUrl: string;
+  lockKind: BrowserUrlLockKind;
+  /** Set when this tab's loopback URL is served over a forward. */
+  tunnel: TabTunnelEntry | null;
+  /** Host/rest split for the read-mode overlay; null when there is nothing to split. */
+  display: BrowserUrlDisplay | null;
+  /** Draw the host-emphasised overlay instead of the raw text. */
+  showOverlay: boolean;
+  onChange: (value: string) => void;
+  onFocus: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onSubmit: (event?: FormEvent<HTMLFormElement>) => void;
+  /** The field lost focus: stop editing, and restore whatever the parent decides. */
+  onEndEdit: () => void;
+};
 
 export type BrowserToolbarRowProps = {
   rowRef: MutableRefObject<HTMLDivElement | null>;
-  toolbar: BrowserToolbarLayout;
-  busy: string | null;
-  apiAvailable: boolean;
+  /** Everything this row and the ⋮ menu both need, built once by the panel. */
+  shared: BrowserChromeShared;
+  urlField: BrowserUrlFieldProps;
   hasTab: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -57,42 +85,21 @@ export type BrowserToolbarRowProps = {
   onForward: () => void;
   onReload: () => void;
   onStop: () => void;
-  onNavigate: (event?: FormEvent<HTMLFormElement>) => void;
-  lockKind: BrowserUrlLockKind;
-  activeTabTunnel: TabTunnelEntry | null;
-  urlInputRef: MutableRefObject<HTMLInputElement | null>;
-  urlInput: string;
-  setUrlInput: Dispatch<SetStateAction<string>>;
-  setEditingUrl: Dispatch<SetStateAction<boolean>>;
-  onUrlFocus: () => void;
-  onUrlKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
-  currentUrl: string;
-  showUrlOverlay: boolean;
-  urlDisplay: BrowserUrlDisplay | null;
   recording: BuiltInBrowserRecordingStatus | null;
   recordingClock: number;
   onStopRecording: () => void;
   deviceMenuOpen: boolean;
-  setDeviceMenuOpen: (open: boolean) => void;
-  deviceLabel: string;
-  emulation: BuiltInBrowserEmulationState | null;
-  deviceMenuItems: ReactNode;
+  onDeviceMenuOpenChange: (open: boolean) => void;
   hasCaptureBase: boolean;
   onCameraClick: (event: MouseEvent<HTMLButtonElement>) => void;
-  inspecting: boolean;
-  onInspectToggle: () => void;
-  hasSelection: boolean;
-  canAddContext: boolean;
-  onAttachSelection: () => void;
   /** The ⋮ menu, rendered as this row's last child. */
   overflow: ReactNode;
 };
 
 export function BrowserToolbarRow({
   rowRef,
-  toolbar,
-  busy,
-  apiAvailable,
+  shared,
+  urlField,
   hasTab,
   canGoBack,
   canGoForward,
@@ -101,35 +108,26 @@ export function BrowserToolbarRow({
   onForward,
   onReload,
   onStop,
-  onNavigate,
-  lockKind,
-  activeTabTunnel,
-  urlInputRef,
-  urlInput,
-  setUrlInput,
-  setEditingUrl,
-  onUrlFocus,
-  onUrlKeyDown,
-  currentUrl,
-  showUrlOverlay,
-  urlDisplay,
   recording,
   recordingClock,
   onStopRecording,
   deviceMenuOpen,
-  setDeviceMenuOpen,
-  deviceLabel,
-  emulation,
-  deviceMenuItems,
+  onDeviceMenuOpenChange,
   hasCaptureBase,
   onCameraClick,
-  inspecting,
-  onInspectToggle,
-  hasSelection,
-  canAddContext,
-  onAttachSelection,
   overflow,
 }: BrowserToolbarRowProps) {
+  const {
+    toolbar,
+    busy,
+    apiAvailable,
+    inspecting,
+    onInspectToggle,
+    emulation,
+    deviceLabel,
+    deviceMenuItems,
+    selection,
+  } = shared;
   return (
     <div
       ref={rowRef}
@@ -178,14 +176,14 @@ export function BrowserToolbarRow({
       </div>
 
       <form
-        onSubmit={onNavigate}
+        onSubmit={urlField.onSubmit}
         className={cn(
           "flex min-w-0 flex-1 items-center gap-1.5 bg-black/25 pl-2",
           TOOLBAR_CONTROL,
           "border-white/[0.08] focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
         )}
       >
-        {lockKind === "none" ? null : lockKind === "secure" ? (
+        {urlField.lockKind === "none" ? null : urlField.lockKind === "secure" ? (
           <LockSimple
             size={11}
             weight="fill"
@@ -199,25 +197,22 @@ export function BrowserToolbarRow({
             className="shrink-0 text-amber-300/70"
           />
         )}
-        {activeTabTunnel ? (
+        {urlField.tunnel ? (
           <span
             className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-sky-400/25 bg-sky-500/12 px-1 text-[9.5px] font-medium text-sky-100/85"
-            title={`Tunneled to port ${activeTabTunnel.tunnel.remotePort} on ${activeTabTunnel.tunnel.machineLabel}`}
+            title={`Tunneled to port ${urlField.tunnel.tunnel.remotePort} on ${urlField.tunnel.tunnel.machineLabel}`}
           >
-            {activeTabTunnel.tunnel.machineLabel}
+            {urlField.tunnel.tunnel.machineLabel}
           </span>
         ) : null}
         <span className="relative flex h-full min-w-0 flex-1 items-center">
           <input
-            ref={urlInputRef}
-            value={urlInput}
-            onChange={(event) => setUrlInput(event.target.value)}
-            onFocus={onUrlFocus}
-            onKeyDown={onUrlKeyDown}
-            onBlur={() => {
-              setEditingUrl(false);
-              if (!urlInput.trim()) setUrlInput(currentUrl);
-            }}
+            ref={urlField.inputRef}
+            value={urlField.value}
+            onChange={(event) => urlField.onChange(event.target.value)}
+            onFocus={urlField.onFocus}
+            onKeyDown={urlField.onKeyDown}
+            onBlur={urlField.onEndEdit}
             placeholder="Search or enter address"
             aria-label="ADE browser URL"
             // Always `flex: 1 1 0` with no intrinsic floor: the field is the
@@ -225,7 +220,7 @@ export function BrowserToolbarRow({
             // and the row above has already made sure that is enough.
             className={cn(
               "h-full w-0 min-w-0 flex-1 basis-0 truncate bg-transparent pr-2 text-[11px] outline-none placeholder:text-muted-fg/40",
-              showUrlOverlay ? "text-transparent caret-fg/80" : "text-fg/85",
+              urlField.showOverlay ? "text-transparent caret-fg/80" : "text-fg/85",
             )}
           />
           {/*
@@ -233,14 +228,14 @@ export function BrowserToolbarRow({
             the path is detail. The real input stays underneath so selection,
             typing and the caret behave exactly as before.
           */}
-          {showUrlOverlay && urlDisplay ? (
+          {urlField.showOverlay && urlField.display ? (
             <span
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 left-0 right-2 flex items-center overflow-hidden whitespace-nowrap text-[11px] leading-none"
             >
-              <span className="shrink-0 text-fg/90">{urlDisplay.host}</span>
-              {urlDisplay.rest ? (
-                <span className="min-w-0 truncate text-muted-fg/55">{urlDisplay.rest}</span>
+              <span className="shrink-0 text-fg/90">{urlField.display.host}</span>
+              {urlField.display.rest ? (
+                <span className="min-w-0 truncate text-muted-fg/55">{urlField.display.rest}</span>
               ) : null}
             </span>
           ) : null}
@@ -256,7 +251,7 @@ export function BrowserToolbarRow({
           <button
             type="submit"
             data-testid="browser-url-submit"
-            disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
+            disabled={Boolean(busy) || !apiAvailable || !urlField.value.trim()}
             className={cn(
               "inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-[6px] border-l border-white/[0.06] text-fg/75 hover:bg-white/[0.06]",
               toolbar.openAffordance === "label" ? "px-1.5 text-[10px] font-medium" : "w-7",
@@ -295,7 +290,7 @@ export function BrowserToolbarRow({
       ) : null}
 
       {toolbar.showDevice ? (
-        <DropdownMenu.Root open={deviceMenuOpen} onOpenChange={setDeviceMenuOpen}>
+        <DropdownMenu.Root open={deviceMenuOpen} onOpenChange={onDeviceMenuOpenChange}>
           <DropdownMenu.Trigger asChild>
             <button
               type="button"
@@ -378,11 +373,11 @@ export function BrowserToolbarRow({
         </button>
       ) : null}
 
-      {hasSelection && toolbar.showAttach ? (
+      {selection.has && toolbar.showAttach ? (
         <button
           type="button"
-          disabled={Boolean(busy) || !apiAvailable || !canAddContext}
-          onClick={onAttachSelection}
+          disabled={Boolean(busy) || !apiAvailable || !selection.canAdd}
+          onClick={selection.onAttach}
           className={cn(
             "inline-flex shrink-0 items-center gap-1 px-2 font-medium",
             TOOLBAR_CONTROL,

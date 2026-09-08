@@ -9,23 +9,11 @@ import { machineNameForBinding } from "../../../shared/machineIdentity";
 import type { AgentChatFileRef, BrowserLinkOpenMode, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
-  BuiltInBrowserDevToolsResult,
   BuiltInBrowserEmulationPreset,
-  BuiltInBrowserEmulationResult,
-  BuiltInBrowserExportHarResult,
-  BuiltInBrowserFindInPageResult,
-  BuiltInBrowserNetworkLoggingResult,
   BuiltInBrowserPermissionDecision,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRecordingStatus,
-  BuiltInBrowserStartRecordingResult,
-  BuiltInBrowserStopRecordingResult,
-  BuiltInBrowserTab,
-  BuiltInBrowserTabHandoff,
-  BuiltInBrowserTabTargetArgs,
-  BuiltInBrowserZoomResult,
-  DevServersArgs,
 } from "../../../shared/types/builtInBrowser";
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
 import { browserToolbarLayout } from "./builtInBrowserToolbar";
@@ -35,6 +23,7 @@ import {
   emulationDisplayLabel,
   emulationSizeLabel,
   findErrorMessage,
+  recordingEndedByLabel,
   simulatorEmulationPreset,
   stepZoomFactor,
   type BrowserFindState,
@@ -54,7 +43,6 @@ import {
 import {
   browserUrlOrigin,
   clipboardUrlCandidate,
-  completeBrowserUrl,
   splitBrowserUrlForDisplay,
   urlLockKind,
 } from "../../lib/browserUrl";
@@ -67,7 +55,6 @@ import {
   remoteTunnelApprovalKey,
   type RemoteLoopbackTunnel,
 } from "../../../shared/remoteLoopbackUrl";
-import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
@@ -92,147 +79,74 @@ import { BrowserProfilePanel } from "./browser/BrowserProfilePanel";
 import { BrowserStage } from "./browser/BrowserStage";
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
-import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "./browser/browserChrome";
+import {
+  MENU_ITEM_CLASS,
+  MENU_LABEL_CLASS,
+  MENU_SEPARATOR_CLASS,
+  type BrowserChromeShared,
+} from "./browser/browserChrome";
 import type {
   BrowserCaptureSelection,
   BrowserFrame,
-  BrowserTab,
   BuiltInBrowserContextItem,
+  BuiltInBrowserEventPayload,
   BuiltInBrowserScreenshot,
-  CaptureMediaBounds,
+  BuiltInBrowserStatus,
 } from "./browser/browserPanelTypes";
+import {
+  browserEventMatchesProject,
+  errorMessage,
+  frameLabel,
+  normalizeContextItem,
+  normalizeScreenshot,
+  normalizeSelectionResult,
+  normalizeStatus,
+  normalizeUrlForNavigation,
+  numberField,
+  stringField,
+  stripDataUrlPrefix,
+} from "./browser/browserPanelNormalizers";
+import {
+  browserCaptureFrame,
+  cropBrowserScreenshot,
+  pointerToCapturePoint,
+} from "./browser/browserCapture";
 
-type BuiltInBrowserStatus = {
-  supported: boolean;
-  partition?: string | null;
-  visible: boolean;
-  activeTabId: string | null;
-  tabs: BrowserTab[];
-  url: string | null;
-  title: string | null;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  loading: boolean;
-  inspecting: boolean;
-  selectedItem: BuiltInBrowserContextItem | null;
-  lastError?: string | null;
-  [key: string]: unknown;
-};
-
-type BuiltInBrowserEventPayload = {
-  type?: string;
-  status?: unknown;
-  item?: unknown;
-  selection?: unknown;
-  selectedItem?: unknown;
-  screenshot?: unknown;
-  url?: unknown;
-  title?: unknown;
-  canGoBack?: unknown;
-  canGoForward?: unknown;
-  loading?: unknown;
-  inspecting?: unknown;
-  error?: unknown;
-  message?: unknown;
-  [key: string]: unknown;
-};
-
-type BuiltInBrowserApi = {
-  getStatus: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  getProfileDiagnostics?: () => Promise<BuiltInBrowserProfileDiagnostics>;
-  listPermissions?: () => Promise<{ permissions: BuiltInBrowserPermissionDecision[] }>;
-  clearPermissions?: (args?: {
-    origin?: string | null;
-    permission?: string | null;
-  }) => Promise<{ removed: number; permissions: BuiltInBrowserPermissionDecision[] }>;
-  setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  createTab?: (args?: { url?: string | null; activate?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  switchTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  closeTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  reload: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  goBack: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  goForward: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  stop: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  startInspect: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-  stopInspect: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-  captureScreenshot: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  selectCurrent: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
-  clearSelection: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-  /**
-   * Human-only hand-back. Deliberately absent from the agent bridge: an agent
-   * gets its tab back when the person presses Hand back, the auto-offer is
-   * accepted, the tab closes, or the handoff times out — never on its own say-so.
-   */
-  endHandoff?: (
-    args?: BuiltInBrowserTabTargetArgs & { endedBy?: "human" | "auto-offer" },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<unknown>;
-  setEmulation?: (
-    args?: BuiltInBrowserTabTargetArgs & {
-      preset?: string | null;
-      width?: number | null;
-      height?: number | null;
-    },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserEmulationResult>;
-  setZoom?: (
-    args?: BuiltInBrowserTabTargetArgs & { factor?: number | null; reset?: boolean },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserZoomResult>;
-  findInPage?: (
-    args: BuiltInBrowserTabTargetArgs & { text: string; forward?: boolean; findNext?: boolean },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserFindInPageResult>;
-  stopFindInPage?: (
-    args?: BuiltInBrowserTabTargetArgs & { action?: "clearSelection" | "keepSelection" },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<unknown>;
-  setDevTools?: (
-    args: BuiltInBrowserTabTargetArgs & { open: boolean },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserDevToolsResult>;
-  setNetworkLogging?: (
-    args: BuiltInBrowserTabTargetArgs & { enabled: boolean; clear?: boolean },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserNetworkLoggingResult>;
-  exportHar?: (
-    args?: BuiltInBrowserTabTargetArgs & { failedOnly?: boolean },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserExportHarResult>;
-  startRecording?: (
-    args?: BuiltInBrowserTabTargetArgs & { fps?: number | null; caption?: string | null },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserStartRecordingResult>;
-  stopRecording?: (
-    args?: BuiltInBrowserTabTargetArgs,
-    pin?: OpenProjectBinding | null,
-  ) => Promise<BuiltInBrowserStopRecordingResult>;
-  /** Added by the browser service; absent on an older main process. */
-  /**
-   * Dev-server discovery reads THIS machine's PTY output, so it takes no pin —
-   * a lane is the only scope it has.
-   */
-  getDevServers?: (args?: DevServersArgs) => Promise<unknown>;
-  onEvent: (
-    cb: (event: BuiltInBrowserEventPayload) => void,
-    pin?: OpenProjectBinding | null,
-  ) => () => void;
-  /** Remote-pin only: resolve a loopback URL onto a forward without navigating. */
-  localizeRemoteUrl?: (
-    args: { url: string },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<{ url: string; forward: RemoteLoopbackTunnel | null }>;
-  acknowledgeRemoteRequest?: (
-    args: { requestId: string; desktopLabel: string; accepted: boolean; reason?: string | null },
-    pin?: OpenProjectBinding | null,
-  ) => Promise<{ ok: boolean }>;
-  onRemoteRequest?: (
-    cb: (event: BuiltInBrowserRemoteRequest) => void,
-    pin?: OpenProjectBinding | null,
-  ) => () => void;
-};
+/**
+ * The preload's declared browser namespace, with presence relaxed.
+ *
+ * The panel used to carry a hand-written copy of this whole surface, which is
+ * how `getDevServers` came to be re-widened to `Promise<unknown>` after the
+ * preload had already declared its result type. The SHAPE is the declaration's
+ * business now; the only thing restated here is that a method may be MISSING at
+ * runtime — an older main process on a pinned machine, or the hosted web
+ * client, whose namespace is a stub. Optional call sites feature-detect; the
+ * handful listed below have existed for as long as the namespace has and are
+ * treated as load-bearing.
+ *
+ * Payloads are still normalized on top of this (`normalizeStatus` and friends):
+ * a declared return type says what a current main process SENDS, not what
+ * arrived.
+ */
+type BuiltInBrowserNamespace = Window["ade"]["builtInBrowser"];
+type BuiltInBrowserApi =
+  & Partial<BuiltInBrowserNamespace>
+  & Pick<
+    BuiltInBrowserNamespace,
+    | "getStatus"
+    | "setBounds"
+    | "navigate"
+    | "reload"
+    | "goBack"
+    | "goForward"
+    | "stop"
+    | "startInspect"
+    | "stopInspect"
+    | "captureScreenshot"
+    | "selectCurrent"
+    | "clearSelection"
+    | "onEvent"
+  >;
 
 /**
  * A tunnel the agent asked for that a human has not approved yet.
@@ -262,13 +176,6 @@ type ChatBuiltInBrowserPanelProps = {
 type MessageTone = "info" | "error";
 type Message = { tone: MessageTone; text: string };
 
-type BrowserCrop = {
-  dataUrl: string;
-  width: number;
-  height: number;
-  frame: BrowserFrame;
-};
-
 /** Live find, without a request per keystroke. */
 const FIND_DEBOUNCE_MS = 150;
 /*
@@ -290,390 +197,14 @@ const UNDERLAY_SETTLE_SNAPSHOT_MS = 600;
 /** Ports worth a one-shot probe for the empty state's "your dev server" chip. */
 const DEV_SERVER_PROBE_PORTS = [3000, 5173, 4321, 8080, 8000] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function stringField(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function booleanField(value: unknown, fallback = false): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function numberField(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function getBrowserApi(): BuiltInBrowserApi | null {
-  return (window.ade as unknown as { builtInBrowser?: BuiltInBrowserApi }).builtInBrowser ?? null;
+  return window.ade?.builtInBrowser ?? null;
 }
 
 function requireBrowserApi(): BuiltInBrowserApi {
   const api = getBrowserApi();
   if (!api) throw new Error("Built-in browser is not available in this renderer.");
   return api;
-}
-
-function stripDataUrlPrefix(dataUrl: string): string {
-  const comma = dataUrl.indexOf(",");
-  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-}
-
-const UNSUPPORTED_NAVIGATION_SCHEME_RE = /^(about|blob|data|devtools|file):/i;
-
-type NormalizedNavigationUrl =
-  | { ok: true; url: string }
-  | { ok: false; reason: string };
-
-function normalizeUrlForNavigation(value: string): NormalizedNavigationUrl {
-  const trimmed = value.trim();
-  if (!trimmed) return { ok: true, url: trimmed };
-  if (UNSUPPORTED_NAVIGATION_SCHEME_RE.test(trimmed)) {
-    return {
-      ok: false,
-      reason: "Unsupported URL — the built-in browser only opens http(s) URLs.",
-    };
-  }
-  // Anything that is not already a URL becomes a search: an omnibox that
-  // silently does nothing with typed words is worse than one that guesses.
-  return { ok: true, url: completeBrowserUrl(trimmed, { fallback: "search", scheme: "http" }) ?? trimmed };
-}
-
-function normalizeFrame(value: unknown): BrowserFrame | null {
-  if (!isRecord(value)) return null;
-  const x = numberField(value.x);
-  const y = numberField(value.y);
-  const width = numberField(value.width);
-  const height = numberField(value.height);
-  if (x == null || y == null || width == null || height == null) return null;
-  return { x, y, width, height };
-}
-
-function normalizeContextItem(value: unknown, status?: BuiltInBrowserStatus | null): BuiltInBrowserContextItem | null {
-  if (!isRecord(value)) return null;
-  const metadata = isRecord(value.metadata) ? value.metadata : {};
-  const label = stringField(value.label)
-    ?? stringField(metadata.label)
-    ?? stringField(value.accessibleName)
-    ?? stringField(value.name);
-  const text = stringField(value.text)
-    ?? stringField(metadata.text)
-    ?? stringField(value.value)
-    ?? stringField(metadata.value)
-    ?? label;
-  const url = stringField(value.url) ?? status?.url ?? null;
-  const title = stringField(value.title) ?? status?.title ?? null;
-  const selector = stringField(value.selector) ?? stringField(metadata.selector) ?? stringField(value.cssSelector) ?? null;
-  const frame = normalizeFrame(value.frame) ?? normalizeFrame(value.pixelFrame) ?? normalizeFrame(value.bounds);
-  const selectedAt = stringField(value.selectedAt) ?? new Date().toISOString();
-  return {
-    ...value,
-    kind: stringField(value.kind) ?? "built_in_browser_element",
-    id: stringField(value.id) ?? `built-in-browser-selection-${selectedAt}`,
-    sessionId: stringField(value.sessionId),
-    url,
-    title,
-    selector,
-    text,
-    role: stringField(value.role) ?? stringField(metadata.role),
-    tagName: stringField(value.tagName) ?? stringField(metadata.tagName),
-    frame,
-    metadata,
-    screenshotDataUrl: stringField(value.screenshotDataUrl) ?? stringField(value.dataUrl),
-    selectedAt,
-  };
-}
-
-function normalizeSelectionResult(value: unknown, status: BuiltInBrowserStatus | null): BuiltInBrowserContextItem | null {
-  if (!isRecord(value)) return normalizeContextItem(value, status);
-  return (
-    normalizeContextItem(value.item, status)
-    ?? normalizeContextItem(value.selection, status)
-    ?? normalizeContextItem(value.selectedItem, status)
-    ?? normalizeContextItem(value, status)
-  );
-}
-
-function normalizeScreenshot(value: unknown, status: BuiltInBrowserStatus | null): BuiltInBrowserScreenshot | null {
-  if (!isRecord(value)) return null;
-  if (isRecord(value.screenshot)) return normalizeScreenshot(value.screenshot, status);
-  const item =
-    normalizeContextItem(value.item, status)
-    ?? normalizeContextItem(value.contextItem, status)
-    ?? null;
-  return {
-    ...value,
-    path: stringField(value.path),
-    filePath: stringField(value.filePath),
-    data: stringField(value.data) ?? stringField(value.base64),
-    dataUrl: stringField(value.dataUrl),
-    screenshotDataUrl: stringField(value.screenshotDataUrl),
-    mimeType: stringField(value.mimeType) ?? "image/png",
-    filename: stringField(value.filename) ?? "built-in-browser-screenshot.png",
-    width: numberField(value.width),
-    height: numberField(value.height),
-    capturedAt: stringField(value.capturedAt) ?? new Date().toISOString(),
-    item,
-    contextItem: item,
-  };
-}
-
-function normalizeTab(value: unknown): BrowserTab | null {
-  if (!isRecord(value)) return null;
-  const id = stringField(value.id);
-  if (!id) return null;
-  return {
-    id,
-    faviconUrl: stringField(value.faviconUrl),
-    isLaunchpad: booleanField(value.isLaunchpad, false),
-    url: stringField(value.url),
-    title: stringField(value.title),
-    isLoading: booleanField(value.isLoading, false),
-    canGoBack: booleanField(value.canGoBack, false),
-    canGoForward: booleanField(value.canGoForward, false),
-    ownerLaneId: stringField(value.ownerLaneId),
-    ownerChatSessionId: stringField(value.ownerChatSessionId),
-    ownerClaimedAt: stringField(value.ownerClaimedAt),
-    ownerLeaseExpiresAt: stringField(value.ownerLeaseExpiresAt),
-    zoomFactor: numberField(value.zoomFactor) || 1,
-    devToolsOpen: booleanField(value.devToolsOpen, false),
-    emulation: (isRecord(value.emulation) ? value.emulation : null) as BuiltInBrowserTab["emulation"],
-    networkLogging: booleanField(value.networkLogging, false),
-    recording: (isRecord(value.recording) ? value.recording : null) as BuiltInBrowserTab["recording"],
-    handoff: normalizeTabHandoff(value.handoff),
-  };
-}
-
-/**
- * A tab's login handoff, or null.
- *
- * Parsed defensively rather than cast: this panel also runs against an older
- * main process during a dev reload, where `handoff` is simply absent.
- */
-function normalizeTabHandoff(value: unknown): BuiltInBrowserTabHandoff | null {
-  if (!isRecord(value)) return null;
-  const reason = stringField(value.reason);
-  const startedAt = stringField(value.startedAt);
-  if (!reason || !startedAt) return null;
-  const previousOwner = isRecord(value.previousOwner) ? value.previousOwner : {};
-  return {
-    reason,
-    startedAt,
-    expiresAt: stringField(value.expiresAt) ?? startedAt,
-    requestedByChatSessionId: stringField(value.requestedByChatSessionId),
-    requestedByLaneId: stringField(value.requestedByLaneId),
-    startedAtOrigin: stringField(value.startedAtOrigin),
-    previousOwner: {
-      laneId: stringField(previousOwner.laneId),
-      chatSessionId: stringField(previousOwner.chatSessionId),
-    },
-  };
-}
-
-function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null): BuiltInBrowserStatus {
-  if (!isRecord(value)) {
-    return {
-      supported: previous?.supported ?? true,
-      visible: previous?.visible ?? false,
-      activeTabId: previous?.activeTabId ?? null,
-      tabs: previous?.tabs ?? [],
-      url: previous?.url ?? null,
-      title: previous?.title ?? null,
-      canGoBack: previous?.canGoBack ?? false,
-      canGoForward: previous?.canGoForward ?? false,
-      loading: previous?.loading ?? false,
-      inspecting: previous?.inspecting ?? false,
-      selectedItem: previous?.selectedItem ?? null,
-      lastError: previous?.lastError ?? null,
-    };
-  }
-  const rawTabs = Array.isArray(value.tabs) ? value.tabs.map(normalizeTab).filter((tab): tab is BrowserTab => Boolean(tab)) : previous?.tabs ?? [];
-  // Only when the payload actually says "zero tabs": a partial update that
-  // omits `tabs` entirely is silence, not a claim that they all closed.
-  if (Array.isArray(value.tabs) && rawTabs.length === 0) {
-    // No tabs is a real state, not a gap in the payload: carrying the closed
-    // tab's URL forward left a green padlock and a live-looking omnibox over a
-    // browser that has nothing open.
-    return {
-      ...value,
-      supported: booleanField(value.supported, previous?.supported ?? true),
-      visible: booleanField(value.visible, previous?.visible ?? false),
-      activeTabId: null,
-      tabs: [],
-      url: null,
-      title: null,
-      canGoBack: false,
-      canGoForward: false,
-      loading: false,
-      inspecting: false,
-      selectedItem: null,
-      lastError: stringField(value.lastError) ?? stringField(value.error) ?? previous?.lastError ?? null,
-    };
-  }
-  const activeTabId = stringField(value.activeTabId) ?? previous?.activeTabId ?? rawTabs[0]?.id ?? null;
-  const activeTab = rawTabs.find((tab) => tab.id === activeTabId) ?? rawTabs[0] ?? null;
-  return {
-    ...value,
-    supported: booleanField(value.supported, previous?.supported ?? true),
-    visible: booleanField(value.visible, previous?.visible ?? false),
-    activeTabId,
-    tabs: rawTabs,
-    /*
-      The active tab's own URL, never the last one we happened to see.
-
-      A new tab has no URL, and falling through to `previous` handed the empty
-      launchpad the address of the tab before it — which then wore a green
-      padlock over a field with nothing in it. `previous` is only a fallback for
-      not knowing which tab is active at all.
-    */
-    url: stringField(value.url) ?? (activeTab ? activeTab.url : previous?.url ?? null),
-    title: stringField(value.title) ?? (activeTab ? activeTab.title : previous?.title ?? null),
-    canGoBack: booleanField(value.canGoBack, activeTab?.canGoBack ?? previous?.canGoBack ?? false),
-    canGoForward: booleanField(value.canGoForward, activeTab?.canGoForward ?? previous?.canGoForward ?? false),
-    loading: booleanField(value.loading, booleanField(value.isLoading, activeTab?.isLoading ?? previous?.loading ?? false)),
-    inspecting: booleanField(value.inspecting, booleanField(value.isInspecting, previous?.inspecting ?? false)),
-    selectedItem:
-      normalizeContextItem(value.selectedItem, previous)
-      ?? normalizeContextItem(value.selection, previous)
-      ?? previous?.selectedItem
-      ?? null,
-    lastError: stringField(value.lastError) ?? stringField(value.error) ?? previous?.lastError ?? null,
-  };
-}
-
-function eventProjectRoot(value: unknown): string | null | undefined {
-  if (!isRecord(value)) return undefined;
-  if ("collectionProjectRoot" in value) {
-    const root = value.collectionProjectRoot;
-    return typeof root === "string" && root.trim().length > 0 ? root : null;
-  }
-  if (isRecord(value.status)) return eventProjectRoot(value.status);
-  return undefined;
-}
-
-function browserEventMatchesProject(
-  event: BuiltInBrowserEventPayload,
-  projectRoot: string | null,
-): boolean {
-  const root = eventProjectRoot(event);
-  if (root === undefined) return true;
-  if (!projectRoot) return root === null;
-  return root === projectRoot;
-}
-
-function frameLabel(frame: BrowserFrame | null): string | null {
-  if (!frame) return null;
-  return `${Math.round(frame.x)}, ${Math.round(frame.y)} · ${Math.round(frame.width)}×${Math.round(frame.height)}`;
-}
-
-function clampBrowserFrame(frame: BrowserFrame, width: number, height: number): BrowserFrame {
-  const cropWidth = Math.max(1, Math.min(width, Math.round(frame.width)));
-  const cropHeight = Math.max(1, Math.min(height, Math.round(frame.height)));
-  return {
-    x: Math.max(0, Math.min(width - cropWidth, Math.round(frame.x))),
-    y: Math.max(0, Math.min(height - cropHeight, Math.round(frame.y))),
-    width: cropWidth,
-    height: cropHeight,
-  };
-}
-
-function browserCaptureFrame(
-  selection: BrowserCaptureSelection,
-  width: number,
-  height: number,
-): BrowserFrame {
-  const rawX = Math.min(selection.startX, selection.currentX);
-  const rawY = Math.min(selection.startY, selection.currentY);
-  const rawWidth = Math.abs(selection.currentX - selection.startX);
-  const rawHeight = Math.abs(selection.currentY - selection.startY);
-  return clampBrowserFrame({ x: rawX, y: rawY, width: rawWidth, height: rawHeight }, width, height);
-}
-
-function measureObjectContain(element: HTMLElement, mediaWidth: number, mediaHeight: number): CaptureMediaBounds | null {
-  if (!mediaWidth || !mediaHeight) return null;
-  const rect = element.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  const scale = Math.min(rect.width / mediaWidth, rect.height / mediaHeight);
-  const width = mediaWidth * scale;
-  const height = mediaHeight * scale;
-  return {
-    left: (rect.width - width) / 2,
-    top: (rect.height - height) / 2,
-    width,
-    height,
-    scaleX: width / mediaWidth,
-    scaleY: height / mediaHeight,
-  };
-}
-
-function pointerToCapturePoint(
-  event: PointerEvent<HTMLElement>,
-  element: HTMLElement,
-  mediaWidth: number,
-  mediaHeight: number,
-  clamp = false,
-): ({ x: number; y: number; bounds: CaptureMediaBounds }) | null {
-  const bounds = measureObjectContain(element, mediaWidth, mediaHeight);
-  if (!bounds) return null;
-  const rect = element.getBoundingClientRect();
-  let x = (event.clientX - rect.left - bounds.left) / bounds.scaleX;
-  let y = (event.clientY - rect.top - bounds.top) / bounds.scaleY;
-  if (clamp) {
-    x = Math.max(0, Math.min(mediaWidth, x));
-    y = Math.max(0, Math.min(mediaHeight, y));
-  } else if (x < 0 || y < 0 || x > mediaWidth || y > mediaHeight) {
-    return null;
-  }
-  return { x, y, bounds };
-}
-
-async function cropBrowserScreenshot(
-  screenshot: BuiltInBrowserScreenshot,
-  frame: BrowserFrame,
-): Promise<BrowserCrop | null> {
-  const dataUrl = screenshot.dataUrl ?? screenshot.screenshotDataUrl ?? null;
-  const width = screenshot.width ?? null;
-  const height = screenshot.height ?? null;
-  if (!dataUrl || !width || !height) return null;
-  const cropFrame = clampBrowserFrame(frame, width, height);
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = cropFrame.width;
-      canvas.height = cropFrame.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-      ctx.drawImage(
-        image,
-        cropFrame.x,
-        cropFrame.y,
-        cropFrame.width,
-        cropFrame.height,
-        0,
-        0,
-        cropFrame.width,
-        cropFrame.height,
-      );
-      resolve({
-        dataUrl: canvas.toDataURL("image/png"),
-        width: cropFrame.width,
-        height: cropFrame.height,
-        frame: cropFrame,
-      });
-    };
-    image.onerror = () => resolve(null);
-    image.src = dataUrl;
-  });
 }
 
 /**
@@ -1208,7 +739,14 @@ export function ChatBuiltInBrowserPanel({
       .catch((error: unknown) => {
         if (!cancelled) setMessage({ tone: "error", text: errorMessage(error) });
       });
-    const unsubscribe = api.onEvent((event) => {
+    // Widened once, here, on purpose. The preload declares a closed union of
+    // what a CURRENT main process sends; this panel also has to survive an older
+    // one (a pinned machine on a previous release), whose events carry a subset
+    // — and in a couple of cases a differently-spelled field. `event` is read
+    // through the same field-by-field normalizers as every other payload, so the
+    // widening buys permissiveness at the boundary and nothing beyond it.
+    const unsubscribe = api.onEvent((raw) => {
+      const event = raw as BuiltInBrowserEventPayload;
       if (!browserEventMatchesProject(event, projectRoot)) return;
       const eventType = typeof event.type === "string" ? event.type : "";
       if (event.status) {
@@ -1238,8 +776,14 @@ export function ChatBuiltInBrowserPanel({
       }
       if (eventType === "recording") {
         // The recording event carries no status, and `tab.recording` is what the
-        // REC pill reads — so pull the tab state that just changed.
+        // REC pill reads — so pull the tab state that just changed. That read is
+        // also what clears the pill.
         api.getStatus(browserScope, runtimePinRef.current).then(applyStatus).catch(() => {});
+        // A recording nobody stopped stopped anyway. The pill clearing is the
+        // only other signal, and a pill that vanishes says nothing about why —
+        // which is exactly the question a truncated clip raises.
+        const endedBy = recordingEndedByLabel(event.endedBy);
+        if (endedBy) showToast({ title: "Recording stopped", message: endedBy, tone: "info" });
       }
       const nextSelection =
         normalizeContextItem(event.item, statusRef.current)
@@ -2211,6 +1755,18 @@ export function ChatBuiltInBrowserPanel({
     urlInputRef.current?.blur();
   }, [currentUrl]);
 
+  /**
+   * Leaving the field, as one rule.
+   *
+   * An emptied omnibox is not an instruction to navigate to nothing, so blur
+   * puts the page's own URL back. This used to live inside the toolbar row,
+   * which was the one place a child decided what the parent's state meant.
+   */
+  const handleUrlEndEdit = useCallback(() => {
+    setEditingUrl(false);
+    setUrlInput((current) => (current.trim() ? current : currentUrl));
+  }, [currentUrl]);
+
   /* ── Keyboard ───────────────────────────────────────────────────────────── */
 
   const handlePanelKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
@@ -2317,7 +1873,7 @@ export function ChatBuiltInBrowserPanel({
     const api = getBrowserApi();
     if (!api?.getDevServers || remotePin) return undefined;
     let cancelled = false;
-    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }))
+    void api.getDevServers({ laneId: contextLaneId })
       .then((value) => {
         if (cancelled) return;
         const discovered = normalizeDevServers(value);
@@ -2460,6 +2016,34 @@ export function ChatBuiltInBrowserPanel({
   // Only while the field shows exactly what is loaded: mid-edit the person's
   // own text is the truth, and dimming half of it would be a lie.
   const showUrlOverlay = !editingUrl && urlDisplay != null && urlInput === currentUrl;
+  // One value per concept, built here because this is where the sequencing
+  // rules already live — the row and the ⋮ menu each take a whole group rather
+  // than eleven props the parent has to remember to keep in step.
+  const urlField = useMemo(() => ({
+    inputRef: urlInputRef,
+    value: urlInput,
+    currentUrl,
+    lockKind,
+    tunnel: activeTabTunnel,
+    display: urlDisplay,
+    showOverlay: showUrlOverlay,
+    onChange: setUrlInput,
+    onFocus: handleUrlFocus,
+    onKeyDown: handleUrlKeyDown,
+    onSubmit: handleNavigate,
+    onEndEdit: handleUrlEndEdit,
+  }), [
+    activeTabTunnel,
+    currentUrl,
+    handleNavigate,
+    handleUrlEndEdit,
+    handleUrlFocus,
+    handleUrlKeyDown,
+    lockKind,
+    showUrlOverlay,
+    urlDisplay,
+    urlInput,
+  ]);
   const emulationWidth = emulation?.width && emulation.width > 0 ? emulation.width : null;
   const emulationHeight = emulation?.height && emulation.height > 0 ? emulation.height : null;
   const emulationSize = useMemo(
@@ -2679,6 +2263,32 @@ export function ChatBuiltInBrowserPanel({
     </DropdownMenu.RadioGroup>
   );
 
+  /**
+   * The chrome the row and the ⋮ menu both take.
+   *
+   * These eleven values were passed to each of them separately, which made the
+   * duplication something a reader had to notice. Built once here, handed to
+   * both, so the two surfaces cannot disagree about what "busy" or "inspecting"
+   * means. Deliberately NOT memoized: `deviceMenuItems` is fresh JSX on every
+   * render already, so a `useMemo` here would be a dependency array that always
+   * misses.
+   */
+  const toolbarChrome: BrowserChromeShared = {
+    toolbar,
+    busy,
+    apiAvailable,
+    inspecting,
+    onInspectToggle: handleInspectToggle,
+    emulation,
+    deviceLabel,
+    deviceMenuItems,
+    selection: {
+      has: hasSelection,
+      canAdd: Boolean(onAddContext),
+      onAttach: handleAttachSelection,
+    },
+  };
+
   return (
     <div
       ref={panelRef}
@@ -2738,9 +2348,8 @@ export function ChatBuiltInBrowserPanel({
 
         <BrowserToolbarRow
           rowRef={toolbarRowRef}
-          toolbar={toolbar}
-          busy={busy}
-          apiAvailable={apiAvailable}
+          shared={toolbarChrome}
+          urlField={urlField}
           hasTab={hasTab}
           canGoBack={canGoBack}
           canGoForward={canGoForward}
@@ -2749,49 +2358,22 @@ export function ChatBuiltInBrowserPanel({
           onForward={handleForward}
           onReload={handleReload}
           onStop={handleStop}
-          onNavigate={handleNavigate}
-          lockKind={lockKind}
-          activeTabTunnel={activeTabTunnel}
-          urlInputRef={urlInputRef}
-          urlInput={urlInput}
-          setUrlInput={setUrlInput}
-          setEditingUrl={setEditingUrl}
-          onUrlFocus={handleUrlFocus}
-          onUrlKeyDown={handleUrlKeyDown}
-          currentUrl={currentUrl}
-          showUrlOverlay={showUrlOverlay}
-          urlDisplay={urlDisplay}
           recording={recording}
           recordingClock={recordingClock}
           onStopRecording={handleStopRecording}
           deviceMenuOpen={deviceMenuOpen}
-          setDeviceMenuOpen={setDeviceMenuOpen}
-          deviceLabel={deviceLabel}
-          emulation={emulation}
-          deviceMenuItems={deviceMenuItems}
+          onDeviceMenuOpenChange={setDeviceMenuOpen}
           hasCaptureBase={Boolean(captureBase)}
           onCameraClick={handleCameraClick}
-          inspecting={inspecting}
-          onInspectToggle={handleInspectToggle}
-          hasSelection={hasSelection}
-          canAddContext={Boolean(onAddContext)}
-          onAttachSelection={handleAttachSelection}
           overflow={(
             <BrowserOverflowMenu
               open={overflowOpen}
               onOpenChange={setOverflowOpen}
-              apiAvailable={apiAvailable}
-              toolbar={toolbar}
-              busy={busy}
+              shared={toolbarChrome}
               zoomFactor={zoomFactor}
               onZoomStep={handleZoomStep}
               onZoomReset={handleZoomReset}
-              inspecting={inspecting}
-              onInspectToggle={handleInspectToggle}
               onAttachScreenshot={handleAttachScreenshot}
-              emulation={emulation}
-              deviceLabel={deviceLabel}
-              deviceMenuItems={deviceMenuItems}
               onOpenFind={openFind}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
@@ -2806,9 +2388,6 @@ export function ChatBuiltInBrowserPanel({
               onOpenLoginImport={() => setImportOpen(true)}
               currentUrl={currentUrl}
               onOpenExternal={handleOpenExternal}
-              hasSelection={hasSelection}
-              canAddContext={Boolean(onAddContext)}
-              onAttachSelection={handleAttachSelection}
               canInsertDraft={Boolean(onInsertDraft)}
               onInsertSelectionDraft={handleInsertSelectionDraft}
               onClearSelection={handleClearSelection}

@@ -34,9 +34,12 @@ import {
  *   state that then has to be reconciled across machines.
  * - `browser` is **pulled from the desktop bridge**. The browser lives in the
  *   desktop's Electron main process; the daemon proxies `built_in_browser.*`
- *   over a socket. No desktop attached means no browser to describe — that is
- *   `browser: null` with `browserUnavailable: "desktop_not_attached"`, an
- *   ordinary state, not an error.
+ *   over a socket, scoped to THIS daemon's project. No desktop attached means no
+ *   browser to describe — that is `browser: null` with
+ *   `browserUnavailable: "desktop_not_attached"`, an ordinary state, not an
+ *   error. A desktop that is attached but has no window open for this project
+ *   is `"desktop_not_attached_for_project"`: also ordinary, and deliberately not
+ *   answered out of another project's window collection.
  * - `appControl` is **read in-process** from the daemon's own App Control
  *   service, which is why it survives a desktop that has quit.
  *
@@ -317,6 +320,10 @@ export function createWorkToolsStateService(
       }
       return { browser: null, unavailable: "desktop_not_attached" };
     }
+    // A desktop answered, but it has no window open for this daemon's project.
+    // Deliberately NOT falling back to whatever else that desktop has open: the
+    // tabs would belong to another project.
+    if (status.unavailable) return { browser: null, unavailable: status.unavailable };
     const browser = summarizeBrowser(status, laneId);
     browser.latestObservation = await findLatestObservation(browserObservationRoot, laneId);
     return { browser, unavailable: null };

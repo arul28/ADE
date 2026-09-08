@@ -3,7 +3,10 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LoginImportReadRequest } from "./loginImportRead";
-import { readLoginImportSourceInWorker } from "./loginImportReadWorkerClient";
+import {
+  readLoginImportSourceInWorker,
+  terminateLoginImportReadWorkers,
+} from "./loginImportReadWorkerClient";
 
 const REQUEST: LoginImportReadRequest = {
   engine: "chromium",
@@ -18,6 +21,10 @@ type FakeChild = EventEmitter & {
   stdin: PassThrough;
   stdout: PassThrough;
   stderr: PassThrough;
+  kill: ReturnType<typeof vi.fn>;
+  pid: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
 };
 
 function fakeChild(): FakeChild {
@@ -25,6 +32,10 @@ function fakeChild(): FakeChild {
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
+  child.pid = 4242;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = vi.fn(() => true);
   return child;
 }
 
@@ -100,5 +111,46 @@ describe("readLoginImportSourceInWorker", () => {
       status: "read_failed",
       reason: "EACCES",
     });
+  });
+
+  // A Keychain modal has no timeout by design, so "no timeout" needs an answer
+  // to "then how does it end". These are the three answers.
+  it("kills the child when the read is cancelled", async () => {
+    const child = fakeChild();
+    const controller = new AbortController();
+    const pending = readLoginImportSourceInWorker(REQUEST, {
+      spawnWorker: (() => child) as never,
+      workerPath: "/w.cjs",
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ ok: false, status: "read_failed" });
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it("kills every in-flight child at app quit", async () => {
+    const child = fakeChild();
+    const pending = readLoginImportSourceInWorker(REQUEST, {
+      spawnWorker: (() => child) as never,
+      workerPath: "/w.cjs",
+    });
+    expect(terminateLoginImportReadWorkers()).toBe(1);
+    expect(child.kill).toHaveBeenCalled();
+    // The promise is still owned by its caller; ending the child settles it.
+    child.emit("close", 143);
+    await expect(pending).resolves.toMatchObject({ ok: false, status: "read_failed" });
+    expect(terminateLoginImportReadWorkers()).toBe(0);
+  });
+
+  it("does not leave a child running after a spawn error", async () => {
+    const child = fakeChild();
+    const pending = readLoginImportSourceInWorker(REQUEST, {
+      spawnWorker: (() => child) as never,
+      workerPath: "/w.cjs",
+    });
+    child.emit("error", new Error("EACCES"));
+    await pending;
+    expect(child.kill).toHaveBeenCalled();
+    expect(terminateLoginImportReadWorkers()).toBe(0);
   });
 });

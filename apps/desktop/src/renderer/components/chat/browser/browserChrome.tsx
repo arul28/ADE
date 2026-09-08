@@ -6,7 +6,38 @@
  * geometry and menu surface. Keeping the strings here is what stops the four
  * from drifting into four slightly different toolbars.
  */
+import type { ReactNode } from "react";
+import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
+import type { BrowserToolbarLayout } from "../builtInBrowserToolbar";
 import { cn } from "../../ui/cn";
+
+/**
+ * The chrome both toolbar pieces are handed, built once by the panel.
+ *
+ * Eleven props used to be passed separately to the row AND to the ⋮ menu by the
+ * same parent, which is a duplication a reader has to notice rather than one the
+ * types prevent. One object, spread into neither: each child takes it whole, so
+ * adding a shared concern is one edit in one place.
+ */
+export type BrowserChromeShared = {
+  toolbar: BrowserToolbarLayout;
+  /** Which action is in flight, so every control can disable itself. */
+  busy: string | null;
+  apiAvailable: boolean;
+  inspecting: boolean;
+  onInspectToggle: () => void;
+  emulation: BuiltInBrowserEmulationState | null;
+  deviceLabel: string;
+  /** The device list, rendered by whichever surface is showing it. */
+  deviceMenuItems: ReactNode;
+  /** The element the person picked in the page, and what may be done with it. */
+  selection: {
+    has: boolean;
+    canAdd: boolean;
+    onAttach: () => void;
+  };
+};
+
 
 /** Shared control geometry, so the URL field and the menu buttons read as one row. */
 export const TOOLBAR_CONTROL = "h-7 rounded-[7px] border text-[11px]";

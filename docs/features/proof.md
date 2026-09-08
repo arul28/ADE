@@ -20,7 +20,7 @@ Three paths used to file records without anyone asking:
 
 | Path | Now |
 |---|---|
-| `captureScreenshot` chat tool (`apps/desktop/src/main/services/ai/tools/workflowTools.ts`) | Gone. `workflowTools.ts` is a name-list module now — the tool had no live registry behind it, so it filed nothing because it never ran. Agents use `ade proof capture --caption` / `ade proof attach`. |
+| `captureScreenshot` chat tool (formerly `apps/desktop/src/main/services/ai/tools/workflowTools.ts`) | Gone, along with `workflowTools.ts` itself. It was a name with no registry behind it, so it filed nothing because it never ran. Agents use `ade proof capture --caption` / `ade proof attach`. |
 | `screenshot_environment` / `record_environment` RPC tools (`apps/ade-cli/src/adeRpcServer.ts`) | File a record only when the call passes `proof: true`, which `ade proof capture` and `ade proof record` set. A bare call — agent vision, an automation run's `browser` tool family — writes to `.ade/cache/tmp/computer-use/` and returns the path. |
 | `computer_use_artifacts` action domain (`apps/desktop/src/main/services/adeActions/registry.ts`) | No longer exposes `ingest`. `ade actions call computer_use_artifacts.ingest` reached the broker past `validateComputerUseOwnerClaims` and the authorized caller-root check; ingestion now happens only through `ingest_computer_use_artifacts`, where both live. The domain exposes reads and record lifecycle. |
 

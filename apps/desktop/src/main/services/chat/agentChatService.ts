@@ -562,8 +562,6 @@ import {
 } from "../ai/tools/orchestrationTools";
 import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
-import { workflowToolNames } from "../ai/tools/workflowTools";
-import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { CTO_INTRO_ONBOARDING_STEP, CTO_INTRO_PROMPT } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -3783,18 +3781,6 @@ type SessionTurnCollector = {
   lastError: string | null;
   timeout: NodeJS.Timeout | null;
 };
-
-const CORE_NATIVE_SESSION_TOOL_NAMES = [
-  "commit_changes",
-  "rebase_lane",
-  "stash_push",
-  "list_stashes",
-  "stash_apply",
-  "stash_pop",
-  "stash_drop",
-  "stash_clear",
-  "ask_user",
-] as const;
 
 type PreparedSendMessage = {
   sessionId: string;
@@ -8530,8 +8516,6 @@ export function createAgentChatService(args: {
     githubService,
     getOrchestrationService,
     getSearchService,
-    linearClient: linearClientRef,
-    linearCredentials: linearCredentialsRef,
     prService,
     diskPressureMonitor,
     getTestService,
@@ -10095,55 +10079,13 @@ export function createAgentChatService(args: {
     return lane.id;
   };
 
-  const previewSessionToolNames = ({
-    laneId,
-    sessionProfile,
-    identityKey,
-  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey">): string[] => {
-    const effectiveSessionProfile = sessionProfile ?? "workflow";
-    if (effectiveSessionProfile === "light") return [];
-
-    const sessionId = `preview:${laneId}`;
-    const toolNames = new Set<string>();
-    for (const toolName of workflowToolNames({
-      hasPrService: Boolean(prService),
-      hasComputerUseArtifactBroker: Boolean(computerUseArtifactBrokerRef),
-    })) {
-      toolNames.add(toolName);
-    }
-
-    const linearTools = createLinearTools({
-      linearClient: linearClientRef ?? null,
-      credentials: linearCredentialsRef ?? null,
-    });
-    for (const toolName of Object.keys(linearTools)) {
-      toolNames.add(toolName);
-    }
-
-    for (const toolName of CORE_NATIVE_SESSION_TOOL_NAMES) {
-      toolNames.add(toolName);
-    }
-
-    if (identityKey === "cto") {
-      const ctoTools = createCtoOperatorTools(buildCtoOperatorToolDeps({
-        sessionId,
-        laneId,
-        modelId: null,
-        reasoningEffort: null,
-      }));
-      for (const toolName of Object.keys(ctoTools)) {
-        toolNames.add(toolName);
-      }
-    }
-
-    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
-  };
-
   /**
-   * The CTO operator tool dependency set. Shared by `previewSessionToolNames`
-   * (which only reads the keys, to generate the prompt manifest) and by the
-   * runtime tool map below (which actually executes them) so the advertised
-   * surface and the callable surface cannot drift apart.
+   * The CTO operator tool dependency set.
+   *
+   * One builder, used by the runtime tool map below so every CTO session gets
+   * the same dependencies. It used to be shared with `previewSessionToolNames`
+   * as well — a name-enumeration helper deleted for having no non-test caller —
+   * which is why it is a separate function rather than an inline literal.
    */
   const buildCtoOperatorToolDeps = (args: {
     sessionId: string;
@@ -52889,7 +52831,6 @@ export function createAgentChatService(args: {
       githubService,
       linearIssueTracker,
     }),
-    previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,
     handleCursorCloudStatusChange,

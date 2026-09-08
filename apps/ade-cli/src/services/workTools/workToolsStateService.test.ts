@@ -22,6 +22,7 @@ function browserStatus(
   return {
     activeTabId: "tab-1",
     tabs: [],
+    unavailable: null,
     ...overrides,
   };
 }
@@ -163,6 +164,24 @@ describe("workToolsStateService", () => {
     expect(state.browserUnavailable).toBe("desktop_not_attached");
     // App Control runs in the daemon, so it survives a desktop that has quit.
     expect(state.appControl).toMatchObject({ appName: "ADE Dev", status: "connected", driver: "cdp" });
+    service.dispose();
+  });
+
+  it("reports a desktop with no window for this project as its own state", async () => {
+    // Not "desktop_not_attached": ADE Desktop IS running, so telling the user to
+    // open it sends them chasing the wrong thing. And deliberately not the other
+    // project's tabs, which is what an unscoped answer used to return.
+    const service = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: async () => ({
+        activeTabId: null,
+        tabs: [],
+        unavailable: "desktop_not_attached_for_project" as const,
+      }),
+    });
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.browser).toBeNull();
+    expect(state.browserUnavailable).toBe("desktop_not_attached_for_project");
     service.dispose();
   });
 

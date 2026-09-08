@@ -1,4 +1,5 @@
 import type { OpenProjectBinding } from "../../../../shared/types/core";
+import { createPendingRequestChannel } from "../../../lib/pendingRequestChannel";
 
 /**
  * "Open this path in the Work tab's Files panel" — a one-shot request channel.
@@ -7,8 +8,8 @@ import type { OpenProjectBinding } from "../../../../shared/types/core";
  * the user into the Files tab. The chat surface and the embedded workbench sit
  * on opposite sides of the Work tree with no shared ancestor that owns files
  * state, so the request travels through a module channel rather than a prop
- * threaded through every layer between them. Same idiom as `pendingReveals`
- * and `pendingSessionAnchors`.
+ * threaded through every layer between them. The mechanics are
+ * `createPendingRequestChannel`; only the payload is this module's.
  *
  * Only the EMBEDDED (tools-pane) workbench listens here. A file that belongs to
  * another lane or another machine goes to the full Files tab instead, and that
@@ -38,27 +39,16 @@ export type FilesOpenRequest = {
   nonce: string;
 };
 
-type Listener = (request: FilesOpenRequest) => void;
-
-const listeners = new Set<Listener>();
+const channel = createPendingRequestChannel<FilesOpenRequest>("files-open");
 
 /**
- * Held for the gap between the request and the panel mounting: clicking a
- * filename also switches the Work sidebar to Files, and the workbench does not
- * exist yet at that moment. The consumer drains this on mount.
+ * Callers here assemble the whole request (path, lane, pin, position) before
+ * sending it, so the nonce is minted separately rather than by `request`.
  */
-let pendingRequest: FilesOpenRequest | null = null;
-
-let nonceCounter = 0;
-
-export function nextFilesOpenNonce(): string {
-  nonceCounter += 1;
-  return `files-open-${nonceCounter}`;
-}
+export const nextFilesOpenNonce = channel.nextNonce;
 
 export function requestFilesOpenInTools(request: FilesOpenRequest): void {
-  pendingRequest = request;
-  for (const listener of listeners) listener(request);
+  channel.request(request);
 }
 
 /**
@@ -66,34 +56,19 @@ export function requestFilesOpenInTools(request: FilesOpenRequest): void {
  * the hold does not survive it. Without this, a request delivered to a mounted
  * panel stayed queued forever and the NEXT embedded workbench to mount — after
  * a lane switch, a project switch, or the sidebar tab being reopened — drained
- * it and re-opened a file the user had not asked for. `listeners.size` cannot
+ * it and re-opened a file the user had not asked for. Listener count cannot
  * stand in for this: the Work page subscribes for the whole session just to
  * reveal the panel, so there is always at least one listener.
  */
-export function clearPendingFilesOpenRequest(): void {
-  pendingRequest = null;
-}
+export const clearPendingFilesOpenRequest = channel.clearPending;
 
 /**
  * Consume whatever was requested before the panel mounted. Returns null when
  * there is nothing waiting, so a normal mount costs nothing.
  */
-export function takePendingFilesOpenRequest(): FilesOpenRequest | null {
-  const request = pendingRequest;
-  pendingRequest = null;
-  return request;
-}
+export const takePendingFilesOpenRequest = channel.takePending;
 
-export function subscribeFilesOpenInTools(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
+export const subscribeFilesOpenInTools = channel.subscribe;
 
 /** Test seam: drops queued state so one test cannot leak into the next. */
-export function resetFilesOpenRequestsForTests(): void {
-  listeners.clear();
-  pendingRequest = null;
-  nonceCounter = 0;
-}
+export const resetFilesOpenRequestsForTests = channel.resetForTests;

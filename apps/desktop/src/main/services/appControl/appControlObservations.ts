@@ -1,29 +1,22 @@
 import path from "node:path";
-import type {
-  AppControlDiagnostics,
-  AppControlObservationCleanup,
-} from "../../../shared/types";
+import type { AppControlDiagnostics } from "../../../shared/types";
 import {
   clampObservationInteger,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
-import {
-  agentActionTargetForTrace,
-  applyAgentObservationHandles,
-  agentElementLocatePayload,
-  agentHasElementTarget,
-} from "../../../shared/agentObservationNormalizers";
-import {
-  pruneAgentObservationCacheRoot,
-  pruneAgentObservationDirectory,
-} from "../shared/agentObservationCache";
+import { agentActionTargetForTrace } from "../../../shared/agentObservationNormalizers";
 
 /**
- * App Control's observation bounds and cache layout. The value normalizers and
- * cache pruners it needs are shared with the built-in browser (both surfaces
- * evaluate the same in-page collector), so they are re-exported from
- * `shared/agentObservationNormalizers` and `shared/agentObservationCache`
- * rather than forked here.
+ * App Control's observation bounds and cache layout. The value normalizers it
+ * needs are shared with the built-in browser (both surfaces evaluate the same
+ * in-page collector) and are re-exported below rather than forked here.
+ *
+ * The rule for what belongs in this file: a symbol that ADDS something to the
+ * shared one — `actionTargetForTrace` extends the key set with `targetId`,
+ * `observationDirectory` knows App Control's layout. A symbol that only renames
+ * a shared function is imported from the shared module at its use site instead,
+ * because a `const x = y` here reads to a greping reader like a definition and
+ * costs them a hop to learn it is not one.
  */
 
 export {
@@ -112,11 +105,6 @@ export function normalizeTraceLimit(value: unknown): number {
   );
 }
 
-export const applyObservationHandles = applyAgentObservationHandles;
-
-export const hasElementTarget = agentHasElementTarget;
-export const elementLocatePayload = agentElementLocatePayload;
-
 /**
  * Trace target bag: bounded, redacts typed secrets down to a length.
  *
@@ -142,18 +130,6 @@ export function decodeObservationDataUrl(dataUrl: string): { buffer: Buffer; mim
 /** Directory that holds one session's observations. */
 export function observationDirectory(observationRootPath: string, sessionId: string): string {
   return path.join(observationRootPath, sanitizeObservationPathSegment(sessionId));
-}
-
-export function pruneObservationDirectory(
-  dir: string,
-  keepCount: number,
-): Promise<AppControlObservationCleanup> {
-  return pruneAgentObservationDirectory(dir, keepCount);
-}
-
-/** Drop observation files from sessions that ended long ago. */
-export function pruneObservationCacheRoot(rootDir: string, maxAgeMs: number): Promise<void> {
-  return pruneAgentObservationCacheRoot(rootDir, maxAgeMs);
 }
 
 export function emptyDiagnostics(): AppControlDiagnostics {

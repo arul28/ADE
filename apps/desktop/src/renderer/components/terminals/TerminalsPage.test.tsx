@@ -23,7 +23,10 @@ const crossMachineMocks = vi.hoisted(() => ({
   seedOptimistic: vi.fn(),
 }));
 
-vi.mock("../../state/crossMachineLanes", () => ({
+vi.mock("../../state/crossMachineLanes", async () => ({
+  ...(await vi.importActual<typeof import("../../state/crossMachineLanes")>(
+    "../../state/crossMachineLanes",
+  )),
   cancelCrossMachineOptimisticChatSession: crossMachineMocks.cancelOptimistic,
   seedCrossMachineOptimisticChatSession: crossMachineMocks.seedOptimistic,
 }));

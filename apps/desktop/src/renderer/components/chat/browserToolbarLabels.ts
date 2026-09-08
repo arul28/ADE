@@ -66,6 +66,46 @@ export function normalizeRecordingFps(value: unknown): BuiltInBrowserRecordingFr
   return value === 60 ? 60 : 30;
 }
 
+/**
+ * Minutes on the recorder's wall-clock cap, for the sentence that explains it.
+ *
+ * A renderer-side copy of `BUILT_IN_BROWSER_MAX_RECORDING_MS` (main's
+ * `builtInBrowserCapabilities.ts`), the same way the frame-rate list above is a
+ * copy of main's `BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS`: the renderer cannot
+ * import from `main/`, and the cap is not on the wire.
+ */
+export const BUILT_IN_BROWSER_MAX_RECORDING_MINUTES = 5;
+
+/**
+ * Why a recording nobody stopped stopped anyway.
+ *
+ * Null for the ordinary case — an agent or a person calling `stopRecording` —
+ * because "your recording stopped because you stopped it" is noise. The two
+ * values that are NOT that are the whole reason the field exists: without them
+ * the REC pill just vanishes and the clip is quietly short.
+ *
+ * Each line has to answer the question the vanished pill raises, which is not
+ * "why" but "is there a file". The two cases differ on exactly that:
+ * `max_duration` FINALIZES the recording (the clip is on disk, the event's
+ * `frameCount` is the real one), while `handoff` ABORTS it — nothing is
+ * published, because a capture taken while a human was typing a password is not
+ * proof of anything the agent did — and it does not resume on hand-back. A line
+ * that said only "stopped" would send someone hunting for a file that in one of
+ * the two cases was never written.
+ *
+ * No Reveal action to go with the first: the `recording` event carries no path,
+ * unlike the `stopRecording` result the normal save path toasts.
+ */
+export function recordingEndedByLabel(value: unknown): string | null {
+  if (value === "max_duration") {
+    return `${BUILT_IN_BROWSER_MAX_RECORDING_MINUTES}-minute limit reached. The clip was saved.`;
+  }
+  if (value === "handoff") {
+    return "Sign-in took the tab. The partial clip was discarded and recording does not resume.";
+  }
+  return null;
+}
+
 /* ── Device emulation ─────────────────────────────────────────────────────── */
 
 /** `desktop` means "no override", so a null emulation reads as Desktop. */
@@ -172,7 +212,7 @@ export function simulatorEmulationPreset(
 /* ── Zoom ─────────────────────────────────────────────────────────────────── */
 
 /** Chromium's own zoom ladder, which is what ⌘=/⌘− step through elsewhere. */
-export const BUILT_IN_BROWSER_ZOOM_STEPS = [
+const BUILT_IN_BROWSER_ZOOM_STEPS = [
   0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3,
 ] as const;
 

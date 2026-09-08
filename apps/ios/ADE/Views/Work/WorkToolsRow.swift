@@ -34,13 +34,23 @@ struct WorkToolsRow: View {
         summaryButton(summary)
       }
     }
+    .task(id: laneId) { await refresh() }
     .task(id: laneId) {
-      await refresh()
       // The desktop's state is not table-backed, so there is nothing to
       // subscribe to; poll while the row is alive and stop when it is not.
+      // The poll lives beside the initial load rather than inside it — the
+      // same two-`.task` shape `WorkToolsSheet` uses — so a slow first
+      // response cannot delay the cadence.
       while !Task.isCancelled {
         try? await Task.sleep(for: Self.refreshInterval)
         guard !Task.isCancelled else { return }
+        // The sheet is presented *from* this row, so the row stays mounted and
+        // this loop keeps running underneath it. Skip while it is up: the
+        // sheet polls the same `workTools.getLaneState` every 3s and is the
+        // authoritative view, so a second read here is a duplicate RPC and a
+        // duplicate decode for a summary line nobody can see. The row catches
+        // up on the next tick after dismissal.
+        guard !toolsPresented else { continue }
         await refresh()
       }
     }

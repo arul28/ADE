@@ -774,7 +774,6 @@ import type {
   BrowserLoginImportListDomainsResult,
   BrowserLoginImportListSourcesResult,
   BrowserLoginImportResult,
-  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
@@ -8446,13 +8445,6 @@ const adeBridge = {
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args),
           ),
-    attachWebview: async (
-      args: BuiltInBrowserAttachWebviewArgs,
-    ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserAttachWebview, args),
-      ),
     /**
      * Resolve what a loopback URL means for a chat pinned to another machine,
      * without navigating. The panel calls this so its URL bar can keep showing

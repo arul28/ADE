@@ -1,14 +1,17 @@
+import type { DevServersResult } from "../../../shared/types/builtInBrowser";
 import { browserHostLabel } from "../../lib/browserUrl";
 
 /**
  * The launchpad's dev-server list.
  *
- * Two feeds land here — the one-shot `builtInBrowser.getDevServers()` read and
- * the live `dev-server-detected` event — and only the first has a declared
- * type. The event's payload is whatever the main process on the other end of a
- * dev reload happens to send, so every entry is normalized rather than cast: a
- * bare port, a host string and the full record all have to land somewhere
- * useful instead of throwing inside a render.
+ * Two feeds land here. The one-shot `builtInBrowser.getDevServers()` read is
+ * typed (`DevServersResult`) and, unlike every other browser call, takes no pin
+ * — it reads THIS process's own PTY output — so there is no older main process
+ * on the other end of it and no shape to guess. The live `dev-server-detected`
+ * event is the loose one: its payload is whatever the detector sent, which over
+ * the years has been a bare port, a host string and the full record. That is
+ * what {@link normalizeDevServer} exists for; {@link normalizeDevServers} just
+ * walks the typed list through it and de-duplicates.
  */
 
 export type BrowserDevServer = {
@@ -58,12 +61,10 @@ export function normalizeDevServer(value: unknown): BrowserDevServer | null {
   return { url, port: devServerPort(url, rawPort), source: source || null };
 }
 
-export function normalizeDevServers(value: unknown): BrowserDevServer[] {
-  const list = Array.isArray(value)
-    ? value
-    : value && typeof value === "object" && Array.isArray((value as { servers?: unknown }).servers)
-      ? (value as { servers: unknown[] }).servers
-      : [];
+export function normalizeDevServers(
+  result: DevServersResult | null | undefined,
+): BrowserDevServer[] {
+  const list = result?.servers ?? [];
   const seen = new Set<string>();
   const servers: BrowserDevServer[] = [];
   for (const entry of list) {
