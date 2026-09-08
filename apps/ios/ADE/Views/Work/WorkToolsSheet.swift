@@ -206,7 +206,7 @@ struct WorkToolsSheet: View {
     state?.browser?.tabs.compactMap(\.handoffReason).first
   }
 
-  /// Why there is no browser to show. The desktop distinguishes three cases
+  /// Why there is no browser to show. The desktop distinguishes four cases
   /// (`WorkToolsUnavailableReason`) and only one of them is "open ADE on your
   /// Mac" — telling a user to open an app that is already open, because the
   /// read failed, sends them chasing the wrong thing. An unknown or absent

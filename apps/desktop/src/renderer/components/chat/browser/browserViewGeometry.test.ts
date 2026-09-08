@@ -4,6 +4,7 @@ import {
   clampBrowserViewBounds,
   emulationCaption,
   isBrowserOverlayCandidate,
+  isBrowserOverlayCandidateVisible,
   rectIntersection,
   type BrowserOverlayCandidate,
 } from "./browserViewGeometry";
@@ -148,6 +149,32 @@ function candidate(overrides: Partial<BrowserOverlayCandidate> = {}): BrowserOve
     ...overrides,
   };
 }
+
+describe("isBrowserOverlayCandidateVisible", () => {
+  it("agrees with the full predicate on every style-only reject", () => {
+    // The hook calls this first so an invisible candidate never costs a forced
+    // layout or a selector match. It has to reject exactly what the full
+    // predicate's opening block rejects, or the pass would start missing
+    // overlays that do paint.
+    for (const invisible of [
+      { display: "none" },
+      { visibility: "hidden" },
+      { opacity: "0" },
+      { pointerEvents: "none" },
+      { hidden: true },
+      { ariaHidden: true },
+    ]) {
+      expect(isBrowserOverlayCandidateVisible(candidate(invisible))).toBe(false);
+      expect(isBrowserOverlayCandidate(candidate({ ...invisible, position: "fixed" }))).toBe(false);
+    }
+  });
+
+  it("passes anything the full predicate would go on to measure", () => {
+    expect(isBrowserOverlayCandidateVisible(candidate())).toBe(true);
+    // A fading menu still paints, so it must survive the cheap gate.
+    expect(isBrowserOverlayCandidateVisible(candidate({ opacity: "0.4" }))).toBe(true);
+  });
+});
 
 describe("isBrowserOverlayCandidate", () => {
   it("ignores an in-flow element that is merely present", () => {

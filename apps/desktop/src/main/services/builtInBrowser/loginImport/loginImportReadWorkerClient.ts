@@ -13,9 +13,13 @@
  * pid, and the caller can still walk away because the UI never blocked.
  *
  * "No timeout" is only defensible with an answer to "then how does it end", so:
- * every live child is tracked here, the promise's own settle path terminates it,
- * an `AbortSignal` cancels it, and {@link terminateLoginImportReadWorkers} kills
- * whatever is left at app quit. Without that last one, quitting ADE while a
+ * every live child is tracked here, the promise's own settle path terminates it
+ * (including the spawn-error and unreadable-answer paths), a second read of the
+ * same source reuses the first rather than spawning again, and
+ * {@link terminateLoginImportReadWorkers} kills whatever is left at app quit.
+ * There is deliberately no caller-supplied cancellation: nothing above this
+ * module has a lifetime to hang one on, and an advertised cancel token with no
+ * caller is a contract the code does not keep. Without the quit hook, quitting ADE while a
  * Keychain modal is up leaves an orphaned `Electron (ELECTRON_RUN_AS_NODE)`
  * process still holding an OS credential prompt — Node does not reap
  * non-detached children when the parent exits on macOS.
@@ -33,8 +37,6 @@ export type LoginImportReadWorkerOptions = {
   /** Injected for tests. */
   spawnWorker?: typeof spawn;
   workerPath?: string;
-  /** Cancels the read and kills the child; the promise resolves as a failure. */
-  signal?: AbortSignal;
 };
 
 /**
@@ -48,8 +50,10 @@ const liveWorkers = new Set<ChildProcessWithoutNullStreams>();
 /**
  * Kill every in-flight login-import read. Called from the app's shutdown path.
  *
- * `terminateProcessTree`, not `child.kill()`: on Windows the child is reached
- * through a shim and only the tree kill actually ends it.
+ * `terminateProcessTree`, not `child.kill()`: on win32 it runs `taskkill /T`
+ * *and* the direct kill, which reaches any descendant the reader spawned and
+ * covers a `taskkill` that reports success without acting. On every other
+ * platform it is `child.kill()`.
  */
 export function terminateLoginImportReadWorkers(): number {
   const children = [...liveWorkers];
@@ -86,9 +90,6 @@ export function readLoginImportSourceInWorker(
   if (!options.spawnWorker && !fs.existsSync(workerPath)) {
     return Promise.resolve(failed("ADE's login import helper is missing from this build."));
   }
-  if (options.signal?.aborted) {
-    return Promise.resolve(failed("The login import read was cancelled."));
-  }
   return new Promise((resolve) => {
     const spawnWorker = options.spawnWorker ?? spawn;
     const env = { ...process.env };
@@ -111,7 +112,6 @@ export function readLoginImportSourceInWorker(
     const finish = (response: LoginImportReadResponse): void => {
       if (settled) return;
       settled = true;
-      options.signal?.removeEventListener("abort", onAbort);
       // Every settle path ends the child, not just the clean `close`. The
       // spawn-error, unreadable-answer and stdin-write-failure paths used to
       // resolve while leaving a live process behind a Keychain modal.
@@ -124,11 +124,6 @@ export function readLoginImportSourceInWorker(
       }
       resolve(response);
     };
-    const onAbort = (): void => {
-      finish(failed("The login import read was cancelled."));
-    };
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;

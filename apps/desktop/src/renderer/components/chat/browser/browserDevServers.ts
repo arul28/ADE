@@ -1,5 +1,5 @@
-import type { DevServersResult } from "../../../shared/types/builtInBrowser";
-import { browserHostLabel } from "../../lib/browserUrl";
+import type { DevServersResult } from "../../../../shared/types/builtInBrowser";
+import { browserHostLabel } from "../../../lib/browserUrl";
 
 /**
  * The launchpad's dev-server list.

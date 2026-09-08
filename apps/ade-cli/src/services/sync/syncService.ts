@@ -886,6 +886,12 @@ export function createSyncService(args: SyncServiceArgs) {
       ctoMemoryService: args.ctoMemoryService,
       linearCredentialService: args.linearCredentialService,
       getLinearIssueTracker: args.getLinearIssueTracker,
+      // Production always supplies `remoteCommandService` below, so the host's
+      // own fallback never builds one — but pass this anyway, or the day a
+      // caller omits that service the fallback silently advertises an action set
+      // without `workTools.*`, which is a mobile capability disappearing with no
+      // error anywhere.
+      workToolsStateService: args.workToolsStateService,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

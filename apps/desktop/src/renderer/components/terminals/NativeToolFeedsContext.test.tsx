@@ -153,4 +153,18 @@ describe("NativeToolFeedsProvider", () => {
     expect(() => render(<Orphan />)).toThrow(/NativeToolFeedsProvider/);
     error.mockRestore();
   });
+
+  it("refuses to accept handlers without an owner, rather than dropping them", () => {
+    // The dangerous half: registering outside the provider used to be a silent
+    // no-op, so the consumer got no error and no events, and the symptom (a
+    // corner card that stops repainting) points nowhere near the missing
+    // provider.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    function OrphanHandler() {
+      useNativeToolFeedHandlers({ onBrowserEvent: () => {} });
+      return null;
+    }
+    expect(() => render(<OrphanHandler />)).toThrow(/NativeToolFeedsProvider/);
+    error.mockRestore();
+  });
 });

@@ -8,7 +8,7 @@
  */
 import type { ReactNode } from "react";
 import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
-import type { BrowserToolbarLayout } from "../builtInBrowserToolbar";
+import type { BrowserToolbarLayout } from "./builtInBrowserToolbar";
 import { cn } from "../../ui/cn";
 
 /**

@@ -147,13 +147,28 @@ const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tool
  * feed is arithmetic and string comparison, so it lives here where it can be
  * exercised without a compositor.
  */
-export type BrowserOverlayCandidate = {
+export type BrowserOverlayCandidate = BrowserOverlayCandidateVisibility & {
   /** The candidate's own box; only its size decides candidacy. */
   rect: Pick<BrowserViewRect, "height" | "width">;
   /** `role` attribute, or null when it has none. */
   role: string | null;
   /** Computed `position`. */
   position: string;
+  /** `aria-modal="true"`. */
+  ariaModal: boolean;
+  /** Matched one of the popover-library content selectors. */
+  matchesOverlaySelector: boolean;
+};
+
+/**
+ * The subset that can disqualify a candidate without measuring it.
+ *
+ * Split out so the caller can reject on the computed style alone: a
+ * `display:none` popover never needs its rect read, and a forced layout per
+ * candidate is exactly what the occlusion pass cannot afford when it runs on
+ * every animation and transition event.
+ */
+export type BrowserOverlayCandidateVisibility = {
   /** Computed `pointer-events`. */
   pointerEvents: string;
   /** Computed `display`. */
@@ -166,11 +181,19 @@ export type BrowserOverlayCandidate = {
   hidden: boolean;
   /** `aria-hidden="true"`. */
   ariaHidden: boolean;
-  /** `aria-modal="true"`. */
-  ariaModal: boolean;
-  /** Matched one of the popover-library content selectors. */
-  matchesOverlaySelector: boolean;
 };
+
+/** Is this candidate visible and clickable enough to occlude anything? */
+export function isBrowserOverlayCandidateVisible(candidate: BrowserOverlayCandidateVisibility): boolean {
+  return !(
+    candidate.display === "none"
+    || candidate.visibility === "hidden"
+    || candidate.opacity === "0"
+    || candidate.pointerEvents === "none"
+    || candidate.hidden
+    || candidate.ariaHidden
+  );
+}
 
 /**
  * Could this element be painting over the native browser view?
@@ -182,16 +205,7 @@ export type BrowserOverlayCandidate = {
  * library's content box, or simply by being taken out of flow.
  */
 export function isBrowserOverlayCandidate(candidate: BrowserOverlayCandidate): boolean {
-  if (
-    candidate.display === "none"
-    || candidate.visibility === "hidden"
-    || candidate.opacity === "0"
-    || candidate.pointerEvents === "none"
-    || candidate.hidden
-    || candidate.ariaHidden
-  ) {
-    return false;
-  }
+  if (!isBrowserOverlayCandidateVisible(candidate)) return false;
   if (candidate.rect.width < 4 || candidate.rect.height < 4) return false;
   if (candidate.role && OVERLAY_ROLES.has(candidate.role)) return true;
   if (candidate.ariaModal) return true;

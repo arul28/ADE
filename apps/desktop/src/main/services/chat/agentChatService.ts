@@ -686,8 +686,6 @@ import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
-import type { LinearClient } from "../cto/linearClient";
-import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -8388,8 +8386,6 @@ export function createAgentChatService(args: {
       limit?: number;
     }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
   } | null;
-  linearClient?: LinearClient | null;
-  linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**

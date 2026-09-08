@@ -84,6 +84,7 @@ import {
   BUILT_IN_BROWSER_MAX_RECORDING_MS,
   buildBuiltInBrowserHar,
   builtInBrowserUploadRoots,
+  clampBuiltInBrowserEmulationViewScale,
   clampBuiltInBrowserZoomFactor,
   filterBuiltInBrowserNetworkLog,
   normalizeBuiltInBrowserHeaders,
@@ -111,8 +112,8 @@ import type {
   BrowserDebuggerHoldOwner,
   BrowserTabState,
   BuiltInBrowserElementTargetInput,
-  CdpRuntimeEvaluateResponse,
 } from "./builtInBrowserService";
+import { evaluateInTab } from "./builtInBrowserCdp";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
 const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
@@ -210,16 +211,6 @@ function selectBrowserOption(element, payload) {
 `;
 
 /**
- * Clamp for the pane's device-fit factor: (0, 1], `1` for anything non-finite.
- *
- * Exported because `setBounds` in the window service computes the same factor
- * when the pane is resized and hands it back through `getEmulationViewScale`.
- */
-export function clampBuiltInBrowserEmulationViewScale(value: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.min(1, Math.max(0.05, value)) : 1;
-}
-
-/**
  * Everything the capability surface needs from the window service, and nothing
  * else. Deliberately narrow and deliberately explicit: a new capability that
  * needs a sixth kind of access has to add it here, where the coupling is
@@ -229,8 +220,16 @@ export type BuiltInBrowserTabCapabilityDeps = {
   logger: () => Logger | null;
   emit: (payload: BuiltInBrowserEventPayload) => void;
   emitStatus: () => void;
-  getStatus: () => BuiltInBrowserStatus;
-  scopeStatusForInput: (status: BuiltInBrowserStatus, input: unknown) => BuiltInBrowserStatus;
+  /**
+   * The collection's status, scoped to what this caller is allowed to see.
+   *
+   * One member rather than the `getStatus` / `scopeStatusForInput` pair every
+   * call site used to compose by hand: the pairing is the operation, and a
+   * caller that got it wrong (returning an unscoped status to an agent) would
+   * still type-check. NOT the service's `getStatusForInput`, which additionally
+   * calls `prepareAgentReadTab` — no capability here does that.
+   */
+  statusForInput: (input: unknown) => BuiltInBrowserStatus;
   /** The tab this window is showing, for capabilities that default to it. */
   getActiveTabId: () => string | null;
   /** The window the pane lives in, or `null` before it is attached. */
@@ -284,9 +283,6 @@ export type BuiltInBrowserTabCapabilityDeps = {
   observationDirectory: (tab: BrowserTabState) => string;
   observationRootPath: string | null;
   observationRelativeBasePath: string | null;
-  /** Shared with the service's `setDisplayMediaRequestHandler` wiring. */
-  armedDisplayMediaFrames: Map<number, { target: WebContents; expiresAt: number }>;
-  configuredDisplayMediaSessions: WeakSet<Electron.Session>;
   traceAutoEndedRecording: (
     tab: BrowserTabState,
     endedBy: BuiltInBrowserRecordingEndedBy,
@@ -304,12 +300,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const {
     acquireDebuggerHold,
     actionResult,
-    armedDisplayMediaFrames,
-    configuredDisplayMediaSessions,
     emit,
     emitStatus,
     focusElementTarget,
-    getStatus,
     logger,
     observationDirectory,
     observationRelativeBasePath,
@@ -319,8 +312,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     resolveClickTarget,
     runTracedAgentAction,
     runTracedTabCapability,
-    scopeStatusForInput,
     sendDebuggerCommand,
+    statusForInput,
     tabById,
     targetTabFromInput,
     traceAutoEndedRecording,
@@ -329,6 +322,16 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   // Read through the deps rather than destructured: these change over the
   // window service's life (the window is attached later, the active tab and the
   // emulation fit factor change on every switch and every pane drag).
+  /**
+   * Recording plumbing, owned here because `armDisplayMediaCapture` below is the
+   * only reader and the only writer. It used to be allocated by the window
+   * service and handed back through the deps bag, which read as if the service
+   * had its own `setDisplayMediaRequestHandler` wiring to keep in step — it does
+   * not; the handler is installed in this module.
+   */
+  const armedDisplayMediaFrames = new Map<number, { target: WebContents; expiresAt: number }>();
+  const configuredDisplayMediaSessions = new WeakSet<Electron.Session>();
+
   const win = (): BrowserWindow | null => deps.getWindow();
   const activeTabId = (): string | null => deps.getActiveTabId();
   const emulationViewScale = (): number => deps.getEmulationViewScale();
@@ -450,7 +453,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       emulation: next,
       presets: [...BUILT_IN_BROWSER_EMULATION_PRESETS],
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -472,7 +475,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     return {
       tabId: tab.id,
       zoomFactor: factor,
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -521,7 +524,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         activeMatchOrdinal: result.activeMatchOrdinal ?? null,
         matches: result.matches ?? null,
         finalUpdate: Boolean(result.finalUpdate),
-        status: scopeStatusForInput(getStatus(), input),
+        status: statusForInput(input),
       };
     });
   }
@@ -547,7 +550,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     return {
       tabId: tab.id,
       stopped: true,
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -599,7 +602,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       devToolsOpen: tab.devToolsMode !== null,
       mode: tab.devToolsMode,
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -742,7 +745,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       enabled: tab.networkLoggingEnabled,
       entryCount: tab.networkLog.size,
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -975,26 +978,17 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     return objectId;
   };
 
-  const evaluateFocusedElementScript = async (
+  const evaluateFocusedElementScript = (
     wc: WebContents,
     functionSource: string,
     payload: Record<string, unknown>,
-  ): Promise<unknown> => {
-    const expression = `(${functionSource})((${DEEP_ACTIVE_ELEMENT_FUNCTION})(), ${JSON.stringify(payload)})`;
-    const response = await withTemporaryDebugger(wc, async () => {
-      await sendDebuggerCommand(wc, "Runtime.enable");
-      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-        silent: true,
-      });
-    });
-    if (response.exceptionDetails) {
-      throw new Error("Browser element script evaluation failed.");
-    }
-    return response.result?.value;
-  };
+  ): Promise<unknown> =>
+    evaluateInTab(
+      { sendDebuggerCommand, withTemporaryDebugger },
+      wc,
+      `(${functionSource})((${DEEP_ACTIVE_ELEMENT_FUNCTION})(), ${JSON.stringify(payload)})`,
+      "Browser element script evaluation failed.",
+    );
 
   /* ── Live preview stream ───────────────────────────────────────────────── */
 
@@ -1133,7 +1127,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     return {
       tabId: tab.id,
       recording: status,
-      status: scopeStatusForInput(getStatus(), input),
+      status: statusForInput(input),
     };
   }
 
@@ -1148,7 +1142,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!session) throw new Error(`Browser tab ${tab.id} is not recording.`);
     const result = await runTracedTabCapability(tab, "stopRecording", input, () =>
       finishRecording(tab, session, null));
-    return { ...result, status: scopeStatusForInput(getStatus(), input) };
+    return { ...result, status: statusForInput(input) };
   }
 
   /**
@@ -1156,6 +1150,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
    * and by the session's own max-duration timer, so an auto-stopped recording
    * lands the same file and the same event — with `endedBy` naming what ended it.
    */
+  /** The tab's current document title, or `null` once its WebContents is gone. */
+  const liveTabTitle = (tab: BrowserTabState): string | null =>
+    tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle());
+
   const finishRecording = async (
     tab: BrowserTabState,
     session: BuiltInBrowserRecordingSession,
@@ -1168,7 +1166,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       recording: null,
       frameCount: result.frameCount,
-      ...(endedBy ? { endedBy } : {}),
+      // Only on an automatic ending: an explicit `stopRecording` raises no
+      // toast, and the tab's own pane already says which tab it was.
+      ...(endedBy ? { endedBy, tabTitle: liveTabTitle(tab) } : {}),
       updatedAt: new Date().toISOString(),
     });
     emitStatus();
@@ -1288,8 +1288,20 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     uploadFile,
     startPreviewStream,
     stopPreviewStream,
-    previewStreams,
     startRecording,
     stopRecording,
+    /** Drops any preview stream watching a tab the service just closed. */
+    stopPreviewStreamsForTab: (tabId: string): void => {
+      previewStreams.stopTab(tabId);
+    },
+    /**
+     * Teardown for everything this module owns, called when the window service
+     * disposes. Two named methods rather than handing the service the whole
+     * `previewStreams` object: a sub-collaborator on a seam's public surface is
+     * an invitation to reach through it for the next thing.
+     */
+    dispose: (): void => {
+      previewStreams.dispose();
+    },
   };
 }

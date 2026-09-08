@@ -2864,10 +2864,18 @@ function scopeBuiltInBrowserAdeActionArgs(
  * open. This is the enforcement the comment described.
  *
  * Two things this function does NOT decide:
- * - A CTO-role caller never reaches here at all (the dispatch guard is
- *   `!callerIsCto && domain === "work_tools"`). The CTO thread is a deliberate
- *   cross-lane role — same carve-out `external-sessions` takes — so it reads
- *   every lane's pane on purpose.
+ * - A CTO-role caller skips the READ scoping entirely (the dispatch guard is
+ *   `domain === "work_tools" && (!callerIsCto || action === "setActiveTool")`).
+ *   The CTO thread is a deliberate cross-lane role — same carve-out
+ *   `external-sessions` takes — so it reads every lane's pane on purpose. The
+ *   WRITE is routed here even for CTO. Note what that actually catches:
+ *   `resolveSessionBoundRole` downgrades a `cto` role to `agent` whenever a
+ *   `chatSessionId` is present, so a CTO *chat* never reaches the carve-out at
+ *   all. What can be both elevated and agent-shaped is a run/step identity with
+ *   no chat session, and that caller must not flip what every paired phone
+ *   believes the human has open — the same gap the second bullet describes for
+ *   reads. The human's own desktop is elevated too but carries no run/step/chat
+ *   identity, so it stays a user client and keeps the write.
  * - "Not a user client" and "has a resolvable lane" are NOT complements.
  *   `isUserClientSession` is false as soon as any of
  *   `runId`/`stepId`/`attemptId`/`chatSessionId` is set, while
@@ -4092,7 +4100,11 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
-    } else if (!callerIsCto && domain === "work_tools") {
+    } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
+      // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's
+      // one write, so it goes through the scoping function whatever the role and
+      // is gated there on user clients — see that function's doc comment for
+      // which elevated caller this actually catches.
       scopedObjectArgs = scopeWorkToolsAdeActionArgs(
         runtime,
         session,

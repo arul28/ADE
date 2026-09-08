@@ -1,9 +1,14 @@
 import path from "node:path";
 import { resolvePathWithinRoot } from "../shared/utils";
+import {
+  BUILT_IN_BROWSER_MAX_RECORDING_MS,
+  BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
+} from "../../../shared/types/builtInBrowser";
 import type {
   BuiltInBrowserNetworkHeader,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLogEntry,
+  BuiltInBrowserRecordingFps,
 } from "../../../shared/types";
 
 /**
@@ -97,6 +102,26 @@ export function clampBuiltInBrowserZoomFactor(value: unknown): number {
     BUILT_IN_BROWSER_MAX_ZOOM_FACTOR,
     Math.max(BUILT_IN_BROWSER_MIN_ZOOM_FACTOR, value),
   );
+}
+
+export const BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE = 0.05;
+export const BUILT_IN_BROWSER_MAX_EMULATION_VIEW_SCALE = 1;
+
+/**
+ * Clamp for the pane's device-fit factor: (0, 1], `1` for anything non-finite.
+ *
+ * Beside `clampBuiltInBrowserZoomFactor` on purpose — both sides of the
+ * service/capability seam compute it (`setBounds` in the window service when the
+ * pane is resized, `sendEmulationCommands` when a preset is applied), so it
+ * belongs in the module both already import rather than in one of them.
+ */
+export function clampBuiltInBrowserEmulationViewScale(value: number): number {
+  return Number.isFinite(value) && value > 0
+    ? Math.min(
+      BUILT_IN_BROWSER_MAX_EMULATION_VIEW_SCALE,
+      Math.max(BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE, value),
+    )
+    : 1;
 }
 
 export function isRedactedBuiltInBrowserHeader(name: string): boolean {
@@ -382,36 +407,13 @@ export function resolveBuiltInBrowserUploadPaths(
 
 /* ── Recording ────────────────────────────────────────────────────────────── */
 
-export const BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS = [30, 60] as const;
-
-export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS)[number];
-
 /**
- * Wall-clock cap on a single recording, enforced by the session's own timer.
- *
- * A recording is a `getDisplayMedia` capture of a live tab writing to the
- * project's scratch dir; an agent that forgets to call `stopRecording` (or dies
- * mid-run) would otherwise capture until the app quits. Five minutes is long
- * enough for any "show me this flow" and short enough that the forgotten case
- * costs a bounded file.
- *
- * What the caller sees when it fires: the recording is finalized exactly as a
- * `stopRecording` would have finalized it — same file, same manifest — and the
- * agent is told through two channels rather than a return value it never
- * asked for. A `recording` event carries `endedBy: "max_duration"` (so the
- * pane can say why the REC pill vanished), and a `stopRecording`-shaped entry
- * with the same `endedBy` lands in the tab's action trace, which is where the
- * skill tells an agent to look. A later `stopRecording` then throws
- * `Browser tab <id> is not recording.` A login hand-off is the other automatic
- * ending (`endedBy: "handoff"`), and unlike this one it ABORTS rather than
- * finalizes — see `suspendAgentCaptureForHandoff`. Neither resumes; an agent
- * that wants more has to start a new recording.
- *
- * CHANGING THE NUMBER: the pane's "5-minute limit reached" toast carries its own
- * copy of this value (`renderer/components/chat/browserToolbarLabels.ts`) because
- * this module is main-process-only and the cap is not on the wire. Change both.
+ * Re-exported from `shared/types/builtInBrowser` so main-side call sites keep
+ * importing the recording rules from the module that enforces them, while the
+ * renderer (which cannot import from `main/`) reads the same single definition.
  */
-export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
+export { BUILT_IN_BROWSER_MAX_RECORDING_MS, BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS };
+export type { BuiltInBrowserRecordingFps };
 
 /** Frame budget the wall-clock cap implies at the highest supported rate. */
 export const BUILT_IN_BROWSER_MAX_RECORDING_FRAMES =

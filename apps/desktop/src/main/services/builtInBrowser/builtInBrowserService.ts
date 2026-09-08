@@ -127,10 +127,8 @@ import {
   normalizeDimension,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
-import {
-  clampBuiltInBrowserEmulationViewScale,
-  createBuiltInBrowserTabCapabilities,
-} from "./builtInBrowserTabCapabilities";
+import { createBuiltInBrowserTabCapabilities } from "./builtInBrowserTabCapabilities";
+import { evaluateInTab } from "./builtInBrowserCdp";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
@@ -150,6 +148,7 @@ import {
 import {
   BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
   BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT,
+  clampBuiltInBrowserEmulationViewScale,
   createBuiltInBrowserNetworkLog,
   type BuiltInBrowserNetworkLogStore,
 } from "./builtInBrowserCapabilities";
@@ -239,7 +238,6 @@ type CdpCallFunctionResponse = {
   exceptionDetails?: unknown;
 };
 
-export type CdpRuntimeEvaluateResponse = CdpCallFunctionResponse;
 
 type CdpScreenshotResponse = {
   data?: string;
@@ -812,14 +810,23 @@ export function createBuiltInBrowserService(args: {
   };
 
   /**
-   * Project-scoped read that never attaches, never marks a window active, and
-   * returns `null` instead of throwing when no window serves the project.
+   * Project-scoped read that never constructs, never attaches, never marks a
+   * window active, and returns `null` instead of throwing when no window serves
+   * the project.
    *
-   * `serviceForProjectRoot` is the write path: it calls `attachToWindow` and can
-   * mark the collection active, which is the wrong thing to do on behalf of a
-   * background poller. The runtime daemon's Work-tools mirror polls this on a
-   * timer for a phone that may not even be looking, so it needs a read that has
-   * no side effect on which pane the human sees.
+   * This is a plain `windowServices` lookup on purpose. `serviceForProjectRoot`
+   * is the write path: it calls `attachToWindow` and can mark the collection
+   * active. Even `serviceForWindowCollection` is a *creating* resolver — on a
+   * miss it disposes every fallback service and builds a window service, whose
+   * factory restores and `loadURL`s every persisted tab in the shared,
+   * authenticated browser profile. The runtime daemon's Work-tools mirror polls
+   * this on a timer for a phone that may not even be looking, once per project,
+   * so materializing a background project's collection here would background-load
+   * that project's tabs for a pane nobody opened.
+   *
+   * A window that is open for the project but has never used the Browser pane
+   * therefore reads as `null`, i.e. the same "not attached for this project"
+   * state as no window at all — which is what the human sees on that machine.
    */
   const readOnlyServiceForProjectRoot = (
     projectRoot: string | null,
@@ -828,9 +835,8 @@ export function createBuiltInBrowserService(args: {
     if (!normalized) return activeService();
     const win = liveWindowForProjectRoot(normalized);
     if (!win) return null;
-    return serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
-      markActive: false,
-    });
+    const key = serviceKey(win.id, collectionForProjectRoot(normalized));
+    return windowServices.get(key)?.service ?? null;
   };
 
   /* ── Dev-server discovery ───────────────────────────────────────────────── */
@@ -853,14 +859,20 @@ export function createBuiltInBrowserService(args: {
    * would be exactly the kind of surprise this feature must not cause.
    */
   const devServerTargetService = (laneId: string | null): WindowBrowserService | null => {
-    const services = allWindowServices();
     if (laneId) {
-      for (const service of services) {
+      for (const service of allWindowServices()) {
         if (service.getStatus().tabs.some((tab) => tab.ownerLaneId === laneId)) return service;
       }
     }
-    const active = services.length > 0 ? activeService() : null;
-    if (active && active.getStatus().tabs.length === 0) return active;
+    // `activeService()` unconditionally, with no "are there any services yet"
+    // guard: on a machine that has not opened the pane at all it materializes
+    // the window-collection fallback, which is the empty pane a detection is
+    // allowed to drop a tab into. The guard used to be load-bearing only by
+    // accident — the chip's own `activeService()` call ran first and created
+    // that fallback — and this resolver now runs BEFORE the chip, so relying on
+    // that ordering would silently stop auto-opening on a cold pane.
+    const active = activeService();
+    if (active.getStatus().tabs.length === 0) return active;
     return null;
   };
 
@@ -871,12 +883,14 @@ export function createBuiltInBrowserService(args: {
     // times during a watch run must not open twenty tabs.
     if (autoOpenedDevServers.has(key)) return;
     autoOpenedDevServers.add(key);
-    let enabled = true;
-    try {
-      enabled = (await args.isDevServerAutoOpenEnabled?.(record)) ?? true;
-    } catch {
-      enabled = true;
-    }
+    // Resolved before the chip is emitted, and unconditionally — even when
+    // auto-open is off and nothing will be opened. Every surface filters
+    // `dev-server-detected` on `status.collectionProjectRoot`
+    // (`browserPanelNormalizers.ts#eventProjectRoot`), so a chip stamped with
+    // whatever collection happens to be frontmost is dropped by the lane's own
+    // panel and merged into a different project's launchpad. This resolver is
+    // synchronous, so it costs nothing to do it here.
+    const targetService = devServerTargetService(laneId);
     // Still tell surfaces about it even when nothing opened: the launchpad chips
     // and the corner card want the server either way.
     const emitChipOnly = (): void => {
@@ -885,20 +899,29 @@ export function createBuiltInBrowserService(args: {
         server: record,
         tabId: null,
         autoOpened: false,
-        status: activeService().getStatus(),
+        status: (targetService ?? activeService()).getStatus(),
         detectedAt: record.detectedAt,
       }, null);
     };
-    // Chip FIRST, unconditionally, before anything that can await a human.
+    // Chip FIRST, unconditionally, before anything that can await at all.
     // The claim below goes through the agent-access gate, which may raise a
     // native prompt and sit on it forever — and `autoOpenedDevServers` has
     // already been marked, so nothing retries. Emitting after the claim meant a
     // detected dev server was invisible in every surface for as long as an
-    // unanswered prompt stood. Consumers already tolerate a second
+    // unanswered prompt stood. The auto-open predicate is no safer to wait on:
+    // it walks every project context awaiting `laneService.getSummary`, a daemon
+    // round trip in the runtime-backed build, and a wedged lane service would
+    // stall the chip the same way. Consumers already tolerate a second
     // `dev-server-detected` for the same record (the launchpad keys on port),
     // so the enriched `autoOpened` event below is a refinement, not a duplicate.
     emitChipOnly();
-    const service = enabled ? devServerTargetService(laneId) : null;
+    let enabled = true;
+    try {
+      enabled = (await args.isDevServerAutoOpenEnabled?.(record)) ?? true;
+    } catch {
+      enabled = true;
+    }
+    const service = enabled ? targetService : null;
     if (!service) return;
     // The detection is triggered by whatever a terminal *printed*, and an agent
     // controls its own terminal — so an unclaimed auto-open would let a printed
@@ -1349,8 +1372,6 @@ function createBuiltInBrowserWindowService(args: {
   let restoringTabs = false;
   let disposed = false;
   const configuredWebContents = new WeakSet<WebContents>();
-  const configuredDisplayMediaSessions = new WeakSet<Electron.Session>();
-  const armedDisplayMediaFrames = new Map<number, { target: WebContents; expiresAt: number }>();
   const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
 
@@ -2911,6 +2932,7 @@ function createBuiltInBrowserWindowService(args: {
         recording: null,
         frameCount: 0,
         endedBy: "handoff",
+        tabTitle: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
         updatedAt: new Date().toISOString(),
       });
       traceAutoEndedRecording(tab, "handoff");
@@ -3354,7 +3376,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
-      tabCapabilities.previewStreams.stopTab(removed.id);
+      tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
       endSessionsForTab(removed.id);
@@ -3876,7 +3898,7 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
-    tabCapabilities.previewStreams.dispose();
+    tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
     unsubscribeNetworkObserver = null;
@@ -4216,43 +4238,26 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const evaluateBrowserDom = async (
-    wc: WebContents,
-    payload: Record<string, unknown>,
-  ): Promise<unknown> => {
-    const expression = `(${AGENT_DOM_COLLECTOR_FUNCTION})(${JSON.stringify(payload)})`;
-    const response = await withTemporaryDebugger(wc, async () => {
-      await sendDebuggerCommand(wc, "Runtime.enable");
-      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-        silent: true,
-      });
-    });
-    if (response.exceptionDetails) {
-      throw new Error("Browser DOM evaluation failed.");
-    }
-    return response.result?.value;
-  };
+  const cdpEvaluateDeps = { sendDebuggerCommand, withTemporaryDebugger };
+
+  const evaluateBrowserDom = (wc: WebContents, payload: Record<string, unknown>): Promise<unknown> =>
+    evaluateInTab(
+      cdpEvaluateDeps,
+      wc,
+      `(${AGENT_DOM_COLLECTOR_FUNCTION})(${JSON.stringify(payload)})`,
+      "Browser DOM evaluation failed.",
+    );
 
   const evaluateElementMapOverlay = async (
     wc: WebContents,
     payload: Record<string, unknown>,
   ): Promise<void> => {
-    const expression = `(${AGENT_ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`;
-    const response = await withTemporaryDebugger(wc, async () => {
-      await sendDebuggerCommand(wc, "Runtime.enable");
-      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-        silent: true,
-      });
-    });
-    if (response.exceptionDetails) {
-      throw new Error("Browser element map overlay evaluation failed.");
-    }
+    await evaluateInTab(
+      cdpEvaluateDeps,
+      wc,
+      `(${AGENT_ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`,
+      "Browser element map overlay evaluation failed.",
+    );
   };
 
   const readDomSnapshot = async (
@@ -4575,8 +4580,7 @@ function createBuiltInBrowserWindowService(args: {
     logger,
     emit,
     emitStatus,
-    getStatus,
-    scopeStatusForInput,
+    statusForInput: (input) => scopeStatusForInput(getStatus(), input),
     getActiveTabId: () => activeTabId,
     getWindow: () => win,
     getEmulationViewScale: () => emulationViewScale,
@@ -4595,8 +4599,6 @@ function createBuiltInBrowserWindowService(args: {
     observationDirectory,
     observationRootPath,
     observationRelativeBasePath,
-    armedDisplayMediaFrames,
-    configuredDisplayMediaSessions,
     traceAutoEndedRecording,
     getCollectionProjectRoot: () => args.collection.projectRoot,
     createRecordingWindow: args.createRecordingWindow ?? null,

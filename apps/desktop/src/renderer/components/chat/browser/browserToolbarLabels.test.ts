@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BuiltInBrowserEmulationState } from "../../../shared/types/builtInBrowser";
+import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
 import {
   activeEmulationPresetId,
   browserTabLabel,
@@ -13,6 +13,7 @@ import {
   normalizeRecordingFps,
   recordingElapsedMs,
   recordingEndedByLabel,
+  recordingEndedByMessage,
   recordingPillLabel,
   simulatorEmulationPreset,
   stepZoomFactor,
@@ -95,6 +96,32 @@ describe("recordingEndedByLabel", () => {
     // line that stopped at "stopped" would send someone hunting for nothing.
     expect(recordingEndedByLabel("handoff"))
       .toBe("Sign-in took the tab. The partial clip was discarded and recording does not resume.");
+  });
+});
+
+describe("recordingEndedByMessage", () => {
+  it("names the tab, because the event is scoped to the project and not to it", () => {
+    // A background tab hitting the cap toasts over the page the human is
+    // looking at; unattributed, the sentence reads as being about that page.
+    expect(recordingEndedByMessage("max_duration", "Checkout — Example"))
+      .toBe("Checkout — Example — 5-minute limit reached. The clip was saved.");
+  });
+
+  it("falls back to the bare reason when the tab has no usable title", () => {
+    expect(recordingEndedByMessage("handoff", null))
+      .toBe("Sign-in took the tab. The partial clip was discarded and recording does not resume.");
+    expect(recordingEndedByMessage("handoff", "   "))
+      .toBe("Sign-in took the tab. The partial clip was discarded and recording does not resume.");
+  });
+
+  it("clips a title long enough to bury the reason", () => {
+    const message = recordingEndedByMessage("max_duration", "x".repeat(120));
+    expect(message).toBe(`${"x".repeat(47)}… — 5-minute limit reached. The clip was saved.`);
+  });
+
+  it("stays silent for an ordinary stop, title or no title", () => {
+    expect(recordingEndedByMessage(null, "Checkout")).toBeNull();
+    expect(recordingEndedByMessage("human", "Checkout")).toBeNull();
   });
 });
 

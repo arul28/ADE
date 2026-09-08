@@ -29,9 +29,8 @@ filtering before exposing the final list.
 ### In-process path
 
 The chat runtime (`agentChatService.ts`) instantiates tool objects
-directly from `universalTools.ts`, `ctoOperatorTools.ts`,
-`linearTools.ts`, and `orchestrationTools.ts`,
-then hands them to the provider adapter:
+directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
+`orchestrationTools.ts`, then hands them to the provider adapter:
 
 - **Claude Agent SDK:** the SDK `query()` stream receives ADE tools as
   SDK tool definitions alongside the runtime options for that session.

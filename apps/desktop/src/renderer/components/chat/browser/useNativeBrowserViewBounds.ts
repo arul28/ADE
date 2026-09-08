@@ -2,10 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Mutable
 import {
   clampBrowserViewBounds,
   isBrowserOverlayCandidate,
+  isBrowserOverlayCandidateVisible,
   rectIntersection,
   UNDERLAY_FADE_MS,
   type BrowserViewRect,
-} from "../browserViewGeometry";
+} from "./browserViewGeometry";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -129,10 +130,6 @@ function measureNativeBrowserBounds(
   };
 }
 
-function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
-  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-}
-
 /** The popover libraries' own content boxes, which are always overlays. */
 const OVERLAY_CONTENT_SELECTOR = "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]";
 
@@ -142,19 +139,29 @@ const OVERLAY_CONTENT_SELECTOR = "[data-radix-popper-content-wrapper], [data-rad
  * The only part of this that touches the DOM: a computed style, four
  * attributes and a rect. The decision itself is `isBrowserOverlayCandidate` in
  * `browserViewGeometry`, so it can be tested without a compositor.
+ *
+ * The style-only rejects run first and short-circuit, because the remaining
+ * reads are the expensive ones: `getBoundingClientRect` forces a layout flush
+ * and `matches` walks a twelve-clause selector, and this runs over every
+ * candidate in the document on every animation and transition event. An
+ * invisible candidate never reaches either.
  */
 function readBrowserOverlayCandidate(element: HTMLElement): boolean {
   const style = window.getComputedStyle(element);
-  return isBrowserOverlayCandidate({
-    rect: element.getBoundingClientRect(),
-    role: element.getAttribute("role"),
-    position: style.position,
+  const visibility = {
     pointerEvents: style.pointerEvents,
     display: style.display,
     visibility: style.visibility,
     opacity: style.opacity,
     hidden: element.hidden,
     ariaHidden: element.getAttribute("aria-hidden") === "true",
+  };
+  if (!isBrowserOverlayCandidateVisible(visibility)) return false;
+  return isBrowserOverlayCandidate({
+    ...visibility,
+    rect: element.getBoundingClientRect(),
+    role: element.getAttribute("role"),
+    position: style.position,
     ariaModal: element.getAttribute("aria-modal") === "true",
     matchesOverlaySelector: element.matches(OVERLAY_CONTENT_SELECTOR),
   });
@@ -191,8 +198,7 @@ function browserSurfaceHasExternalOverlay(surface: HTMLElement): boolean {
   const surfaceRect = surface.getBoundingClientRect();
   if (surfaceRect.width < 4 || surfaceRect.height < 4) return false;
   for (const element of collectBrowserOverlayCandidates(surface)) {
-    const elementRect = element.getBoundingClientRect();
-    if (rectsOverlap(surfaceRect, elementRect) && overlayCandidatePaintsOverSurface(element, surfaceRect)) return true;
+    if (overlayCandidatePaintsOverSurface(element, surfaceRect)) return true;
   }
   return false;
 }

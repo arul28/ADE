@@ -1475,8 +1475,6 @@ export async function createAdeRuntime(args: {
         fileService: headlessLinearServices.fileService,
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,
-        linearClient: headlessLinearServices.linearClient,
-        linearCredentials: headlessLinearServices.linearCredentialService,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
         // Sleep is a machine fact, so every chat in this brain reads the one

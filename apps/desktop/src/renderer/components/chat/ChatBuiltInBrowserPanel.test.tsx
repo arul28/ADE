@@ -1412,6 +1412,75 @@ describe("ChatBuiltInBrowserPanel", () => {
       });
       expect(screen.queryByTestId("browser-launchpad")).toBeNull();
     });
+
+    it("does not wear the previous tab's padlock on a blank new tab", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
+      await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
+      expect(screen.getByLabelText("Secure connection")).toBeTruthy();
+
+      emit({
+        type: "status",
+        status: statusWith({
+          activeTabId: "tab-2",
+          url: null,
+          tabs: [
+            browserStatus.tabs[0],
+            makeBuiltInBrowserTab({ id: "tab-2", url: null, title: null, isLaunchpad: true }),
+          ],
+        }),
+      });
+
+      await waitFor(() => expect(urlInput.value).toBe(""));
+      // The address bar is empty, so there is no connection to make a claim about.
+      expect(screen.queryByLabelText("Secure connection")).toBeNull();
+      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+    });
+
+    it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      // `browserScope` is `{projectRoot} | {tabCollection} | {}` and never
+      // carries a laneId, so the registry's lane filter never ran. Discovery is
+      // also a fact about THIS machine's PTYs, so it takes no runtime pin.
+      await waitFor(() => expect(api.getDevServers).toHaveBeenCalled());
+      const [args, ...rest] = api.getDevServers.mock.calls[0];
+      expect(args).toHaveProperty("laneId");
+      expect(args).not.toHaveProperty("projectRoot");
+      expect(rest).toEqual([]);
+    });
+
+    it("probes the usual ports when discovery comes back empty", async () => {
+      const { api, emit } = installBrowserApi();
+      api.getDevServers.mockResolvedValue({ servers: [] });
+      (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
+        .ade.localhost.probePort.mockImplementation(async (port: number) => port === 5173);
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      // Wait for the mounted status before replacing it, or the initial read
+      // lands afterwards and puts the tab back.
+      await screen.findByRole("tab");
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+
+      await screen.findByTestId("browser-launchpad");
+      // A dev server the human started outside ADE has no command to name it,
+      // so it says what it honestly is.
+      expect(await screen.findByText("localhost:5173")).toBeTruthy();
+    });
+
+    it("prefers the command that opened the port when discovery knows it", async () => {
+      const { emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      // Wait for the mounted status before replacing it, or the initial read
+      // lands afterwards and puts the tab back.
+      await screen.findByRole("tab");
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+
+      await screen.findByTestId("browser-launchpad");
+      expect(await screen.findByText("npm run dev · :5173")).toBeTruthy();
+    });
   });
 
   describe("find bar", () => {
@@ -1487,6 +1556,32 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       expect(await screen.findByText("Find is not available on this page.")).toBeTruthy();
       expect(screen.queryByText(/invoking remote method/)).toBeNull();
+    });
+
+    it("keeps Escape to itself instead of closing the whole tool", async () => {
+      const { api } = installBrowserApi();
+      const onKeyDown = vi.fn();
+      render(
+        <div onKeyDown={onKeyDown}>
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </div>,
+      );
+      await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+
+      fireEvent.keyDown(screen.getByLabelText("ADE browser URL").closest("div")!, {
+        key: "f",
+        metaKey: true,
+      });
+      const bar = await screen.findByTestId("browser-find-bar");
+      // The contract the pane's capture-phase handler reads.
+      expect(bar.getAttribute("data-ade-escape-scope")).toBe("find");
+
+      onKeyDown.mockClear();
+      fireEvent.keyDown(screen.getByLabelText("Find on page"), { key: "Escape" });
+
+      await waitFor(() => expect(screen.queryByTestId("browser-find-bar")).toBeNull());
+      // Nothing above the panel ever sees it, so nothing above the panel acts.
+      expect(onKeyDown).not.toHaveBeenCalled();
     });
   });
 
@@ -1618,34 +1713,6 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       fireEvent.blur(screen.getByLabelText("ADE browser URL"));
       expect(screen.getByTestId("browser-url-submit")).toBeTruthy();
-    });
-  });
-
-  describe("find bar", () => {
-    it("keeps Escape to itself instead of closing the whole tool", async () => {
-      const { api } = installBrowserApi();
-      const onKeyDown = vi.fn();
-      render(
-        <div onKeyDown={onKeyDown}>
-          <ChatBuiltInBrowserPanel sessionId="chat-1" />
-        </div>,
-      );
-      await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
-
-      fireEvent.keyDown(screen.getByLabelText("ADE browser URL").closest("div")!, {
-        key: "f",
-        metaKey: true,
-      });
-      const bar = await screen.findByTestId("browser-find-bar");
-      // The contract the pane's capture-phase handler reads.
-      expect(bar.getAttribute("data-ade-escape-scope")).toBe("find");
-
-      onKeyDown.mockClear();
-      fireEvent.keyDown(screen.getByLabelText("Find on page"), { key: "Escape" });
-
-      await waitFor(() => expect(screen.queryByTestId("browser-find-bar")).toBeNull());
-      // Nothing above the panel ever sees it, so nothing above the panel acts.
-      expect(onKeyDown).not.toHaveBeenCalled();
     });
   });
 
@@ -1843,77 +1910,6 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       expect(await screen.findByTestId("browser-load-progress")).toBeTruthy();
       expect(screen.getByLabelText("Stop loading")).toBeTruthy();
-    });
-  });
-
-  describe("launchpad", () => {
-    it("does not wear the previous tab's padlock on a blank new tab", async () => {
-      const { emit } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
-      await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
-      expect(screen.getByLabelText("Secure connection")).toBeTruthy();
-
-      emit({
-        type: "status",
-        status: statusWith({
-          activeTabId: "tab-2",
-          url: null,
-          tabs: [
-            browserStatus.tabs[0],
-            makeBuiltInBrowserTab({ id: "tab-2", url: null, title: null, isLaunchpad: true }),
-          ],
-        }),
-      });
-
-      await waitFor(() => expect(urlInput.value).toBe(""));
-      // The address bar is empty, so there is no connection to make a claim about.
-      expect(screen.queryByLabelText("Secure connection")).toBeNull();
-      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
-    });
-
-    it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
-      const { api } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-
-      // `browserScope` is `{projectRoot} | {tabCollection} | {}` and never
-      // carries a laneId, so the registry's lane filter never ran. Discovery is
-      // also a fact about THIS machine's PTYs, so it takes no runtime pin.
-      await waitFor(() => expect(api.getDevServers).toHaveBeenCalled());
-      const [args, ...rest] = api.getDevServers.mock.calls[0];
-      expect(args).toHaveProperty("laneId");
-      expect(args).not.toHaveProperty("projectRoot");
-      expect(rest).toEqual([]);
-    });
-
-    it("probes the usual ports when discovery comes back empty", async () => {
-      const { api, emit } = installBrowserApi();
-      api.getDevServers.mockResolvedValue({ servers: [] });
-      (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
-        .ade.localhost.probePort.mockImplementation(async (port: number) => port === 5173);
-
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-      // Wait for the mounted status before replacing it, or the initial read
-      // lands afterwards and puts the tab back.
-      await screen.findByRole("tab");
-      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
-
-      await screen.findByTestId("browser-launchpad");
-      // A dev server the human started outside ADE has no command to name it,
-      // so it says what it honestly is.
-      expect(await screen.findByText("localhost:5173")).toBeTruthy();
-    });
-
-    it("prefers the command that opened the port when discovery knows it", async () => {
-      const { emit } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-      // Wait for the mounted status before replacing it, or the initial read
-      // lands afterwards and puts the tab back.
-      await screen.findByRole("tab");
-      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
-
-      await screen.findByTestId("browser-launchpad");
-      expect(await screen.findByText("npm run dev · :5173")).toBeTruthy();
     });
   });
 });

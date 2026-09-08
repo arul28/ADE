@@ -48,7 +48,7 @@ export function stripDataUrlPrefix(dataUrl: string): string {
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
 
-export const UNSUPPORTED_NAVIGATION_SCHEME_RE = /^(about|blob|data|devtools|file):/i;
+const UNSUPPORTED_NAVIGATION_SCHEME_RE = /^(about|blob|data|devtools|file):/i;
 
 export type NormalizedNavigationUrl =
   | { ok: true; url: string }
@@ -270,7 +270,7 @@ export function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus |
   };
 }
 
-export function eventProjectRoot(value: unknown): string | null | undefined {
+function eventProjectRoot(value: unknown): string | null | undefined {
   if (!isRecord(value)) return undefined;
   if ("collectionProjectRoot" in value) {
     const root = value.collectionProjectRoot;

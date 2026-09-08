@@ -13,33 +13,33 @@ import type {
   BuiltInBrowserPermissionDecision,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRecordingFps,
   BuiltInBrowserRecordingStatus,
 } from "../../../shared/types/builtInBrowser";
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
-import { browserToolbarLayout } from "./builtInBrowserToolbar";
+import { browserToolbarLayout } from "./browser/builtInBrowserToolbar";
 import {
   activeEmulationPresetId,
   deviceMenuPresets,
   emulationDisplayLabel,
   emulationSizeLabel,
   findErrorMessage,
-  recordingEndedByLabel,
+  recordingEndedByMessage,
   simulatorEmulationPreset,
   stepZoomFactor,
   type BrowserFindState,
-  type BuiltInBrowserRecordingFrameRate,
-} from "./browserToolbarLabels";
+} from "./browser/browserToolbarLabels";
 import {
   browserLetterboxFrame,
   type BrowserViewFrame,
-} from "./browserViewGeometry";
+} from "./browser/browserViewGeometry";
 import {
   devServerChipLabel,
   mergeDevServer,
   normalizeDevServer,
   normalizeDevServers,
   type BrowserDevServer,
-} from "./browserDevServers";
+} from "./browser/browserDevServers";
 import {
   browserUrlOrigin,
   clipboardUrlCandidate,
@@ -296,7 +296,7 @@ export function ChatBuiltInBrowserPanel({
   const [responsiveWidth, setResponsiveWidth] = useState("1024");
   const [responsiveHeight, setResponsiveHeight] = useState("768");
   const [linkMode, setLinkModeState] = useState<BrowserLinkOpenMode>(() => getLinkOpenMode());
-  const [recordingFps, setRecordingFps] = useState<BuiltInBrowserRecordingFrameRate>(30);
+  const [recordingFps, setRecordingFps] = useState<BuiltInBrowserRecordingFps>(30);
   // Re-rendered once a second while recording so the REC pill's clock ticks.
   const [recordingClock, setRecordingClock] = useState(() => Date.now());
   const [importOpen, setImportOpen] = useState(false);
@@ -782,7 +782,10 @@ export function ChatBuiltInBrowserPanel({
         // A recording nobody stopped stopped anyway. The pill clearing is the
         // only other signal, and a pill that vanishes says nothing about why —
         // which is exactly the question a truncated clip raises.
-        const endedBy = recordingEndedByLabel(event.endedBy);
+        // Named by tab: this event is scoped to the project, not to the tab in
+        // front of the user, so a background tab hitting the cap would
+        // otherwise raise a toast that reads as being about the visible page.
+        const endedBy = recordingEndedByMessage(event.endedBy, event.tabTitle);
         if (endedBy) showToast({ title: "Recording stopped", message: endedBy, tone: "info" });
       }
       const nextSelection =
@@ -1873,7 +1876,13 @@ export function ChatBuiltInBrowserPanel({
     const api = getBrowserApi();
     if (!api?.getDevServers || remotePin) return undefined;
     let cancelled = false;
-    void api.getDevServers({ laneId: contextLaneId })
+    // `Promise.resolve(...)`, not a bare `.then`: the declared return type is
+    // what a CURRENT main process sends. A stub namespace or an older build that
+    // returns a non-thenable would throw `.then is not a function` synchronously
+    // inside the effect body, which React does not treat as a rejection — it
+    // unmounts the subtree, so the pane blanks instead of falling back to the
+    // port probe below.
+    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }))
       .then((value) => {
         if (cancelled) return;
         const discovered = normalizeDevServers(value);

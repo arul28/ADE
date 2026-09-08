@@ -3897,8 +3897,6 @@ app.whenReady().then(async () => {
       githubService,
       getOrchestrationService: () => orchestrationServiceRef,
       getSearchService: () => searchServiceHolder.current,
-      linearClient,
-      linearCredentials: linearCredentialService,
       prService,
       diskPressureMonitor,
       // Electron's `suspend` fires a beat BEFORE the machine goes down, which

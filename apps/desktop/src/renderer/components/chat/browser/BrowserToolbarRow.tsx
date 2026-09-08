@@ -27,7 +27,7 @@ import {
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { BuiltInBrowserRecordingStatus } from "../../../../shared/types/builtInBrowser";
-import { recordingPillLabel } from "../browserToolbarLabels";
+import { recordingPillLabel } from "./browserToolbarLabels";
 import type { TabTunnelEntry } from "../browserRemoteTunnels";
 import type { BrowserUrlDisplay, BrowserUrlLockKind } from "../../../lib/browserUrl";
 import { cn } from "../../ui/cn";

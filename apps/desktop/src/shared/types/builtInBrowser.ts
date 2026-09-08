@@ -520,6 +520,15 @@ export type BuiltInBrowserEventPayload =
        * without having called `stopRecording`.
        */
       endedBy?: BuiltInBrowserRecordingEndedBy;
+      /**
+       * The recording tab's title at the moment it stopped.
+       *
+       * Carried because a `recording` event is filtered by project but not by
+       * tab: a background tab hitting the cap raises a toast on top of whatever
+       * page the human is actually looking at, and "Recording stopped" with no
+       * subject reads as being about that page. `null` for an untitled tab.
+       */
+      tabTitle?: string | null;
       updatedAt: string;
     }
   /**
@@ -881,6 +890,44 @@ export type BuiltInBrowserUploadFileArgs = BuiltInBrowserAgentActionArgs & Built
 /* ── Screen recording ─────────────────────────────────────────────────────── */
 
 export type BuiltInBrowserRecordingFormat = "webm" | "mp4";
+
+/**
+ * The frame rates a recording may run at, and the wall-clock cap on one.
+ *
+ * These live here rather than next to the recorder because both processes need
+ * them and neither can import the other's: main enforces them
+ * (`builtInBrowserCapabilities.ts` re-exports them for its call sites) and the
+ * renderer renders them — the fps menu in the overflow panel and the
+ * "5-minute limit reached" toast. They used to be a main-side pair with a
+ * hand-synced renderer copy and a "change both" comment; one home is the
+ * point.
+ */
+export const BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS = [30, 60] as const;
+
+export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS)[number];
+
+/**
+ * Wall-clock cap on a single recording, enforced by the session's own timer.
+ *
+ * A recording is a `getDisplayMedia` capture of a live tab writing to the
+ * project's scratch dir; an agent that forgets to call `stopRecording` (or dies
+ * mid-run) would otherwise capture until the app quits. Five minutes is long
+ * enough for any "show me this flow" and short enough that the forgotten case
+ * costs a bounded file.
+ *
+ * What the caller sees when it fires: the recording is finalized exactly as a
+ * `stopRecording` would have finalized it — same file, same manifest — and the
+ * agent is told through two channels rather than a return value it never
+ * asked for. A `recording` event carries `endedBy: "max_duration"` (so the
+ * pane can say why the REC pill vanished), and a `stopRecording`-shaped entry
+ * with the same `endedBy` lands in the tab's action trace, which is where the
+ * skill tells an agent to look. A later `stopRecording` then throws
+ * `Browser tab <id> is not recording.` A login hand-off is the other automatic
+ * ending (`endedBy: "handoff"`), and unlike this one it ABORTS rather than
+ * finalizes — see `suspendAgentCaptureForHandoff`. Neither resumes; an agent
+ * that wants more has to start a new recording.
+ */
+export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
 
 export type BuiltInBrowserRecordingStatus = {
   startedAt: string;

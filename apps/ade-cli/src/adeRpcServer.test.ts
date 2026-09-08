@@ -4920,6 +4920,55 @@ describe("adeRpcServer", () => {
     expect(getLaneState).not.toHaveBeenCalled();
   });
 
+  it("lets an elevated agent-shaped caller read every lane's pane but never write the active tool", async () => {
+    // The CTO carve-out on `work_tools` is a READ carve-out. `setActiveTool` is
+    // the domain's one write and it belongs to the human at the desktop, so the
+    // carve-out must not smuggle it through — it used to, by skipping the
+    // scoping function (and therefore its user-clients-only gate) wholesale.
+    //
+    // The caller that can be BOTH elevated and agent-shaped is an orchestration
+    // run: `resolveSessionBoundRole` downgrades a cto role to `agent` whenever a
+    // `chatSessionId` is present, so a CTO *chat* never reaches the carve-out,
+    // but a run/step identity with no chat session keeps `cto`.
+    const fixture = createRuntime();
+    const getLaneState = vi.fn(async (args: unknown) => args);
+    const readObservationPreview = vi.fn(async (args: unknown) => args);
+    const setActiveTool = vi.fn(() => ({ ok: true }));
+    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "cto-run", role: "cto", runId: "run-1", stepId: "step-1" });
+
+    // Reads still cross lanes, unscoped, exactly as before.
+    const state = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "getLaneState",
+      args: { laneId: "lane-b" },
+    });
+    expect(state?.isError).toBeUndefined();
+    expect(getLaneState).toHaveBeenCalledWith({ laneId: "lane-b" });
+
+    const write = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "setActiveTool",
+      args: { laneId: "lane-b", tool: "browser" },
+    });
+    expect(write.isError).toBe(true);
+    expect(setActiveTool).not.toHaveBeenCalled();
+
+    // The human's own desktop is elevated too but carries no run/step/chat
+    // identity, so it is still a user client and still owns the write.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const humanWrite = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "setActiveTool",
+      args: { laneId: "lane-b", tool: "browser" },
+    });
+    expect(humanWrite?.isError).toBeUndefined();
+    expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
+  });
+
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
     // `callerLaneId` IS the aggregator's ownership check, so it is never the
     // caller's to supply — including on the user-client path, where it used to

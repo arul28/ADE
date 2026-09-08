@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   WORK_TOOLS_CONTROL_HINT,
   WORK_TOOLS_NO_DESKTOP_MESSAGE,
+  workToolsUnavailableMessage,
   type WorkToolsLaneState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
@@ -141,7 +142,11 @@ function ReadOnlyMessage({ message }: { message: string }): JSX.Element {
 function BrowserSummary({ state }: { state: WorkToolsLaneState }): JSX.Element {
   const browser = state.browser;
   if (!browser) {
-    return <ReadOnlyMessage message={WORK_TOOLS_NO_DESKTOP_MESSAGE} />;
+    // `browserUnavailable` says WHY, and only one of its four reasons is "open
+    // ADE on your Mac". The wording is shared with the iOS sheet so the two
+    // read-only clients cannot drift; an unknown reason falls back to the
+    // common case rather than inventing a diagnosis.
+    return <ReadOnlyMessage message={workToolsUnavailableMessage(state.browserUnavailable)} />;
   }
   if (!browser.tabs.length) {
     return (

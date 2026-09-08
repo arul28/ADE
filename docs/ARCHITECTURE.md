@@ -714,7 +714,6 @@ Agent tools are split by domain:
 |------|--------|
 | `ai/tools/universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read/search tools, web tools, todos, and ask-user. |
 | `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. Registered on the live session via `createCtoRuntimeToolMap` through the per-provider transports (`ade-cto` SDK MCP server for Claude, the `ade_cto` dynamic-tool namespace for Codex, a dedicated HTTP MCP lease for Cursor/Droid/OpenCode). Git mutations require an explicit `laneId` because the CTO session is pinned to the primary lane. |
-| `ai/tools/linearTools.ts` | Linear integration tool surface. |
 | `ai/tools/webFetch.ts` / `webSearch.ts` | Outbound web access. |
 | `ai/tools/readFileRange.ts` / `globSearch.ts` / `grepSearch.ts` | Read-only file tools shared across all roles. |
 | `ai/tools/editFile.ts` | Edit-path tool wired to ADE-controlled write flow. |

@@ -114,20 +114,7 @@ describe("readLoginImportSourceInWorker", () => {
   });
 
   // A Keychain modal has no timeout by design, so "no timeout" needs an answer
-  // to "then how does it end". These are the three answers.
-  it("kills the child when the read is cancelled", async () => {
-    const child = fakeChild();
-    const controller = new AbortController();
-    const pending = readLoginImportSourceInWorker(REQUEST, {
-      spawnWorker: (() => child) as never,
-      workerPath: "/w.cjs",
-      signal: controller.signal,
-    });
-    controller.abort();
-    await expect(pending).resolves.toMatchObject({ ok: false, status: "read_failed" });
-    expect(child.kill).toHaveBeenCalled();
-  });
-
+  // to "then how does it end". These are those answers.
   it("kills every in-flight child at app quit", async () => {
     const child = fakeChild();
     const pending = readLoginImportSourceInWorker(REQUEST, {

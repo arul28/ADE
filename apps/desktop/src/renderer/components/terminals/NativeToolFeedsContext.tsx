@@ -27,7 +27,12 @@ import {
 } from "./useNativeToolSessions";
 
 /**
- * The one owner of the three native tool feeds.
+ * The one owner of the Work tools pane's and the live corner card's native tool
+ * feeds.
+ *
+ * Scoped to those two on purpose: `ChatAppControlPanel` and
+ * `ChatIosSimulatorPanel` still open their own `onEvent` subscriptions, and
+ * correctly so — they need per-panel detail these summary feeds do not carry.
  *
  * The Work tools pane and the floating live-preview card both need to know what
  * the browser, App Control and the simulator are doing. `useNativeToolSessions`
@@ -97,12 +102,20 @@ export function useNativeToolFeeds(): NativeToolFeeds {
  * The handler object is read through a ref, so a caller passing inline closures
  * cannot make the registration churn — the same rule the hook already applied
  * to its own callback props.
+ *
+ * Throws outside the provider for the same reason `useNativeToolFeeds` does,
+ * and more urgently: a silent no-op here registers handlers that never fire,
+ * and the symptom (a corner card that stops repainting) points nowhere near
+ * the missing provider.
  */
 export function useNativeToolFeedHandlers(handlers: NativeToolFeedHandlers): void {
   const registry = useContext(NativeToolFeedHandlerContext);
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
-  useLayoutEffect(() => registry?.register(handlersRef), [registry]);
+  if (!registry) {
+    throw new Error("useNativeToolFeedHandlers must be used inside <NativeToolFeedsProvider>");
+  }
+  useLayoutEffect(() => registry.register(handlersRef), [registry]);
 }
 
 export function NativeToolFeedsProvider({

@@ -10,7 +10,7 @@ import { Globe, Plus, Robot, SpinnerGap, X } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
-import { browserTabLabel } from "../browserToolbarLabels";
+import { browserTabLabel } from "./browserToolbarLabels";
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS } from "./browserChrome";
 import type { BrowserTab } from "./browserPanelTypes";

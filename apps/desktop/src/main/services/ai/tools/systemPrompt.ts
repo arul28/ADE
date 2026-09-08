@@ -244,21 +244,10 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasWorkflowTools = hasCreateLane || hasCreatePr;
   const guardedLocalReadOnly = permissionMode === "plan";
   const adeSkillRoots = args.adeSkillRoots ?? getAdeAgentSkillRootsForPrompt({ cwd: args.cwd });
-  // CAREFUL — this set lists BOTH spellings on purpose, and "no camelCase
-  // implementation" does NOT mean "the capability does not exist". The
-  // camelCase names are the historical chat-tool spellings; most have a live
-  // snake_case twin on the agent/RPC tool surface in
-  // `apps/ade-cli/src/adeRpcServer.ts` (`pr_get_checks`,
-  // `pr_get_review_comments`, `pr_rerun_failed_checks`,
-  // `pr_reply_to_review_thread`, `pr_resolve_review_thread` — real handlers,
-  // also called from the TUI). `pr_get_check_log` and
-  // `pr_refresh_issue_inventory` have no implementation under EITHER spelling,
-  // and `createLane` / `createPrFromLane` live in `ctoOperatorTools.ts`.
-  // A reviewer who greps only the camelCase spellings concludes PR tooling is
-  // unbuilt and is wrong — that mistake reached ARCHITECTURE.md once already.
-  // Check BOTH spellings against a live registry before concluding anything.
-  // This set only FILTERS names a caller already passed; it never advertises a
-  // tool the session does not have. Prose copy: `docs/features/chat/tool-system.md`.
+  // Both spellings on purpose. The camelCase names are historical chat-tool
+  // spellings; most have a LIVE snake_case twin on the RPC tool surface
+  // (`apps/ade-cli/src/adeRpcServer.ts`). Never conclude "unbuilt" from the
+  // camelCase spelling alone — see docs/features/chat/tool-system.md, "Tier 2".
   const PR_ISSUE_TOOL_NAMES = new Set([
     "prGetChecks",
     "prGetCheckLog",

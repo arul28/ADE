@@ -10,7 +10,7 @@ import type { MutableRefObject, PointerEvent } from "react";
 import { ArrowsLeftRight, ClipboardText, Globe } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
-import { emulationCaption, UNDERLAY_FADE_MS, type BrowserViewFrame } from "../browserViewGeometry";
+import { emulationCaption, UNDERLAY_FADE_MS, type BrowserViewFrame } from "./browserViewGeometry";
 import { revealTransition } from "../../../lib/motion";
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";

@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import { createBuiltInBrowserService } from "./builtInBrowserService";
+import { createDevServerRegistry } from "../devServers/devServerRegistry";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -480,6 +481,53 @@ function fakeBrowserWindow() {
   };
 }
 
+/** The `BrowserWindow` shape the service's public methods take. */
+type ServiceBrowserWindow = Parameters<
+  ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]
+>[0];
+
+/**
+ * A service wired for project-scoped routing, plus the two registries it reads.
+ *
+ * Six tests built this by hand, each repeating the same `as unknown as
+ * Parameters<…>[0]` double cast — the kind of cast that quietly stops matching
+ * the signature it names. One place to fix when the signature moves.
+ */
+function projectScopedService(onEvent?: Parameters<typeof createBuiltInBrowserService>[0]["onEvent"]) {
+  const projectRootByWindow = new Map<number, string>();
+  const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+  const service = createBuiltInBrowserService({
+    onEvent,
+    getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+    getWindowForProjectRoot: (projectRoot) =>
+      (windowsByProjectRoot.get(projectRoot) as unknown as ServiceBrowserWindow | undefined) ?? null,
+  });
+  /** Mints a window, registers it in both directions, and returns both shapes. */
+  const openWindow = (projectRoot?: string | null) => {
+    const win = fakeBrowserWindow();
+    if (projectRoot) {
+      projectRootByWindow.set(win.id, projectRoot);
+      windowsByProjectRoot.set(projectRoot, win);
+    }
+    return { win, browserWin: win as unknown as ServiceBrowserWindow };
+  };
+  /** The window's own project changed (the human switched project tabs). */
+  const setWindowProject = (
+    win: ReturnType<typeof fakeBrowserWindow>,
+    projectRoot: string,
+  ): void => {
+    projectRootByWindow.set(win.id, projectRoot);
+  };
+  /** A project the window merely has OPEN, without being its current one. */
+  const serveProjectFromWindow = (
+    projectRoot: string,
+    win: ReturnType<typeof fakeBrowserWindow>,
+  ): void => {
+    windowsByProjectRoot.set(projectRoot, win);
+  };
+  return { service, projectRootByWindow, openWindow, setWindowProject, serveProjectFromWindow };
+}
+
 describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   let collector: ReturnType<typeof captureStatusEvents>;
 
@@ -952,25 +1000,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("routes project-scoped bridge calls to the matching project window", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const winA = fakeBrowserWindow();
-    const winB = fakeBrowserWindow();
-    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
-    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
-    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
-    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
-    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinB } = scoped.openWindow("/Users/ade/project-beta");
 
     service.attachToWindow(browserWinA);
     await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
@@ -994,25 +1027,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     // machine-wide, so an unscoped answer here showed project B's phone the
     // tabs of whichever window happened to be frontmost — hiding its own and
     // leaking another project's titles and URLs.
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const winA = fakeBrowserWindow();
-    const winB = fakeBrowserWindow();
-    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
-    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
-    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
-    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
-    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinB } = scoped.openWindow("/Users/ade/project-beta");
 
     service.attachToWindow(browserWinB);
     await service.createTab({ url: "https://beta.example.test", activate: true }, browserWinB);
@@ -1048,6 +1066,64 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatusForProjectScope(null)?.tabs).toHaveLength(1);
   });
 
+  it("does not materialize a project's browser collection to answer a status poll", async () => {
+    // The Work-tools mirror polls this on a timer, once per project, for a phone
+    // that may not be looking. Constructing the collection here would restore
+    // and `loadURL` every persisted tab of a background project in the shared
+    // authenticated profile — for a pane nobody opened.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: betaWin } = scoped.openWindow("/Users/ade/project-beta");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    // Beta has a window open for it, but its Browser pane has never been used.
+    expect(betaWin.contentView.children).toHaveLength(0);
+    expect(service.getStatusForProjectScope("/Users/ade/project-beta")).toBeNull();
+    // No collection was built, so no persisted tab was restored or loaded.
+    expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+    // And the frontmost project is untouched.
+    expect(service.getStatus().collectionProjectRoot).toBe("/Users/ade/project-alpha");
+  });
+
+  it("stamps the dev-server chip with the lane's own collection, not the frontmost one", async () => {
+    // Every surface filters `dev-server-detected` on `status.collectionProjectRoot`,
+    // so a chip stamped with whichever collection happens to be frontmost is
+    // dropped by the lane's own panel and merged into another project's launchpad.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    const { browserWin: browserWinAlpha } = scoped.openWindow("/Users/ade/project-alpha");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+    });
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true, laneId: "lane-1" }, browserWinBeta);
+    // Alpha is the frontmost collection from here on, and it is NOT the lane's.
+    watched.attachToWindow(browserWinAlpha);
+    await watched.createTab({ url: "https://alpha.example.test", activate: true }, browserWinAlpha);
+
+    collector.events.length = 0;
+    registry.record({ port: 5199, url: "http://localhost:5199/", laneId: "lane-1", sessionId: "sess-1" });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    const chip = collector.events.find((entry) => entry.type === "dev-server-detected");
+    expect(chip).toMatchObject({ autoOpened: false, tabId: null });
+    expect(chip && "status" in chip ? chip.status.collectionProjectRoot : null)
+      .toBe("/Users/ade/project-beta");
+    watched.dispose();
+  });
+
   it("does not fall back to the active project for unmatched project-scoped bridge calls", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
@@ -1070,22 +1146,11 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("routes project-scoped calls to an inactive project tab without activating the window project", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
-    windowsByProjectRoot.set("/Users/ade/project-beta", win);
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-beta");
+    // The window has alpha open as a tab too, without alpha being its current project.
+    scoped.serveProjectFromWindow("/Users/ade/project-alpha", win);
 
     service.attachToWindow(browserWin);
     await service.createTab({ url: "https://beta.example.test", activate: true }, browserWin);
@@ -1095,7 +1160,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       newTab: true,
     });
 
-    expect(projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
+    expect(scoped.projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).collectionProjectRoot).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).collectionProjectRoot).toBe("/Users/ade/project-alpha");
@@ -1103,24 +1168,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("attaches project-scoped browser views without waiting for a window focus event", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
-    windowsByProjectRoot.set("/Users/ade/project-beta", win);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow();
+    scoped.serveProjectFromWindow("/Users/ade/project-alpha", win);
+    scoped.serveProjectFromWindow("/Users/ade/project-beta", win);
 
     service.attachToWindow(browserWin);
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    scoped.setWindowProject(win, "/Users/ade/project-alpha");
     // Showing the pane no longer conjures a tab, so each collection opens one
     // explicitly; what is under test is which window the view attaches to.
     await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
@@ -1140,7 +1195,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
     expect(win.contentView.children).toHaveLength(1);
 
-    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    scoped.setWindowProject(win, "/Users/ade/project-beta");
     await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-beta",
@@ -1164,21 +1219,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps same-project view attachment stable across repeated project-scoped calls", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
 
     service.attachToWindow(browserWin);
     await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
@@ -1215,23 +1258,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps project browser views attached independently in separate ADE windows", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const winA = fakeBrowserWindow();
-    const winB = fakeBrowserWindow();
-    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
-    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
-    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win: winA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: winB } = scoped.openWindow("/Users/ade/project-beta");
 
     await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
     await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });

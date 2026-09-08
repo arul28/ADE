@@ -120,6 +120,42 @@ describe("WorkToolReadOnlyView", () => {
     expect(await screen.findByText("No browser tabs are open in this lane.")).toBeTruthy();
   });
 
+  it("does not tell a user with ADE already open to open ADE", async () => {
+    // The narrow reason: a desktop IS attached, it just has no window for this
+    // project. "Open ADE on your Mac" would send them to look at an app that is
+    // already in front of them — the exact failure the reason exists to avoid,
+    // and the wording is shared with the iOS sheet so the two cannot drift.
+    installAde({
+      getLaneState: vi.fn(async () => laneState({
+        browser: null,
+        browserUnavailable: "desktop_not_attached_for_project",
+      })),
+    });
+
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+
+    expect(
+      await screen.findByText(
+        "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("distinguishes an unsupported browser from a failed read", async () => {
+    installAde({
+      getLaneState: vi.fn(async () => laneState({ browser: null, browserUnavailable: "unsupported" })),
+    });
+    const { unmount } = render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    expect(await screen.findByText("The browser isn't available on this machine.")).toBeTruthy();
+    unmount();
+
+    installAde({
+      getLaneState: vi.fn(async () => laneState({ browser: null, browserUnavailable: "error" })),
+    });
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    expect(await screen.findByText("Couldn't read the browser's state.")).toBeTruthy();
+  });
+
   it("asks for nothing without a lane", async () => {
     const getLaneState = vi.fn(async () => laneState());
     installAde({ getLaneState });

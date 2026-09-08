@@ -9,7 +9,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { CaretLeft, CaretRight, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import { findMatchLabel, type BrowserFindState } from "../browserToolbarLabels";
+import { findMatchLabel, type BrowserFindState } from "./browserToolbarLabels";
 import { revealTransition } from "../../../lib/motion";
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";

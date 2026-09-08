@@ -1,14 +1,19 @@
 import {
   BUILT_IN_BROWSER_EMULATION_PRESETS,
   findBuiltInBrowserEmulationPreset,
-} from "../../../shared/builtInBrowserEmulation";
+} from "../../../../shared/builtInBrowserEmulation";
+import {
+  BUILT_IN_BROWSER_MAX_RECORDING_MS,
+  BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
+} from "../../../../shared/types/builtInBrowser";
 import type {
   BuiltInBrowserEmulationPreset,
   BuiltInBrowserEmulationPresetId,
   BuiltInBrowserEmulationState,
+  BuiltInBrowserRecordingFps,
   BuiltInBrowserRecordingStatus,
-} from "../../../shared/types/builtInBrowser";
-import { browserHostLabel } from "../../lib/browserUrl";
+} from "../../../../shared/types/builtInBrowser";
+import { browserHostLabel } from "../../../lib/browserUrl";
 
 /**
  * The words the browser chrome puts on screen.
@@ -58,23 +63,17 @@ export function recordingPillLabel(
   return fps ? `${elapsed} · ${fps}` : elapsed;
 }
 
-/** The only two rates the recorder accepts. */
-export const BUILT_IN_BROWSER_RECORDING_FRAME_RATES = [30, 60] as const;
-export type BuiltInBrowserRecordingFrameRate = (typeof BUILT_IN_BROWSER_RECORDING_FRAME_RATES)[number];
-
-export function normalizeRecordingFps(value: unknown): BuiltInBrowserRecordingFrameRate {
-  return value === 60 ? 60 : 30;
-}
-
 /**
- * Minutes on the recorder's wall-clock cap, for the sentence that explains it.
+ * The picker's coercion of an fps choice, over the shared rate list.
  *
- * A renderer-side copy of `BUILT_IN_BROWSER_MAX_RECORDING_MS` (main's
- * `builtInBrowserCapabilities.ts`), the same way the frame-rate list above is a
- * copy of main's `BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS`: the renderer cannot
- * import from `main/`, and the cap is not on the wire.
+ * Deliberately lenient where main's `normalizeBuiltInBrowserRecordingFps`
+ * throws: this one backs a `<Select>` whose only job is to land on a legal
+ * value, and a rejected menu click has nowhere to surface.
  */
-export const BUILT_IN_BROWSER_MAX_RECORDING_MINUTES = 5;
+export function normalizeRecordingFps(value: unknown): BuiltInBrowserRecordingFps {
+  const match = BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS.find((option) => option === value);
+  return match ?? BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS[0];
+}
 
 /**
  * Why a recording nobody stopped stopped anyway.
@@ -98,12 +97,40 @@ export const BUILT_IN_BROWSER_MAX_RECORDING_MINUTES = 5;
  */
 export function recordingEndedByLabel(value: unknown): string | null {
   if (value === "max_duration") {
-    return `${BUILT_IN_BROWSER_MAX_RECORDING_MINUTES}-minute limit reached. The clip was saved.`;
+    const minutes = Math.round(BUILT_IN_BROWSER_MAX_RECORDING_MS / 60_000);
+    return `${minutes}-minute limit reached. The clip was saved.`;
   }
   if (value === "handoff") {
     return "Sign-in took the tab. The partial clip was discarded and recording does not resume.";
   }
   return null;
+}
+
+/** Longest tab title the toast will carry before it stops being scannable. */
+const RECORDING_TOAST_TITLE_MAX = 48;
+
+/**
+ * The "Recording stopped" toast's body, with the tab it is about.
+ *
+ * The `recording` event is filtered by project but not by tab, so a background
+ * tab hitting the cap raises this over whatever page the human is looking at —
+ * and an unattributed "Recording stopped" reads as being about *that* page.
+ * Naming the tab is the whole point of the toast: the pill you would have
+ * watched is on a tab you cannot see.
+ *
+ * Null when there is nothing worth saying (`recordingEndedByLabel`'s ordinary
+ * stop), and the bare reason when the tab had no title — an untitled or
+ * already-destroyed tab is not worth an empty pair of quotes.
+ */
+export function recordingEndedByMessage(endedBy: unknown, tabTitle: unknown): string | null {
+  const reason = recordingEndedByLabel(endedBy);
+  if (!reason) return null;
+  const title = typeof tabTitle === "string" ? tabTitle.trim() : "";
+  if (!title) return reason;
+  const clipped = title.length > RECORDING_TOAST_TITLE_MAX
+    ? `${title.slice(0, RECORDING_TOAST_TITLE_MAX - 1).trimEnd()}…`
+    : title;
+  return `${clipped} — ${reason}`;
 }
 
 /* ── Device emulation ─────────────────────────────────────────────────────── */

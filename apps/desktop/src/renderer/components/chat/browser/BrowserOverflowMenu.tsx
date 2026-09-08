@@ -24,11 +24,13 @@ import {
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { BrowserLinkOpenMode } from "../../../../shared/types";
 import {
-  BUILT_IN_BROWSER_RECORDING_FRAME_RATES,
+  BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
+  type BuiltInBrowserRecordingFps,
+} from "../../../../shared/types/builtInBrowser";
+import {
   normalizeRecordingFps,
   zoomPercentLabel,
-  type BuiltInBrowserRecordingFrameRate,
-} from "../browserToolbarLabels";
+} from "./browserToolbarLabels";
 import { modifierKeyLabel } from "../../../lib/platform";
 import { cn } from "../../ui/cn";
 import {
@@ -59,8 +61,8 @@ export type BrowserOverflowMenuProps = {
   networkLogging: boolean;
   onToggleNetworkLogging: () => void;
   onExportHar: () => void;
-  recordingFps: BuiltInBrowserRecordingFrameRate;
-  setRecordingFps: (fps: BuiltInBrowserRecordingFrameRate) => void;
+  recordingFps: BuiltInBrowserRecordingFps;
+  setRecordingFps: (fps: BuiltInBrowserRecordingFps) => void;
   linkMode: BrowserLinkOpenMode;
   onLinkModeChange: (mode: BrowserLinkOpenMode) => void;
   onToggleProfile: () => void;
@@ -254,7 +256,7 @@ export function BrowserOverflowMenu({
             value={String(recordingFps)}
             onValueChange={(value) => setRecordingFps(normalizeRecordingFps(Number(value)))}
           >
-            {BUILT_IN_BROWSER_RECORDING_FRAME_RATES.map((fps) => (
+            {BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS.map((fps) => (
               <DropdownMenu.RadioItem
                 key={fps}
                 value={String(fps)}

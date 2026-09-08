@@ -677,10 +677,6 @@ vi.mock("../ai/tools/universalTools", () => ({
   })),
 }));
 
-vi.mock("../ai/tools/linearTools", () => ({
-  createLinearTools: vi.fn(() => []),
-}));
-
 vi.mock("../ai/tools/ctoOperatorTools", async () => {
   const { z } = await import("zod");
   // Returns one real ExecutableTool so tests can assert the CTO tool surface is
