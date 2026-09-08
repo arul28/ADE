@@ -21,7 +21,9 @@ import {
   Selection,
   ShieldCheck,
   SignIn,
+  X,
 } from "@phosphor-icons/react";
+import { useRef } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { BrowserLinkOpenMode } from "../../../../shared/types";
 import {
@@ -32,7 +34,7 @@ import {
   normalizeRecordingFps,
   zoomPercentLabel,
 } from "./browserToolbarLabels";
-import { modifierKeyLabel } from "../../../lib/platform";
+import { modifierChordLabel } from "../../../lib/platform";
 import { cn } from "../../ui/cn";
 import {
   CHROME_GHOST,
@@ -59,6 +61,8 @@ export type BrowserOverflowMenuProps = {
   onOpenFind: () => void;
   /** The tab strip hides itself at one tab, so `+` lives here as well. */
   onNewTab: () => void;
+  /** …and so does closing one. Null when there is no tab to close. */
+  onCloseTab: (() => void) | null;
   devToolsOpen: boolean;
   onToggleDevTools: () => void;
   networkLogging: boolean;
@@ -88,6 +92,7 @@ export function BrowserOverflowMenu({
   onAttachScreenshot,
   onOpenFind,
   onNewTab,
+  onCloseTab,
   devToolsOpen,
   onToggleDevTools,
   networkLogging,
@@ -124,6 +129,21 @@ export function BrowserOverflowMenu({
   // has nothing to insert into.
   const inspectItem = canAttachContext && !toolbar.showInspect;
   const captureItem = canAttachContext && !toolbar.showCamera;
+  /*
+    Find is the one row that hands the keyboard somewhere else.
+
+    Radix returns focus to the trigger when a menu closes, which landed the
+    caret back on the ⋯ button *after* the find bar had focused its input — so
+    the bar was open, looked ready, and every letter you typed went to a button
+    instead. The row that opens the bar waives the restore for exactly that
+    close; every other row still gets it, because for them the trigger is where
+    the keyboard belongs.
+  */
+  const restoreFocusRef = useRef(true);
+  const handOffFocus = (run: () => void) => () => {
+    restoreFocusRef.current = false;
+    run();
+  };
   return (
     <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
       <DropdownMenu.Trigger asChild>
@@ -148,7 +168,16 @@ export function BrowserOverflowMenu({
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content align="end" sideOffset={6} className={MENU_CONTENT_CLASS}>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          className={MENU_CONTENT_CLASS}
+          onCloseAutoFocus={(event) => {
+            if (restoreFocusRef.current) return;
+            restoreFocusRef.current = true;
+            event.preventDefault();
+          }}
+        >
           {/*
             The order is the order every premium browser's ⋯ menu uses: the
             two things you came for (a new tab, find), then the page's own
@@ -158,11 +187,23 @@ export function BrowserOverflowMenu({
             <Plus size={12} className="shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate">New tab</span>
           </DropdownMenu.Item>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onOpenFind()}>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handOffFocus(onOpenFind)}>
             <MagnifyingGlass size={12} className="shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate">Find on page</span>
-            <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{`${modifierKeyLabel}F`}</span>
+            <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{modifierChordLabel("F")}</span>
           </DropdownMenu.Item>
+          {/*
+            The strip hides itself at one tab and took its × with it, so the
+            last tab could not be closed from anywhere. Closing it leaves the
+            pane on the launchpad — which is what a browser with no page is.
+          */}
+          {onCloseTab ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handOffFocus(onCloseTab)}>
+              <X size={12} className="shrink-0 opacity-70" />
+              <span className="min-w-0 flex-1 truncate">Close tab</span>
+              <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{modifierChordLabel("W")}</span>
+            </DropdownMenu.Item>
+          ) : null}
 
           {/*
             Everything the toolbar had to drop at this width lives here,

@@ -70,9 +70,9 @@ describe("WorkToolPicker", () => {
     // A tool with nothing measured says what it is for, in four words.
     expect(screen.getByText("Drive a real browser")).toBeTruthy();
     expect(screen.getByText("Run a shell here")).toBeTruthy();
-    // Files measures nothing, so it always shows its blurb rather than a noun
-    // ("Lane worktree") dressed up as a status.
-    expect(screen.getByText("Browse the worktree")).toBeTruthy();
+    // Files has no blurb at all: the lane store always knows whether the
+    // worktree is dirty, so its slot is a status the pane never has to guess.
+    expect(screen.getByText("Boot a simulator")).toBeTruthy();
   });
 
   it("shows the reason on a tool that cannot run here and refuses the click", () => {
@@ -234,6 +234,32 @@ describe("WorkToolPicker", () => {
     } else {
       expect(gridItem.style.gridColumn).toBe("");
     }
+  });
+
+  it("caps the grid at two columns and never lets a card shrink below 196px", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+
+    const grid = screen.getByRole("group", { name: "Work tools" });
+    const column = grid.parentElement as HTMLElement;
+    // The regression: at 527px of pane the grid found room for a THIRD track
+    // and spent the extra width making every card smaller (149px). Two 196px
+    // tracks need 400px of column and three need 604px — more than the column
+    // is ever allowed to be, so three is arithmetically unreachable.
+    const maxColumn = Number.parseInt(column.style.maxWidth, 10);
+    const track = /minmax\(min\(100%, (\d+)px\)/u.exec(grid.style.gridTemplateColumns);
+    expect(track).toBeTruthy();
+    const minTrack = Number(track![1]);
+    expect(minTrack).toBeGreaterThanOrEqual(196);
+    expect(minTrack * 3 + 16).toBeGreaterThan(maxColumn);
+    expect(minTrack * 2 + 8).toBeLessThanOrEqual(maxColumn);
   });
 
   it("keeps the web client's watchable tools pickable and its undrivable one dimmed", () => {

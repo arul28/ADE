@@ -115,6 +115,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppMenuCommand,
   AppZoomCommand,
   AutoUpdatePreferences,
   KeepAwakeFixResult,
@@ -4212,6 +4213,21 @@ const adeBridge = {
       windowId?: number | null,
     ): Promise<{ closed: boolean }> =>
       ipcRenderer.invoke(IPC.appCloseWindow, { windowId: windowId ?? null }),
+    /**
+     * The ordinary window close, prompt and all — what ⌘W does when no surface
+     * in the renderer claimed the menu command for itself.
+     */
+    requestWindowClose: async (): Promise<{ requested: boolean }> =>
+      ipcRenderer.invoke(IPC.appRequestWindowClose),
+    /** Native-menu commands (⌘F, ⌘W) offered to the renderer first. */
+    onMenuCommand: (cb: (command: AppMenuCommand) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AppMenuCommand,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appMenuCommand, listener);
+      return () => ipcRenderer.removeListener(IPC.appMenuCommand, listener);
+    },
     onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

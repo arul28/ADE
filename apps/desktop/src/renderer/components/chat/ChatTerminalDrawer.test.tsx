@@ -4,6 +4,27 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
+import { terminalStatusLine } from "../terminals/useWorkToolStatuses";
+import {
+  getWorkTerminalShellCount,
+  resetWorkTerminalShellCounts,
+  subscribeWorkTerminalShells,
+} from "../terminals/workTerminalShells";
+
+/**
+ * The tools pane header, reduced to the one thing this file can prove: it reads
+ * the SAME list the drawer renders, through the same subscription, and it is a
+ * sibling of the drawer rather than its parent — so anything it re-renders for
+ * cannot have remounted the drawer.
+ */
+function ShellCountProbe({ ownerSessionId }: { ownerSessionId: string }) {
+  const count = React.useSyncExternalStore(
+    subscribeWorkTerminalShells,
+    () => getWorkTerminalShellCount(ownerSessionId),
+    () => null,
+  );
+  return <div data-testid="shell-count">{terminalStatusLine(null, count).line ?? "unmeasured"}</div>;
+}
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -51,6 +72,7 @@ describe("ChatTerminalDrawer", () => {
 
   afterEach(() => {
     cleanup();
+    resetWorkTerminalShellCounts();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -208,6 +230,64 @@ describe("ChatTerminalDrawer", () => {
     // The new shell lands in the split pane; focus stays where the split was
     // requested from, so the top pane is still the shell you were using.
     expect(screen.getAllByTestId("terminal-view")[0].textContent).toBe("terminal-1:pty-1");
+  });
+
+  it("moves the pane's shell count when a split opens a shell, without remounting", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "Only terminal", status: "running" },
+    ] as any);
+
+    render(
+      <>
+        <ShellCountProbe ownerSessionId="chat-1" />
+        <ChatTerminalDrawer
+          open
+          onToggle={vi.fn()}
+          laneId="lane-1"
+          chatSessionId="chat-1"
+          variant="panel"
+          autoCreateOnOpen={false}
+        />
+      </>,
+    );
+
+    expect(await screen.findByText("Only terminal")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("shell-count").textContent).toBe("1 shell"));
+
+    // The exact regression: the header said "1 shell" over a split showing two
+    // panes, because it was counting a different list.
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId("shell-count").textContent).toBe("2 shells"));
+
+    // One `terminal.list` for the whole exercise: the count moved because the
+    // panel published it, not because anything remounted and re-read.
+    expect(window.ade.terminal.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops reporting a shell count once the panel is gone", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "Only terminal", status: "running" },
+    ] as any);
+
+    const view = render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        variant="panel"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("Only terminal")).toBeTruthy();
+    await waitFor(() => expect(getWorkTerminalShellCount("chat-1")).toBe(1));
+
+    // Switching to another tool unmounts the panel; a count left behind would
+    // describe shells nobody is showing.
+    view.unmount();
+    expect(getWorkTerminalShellCount("chat-1")).toBeNull();
   });
 
   it("does not restore terminal tabs while the drawer is closed", async () => {
@@ -374,7 +454,7 @@ describe("ChatTerminalDrawer", () => {
 
     await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
     const drawer = view.container.firstElementChild as HTMLElement;
-    const handle = view.container.querySelector(".cursor-row-resize");
+    const handle = view.container.querySelector(".ade-tool-gutter.horizontal");
     expect(handle).toBeTruthy();
     expect(drawer.style.height).toBe("300px");
 

@@ -14,15 +14,17 @@ import {
 } from "./useWorkToolStatuses";
 
 /**
- * Two columns above 340px of pane, one below.
+ * Two columns, or one. Never three.
  *
  * Expressed as a track minimum rather than a media/container query so it can
  * never disagree with the real width: with 24px of padding either side and an
- * 8px gutter, two 142px tracks need exactly 340px of pane. Below that the
- * second track cannot be placed and `auto-fit` collapses to one — which is what
- * stops the labels breaking mid-word at 300px.
+ * 8px gutter, two 196px tracks need 448px of pane and three need 652px — more
+ * than the column is ever allowed to be. That arithmetic is the cap. A wide
+ * pane used to reach three tracks and spend the extra width making every card
+ * SMALLER (149px at 527px of pane); the cards now grow with the pane instead,
+ * from 196px at the two-column threshold to 252px at the column's full width.
  */
-const CARD_MIN_TRACK_PX = 142;
+const CARD_MIN_TRACK_PX = 196;
 
 /** The column the whole page is built around — title, subline and grid alike. */
 const COLUMN_MAX_PX = 512;
@@ -36,23 +38,15 @@ const COLUMN_MAX_PX = 512;
  * replaced. Kept here rather than on the catalogue entry because it is picker
  * copy — the header, the palette and the activity dots have no use for it.
  */
-/**
- * Shorter names for the grid than the catalogue's own.
- *
- * At the two-column minimum a card gives its label 86px, and "iOS Simulator"
- * wants 90 — so the one card that has ever needed an ellipsis loses the word
- * that its own icon already says. The header, the palette and the tooltips
- * keep the full name; this is the only surface tight enough to need less.
+/*
+ * Files has no entry: the lane store always knows whether the worktree is
+ * dirty, so its card always has a real status ("Changes" / "Clean") and a
+ * blurb there would be copy that can never render.
  */
-const WORK_TOOL_SHORT_LABELS: Partial<Record<WorkSidebarTab, string>> = {
-  ios: "Simulator",
-};
-
 const WORK_TOOL_DESCRIPTIONS: Partial<Record<WorkSidebarTab, string>> = {
   terminal: "Run a shell here",
   browser: "Drive a real browser",
   git: "Commit, push, rebase",
-  files: "Browse the worktree",
   ios: "Boot a simulator",
   "app-control": "Drive a desktop app",
 };
@@ -151,7 +145,10 @@ export function WorkToolPicker({
           // card the mouse has since left is a second card that looks hovered.
           onPointerMove={() => setHighlight((current) => (current === -1 ? current : -1))}
           className="grid gap-2"
-          style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${CARD_MIN_TRACK_PX}px, 1fr))` }}
+          // `min()` rather than the bare minimum: below one card's width the
+          // track must shrink with the pane, or the grid overflows the column
+          // it is centred in and the cards clip on the right.
+          style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
         >
           {WORK_TOOL_DEFINITIONS.map((definition, index) => {
             const availability = workToolAvailability(definition.id, context);
@@ -204,7 +201,7 @@ export function WorkToolPicker({
                       className="shrink-0 text-muted-fg transition-colors duration-[120ms] ease-out group-hover:text-fg group-data-[highlighted=true]:text-fg"
                     />
                     <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
-                      {WORK_TOOL_SHORT_LABELS[definition.id] ?? definition.label}
+                      {definition.label}
                     </span>
                     {hasError ? (
                       <span

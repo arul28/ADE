@@ -1,7 +1,7 @@
 import React from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { getFileIcon } from "../filePresentation";
+import { getFileIcon, useFileIconColor } from "../filePresentation";
 import {
   WORK_TOOL_PRIMARY_BUTTON,
   WORK_TOOL_SECTION_LABEL,
@@ -27,6 +27,7 @@ export function WarmEmptyState({
   onOpen: (path: string) => void;
   onSearch: () => void;
 }) {
+  const fileIconColorFor = useFileIconColor();
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 overflow-auto p-8">
       <p className="font-sans text-[14px] font-medium" style={{ color: COLORS.textPrimary }}>
@@ -46,6 +47,7 @@ export function WarmEmptyState({
               const name = path.split("/").pop() ?? path;
               const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
               const { icon: Icon, color } = getFileIcon(name);
+              const iconColor = fileIconColorFor(color);
               return (
                 <button
                   key={path}
@@ -59,7 +61,7 @@ export function WarmEmptyState({
                   style={{ color: COLORS.textMuted }}
                   title={path}
                 >
-                  <Icon size={16} color={color} />
+                  <Icon size={16} color={iconColor} />
                   <span className="truncate" style={{ color: COLORS.textSecondary }}>{name}</span>
                   {dir ? (
                     <span className="ml-auto truncate pl-3 text-[11px]" style={{ color: COLORS.textDim }}>{dir}</span>

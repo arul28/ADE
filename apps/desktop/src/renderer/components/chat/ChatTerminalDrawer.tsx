@@ -10,6 +10,10 @@ import {
   WorkToolEmptyLine,
   WorkToolSurface,
 } from "../terminals/workToolChrome";
+import {
+  clearWorkTerminalShellCount,
+  publishWorkTerminalShellCount,
+} from "../terminals/workTerminalShells";
 
 type AppControlTabState = {
   terminalSessionId: string;
@@ -212,6 +216,21 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     setActiveTabId(null);
     if (!chatSessionId) restoringUiStateRef.current = false;
   }, [chatSessionId, uiStateKey]);
+
+  /**
+   * Tell the tools pane how many shells are on screen, including the one in a
+   * split pane.
+   *
+   * The header's status is this number, not a second `terminal.list` read that
+   * disagreed with it. Published on every tab change and retracted on unmount,
+   * so a pane showing another tool falls back to its own read rather than to a
+   * stale count from a panel that is no longer there.
+   */
+  useEffect(() => {
+    if (!chatSessionId || !open) return undefined;
+    publishWorkTerminalShellCount(chatSessionId, tabs.length);
+    return () => clearWorkTerminalShellCount(chatSessionId);
+  }, [chatSessionId, open, tabs.length]);
 
   useEffect(() => {
     if (restoringUiStateRef.current) return;
@@ -647,12 +666,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       style={isPanel ? undefined : { height: drawerHeight }}
     >
       {!isPanel ? (
+        // Same splitter as the tools pane: 8px of hit area, a hairline only
+        // while you are on it. The rounded pill was a third treatment for a
+        // gesture the app already had two of.
         <div
-          className="flex h-2 cursor-row-resize items-center justify-center transition-colors hover:bg-white/[0.04]"
+          className="ade-pane-gutter ade-tool-gutter horizontal shrink-0"
           onMouseDown={handleDragStart}
-        >
-          <div className="h-0.5 w-8 rounded-full bg-white/[0.12]" />
-        </div>
+        />
       ) : null}
 
       {showEmptyState ? null : (

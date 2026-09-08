@@ -14,7 +14,7 @@ import type { FileTreeNode } from "../../../shared/types";
 import { arePathsEqual, normalizePath } from "../../lib/pathUtils";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon } from "./filePresentation";
+import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon, useFileIconColor } from "./filePresentation";
 
 const ROW_HEIGHT = 28;
 
@@ -187,6 +187,7 @@ export function FilesExplorer({
   compact = false,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileIconColorFor = useFileIconColor();
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const renameSubmittingRef = useRef(false);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -443,6 +444,11 @@ export function FilesExplorer({
               const statusLabel = changeStatusLabel(node.changeStatus ?? null);
               const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
               const FileIcon = fileIcon?.icon;
+              // Inside the tools pane every glyph is muted: a 220px column of
+              // fourteen fully-saturated hues reads as a sticker sheet next to a
+              // monochrome pane, and the icon's SHAPE already says what kind of
+              // file it is.
+              const fileIconColor = fileIcon ? fileIconColorFor(fileIcon.color) : undefined;
               const folderColor = isActive ? COLORS.accent : COLORS.textMuted;
               const isRenaming = renamingPath != null && arePathsEqual(renamingPath, node.path, workspaceComparisonRoot);
               const rowStyle: React.CSSProperties = {
@@ -520,7 +526,7 @@ export function FilesExplorer({
                     <>
                       <span style={{ width: 12, flexShrink: 0 }} />
                       {FileIcon
-                        ? <FileIcon size={16} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
+                        ? <FileIcon size={16} weight="regular" style={{ color: fileIconColor, flexShrink: 0 }} />
                         : null}
                     </>
                   )}

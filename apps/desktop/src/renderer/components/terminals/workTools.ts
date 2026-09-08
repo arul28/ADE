@@ -69,7 +69,12 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   },
   {
     id: "ios",
-    label: "iOS Simulator",
+    // "Simulator", not "iOS Simulator". The picker already had to shorten it
+    // to fit a card, so the pane was calling one tool two names — the card said
+    // Simulator, the header and the palette said iOS Simulator. The icon is a
+    // phone and the availability rule is "macOS only"; the platform word was
+    // never carrying anything the surface did not already say.
+    label: "Simulator",
     icon: DeviceMobile,
     color: "#60a5fa",
   },

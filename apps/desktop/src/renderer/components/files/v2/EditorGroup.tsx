@@ -4,7 +4,7 @@ import type { LaneSummary } from "../../../../shared/types";
 import { modifierKeyLabel, revealLabel } from "../../../lib/platform";
 import { getLaneAccent } from "../../lanes/laneColorPalette";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { getFileIcon } from "../filePresentation";
+import { getFileIcon, useFileIconColor } from "../filePresentation";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorGroup as EditorGroupModel, EditorTab } from "./editorGroupsStore";
 import type { TabWorkspaceContext } from "./EditorGroups";
@@ -333,6 +333,7 @@ function TabButton({
   onDragEnd: () => void;
   onContextMenu: (x: number, y: number) => void;
 }) {
+  const fileIconColorFor = useFileIconColor();
   const { icon: Icon, color } = getFileIcon(tab.title);
   return (
     <div
@@ -368,7 +369,7 @@ function TabButton({
       }}
       title={tab.path}
     >
-      <Icon size={13} color={color} weight="regular" />
+      <Icon size={13} color={fileIconColorFor(color)} weight="regular" />
       <span className="truncate">{tab.title}</span>
       {dirty ? (
         <span className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: COLORS.textMuted }} />

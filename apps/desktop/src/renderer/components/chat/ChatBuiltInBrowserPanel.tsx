@@ -53,6 +53,8 @@ import {
   splitBrowserUrlForDisplay,
   urlLockKind,
 } from "../../lib/browserUrl";
+import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
@@ -313,16 +315,15 @@ export function ChatBuiltInBrowserPanel({
   const [permissionDecisions, setPermissionDecisions] = useState<BuiltInBrowserPermissionDecision[]>([]);
   const reduceMotion = useReducedMotion() ?? false;
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const urlInputRef = useRef<HTMLInputElement | null>(null);
   /*
-    The launchpad has an address field of its own.
+    ONE address field, always the chrome row's.
 
-    It is the first thing in the empty state's column, so it — not the 40px
-    chrome row above it — is where the caret belongs when a tab has nowhere to
-    be. Both write the same `urlInput`, so whichever one is on screen IS the
-    omnibox; only the focus target differs.
+    The launchpad used to draw a boxed copy of the omnibox in the middle of the
+    column, so an empty tab showed two live URL fields writing the same state —
+    two answers to "where do I type". The launchpad keeps the offers; the field
+    stays where it is on every other page, and gets the caret.
   */
-  const launchpadInputRef = useRef<HTMLInputElement | null>(null);
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const tabStripRef = useRef<HTMLDivElement | null>(null);
   /** The row whose measured width decides what the toolbar can afford. */
@@ -1014,7 +1015,6 @@ export function ChatBuiltInBrowserPanel({
         */
         setEditingUrl(false);
         urlInputRef.current?.blur();
-        launchpadInputRef.current?.blur();
         // Before the refresh: see `rememberTabTunnel`.
         if (prepared.tunnel) {
           rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
@@ -1081,6 +1081,21 @@ export function ChatBuiltInBrowserPanel({
       await refreshStatus();
     });
   }, [refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
+
+  /**
+   * ⌘W and the ⋯ menu's "Close tab": close whichever tab is in front.
+   *
+   * The strip hides itself at one tab, which took its × with it — so the last
+   * tab could not be closed at all, and a page you were done with had to be
+   * navigated away from instead. Closing the last one leaves the pane on the
+   * launchpad, which is what a browser with no page is.
+   */
+  const handleCloseActiveTab = useCallback(() => {
+    const tabId = statusRef.current?.activeTabId ?? null;
+    if (!tabId) return false;
+    handleCloseTab(tabId);
+    return true;
+  }, [handleCloseTab]);
 
   const handleHandBack = useCallback((endedBy: "human" | "auto-offer") => {
     void runBusy("hand-back", async () => {
@@ -1430,6 +1445,15 @@ export function ChatBuiltInBrowserPanel({
 
   /* ── Device emulation ───────────────────────────────────────────────────── */
 
+  /**
+   * Picking a device does not deserve a banner.
+   *
+   * It used to push "Browser is emulating iPhone 17 Pro." into the message row,
+   * which cost 34px above the page for a fact the page itself is already
+   * showing — and stayed up until it was dismissed. The letterbox caption
+   * ("402 × 874 · fit 66%") and the device button's dot say the same thing,
+   * quietly and for exactly as long as it is true.
+   */
   const applyEmulation = useCallback((
     request: {
       preset?: string | null;
@@ -1438,19 +1462,17 @@ export function ChatBuiltInBrowserPanel({
       mobile?: boolean | null;
       deviceScaleFactor?: number | null;
     },
-    label: string,
   ) => {
     void runBusy("emulation", async () => {
       const api = requireBrowserApi();
       if (!api.setEmulation) throw new Error("This ADE build does not support browser device emulation.");
       const result = await api.setEmulation(withBrowserScope(request), runtimePinRef.current);
       applyStatus(result.status);
-      setMessage({ tone: "info", text: `Browser is emulating ${label}.` });
     });
   }, [applyStatus, runBusy, withBrowserScope]);
 
   const handlePickPreset = useCallback((preset: BuiltInBrowserEmulationPreset) => {
-    applyEmulation({ preset: preset.id }, preset.label);
+    applyEmulation({ preset: preset.id });
   }, [applyEmulation]);
 
   const handleEmulationOff = useCallback(() => {
@@ -1475,15 +1497,12 @@ export function ChatBuiltInBrowserPanel({
     if (!current?.width || !current.height) return;
     const rotated = { width: current.height, height: current.width };
     const presetId = activeEmulationPresetId(current);
-    applyEmulation(
-      {
-        ...rotated,
-        preset: presetId === "responsive" || presetId === "desktop" ? null : presetId,
-        mobile: current.mobile,
-        deviceScaleFactor: current.deviceScaleFactor || null,
-      },
-      emulationDisplayLabel({ ...current, ...rotated, presetId: "responsive" }),
-    );
+    applyEmulation({
+      ...rotated,
+      preset: presetId === "responsive" || presetId === "desktop" ? null : presetId,
+      mobile: current.mobile,
+      deviceScaleFactor: current.deviceScaleFactor || null,
+    });
   }, [applyEmulation]);
 
   /** One value for the whole device menu, so exactly one row is ever checked. */
@@ -1508,7 +1527,7 @@ export function ChatBuiltInBrowserPanel({
       return;
     }
     setDeviceMenuOpen(false);
-    applyEmulation({ width, height }, `${width}×${height}`);
+    applyEmulation({ width, height });
   }, [applyEmulation, responsiveHeight, responsiveWidth]);
 
   /* ── Zoom ───────────────────────────────────────────────────────────────── */
@@ -1837,17 +1856,35 @@ export function ChatBuiltInBrowserPanel({
   /* ── Keyboard ───────────────────────────────────────────────────────────── */
 
   const handlePanelKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape" && findOpen) {
+    /*
+      Capture, so ⌘F works wherever focus is inside the pane — including the
+      omnibox, which stops its own keydowns. That puts this handler AHEAD of
+      the find bar and the URL field on Escape too, so it stands down for
+      anything that is being typed into: those two own their own Escape (one
+      closes the bar, the other reverts the address), and this is only the
+      fallback for an Escape pressed at the page.
+    */
+    if (event.key === "Escape") {
+      if (!findOpen || isTypingTarget(event.target)) return;
       event.preventDefault();
       closeFind();
       return;
     }
     const mod = event.metaKey || event.ctrlKey;
-    if (!mod) return;
+    if (!mod || event.altKey) return;
     const key = event.key.toLowerCase();
     if (key === "f") {
       event.preventDefault();
+      event.stopPropagation();
       openFind();
+      return;
+    }
+    if (key === "w") {
+      // Only when this pane actually owns a tab: with none, ⌘W still means
+      // "close the window", and swallowing it here would make the chord dead.
+      if (!handleCloseActiveTab()) return;
+      event.preventDefault();
+      event.stopPropagation();
     }
     /*
       Page zoom is deliberately NOT bound here. CmdOrCtrl +=/−/0 are registered
@@ -1855,8 +1892,41 @@ export function ChatBuiltInBrowserPanel({
       the browser process before this keydown ever fires — so a binding here
       would pass every jsdom test and do nothing in the packaged app. The menu's
       zoom command is claimed below instead.
+
+      ⌘F and ⌘W are menu accelerators too, and the claim below is what makes
+      them work on the packaged app. They stay bound here as well because that
+      is the path a test can drive and the path that still works if the menu
+      route is ever unavailable — both ends call the same two functions, so
+      they cannot disagree.
     */
-  }, [closeFind, findOpen, openFind]);
+  }, [closeFind, findOpen, handleCloseActiveTab, openFind]);
+
+  /**
+   * The same two chords, arriving from the native menu instead.
+   *
+   * ⌘F and ⌘W are registered as menu accelerators, so Electron consumes them in
+   * the browser process before any keydown reaches this pane — and once you
+   * click into the page, focus is in the page's own WebContents, so this
+   * renderer sees no keystroke at all. That is the reported bug: ⋯ advertised
+   * ⌘F and the chord did nothing. The ownership test is the zoom claim's, for
+   * the same reasons spelled out there.
+   */
+  useEffect(() => {
+    if (!apiAvailable) return undefined;
+    return claimAppMenuCommands((command) => {
+      const panel = panelRef.current;
+      if (!panel || !panel.isConnected || !hasTabRef.current) return false;
+      if (panel.closest("[inert]")) return false;
+      const active = document.activeElement;
+      const ownsKeyboard = active == null || active === document.body || panel.contains(active);
+      if (!ownsKeyboard) return false;
+      if (command === "find") {
+        openFind();
+        return true;
+      }
+      return handleCloseActiveTab();
+    });
+  }, [apiAvailable, handleCloseActiveTab, openFind]);
 
   /**
    * Take the app's zoom chords while this pane owns the keyboard.
@@ -2184,9 +2254,7 @@ export function ChatBuiltInBrowserPanel({
     tunnel: activeTabTunnel,
     display: urlDisplay,
     showOverlay: showUrlOverlay,
-    // The launchpad has the field you are actually typing into while it is up,
-    // so the chrome row must not sprout a second submit arrow beside it.
-    editing: editingUrl && !showLaunchpad,
+    editing: editingUrl,
     onChange: setUrlInput,
     onFocus: handleUrlFocus,
     onKeyDown: handleUrlKeyDown,
@@ -2197,7 +2265,6 @@ export function ChatBuiltInBrowserPanel({
     currentUrl,
     editingUrl,
     handleNavigate,
-    showLaunchpad,
     handleUrlEndEdit,
     handleUrlFocus,
     handleUrlKeyDown,
@@ -2206,15 +2273,6 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
-  const launchpadField = useMemo(() => ({
-    inputRef: launchpadInputRef,
-    value: urlInput,
-    onChange: setUrlInput,
-    onFocus: handleUrlFocus,
-    onKeyDown: handleUrlKeyDown,
-    onSubmit: handleNavigate,
-    onEndEdit: handleUrlEndEdit,
-  }), [handleNavigate, handleUrlEndEdit, handleUrlFocus, handleUrlKeyDown, urlInput]);
   const emulationWidth = emulation?.width && emulation.width > 0 ? emulation.width : null;
   const emulationHeight = emulation?.height && emulation.height > 0 ? emulation.height : null;
   const emulationSize = useMemo(
@@ -2281,12 +2339,12 @@ export function ChatBuiltInBrowserPanel({
     };
   }, [showLaunchpad]);
 
-  // A new tab is a question, so the caret starts where the answer goes — which
-  // is the launchpad's own field when the launchpad is what you are looking at.
+  // A new tab is a question, so the caret starts where the answer goes — the
+  // one address field this pane has.
   useEffect(() => {
     if (!showLaunchpad) return undefined;
     const frame = window.requestAnimationFrame(() => {
-      (launchpadInputRef.current ?? urlInputRef.current)?.focus();
+      urlInputRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
   }, [showLaunchpad, activeTabId]);
@@ -2454,7 +2512,7 @@ export function ChatBuiltInBrowserPanel({
     <div
       ref={panelRef}
       data-testid="browser-panel"
-      onKeyDown={handlePanelKeyDown}
+      onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
@@ -2540,6 +2598,7 @@ export function ChatBuiltInBrowserPanel({
               onAttachScreenshot={handleAttachScreenshot}
               onOpenFind={openFind}
               onNewTab={handleNewTab}
+              onCloseTab={hasTab ? handleCloseActiveTab : null}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
               networkLogging={networkLogging}
@@ -2635,7 +2694,6 @@ export function ChatBuiltInBrowserPanel({
           onCapturePointerCancel={cancelBrowserCapture}
           showLaunchpad={showLaunchpad}
           apiAvailable={apiAvailable}
-          launchpadField={launchpadField}
           launchpadGroups={launchpadGroups}
           letterboxed={letterboxed}
           emulation={emulation}

@@ -820,7 +820,10 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
-import { isBuiltInBrowserNoTabError } from "../builtInBrowser/builtInBrowserService";
+import {
+  isBuiltInBrowserCaptureUnavailableError,
+  isBuiltInBrowserNoTabError,
+} from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 import {
   createBrowserLoginImportService,
@@ -3528,6 +3531,24 @@ export function registerIpc({
       : BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (!closeWindow) return { closed: false };
     return closeWindow(requestedWindowId);
+  });
+
+  /**
+   * The ordinary window close, asked for by the renderer.
+   *
+   * `appCloseWindow` deliberately skips the "you have work running" prompt —
+   * it is the programmatic close a project tab uses. ⌘W must NOT skip it, so
+   * this one calls `win.close()` and lets `handleMainWindowCloseRequested` ask
+   * the question exactly as the title-bar button and the old `role: "close"`
+   * menu item did. It exists because ⌘W is now a menu *command* the renderer
+   * may claim for the built-in browser's tab; when nothing claims it, the
+   * renderer asks for this instead.
+   */
+  ipcMain.handle(IPC.appRequestWindowClose, async (event): Promise<{ requested: boolean }> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { requested: false };
+    win.close();
+    return { requested: true };
   });
 
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
@@ -9252,6 +9273,14 @@ export function registerIpc({
         // thing left worth recording.
         getCtx().logger.debug("built_in_browser.screenshot_no_tab", { tabId: error.tabId });
         return { ok: false, reason: "no_tab" } satisfies BuiltInBrowserScreenshotResult;
+      }
+      if (isBuiltInBrowserCaptureUnavailableError(error)) {
+        // The panel's underlay capture racing its own hide. It happened three
+        // times per Browser -> Terminal switch and each one printed
+        // `Error occurred in handler ... Page.enable timed out after 3000ms`
+        // into the log of a session where nothing was actually wrong.
+        getCtx().logger.debug("built_in_browser.screenshot_unavailable", { err: error.message });
+        return { ok: false, reason: "unavailable" } satisfies BuiltInBrowserScreenshotResult;
       }
       throw error;
     }

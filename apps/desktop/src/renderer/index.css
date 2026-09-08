@@ -437,6 +437,29 @@ samp {
   overscroll-behavior: contain;
 }
 
+/*
+  The terminal's scrollbar is furniture, not content: a permanent track down the
+  right edge of every shell is a second vertical rule beside the pane's own. It
+  paints when the pointer is over the terminal and is invisible otherwise.
+
+  Colour only, never `scrollbar-width` or `display` — the gutter stays reserved
+  at every state, so a hover cannot reflow the terminal by a column. That
+  matters most on Windows and Linux, where the scrollbar has real width.
+*/
+.ade-terminal-host .xterm-viewport::-webkit-scrollbar-track,
+.ade-terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.ade-terminal-host:hover .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.28);
+}
+
+.ade-terminal-host:hover .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.45);
+}
+
 h1,
 h2,
 h3,
@@ -1391,6 +1414,47 @@ h6 {
 
 .ade-pane-gutter .ade-gutter-pill {
   display: none;
+}
+
+/*
+  The Work tools pane and the chat terminal drawer share ONE splitter.
+
+  Before this the tools pane drew a permanent 5px grey bar that turned accent
+  blue on hover, the drawer drew a rounded pill, and the browser/Work panes
+  drew the gutter above — three treatments for the same gesture. This is the
+  gutter's 8px invisible hit area with a 1px hairline that only appears while
+  you are on it or dragging it, so the divider is a line you find rather than a
+  band you look at.
+*/
+.ade-tool-gutter::before {
+  opacity: 0;
+  border-radius: 0;
+  background: var(--color-separator-active);
+  box-shadow: none;
+}
+
+.ade-tool-gutter.vertical::before {
+  width: 1px;
+  height: 100%;
+}
+
+.ade-tool-gutter.horizontal::before {
+  width: 100%;
+  height: 1px;
+}
+
+.ade-tool-gutter:hover,
+.ade-tool-gutter:focus-visible,
+.ade-tool-gutter[data-resize-handle-active] {
+  background: transparent;
+  outline: none;
+}
+
+.ade-tool-gutter:hover::before,
+.ade-tool-gutter:focus-visible::before,
+.ade-tool-gutter[data-resize-handle-active]::before {
+  opacity: 1;
+  box-shadow: none;
 }
 
 /* ═══════════════════════════════════════════════════════════

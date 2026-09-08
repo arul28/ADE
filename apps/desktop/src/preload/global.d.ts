@@ -37,6 +37,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppMenuCommand,
   AppZoomCommand,
   AutoUpdatePreferences,
   KeepAwakeFixResult,
@@ -892,6 +893,8 @@ declare global {
           rootPath: string,
         ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
+        requestWindowClose: () => Promise<{ requested: boolean }>;
+        onMenuCommand: (cb: (command: AppMenuCommand) => void) => () => void;
         onProjectChanged: (
           cb: (project: ProjectInfo | null) => void,
         ) => () => void;

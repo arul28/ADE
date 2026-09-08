@@ -12,6 +12,7 @@ import {
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
+import { isTypingTarget } from "../../lib/typingTarget";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
@@ -1431,10 +1432,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [selectedLaneId, deletingLaneIds, selectableFilteredLaneIds, sortedSelectableLaneIds, selectLane]);
 
   useEffect(() => {
-    const isTypingTarget = (target: EventTarget | null): boolean => {
-      if (!(target instanceof HTMLElement)) return false;
-      return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
-    };
     const onKeyDown = (event: KeyboardEvent) => {
       const targetIsTyping = isTypingTarget(event.target);
       if (!targetIsTyping && eventMatchesBinding(event, kbFilterFocus)) {

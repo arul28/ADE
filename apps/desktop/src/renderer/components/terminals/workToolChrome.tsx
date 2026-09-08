@@ -76,8 +76,18 @@ export const WORK_TOOL_CHROME_CHIP_WRAP = "min-w-0 shrink";
 /** The muted half of the row: counts, states, whatever is read and not clicked. */
 export const WORK_TOOL_CHROME_META = "shrink-0 text-[12px] tabular-nums text-muted-fg";
 
-/** 12px muted section label. Sentence case — the pane is not shouting. */
-export const WORK_TOOL_SECTION_LABEL = "px-1 text-[12px] font-medium text-muted-fg";
+/**
+ * The pane's one section header: 12px, medium, muted, sentence case, no icon.
+ *
+ * Every tool had its own: uppercase 10px mono with letter-spacing in Git, a
+ * 13px semibold line in the simulator, a bare 11px muted row in Files. Same
+ * weight as the browser launchpad's group labels, so a person moving between
+ * tools reads one typographic rank rather than four.
+ */
+export const WORK_TOOL_SECTION_LABEL_TEXT = "text-[12px] font-medium text-muted-fg";
+
+/** The label plus the row padding every panel spends around it. */
+export const WORK_TOOL_SECTION_LABEL = cn("px-1", WORK_TOOL_SECTION_LABEL_TEXT);
 
 /**
  * A 28px ghost icon button with the pane's own tooltip.

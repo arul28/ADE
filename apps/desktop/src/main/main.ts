@@ -207,6 +207,7 @@ import type {
   AttentionNotchAcknowledgeRequest,
   AttentionNotchSettings,
   AttentionSnapshot,
+  AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
   CreateProjectInput,
@@ -7598,6 +7599,36 @@ app.whenReady().then(async () => {
       if (!target || target.isDestroyed()) return;
       target.webContents.send(IPC.appZoomCommand, command);
     };
+    /**
+     * ⌘F and ⌘W, offered to the renderer before the app answers them.
+     *
+     * Same shape as the zoom route above and for the same reason: an
+     * accelerator is consumed in the browser process, and the built-in
+     * browser's page lives in a different WebContents, so a renderer keydown
+     * binding is shadowed on the packaged app while passing every jsdom test.
+     * The renderer decides (`lib/appMenuCommands`) and falls back to the
+     * app-wide default — nothing for Find, `appRequestWindowClose` for ⌘W —
+     * when no surface claims the command.
+     *
+     * A window we did not open (a DevTools window, a native panel) has no such
+     * renderer, so ⌘W there closes it directly rather than into the void.
+     */
+    const sendMenuCommand = (
+      command: AppMenuCommand,
+      browserWindow: Electron.BaseWindow | undefined,
+      fallback?: (win: BrowserWindow) => void,
+    ): void => {
+      const target =
+        browserWindow instanceof BrowserWindow
+          ? browserWindow
+          : BrowserWindow.getFocusedWindow();
+      if (!target || target.isDestroyed()) return;
+      if (!windowProjectRoots.has(target.id)) {
+        fallback?.(target);
+        return;
+      }
+      target.webContents.send(IPC.appMenuCommand, command);
+    };
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [{
@@ -7624,7 +7655,15 @@ app.whenReady().then(async () => {
             },
           },
           { type: "separator" },
-          { role: "close" },
+          {
+            // Not `role: "close"`: inside the built-in browser ⌘W has to close
+            // the browser TAB, and the last tab was previously unclosable
+            // because this accelerator always beat the pane to the keystroke.
+            label: "Close",
+            accelerator: "CmdOrCtrl+W",
+            click: (_item, browserWindow) =>
+              sendMenuCommand("close-tab", browserWindow, (win) => win.close()),
+          },
         ],
       },
       {
@@ -7637,6 +7676,12 @@ app.whenReady().then(async () => {
           { role: "copy" },
           { role: "paste" },
           { role: "selectAll" },
+          { type: "separator" },
+          {
+            label: "Find…",
+            accelerator: "CmdOrCtrl+F",
+            click: (_item, browserWindow) => sendMenuCommand("find", browserWindow),
+          },
         ],
       },
       {

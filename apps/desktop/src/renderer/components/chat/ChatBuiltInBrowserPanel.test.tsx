@@ -8,6 +8,11 @@ import {
   resetAppZoomCommandsForTests,
 } from "../../lib/appZoomCommands";
 import {
+  consumeAppMenuCommand,
+  resetAppMenuCommandsForTests,
+} from "../../lib/appMenuCommands";
+import { isTypingTarget } from "../../lib/typingTarget";
+import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -380,6 +385,17 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // Claim registries are module state: a panel that unmounted without its
+  // effect cleanup running would answer the next case's command.
+  resetAppMenuCommandsForTests();
+  /*
+    Radix marks `document.body` inert while a modal menu is up and does not
+    always take it off again once the tree the menu belonged to is unmounted.
+    `<body inert>` never happens in the app, but left standing here it makes
+    every later case look like a hidden pane to the two claims that (rightly)
+    refuse to answer inside one.
+  */
+  document.body.removeAttribute("inert");
   // The toast store is module state, so a toast raised by one case is visible
   // to the next one's assertions unless it is cleared here.
   for (const toast of getToasts()) dismissToast(toast.id);
@@ -1526,9 +1542,19 @@ describe("ChatBuiltInBrowserPanel", () => {
       const recent = await screen.findByRole("region", { name: "Recently used" });
       expect(within(recent).getByText("https://example.test/")).toBeTruthy();
 
-      // The launchpad's own field is where the caret goes, not the 40px row.
-      expect(document.activeElement)
-        .toBe(screen.getByLabelText("Open a page in the ADE browser"));
+      /*
+        ONE address field, and it is the chrome row's.
+
+        The launchpad used to open with a boxed copy of the omnibox, so an
+        empty tab put two live URL fields on screen writing the same state.
+        The row's field is the omnibox everywhere else, so it is the omnibox
+        here too — and it is the one that gets the caret.
+      */
+      const urlFields = screen.getAllByPlaceholderText("Search or enter URL");
+      expect(urlFields).toHaveLength(1);
+      expect(screen.queryByLabelText("Open a page in the ADE browser")).toBeNull();
+      await waitFor(() => expect(document.activeElement)
+        .toBe(screen.getByLabelText("ADE browser URL")));
     });
 
     it("hides the local-servers group when this machine is serving nothing", async () => {
@@ -1672,6 +1698,85 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       expect(await screen.findByText("Find is not available on this page.")).toBeTruthy();
       expect(screen.queryByText(/invoking remote method/)).toBeNull();
+    });
+
+    /*
+      ⌘F is a native menu accelerator, so on the packaged app Electron consumes
+      it in the browser process and this renderer never sees a keydown — and
+      once you click the page, focus is in the page's own WebContents, so there
+      is nothing to see anyway. The menu sends the command down instead, and
+      these are the two ends of the fix: the claim, and the focus handoff.
+    */
+    it("takes ⌘F from the native menu when focus is nowhere in the DOM", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
+
+      // Clicked into the page: focus fell to <body>, which is what a native
+      // view having the keyboard looks like from here.
+      (document.activeElement as HTMLElement | null)?.blur();
+      let claimed = false;
+      act(() => {
+        claimed = consumeAppMenuCommand("find");
+      });
+      expect(claimed).toBe(true);
+
+      const input = await screen.findByLabelText("Find on page");
+      await waitFor(() => expect(document.activeElement).toBe(input));
+    });
+
+    it("declines the menu's ⌘F when the keyboard belongs to something else", async () => {
+      installBrowserApi();
+      render(
+        <div>
+          <input aria-label="somewhere else" />
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </div>,
+      );
+      await screen.findByTestId("browser-toolbar-row");
+      screen.getByLabelText("somewhere else").focus();
+
+      expect(consumeAppMenuCommand("find")).toBe(false);
+      expect(screen.queryByTestId("browser-find-bar")).toBeNull();
+    });
+
+    it("leaves the caret in the field when Find is opened from the ⋯ menu", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      const trigger = await screen.findByLabelText("More browser options");
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("Find on page"));
+
+      const input = await screen.findByLabelText("Find on page");
+      /*
+        The reported bug: Radix hands focus back to the trigger when the menu
+        closes, which landed the caret on a BUTTON after the bar had focused
+        its input — so the bar looked ready and every letter you typed went to
+        a global shortcut instead.
+      */
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      expect(document.activeElement).not.toBe(trigger);
+    });
+
+    it("keeps the find field out of reach of single-key shortcuts", async () => {
+      installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
+      act(() => {
+        consumeAppMenuCommand("find");
+      });
+      const input = await screen.findByLabelText("Find on page");
+
+      // The one test every single-key binding in the app has to apply: the
+      // letters of "domain" are a query here, not six commands.
+      expect(isTypingTarget(input)).toBe(true);
+      expect(isTypingTarget(screen.getByLabelText("More browser options"))).toBe(false);
     });
 
     it("keeps Escape to itself instead of closing the whole tool", async () => {
@@ -1928,6 +2033,45 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(checked[0].textContent).toContain("iPhone 17");
     });
 
+    it("says nothing above the page when a device is applied", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      const emulated = {
+        ...browserStatus,
+        tabs: [{
+          ...browserStatus.tabs[0],
+          emulation: {
+            presetId: "iphone-17",
+            label: "iPhone 17",
+            width: 402,
+            height: 874,
+            deviceScaleFactor: 3,
+            mobile: true,
+            hasTouch: true,
+            userAgent: "iphone",
+          },
+        }],
+      };
+      api.setEmulation.mockResolvedValue({ status: emulated });
+
+      await openMenu("Browser device preset — Desktop");
+      fireEvent.click(await screen.findByText("iPhone 17"));
+      await waitFor(() => expect(api.setEmulation).toHaveBeenCalled());
+      emit({ type: "status", status: emulated });
+
+      /*
+        The 34px "Browser is emulating iPhone 17 Pro." row is gone. It spent a
+        line above the page on a fact the page is already showing, and stayed
+        up until it was dismissed. The caption under the letterbox and the
+        device button's dot are the indicator.
+      */
+      expect(screen.queryByText(/Browser is emulating/)).toBeNull();
+      expect((await screen.findByTestId("browser-emulation-caption")).textContent)
+        .toContain("402 × 874");
+    });
+
     it("rotates with the preset attached so the device keeps its own metrics", async () => {
       const { api, emit } = installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
@@ -2008,6 +2152,68 @@ describe("ChatBuiltInBrowserPanel", () => {
         "textContent",
         expect.stringContaining("fit "),
       );
+    });
+  });
+
+  describe("closing the active tab", () => {
+    /*
+      The tab strip hides itself at one tab and took its × with it, so the last
+      tab could not be closed from anywhere — a page you were done with had to
+      be navigated away from instead.
+    */
+    it("closes the last tab from the ⋯ menu and lands on the launchpad", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      await openMenu("More browser options");
+      fireEvent.click(await screen.findByText("Close tab"));
+
+      await waitFor(() => expect(api.closeTab).toHaveBeenCalledWith(
+        expect.objectContaining({ tabId: browserStatus.activeTabId }),
+        null,
+      ));
+
+      const empty = statusWith({ tabs: [], activeTabId: null });
+      api.getStatus.mockResolvedValue(empty);
+      emit({ type: "status", status: empty });
+      expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
+    });
+
+    it("takes ⌘W on the panel, and hands it back when there is no tab", async () => {
+      const { api, emit } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      const panel = await screen.findByTestId("browser-panel");
+
+      fireEvent.keyDown(panel, { key: "w", metaKey: true });
+      await waitFor(() => expect(api.closeTab).toHaveBeenCalledTimes(1));
+
+      // With no tab, ⌘W still means "close the window" — swallowing it here
+      // would make the chord dead rather than scoped.
+      const empty = statusWith({ tabs: [], activeTabId: null });
+      api.getStatus.mockResolvedValue(empty);
+      emit({ type: "status", status: empty });
+      await screen.findByTestId("browser-launchpad");
+
+      fireEvent.keyDown(panel, { key: "w", metaKey: true });
+      expect(api.closeTab).toHaveBeenCalledTimes(1);
+      expect(consumeAppMenuCommand("close-tab")).toBe(false);
+    });
+
+    it("takes the menu's ⌘W while the pane owns the keyboard", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      await waitFor(() => expect(
+        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+      ).toBe("https://example.test/"));
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      expect(consumeAppMenuCommand("close-tab")).toBe(true);
+      await waitFor(() => expect(api.closeTab).toHaveBeenCalledWith(
+        expect.objectContaining({ tabId: browserStatus.activeTabId }),
+        null,
+      ));
     });
   });
 

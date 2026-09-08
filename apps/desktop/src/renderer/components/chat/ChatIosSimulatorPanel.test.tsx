@@ -564,6 +564,24 @@ describe("ChatIosSimulatorPanel", () => {
     await waitFor(() => expect(api.stopStream).toHaveBeenCalled());
   });
 
+  it("hides the type-into-simulator composer until something is booted", async () => {
+    // Nothing is running, so the empty state's Launch is the one button on the
+    // page. The composer used to sit under it with its own Send, which read as
+    // a second primary next to the one action that page exists for.
+    installIosSimulatorApi({ status: { ...activeStatus, activeSession: null } });
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("ios-empty-launch")).toBeTruthy();
+    expect(screen.queryByTestId("ios-type-composer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
   it("keeps the tool chips out of the way until something is actually missing", async () => {
     const { api } = installIosSimulatorApi();
 

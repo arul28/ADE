@@ -38,6 +38,7 @@ import {
   getStoredZoomLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
+import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
@@ -1166,6 +1167,26 @@ export function TopBar({
       else applyZoom(DEFAULT_ZOOM);
     });
   }, [applyZoom]);
+
+  /**
+   * ⌘F and ⌘W, offered to the pane that has the keyboard before the app
+   * answers them.
+   *
+   * Both are native menu accelerators, so a renderer keydown binding never sees
+   * them on the packaged app — and the built-in browser's page is a different
+   * WebContents, so when you are clicked into a page this renderer gets no key
+   * event at all. Whatever claims the command handles it; ⌘W otherwise means
+   * what it always meant, which is the ordinary window close WITH its prompt.
+   */
+  useEffect(() => {
+    const onMenuCommand = window.ade?.app?.onMenuCommand;
+    if (typeof onMenuCommand !== "function") return;
+    return onMenuCommand((command) => {
+      if (consumeAppMenuCommand(command)) return;
+      if (command !== "close-tab") return;
+      void window.ade?.app?.requestWindowClose?.().catch(() => {});
+    });
+  }, []);
 
   const fetchRecent = useCallback((options?: { force?: boolean }) => {
     listRecentProjectsCached(options)

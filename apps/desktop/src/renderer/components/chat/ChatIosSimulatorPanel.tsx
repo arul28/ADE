@@ -3765,8 +3765,12 @@ export function ChatIosSimulatorPanel({
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-1">
-        {mode === "interact" && controlAvailable && !simulatorMutationBlocked && !setupBlocked ? (
-          <div className="flex items-center gap-1">
+        {/* Nothing to type into until something is booted. The composer used to
+            sit under the "Boot a simulator" empty state with its own Send
+            button, which read as a second, competing primary next to the one
+            button that page exists for. */}
+        {hasActiveSession && mode === "interact" && controlAvailable && !simulatorMutationBlocked && !setupBlocked ? (
+          <div className="flex items-center gap-1" data-testid="ios-type-composer">
             <input
               className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
               value={typedText}

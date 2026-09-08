@@ -143,6 +143,10 @@ export function beginWorkSidebarSplitterDrag(handle: HTMLElement | null): () => 
   // The handle is the one element still under the pointer conceptually; a
   // double-click on it must not select the pane's chrome either.
   if (handle) handle.style.userSelect = "none";
+  // The gutter's own drag state. `:active` is not it — the pointer leaves the
+  // 8px handle on the first frame of any real drag, and the hairline would
+  // vanish exactly while you are using it.
+  handle?.setAttribute("data-resize-handle-active", "");
   let done = false;
   return () => {
     if (done) return;
@@ -152,5 +156,6 @@ export function beginWorkSidebarSplitterDrag(handle: HTMLElement | null): () => 
     body.style.userSelect = previous.bodyUserSelect;
     body.style.pointerEvents = previous.bodyPointerEvents;
     if (handle) handle.style.userSelect = previous.handleUserSelect;
+    handle?.removeAttribute("data-resize-handle-active");
   };
 }

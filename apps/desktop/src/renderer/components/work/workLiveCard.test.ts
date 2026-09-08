@@ -27,6 +27,8 @@ import {
   workLiveCardPositionFromRect,
   workLiveCardRect,
   workLiveCardTravel,
+  workLiveBottomReserve,
+  workLiveHostLabel,
   workLivePreviewMaxWidth,
   workLiveScrubIndex,
   type WorkLiveActivity,
@@ -479,6 +481,77 @@ describe("workLiveScrubFrameKey", () => {
 
   it("falls back to the timestamp for a frame committed without an id", () => {
     expect(workLiveScrubFrameKey({ id: null, dataUrl: null, caption: null, at: 7 })).toBe(":7");
+  });
+});
+
+describe("workLiveHostLabel", () => {
+  it("reduces a URL to the host a person recognises", () => {
+    expect(workLiveHostLabel("https://example.com/a/b?c=1#d")).toBe("example.com");
+    expect(workLiveHostLabel("http://localhost:5173/work")).toBe("localhost:5173");
+    // `www.` is noise on a 320px pill.
+    expect(workLiveHostLabel("https://www.example.com/")).toBe("example.com");
+  });
+
+  it("hands back anything it cannot parse rather than losing the only label", () => {
+    // Parses, but has no host — the scheme-only forms come back whole rather
+    // than as the empty string the `.host` read would have given.
+    expect(workLiveHostLabel("about:blank")).toBe("about:blank");
+    expect(workLiveHostLabel("localhost:5173")).toBe("localhost:5173");
+    expect(workLiveHostLabel("not a url")).toBe("not a url");
+    expect(workLiveHostLabel("   ")).toBeNull();
+    expect(workLiveHostLabel(null)).toBeNull();
+    expect(workLiveHostLabel(undefined)).toBeNull();
+  });
+});
+
+describe("workLiveBottomReserve", () => {
+  const host = { top: 0, bottom: 600, height: 600 };
+
+  it("reserves from the host's bottom edge up to the obstruction's top", () => {
+    expect(workLiveBottomReserve({
+      host,
+      obstructions: [{ top: 480, bottom: 600, height: 120 }],
+    })).toBe(120);
+  });
+
+  it("covers everything below a card floating above the composer, in one number", () => {
+    // The anchored card is what the reserve is measured to; the composer under
+    // it is included by construction rather than added to it.
+    expect(workLiveBottomReserve({
+      host,
+      obstructions: [
+        { top: 480, bottom: 600, height: 120 },
+        { top: 400, bottom: 470, height: 70 },
+      ],
+    })).toBe(200);
+  });
+
+  it("ignores boxes that are hidden, at the top, or outside the host", () => {
+    expect(workLiveBottomReserve({
+      host,
+      obstructions: [
+        // A hidden empty-state composer belonging to another chat pane.
+        { top: 0, bottom: 0, height: 0 },
+        // Chrome at the top of the column.
+        { top: 0, bottom: 40, height: 40 },
+        // Below the host entirely.
+        { top: 640, bottom: 700, height: 60 },
+      ],
+    })).toBe(0);
+  });
+
+  it("never gives up more than half the column", () => {
+    expect(workLiveBottomReserve({
+      host,
+      obstructions: [{ top: 40, bottom: 600, height: 560 }],
+    })).toBe(300);
+  });
+
+  it("answers zero for a host that has not been laid out", () => {
+    expect(workLiveBottomReserve({
+      host: { top: 0, bottom: 0, height: 0 },
+      obstructions: [{ top: 0, bottom: 100, height: 100 }],
+    })).toBe(0);
   });
 });
 

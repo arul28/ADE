@@ -36,6 +36,31 @@ const FILE_ICON_COLORS = {
   default: COLORS.textMuted,
 } as const;
 
+/**
+ * Inside the Work tools pane, file glyphs are monochrome.
+ *
+ * The hues below are useful in a full-width Files tab where a colour is a
+ * second axis you can scan. In a 220px pane beside a monochrome chat they are
+ * fourteen saturated dots doing the job the icon's SHAPE already does. A
+ * context rather than a prop because the same `getFileIcon` colour is spent by
+ * the tree, the tab strip, the search panel and the empty state, and threading
+ * a flag through four of them would be four chances to disagree.
+ */
+export const MonochromeFileIconsContext = React.createContext(false);
+
+/**
+ * A mapper from a glyph's catalogue colour to the colour it should paint with
+ * here. Returned once per component rather than called per row, because most
+ * callers spend it inside a `.map()` where a hook cannot go.
+ */
+export function useFileIconColor(): (color: string) => string {
+  const monochrome = React.useContext(MonochromeFileIconsContext);
+  return React.useMemo(
+    () => (color: string) => (monochrome ? COLORS.textMuted : color),
+    [monochrome],
+  );
+}
+
 export function getFileIcon(fileName: string): { icon: React.ComponentType<any>; color: string } {
   const lower = fileName.toLowerCase();
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";

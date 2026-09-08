@@ -9,6 +9,7 @@ import type { BuiltInBrowserStatus, LaneSummary } from "../../../shared/types";
 import {
   appControlStatusLine,
   browserStatusLine,
+  filesStatusLine,
   gitStatusLine,
   iosStatusLine,
   terminalStatusLine,
@@ -44,6 +45,30 @@ describe("work tool status lines", () => {
     expect(terminalStatusLine(["zsh"]).line).toBe("1 shell");
     expect(terminalStatusLine(["zsh", "npm run dev -w apps/desktop"]).line).toBe("2 shells");
     expect(terminalStatusLine(null).line).toBeNull();
+  });
+
+  it("prefers the panel's own shell count over the pane's list read", () => {
+    // The regression: a split opens a second shell that the daemon's list can
+    // report as finished, so the pane said "1 shell" over two live panes. What
+    // the panel RENDERS is the count, whenever a panel is mounted.
+    expect(terminalStatusLine(["zsh"], 2).line).toBe("2 shells");
+    // And a shell the list has not caught up with yet is still a shell.
+    expect(terminalStatusLine([], 1).line).toBe("1 shell");
+    expect(terminalStatusLine(null, 0).line).toBe("No shells");
+    // With no panel mounted the pane falls back to its own read.
+    expect(terminalStatusLine(["zsh"], null).line).toBe("1 shell");
+  });
+
+  it("gives Files the one fact the lane store carries, and names the surface otherwise", () => {
+    const lane = (status: Partial<NonNullable<LaneSummary["status"]>>) => ({
+      status: { ahead: 0, behind: 0, dirty: false, rebaseInProgress: false, ...status },
+    } as LaneSummary);
+    expect(filesStatusLine(lane({ dirty: true })).line).toBe("Changes");
+    expect(filesStatusLine(lane({ dirty: false })).line).toBe("Clean");
+    expect(filesStatusLine(null).line).toBe("Worktree");
+    // Never "live": a worktree with edits in it is not a running tool, and an
+    // activity dot for one would be a dot that never goes out.
+    expect(filesStatusLine(lane({ dirty: true })).live).toBe(false);
   });
 
   it("says how many tabs and who holds them, in two words", () => {

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import type * as Monaco from "monaco-editor";
 import { resolveLanguageId } from "../../filePresentation";
-import { loadMonaco } from "../monacoLoader";
+import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
 import { takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
@@ -78,7 +78,7 @@ export function CodeViewer({
         language: "plaintext",
         automaticLayout: true,
         readOnly,
-        theme: theme === "light" ? "vs" : "vs-dark",
+        theme: adeMonacoTheme(theme),
         fontSize: 13,
         minimap: { enabled: true },
         stickyScroll: { enabled: true },
@@ -153,7 +153,7 @@ export function CodeViewer({
     editorRef.current?.updateOptions({ readOnly });
   }, [readOnly]);
   useEffect(() => {
-    monacoRef.current?.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+    monacoRef.current?.editor.setTheme(adeMonacoTheme(theme));
   }, [theme]);
 
   function attachModel(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor) {

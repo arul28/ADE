@@ -11,22 +11,24 @@
  * rather than butting a rounded pane against a square document — which is the
  * single cheapest thing that separates a premium browser from an iframe.
  */
-import type { FormEvent, KeyboardEvent, MutableRefObject, PointerEvent } from "react";
+import type { MutableRefObject, PointerEvent } from "react";
 import {
   ArrowsLeftRight,
   ClipboardText,
   ClockCounterClockwise,
   Globe,
-  MagnifyingGlass,
   RadioButton,
   X,
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
+import {
+  BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
+  type BuiltInBrowserEmulationState,
+} from "../../../../shared/types/builtInBrowser";
 import { emulationCaption, UNDERLAY_FADE_MS, type BrowserViewFrame } from "./browserViewGeometry";
 import { revealTransition } from "../../../lib/motion";
 import { cn } from "../../ui/cn";
-import { CHROME_FIELD_NO_HALO, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
+import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
 import type {
   BrowserCaptureSelection,
   BrowserFrame,
@@ -55,17 +57,6 @@ export type BrowserLaunchpadGroup = {
   rows: BrowserLaunchpadRow[];
 };
 
-/** The launchpad's own copy of the omnibox — the first thing in the column. */
-export type BrowserLaunchpadFieldProps = {
-  inputRef: MutableRefObject<HTMLInputElement | null>;
-  value: string;
-  onChange: (value: string) => void;
-  onFocus: () => void;
-  onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
-  onSubmit: (event?: FormEvent<HTMLFormElement>) => void;
-  onEndEdit: () => void;
-};
-
 export type BrowserStageProps = {
   surfaceRef: MutableRefObject<HTMLDivElement | null>;
   stageRef: MutableRefObject<HTMLDivElement | null>;
@@ -85,7 +76,6 @@ export type BrowserStageProps = {
   onCapturePointerCancel: (event?: PointerEvent<HTMLDivElement>) => void;
   showLaunchpad: boolean;
   apiAvailable: boolean;
-  launchpadField: BrowserLaunchpadFieldProps;
   launchpadGroups: BrowserLaunchpadGroup[];
   letterboxed: boolean;
   emulation: BuiltInBrowserEmulationState | null;
@@ -222,7 +212,6 @@ export function BrowserStage({
   onCapturePointerCancel,
   showLaunchpad,
   apiAvailable,
-  launchpadField,
   launchpadGroups,
   letterboxed,
   emulation,
@@ -246,7 +235,14 @@ export function BrowserStage({
           <motion.div
             ref={viewportRef}
             aria-hidden="true"
-            className="pointer-events-none absolute overflow-hidden rounded-[9px]"
+            className="pointer-events-none absolute overflow-hidden"
+            /*
+              The same radius the native view is rounded to in main
+              (`applyTabViewCornerRadius`). The view is composited ABOVE this
+              renderer, so this element cannot mask it — the two are one radius
+              read from one constant precisely because CSS cannot enforce it.
+            */
+            style={{ borderRadius: BUILT_IN_BROWSER_VIEW_CORNER_RADIUS }}
             initial={false}
             animate={{
               left: viewFrame.left,
@@ -326,36 +322,18 @@ export function BrowserStage({
               <div className="flex min-h-full w-full items-center justify-center px-5 py-8">
               <div className="flex w-full max-w-[576px] flex-col gap-5">
                 {apiAvailable ? (
+                  /*
+                    No field here.
+
+                    This column used to open with a boxed copy of the omnibox,
+                    which put two live URL fields on screen at once writing the
+                    same state — two answers to "where do I type". The chrome
+                    row's field is the omnibox on every other page, so it is the
+                    omnibox here too, and it is the one that takes the caret.
+                    What is left is what the launchpad is actually for: the
+                    addresses this machine already has.
+                  */
                   <>
-                    {/*
-                      The same ghost field as the chrome row, at the size the
-                      thing you came here to do deserves. It writes the same
-                      state, so whichever one you type into is the omnibox.
-                    */}
-                    <form
-                      onSubmit={launchpadField.onSubmit}
-                      className={cn(
-                        "flex h-10 min-w-0 items-center gap-2 rounded-[10px] px-3",
-                        "ring-1 ring-inset ring-white/[0.07] transition-[box-shadow] duration-[120ms] ease-out",
-                        "focus-within:ring-[color-mix(in_srgb,var(--color-accent)_38%,transparent)]",
-                      )}
-                    >
-                      <MagnifyingGlass size={14} className="shrink-0 text-muted-fg/50" />
-                      <input
-                        ref={launchpadField.inputRef}
-                        value={launchpadField.value}
-                        onChange={(event) => launchpadField.onChange(event.target.value)}
-                        onFocus={launchpadField.onFocus}
-                        onKeyDown={launchpadField.onKeyDown}
-                        onBlur={launchpadField.onEndEdit}
-                        placeholder="Search or enter URL"
-                        aria-label="Open a page in the ADE browser"
-                        className={cn(
-                          "h-full min-w-0 flex-1 bg-transparent text-[13px] text-fg/88 outline-none placeholder:text-muted-fg/45",
-                          CHROME_FIELD_NO_HALO,
-                        )}
-                      />
-                    </form>
                     {launchpadGroups.map((group) => (
                       <LaunchpadGroup key={group.key} group={group} />
                     ))}

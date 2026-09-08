@@ -166,6 +166,26 @@ export type WorkLiveSourceState = {
 
 const AGENT_OWNER_LABEL = "agent";
 
+/**
+ * `https://example.com/a/b?c` → `example.com`.
+ *
+ * The identity of a page a person recognises is its host, and for a page whose
+ * `<title>` has not arrived yet the host is all there is. Anything that will
+ * not parse as a URL — `about:blank`, a half-typed address — is returned as it
+ * was rather than dropped, so the card never silently loses its only label.
+ */
+export function workLiveHostLabel(url: string | null | undefined): string | null {
+  const raw = typeof url === "string" ? url.trim() : "";
+  if (!raw) return null;
+  try {
+    const host = new URL(raw).host;
+    if (!host) return raw;
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch {
+    return raw;
+  }
+}
+
 export const WORK_LIVE_SOURCES: Record<
   WorkLiveScreenTool,
   (state: WorkLiveSourceState) => WorkLiveSource
@@ -173,7 +193,10 @@ export const WORK_LIVE_SOURCES: Record<
   browser: ({ browserTab }) => ({
     live: Boolean(browserTab),
     ownerLabel: browserTab?.ownerChatSessionId ? AGENT_OWNER_LABEL : null,
-    caption: browserTab?.title ?? browserTab?.url ?? null,
+    // Title first, host second — never the raw URL. The card leads with this
+    // line, and a 320px pill has room for `example.com`, not for
+    // `https://example.com/search?q=…&utm_source=…`.
+    caption: browserTab?.title ?? workLiveHostLabel(browserTab?.url) ?? null,
     handoff: detectWorkLiveHandoff(browserTab),
     recording: browserTab?.recording ?? null,
   }),
@@ -499,6 +522,60 @@ export function workLiveCardTravel(args: {
     maxLeft: Math.max(minLeft, args.host.width - cardWidth - WORK_LIVE_CARD_INSET),
     maxTop: Math.max(minTop, args.host.height - args.cardHeight - WORK_LIVE_CARD_INSET - bottomReserve),
   };
+}
+
+/**
+ * Everything at the bottom of the chat column the card must not sit on top of.
+ *
+ * The composer is the obvious one; anything else that parks itself against the
+ * bottom edge (an approval card, a launch shelf) opts in with
+ * `data-work-live-card-avoid`, because those live in files this card does not
+ * own and a shared attribute is cheaper than a shared prop chain.
+ */
+export const WORK_LIVE_CARD_AVOID_SELECTOR =
+  "[data-chat-composer-wrapper],[data-work-live-card-avoid]";
+
+/**
+ * The card gives up at most half the column.
+ *
+ * Without a ceiling a tall composer — chips, attachments, a six-line draft —
+ * pushes the card off the top of its own travel, and `workLiveCardTravel`'s
+ * `Math.max` then quietly parks it back at the inset. Half is the point past
+ * which nudging up stops being "keep the last message visible" and starts
+ * being "cover a different part of the conversation".
+ */
+export const WORK_LIVE_CARD_MAX_BOTTOM_RESERVE_RATIO = 0.5;
+
+export type WorkLiveCardObstruction = { top: number; bottom: number; height: number };
+
+/**
+ * How much room to leave at the bottom of the host, in host pixels.
+ *
+ * Viewport coordinates in, one number out: measuring rects rather than reading
+ * `offsetHeight` off a selector match is what keeps a hidden empty-state
+ * composer belonging to some OTHER chat pane from reserving space in this one.
+ * Only boxes that reach into the bottom half count, and the reserve is measured
+ * from the host's bottom edge to the box's top — so a card floating above the
+ * composer covers itself and the composer under it in one number.
+ */
+export function workLiveBottomReserve(args: {
+  host: { top: number; bottom: number; height: number };
+  obstructions: readonly WorkLiveCardObstruction[];
+}): number {
+  const { host } = args;
+  if (!(host.height > 0)) return 0;
+  const midpoint = host.top + host.height / 2;
+  const limit = host.height * WORK_LIVE_CARD_MAX_BOTTOM_RESERVE_RATIO;
+  let reserve = 0;
+  for (const box of args.obstructions) {
+    // A zero-height box is display:none or not laid out yet; a box entirely
+    // above the midpoint is chrome at the top, not something to sit above.
+    if (!(box.height > 0)) continue;
+    if (box.bottom <= midpoint) continue;
+    if (box.top >= host.bottom) continue;
+    reserve = Math.max(reserve, host.bottom - Math.max(host.top, box.top));
+  }
+  return Math.round(Math.max(0, Math.min(limit, reserve)));
 }
 
 /** Pins an arbitrary pixel position inside {@link workLiveCardTravel}. */

@@ -4,7 +4,6 @@ import {
   AppWindow,
   DotsThree,
   Link as LinkIcon,
-  Play,
   SpinnerGap,
   Wrench,
 } from "@phosphor-icons/react";
@@ -114,7 +113,7 @@ export function AppControlToolbar({
   onSwitchWindow: (targetId: string) => void;
   switching: boolean;
   controlsDisabled: boolean;
-  /** Controlled so the empty state's "Pick an app to drive" can open it. */
+  /** Controlled so the empty state's "Pick an app" can open it. */
   pickerOpen: boolean;
   onPickerOpenChange: (open: boolean) => void;
   renderOverflow: (close: () => void) => ReactNode;
@@ -135,7 +134,7 @@ export function AppControlToolbar({
       {/* App picker — the launch target, and everything that changes it. */}
       <AppControlMenu
         ariaLabel="App Control launch target"
-        triggerTitle={hasSession ? statusDetail : "Pick an app to drive"}
+        triggerTitle={hasSession ? statusDetail : "Pick an app"}
         triggerIcon={<AppWindow size={14} weight="duotone" className="shrink-0 text-muted-fg/75" />}
         triggerLabel={appLabel}
         // Fixed px, never a percentage: the trigger's own width is what sizes
@@ -181,14 +180,21 @@ export function AppControlToolbar({
                 aria-label="Launch App Control command"
                 className={cn(
                   "inline-flex h-[26px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[10.5px] font-medium",
-                  "border border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
-                  "bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/90",
-                  "transition-colors duration-[120ms] ease-out hover:bg-[color-mix(in_srgb,var(--color-accent)_24%,transparent)]",
+                  "border border-white/[0.1] bg-white/[0.03] text-fg/80",
+                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.07]",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   "disabled:cursor-not-allowed disabled:opacity-45",
                 )}
               >
-                {launching ? <SpinnerGap size={11} className="animate-spin" /> : <Play size={10} weight="fill" />}
+                {/*
+                  No ▶. The glyph read as a transport control on a row that
+                  launches a command, and it was the only accented button in a
+                  menu of ghost ones — so it claimed to be the thing you came
+                  for while "Connect", the other half of the same choice, sat
+                  quietly beside it. Same weight for both; the spinner is the
+                  only glyph either one earns.
+                */}
+                {launching ? <SpinnerGap size={11} className="animate-spin" /> : null}
                 Run
               </button>
             </div>
@@ -269,13 +275,30 @@ export function AppControlToolbar({
         )}
       </AppControlMenu>
 
-      {/* Driver chip. Computer use is typed and capability-gated, not built. */}
+      {/*
+        The driver, as a dot.
+
+        "CDP" spelled out on the row was a debug chip: it named an internal
+        transport in a bar that otherwise answers product questions, and it
+        named it even when there was nothing to drive. The menu behind it is
+        unchanged — the dot is still the way to pick a driver — and the name
+        lives in the tooltip, where a name that only matters when you go looking
+        for it belongs.
+      */}
       <AppControlMenu
         ariaLabel="App Control driver"
         triggerTitle={`Driving with ${DRIVER_LABEL[activeDriver]}`}
-        triggerLabel={DRIVER_LABEL[activeDriver]}
+        triggerIcon={(
+          <span
+            aria-hidden="true"
+            className={cn(
+              "h-[6px] w-[6px] shrink-0 rounded-full",
+              hasSession ? "bg-sky-300/85" : "bg-muted-fg/45",
+            )}
+          />
+        )}
         triggerClassName={cn(
-          "h-7 rounded-[7px] px-1.5 text-[11px] text-muted-fg hover:bg-white/[0.06]",
+          "h-7 w-7 justify-center rounded-[7px] px-0 text-muted-fg hover:bg-white/[0.06]",
         )}
         showCaret={false}
         menuClassName="w-[236px]"
@@ -308,22 +331,30 @@ export function AppControlToolbar({
         )}
       </AppControlMenu>
 
-      {/* Status. One dot and one word — the detail lives in the tooltip. */}
-      <span
-        className="inline-flex min-w-0 shrink items-center gap-1.5 px-1 text-[11px] text-muted-fg"
-        title={statusDetail}
-        role="status"
-      >
+      {/*
+        Status. One dot and one word — the detail lives in the tooltip.
+
+        Only once there is a session: with none, this said "no app" one control
+        to the right of a chip already reading "Pick an app", which is the same
+        sentence twice and the emptier half of it first.
+      */}
+      {hasSession ? (
         <span
-          aria-hidden="true"
-          className={cn(
-            "h-[6px] w-[6px] shrink-0 rounded-full",
-            STATUS_DOT_TONE[statusTone],
-            statusTone === "warn" ? "motion-safe:animate-pulse" : null,
-          )}
-        />
-        <span className="truncate">{statusWord}</span>
-      </span>
+          className="inline-flex min-w-0 shrink items-center gap-1.5 px-1 text-[11px] text-muted-fg"
+          title={statusDetail}
+          role="status"
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "h-[6px] w-[6px] shrink-0 rounded-full",
+              STATUS_DOT_TONE[statusTone],
+              statusTone === "warn" ? "motion-safe:animate-pulse" : null,
+            )}
+          />
+          <span className="truncate">{statusWord}</span>
+        </span>
+      ) : null}
 
       {remoteLabel ? (
         <span

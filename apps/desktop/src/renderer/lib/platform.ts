@@ -85,3 +85,14 @@ export const revealLabel = isMac
     ? "Reveal in File Explorer"
     : "Reveal in file manager";
 export const modifierKeyLabel = isMac ? "Cmd" : "Ctrl";
+
+/**
+ * A menu row's shortcut glyph: `⌘F` on macOS, `Ctrl+F` everywhere else.
+ *
+ * The bare `modifierKeyLabel` renders "CmdF" on macOS, which is not how a Mac
+ * menu spells a chord — and "⌘F" on Windows names a key that keyboard does not
+ * have. One helper so every menu in the app spells the same chord the same way.
+ */
+export function modifierChordLabel(key: string): string {
+  return isMac ? `⌘${key}` : `${modifierKeyLabel}+${key}`;
+}

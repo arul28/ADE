@@ -1698,7 +1698,7 @@ describe("CommandPalette", () => {
         supportsIosSimulator: true,
         isWebClient: false,
       });
-      expect(local).toContain("Tools: iOS Simulator");
+      expect(local).toContain("Tools: Simulator");
       expect(local).toContain("Tools: Browser");
 
       // No simulator here, so the command that lands on a "macOS only" card is
@@ -1709,7 +1709,7 @@ describe("CommandPalette", () => {
           supportsIosSimulator: false,
           isWebClient: false,
         }),
-      ).not.toContain("Tools: iOS Simulator");
+      ).not.toContain("Tools: Simulator");
 
       // A remote project's work happens on the other machine — except the
       // browser, which is this desktop's window reaching that machine's
@@ -1720,7 +1720,7 @@ describe("CommandPalette", () => {
         isWebClient: false,
       });
       expect(remote).toContain("Tools: Browser");
-      expect(remote).not.toContain("Tools: iOS Simulator");
+      expect(remote).not.toContain("Tools: Simulator");
       expect(remote).not.toContain("Tools: App Control");
       expect(remote).not.toContain("Tools: Pull request");
       expect(remote).toContain("Tools: Git");
@@ -1736,7 +1736,7 @@ describe("CommandPalette", () => {
       });
       expect(web).toContain("Tools: Browser");
       expect(web).toContain("Tools: App Control");
-      expect(web).not.toContain("Tools: iOS Simulator");
+      expect(web).not.toContain("Tools: Simulator");
     });
 
     /**

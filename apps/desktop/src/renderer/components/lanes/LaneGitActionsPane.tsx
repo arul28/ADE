@@ -19,6 +19,7 @@ import {
   WORK_TOOL_CHROME_CHIP_WRAP,
   WORK_TOOL_CHROME_META,
   WORK_TOOL_CHROME_ROW,
+  WORK_TOOL_SECTION_LABEL_TEXT,
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
@@ -460,7 +461,7 @@ function SectionCard({
         style={{ display: "flex", flexDirection: "column", minWidth: 0, ...sectionStyle }}
       >
         <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-1">
-          <span className="text-[12px] font-medium text-muted-fg">{title}</span>
+          <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
           {aside}
         </div>
         <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...bodyStyle }}>
@@ -1898,6 +1899,21 @@ export function LaneGitActionsPane({
     (selectedPath && selectedMode) || selectedCommit,
   );
 
+  /**
+   * The Files section has nothing to list.
+   *
+   * Stacked, the two sections were an even `1fr 1fr` split whatever they held,
+   * so a clean worktree spent half the pane — 320px at a normal window — on
+   * the words "Clean · nothing to commit" and then a void. When there is
+   * nothing to scroll, the section is worth its own height and History follows
+   * it directly, 12px below. Stashes count as content: they live in the same
+   * section, behind the row's "more".
+   */
+  const filesSectionIsEmpty = !diffViewActive
+    && changes.staged.length === 0
+    && changes.unstaged.length === 0
+    && (isPane ? !showAdvanced : stashes.length === 0);
+
   /*
     The Work tools pane's one chrome row.
 
@@ -2849,10 +2865,21 @@ export function LaneGitActionsPane({
 
         {/* ─── Files + History (maximized) ─── */}
         <div
+          data-testid="git-sections"
+          data-files-collapsed={filesSectionIsEmpty ? "true" : undefined}
           style={{
             display: "grid",
             gridTemplateColumns: responsiveMode === "narrow" ? "1fr" : "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
-            gridTemplateRows: responsiveMode === "narrow" ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
+            // Side by side the two sections share the height. Stacked they are
+            // an even split ONLY while the top one has rows to show; with
+            // nothing to list it takes its own height and History gets the
+            // rest, so the gap between them is the 12px below and not 320px of
+            // stretched empty section.
+            gridTemplateRows: responsiveMode !== "narrow"
+              ? "minmax(0, 1fr)"
+              : filesSectionIsEmpty
+                ? "auto minmax(0, 1fr)"
+                : "minmax(0, 1fr) minmax(0, 1fr)",
             padding: isPane ? "0 8px 8px" : 10,
             gap: isPane ? 12 : 10,
             flex: "1 1 0",
@@ -2872,9 +2899,14 @@ export function LaneGitActionsPane({
             }
             dataTestId="files-section"
             plain={isPane}
-            sectionStyle={isPane
-              ? { minHeight: 0, height: "100%" }
-              : { minHeight: 0, height: "100%", background: "rgba(255,255,255,0.03)" }}
+            sectionStyle={{
+              minHeight: 0,
+              // `height: 100%` is what makes the section fill its row; in the
+              // collapsed case the row IS the content, so filling it would put
+              // the void back.
+              ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
+              ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }),
+            }}
             headerStyle={{ background: "rgba(255,255,255,0.03)" }}
             bodyStyle={
               diffViewActive
@@ -3225,7 +3257,12 @@ export function LaneGitActionsPane({
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }}>
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
+                  <div
+                    className={isPane ? WORK_TOOL_SECTION_LABEL_TEXT : undefined}
+                    style={isPane ? { padding: "0 8px 4px" } : { padding: "0 8px 4px", ...LABEL_STYLE }}
+                  >
+                    {isPane ? `Staged (${changes.staged.length})` : `STAGED (${changes.staged.length})`}
+                  </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
                     <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3243,7 +3280,12 @@ export function LaneGitActionsPane({
               ) : null}
               {changes.unstaged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
+                  <div
+                    className={isPane ? WORK_TOOL_SECTION_LABEL_TEXT : undefined}
+                    style={isPane ? { padding: "0 8px 4px" } : { padding: "0 8px 4px", ...LABEL_STYLE }}
+                  >
+                    {isPane ? `Unstaged (${changes.unstaged.length})` : `UNSTAGED (${changes.unstaged.length})`}
+                  </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
                     <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>

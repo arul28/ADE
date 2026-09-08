@@ -1547,7 +1547,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               tabIndex={0}
               onMouseDown={handleWorkSidebarResizeMouseDown}
               onKeyDown={handleWorkSidebarResizeKeyDown}
-              className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 focus-visible:bg-[var(--color-accent)]/45 focus-visible:outline-none active:bg-[var(--color-accent)]/40"
+              // The app's one splitter: an 8px invisible hit area with a 1px
+              // hairline that appears on hover, focus and drag. Same class the
+              // browser and Work panes use, so the tools pane is not the one
+              // divider drawn as a permanent grey band.
+              className="ade-pane-gutter ade-tool-gutter vertical shrink-0"
             />
           ) : null}
           <AnimatePresence initial={false}>

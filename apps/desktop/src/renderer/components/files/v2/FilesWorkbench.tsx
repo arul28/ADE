@@ -5,7 +5,7 @@ import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { useAppStore, useRootAppStore } from "../../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../../state/crossMachineLanes";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
-import { resolveLanguageId } from "../filePresentation";
+import { MonochromeFileIconsContext, resolveLanguageId } from "../filePresentation";
 import { FilesExplorer, type FilesExplorerContextMenuEvent } from "../FilesExplorer";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBufferValuesForWorkspace } from "../../../lib/dirtyWorkspaceBuffers";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -73,8 +73,17 @@ import { COLORS } from "../../lanes/laneDesignTokens";
 import { revealLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
-import { CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
+
+/**
+ * Below this pane width the embedded workbench shows ONE surface at a time.
+ *
+ * 220px of tree plus a 1px rule leaves the editor 227px at a 447px pane —
+ * about thirty characters of a line, with every filename beside it elided.
+ * Two unusable columns are worse than one usable screen.
+ */
+const EMBEDDED_SINGLE_SURFACE_PX = 520;
 
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 // Open-request keys remembered for dedup. Far above any real burst; exists so a
@@ -217,6 +226,21 @@ export function FilesWorkbench({
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
+  /**
+   * Which of the two surfaces the embedded pane is showing.
+   *
+   * Only consulted below `EMBEDDED_SINGLE_SURFACE_PX`. A 447px tools pane split
+   * into a 220px tree and a 227px editor is two columns too narrow to use: the
+   * tree elides every filename and the editor shows about thirty characters of
+   * a line. Narrow, the pane is one surface at a time and the chrome row's
+   * breadcrumb is what moves between them.
+   */
+  const [embeddedSurface, setEmbeddedSurface] = useState<"tree" | "editor">("tree");
+  // A callback ref held in state, not a `useRef`: the workbench renders a
+  // loading placeholder before its real root exists, so an effect keyed on
+  // anything else would run once against a null node and never look again.
+  const [paneNode, setPaneNode] = useState<HTMLDivElement | null>(null);
+  const [paneWidth, setPaneWidth] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [dirtyTabIds, setDirtyTabIds] = useState<Set<string>>(new Set());
   const [dirtyBufferRevision, setDirtyBufferRevision] = useState(0);
@@ -332,9 +356,27 @@ export function FilesWorkbench({
   const activeGroup = groupsState.groups[groupsState.activeGroupId];
   const activeTab = activeGroup?.tabs.find((t) => t.id === activeGroup.activeTabId) ?? null;
 
+  // Measured, not media-queried: the pane is a resizable column inside a
+  // window, so its width has nothing to do with the viewport's.
+  useEffect(() => {
+    if (!embedded || !paneNode) return undefined;
+    if (typeof ResizeObserver === "undefined") {
+      setPaneWidth(paneNode.clientWidth);
+      return undefined;
+    }
+    const observer = new ResizeObserver((entries) => {
+      setPaneWidth(entries[0]?.contentRect.width ?? paneNode.clientWidth);
+    });
+    observer.observe(paneNode);
+    return () => observer.disconnect();
+  }, [embedded, paneNode]);
+
   /** Reveal a directory from the pane's breadcrumb. Declared with the other
       hooks — this component has early returns below it. */
   const revealDirectory = useCallback((dirPath: string) => {
+    // Below the split threshold the tree is a separate screen, so pressing a
+    // directory crumb has to bring it back before it can reveal anything.
+    setEmbeddedSurface("tree");
     setSelectedNodePath(dirPath);
     // Expand rather than toggle: pressing a crumb for a directory you are
     // already inside should never collapse the thing you are looking at.
@@ -876,6 +918,7 @@ export function FilesWorkbench({
     async (path: string, opts: { preview?: boolean; line?: number; column?: number } = {}) => {
       if (!workspaceId) return;
       setSelectedNodePath(path);
+      setEmbeddedSurface("editor");
       if (opts.line && opts.line > 0) {
         setPendingReveal(path, { line: opts.line, column: opts.column });
       }
@@ -1422,10 +1465,18 @@ export function FilesWorkbench({
       }))
     : [];
 
+  // 520px is where the two columns stop being usable: below it the 220px tree
+  // and the editor beside it are each too narrow to read.
+  const singleSurface = embedded && paneWidth > 0 && paneWidth < EMBEDDED_SINGLE_SURFACE_PX;
+  const showEditorSurface = !singleSurface || (embeddedSurface === "editor" && openCount > 0);
+
   return (
+    <MonochromeFileIconsContext.Provider value={embedded === true}>
     <div
+      ref={setPaneNode}
       className="flex h-full min-h-0 flex-col"
       data-testid="files-workbench-v2"
+      data-single-surface={singleSurface ? (showEditorSurface ? "editor" : "tree") : undefined}
       onDragOver={handleNativeDragOver}
       onDrop={handleNativeDrop}
     >
@@ -1470,6 +1521,17 @@ export function FilesWorkbench({
       */}
       {embedded ? (
         <div className={WORK_TOOL_CHROME_ROW} data-testid="files-pane-chrome">
+          {singleSurface && showEditorSurface ? (
+            /* The trail back to the only other screen there is. A crumb, not a
+               tab bar: one surface at a time means one way back. */
+            <WorkToolChromeButton
+              label="Back to files"
+              onClick={() => setEmbeddedSurface("tree")}
+              testId="files-pane-back"
+            >
+              <ArrowLeft size={16} />
+            </WorkToolChromeButton>
+          ) : null}
           <nav aria-label="File path" className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
             {breadcrumbSegments.length === 0 ? (
               <span className="truncate px-2 text-[12px] text-muted-fg">
@@ -1505,11 +1567,24 @@ export function FilesWorkbench({
           </WorkToolChromeButton>
         </div>
       ) : null}
-      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: embedded ? "220px 1fr" : "260px 1fr" }}>
-        {/* Explorer column — purple card surface to match the rest of ADE's chrome */}
+      <div
+        className="grid min-h-0 flex-1"
+        style={{
+          gridTemplateColumns: singleSurface ? "1fr" : embedded ? "220px 1fr" : "260px 1fr",
+        }}
+      >
+        {/* Explorer column. Embedded it is `--color-surface`, the same token the
+            editor and its gutter now paint with, so the pane is one surface
+            rather than a card-tinted tree beside Monaco's own grey. */}
+        {showEditorSurface && singleSurface ? null : (
         <div
-          className="flex min-h-0 flex-col border-r"
-          style={{ borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)" }}
+          className={cn("flex min-h-0 flex-col", singleSurface ? null : "border-r")}
+          style={{
+            borderColor: COLORS.border,
+            background: embedded
+              ? "var(--color-surface)"
+              : "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)",
+          }}
         >
           {!embedded ? (
             <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
@@ -1570,7 +1645,12 @@ export function FilesWorkbench({
             </div>
           ) : null}
         </div>
-        <div className="min-h-0 min-w-0">
+        )}
+        {singleSurface && !showEditorSurface ? null : (
+        <div
+          className="min-h-0 min-w-0"
+          style={embedded ? { background: "var(--color-surface)" } : undefined}
+        >
           {openCount === 0 ? (
             <WarmEmptyState
               recents={visibleRecentFiles}
@@ -1613,6 +1693,7 @@ export function FilesWorkbench({
           />
           )}
         </div>
+        )}
       </div>
       <StatusBar
         activeTab={activeTab}
@@ -1656,5 +1737,6 @@ export function FilesWorkbench({
         />
       ) : null}
     </div>
+    </MonochromeFileIconsContext.Provider>
   );
 }

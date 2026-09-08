@@ -4,8 +4,15 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import {
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+  BUILT_IN_BROWSER_PREVIEW_WARM_MS,
+} from "../../../shared/types";
+import {
   BuiltInBrowserNoTabError,
   createBuiltInBrowserService,
+  isBuiltInBrowserCaptureUnavailableError,
   isBuiltInBrowserNoTabError,
 } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
@@ -112,15 +119,35 @@ const fakes = vi.hoisted(() => {
     isLoading = (): boolean => false;
     canGoBack = (): boolean => false;
     canGoForward = (): boolean => false;
-    capturePage = async (): Promise<{
+    capturePageCalls: { stayHidden: boolean | undefined }[] = [];
+    /** Set by the tests that model a view with no compositor surface at all. */
+    captureAlwaysEmpty = false;
+    capturePage = async (
+      _rect?: unknown,
+      opts?: { stayHidden?: boolean },
+    ): Promise<{
       isEmpty: () => boolean;
       toDataURL: () => string;
       getSize: () => { width: number; height: number };
-    }> => ({
-      isEmpty: () => false,
-      toDataURL: () => "data:image/png;base64,dGVzdA==",
-      getSize: () => ({ width: 320, height: 180 }),
-    });
+      resize: (options: { width: number }) => unknown;
+      toJPEG: (quality: number) => Buffer;
+    }> => {
+      this.capturePageCalls.push({ stayHidden: opts?.stayHidden });
+      // Models the rule the corner card was broken by: Chromium can only hand
+      // back a frame for a view that HAS a compositor surface, and `stayHidden`
+      // is a promise not to create one. A tab the panel has never shown — the
+      // exact tab the card exists to picture — therefore answers an empty image
+      // to every `stayHidden` capture, forever, without ever erroring.
+      const empty = this.captureAlwaysEmpty || opts?.stayHidden === true;
+      const image = {
+        isEmpty: () => empty,
+        toDataURL: () => "data:image/png;base64,dGVzdA==",
+        getSize: () => ({ width: 320, height: 180 }),
+        resize: (): unknown => image,
+        toJPEG: (): Buffer => Buffer.from("jpeg-bytes"),
+      };
+      return image;
+    };
     isDestroyed = (): boolean => false;
     getURL = (): string => this.currentUrl;
     getTitle = (): string => "";
@@ -529,12 +556,17 @@ function fakeBrowserWindow() {
   };
   let contentBounds = { x: 0, y: 0, width: 1280, height: 720 };
   let focused = true;
+  let visibleOnScreen = false;
   return {
     id: fakeWindowId++,
     isDestroyed: () => false,
     // The preview loop pauses on a window nobody can see, which is what keeps
-    // a stream a test forgot to stop from capturing against these stubs.
-    isVisible: () => false,
+    // a stream a test forgot to stop from capturing against these stubs. The
+    // preview tests opt in explicitly with `setVisibleOnScreen(true)`.
+    isVisible: () => visibleOnScreen,
+    setVisibleOnScreen: (next: boolean): void => {
+      visibleOnScreen = next;
+    },
     isMinimized: () => false,
     // Focused by default: handing the keyboard back is guarded on it, and the
     // sequences these tests drive are all ones the user just clicked through.
@@ -846,6 +878,164 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     // nobody is previewing costs nothing.
     service.stopPreviewStream({ tabId });
     expect(win.contentView.children).toHaveLength(0);
+  });
+
+  it("warms a never-attended view against the window before parking it off screen", async () => {
+    /*
+      The mechanism behind the black card, pinned as geometry.
+
+      Parking preserves a compositor surface; it cannot create one. Measured
+      live over CDP: a tab the panel had shown captured 469x739 frames while
+      parked, and a tab created in the background captured `empty=true,
+      size=0x0` forever — same code path, same park point, same watcher. One
+      pixel of overlap with the window's content rect is what makes Chromium
+      allocate the surface, so the view is placed there for two frames and only
+      then moved past every display.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+
+    // Never shown in the panel: no `setBounds(visible: true)` anywhere.
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      const warming = view.boundsCalls.at(-1)!;
+      // Exactly one pixel inside, at the far corner — the least of the window
+      // it is possible to cover while still being on it.
+      expect(warming).toMatchObject({ x: 1279, y: 719 });
+      // Full size while warming, so the page lays out once at the size it will
+      // be captured at rather than resizing again on the way out.
+      expect(warming.width).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH);
+      expect(warming.height).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT);
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // …and then off every display, where nothing can reach it.
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked.x).toBe(1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+    expect(parked.y).toBe(720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("does not warm a view the panel has already shown", async () => {
+    // A view that has been on screen already has the surface, and warming it
+    // again would flash a pixel of the page for no reason on every tool switch.
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked).toMatchObject({
+      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      width: 640,
+      height: 360,
+    });
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("tags a capture that has no surface to photograph instead of throwing a bare error", async () => {
+    /*
+      The other half of the same P0. Switching Browser -> Terminal printed
+      `Error occurred in handler for 'ade.builtInBrowser.captureScreenshot':
+      Page.enable timed out after 3000ms` three times, because the panel's
+      underlay capture races the hide it belongs to: by the time it lands the
+      view has no surface, `capturePage` answers an empty image, and the CDP
+      fallback's `Page.enable` never returns against a surfaceless target.
+
+      Nothing was actually wrong — the panel has a last frame to fall back on —
+      so the failure is TAGGED here and softened to `{ ok: false }` at the
+      trusted-renderer IPC boundary. Agents do not come through that boundary
+      and still see a real failure.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const wc = fakes.webContentsInstances.at(-1)!;
+    wc.captureAlwaysEmpty = true;
+    fakes.setSendCommand(async (method) => {
+      if (method === "Page.enable") throw new Error("Page.enable timed out after 3000ms");
+      return {};
+    });
+
+    const error = await service.captureScreenshot({}).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    );
+    expect(isBuiltInBrowserCaptureUnavailableError(error)).toBe(true);
+    expect((error as Error).message).toContain("Page.enable timed out");
+    // Not the no-tab shape: there IS a tab, and conflating the two would have
+    // the renderer report "the browser closed" for a pane that is wide open.
+    expect(isBuiltInBrowserNoTabError(error)).toBe(false);
+
+    fakes.resetSendCommand();
+    service.dispose();
+  });
+
+  it("paints preview frames in the order the corner card actually drives: hide, subscribe, frames", async () => {
+    /*
+      The P0 the round-4 review caught: the card was a 320x200 black rectangle
+      with a live dot on it, every time.
+
+      The ordering is the whole bug. The card only exists for the tool you are
+      NOT looking at, so the tools pane hides the browser FIRST and the card
+      subscribes AFTER — by which point the view has no compositor surface, and
+      `capturePage({ stayHidden: true })` answers an empty image rather than an
+      error. The loop ticked, `isEmpty()` swallowed every frame as "nothing to
+      show right now", and nothing anywhere said a word.
+
+      Parking preserves a surface Chromium already has; it does not create one.
+      Raising the capturer count — which is what omitting `stayHidden` does — is
+      what makes a parked or never-attended view answer at all.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId!;
+    const wc = fakes.webContentsInstances.at(-1)!;
+
+    // 1. The pane switches away from Browser. Nothing is watching yet, so the
+    //    view is not even parked.
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    expect(win.contentView.children).toHaveLength(0);
+
+    // 2. The card mounts and subscribes, which is what parks the view.
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId, fps: 10 });
+      expect(win.contentView.children).toHaveLength(1);
+      // 3. Frames — the assertion that was false before this fix.
+      await vi.advanceTimersByTimeAsync(450);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const frames = collector.events.filter((event) => event.type === "preview-frame");
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0]).toMatchObject({ tabId, width: 320, height: 180 });
+    expect(frames[0]).toHaveProperty("dataUrl", expect.stringContaining("data:image/jpeg;base64,"));
+    // The mechanism, pinned separately from the outcome: a future refactor that
+    // reintroduces `stayHidden` here brings the black card back with it.
+    expect(wc.capturePageCalls.length).toBeGreaterThan(0);
+    expect(wc.capturePageCalls.every((call) => call.stayHidden !== true)).toBe(true);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
   });
 
   /**

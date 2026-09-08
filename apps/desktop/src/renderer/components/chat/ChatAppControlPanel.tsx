@@ -4,7 +4,6 @@ import {
   ArrowSquareOut,
   Camera,
   Crosshair,
-  Desktop,
   Keyboard,
   ListChecks,
   Minus,
@@ -46,6 +45,10 @@ import {
   type AgentCursorState,
 } from "./AppControlOverlays";
 import { AppControlStatusRow, AppControlTraceDrawer } from "./AppControlTraceDrawer";
+import {
+  WORK_TOOL_PRIMARY_BUTTON,
+  WorkToolEmptyLine,
+} from "../terminals/workToolChrome";
 import { AppControlToolbar, type AppControlLaunchRecent, type AppControlStatusTone } from "./AppControlToolbar";
 import {
   CURSOR_TRACE_ACTIONS,
@@ -240,7 +243,10 @@ function shortId(value: string | null | undefined): string | null {
 
 function statusInfo(session: AppControlSession | null): StatusInfo {
   if (!session) {
-    return { label: "Idle", word: "no app", detail: "No active session", tone: "idle" };
+    // One phrase, one casing. The pane said "no app", "No app attached" and
+    // "Pick an app to drive" about the same fact; the header's "No app" is the
+    // spelling every surface now uses.
+    return { label: "Idle", word: "No app", detail: "No active session", tone: "idle" };
   }
   const terminal = shortId(session.terminalSessionId);
   const waitingForCdp = session.cdpPort && !session.cdpEndpoint
@@ -1655,39 +1661,24 @@ export function ChatAppControlPanel({
               </div>
             </div>
           ) : (
-            <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2.5 px-5 text-center">
-              <Desktop size={26} weight="duotone" className="text-muted-fg/35" />
-              <div className="text-[12px] font-medium text-fg/85">
-                {sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
-              </div>
-              <div className="max-w-[320px] text-[11px] leading-[16px] text-muted-fg">
-                {sessionConnected
-                  ? "Refresh the snapshot to capture the current screen and DOM."
-                  : "Launch it from here, or attach to a running app by its CDP port."}
-              </div>
-              {!sessionConnected ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setPickerOpen(true)}
-                    className={cn(
-                      "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
-                      "border border-[color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
-                      "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-fg/90",
-                      "transition-colors duration-[120ms] ease-out hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
-                      "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                    )}
-                  >
-                    <Stack size={11} weight="duotone" />
-                    Pick an app to drive
-                  </button>
-                  <div className="max-w-[320px] text-[10.5px] leading-[15px] text-muted-fg/65">
-                    Agents reach the same session with{" "}
-                    <span className="font-mono text-muted-fg">ade app-control launch</span>.
-                  </div>
-                </>
-              ) : null}
-            </div>
+            /* One line and one action, like every other tool's empty state.
+               This was a glyph, a headline, a paragraph, a button and a CLI
+               hint — five things saying the same thing the header already
+               says, in three different casings of "no app". */
+            <WorkToolEmptyLine
+              title={sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
+              action={sessionConnected ? undefined : (
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(true)}
+                  className={WORK_TOOL_PRIMARY_BUTTON}
+                  data-testid="app-control-empty-pick"
+                >
+                  <Stack size={14} weight="regular" />
+                  <span>Pick an app</span>
+                </button>
+              )}
+            />
           )}
         </div>
       </div>
@@ -1791,7 +1782,9 @@ export function ChatAppControlPanel({
 
       <AppControlStatusRow
         lastLine={lastActionLine}
-        hint={sessionConnected ? "No agent actions on this app yet." : "No app attached."}
+        // Nothing to report is not a sentence worth a footer row: the empty
+        // state above already says there is no app.
+        hint={sessionConnected ? "No agent actions on this app yet." : ""}
         consoleErrors={countConsoleErrors(observation?.diagnostics)}
         networkFailures={countNetworkFailures(observation?.diagnostics)}
         diagnosticsKnown={Boolean(observation?.diagnostics)}

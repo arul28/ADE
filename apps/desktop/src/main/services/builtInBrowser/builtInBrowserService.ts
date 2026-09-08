@@ -99,6 +99,8 @@ import {
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
   BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS,
+  BUILT_IN_BROWSER_PREVIEW_WARM_MS,
+  BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
@@ -528,6 +530,39 @@ export class BuiltInBrowserNoTabError extends Error {
     this.name = "BuiltInBrowserNoTabError";
     this.tabId = tabId;
   }
+}
+
+/**
+ * "There is a tab, but nothing can be photographed of it right now."
+ *
+ * The panel captures a frame on the way out of every popover and every tool
+ * switch, to freeze under the thing that is about to cover the live view. That
+ * request races the hide it belongs to by construction, so it regularly lands
+ * on a view that no longer has a compositor surface — at which point
+ * `capturePage` answers an empty image and the CDP fallback's `Page.enable`
+ * never returns at all. Both are ordinary states of a pane being closed, and
+ * neither is worth an `Error occurred in handler` per tool switch: the renderer
+ * has a last frame, or a pane background, to fall back to.
+ *
+ * Agents are unaffected — they do not come through the trusted-renderer IPC
+ * boundary that softens this, and for them a screenshot of nothing IS a failure.
+ */
+export class BuiltInBrowserCaptureUnavailableError extends Error {
+  readonly reason = "unavailable" as const;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "BuiltInBrowserCaptureUnavailableError";
+  }
+}
+
+export function isBuiltInBrowserCaptureUnavailableError(
+  error: unknown,
+): error is BuiltInBrowserCaptureUnavailableError {
+  // Same two-branch shape as the no-tab predicate, for the same reason: an
+  // error that crossed a module or process boundary is still this error.
+  return error instanceof BuiltInBrowserCaptureUnavailableError
+    || (error instanceof Error && error.name === "BuiltInBrowserCaptureUnavailableError");
 }
 
 export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrowserNoTabError {
@@ -1732,6 +1767,10 @@ function createBuiltInBrowserWindowService(args: {
 
   const removeTabViewFromWindow = (tab: BrowserTabState): void => {
     parkedTabIds.delete(tab.id);
+    // A view outside the window keeps no surface worth trusting; the next park
+    // re-warms rather than capturing empty frames into a card nobody can read.
+    surfacedTabIds.delete(tab.id);
+    clearWarmingTimer(tab.id);
     if (!win || win.isDestroyed()) return;
     if (!tab.view) return;
     try {
@@ -2893,6 +2932,98 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
+  /**
+   * Where a watched view goes for the first ~two frames after it is attached.
+   *
+   * Parking preserves a compositor surface; it cannot create one. A view whose
+   * bounds have never intersected the window's content rect has no surface at
+   * all, and `capturePage()` on it resolves an EMPTY image — forever, silently,
+   * because an empty frame is "nothing to show right now" rather than an error.
+   * That is the whole of the black corner card: an agent's background tab, a
+   * launchpad tab, a tab switched to while the pane was on Terminal — none of
+   * them had ever been on screen, so none of them could ever be photographed.
+   *
+   * Overlapping the window by a single pixel is enough for Chromium to allocate
+   * the surface, at the view's full size. So the view is placed with exactly its
+   * top-left pixel inside the window's bottom-right corner, held there for two
+   * frames, and then moved to the real park point — which it survives, because
+   * from that moment on there IS a surface to preserve.
+   *
+   * The size is the parked size, not a token 1x1: the page must lay out once, at
+   * the size it will be captured at, rather than resize again on the way out.
+   */
+  const warmingPreviewRect = (tab: BrowserTabState): Electron.Rectangle | null => {
+    const content = win && !win.isDestroyed()
+      ? win.getContentBounds()
+      : null;
+    // No content rect to overlap by a pixel means no surface to be had here,
+    // and placing the view at 0,0 at full size would put a live page over the
+    // whole UI for the warming window. Park it and take the empty frames.
+    if (!content || !(content.width > 0) || !(content.height > 0)) return null;
+    const parked = parkedPreviewRect(tab);
+    return {
+      x: Math.round(content.width) - 1,
+      y: Math.round(content.height) - 1,
+      width: parked.width,
+      height: parked.height,
+    };
+  };
+
+  /**
+   * Tabs whose view currently holds a compositor surface.
+   *
+   * Dropped whenever the view leaves the window, so the next park warms again
+   * rather than trusting a surface that may have been released — a 1px pixel for
+   * two frames is a cheaper thing to spend than a card that is black forever.
+   */
+  const surfacedTabIds = new Set<string>();
+  /**
+   * Per tab, not one shared handle: two watched tabs warm independently, and a
+   * single timer meant the second one cancelled the first — leaving that view
+   * sitting on its warming rect, with its one pixel showing, for good.
+   */
+  const warmingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const clearWarmingTimer = (tabId: string): void => {
+    const handle = warmingTimers.get(tabId);
+    if (handle == null) return;
+    clearTimeout(handle);
+    warmingTimers.delete(tabId);
+  };
+  const clearWarmingTimers = (): void => {
+    for (const handle of warmingTimers.values()) clearTimeout(handle);
+    warmingTimers.clear();
+  };
+  const scheduleParkAfterWarming = (tabId: string): void => {
+    if (warmingTimers.has(tabId)) return;
+    const handle = setTimeout(() => {
+      warmingTimers.delete(tabId);
+      surfacedTabIds.add(tabId);
+      attachViewsToCurrentWindow();
+    }, BUILT_IN_BROWSER_PREVIEW_WARM_MS);
+    handle.unref?.();
+    warmingTimers.set(tabId, handle);
+  };
+
+  /**
+   * Rounds the page itself to match the frame it is shown in.
+   *
+   * Only meaningful while the view is attended: a parked view is off every
+   * screen, and leaving a radius on it would round the corners of the frames
+   * the corner card captures from it. Feature-detected rather than assumed —
+   * `setBorderRadius` is recent, and a build without it must degrade to today's
+   * square corners rather than crash the whole attach pass.
+   */
+  const applyTabViewCornerRadius = (tab: BrowserTabState, radius: number): void => {
+    const view = tab.view as (WebContentsView & { setBorderRadius?: (radius: number) => void }) | null;
+    if (!view || typeof view.setBorderRadius !== "function") return;
+    try {
+      view.setBorderRadius(Math.max(0, Math.round(radius)));
+    } catch {
+      // A view mid-teardown, or a platform that cannot round one: the square
+      // corner is a cosmetic regression, not a reason to abort the attach.
+    }
+  };
+
   const returnFocusToHostWindow = (): void => {
     if (!win || win.isDestroyed()) return;
     // `WebContents.focus()` is not a DOM-only operation: Electron activates the
@@ -2933,7 +3064,15 @@ function createBuiltInBrowserWindowService(args: {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
-          tab.view.setBounds(parkedPreviewRect(tab));
+          // Square while parked: the rounded corners belong to the panel's
+          // frame, and a preview frame with four transparent notches in it is
+          // not what the corner card is asking for.
+          applyTabViewCornerRadius(tab, 0);
+          // Warm first if this view has no surface yet; the timer moves it to
+          // the real park point two frames later.
+          const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(tab);
+          tab.view.setBounds(warming ?? parkedPreviewRect(tab));
+          if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
           // it stays muted like any other background tab.
@@ -2958,6 +3097,9 @@ function createBuiltInBrowserWindowService(args: {
       if (electronRect.width > 0 && electronRect.height > 0) {
         tab.lastPanelRect = { ...electronRect };
       }
+      applyTabViewCornerRadius(tab, BUILT_IN_BROWSER_VIEW_CORNER_RADIUS);
+      // On screen at real bounds: whatever else happens, this view has a surface.
+      surfacedTabIds.add(tab.id);
       tab.view.setBounds(electronRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
@@ -4078,7 +4220,21 @@ function createBuiltInBrowserWindowService(args: {
       logger()?.debug("built_in_browser.capture_page_failed", {
         err: error instanceof Error ? error.message : String(error),
       });
-      return captureCdpScreenshot(wc);
+      try {
+        return await captureCdpScreenshot(wc);
+      } catch (cdpError) {
+        // Both paths need a surface, so both fail together for a view that is
+        // hidden, parked or mid-teardown. Tagged rather than re-thrown raw so
+        // the trusted-renderer boundary can answer `{ ok: false }` instead of
+        // logging a handler error on every tool switch, while the agent tool
+        // path — which does not soften it — still sees a real failure.
+        throw new BuiltInBrowserCaptureUnavailableError(
+          `Browser screenshot is unavailable for tab ${tab.id}: ${
+            cdpError instanceof Error ? cdpError.message : String(cdpError)
+          }`,
+          { cause: cdpError },
+        );
+      }
     }
   }
 
@@ -4427,6 +4583,7 @@ function createBuiltInBrowserWindowService(args: {
       winClosedListener = null;
     }
     unregisterWindowWatchers();
+    clearWarmingTimers();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
@@ -4665,7 +4822,13 @@ function createBuiltInBrowserWindowService(args: {
     timeoutMs = SCREENSHOT_TIMEOUT_MS,
   ): Promise<BuiltInBrowserScreenshot> => {
     const image = await withTimeout(
-      wc.capturePage(rect, { stayHidden: true }),
+      // No `stayHidden`: a tab the panel is not currently showing has no
+      // compositor surface, and asking for one to stay hidden resolves an empty
+      // image. Raising the capturer count for the length of the capture is the
+      // only thing that makes a background or parked tab answer at all — and it
+      // is what keeps this path from falling through to the CDP fallback, where
+      // `Page.enable` on a surfaceless view simply never returns.
+      wc.capturePage(rect),
       timeoutMs,
       `capturePage timed out after ${timeoutMs}ms`,
     );

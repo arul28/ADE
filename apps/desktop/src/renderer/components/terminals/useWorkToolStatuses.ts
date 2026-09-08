@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type {
   AppControlSession,
   BuiltInBrowserEventPayload,
@@ -18,6 +18,10 @@ import {
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
 import { asBuiltInBrowserStatus, isAppControlSessionLive } from "./useNativeToolSessions";
+import {
+  getWorkTerminalShellCount,
+  subscribeWorkTerminalShells,
+} from "./workTerminalShells";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
 
@@ -228,15 +232,38 @@ export function appControlStatusLine(session: AppControlSession | null): WorkToo
   });
 }
 
+/**
+ * The shell count, from whichever source can actually see the shells.
+ *
+ * `panelCount` is what the terminal panel is rendering right now, split pane
+ * included; it is authoritative whenever the panel is mounted, because it is
+ * literally the list on screen. `titles` is the pane's own `terminal.list`
+ * read, used only when no panel is mounted — the header still has to describe
+ * a tool you are not looking at. `null` from both means nothing measured.
+ */
 export function terminalStatusLine(
   titles: readonly string[] | null,
+  panelCount: number | null = null,
 ): WorkToolStatus {
-  if (titles == null) return IDLE;
-  if (titles.length === 0) return statusLine("No shells", false);
+  const count = panelCount ?? titles?.length ?? null;
+  if (count == null) return IDLE;
+  if (count === 0) return statusLine("No shells", false);
   // Shell titles are unbounded ("npm run dev -w apps/desktop"), and appending
   // even one of them turned this into "Shells attache…" at 526px. The count is
   // the whole status; the tab strip below names them.
-  return statusLine(pluralize(titles.length, "shell", "shells"), true);
+  return statusLine(pluralize(count, "shell", "shells"), true);
+}
+
+/**
+ * Files measures nothing of its own, so it reports the one fact the lane store
+ * already carries: whether the worktree is dirty. `LaneSummary.status` holds a
+ * BOOLEAN, not a tally, so this says "Changes" rather than inventing "14
+ * changed" — a real count is a git read the pane would then have to keep fresh.
+ * With no lane status at all the slot names the surface instead of guessing.
+ */
+export function filesStatusLine(lane: LaneSummary | null): WorkToolStatus {
+  if (!lane?.status) return statusLine("Worktree", false);
+  return statusLine(lane.status.dirty ? "Changes" : "Clean", false);
 }
 
 /**
@@ -358,18 +385,22 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, offline, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
+  // The count the terminal PANEL is showing, when one is mounted. Subscribed
+  // rather than polled: the panel publishes on every tab change, so opening a
+  // shell or splitting one moves this line in the same commit that draws it.
+  const panelShellCount = useSyncExternalStore(
+    subscribeWorkTerminalShells,
+    () => getWorkTerminalShellCount(terminalOwnerSessionId),
+    () => null,
+  );
+
   const statuses = useMemo<WorkToolStatusMap>(() => ({
-    terminal: terminalStatusLine(terminalTitles),
+    terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
       ? IDLE
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
-    // Files measures nothing, so it reports nothing: `LaneSummary.status`
-    // carries a dirty BOOLEAN, not a tally, and a real changed-file count means
-    // a git read the pane would then have to keep fresh. "Lane worktree" was
-    // not a status — it was a noun sitting in the status slot pretending to be
-    // one. With no line the picker falls through to the card's own blurb.
-    files: IDLE,
+    files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
   }), [
@@ -380,6 +411,7 @@ export function useWorkToolStatuses(args: {
     lane,
     laneId,
     offline,
+    panelShellCount,
     terminalTitles,
   ]);
 

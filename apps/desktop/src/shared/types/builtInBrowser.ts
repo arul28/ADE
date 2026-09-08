@@ -463,10 +463,16 @@ export type BuiltInBrowserScreenshot = {
  * a card polling a browser whose last tab was just closed would otherwise turn
  * a normal race into a thrown IPC error on every tick. Agents still get the
  * throw — for them a screenshot of nothing IS a failed request.
+ *
+ * `"unavailable"` is the same idea one step later: the tab exists, but its view
+ * has no compositor surface to photograph — it is parked, hidden, or being torn
+ * down. The panel asks for exactly this frame on the way out of every popover
+ * and every tool switch, so it is a race it loses routinely and recovers from
+ * by keeping its last frame.
  */
 export type BuiltInBrowserScreenshotResult =
   | ({ ok: true } & BuiltInBrowserScreenshot)
-  | { ok: false; reason: "no_tab" };
+  | { ok: false; reason: "no_tab" | "unavailable" };
 
 export type BuiltInBrowserContextItem = {
   kind: "built_in_browser_element" | "built_in_browser_capture";
@@ -1029,6 +1035,29 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
+/**
+ * How long a watched view is held overlapping the window before it is parked.
+ *
+ * Two frames at 60Hz plus slack: long enough for Chromium to allocate the
+ * compositor surface the capture needs, short enough that the single pixel of
+ * the page showing at the window's corner is never something anybody sees.
+ */
+export const BUILT_IN_BROWSER_PREVIEW_WARM_MS = 120;
+
+/**
+ * The radius the loaded page itself is rounded to, in the panel's inset frame.
+ *
+ * A `WebContentsView` is composited ABOVE the renderer, so the frame's CSS
+ * `overflow-hidden` cannot mask it: the page stayed a hard rectangle inside a
+ * rounded container, and the four corners were the one place the panel visibly
+ * stopped being a browser and started being an iframe. Electron's
+ * `View.setBorderRadius` is the only thing that can round the native layer.
+ *
+ * 9, not 10: the view sits one hairline inside the frame's 10px radius, which
+ * is the same arithmetic `BrowserStage`'s masking element does — both read this
+ * constant so they cannot drift apart.
+ */
+export const BUILT_IN_BROWSER_VIEW_CORNER_RADIUS = 9;
 
 /**
  * How long window/display geometry has to settle before parked views are

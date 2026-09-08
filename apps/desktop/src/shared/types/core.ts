@@ -485,6 +485,17 @@ export type AppNavigationRequest = {
  */
 export type AppZoomCommand = "in" | "out" | "reset";
 
+/**
+ * A native-menu command the renderer, not the menu, decides what to do with.
+ *
+ * Same reason as `AppZoomCommand`: Electron consumes a menu accelerator in the
+ * browser process before any renderer keydown fires, and the built-in browser's
+ * page has focus in a *different* WebContents entirely — so ⌘F and ⌘W can only
+ * reach the pane as a command sent down from the menu. A surface claims one
+ * (`lib/appMenuCommands`) and the app-wide default runs only if nobody did.
+ */
+export type AppMenuCommand = "find" | "close-tab";
+
 export type AppNavigationResult = {
   ok: boolean;
   mode: "desktop" | "unavailable";

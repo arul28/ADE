@@ -28,8 +28,61 @@ export async function loadMonaco(): Promise<typeof Monaco> {
             return new EditorWorker();
           }),
       };
-      return await import("monaco-editor");
+      const monaco = await import("monaco-editor");
+      defineAdeThemes(monaco);
+      return monaco;
     })();
   }
   return monacoInit;
+}
+
+/**
+ * The editor's surface, in the app's own colour rather than Monaco's.
+ *
+ * `vs-dark` paints #1e1e1e behind the code, its gutter and its minimap, which
+ * inside the Work tools pane meant the file tree, the editor and the gutter
+ * were three different greys stacked in a 447px column. Only the surfaces are
+ * overridden — the syntax colours are still Monaco's, inherited from the base
+ * theme, because re-tokenising a language set is not what "one background"
+ * means.
+ */
+export const ADE_MONACO_DARK_THEME = "ade-dark";
+export const ADE_MONACO_LIGHT_THEME = "ade-light";
+
+/** The token every ADE surface reads, resolved to a literal Monaco understands. */
+function surfaceColor(fallback: string): string {
+  if (typeof window === "undefined" || typeof getComputedStyle !== "function") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--color-surface").trim();
+  // Monaco parses hex only; anything else (a `color-mix`, an unset token on a
+  // detached document) has to fall back rather than throw the theme away.
+  return /^#[0-9a-f]{3,8}$/iu.test(value) ? value : fallback;
+}
+
+function defineAdeThemes(monaco: typeof Monaco): void {
+  const dark = surfaceColor("#16141E");
+  const light = surfaceColor("#faf8f5");
+  const surfaces = (background: string) => ({
+    "editor.background": background,
+    "editorGutter.background": background,
+    "editorStickyScroll.background": background,
+    "editorStickyScrollHover.background": background,
+    "minimap.background": background,
+    "editorOverviewRuler.background": background,
+  });
+  monaco.editor.defineTheme(ADE_MONACO_DARK_THEME, {
+    base: "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: surfaces(dark),
+  });
+  monaco.editor.defineTheme(ADE_MONACO_LIGHT_THEME, {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: surfaces(light),
+  });
+}
+
+export function adeMonacoTheme(theme: "light" | "dark"): string {
+  return theme === "light" ? ADE_MONACO_LIGHT_THEME : ADE_MONACO_DARK_THEME;
 }

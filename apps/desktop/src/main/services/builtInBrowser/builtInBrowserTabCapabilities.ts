@@ -1025,7 +1025,22 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     capture: async (tabId, maxWidth) => {
       const tab = tabById(tabId);
       if (!tab || tab.webContents.isDestroyed()) return null;
-      const image = await tab.webContents.capturePage(undefined, { stayHidden: true });
+      // `stayHidden` is deliberately FALSE, and it is the whole reason the card
+      // paints at all.
+      //
+      // Parking a view off-screen keeps a surface Chromium already has; it does
+      // not create one. A tab the panel has never shown — an agent's freshly
+      // opened tab, a tab switched to while the pane was on Terminal, the very
+      // case the corner card exists for — therefore has no compositor frame,
+      // and `capturePage({ stayHidden: true })` resolves an EMPTY image against
+      // it forever. Silently: `isEmpty()` is not an error, so the loop kept
+      // ticking and the card stayed black with a live dot on it.
+      //
+      // Omitting the flag makes Electron raise the capturer count and treat the
+      // page as visible for the duration of the capture, which is what forces
+      // the frame to exist. The page being "visible" while somebody is watching
+      // a live preview of it is also the honest answer for `visibilitychange`.
+      const image = await tab.webContents.capturePage();
       if (image.isEmpty()) return null;
       const size = image.getSize();
       // Downscale in main, not in the renderer: shipping a full-resolution

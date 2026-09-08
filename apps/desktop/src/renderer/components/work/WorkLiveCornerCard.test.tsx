@@ -502,9 +502,40 @@ describe("WorkLiveCornerCard chrome", () => {
     expect(pill?.className).toContain("group-hover:opacity-100");
     // The pill is the drag handle; the picture underneath is not.
     expect(pill?.className).toContain("cursor-grab");
-    // …and it carries the name and the last-action caption.
-    expect(pill?.textContent).toContain("Browser");
+    // …and it leads with the PAGE. The tool's own name is already spelled by
+    // the icon beside it, in the tool's hue; which of an agent's several tabs
+    // this is a picture of was the fact the pill did not carry.
     expect(pill?.textContent).toContain("Sign in");
+    expect(pill?.textContent).not.toContain("Browser");
+    // A drag that starts on the pill must not select the pill's own label.
+    expect(card.className).toContain("select-none");
+  });
+
+  it("leads the pill with the page and follows it with the last action", async () => {
+    // The review's example, exactly: `example.test · Closed find · 3m`.
+    const card = await showTab({ title: null });
+    const pill = card.querySelector("[data-live-card-pill]");
+    // No title yet, so the HOST — never the raw URL, which does not fit and
+    // reads as a log line rather than as an identity.
+    expect(pill?.textContent).toContain("example.test");
+    expect(pill?.textContent).not.toContain("https://");
+
+    emitBrowserEvent(traceEvent("trace-1", "stopFindInPage", ""));
+    await waitFor(() => expect(pill?.textContent).toContain("Closed find"));
+    const text = pill?.textContent ?? "";
+    expect(text.indexOf("example.test")).toBeLessThan(text.indexOf("Closed find"));
+  });
+
+  it("rests on a neutral dot rather than on the tool's own hue", async () => {
+    // Cyan at 8px, floating over the conversation, read as a status light that
+    // meant something. Rest is the one state that means nothing, so it gets the
+    // same idle grey the rest of the chat uses — leaving red (recording) and
+    // amber (needs you) as the only colours on the card that carry news.
+    const card = await showTab({});
+    const dot = restDot(card);
+    expect(dot?.dataset.liveCardStatus).toBe("idle");
+    expect(dot?.getAttribute("style") ?? "").not.toContain("#22d3ee");
+    expect(dot?.className).toContain("bg-fg/25");
   });
 
   it("turns the dot red while the tab is recording", async () => {

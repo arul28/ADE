@@ -38,7 +38,7 @@ import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
-import { isAvailableWorkSidebarTab, workToolContextLabel } from "./workTools";
+import { isAvailableWorkSidebarTab, workToolContextLabel, workToolLabel } from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
@@ -303,11 +303,13 @@ export function WorkSidebar({
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
+    // The catalogue's names, not literals: the banner is the one place the pane
+    // used to call the simulator something the header and the picker do not.
     if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return laneMismatchMessage("App Control", appControlSession.laneId, laneId, scopedLanes);
+      return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
     }
     if (effectiveTool === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, scopedLanes);
+      return laneMismatchMessage(workToolLabel("ios"), iosSession.laneId, laneId, scopedLanes);
     }
     return null;
   }

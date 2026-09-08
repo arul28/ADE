@@ -592,7 +592,7 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This iOS Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
@@ -667,7 +667,7 @@ describe("WorkSidebar context targets", () => {
     renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
 
     const dot = await screen.findByRole("button", {
-      name: "Switch to iOS Simulator — iPhone 17 Pro",
+      name: "Switch to Simulator — iPhone 17 Pro",
     });
     fireEvent.click(dot);
     expect(onTabChange).toHaveBeenCalledWith("ios");

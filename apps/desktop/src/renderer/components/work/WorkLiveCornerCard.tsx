@@ -44,12 +44,14 @@ import {
   normalizeWorkLiveCardPosition,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
+  workLiveBottomReserve,
   workLiveCardDragConstraints,
   workLiveCardFits,
   workLiveCardPositionFromRect,
   workLiveCardRect,
   workLiveCardSize,
   workLivePreviewMaxWidth,
+  WORK_LIVE_CARD_AVOID_SELECTOR,
   workLiveScrubFrameKey,
   workLiveScrubIndex,
   workLiveSource,
@@ -445,21 +447,52 @@ export function WorkLiveCornerCard({
     return () => observer.disconnect();
   }, []);
 
-  // The card sits ABOVE the composer, so it has to know how tall the composer
-  // is. Measured rather than assumed: the composer grows with chips, attached
-  // context and a multi-line draft.
+  /*
+    The card sits ABOVE whatever is parked at the bottom of the chat column —
+    the composer, and anything that opts in with `data-work-live-card-avoid`.
+
+    Measured as viewport RECTS against the host's own rect, not as
+    `offsetHeight` of the first selector match: several chat panes stay mounted
+    at once, and the previous version happily reserved space for a hidden
+    empty-state composer belonging to a different session (or, when the live
+    composer rendered as a shell footer without the attribute, reserved nothing
+    at all and parked the card on top of it).
+  */
   useEffect(() => {
     const host = hostRef.current;
     if (!host || typeof ResizeObserver === "undefined") return undefined;
-    const composer = host.parentElement?.querySelector<HTMLElement>("[data-chat-composer-wrapper]") ?? null;
-    if (!composer) {
-      setBottomReserve(0);
-      return undefined;
-    }
-    const observer = new ResizeObserver(() => setBottomReserve(composer.offsetHeight));
-    observer.observe(composer);
-    setBottomReserve(composer.offsetHeight);
-    return () => observer.disconnect();
+    const root = host.parentElement ?? host;
+    let frame: number | null = null;
+    const observed = new Set<Element>();
+    const measure = () => {
+      frame = null;
+      const hostRect = host.getBoundingClientRect();
+      const obstructions: { top: number; bottom: number; height: number }[] = [];
+      for (const element of root.querySelectorAll<HTMLElement>(WORK_LIVE_CARD_AVOID_SELECTOR)) {
+        const rect = element.getBoundingClientRect();
+        obstructions.push({ top: rect.top, bottom: rect.bottom, height: rect.height });
+        // Observed lazily: a composer that grows with a draft has to re-measure,
+        // and one that has not been rendered yet cannot be observed up front.
+        if (observed.has(element)) continue;
+        observer.observe(element);
+        observed.add(element);
+      }
+      setBottomReserve(workLiveBottomReserve({
+        host: { top: hostRect.top, bottom: hostRect.bottom, height: hostRect.height },
+        obstructions,
+      }));
+    };
+    const schedule = () => {
+      if (frame != null) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(host);
+    measure();
+    return () => {
+      if (frame != null) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [visible]);
 
   const position = useMemo(
@@ -645,14 +678,26 @@ export function WorkLiveCornerCard({
   ), [scrubBuffer, scrubFrameId]);
   const ownerLabel = source?.ownerLabel ?? null;
 
+  /**
+   * What the card is a picture OF — `example.com`, the app under App Control,
+   * the simulator's app. It leads the pill.
+   *
+   * The pill used to lead with the tool's own name and then print the action
+   * alone: "Browser · Closed find · 3m". Which browser, of the two tabs and
+   * three windows an agent may have opened, was the one thing it did not say —
+   * and the tool's name is already spelled by the icon beside it, in the tool's
+   * own hue. Page first, then what just happened to it.
+   */
+  const identity = source?.caption ?? definition?.label ?? null;
+
   const caption = useMemo(() => {
     if (scrubbedFrame) {
       return scrubbedFrame.caption
         ? `${scrubbedFrame.caption} · ${formatWorkLiveAge(nowTick - scrubbedFrame.at)}`
         : formatWorkLiveAge(nowTick - scrubbedFrame.at);
     }
-    // The tool's own most recent ACTION outranks whatever it is showing: "click
-    // 'Sign in' · 2s" is the news, the page title is the context.
+    // The most recent ACTION, in the slot after the page: "click 'Sign in' · 2s"
+    // is the news, and the page it happened to is now the line before it.
     if (tool === "browser" && lastTrace) {
       const label = formatWorkLiveActionCaption(lastTrace.action, lastTrace.target);
       return `${label} · ${formatWorkLiveAge(nowTick - (Date.parse(lastTrace.endedAt) || nowTick))}`;
@@ -660,8 +705,10 @@ export function WorkLiveCornerCard({
     if (tool === "app-control" && appControlAction) {
       return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
     }
-    return source?.caption ?? null;
-  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, source, tool]);
+    // Nothing has happened yet, and the page is already named to the left of
+    // this slot — repeating it here was the old fallback and said nothing twice.
+    return null;
+  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, tool]);
 
   const handoff = source?.handoff ?? null;
   const recording = source?.recording ?? null;
@@ -704,14 +751,21 @@ export function WorkLiveCornerCard({
    * The whole of the resting chrome, as one colour.
    *
    * An 8px dot cannot spell "recording" or "waiting for you", so it does the
-   * only thing that size affords: red beats amber beats the tool's own hue,
-   * worst news first. The words for it arrive with the pill.
+   * only thing that size affords: red beats amber beats rest, worst news first.
+   * The words for it arrive with the pill.
+   *
+   * Null is rest, and rest is NOT the tool's hue. The hue is a wayfinding accent
+   * for a 14px glyph in a list of six tools; blown up to a saturated cyan dot
+   * floating over the conversation it read as a status light that meant
+   * something, and it is the one state that means nothing. Rest falls through to
+   * `bg-fg/25` — the same idle grey the rest of the chat uses — which leaves red
+   * and amber the only colours on the card that carry news.
    */
   const statusColor = recording
     ? "var(--color-error)"
     : handoff
       ? "var(--color-warning)"
-      : hue;
+      : null;
   // The highlighted slot follows the frame the pointer holds, so an eviction
   // moves the highlight with the picture instead of leaving it behind.
   const scrubbedIndex = scrubbedFrame ? scrubBuffer.indexOf(scrubbedFrame) : -1;
@@ -768,6 +822,10 @@ export function WorkLiveCornerCard({
             data-work-live-card={tool}
             className={cn(
               "group pointer-events-auto absolute cursor-pointer overflow-hidden",
+              // The pill is a drag handle sitting on its own text, so a drag
+              // that starts on the label used to select the label — the caret
+              // and the blue highlight following the card across the column.
+              "select-none",
               "rounded-[var(--radius-lg)] bg-[var(--color-surface)] shadow-[var(--shadow-float)]",
               "transition-shadow duration-[120ms] ease-out motion-reduce:transition-none",
               "hover:shadow-[var(--shadow-card-hover)]",
@@ -872,9 +930,10 @@ export function WorkLiveCornerCard({
                 "shadow-[0_0_0_1px_rgba(0,0,0,0.45)]",
                 "transition-opacity duration-[120ms] ease-out motion-reduce:transition-none",
                 "group-hover:opacity-0 group-focus-within:opacity-0",
+                statusColor ? null : "bg-fg/25",
                 recording ? "[animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none" : null,
               )}
-              style={{ background: statusColor }}
+              style={statusColor ? { background: statusColor } : undefined}
             />
 
             {/*
@@ -902,8 +961,16 @@ export function WorkLiveCornerCard({
               {Icon ? (
                 <Icon size={14} weight="duotone" className="shrink-0" style={{ color: hue }} />
               ) : null}
-              <span className="shrink-0 truncate text-[11px] font-medium text-fg">
-                {definition.label}
+              {/*
+                `min-w-0` + a shrink budget rather than `shrink-0`: a page title
+                can be sixty characters, and pinning it at full width pushed the
+                action, the ✕ and everything else out of a 320px pill.
+              */}
+              <span
+                className="min-w-0 shrink truncate text-[11px] font-medium text-fg"
+                title={identity ?? undefined}
+              >
+                {identity ?? definition.label}
                 {ownerLabel ? <span className="text-muted-fg"> · {ownerLabel}</span> : null}
               </span>
               <span

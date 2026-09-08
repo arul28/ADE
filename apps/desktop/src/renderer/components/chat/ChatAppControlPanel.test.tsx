@@ -322,9 +322,13 @@ describe("ChatAppControlPanel", () => {
     );
 
     // The empty state is the launchpad, not a dead end.
-    expect(await screen.findByRole("button", { name: "Pick an app to drive" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Pick an app" })).toBeTruthy();
     expect(screen.getByText("No app attached")).toBeTruthy();
-    expect(screen.getByText(/ade app-control launch/)).toBeTruthy();
+    // One line and one action. The CLI hint under the button was a third thing
+    // to read on a page whose whole job is the button.
+    expect(screen.queryByText(/ade app-control launch/)).toBeNull();
+    // …and the phrase is not repeated in the footer either.
+    expect(screen.queryAllByText(/no app/iu)).toHaveLength(1);
 
     await openAppPicker();
     fireEvent.click(screen.getByText("Help wire CDP"));

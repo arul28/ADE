@@ -26,6 +26,8 @@ export const IPC = {
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
   appZoomCommand: "ade.app.zoomCommand",
+  appMenuCommand: "ade.app.menuCommand",
+  appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
