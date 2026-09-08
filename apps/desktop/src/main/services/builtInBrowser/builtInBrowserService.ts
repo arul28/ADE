@@ -531,8 +531,13 @@ export class BuiltInBrowserNoTabError extends Error {
 }
 
 export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrowserNoTabError {
+  // The name branch is what catches an error that is not *this* module's
+  // instance — a second copy of the module, or an error rehydrated across a
+  // boundary. Because the predicate narrows to the class, whose `tabId` readers
+  // treat as `string | null`, that branch has to prove the field is actually
+  // there; without it a name-only match would hand the callers `undefined`.
   return error instanceof BuiltInBrowserNoTabError
-    || (error instanceof Error && error.name === "BuiltInBrowserNoTabError");
+    || (error instanceof Error && error.name === "BuiltInBrowserNoTabError" && "tabId" in error);
 }
 
 export function createBuiltInBrowserService(args: {
@@ -2894,6 +2899,16 @@ function createBuiltInBrowserWindowService(args: {
     // owner window with it on every platform. Handing the keyboard back is only
     // ever meant for a window the user is already in, so a window that is not
     // the foreground one is left alone rather than raised from the background.
+    //
+    // What that leaves behind, deliberately: parking neither detaches nor hides
+    // the view, so a page that had the caret keeps it while parked off screen.
+    // On a window that is not frontmost nothing else releases that focus, so
+    // when the user next activates the window Chromium restores focus to the
+    // last-focused `WebContents` — the invisible parked page — and keystrokes
+    // go there until they click something. There is no non-activating
+    // `WebContents.blur()` to fix this with; a real fix would have to hand
+    // focus back once the window next becomes focused. Raising a background
+    // window is the worse of the two, so the guard stays.
     if (!win.isFocused?.()) return;
     try {
       win.webContents?.focus?.();
