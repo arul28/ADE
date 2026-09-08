@@ -715,7 +715,7 @@ describe("windows DPAPI key unwrap", () => {
 
   it("reports a refused trusted-tool lookup as key_unavailable instead of shelling out anyway", () => {
     dpapi.resolveTrustedWindowsTool.mockImplementation(() => {
-      throw new TrustedWindowsToolError("powershell is not where Windows says it is");
+      throw new TrustedWindowsToolError("powershell", "powershell is not where Windows says it is");
     });
 
     expect(() =>

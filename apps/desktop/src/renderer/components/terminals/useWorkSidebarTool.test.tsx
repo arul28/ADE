@@ -2,6 +2,7 @@
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import { useAppStore } from "../../state/appStore";
 import { useWorkSidebarTool, workToolScopeKey } from "./useWorkSidebarTool";
 import {
@@ -150,7 +151,9 @@ describe("workToolRequests", () => {
 });
 
 describe("Work tool analytics", () => {
-  const capture = vi.fn(async () => undefined);
+  // Typed with the real preload signature so `mock.calls[0][0]` is the
+  // analytics payload rather than an untyped empty tuple.
+  const capture = vi.fn(async (_input: Omit<ProductAnalyticsCapture, "surface">) => undefined);
 
   beforeEach(() => {
     capture.mockClear();
