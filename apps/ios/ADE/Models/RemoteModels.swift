@@ -888,6 +888,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var awaitingInput: Bool?
   var pendingInputItemId: String? = nil
+  /// Live-only Codex non-blocking `requestUserInput`. Older hosts omit it.
+  /// Must not be treated as awaitingInput / pendingInputItemId.
+  var steeringInput: Bool? = nil
   /// Durable scheduled work managed by the paired ADE host. Older hosts omit it.
   var scheduledWork: [AgentChatScheduledWorkItem]? = nil
   /// True when this chat's durable schedules are paused. Older hosts omit it.
@@ -960,6 +963,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.summary == rhs.summary
       && lhs.awaitingInput == rhs.awaitingInput
       && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.steeringInput == rhs.steeringInput
       && lhs.scheduledWork == rhs.scheduledWork
       && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
       && lhs.nextWakeAt == rhs.nextWakeAt
@@ -4159,6 +4163,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var chatSessionId: String? = nil
   /// Current pending approval/input item id when the backing chat is waiting on the user.
   var pendingInputItemId: String? = nil
+  /// Live-only Codex non-blocking steering question. Older hosts omit it.
+  var steeringInput: Bool? = nil
   /// Present when this Work row is a Cursor Cloud chat. Cursor owns that
   /// agent's name, so ADE hides Rename.
   var cursorCloudAgentId: String? = nil
@@ -4211,6 +4217,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
       && lhs.chatSessionId == rhs.chatSessionId
       && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.steeringInput == rhs.steeringInput
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
@@ -4258,6 +4265,7 @@ extension TerminalSessionSummary {
     case chatIdleSinceAt
     case chatSessionId
     case pendingInputItemId
+    case steeringInput
     case cursorCloudAgentId
     case orchestrationRunId
     case orchestrationRole
@@ -4304,6 +4312,7 @@ extension TerminalSessionSummary {
     chatIdleSinceAt = try container.decodeIfPresent(String.self, forKey: .chatIdleSinceAt)
     chatSessionId = try container.decodeIfPresent(String.self, forKey: .chatSessionId)
     pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
+    steeringInput = try container.decodeIfPresent(Bool.self, forKey: .steeringInput)
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)

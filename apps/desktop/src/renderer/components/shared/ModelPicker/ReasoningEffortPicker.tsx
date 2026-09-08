@@ -1,7 +1,7 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
-import type { ModelDescriptor } from "../../../../shared/modelRegistry";
+import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
 import { useReasoningByFamily } from "./useReasoningByFamily";
@@ -214,7 +214,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [descriptor?.reasoningTiers],
   );
   const family = descriptor?.family;
-  const useCodex56Labels = /^gpt-5\.6-(?:sol|terra|luna)$/i.test(descriptor?.providerModelId ?? "");
+  const useCodex56Labels = usesCodexNamedEffortLabels(descriptor?.providerModelId);
 
   const displayedEffort = useMemo<string | null>(() => {
     const modelDefault = descriptor?.defaultReasoningEffort;

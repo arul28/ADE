@@ -176,6 +176,8 @@ import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
+  AgentChatCodexPlugin,
+  AgentChatCodexPluginsArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudeSessionInfo,
@@ -1958,6 +1960,9 @@ declare global {
         listClaudePlugins: (
           args?: AgentChatClaudePluginsArgs,
         ) => Promise<AgentChatClaudePlugin[]>;
+        listCodexPlugins: (
+          args?: AgentChatCodexPluginsArgs,
+        ) => Promise<AgentChatCodexPlugin[]>;
         reloadClaudePlugins: (
           args: AgentChatReloadClaudePluginsArgs,
         ) => Promise<AgentChatReloadClaudePluginsResult>;

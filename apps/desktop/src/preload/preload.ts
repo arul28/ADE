@@ -442,6 +442,8 @@ import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
+  AgentChatCodexPlugin,
+  AgentChatCodexPluginsArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudeSessionInfo,
@@ -7088,6 +7090,12 @@ const adeBridge = {
     ): Promise<AgentChatClaudePlugin[]> =>
       callProjectRuntimeActionOr("chat", "listClaudePlugins", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListClaudePlugins, args),
+      ),
+    listCodexPlugins: async (
+      args: AgentChatCodexPluginsArgs = {},
+    ): Promise<AgentChatCodexPlugin[]> =>
+      callProjectRuntimeActionOr("chat", "listCodexPlugins", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListCodexPlugins, args),
       ),
     reloadClaudePlugins: async (
       args: AgentChatReloadClaudePluginsArgs,

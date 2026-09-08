@@ -8,6 +8,8 @@ import {
   latestPendingApproval,
   movePendingQuestionFocus,
   movePendingQuestionOption,
+  pendingApprovalCapturesPrompt,
+  pendingApprovalOwnsQuestionKeys,
   pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
@@ -505,5 +507,33 @@ describe("pendingInput", () => {
     expect(pendingQuestionSelectionValue(baseRequest, selected)).toBe("manual");
     expect(selected.answers).toEqual({});
     expect(selected.pendingDigitSelection).toBeNull();
+  });
+});
+
+describe("pendingApprovalCapturesPrompt", () => {
+  it("leaves the composer free for non-blocking Codex steering", () => {
+    expect(pendingApprovalCapturesPrompt(questionApproval({ ...baseRequest, blocking: false }))).toBe(false);
+    expect(pendingApprovalCapturesPrompt(questionApproval())).toBe(true);
+    expect(pendingApprovalCapturesPrompt({
+      itemId: "item-approval",
+      description: "Allow edit",
+      highStakes: false,
+      mode: "approval",
+    })).toBe(true);
+    expect(pendingApprovalCapturesPrompt(null)).toBe(false);
+  });
+});
+
+describe("pendingApprovalOwnsQuestionKeys", () => {
+  it("keeps empty-prompt keys on non-blocking Codex steering cards", () => {
+    expect(pendingApprovalOwnsQuestionKeys(questionApproval({ ...baseRequest, blocking: false }))).toBe(true);
+    expect(pendingApprovalOwnsQuestionKeys(questionApproval())).toBe(true);
+    expect(pendingApprovalOwnsQuestionKeys({
+      itemId: "item-approval",
+      description: "Allow edit",
+      highStakes: false,
+      mode: "approval",
+    })).toBe(false);
+    expect(pendingApprovalOwnsQuestionKeys(null)).toBe(false);
   });
 });

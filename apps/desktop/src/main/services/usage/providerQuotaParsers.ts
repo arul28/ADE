@@ -222,6 +222,20 @@ export function parseCodexRateLimitWindows(data: Record<string, unknown>): Usage
   return parseCodexRateLimitSnapshot(data).windows;
 }
 
+/** Plus/Team 5-hour window used percent from the live `account/rateLimits` payload. */
+export function codexFiveHourUsedPercent(payload: unknown): number | null {
+  if (!isRecord(payload)) return null;
+  const window = parseCodexRateLimitSnapshot(payload).windows
+    .find((entry) => entry.windowType === "five_hour");
+  return typeof window?.percentUsed === "number" ? window.percentUsed : null;
+}
+
+export const CODEX_PLAN_LIMIT_NOTICE_PERCENT = 50;
+
+export function shouldEmitCodexApproachingPlanLimit(percentUsed: number | null | undefined): boolean {
+  return typeof percentUsed === "number" && percentUsed >= CODEX_PLAN_LIMIT_NOTICE_PERCENT;
+}
+
 function codexWindowTypeFromDuration(value: number | null): UsageWindow["windowType"] | null {
   if (value == null) return null;
   if (value <= 360) return "five_hour";

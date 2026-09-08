@@ -190,6 +190,7 @@ export function toWorkSessionSummary(
     summary: session.summary ?? summary?.summary ?? null,
     runtimeState: session.runtimeState ?? summary?.runtimeState ?? fallbackRuntimeState(session),
     pendingInputItemId: session.pendingInputItemId ?? summary?.pendingInputItemId ?? null,
+    ...(session.steeringInput || summary?.steeringInput ? { steeringInput: true } : {}),
     settledAt: session.settledAt ?? null,
     statusNote: session.statusNote ?? null,
     attentionRequestedAt: session.attentionRequestedAt ?? null,

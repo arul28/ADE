@@ -1116,6 +1116,16 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
 	      { name: "laneId", type: "string", placeholder: "{{trigger.lane.id}}" },
 	    ],
 	  },
+	  {
+	    domain: "chat",
+	    action: "listCodexPlugins",
+	    label: "List Codex plugins",
+	    description: "Return installed Codex plugins from a live Codex chat runtime.",
+	    params: [
+	      { name: "sessionId", type: "string" },
+	      { name: "laneId", type: "string" },
+	    ],
+	  },
 		  {
 		    domain: "chat",
 		    action: "reloadClaudePlugins",

@@ -1308,34 +1308,40 @@ describe("interface draft setup", () => {
     expect(initialModelState("chat").interfaceMode).toBe("chat");
   });
 
-  it("starts new TUI chats on GPT-5.6 Sol with its low default", () => {
+  it("starts new TUI chats on GPT-6 Astra with its low default", () => {
     expect(initialModelState("chat")).toMatchObject({
       provider: "codex",
-      model: "gpt-5.6-sol",
-      modelId: "openai/gpt-5.6-sol",
-      displayName: "GPT-5.6 Sol",
+      model: "gpt-6-astra",
+      modelId: "openai/gpt-6-astra",
+      displayName: "GPT-6 Astra",
       reasoningEffort: "low",
     });
     expect(registryModelsForProvider("codex").slice(0, 4).map((model) => model.modelId)).toEqual([
+      "openai/gpt-6-astra",
       "openai/gpt-5.6-sol",
       "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
-      "openai/gpt-5.5",
     ]);
   });
 
   it("shows the complete GPT-5.6 effort ladders from runtime and registry metadata", () => {
     const modelState = initialModelState("chat");
     const models = [{
-      id: "gpt-5.6-sol",
-      modelId: "openai/gpt-5.6-sol",
-      displayName: "GPT-5.6 Sol",
+      id: "gpt-6-astra",
+      modelId: "openai/gpt-6-astra",
+      displayName: "GPT-6 Astra",
       isDefault: true,
-      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
         .map((effort) => ({ effort, description: effort })),
     }];
 
-    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(modelReasoningEfforts({
+      ...modelState,
+      model: "gpt-6-astra",
+      modelId: "openai/gpt-6-astra",
+      displayName: "GPT-6 Astra",
+    }, [])).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(modelReasoningEfforts({
       ...modelState,
       model: "gpt-5.6-terra",
@@ -1357,7 +1363,7 @@ describe("interface draft setup", () => {
       interfaceEditable: true,
     }).find((row) => row.kind === "reasoning")).toMatchObject({
       value: "Light",
-      detail: "Light, Medium, High, Extra High, Max, Ultra",
+      detail: "Light, Medium, High, Extra High, Max",
     });
   });
 

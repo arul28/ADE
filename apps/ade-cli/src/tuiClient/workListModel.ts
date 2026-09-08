@@ -302,6 +302,10 @@ function buildSessionRow(args: {
       snoozeWakeLabel: snoozed ? snoozeWakeLabel(summary.snoozedUntil, args.nowMs) : null,
     },
   );
+  const statusWithSteering = status && status.glyph === "working"
+    && (args.session.steeringInput || summary.steeringInput)
+    ? { ...status, label: `${status.label} ?` }
+    : status;
   const settled = canonicalStatusBucket(phase) === "settled";
   const title = primarySessionLabel(summary);
 
@@ -313,10 +317,10 @@ function buildSessionRow(args: {
     laneName: args.laneName,
     machine: null,
     title,
-    status,
-    tone: status?.tone ?? "neutral",
-    glyph: status?.glyph ?? null,
-    elapsedLabel: sessionElapsedLabel(summary, status, phase, canonical.liveness, args.nowMs),
+    status: statusWithSteering,
+    tone: statusWithSteering?.tone ?? "neutral",
+    glyph: statusWithSteering?.glyph ?? null,
+    elapsedLabel: sessionElapsedLabel(summary, statusWithSteering, phase, canonical.liveness, args.nowMs),
     // Settled rows swap the status word for when they ended — the only fact in
     // the tail worth reading.
     timestampLabel: status === null

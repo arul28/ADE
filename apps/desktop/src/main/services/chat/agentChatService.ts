@@ -113,6 +113,11 @@ import {
   parseCodexUserShellDraft,
   shouldCoalesceCodexCheckIn,
 } from "../../../shared/codexComposerCommands";
+import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
+import {
+  codexComputerUseToolCall,
+} from "../../../shared/codexComputerUseStatus";
+import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
@@ -246,6 +251,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
+  AgentChatCodexPlugin,
+  AgentChatCodexPluginsArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatRecoverTurnArgs,
@@ -454,6 +461,7 @@ import {
 } from "../../../shared/chatTurnStatus";
 import {
   flattenAnswerForSingleStringProvider,
+  isSteeringPendingRequest,
   ownQuestionValue,
   sanitizeAnswersForTranscript,
 } from "../../../shared/pendingInputAnswers";
@@ -795,6 +803,10 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import {
+  codexFiveHourUsedPercent,
+  shouldEmitCodexApproachingPlanLimit,
+} from "../usage/providerQuotaParsers";
 import type { CursorCloudIngressEventRecord } from "../automations/cursorCloudIngressService";
 import {
   createDroidSdkEventMapperState,
@@ -1776,6 +1788,8 @@ type CodexRuntime = {
   sendError: (id: string | number, message: string, code?: number) => void;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   rateLimits: CodexRateLimits | null;
+  /** Set after the once-per-runtime "Approaching Codex plan limit" notice. */
+  rateLimitWarningEmitted: boolean;
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
   planModeFallbackNotified: boolean;
@@ -2790,13 +2804,26 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (managed.localPendingInputs.size > 0) return true;
   const runtime = managed.runtime;
   if (!runtime) return false;
-  if (runtime.kind === "codex") return runtime.approvals.size > 0;
+  if (runtime.kind === "codex") {
+    for (const pending of runtime.approvals.values()) {
+      if (!isSteeringPendingRequest(pending.request)) return true;
+    }
+    return false;
+  }
   if (runtime.kind === "claude") return runtime.approvals.size > 0;
   if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   // Pi and the ACP providers both raise their cards through
   // `localPendingInputs`, which the check above already covered.
   if (runtime.kind === "pi" || runtime.kind === "acp") return false;
+  return false;
+}
+
+function hasLiveSteeringInput(managed: ManagedChatSession | null | undefined): boolean {
+  if (!managed?.runtime || managed.runtime.kind !== "codex") return false;
+  for (const pending of managed.runtime.approvals.values()) {
+    if (isSteeringPendingRequest(pending.request)) return true;
+  }
   return false;
 }
 
@@ -3830,7 +3857,7 @@ const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
 const DEFAULT_DROID_DESCRIPTOR = getDefaultModelDescriptor("droid");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.6-sol";
+const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-6-astra";
 const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
@@ -4390,9 +4417,9 @@ function codexThreadConfigArgs(
       ...(baseMcpServers ?? {}),
     }
     : null;
-  if (!effort && !mcpServers) return {};
   return {
     config: {
+      tools: { update_plan: { enabled: true } },
       ...(effort ? { model_reasoning_effort: effort } : {}),
       ...(mcpServers ? { mcp_servers: mcpServers } : {}),
     },
@@ -6899,10 +6926,18 @@ function codexTurnPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): R
 }
 
 type CodexThreadLifecycleResponse = {
-  thread?: { id?: string; name?: string | null; title?: string | null; threadName?: string | null };
+  thread?: {
+    id?: string;
+    name?: string | null;
+    title?: string | null;
+    threadName?: string | null;
+    model?: string | null;
+    reasoningEffort?: unknown;
+  };
   name?: string | null;
   title?: string | null;
   threadName?: string | null;
+  model?: string | null;
   approvalPolicy?: unknown;
   sandbox?: unknown;
   reasoningEffort?: unknown;
@@ -6966,6 +7001,13 @@ function applyCodexEffectiveThreadState(
     managed.session.codexServiceTier = normalizeCodexServiceTier(response.serviceTier);
   }
 
+  const threadModel = stringOrNull(response.thread?.model ?? response.model);
+  if (threadModel) {
+    managed.session.model = threadModel;
+    const descriptor = resolveModelDescriptorForProvider(threadModel, "codex");
+    if (descriptor) managed.session.modelId = descriptor.id;
+  }
+
   const requestedCodexPolicy = options.requestedCodexPolicy ?? null;
   const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
   const sandbox = normalizeCodexRuntimeSandbox(response.sandbox);
@@ -6988,7 +7030,9 @@ function applyCodexEffectiveThreadState(
   const reasoningEffort = validateReasoningEffort(
     "codex",
     normalizeReasoningEffort(
-      typeof response.reasoningEffort === "string" ? response.reasoningEffort : null,
+      typeof (response.thread?.reasoningEffort ?? response.reasoningEffort) === "string"
+        ? String(response.thread?.reasoningEffort ?? response.reasoningEffort)
+        : null,
     ),
   );
   if (reasoningEffort) {
@@ -17933,6 +17977,19 @@ export function createAgentChatService(args: {
     params: Record<string, unknown>,
   ): void => {
     const status = normalizeCodexMcpStartupStatus(params);
+    const computerUseCall = codexComputerUseToolCall({
+      platform: process.platform,
+      serverName: status.serverName,
+      failed: status.failed,
+    });
+    if (computerUseCall) {
+      const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
+      emitChatEvent(managed, {
+        type: "tool_call",
+        ...computerUseCall,
+        ...(turnId ? { turnId } : {}),
+      });
+    }
     if (!status.failed) {
       logger.debug("agent_chat.codex_mcp_startup_status", {
         sessionId: managed.session.id,
@@ -18843,7 +18900,10 @@ export function createAgentChatService(args: {
   const settleCodexPendingInputs = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
-    options: { preserveRecoverablePlanApprovals?: boolean } = {},
+    options: {
+      preserveRecoverablePlanApprovals?: boolean;
+      retainPlanApprovals?: boolean;
+    } = {},
   ): void => {
     const resolvedItemIds = new Set<string>();
     const resolveOnce = (itemId: string, turnId: string | null): void => {
@@ -18865,6 +18925,16 @@ export function createAgentChatService(args: {
     const stagedItemIds = new Set(stagedFollowups.map((followup) => followup.itemId));
 
     for (const [itemId, pending] of [...runtime.approvals]) {
+      // A completed Codex turn still owns unanswered plan cards. Keep the
+      // waiter so persist can write `awaitingInput` and the user can answer
+      // without rebuilding from the transcript. Teardown uses
+      // `preserveRecoverablePlanApprovals` instead: drop the waiter on a dying
+      // process, keep the card.
+      if (
+        options.retainPlanApprovals
+        && pending.kind === "plan_approval"
+        && !stagedItemIds.has(itemId)
+      ) continue;
       runtime.approvals.delete(itemId);
       // The entry goes either way — the runtime holding it is finished. What
       // the flag preserves is the *card*, by withholding its receipt, which is
@@ -26963,6 +27033,44 @@ export function createAgentChatService(args: {
     }
   };
 
+  const emitCodexMcpEvent = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    args: { serverName: string; event: string; itemId: string },
+  ): void => {
+    const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
+    emitChatEvent(managed, {
+      type: "tool_call",
+      tool: "mcp_event",
+      args: { server: args.serverName, event: args.event },
+      itemId: args.itemId,
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const applyCodexRateLimitPayload = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    payload: unknown,
+    turnId?: string,
+  ): void => {
+    const record = asRecord(payload);
+    const rateLimits = normalizeCodexRateLimits(record?.rateLimits ?? payload);
+    if (rateLimits) runtime.rateLimits = rateLimits;
+    if (runtime.rateLimitWarningEmitted || !shouldEmitCodexApproachingPlanLimit(codexFiveHourUsedPercent(payload))) {
+      return;
+    }
+    runtime.rateLimitWarningEmitted = true;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "rate_limit",
+      severity: "info",
+      status: "allowed_warning",
+      message: "Approaching Codex plan limit",
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
   const handleCodexServerRequest = (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): void => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const id = payload.id;
@@ -27267,49 +27375,46 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (method === "item/tool/requestUserInput") {
-      const params = (payload.params as {
-        itemId?: string;
-        threadId?: string;
-        turnId?: string;
-        autoResolutionMs?: number | null;
-        questions?: Array<{
-          id?: string;
-          header?: string;
-          question?: string;
-          isOther?: boolean;
-          isSecret?: boolean;
-          multiSelect?: boolean;
-          options?: Array<{ label?: string; description?: string; preview?: string; previewFormat?: "markdown" | "html" }> | null;
-        }>;
-      } | null) ?? {};
+    if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
+      const params = asRecord(payload.params) ?? {};
+      const blocking = readCodexIsBlocking(params);
       const itemId = String(params.itemId ?? randomUUID());
       const questions: PendingInputQuestion[] = Array.isArray(params.questions)
-        ? params.questions.flatMap((question, index) => {
-            const questionId = typeof question?.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`;
-            const questionText = typeof question?.question === "string" ? question.question.trim() : "";
+        ? params.questions.flatMap((questionValue, index) => {
+            const question = asRecord(questionValue);
+            if (!question) return [];
+            const questionId = typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`;
+            const questionText = typeof question.question === "string" ? question.question.trim() : "";
             if (!questionText.length) return [];
-            const options = Array.isArray(question?.options)
-              ? question.options.flatMap((option) => {
-                  const label = typeof option?.label === "string" ? option.label.trim() : "";
+            const options = Array.isArray(question.options)
+              ? question.options.flatMap((optionValue) => {
+                  const option = asRecord(optionValue);
+                  if (!option) return [];
+                  const label = typeof option.label === "string" ? option.label.trim() : "";
                   if (!label.length) return [];
-                  const description = typeof option?.description === "string" ? option.description.trim() : "";
-                  const preview = typeof option?.preview === "string" ? option.preview : "";
+                  const description = typeof option.description === "string" ? option.description.trim() : "";
+                  const preview = typeof option.preview === "string" ? option.preview : "";
+                  const previewFormat: "markdown" | "html" | undefined =
+                    option.previewFormat === "markdown"
+                      ? "markdown"
+                      : option.previewFormat === "html"
+                        ? "html"
+                        : undefined;
                   return [{
                     label,
                     value: label,
                     ...(description ? { description } : {}),
-                    ...(preview.trim().length ? { preview, ...(option?.previewFormat ? { previewFormat: option.previewFormat } : {}) } : {}),
+                    ...(preview.trim().length ? { preview, ...(previewFormat ? { previewFormat } : {}) } : {}),
                   }];
                 })
               : [];
             return [{
               id: questionId,
-              header: typeof question?.header === "string" && question.header.trim().length ? question.header.trim() : `Question ${index + 1}`,
+              header: typeof question.header === "string" && question.header.trim().length ? question.header.trim() : `Question ${index + 1}`,
               question: questionText,
-              ...(question?.multiSelect === true ? { multiSelect: true } : {}),
-              allowsFreeform: question?.isOther === true || options.length === 0,
-              isSecret: question?.isSecret === true,
+              ...(question.multiSelect === true ? { multiSelect: true } : {}),
+              allowsFreeform: question.isOther === true || options.length === 0,
+              isSecret: question.isSecret === true,
               ...(options.length ? { options } : {}),
             }];
           })
@@ -27323,8 +27428,9 @@ export function createAgentChatService(args: {
         description: questions[0]?.question ?? "Codex requested input",
         questions,
         allowsFreeform: questions.some((question) => question.allowsFreeform !== false),
-        blocking: true,
-        canProceedWithoutAnswer: typeof params.autoResolutionMs === "number" && params.autoResolutionMs > 0,
+        blocking,
+        canProceedWithoutAnswer: !blocking
+          || (typeof params.autoResolutionMs === "number" && params.autoResolutionMs > 0),
         autoResolutionMs: typeof params.autoResolutionMs === "number" ? params.autoResolutionMs : null,
         turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
         providerMetadata: {
@@ -27364,6 +27470,18 @@ export function createAgentChatService(args: {
       || method === "account/chatgptAuthTokens/refresh"
     ) {
       runtime.sendError(id, `ADE does not provide Codex app-server capability '${method}'.`, -32601);
+      return;
+    }
+
+    if (method === "mcpServer/event/stream/start" || method === "mcpServer/event/stream/stop") {
+      const streamParams = asRecord(payload.params) ?? {};
+      const serverName = stringOrNull(streamParams.serverName ?? streamParams.server) ?? "MCP";
+      emitCodexMcpEvent(managed, runtime, {
+        serverName,
+        event: method.endsWith("/stop") ? "stream stop" : "stream start",
+        itemId: `mcp-event:${serverName}:${method}`,
+      });
+      runtime.sendResponse(id, {});
       return;
     }
 
@@ -30400,11 +30518,7 @@ export function createAgentChatService(args: {
     const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
     markSessionIdleWithFreshCache(managed);
     drainPendingPlanFollowups(managed, runtime);
-    for (const [approvalId, pending] of runtime.approvals) {
-      if (pending.kind !== "plan_approval") {
-        runtime.approvals.delete(approvalId);
-      }
-    }
+    settleCodexPendingInputs(managed, runtime, { retainPlanApprovals: true });
 
     const error = asRecord(turn.error);
     const errorMessage = stringOrNull(error?.message);
@@ -30932,11 +31046,7 @@ export function createAgentChatService(args: {
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
-      for (const [approvalId, pending] of runtime.approvals) {
-        if (pending.kind !== "plan_approval") {
-          runtime.approvals.delete(approvalId);
-        }
-      }
+      settleCodexPendingInputs(managed, runtime, { retainPlanApprovals: true });
 
       if (status === "failed" && turn?.error?.message) {
         emitCodexErrorOnce(managed, runtime, {
@@ -31328,6 +31438,33 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "thread/settings/updated") {
+      applyCodexEffectiveThreadState(managed, {
+        ...(asRecord(params.thread)
+          ? { thread: params.thread as CodexThreadLifecycleResponse["thread"] }
+          : {}),
+        model: typeof params.model === "string" ? params.model : undefined,
+        reasoningEffort: params.reasoningEffort,
+        approvalPolicy: params.approvalPolicy,
+        sandbox: params.sandbox,
+        serviceTier: params.serviceTier,
+      });
+      persistChatState(managed);
+      return;
+    }
+
+    if (typeof method === "string" && method.startsWith("mcpServer/event/")) {
+      const serverName = stringOrNull(params.serverName ?? params.server) ?? "MCP";
+      const eventLabel = stringOrNull(params.message ?? params.event ?? params.name)
+        ?? method.replace(/^mcpServer\/event\//, "");
+      emitCodexMcpEvent(managed, runtime, {
+        serverName,
+        event: eventLabel,
+        itemId: `mcp-event:${serverName}:${stringOrNull(params.id) ?? method}`,
+      });
+      return;
+    }
+
     if (method === "mcpServer/startupStatus/updated") {
       handleCodexMcpStartupStatus(managed, runtime, params);
       return;
@@ -31368,22 +31505,12 @@ export function createAgentChatService(args: {
     }
 
     if (method === "account/rateLimits/updated") {
-      const rateLimits = normalizeCodexRateLimits(params.rateLimits);
-      if (rateLimits) {
-        runtime.rateLimits = rateLimits;
-        const pct = rateLimits.limit && rateLimits.remaining != null
-          ? Math.round((rateLimits.remaining / rateLimits.limit) * 100)
-          : null;
-        if (pct !== null && pct <= 15) {
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "rate_limit",
-            severity: "warning",
-            message: `Codex rate limit: ${rateLimits.remaining}/${rateLimits.limit} remaining${rateLimits.resetAt ? ` (resets ${rateLimits.resetAt})` : ""}`,
-            turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-          });
-        }
-      }
+      applyCodexRateLimitPayload(
+        managed,
+        runtime,
+        params,
+        typeof params.turnId === "string" ? params.turnId : undefined,
+      );
       return;
     }
 
@@ -31500,6 +31627,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  const refreshCodexRateLimits = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): void => {
+    runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
+      .then((res) => {
+        applyCodexRateLimitPayload(managed, runtime, res);
+      })
+      .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
@@ -31598,6 +31736,7 @@ export function createAgentChatService(args: {
       pendingSteers: [],
       slashCommands: [],
       rateLimits: null,
+      rateLimitWarningEmitted: false,
       collaborationModes: null,
       collaborationModesReady: null,
       planModeFallbackNotified: false,
@@ -31997,12 +32136,7 @@ export function createAgentChatService(args: {
     void refreshCodexSkills(managed, runtime);
 
     // Fetch initial rate limits.
-    runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
-      .then((res) => {
-        const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
-        if (rateLimits) runtime.rateLimits = rateLimits;
-      })
-      .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+    refreshCodexRateLimits(managed, runtime);
   };
 
   const stringifyClaudeToolOutput = (output: unknown): string => {
@@ -42480,12 +42614,7 @@ export function createAgentChatService(args: {
             // Fetch skills after resume if not already fetched
             if (runtime.slashCommands.length === 0) {
               void refreshCodexSkills(managed, runtime);
-              runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
-                .then((res) => {
-                  const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
-                  if (rateLimits) runtime.rateLimits = rateLimits;
-                })
-                .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+              refreshCodexRateLimits(managed, runtime);
             }
           } catch (resumeError) {
             logger.warn("agent_chat.thread_resume_failed", {
@@ -44815,12 +44944,7 @@ export function createAgentChatService(args: {
           // Fetch skills after resume if not already fetched
           if (runtime.slashCommands.length === 0) {
             void refreshCodexSkills(managed, runtime);
-            runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
-              .then((res) => {
-                const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
-                if (rateLimits) runtime.rateLimits = rateLimits;
-              })
-              .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+            refreshCodexRateLimits(managed, runtime);
           }
         } catch (resumeError) {
           logger.warn("agent_chat.resume_session_thread_failed", {
@@ -45639,7 +45763,13 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     if (!runtime) return null;
     switch (runtime.kind) {
-      case "codex":
+      case "codex": {
+        for (const [approvalId, pending] of runtime.approvals) {
+          if (isSteeringPendingRequest(pending.request)) continue;
+          if (typeof approvalId === "string" && approvalId.trim().length) return approvalId;
+        }
+        return null;
+      }
       case "claude": {
         const approval = runtime.approvals.keys().next().value;
         return typeof approval === "string" && approval.trim().length ? approval : null;
@@ -45987,6 +46117,7 @@ export function createAgentChatService(args: {
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
+      ...(hasLiveSteeringInput(liveManaged) ? { steeringInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {}),
@@ -50591,6 +50722,26 @@ export function createAgentChatService(args: {
     return discoverClaudePlugins(cwd);
   };
 
+  const listCodexPlugins = async (
+    args: AgentChatCodexPluginsArgs = {},
+  ): Promise<AgentChatCodexPlugin[]> => {
+    const managed = args.sessionId?.trim()
+      ? managedSessions.get(args.sessionId.trim()) ?? null
+      : [...managedSessions.values()].find((session) => session.runtime?.kind === "codex") ?? null;
+    const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
+    if (!runtime) return [];
+    try {
+      await runtime.request("plugin/reconcile", {});
+    } catch {
+      // Under-development on some 0.153.x builds; listing still works.
+    }
+    try {
+      return parseCodexPluginList(await runtime.request("plugin/list", {}));
+    } catch {
+      return [];
+    }
+  };
+
   const reloadClaudePlugins = async ({ sessionId }: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = ensureClaudeSessionRuntime(managed);
@@ -51929,6 +52080,7 @@ export function createAgentChatService(args: {
     getModelCatalog,
     getSlashCommands,
     listClaudePlugins,
+    listCodexPlugins,
     reloadClaudePlugins,
     listClaudeOutputStyles,
     setClaudeOutputStyle,

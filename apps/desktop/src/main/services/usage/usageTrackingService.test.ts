@@ -67,6 +67,10 @@ import { providerScanners } from "./usageLedgerWorker";
 import type { TokenEntry } from "./ledgers/localUsageLedgers";
 import type { CostSnapshot } from "../../../shared/types";
 import { CURSOR_BILLED_USAGE_KV_REF } from "./cursorBilledUsageStore";
+import {
+  codexFiveHourUsedPercent,
+  shouldEmitCodexApproachingPlanLimit,
+} from "./providerQuotaParsers";
 
 const {
   aggregateCosts,
@@ -1489,6 +1493,17 @@ describe("parseCodexRateLimitWindows", () => {
       percentUsed: 12,
       windowDurationMs: 60 * 60_000,
     });
+  });
+});
+
+describe("codexFiveHourUsedPercent", () => {
+  it("reads the primary five-hour used_percent and ignores remaining/limit", () => {
+    expect(codexFiveHourUsedPercent({
+      rateLimits: { primary: { used_percent: 50 }, secondary: { used_percent: 10 } },
+    })).toBe(50);
+    expect(codexFiveHourUsedPercent({ remaining: 10, limit: 100 })).toBeNull();
+    expect(shouldEmitCodexApproachingPlanLimit(49)).toBe(false);
+    expect(shouldEmitCodexApproachingPlanLimit(50)).toBe(true);
   });
 });
 

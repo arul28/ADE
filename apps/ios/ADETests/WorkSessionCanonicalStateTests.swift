@@ -505,6 +505,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertFalse(ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: .starting)).prominent)
   }
 
+  func testCodexSteeringInputStaysWorkingInsteadOfNeedsYou() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    var summary = makeChatSummary(status: "active", awaitingInput: false)
+    summary.steeringInput = true
+    let row = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertEqual(row.phase, .running)
+    XCTAssertEqual(row.badge?.kind, .working)
+    XCTAssertNotEqual(row.phase, .needsYou)
+  }
+
   /// Settled is the deliberate hole in the vocabulary: desktop returns `null`
   /// so the row's timestamp owns the slot, because in the collapsed tail the
   /// section itself is already the status.

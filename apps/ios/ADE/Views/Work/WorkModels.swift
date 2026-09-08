@@ -212,6 +212,8 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   /// render "{Provider} asks" and tint per-provider. Optional because some
   /// legacy `structured_question` envelopes don't carry it.
   var source: String? = nil
+  /// Codex `isBlocking: false` steering. Missing/true locks the composer.
+  var blocking: Bool = true
 
   var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
   var questionId: String { primary.questionId }
@@ -282,19 +284,33 @@ func workModelHandoffProviders(fromDetail detail: String?) -> (from: String, to:
   return (from, to)
 }
 
-func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
+func workChatPendingInputHeaderVerb(
+  source: String?,
+  fallbackProvider: String?,
+  kind: String,
+  blocking: Bool = true
+) -> String {
   let rawSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
   let provider = rawSource?.isEmpty == false ? rawSource : fallbackProvider
   let name = workChatSurfaceProviderName(provider)
-  return kind == "plan_approval" ? "\(name) · Plan ready" : "\(name) asks"
+  if kind == "plan_approval" { return "\(name) · Plan ready" }
+  if !blocking { return "\(name) has a question" }
+  return "\(name) asks"
 }
 
 extension WorkPendingQuestionModel {
   /// Header verb shown beside the provider logo: "{Provider} asks".
-  var providerHeaderVerb: String { "\(workChatSurfaceProviderName(source)) asks" }
+  var providerHeaderVerb: String {
+    workChatPendingInputHeaderVerb(source: source, fallbackProvider: nil, kind: "question", blocking: blocking)
+  }
 
   func providerHeaderVerb(fallbackProvider: String?) -> String {
-    workChatPendingInputHeaderVerb(source: source, fallbackProvider: fallbackProvider, kind: "question")
+    workChatPendingInputHeaderVerb(
+      source: source,
+      fallbackProvider: fallbackProvider,
+      kind: "question",
+      blocking: blocking
+    )
   }
 }
 

@@ -441,7 +441,7 @@ describe("commands", () => {
     expect(paletteCommands("/mcp", [], { provider: "codex" })).not.toContainEqual(
       expect.objectContaining({ name: "/mcp" }),
     );
-    expect(paletteCommands("/plugin", [], { provider: "codex" })).not.toContainEqual(
+    expect(paletteCommands("/plugin", [], { provider: "codex" })).toContainEqual(
       expect.objectContaining({ name: "/plugin" }),
     );
     expect(paletteCommands("/context", [], { provider: "claude" })).toContainEqual(

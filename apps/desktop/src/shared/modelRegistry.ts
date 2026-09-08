@@ -168,6 +168,12 @@ export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undef
   return modelSupportsServiceTier(descriptor, "fast");
 }
 
+/** GPT-6 Astra and GPT-5.6 Sol/Terra/Luna label `low` as Light. */
+export function usesCodexNamedEffortLabels(providerModelId: string | null | undefined): boolean {
+  const normalized = (providerModelId?.trim() ?? "").replace(/^openai\//i, "");
+  return /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
+}
+
 function normalizeCursorControlValue(value: string | null | undefined): string | null {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
   if (!normalized) return null;
@@ -447,6 +453,28 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ADE codex chat surfaces use real OpenAI model ids as the canonical
   // registry ids; older ADE-internal "-codex" wrapper ids remain aliases so
   // persisted sessions continue to resolve.
+  {
+    id: "openai/gpt-6-astra",
+    shortId: "gpt-6-astra",
+    aliases: ["astra", "gpt-6-astra"],
+    displayName: "GPT-6 Astra",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6-astra",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 10,
+    outputPricePer1M: 50,
+    costTier: "very_high",
+  },
   {
     id: "openai/gpt-5.6-sol",
     shortId: "gpt-5.6-sol",
@@ -2379,6 +2407,8 @@ function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | un
 }
 
 function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  const astra = models.find((model) => /gpt-6-astra$/i.test(model.providerModelId));
+  if (astra) return astra;
   const sol = models
     .filter((model) => /gpt-\d+(?:\.\d+)*-sol$/i.test(model.providerModelId))
     .sort((left, right) => compareVersionSegmentsDesc(

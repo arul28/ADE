@@ -18,6 +18,7 @@ import {
   shortCredentialSource,
 } from "./cliTools";
 import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/CliAuthActions";
+import { CodexBody } from "./bodies/CodexBody";
 import { CursorAuthActions, CursorBody, cursorOauthSignedIn } from "./bodies/CursorBody";
 import { PiBody } from "./bodies/PiBody";
 import { OpenCodeBody } from "./bodies/OpenCodeBody";
@@ -136,6 +137,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     ],
     credentialLine: (ctx) => credentialLine(ctx, "codex"),
     AuthActions: CodexAuthActions,
+    Body: CodexBody,
   },
   {
     id: "cursor",

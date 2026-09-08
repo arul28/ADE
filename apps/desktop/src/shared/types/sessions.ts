@@ -258,6 +258,8 @@ export type TerminalSessionSummary = {
   summary: string | null;
   runtimeState: TerminalRuntimeState;
   pendingInputItemId?: string | null;
+  /** Live-only Codex steering pip. Never persisted. */
+  steeringInput?: boolean;
   /**
    * Settled-lifecycle columns (terminal_sessions.settled_at / status_note /
    * attention_requested_at / attention_message / last_turn_failed_at). All

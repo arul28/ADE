@@ -395,7 +395,7 @@ export function AskQuestionComposer({
     <div
       ref={setRootNode}
       role="group"
-      aria-label={pendingInputHeaderLabel(request.source, request.kind)}
+      aria-label={pendingInputHeaderLabel(request.source, request.kind, { blocking: request.blocking })}
       data-testid="ask-question-composer"
       onKeyDown={onKeyDown}
       /* The one structural use of accent: a hairline top edge saying "you are
@@ -407,7 +407,7 @@ export function AskQuestionComposer({
           <ProviderLogo family={request.source} size={10} />
         </span>
         <span className={cn("font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.15em]", ACCENT_TEXT)}>
-          {pendingInputHeaderLabel(request.source, request.kind)}
+          {pendingInputHeaderLabel(request.source, request.kind, { blocking: request.blocking })}
         </span>
         <span className="flex-1" />
         {questions.length > 1 ? (

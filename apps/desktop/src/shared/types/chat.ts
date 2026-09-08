@@ -195,6 +195,19 @@ export type AgentChatClaudePluginsArgs = {
   sessionId?: string;
   laneId?: string;
 };
+export type AgentChatCodexPluginOrigin = "bundled" | "local" | "remote";
+export type AgentChatCodexPlugin = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  installed: boolean;
+  origin: AgentChatCodexPluginOrigin;
+  marketplaceName?: string;
+};
+export type AgentChatCodexPluginsArgs = {
+  sessionId?: string;
+  laneId?: string;
+};
 export type AgentChatReloadClaudePluginsArgs = {
   sessionId: string;
 };
@@ -2069,6 +2082,11 @@ export type AgentChatSessionSummary = {
   claudeTag?: string | null;
   awaitingInput?: boolean;
   pendingInputItemId?: string | null;
+  /**
+   * Live-only Codex non-blocking `requestUserInput` (Astra steering).
+   * Never persisted; must not set awaitingInput / pendingInputItemId.
+   */
+  steeringInput?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
   /**

@@ -18070,6 +18070,27 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkChatComposerStaysUnlockedForCodexSteeringQuestion() {
+    let steering = WorkPendingInputItem.question(WorkPendingQuestionModel(
+      id: "steer-1",
+      questions: [
+        WorkPendingQuestion(
+          questionId: "steer",
+          question: "Want a tighter plan?",
+          options: [],
+          allowsFreeform: true
+        ),
+      ],
+      source: "codex",
+      blocking: false
+    ))
+    XCTAssertFalse(steering.blocksComposer)
+    XCTAssertEqual(
+      workChatComposerPlaceholder(pendingInputs: [steering], sessionStatus: "active"),
+      "Type to vibecode..."
+    )
+  }
+
   @MainActor
   func testEditingUnprocessedMessageReplacesComposerDraftAndFocusesIt() {
     let state = WorkChatComposerDraftState()
@@ -18433,6 +18454,7 @@ final class ADETests: XCTestCase {
       "summary": "Primary chat session",
       "awaitingInput": true,
       "pendingInputItemId": "pending-item-1",
+      "steeringInput": true,
       "threadId": "thread-1",
       "requestedCwd": "apps/ios/ADE",
     ]
@@ -18453,6 +18475,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.completion?.artifacts?.first?.reference, "docs/transcript.md")
     XCTAssertTrue(summary.awaitingInput ?? false)
     XCTAssertEqual(summary.pendingInputItemId, "pending-item-1")
+    XCTAssertEqual(summary.steeringInput, true)
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
@@ -21050,12 +21073,21 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(3).map(\.id), [
+    XCTAssertEqual(codexModels?.prefix(4).map(\.id), [
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-5.6-sol")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6-astra")
+
+    let astra = codexModels?.first(where: { $0.id == "gpt-6-astra" })
+    XCTAssertEqual(astra?.displayName, "GPT-6 Astra")
+    XCTAssertEqual(astra?.tier, .flagship)
+    XCTAssertEqual(astra?.tagline, "Flagship · 1.05M context")
+    XCTAssertEqual(astra?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(astra?.defaultReasoningEffort, "low")
+    XCTAssertTrue(astra?.supportsCodexFastMode == true)
 
     let sol = codexModels?.first(where: { $0.id == "gpt-5.6-sol" })
     XCTAssertEqual(sol?.displayName, "GPT-5.6 Sol")
@@ -21075,10 +21107,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
+    XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
     XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-5.6-terra"))
     XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
     XCTAssertEqual(workModelCatalogGroupKey(for: "sol", currentProvider: ""), "codex")
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-astra"), "GPT-6 Astra")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.6-terra"), "GPT-5.6 Terra")
     XCTAssertNotNil(ADEColor.modelBrand(for: "luna"))
   }
@@ -21102,6 +21136,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh", "max"])
@@ -21265,8 +21300,9 @@ final class ADETests: XCTestCase {
             "label": "Models",
             "models": [
               ["id": "gpt-5.5", "runtimeModelId": "gpt-5.5", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.5", "isDefault": false, "isAvailable": true],
+              ["id": "gpt-6-astra", "runtimeModelId": "gpt-6-astra", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-6 Astra", "isDefault": true, "defaultReasoningEffort": "low", "reasoningEfforts": [["effort": "low", "description": "fast"], ["effort": "medium", "description": "balanced"], ["effort": "high", "description": "deep"], ["effort": "xhigh", "description": "extended"], ["effort": "max", "description": "optional"]], "isAvailable": true],
               ["id": "gpt-5.6-luna", "runtimeModelId": "gpt-5.6-luna", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Luna", "isDefault": false, "defaultReasoningEffort": "medium", "isAvailable": true],
-              ["id": "gpt-5.6-sol", "runtimeModelId": "gpt-5.6-sol", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Sol", "isDefault": true, "defaultReasoningEffort": "low", "reasoningEfforts": [["effort": "low", "description": "fast"], ["effort": "medium", "description": "balanced"], ["effort": "high", "description": "deep"], ["effort": "xhigh", "description": "extended"], ["effort": "max", "description": "optional"], ["effort": "ultra", "description": "delegates"]], "isAvailable": true],
+              ["id": "gpt-5.6-sol", "runtimeModelId": "gpt-5.6-sol", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Sol", "isDefault": false, "defaultReasoningEffort": "low", "reasoningEfforts": [["effort": "low", "description": "fast"], ["effort": "medium", "description": "balanced"], ["effort": "high", "description": "deep"], ["effort": "xhigh", "description": "extended"], ["effort": "max", "description": "optional"], ["effort": "ultra", "description": "delegates"]], "isAvailable": true],
               ["id": "gpt-5.6-terra", "runtimeModelId": "gpt-5.6-terra", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Terra", "isDefault": false, "defaultReasoningEffort": "max", "isAvailable": true],
             ],
           ]],
@@ -21282,9 +21318,10 @@ final class ADETests: XCTestCase {
       currentProvider: "codex"
     ).first?.providers.first?.models
 
-    XCTAssertEqual(models?.map(\.id), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
+    XCTAssertEqual(models?.map(\.id), ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
     XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
-    XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-sol" })?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-terra" })?.defaultReasoningEffort, "max")
 
     let legacyListData = try JSONSerialization.data(withJSONObject: [
@@ -21312,6 +21349,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       workPrioritizeGPT56ChatModels(flatList, provider: "codex").map(\.id),
       ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+    )
+    let flatListWithAstraData = try JSONSerialization.data(withJSONObject: [
+      ["id": "gpt-5.5", "displayName": "GPT-5.5", "isDefault": false],
+      ["id": "gpt-5.6-luna", "displayName": "GPT-5.6 Luna", "isDefault": false],
+      ["id": "gpt-6-astra", "displayName": "GPT-6 Astra", "isDefault": true],
+      ["id": "gpt-5.6-sol", "displayName": "GPT-5.6 Sol", "isDefault": false],
+      ["id": "gpt-5.6-terra", "displayName": "GPT-5.6 Terra", "isDefault": false],
+    ])
+    let flatListWithAstra = try JSONDecoder().decode([AgentChatModelInfo].self, from: flatListWithAstraData)
+    XCTAssertEqual(
+      workPrioritizeGPT56ChatModels(flatListWithAstra, provider: "codex").map(\.id),
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
     )
     XCTAssertEqual(workPrioritizeGPT56ChatModels(flatList, provider: "claude").map(\.id), flatList.map(\.id))
   }
@@ -25441,8 +25490,52 @@ final class ADETests: XCTestCase {
       workChatPendingInputHeaderVerb(source: "droid", fallbackProvider: "claude", kind: "question"),
       "Droid asks"
     )
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(
+        source: "codex",
+        fallbackProvider: nil,
+        kind: "question",
+        blocking: false
+      ),
+      "Codex has a question"
+    )
     XCTAssertEqual(workChatSurfaceProviderName("ade"), "ADE")
     XCTAssertEqual(workChatSurfaceProviderName("my_provider-runtime"), "My Provider Runtime")
+  }
+
+  func testPendingWorkQuestionParsesCodexNonBlockingSteering() {
+    let detail = """
+    {
+      "request": {
+        "kind": "structured_question",
+        "source": "codex",
+        "blocking": false,
+        "questions": [
+          { "id": "steer", "question": "Want a tighter plan?", "options": [{ "label": "Yes" }] }
+        ]
+      }
+    }
+    """
+    let model = pendingWorkQuestionFromApproval(
+      description: "Want a tighter plan?",
+      detail: detail,
+      itemId: "codex-steer-1"
+    )
+    guard let model else {
+      return XCTFail("Expected non-blocking Codex steering question.")
+    }
+    XCTAssertEqual(model.blocking, false)
+    XCTAssertEqual(model.providerHeaderVerb, "Codex has a question")
+    XCTAssertFalse(WorkPendingInputItem.question(model).blocksComposer)
+  }
+
+  func testToolDisplayNameMapsComputerUseAndMcpEvent() {
+    XCTAssertEqual(toolDisplayName("computer_use"), "Computer Use")
+    XCTAssertEqual(toolDisplayName("mcp_event"), "MCP")
+    XCTAssertEqual(
+      workToolArgPreview(toolName: "computer_use", argsText: #"{"status":"ready"}"#),
+      "· ready"
+    )
   }
 
   func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {

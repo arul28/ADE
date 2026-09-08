@@ -186,7 +186,7 @@ export function ApprovalPrompt({
     // `kind` may be undefined (legacy/freeform questions); the helper's default
     // branch ("{Provider} asks") is exactly right for any question kind, so
     // coalesce to "" rather than special-casing.
-    title = pendingInputHeaderLabel(source, kind ?? "");
+    title = pendingInputHeaderLabel(source, kind ?? "", { blocking: approval.request?.blocking });
     glyph = "?";
     accent = providerAccent;
   } else if (highStakes) {

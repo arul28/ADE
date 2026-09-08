@@ -115,6 +115,18 @@ describe("chatSessionProjection", () => {
     expect(projected.usageLimitParkedUntil ?? null).toBeNull();
   });
 
+  it("keeps Codex steering live on an active chat without Needs you", () => {
+    const projected = projectChatOntoSession(session(), chat({
+      status: "active",
+      awaitingInput: false,
+      steeringInput: true,
+    }));
+
+    expect(projected.runtimeState).toBe("running");
+    expect(projected.pendingInputItemId).toBeNull();
+    expect(projected.steeringInput).toBe(true);
+  });
+
   it("projects model handoff history onto the Work row", () => {
     const projected = projectChatOntoSession(session(), chat({
       modelHandoffHistory: [{

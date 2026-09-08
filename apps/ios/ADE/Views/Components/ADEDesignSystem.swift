@@ -160,6 +160,9 @@ enum ADEColor {
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
     // OpenAI / Codex
+    "openai/gpt-6-astra": 0x10A37F,
+    "gpt-6-astra": 0x10A37F,
+    "astra": 0x10A37F,
     "openai/gpt-5.6-sol": 0x10A37F,
     "gpt-5.6-sol": 0x10A37F,
     "sol": 0x10A37F,
@@ -202,6 +205,10 @@ enum ADEColor {
     }
 
     switch lower {
+    case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+      append("openai/gpt-6-astra")
+      append("gpt-6-astra")
+      append("astra")
     case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
       append("openai/gpt-5.6-sol")
       append("gpt-5.6-sol")
@@ -330,6 +337,9 @@ enum ADEColor {
     "sonnet": ["low", "medium", "high", "max"],
     // Claude Haiku intentionally absent — no reasoning tiers.
     // OpenAI / Codex
+    "openai/gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+    "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+    "astra": ["low", "medium", "high", "xhigh", "max"],
     "openai/gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "sol": ["low", "medium", "high", "xhigh", "max", "ultra"],

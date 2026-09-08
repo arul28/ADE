@@ -37,7 +37,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.144.5 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.153.4 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -121,19 +121,33 @@ Fable 5.1. Opus 4.8 is labelled without a 1M suffix.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
-### GPT-5.6 Codex models
+### GPT-6 Astra and GPT-5.6 Codex models
 
 The OpenAI section is pinned in this order on every ADE model surface:
 
-1. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — default Codex model; 372k context; default effort `low`.
-2. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
-3. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+1. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
+2. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
+3. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+4. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 
-GPT-5.5 remains selectable below them. Sol and Terra expose `low | medium |
-high | xhigh | max | ultra`; Luna exposes `low | medium | high | xhigh | max`.
-Desktop, ADE Code, and iOS label those values Light, Medium, High, Extra High,
-Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain their
-advertised order. `ultra` is the multi-agent tier and carries a usage warning.
+GPT-5.5 remains selectable below them. Astra and Luna expose `low | medium |
+high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
+ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
+Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
+their advertised order. `ultra` is the multi-agent tier and carries a usage
+warning. Codex 0.153.4 is the pinned app-server that advertises Astra; older
+PATH installs without Astra metadata cannot start it.
+
+On 0.153.4 ADE always enables `tools.update_plan` on `thread/start` and
+`thread/resume`, copies the thread's `model` / `reasoningEffort` into the
+session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
+false` as live steering rather than Needs you. Computer Use appears as a
+working-row tool line only after Codex actually starts that MCP server, and
+only on macOS. Plus/Team chats emit a quiet `Approaching Codex plan limit`
+notice at ≥50% of the five-hour window (`primary.used_percent`), once per
+runtime. Settings lists installed Codex plugins from `plugin/reconcile` +
+`plugin/list` (name, on/off, bundled / local / installed remote) without a
+marketplace or toggle. MCP live stream events fold into the working row.
 
 `selectSupportedReasoningEffort()` centralizes fallback order: keep a valid
 explicit selection, then use the model's advertised default, then a valid

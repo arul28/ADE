@@ -1,5 +1,5 @@
 export const CODEX_COMPACTION_STALL_MS = 180_000;
-export const PINNED_CODEX_APP_SERVER_VERSION = "0.149.1";
+export const PINNED_CODEX_APP_SERVER_VERSION = "0.153.4";
 
 export type CodexAppServerVersion = {
   major: number;
@@ -25,7 +25,7 @@ export function codexServerSupportsDeferGoalContinuation(version: CodexAppServer
   return codexServerAtLeast(version, 145);
 }
 
-/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.149.1). */
+/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.153.4). */
 export function codexServerSupportsThreadQueue(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 146);
 }

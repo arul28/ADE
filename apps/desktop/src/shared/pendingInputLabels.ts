@@ -75,6 +75,7 @@ export function providerDisplayLabel(
 export function pendingInputHeaderLabel(
   source: string | null | undefined,
   kind: string | null | undefined,
+  options?: { blocking?: boolean },
 ): string {
   const name = providerDisplayName(source);
   switch (kind) {
@@ -87,6 +88,6 @@ export function pendingInputHeaderLabel(
     case "model_selection":
       return `${name} · Pick a model`;
     default:
-      return `${name} asks`;
+      return options?.blocking === false ? `${name} has a question` : `${name} asks`;
   }
 }

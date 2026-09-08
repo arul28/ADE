@@ -1508,6 +1508,16 @@ enum WorkPendingInputItem: Identifiable, Equatable {
     case .modelSelection(let model): return model.id
     }
   }
+
+  /// Codex steering (`blocking: false`) keeps the composer open. Everything else gates it.
+  var blocksComposer: Bool {
+    switch self {
+    case .question(let model):
+      return model.blocking
+    case .approval, .permission, .planApproval, .modelSelection:
+      return true
+    }
+  }
 }
 
 /// Title stated by the host for a plain approval gate, if any. Read from the
@@ -1612,6 +1622,16 @@ func workBoolValue(_ value: Any?) -> Bool? {
     }
   }
   return nil
+}
+
+func workReadIsBlocking(_ objects: [[String: Any]?]) -> Bool {
+  for object in objects {
+    guard let object else { continue }
+    if let value = workBoolValue(object["blocking"] ?? object["isBlocking"] ?? object["is_blocking"]) {
+      return value
+    }
+  }
+  return true
 }
 
 func workPendingQuestionOption(from value: Any?) -> WorkPendingQuestionOption? {
@@ -1735,7 +1755,8 @@ func pendingWorkQuestionFromApproval(
       questions: questions,
       title: optionalString(request["title"]),
       body: optionalString(request["body"]) ?? optionalString(request["description"]),
-      source: optionalString(request["source"]) ?? optionalString(detailObject["source"])
+      source: optionalString(request["source"]) ?? optionalString(detailObject["source"]),
+      blocking: workReadIsBlocking([request])
     )
   }
 
@@ -1766,7 +1787,8 @@ func pendingWorkQuestionFromApproval(
     title: optionalString(detailObject["title"]),
     body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"]),
     source: optionalString(request["source"])
-      ?? optionalString(detailObject["source"])
+      ?? optionalString(detailObject["source"]),
+    blocking: workReadIsBlocking([request, detailObject])
   )
 }
 
@@ -1806,7 +1828,8 @@ func pendingWorkQuestionFromAskUserToolCall(
     questions: questions,
     title: optionalString(sourceObject["title"]) ?? optionalString(object["title"]),
     body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"]),
-    source: optionalString(sourceObject["source"]) ?? optionalString(object["source"])
+    source: optionalString(sourceObject["source"]) ?? optionalString(object["source"]),
+    blocking: workReadIsBlocking([sourceObject, object])
   )
 }
 

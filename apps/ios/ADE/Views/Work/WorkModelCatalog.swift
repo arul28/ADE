@@ -170,8 +170,9 @@ func workFilterChatModelsForCursorAvailability(
   models.filter { workAgentChatModelSupportsCursorAvailabilityMode($0, mode: mode) }
 }
 
-/// Preserve the host's flat model catalog while pinning the GPT-5.6 family to
-/// the required Codex order. This never injects a model an older host omitted.
+/// Preserve the host's flat model catalog while pinning GPT-6 Astra and the
+/// GPT-5.6 family to the required Codex order. This never injects a model an
+/// older host omitted.
 func workPrioritizeGPT56ChatModels(
   _ models: [AgentChatModelInfo],
   provider: String
@@ -181,12 +182,7 @@ func workPrioritizeGPT56ChatModels(
   func priority(_ model: AgentChatModelInfo) -> Int {
     let canonicalId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
       ?? workCanonicalCodexRegistryId(for: model.id)
-    switch canonicalId {
-    case "openai/gpt-5.6-sol": return 0
-    case "openai/gpt-5.6-terra": return 1
-    case "openai/gpt-5.6-luna": return 2
-    default: return 3
-    }
+    return workCodexFamilySortPriority(canonicalId) ?? 4
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -382,9 +378,7 @@ private func workVisibleReasoningEfforts(
   fallback: [AgentChatModelReasoningEffort] = []
 ) -> [AgentChatModelReasoningEffort] {
   let canonicalId = workCanonicalCodexRegistryId(for: modelId)
-  guard canonicalId == "openai/gpt-5.6-sol"
-    || canonicalId == "openai/gpt-5.6-terra"
-    || canonicalId == "openai/gpt-5.6-luna" else {
+  guard workIsCodexNamedEffortFamily(canonicalId) else {
     return advertised ?? fallback
   }
   if let advertised, !advertised.isEmpty {
@@ -396,7 +390,7 @@ private func workVisibleReasoningEfforts(
   switch canonicalId {
   case "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
-  case "openai/gpt-5.6-luna":
+  case "openai/gpt-6-astra", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
   default:
     return []
@@ -409,9 +403,7 @@ private func workVisibleDefaultReasoningEffort(
   fallback: String?
 ) -> String? {
   let canonicalId = workCanonicalCodexRegistryId(for: modelId)
-  guard canonicalId == "openai/gpt-5.6-sol"
-    || canonicalId == "openai/gpt-5.6-terra"
-    || canonicalId == "openai/gpt-5.6-luna" else {
+  guard workIsCodexNamedEffortFamily(canonicalId) else {
     return advertised ?? fallback
   }
   let normalizedAdvertised = advertised?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -423,7 +415,7 @@ private func workVisibleDefaultReasoningEffort(
     return normalizedFallback
   }
   switch canonicalId {
-  case "openai/gpt-5.6-sol": return "low"
+  case "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
   case "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
@@ -512,6 +504,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "openai",
         displayName: "OpenAI",
         models: [
+          WorkModelOption(
+            id: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            tier: .flagship,
+            tagline: "Flagship · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: false),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(
             id: "gpt-5.6-sol",
             displayName: "GPT-5.6 Sol",
@@ -1104,8 +1106,24 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   }
 }
 
+private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
+  switch canonicalId {
+  case "openai/gpt-6-astra": return 0
+  case "openai/gpt-5.6-sol": return 1
+  case "openai/gpt-5.6-terra": return 2
+  case "openai/gpt-5.6-luna": return 3
+  default: return nil
+  }
+}
+
+private func workIsCodexNamedEffortFamily(_ canonicalId: String?) -> Bool {
+  workCodexFamilySortPriority(canonicalId) != nil
+}
+
 private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+    return "openai/gpt-6-astra"
   case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "openai/gpt-5.6-sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
@@ -1131,6 +1149,8 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
 
 private func workCodexRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+    return "gpt-6-astra"
   case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "gpt-5.6-sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
@@ -1210,6 +1230,8 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
        "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
+  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+    return "GPT-6 Astra"
   case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "GPT-5.6 Sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
@@ -1609,7 +1631,7 @@ private func workDynamicModelTier(for modelId: String, curated: WorkModelOption?
   if normalized.contains("mini") || normalized.contains("spark") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
     return .fast
   }
-  if normalized.contains("fable") || normalized.contains("opus") || normalized.contains("gpt-5.6-sol") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
+  if normalized.contains("fable") || normalized.contains("opus") || normalized.contains("gpt-6-astra") || normalized.contains("gpt-5.6-sol") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
     return .flagship
   }
   if normalized.contains("gpt-5.6-luna") {
@@ -1618,8 +1640,9 @@ private func workDynamicModelTier(for modelId: String, curated: WorkModelOption?
   return .balanced
 }
 
-/// Keep the GPT-5.6 family at the top of every host-driven Codex/OpenAI list,
-/// even when an older or authenticated host catalog returns a different order.
+/// Keep GPT-6 Astra and the GPT-5.6 family at the top of every host-driven
+/// Codex/OpenAI list, even when an older or authenticated host catalog returns
+/// a different order.
 private func workPrioritizeCodex56Models(
   _ models: [WorkModelOption],
   groupKey: String,
@@ -1630,12 +1653,7 @@ private func workPrioritizeCodex56Models(
   }
 
   func priority(_ modelId: String) -> Int {
-    switch workCanonicalCodexRegistryId(for: modelId) {
-    case "openai/gpt-5.6-sol": return 0
-    case "openai/gpt-5.6-terra": return 1
-    case "openai/gpt-5.6-luna": return 2
-    default: return 3
-    }
+    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 4
   }
 
   return models.enumerated().sorted { lhs, rhs in

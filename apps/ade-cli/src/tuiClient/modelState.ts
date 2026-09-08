@@ -6,6 +6,7 @@ import {
   modelSupportsFastMode,
   resolveCursorCliModelVariant,
   resolveProviderGroupForModel,
+  usesCodexNamedEffortLabels,
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../desktop/src/shared/modelRegistry";
@@ -35,9 +36,9 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
   return {
     provider: "codex",
     interfaceMode: draftKind,
-    model: descriptor?.providerModelId ?? "gpt-5.6-sol",
+    model: descriptor?.providerModelId ?? "gpt-6-astra",
     modelId: descriptor?.id ?? null,
-    displayName: descriptor?.displayName ?? "GPT-5.6 Sol",
+    displayName: descriptor?.displayName ?? "GPT-6 Astra",
     reasoningEffort: descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
     fastMode: false,
     permissionMode: "default",
@@ -228,7 +229,7 @@ export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCode
     ?? getDefaultModelDescriptor("codex");
   return {
     provider,
-    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.6-sol",
+    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-6-astra",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
   };
@@ -307,7 +308,10 @@ export function reasoningEffortDisplayLabel(
 ): string | null {
   if (!effort) return null;
   const isGpt56CodexModel = modelState.provider === "codex"
-    && /gpt-5\.6-(?:sol|terra|luna)/i.test(`${modelState.modelId ?? ""} ${modelState.model}`);
+    && (
+      usesCodexNamedEffortLabels(modelState.model)
+      || usesCodexNamedEffortLabels(modelState.modelId)
+    );
   if (!isGpt56CodexModel) return effort;
   if (effort === "low") return "Light";
   if (effort === "medium") return "Medium";

@@ -103,7 +103,8 @@ func workChatComposerPlaceholder(pendingInputs: [WorkPendingInputItem], sessionS
      case .planApproval = pendingInputs[0] {
     return "Review the plan above..."
   }
-  if workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus) {
+  let blockingCount = pendingInputs.filter(\.blocksComposer).count
+  if workChatComposerBlocksFreeformInput(pendingInputCount: blockingCount, sessionStatus: sessionStatus) {
     return "Answer the prompt above..."
   }
   return "Type to vibecode..."
@@ -334,7 +335,7 @@ func workToolArgPreview(tool: String, argsText: String?) -> String? {
   guard !trimmed.isEmpty else { return nil }
 
   if let object = workJSONObject(from: trimmed) {
-    let keys = ["file_path", "path", "pattern", "query", "command", "cmd", "url"]
+    let keys = ["file_path", "path", "pattern", "query", "command", "cmd", "url", "status", "server"]
     for key in keys {
       if let value = object[key] as? String,
          let text = nonEmptyWorkToolArgPreview(value) {
@@ -1527,6 +1528,8 @@ func toolDisplayName(_ tool: String) -> String {
   switch trimmed.lowercased() {
   case "image_generation": return "Image generation"
   case "image_view": return "Image viewed"
+  case "computer_use": return "Computer Use"
+  case "mcp_event": return "MCP"
   default: break
   }
   if trimmed.hasPrefix("functions.") {
@@ -1596,6 +1599,14 @@ func workToolArgPreview(toolName: String, argsText: String?) -> String? {
       return stringValue("ref")
     case "askuser":
       return stringValue("question")
+    case "computer use", "computer_use":
+      if let status = stringValue("status") { return "· \(status)" }
+      return nil
+    case "mcp", "mcp_event":
+      let joined = [stringValue("server"), stringValue("event")]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+      return joined.isEmpty ? nil : joined
     case "delegate_parallel":
       if let tasks = object["tasks"] as? [Any] {
         return "\(tasks.count) task(s)"

@@ -38,9 +38,11 @@ describe("providerDisplayLabel", () => {
 });
 
 describe("pendingInputHeaderLabel", () => {
-  it("reads '{Provider} asks' for question kinds", () => {
-    expect(pendingInputHeaderLabel("claude", "question")).toBe("Claude asks");
-    expect(pendingInputHeaderLabel("codex", "structured_question")).toBe("Codex asks");
+  it("reads '{Provider} has a question' for non-blocking steering", () => {
+    expect(pendingInputHeaderLabel("codex", "structured_question", { blocking: false }))
+      .toBe("Codex has a question");
+    expect(pendingInputHeaderLabel("codex", "structured_question", { blocking: true }))
+      .toBe("Codex asks");
   });
 
   it("reads '{Provider} · Plan ready' for plan approvals", () => {

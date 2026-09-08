@@ -79,6 +79,17 @@ describe("getToolMeta", () => {
     expect(searchMeta.getTarget!({ pattern: "TODO" })).toBe("TODO");
   });
 
+  it("labels Computer Use with the live status and MCP events with server + event", () => {
+    const computerUse = getToolMeta("computer_use");
+    expect(computerUse.label).toBe("Computer Use");
+    expect(computerUse.getTarget!({ status: "ready" })).toBe("· ready");
+    expect(computerUse.getTarget!({ status: "not set up" })).toBe("· not set up");
+
+    const mcpEvent = getToolMeta("mcp_event");
+    expect(mcpEvent.label).toBe("MCP");
+    expect(mcpEvent.getTarget!({ server: "docs", event: "file changed" })).toBe("docs · file changed");
+  });
+
   it("extracts task count for delegate_parallel", () => {
     const meta = getToolMeta("delegate_parallel");
     expect(meta.getTarget).toBeDefined();

@@ -8,6 +8,7 @@ import {
 import type {
   AgentChatClaudeOutputStyle,
   AgentChatClaudePlugin,
+  AgentChatCodexPlugin,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
@@ -715,6 +716,13 @@ export async function listClaudePlugins(
   return await connection.action<AgentChatClaudePlugin[]>("chat", "listClaudePlugins", { sessionId });
 }
 
+export async function listCodexPlugins(
+  connection: AdeCodeConnection,
+  args: { sessionId?: string; laneId?: string } = {},
+): Promise<AgentChatCodexPlugin[]> {
+  return await connection.action<AgentChatCodexPlugin[]>("chat", "listCodexPlugins", args);
+}
+
 export async function reloadClaudePlugins(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -837,7 +845,7 @@ export async function createChatSession(args: {
         ? "auto"
         : provider === "droid"
           ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
-          : "gpt-5.6-sol";
+          : "gpt-6-astra";
   const reasoningEffort = args.reasoningEffort
     ?? (provider === "codex" ? descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {

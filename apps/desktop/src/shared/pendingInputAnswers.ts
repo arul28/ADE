@@ -85,6 +85,17 @@ export function isAskQuestionRequest(
 }
 
 /**
+ * Codex 0.153.4 `requestUserInput` with `isBlocking: false` (Astra mid-turn
+ * steering). Missing `blocking` stays a send-gate, matching Codex
+ * `unwrap_or(true)`.
+ */
+export function isSteeringPendingRequest(
+  request: { kind?: string | null; blocking?: boolean } | null | undefined,
+): boolean {
+  return isAskQuestionRequest(request) && request?.blocking === false;
+}
+
+/**
  * Options offered for a question at `questionIndex`.
  *
  * Only the first question inherits the request-level `options` fallback — that

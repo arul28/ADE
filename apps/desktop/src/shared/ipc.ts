@@ -323,6 +323,7 @@ export const IPC = {
   agentChatWarmupModel: "ade.agentChat.warmupModel",
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatListClaudePlugins: "ade.agentChat.claudePlugins.list",
+  agentChatListCodexPlugins: "ade.agentChat.codexPlugins.list",
   agentChatReloadClaudePlugins: "ade.agentChat.claudePlugins.reload",
   agentChatListClaudeOutputStyles: "ade.agentChat.claudeOutputStyles.list",
   agentChatSetClaudeOutputStyle: "ade.agentChat.claudeOutputStyles.set",

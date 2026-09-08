@@ -34,7 +34,7 @@ describe("codex app-server feature gates", () => {
   });
 
   it("pins the app-server version ADE ships", () => {
-    expect(PINNED_CODEX_APP_SERVER_VERSION).toBe("0.149.1");
+    expect(PINNED_CODEX_APP_SERVER_VERSION).toBe("0.153.4");
   });
 
   it("does not invent support when the user-agent is missing", () => {

@@ -7,6 +7,7 @@ import type {
 import {
   buildAnswers,
   isAskQuestionRequest,
+  isSteeringPendingRequest,
   isStoredQuestionAnswered,
   optionsForQuestion,
   ownQuestionValue,
@@ -39,6 +40,18 @@ function isApprovalMode(request: PendingInputRequest | undefined): boolean {
   // The inverse of the shared question-kind rule, so the TUI cannot decide
   // "this is a question" differently from the desktop composer.
   return !request || !isAskQuestionRequest(request);
+}
+
+/** Blocking pending input captures typed send. Non-blocking Codex steering does not. */
+export function pendingApprovalCapturesPrompt(approval: PendingApproval | null | undefined): boolean {
+  if (!approval) return false;
+  if (approval.mode === "question" && isSteeringPendingRequest(approval.request)) return false;
+  return true;
+}
+
+/** Empty-prompt question keys, including non-blocking Codex steering. */
+export function pendingApprovalOwnsQuestionKeys(approval: PendingApproval | null | undefined): boolean {
+  return approval?.mode === "question";
 }
 
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {

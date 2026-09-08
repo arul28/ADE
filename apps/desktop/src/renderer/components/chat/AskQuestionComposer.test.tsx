@@ -65,6 +65,15 @@ describe("AskQuestionComposer rendering", () => {
     expect(screen.getByTestId("ask-question-option-plan_choice-merge")).toBeTruthy();
   });
 
+  it("reads Codex has a question for non-blocking steering", () => {
+    renderComposer(buildRequest([planQuestion()], {
+      source: "codex",
+      blocking: false,
+      canProceedWithoutAnswer: true,
+    }));
+    expect(screen.getByRole("group", { name: /codex has a question/i })).toBeTruthy();
+  });
+
   it("regression: preserves impact and the default assumption in the composer", () => {
     renderComposer(buildRequest([
       planQuestion({

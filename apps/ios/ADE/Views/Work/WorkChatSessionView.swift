@@ -989,8 +989,8 @@ struct WorkChatSessionView: View {
   }
 
   /// The strip is minimized only while the deferred gate is still the primary
-  /// one. The gate stays open and the composer stays locked either way — only
-  /// the card is swapped for a one-line pill.
+  /// one. Blocking gates keep the composer locked either way; Codex steering
+  /// does not. Only the card is swapped for a one-line pill.
   var pendingInputCollapsed: Bool {
     get {
       guard let collapsedPendingInputId, let primaryPendingInput else { return false }
@@ -1044,7 +1044,10 @@ struct WorkChatSessionView: View {
   }
 
   var hasPendingInputGate: Bool {
-    workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
+    workChatComposerBlocksFreeformInput(
+      pendingInputCount: pendingInputs.filter(\.blocksComposer).count,
+      sessionStatus: sessionStatus
+    )
   }
 
   var composerPlaceholderText: String {
@@ -1057,7 +1060,7 @@ struct WorkChatSessionView: View {
   /// live (an offline read-only card isn't actionable, so no haptic).
   var blockingPendingInputId: String? {
     guard isLive else { return nil }
-    return primaryPendingInput?.id
+    return pendingInputs.first(where: { $0.blocksComposer })?.id
   }
 
   var liveClaudeQuotaCardId: String? {
@@ -1363,17 +1366,11 @@ struct WorkChatSessionView: View {
     if !canSendMessages {
       return "Waiting for the machine before sending."
     }
-    if pendingInputs.count == 1 {
-      // The single request renders in the consolidated strip directly above the
-      // composer with its own actions, so it carries no guidance banner.
+    let blockingPendingInputs = pendingInputs.filter(\.blocksComposer)
+    if blockingPendingInputs.count <= 1 {
       return nil
     }
-    if !pendingInputs.isEmpty {
-      // Multiple queued requests: the strip shows "Request 1 of N" and advances
-      // as each is answered, so point the user at it.
-      return "Answer the waiting prompt above, or decline it before sending another message."
-    }
-    return nil
+    return "Answer the waiting prompt above, or decline it before sending another message."
   }
 
   /// Total height the floating badge chip row occupies over the transcript:

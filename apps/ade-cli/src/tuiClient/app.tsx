@@ -42,6 +42,7 @@ import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desk
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
+  AgentChatCodexPlugin,
   AgentChatTurnRecoveryAction,
   AgentChatReloadClaudePluginsResult,
   AgentChatEventEnvelope,
@@ -118,6 +119,7 @@ import {
   listGitBranches,
   listLaneDiffStats,
   listClaudePlugins,
+  listCodexPlugins,
   listClaudeOutputStyles,
   listChatSessions,
   listTerminalSessions,
@@ -412,6 +414,8 @@ import {
   createPendingQuestionSelectionState,
   ensurePendingQuestionSelectionState,
   latestPendingApproval,
+  pendingApprovalCapturesPrompt,
+  pendingApprovalOwnsQuestionKeys,
   movePendingQuestionFocus,
   movePendingQuestionOption,
   optionsForPendingQuestion,
@@ -1103,7 +1107,7 @@ export function shouldToggleLatestFailedLineOnBlankEnter(args: {
   return args.pane === "chat"
     && !args.prompt.trim()
     && Boolean(args.latestFailedLineId)
-    && !args.pendingApproval
+    && !pendingApprovalCapturesPrompt(args.pendingApproval)
     && args.rightPaneKind !== "form"
     && args.slashRowCount === 0
     && !isTerminalSessionResumable(args.activeTerminalSession);
@@ -1746,6 +1750,20 @@ function formatClaudePlugins(plugins: AgentChatClaudePlugin[]): string {
     ...plugins.map((plugin) => {
       const suffix = [plugin.version, plugin.description].filter(Boolean).join(" - ");
       return `- ${plugin.name}${suffix ? ` (${suffix})` : ""}\n  ${plugin.path}`;
+    }),
+  ].join("\n");
+}
+
+function formatCodexPlugins(plugins: AgentChatCodexPlugin[]): string {
+  if (!plugins.length) return "No installed Codex plugins were discovered. ADE lists plugins only; it does not install or toggle them.";
+  return [
+    "Codex plugins (list only):",
+    "",
+    ...plugins.map((plugin) => {
+      const state = plugin.enabled ? "on" : "off";
+      const origin = plugin.origin;
+      const market = plugin.marketplaceName ? ` · ${plugin.marketplaceName}` : "";
+      return `- ${plugin.name} (${state}, ${origin}${market})`;
     }),
   ].join("\n");
 }
@@ -10951,8 +10969,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({ kind: "details", title: "Plugins", body: "No active chat is selected." });
         return;
       }
+      if (activeSession?.provider === "codex") {
+        if (args.trim()) {
+          setRightPane({
+            kind: "details",
+            title: "Plugins",
+            body: "Codex plugins are list-only. ADE does not reload, install, or toggle them from here.",
+          });
+          return;
+        }
+        const plugins = await listCodexPlugins(conn, { sessionId });
+        setRightPane({ kind: "details", title: "Plugins", body: formatCodexPlugins(plugins) });
+        return;
+      }
       if (activeSession?.provider !== "claude") {
-        setRightPane({ kind: "details", title: "Plugins", body: "/plugin is only available for Claude chats." });
+        setRightPane({ kind: "details", title: "Plugins", body: "/plugin is only available for Claude and Codex chats." });
         return;
       }
       if (args.trim().toLowerCase() === "reload") {
@@ -13002,13 +13033,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const activeTerminalForBlankResume = activeTerminalSessionRef.current;
     const emptyPromptSubmission = !text && rightPane.kind !== "form" && !promptAttachments.length;
     const blankResumeRequest = emptyPromptSubmission
-      && !pendingApproval
+      && !pendingApprovalCapturesPrompt(pendingApproval)
       && isTerminalSessionResumable(activeTerminalForBlankResume);
     if (emptyPromptSubmission && !blankResumeRequest) return;
     // Intercept ADE-owned slash commands before the connection gate so /model and
     // /plan work pre-chat (splash screen) where connectionRef.current is null.
     try {
-      if (text.startsWith("/") && rightPane.kind !== "form" && !pendingApproval) {
+      if (text.startsWith("/") && rightPane.kind !== "form" && !pendingApprovalCapturesPrompt(pendingApproval)) {
         if (await interceptLocalSlashCommand(text)) {
           clearChatPromptDraft();
           return;
@@ -13055,7 +13086,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice("Press a to approve or d to deny this request.", "error");
         return;
       }
-      if (pendingApproval?.mode === "question") {
+      if (pendingApproval?.mode === "question" && pendingApprovalCapturesPrompt(pendingApproval)) {
         const lowered = value.trim().toLowerCase();
         const isDecline = lowered === "deny" || lowered === "decline" || lowered === "cancel";
         // Multi-question requests accumulate answers across questions in the
@@ -14841,7 +14872,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     );
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormPromptActive;
-    const pendingQuestionApproval = pendingApproval?.mode === "question" ? pendingApproval : null;
+    const pendingQuestionApproval = pendingApprovalOwnsQuestionKeys(pendingApproval)
+      ? pendingApproval
+      : null;
     const pendingQuestionKeyActive = shouldHandlePendingQuestionKey({
       pane,
       hasPendingQuestion: pendingQuestionApproval !== null,
@@ -16459,7 +16492,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (
       pane === "chat"
       && !prompt.trim()
-      && !pendingApproval
+      && !pendingApprovalCapturesPrompt(pendingApproval)
       && rightPane.kind !== "form"
       && !slashRows.length
       && key.ctrl

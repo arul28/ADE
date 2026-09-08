@@ -96,6 +96,7 @@ export function projectChatOntoSession(
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+    ...(chat.steeringInput ? { steeringInput: true } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
   };

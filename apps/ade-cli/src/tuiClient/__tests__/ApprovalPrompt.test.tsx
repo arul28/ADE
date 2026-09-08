@@ -391,4 +391,38 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("Ship the work.");
     expect(frame).toContain("## Validation plan");
   });
+
+  it("reads Codex has a question for non-blocking steering", () => {
+    const approval: PendingApproval = {
+      itemId: "steer-1",
+      description: "Codex has a question.",
+      highStakes: false,
+      mode: "question",
+      request: {
+        requestId: "steer-1",
+        source: "codex",
+        kind: "structured_question",
+        questions: [{
+          id: "nudge",
+          question: "Want a tighter plan?",
+          options: [{ label: "Yes", value: "yes" }],
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: false,
+        canProceedWithoutAnswer: true,
+      },
+    };
+
+    const frame = stripAnsi(render(
+      <ApprovalPrompt
+        approval={approval}
+        questionState={createPendingQuestionSelectionState(approval)}
+        width={100}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("Codex has a question");
+    expect(frame).not.toContain("Codex asks");
+  });
 });

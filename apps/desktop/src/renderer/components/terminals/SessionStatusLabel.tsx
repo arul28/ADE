@@ -91,6 +91,7 @@ export type SessionStatusLabelProps = {
   futureAt?: string | null;
   timestampLabel: string;
   compact: boolean;
+  steeringInput?: boolean;
 };
 
 /**
@@ -103,6 +104,7 @@ export function SessionStatusLabel({
   futureAt,
   timestampLabel,
   compact,
+  steeringInput = false,
 }: SessionStatusLabelProps) {
   const waiting = presentation?.glyph === "waiting";
   const elapsed = useElapsedLabel(elapsedSince, Boolean(presentation?.showsElapsed));
@@ -141,6 +143,9 @@ export function SessionStatusLabel({
       {/* Keep the ticker outside role=status so screen readers do not announce
           the row again every second. */}
       <span role="status" aria-label={exactWakeTitle}>{presentation.label}</span>
+      {steeringInput && presentation.glyph === "working" ? (
+        <span data-testid="session-steering-pip" aria-label="has a question">?</span>
+      ) : null}
       {elapsed ? <span aria-hidden className="tabular-nums">{elapsed}</span> : null}
       {future ? <span aria-hidden className="tabular-nums">{future}</span> : null}
     </span>

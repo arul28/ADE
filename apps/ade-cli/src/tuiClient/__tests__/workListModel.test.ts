@@ -383,6 +383,29 @@ describe("workListModel status", () => {
     expect(row!.isActiveSession).toBe(true);
   });
 
+  it("keeps a steering Codex row as Working with a question pip, not Needs you", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "chat-steer",
+          laneId: "lane-1",
+          provider: "codex",
+          status: "active",
+          runtimeState: "running",
+          toolType: "codex-chat",
+          steeringInput: true,
+          currentTurnStartedAt: new Date(NOW - 8 * 60_000).toISOString(),
+        }),
+      ],
+      activeSessionId: "chat-steer",
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.status?.label).toBe("Working ?");
+    expect(row!.status?.glyph).toBe("working");
+  });
+
   it("shows background work's elapsed from when the WORK started, not last activity", () => {
     // The turn is over. `lastActivityAt` is refreshed by every provider frame,
     // so anchoring there reported a two-hour job as seconds old — identical to
