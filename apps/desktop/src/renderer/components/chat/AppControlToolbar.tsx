@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AppWindow,
   DotsThree,
@@ -121,6 +122,10 @@ export function AppControlToolbar({
   const segments = windows.slice(0, MAX_WINDOW_SEGMENTS);
   const overflowWindows = windows.slice(MAX_WINDOW_SEGMENTS);
   const driverRows = drivers?.drivers ?? [];
+  const reduceMotion = useReducedMotion() ?? false;
+  // Launching, connecting and switching windows are all "the pane is fetching
+  // you a frame" — one bar, not three different spinners in three controls.
+  const working = launching || connecting || switching;
 
   return (
     <div className={cn(
@@ -403,6 +408,33 @@ export function AppControlToolbar({
         >
           {renderOverflow}
         </AppControlMenu>
+      </div>
+
+      {/*
+        The browser row's progress bar, on the row that has the same job.
+
+        Attaching to a renderer takes as long as a page load and used to be
+        told only by a spinner inside whichever menu you happened to have
+        open — so from the pane you could not tell "working" from "wedged".
+        It races out and parks at 90% exactly like the browser's, because
+        neither surface knows a real percentage.
+      */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] overflow-hidden" aria-hidden="true">
+        <AnimatePresence initial={false}>
+          {working ? (
+            <motion.div
+              key="ade-app-control-progress"
+              data-testid="app-control-progress"
+              className="h-full w-full origin-left bg-[var(--color-accent)]"
+              initial={reduceMotion ? { scaleX: 1, opacity: 1 } : { scaleX: 0.04, opacity: 1 }}
+              animate={{ scaleX: reduceMotion ? 1 : 0.9, opacity: 1 }}
+              exit={{ scaleX: 1, opacity: 0 }}
+              transition={reduceMotion
+                ? { duration: 0 }
+                : { scaleX: { duration: 5.3, ease: [0.1, 0.5, 0.2, 1] }, opacity: { duration: 0.2, delay: 0.12 } }}
+            />
+          ) : null}
+        </AnimatePresence>
       </div>
     </div>
   );

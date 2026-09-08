@@ -132,7 +132,17 @@ export function BrowserOverflowMenu({
           disabled={!apiAvailable}
           title="More browser options"
           aria-label="More browser options"
-          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+          className={cn(
+            CHROME_GHOST,
+            TOOLBAR_MOTION,
+            TOOLBAR_FOCUS,
+            // Idle is a bare glyph, exactly like every other control on this
+            // row: the fill is hover, plus the one moment the menu it owns is
+            // actually open. App Control's ⋯ already paints its open state
+            // this way, and a permanently boxed ⋯ next to five borderless
+            // glyphs reads as the only control that is somehow switched on.
+            "data-[state=open]:bg-white/[0.06] data-[state=open]:text-fg",
+          )}
         >
           <DotsThree size={CHROME_ICON_SIZE} weight="bold" />
         </button>

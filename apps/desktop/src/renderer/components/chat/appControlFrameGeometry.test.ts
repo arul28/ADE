@@ -70,6 +70,19 @@ describe("mapClientPointToFrame", () => {
       .toMatchObject({ viewportX: 1280, viewportY: 800, leftPct: 100, topPct: 100 });
   });
 
+  /*
+    The stage frame is inset 8px inside the pane, and the overlays that sit on
+    top of the frame — observe badges, the agent cursor — are positioned from
+    this mapping. It stays honest through the inset for one reason: the rect
+    handed in is the IMAGE's, never the container's, so moving the container
+    moves the rect with it.
+  */
+  it("follows the image rather than the pane, so insetting the stage shifts nothing", () => {
+    const inset = { ...rect, left: rect.left + 8, top: rect.top + 8 };
+    expect(mapClientPointToFrame({ clientX: 428, clientY: 258, rect: inset, metrics: LIVE }))
+      .toMatchObject({ viewportX: 640, viewportY: 400, leftPct: 50, topPct: 50 });
+  });
+
   it("maps nothing without metrics or a laid-out image", () => {
     expect(mapClientPointToFrame({ clientX: 0, clientY: 0, rect, metrics: null })).toBeNull();
     expect(mapClientPointToFrame({

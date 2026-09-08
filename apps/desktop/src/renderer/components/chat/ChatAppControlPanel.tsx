@@ -1430,246 +1430,266 @@ export function ChatAppControlPanel({
         </div>
       ) : null}
 
-      {/* Body — the live frame fills it, everything else is an overlay. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-black/20">
-        {/* Inspect exists to attach an element to a chat, so without one there
-            is only Control left — and a one-option toggle is chrome that asks
-            a question with a single answer. */}
-        {hasActiveSession && onAddContext ? (
-          <div
-            className="absolute left-2 top-2 z-10 inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 p-0.5 backdrop-blur"
-            role="group"
-            aria-label="App Control mode"
-          >
-            {(["control", "inspect"] as const).map((nextMode) => (
-              <button
-                key={nextMode}
-                type="button"
-                disabled={controlsDisabled}
-                aria-pressed={mode === nextMode}
-                onClick={() => setMode(nextMode)}
-                className={cn(
-                  "h-[20px] rounded-[3px] px-2 text-[10px] font-medium transition-colors duration-[120ms] ease-out",
-                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                  "disabled:cursor-not-allowed disabled:opacity-45",
-                  mode === nextMode
-                    ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90"
-                    : "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg/85",
-                )}
-              >
-                {nextMode === "control" ? "Control" : "Inspect"}
-              </button>
-            ))}
-          </div>
-        ) : null}
+      {/*
+        Body — the same card the browser stage draws.
 
-        {snapshot?.url ? (
-          <div
-            className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
-            title={snapshot.url}
-          >
-            {snapshot.title ?? snapshot.url}
-          </div>
-        ) : null}
-        {liveFrameStale ? (
-          <div className="absolute right-2 top-9 z-10 rounded-[var(--radius-sm)] border border-amber-300/20 bg-amber-500/12 px-2 py-1 text-[10px] font-medium text-amber-100/85 backdrop-blur">
-            Stream stale
-          </div>
-        ) : null}
-
-        {hasFrame ? (
-          <div className="relative flex h-full min-h-0 w-full items-center justify-center overflow-auto p-2">
-            <div className="relative max-h-full">
-              <img
-                ref={imageRef}
-                // When the screencast is live the src is driven by raf via
-                // imageRef directly. Falls back to the static snapshot only
-                // before the first live frame arrives. We keep this <img>
-                // mounted whenever EITHER source can paint, so a missing
-                // static snapshot doesn't blank out an active live stream.
-                src={liveFrameActive ? liveFrameInitialSrc ?? snapshot?.screenshot?.dataUrl : snapshot?.screenshot?.dataUrl}
-                alt="Electron app screenshot"
-                draggable={false}
-                className={cn(
-                  "block max-h-[60vh] max-w-full rounded-sm border border-white/[0.06] object-contain",
-                  screenshotBlank ? "cursor-not-allowed opacity-35" : mode === "inspect" ? "cursor-crosshair" : "cursor-pointer",
-                )}
-                onLoad={(event) => {
-                  const blank = Boolean(snapshot?.elements.length) && imageLooksBlank(event.currentTarget);
-                  setScreenshotBlank(blank);
-                  if (blank) {
-                    setHoverElement(null);
-                    setSelectedElement(null);
-                    setSelectedPoint(null);
-                  }
-                }}
-                onError={() => {
-                  // A frame the browser refused to decode is not a frame worth
-                  // keeping as the "last good" one either.
-                  clearLiveFrame();
-                  setScreenshotBlank(false);
-                }}
-                onClick={handleImageClick}
-                onMouseMove={(event) => {
-                  if (mode !== "inspect") return;
-                  const point = mapClientPoint(event.clientX, event.clientY, event.currentTarget);
-                  if (!point) return;
-                  inspectHoverAt(point);
-                }}
-                onMouseLeave={() => {
-                  if (hoverInspectTimerRef.current != null) {
-                    window.clearTimeout(hoverInspectTimerRef.current);
-                    hoverInspectTimerRef.current = null;
-                  }
-                  hoverInspectSeqRef.current += 1;
-                  setHoverElement(null);
-                }}
-              />
-              {screenshotBlank ? (
-                <div className="absolute inset-0 flex items-center justify-center rounded-sm border border-amber-300/18 bg-black/70 px-4 text-center backdrop-blur-sm">
-                  <div className="max-w-[360px] text-[11px] leading-5 text-amber-100/85">
-                    Renderer attached, but the screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Observe map — numbered handles an agent can quote back. */}
-              {observeMapOn && overlayViewport && !screenshotBlank ? (
-                <AppControlObserveOverlay
-                  elements={observedElements}
-                  viewport={overlayViewport}
-                  activeHandle={activeHandle}
-                  copiedHandle={copiedHandle}
-                  onSelectHandle={copyHandle}
-                  onAddToChat={onAddContext ? addHandleToChat : null}
-                />
-              ) : null}
-
-              {/* Agent cursor — where the last agent action actually landed. */}
-              {overlayViewport && !screenshotBlank ? (
-                <AppControlAgentCursor cursor={agentCursor} viewport={overlayViewport} />
-              ) : null}
-
-              {/* Inspect-only: persistent outline for the attached/selected element */}
-              {mode === "inspect" && selectedElement && !screenshotBlank ? (() => {
-                const style = overlayStyleForElement(selectedElement);
-                if (!style) return null;
-                return (
-                  <div
-                    key={`selected-${selectedElement.id}`}
-                    className="pointer-events-none absolute rounded-sm border-2 border-sky-300/85 bg-sky-300/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.18)]"
-                    style={style}
-                  />
-                );
-              })() : null}
-              {/* Inspect-only: hover affordance to telegraph what's selectable */}
-              {mode === "inspect" && hoverElement && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
-                const style = overlayStyleForElement(hoverElement);
-                if (!style) return null;
-                return (
-                  <div
-                    key={`hover-${hoverElement.id}`}
-                    className="pointer-events-none absolute rounded-sm border border-sky-200/60 bg-sky-200/5"
-                    style={style}
-                  />
-                );
-              })() : null}
-              {/* Inspect-only: coordinate marker when no element matched */}
-              {mode === "inspect" && selectedPoint && !screenshotBlank && !selectedElement && metrics ? (
-                <div
-                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
-                  style={{
-                    left: `${(selectedPoint.x / metrics.viewportWidth) * 100}%`,
-                    top: `${(selectedPoint.y / metrics.viewportHeight) * 100}%`,
-                  }}
-                />
-              ) : null}
-              {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
-              {mode === "control" && controlPulse && !screenshotBlank ? (
-                <div
-                  key={`pulse-${controlPulse.nonce}`}
-                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
-                  style={{
-                    left: `${controlPulse.leftPct}%`,
-                    top: `${controlPulse.topPct}%`,
-                  }}
-                />
-              ) : null}
-            </div>
-          </div>
-        ) : launching ? (
-          <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4" role="status">
-            <div className="ade-tool-skeleton h-[132px] w-full max-w-[320px] rounded-[var(--radius-lg)]" aria-hidden="true" />
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-fg">
-              <SpinnerGap size={12} className="animate-spin" />
-              {sessionStatus.detail}
-            </div>
-          </div>
-        ) : showDisconnected ? (
-          <div className="relative flex h-full min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-            <img
-              src={staleFrameSrc ?? undefined}
-              alt="Last frame before the app disconnected"
-              draggable={false}
-              className="block max-h-[60vh] max-w-full rounded-sm object-contain opacity-25 grayscale"
-            />
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
-              <div className="text-[12px] font-medium text-fg/85">The app stopped responding</div>
-              <div className="max-w-[300px] text-[11px] leading-[16px] text-muted-fg">
-                {sessionStatus.detail}
-              </div>
-              <button
-                type="button"
-                disabled={Boolean(busy) || controlsDisabled}
-                onClick={() => void reconnect()}
-                className={cn(
-                  "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
-                  "border border-white/[0.12] bg-white/[0.05] text-fg/85",
-                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.1]",
-                  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                  "disabled:cursor-not-allowed disabled:opacity-45",
-                )}
-              >
-                {busy === "reconnect" ? <SpinnerGap size={11} className="animate-spin" /> : <ArrowClockwise size={11} />}
-                Reconnect
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2.5 px-5 text-center">
-            <Desktop size={26} weight="duotone" className="text-muted-fg/35" />
-            <div className="text-[12px] font-medium text-fg/85">
-              {sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
-            </div>
-            <div className="max-w-[320px] text-[11px] leading-[16px] text-muted-fg">
-              {sessionConnected
-                ? "Refresh the snapshot to capture the current screen and DOM."
-                : "Launch it from here, or attach to a running app by its CDP port."}
-            </div>
-            {!sessionConnected ? (
-              <>
+        The frame is inset 8px from the pane, 10px-radius, with a 1px inset
+        ring over the muted surface, so App Control and the browser next door
+        read as one product instead of two panes that merely sit side by side.
+        Every overlay — the mode toggle, the URL chip, the observe badges, the
+        agent cursor — is a child of this inner frame, so all of them stay
+        aligned to the inset edge rather than to the pane's own edge.
+      */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col p-2">
+        <div
+          data-testid="app-control-stage"
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px]",
+            "bg-[var(--color-surface)] ring-1 ring-inset ring-white/[0.08]",
+          )}
+        >
+          {/* Inspect exists to attach an element to a chat, so without one there
+              is only Control left — and a one-option toggle is chrome that asks
+              a question with a single answer. */}
+          {hasActiveSession && onAddContext ? (
+            <div
+              className="absolute left-2 top-2 z-10 inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 p-0.5 backdrop-blur"
+              role="group"
+              aria-label="App Control mode"
+            >
+              {(["control", "inspect"] as const).map((nextMode) => (
                 <button
+                  key={nextMode}
                   type="button"
-                  onClick={() => setPickerOpen(true)}
+                  disabled={controlsDisabled}
+                  aria-pressed={mode === nextMode}
+                  onClick={() => setMode(nextMode)}
                   className={cn(
-                    "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
-                    "border border-[color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
-                    "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-fg/90",
-                    "transition-colors duration-[120ms] ease-out hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
+                    "h-[20px] rounded-[3px] px-2 text-[10px] font-medium transition-colors duration-[120ms] ease-out",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                    "disabled:cursor-not-allowed disabled:opacity-45",
+                    mode === nextMode
+                      ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90"
+                      : "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg/85",
                   )}
                 >
-                  <Stack size={11} weight="duotone" />
-                  Pick an app to drive
+                  {nextMode === "control" ? "Control" : "Inspect"}
                 </button>
-                <div className="max-w-[320px] text-[10.5px] leading-[15px] text-muted-fg/65">
-                  Agents reach the same session with{" "}
-                  <span className="font-mono text-muted-fg">ade app-control launch</span>.
+              ))}
+            </div>
+          ) : null}
+
+          {snapshot?.url ? (
+            <div
+              className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
+              title={snapshot.url}
+            >
+              {snapshot.title ?? snapshot.url}
+            </div>
+          ) : null}
+          {liveFrameStale ? (
+            <div className="absolute right-2 top-9 z-10 rounded-[var(--radius-sm)] border border-amber-300/20 bg-amber-500/12 px-2 py-1 text-[10px] font-medium text-amber-100/85 backdrop-blur">
+              Stream stale
+            </div>
+          ) : null}
+
+          {hasFrame ? (
+            <div className="relative flex h-full min-h-0 w-full items-center justify-center overflow-auto">
+              <div className="relative max-h-full">
+                <img
+                  ref={imageRef}
+                  // When the screencast is live the src is driven by raf via
+                  // imageRef directly. Falls back to the static snapshot only
+                  // before the first live frame arrives. We keep this <img>
+                  // mounted whenever EITHER source can paint, so a missing
+                  // static snapshot doesn't blank out an active live stream.
+                  src={liveFrameActive ? liveFrameInitialSrc ?? snapshot?.screenshot?.dataUrl : snapshot?.screenshot?.dataUrl}
+                  alt="Electron app screenshot"
+                  draggable={false}
+                  className={cn(
+                    // 9px, not 10: one pixel inside the frame's own radius, so
+                    // the corner never shows a sliver of surface between the
+                    // frame's ring and the frame it holds.
+                    "block max-h-[60vh] max-w-full rounded-[9px] object-contain",
+                    screenshotBlank ? "cursor-not-allowed opacity-35" : mode === "inspect" ? "cursor-crosshair" : "cursor-pointer",
+                  )}
+                  onLoad={(event) => {
+                    const blank = Boolean(snapshot?.elements.length) && imageLooksBlank(event.currentTarget);
+                    setScreenshotBlank(blank);
+                    if (blank) {
+                      setHoverElement(null);
+                      setSelectedElement(null);
+                      setSelectedPoint(null);
+                    }
+                  }}
+                  onError={() => {
+                    // A frame the browser refused to decode is not a frame worth
+                    // keeping as the "last good" one either.
+                    clearLiveFrame();
+                    setScreenshotBlank(false);
+                  }}
+                  onClick={handleImageClick}
+                  onMouseMove={(event) => {
+                    if (mode !== "inspect") return;
+                    const point = mapClientPoint(event.clientX, event.clientY, event.currentTarget);
+                    if (!point) return;
+                    inspectHoverAt(point);
+                  }}
+                  onMouseLeave={() => {
+                    if (hoverInspectTimerRef.current != null) {
+                      window.clearTimeout(hoverInspectTimerRef.current);
+                      hoverInspectTimerRef.current = null;
+                    }
+                    hoverInspectSeqRef.current += 1;
+                    setHoverElement(null);
+                  }}
+                />
+                {screenshotBlank ? (
+                  <div className="absolute inset-0 flex items-center justify-center rounded-[9px] border border-amber-300/18 bg-black/70 px-4 text-center backdrop-blur-sm">
+                    <div className="max-w-[360px] text-[11px] leading-5 text-amber-100/85">
+                      Renderer attached, but the screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Observe map — numbered handles an agent can quote back. */}
+                {observeMapOn && overlayViewport && !screenshotBlank ? (
+                  <AppControlObserveOverlay
+                    elements={observedElements}
+                    viewport={overlayViewport}
+                    activeHandle={activeHandle}
+                    copiedHandle={copiedHandle}
+                    onSelectHandle={copyHandle}
+                    onAddToChat={onAddContext ? addHandleToChat : null}
+                  />
+                ) : null}
+
+                {/* Agent cursor — where the last agent action actually landed. */}
+                {overlayViewport && !screenshotBlank ? (
+                  <AppControlAgentCursor cursor={agentCursor} viewport={overlayViewport} />
+                ) : null}
+
+                {/* Inspect-only: persistent outline for the attached/selected element */}
+                {mode === "inspect" && selectedElement && !screenshotBlank ? (() => {
+                  const style = overlayStyleForElement(selectedElement);
+                  if (!style) return null;
+                  return (
+                    <div
+                      key={`selected-${selectedElement.id}`}
+                      className="pointer-events-none absolute rounded-sm border-2 border-sky-300/85 bg-sky-300/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.18)]"
+                      style={style}
+                    />
+                  );
+                })() : null}
+                {/* Inspect-only: hover affordance to telegraph what's selectable */}
+                {mode === "inspect" && hoverElement && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
+                  const style = overlayStyleForElement(hoverElement);
+                  if (!style) return null;
+                  return (
+                    <div
+                      key={`hover-${hoverElement.id}`}
+                      className="pointer-events-none absolute rounded-sm border border-sky-200/60 bg-sky-200/5"
+                      style={style}
+                    />
+                  );
+                })() : null}
+                {/* Inspect-only: coordinate marker when no element matched */}
+                {mode === "inspect" && selectedPoint && !screenshotBlank && !selectedElement && metrics ? (
+                  <div
+                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
+                    style={{
+                      left: `${(selectedPoint.x / metrics.viewportWidth) * 100}%`,
+                      top: `${(selectedPoint.y / metrics.viewportHeight) * 100}%`,
+                    }}
+                  />
+                ) : null}
+                {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
+                {mode === "control" && controlPulse && !screenshotBlank ? (
+                  <div
+                    key={`pulse-${controlPulse.nonce}`}
+                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
+                    style={{
+                      left: `${controlPulse.leftPct}%`,
+                      top: `${controlPulse.topPct}%`,
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : launching ? (
+            <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4" role="status">
+              <div className="ade-tool-skeleton h-[132px] w-full max-w-[320px] rounded-[var(--radius-lg)]" aria-hidden="true" />
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-fg">
+                <SpinnerGap size={12} className="animate-spin" />
+                {sessionStatus.detail}
+              </div>
+            </div>
+          ) : showDisconnected ? (
+            <div className="relative flex h-full min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+              <img
+                src={staleFrameSrc ?? undefined}
+                alt="Last frame before the app disconnected"
+                draggable={false}
+                className="block max-h-[60vh] max-w-full rounded-[9px] object-contain opacity-25 grayscale"
+              />
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+                <div className="text-[12px] font-medium text-fg/85">The app stopped responding</div>
+                <div className="max-w-[300px] text-[11px] leading-[16px] text-muted-fg">
+                  {sessionStatus.detail}
                 </div>
-              </>
-            ) : null}
-          </div>
-        )}
+                <button
+                  type="button"
+                  disabled={Boolean(busy) || controlsDisabled}
+                  onClick={() => void reconnect()}
+                  className={cn(
+                    "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
+                    "border border-white/[0.12] bg-white/[0.05] text-fg/85",
+                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.1]",
+                    "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                    "disabled:cursor-not-allowed disabled:opacity-45",
+                  )}
+                >
+                  {busy === "reconnect" ? <SpinnerGap size={11} className="animate-spin" /> : <ArrowClockwise size={11} />}
+                  Reconnect
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2.5 px-5 text-center">
+              <Desktop size={26} weight="duotone" className="text-muted-fg/35" />
+              <div className="text-[12px] font-medium text-fg/85">
+                {sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
+              </div>
+              <div className="max-w-[320px] text-[11px] leading-[16px] text-muted-fg">
+                {sessionConnected
+                  ? "Refresh the snapshot to capture the current screen and DOM."
+                  : "Launch it from here, or attach to a running app by its CDP port."}
+              </div>
+              {!sessionConnected ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    className={cn(
+                      "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
+                      "border border-[color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
+                      "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-fg/90",
+                      "transition-colors duration-[120ms] ease-out hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
+                      "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                    )}
+                  >
+                    <Stack size={11} weight="duotone" />
+                    Pick an app to drive
+                  </button>
+                  <div className="max-w-[320px] text-[10.5px] leading-[15px] text-muted-fg/65">
+                    Agents reach the same session with{" "}
+                    <span className="font-mono text-muted-fg">ade app-control launch</span>.
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Control-mode keyboard input — the one action the frame can't express. */}
