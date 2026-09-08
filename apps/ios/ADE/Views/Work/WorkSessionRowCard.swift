@@ -281,7 +281,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.wokeReason = session.wokeReason
     self.runtimeState = session.runtimeState
     self.pendingInputItemId = session.pendingInputItemId
-    self.steeringInput = (session.steeringInput ?? chatSummary?.steeringInput) == true
+    self.steeringInput = workCombineSteeringInput(
+      session: session.steeringInput,
+      chatSummary: chatSummary?.steeringInput
+    )
     self.exitCode = session.exitCode
     self.isArchived = isArchived
     self.isMuted = isMuted
@@ -852,6 +855,9 @@ struct WorkSessionRow: View, Equatable {
     var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
     if let statusLabel = renderSignature.statusLabel {
       parts.append(statusLabel)
+    }
+    if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
+      parts.append("has a question")
     }
     if renderSignature.isSubagent {
       parts.append("subagent")

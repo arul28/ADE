@@ -4487,6 +4487,14 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+function isCodexRpcMethodNotFound(error: unknown): boolean {
+  if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === -32601) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /method not found/i.test(message);
+}
+
 function optionalSubagentModelFields(model?: string | null, reasoningEffort?: string | null): {
   model?: string;
   reasoningEffort?: string;
@@ -7005,7 +7013,11 @@ function applyCodexEffectiveThreadState(
   if (threadModel) {
     managed.session.model = threadModel;
     const descriptor = resolveModelDescriptorForProvider(threadModel, "codex");
-    if (descriptor) managed.session.modelId = descriptor.id;
+    if (descriptor) {
+      managed.session.modelId = descriptor.id;
+    } else {
+      delete managed.session.modelId;
+    }
   }
 
   const requestedCodexPolicy = options.requestedCodexPolicy ?? null;
@@ -31848,7 +31860,9 @@ export function createAgentChatService(args: {
         pending.delete(key);
 
         if (payload.error) {
-          request.reject(new Error(payload.error.message || "Codex request failed."));
+          const error = new Error(payload.error.message || "Codex request failed.") as Error & { code?: number };
+          if (typeof payload.error.code === "number") error.code = payload.error.code;
+          request.reject(error);
           return;
         }
 
@@ -50724,20 +50738,26 @@ export function createAgentChatService(args: {
   const listCodexPlugins = async (
     args: AgentChatCodexPluginsArgs = {},
   ): Promise<AgentChatCodexPlugin[]> => {
-    const managed = args.sessionId?.trim()
-      ? managedSessions.get(args.sessionId.trim()) ?? null
-      : [...managedSessions.values()].find((session) => session.runtime?.kind === "codex") ?? null;
+    const sessionId = args.sessionId?.trim() ?? "";
+    const laneId = args.laneId?.trim() ?? "";
+    const liveCodex = [...managedSessions.values()].filter((session) => session.runtime?.kind === "codex");
+    const managed = sessionId
+      ? managedSessions.get(sessionId) ?? null
+      : laneId
+        ? liveCodex.find((session) => session.session.laneId === laneId) ?? null
+        : liveCodex[0] ?? null;
     const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
     if (!runtime) return [];
     try {
       await runtime.request("plugin/reconcile", {});
     } catch {
-      // Under-development on some 0.153.x builds; listing still works.
+      // Optional warmup; some 0.153.x builds reject it while plugin/list still works.
     }
     try {
       return parseCodexPluginList(await runtime.request("plugin/list", {}));
-    } catch {
-      return [];
+    } catch (error) {
+      if (isCodexRpcMethodNotFound(error)) return [];
+      throw error;
     }
   };
 

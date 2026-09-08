@@ -45742,10 +45742,9 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
         event.event.type === "pending_input_resolved"
         && event.event.itemId === "codex-steer-done",
     );
-    await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
-      steeringInput: true,
-      awaitingInput: true,
-    });
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.steeringInput).not.toBe(true);
+    expect(summary?.awaitingInput).not.toBe(true);
   });
 
   it("enables Codex update_plan on every thread/start", async () => {
@@ -45809,21 +45808,21 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
   it("emits Computer Use status only on macOS and folds MCP live events into the working row", async () => {
     const originalPlatform = process.platform;
     const events: AgentChatEventEnvelope[] = [];
-    const { service } = createService({
-      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-    });
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
-    });
-    await service.sendMessage({
-      sessionId: session.id,
-      text: "Keep working.",
-    }, { awaitDispatch: true });
-
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
     try {
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep working.",
+      }, { awaitDispatch: true });
+
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
       mockState.emitCodexPayload({
         method: "mcpServer/startupStatus/updated",
         params: { serverName: "computer_use", status: "ok" },
@@ -45832,44 +45831,43 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(events.some((event) =>
         event.event.type === "tool_call" && event.event.tool === "computer_use"
       )).toBe(false);
-    } finally {
+
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockState.emitCodexPayload({
+        method: "mcpServer/startupStatus/updated",
+        params: { serverName: "computer_use", status: "ok" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "tool_call"
+          && event.event.tool === "computer_use"
+          && (event.event.args as { status?: string } | undefined)?.status === "ready"
+        )).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "mcp-stream-1",
+        method: "mcpServer/event/stream/start",
+        params: { serverName: "docs" },
+      });
+      mockState.emitCodexPayload({
+        method: "mcpServer/event/resource/updated",
+        params: { serverName: "docs", message: "file changed" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "tool_call"
+          && event.event.tool === "mcp_event"
+          && (event.event.args as { event?: string } | undefined)?.event === "file changed"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.id === "mcp-stream-1" && payload.result && typeof payload.result === "object"
+      )).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     }
-
-    mockState.emitCodexPayload({
-      method: "mcpServer/startupStatus/updated",
-      params: { serverName: "computer_use", status: "ok" },
-    });
-    await vi.waitFor(() => {
-      expect(events.some((event) =>
-        event.event.type === "tool_call"
-        && event.event.tool === "computer_use"
-        && (event.event.args as { status?: string } | undefined)?.status === "ready"
-      )).toBe(true);
-    });
-
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      id: "mcp-stream-1",
-      method: "mcpServer/event/stream/start",
-      params: { serverName: "docs" },
-    });
-    mockState.emitCodexPayload({
-      method: "mcpServer/event/resource/updated",
-      params: { serverName: "docs", message: "file changed" },
-    });
-    await vi.waitFor(() => {
-      expect(events.some((event) =>
-        event.event.type === "tool_call"
-        && event.event.tool === "mcp_event"
-        && (event.event.args as { event?: string } | undefined)?.event === "file changed"
-      )).toBe(true);
-    });
-    expect(mockState.codexRequestPayloads.some((payload) =>
-      payload.id === "mcp-stream-1" && payload.result && typeof payload.result === "object"
-    )).toBe(true);
-
-    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
   it("lists installed Codex plugins from a live runtime without toggling them", async () => {
@@ -45906,6 +45904,79 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     ]);
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "plugin/reconcile")).toBe(true);
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "plugin/list")).toBe(true);
+  });
+
+  it("lists Codex plugins from the requested lane when sessionId is omitted", async () => {
+    mockState.codexResponseOverrides.set("plugin/list", () => ({
+      marketplaces: [{
+        name: "openai-bundled",
+        plugins: [{
+          id: "bundled.docs",
+          name: "docs",
+          enabled: true,
+          installed: true,
+          source: { type: "local" },
+          installPolicy: "INSTALLED_BY_DEFAULT",
+        }],
+      }],
+    }));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+    await expect(service.listCodexPlugins({ laneId: "lane-missing" })).resolves.toEqual([]);
+    await expect(service.listCodexPlugins({ laneId: "lane-1" })).resolves.toEqual([
+      expect.objectContaining({ id: "bundled.docs", origin: "bundled" }),
+    ]);
+  });
+
+  it("fails open on Codex plugin method-not-found and surfaces other plugin errors", async () => {
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+
+    mockState.codexResponseOverrides.set("plugin/list", {
+      error: { code: -32601, message: "Method not found" },
+    });
+    await expect(service.listCodexPlugins({ sessionId: session.id })).resolves.toEqual([]);
+
+    mockState.codexResponseOverrides.set("plugin/list", {
+      error: { code: -32000, message: "auth failed" },
+    });
+    await expect(service.listCodexPlugins({ sessionId: session.id })).rejects.toThrow(/auth failed/);
+  });
+
+  it("clears Codex modelId when the runtime reports an unregistered thread model", async () => {
+    mockState.codexResponseOverrides.set("thread/start", () => ({
+      thread: { id: "thread-unknown-model", model: "gpt-unknown-preview" },
+    }));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Open Codex.",
+    }, { awaitDispatch: true });
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.model).toBe("gpt-unknown-preview");
+    expect(summary?.modelId).toBeUndefined();
   });
 
   it("returns a failed Cursor Task transcript by call id when no agent id exists", async () => {

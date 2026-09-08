@@ -11572,11 +11572,9 @@ export function AgentChatPane({
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
   ) => {
-    if (!selectedSessionId) return;
-    const request = resolvedPendingInputsBySession[selectedSessionId]?.[0];
-    if (!request) return;
-    await handleApproval(request.itemId, decision, responseText, answers);
-  }, [handleApproval, resolvedPendingInputsBySession, selectedSessionId]);
+    if (!selectedSessionId || !pendingInput) return;
+    await handleApproval(pendingInput.itemId, decision, responseText, answers);
+  }, [handleApproval, pendingInput, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;

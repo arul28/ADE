@@ -147,7 +147,10 @@ only on macOS. Plus/Team chats emit a quiet `Approaching Codex plan limit`
 notice at ≥50% of the five-hour window (`primary.used_percent`), once per
 runtime. Settings lists installed Codex plugins from `plugin/reconcile` +
 `plugin/list` (name, on/off, bundled / local / installed remote) without a
-marketplace or toggle. MCP live stream events fold into the working row.
+marketplace or toggle, and Refresh re-fetches that inventory from a live Codex
+chat. `plugin/list` fails open only for JSON-RPC method-not-found (`-32601`);
+other plugin errors stay visible. MCP live stream events fold into the working
+row.
 
 `selectSupportedReasoningEffort()` centralizes fallback order: keep a valid
 explicit selection, then use the model's advertised default, then a valid

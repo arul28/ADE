@@ -2,8 +2,9 @@
  * Codex settings extras: installed plugins from a live app-server runtime.
  * List-only — no marketplace, install, or toggle. Codex 0.153.4 `plugin/list`.
  */
-import React, { useEffect, useState } from "react";
-import { COLORS, SANS_FONT, SECTION_LABEL_STYLE } from "../../../lanes/laneDesignTokens";
+import { ArrowsClockwise } from "@phosphor-icons/react";
+import React, { useCallback, useEffect, useState } from "react";
+import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
 import type { AgentChatCodexPlugin } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
 
@@ -25,24 +26,38 @@ function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
 export function CodexBody(_props: { ctx: ProvidersViewContext }) {
   const [plugins, setPlugins] = useState<AgentChatCodexPlugin[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadPlugins = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      setPlugins(await window.ade.agentChat.listCodexPlugins({}));
+    } catch (err: unknown) {
+      setPlugins(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void window.ade.agentChat.listCodexPlugins({})
-      .then((rows) => {
-        if (!cancelled) setPlugins(rows);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void loadPlugins();
+  }, [loadPlugins]);
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={SECTION_LABEL_STYLE}>Plugins</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={SECTION_LABEL_STYLE}>Plugins</div>
+        <button
+          type="button"
+          style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+          disabled={refreshing}
+          onClick={() => { void loadPlugins(); }}
+        >
+          <ArrowsClockwise size={11} weight="bold" /> {refreshing ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
         Installed Codex plugins from a live Codex chat. ADE lists them; it does not install or toggle them.
       </div>

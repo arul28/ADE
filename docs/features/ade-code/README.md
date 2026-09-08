@@ -277,7 +277,7 @@ Right pane (open contextual content):
 | `/cloud` | List Cursor Cloud agents for this project in the right pane (read-only fleet view): one row per agent with a status glyph (`●` running, `✓` finished, `✗` failed/cancelled), name, status, age, and agent id when it fits. Rows sort running-first then newest-first; a footnote states that management actions live on desktop/iOS. Backed by the same host-side fleet service the desktop top-bar view uses. |
 | `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
 | `/output-style [style]` | List or select the active Claude output style (Claude only). |
-| `/plugin [reload\|native args]` | List Claude plugins (Claude) or list installed Codex plugins read-only (Codex). Codex has no reload/toggle from ADE. |
+| `/plugin [reload\|native args]` | Claude: list plugins, reload, or run native plugin args. Codex: list installed plugins (read-only; no reload/toggle). |
 | `/status` | Project, lane, and runtime state summary. |
 | `/context` | Show chat context usage. |
 | `/agents` | List Claude agents from user/project config (Claude only). |

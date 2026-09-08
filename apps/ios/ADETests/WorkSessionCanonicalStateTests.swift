@@ -515,6 +515,13 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNotEqual(row.phase, .needsYou)
   }
 
+  func testSteeringInputUsesEitherSessionOrChatSummary() {
+    XCTAssertFalse(workCombineSteeringInput(session: nil, chatSummary: nil))
+    XCTAssertFalse(workCombineSteeringInput(session: false, chatSummary: nil))
+    XCTAssertTrue(workCombineSteeringInput(session: false, chatSummary: true))
+    XCTAssertTrue(workCombineSteeringInput(session: true, chatSummary: false))
+  }
+
   /// Settled is the deliberate hole in the vocabulary: desktop returns `null`
   /// so the row's timestamp owns the slot, because in the collapsed tail the
   /// section itself is already the status.

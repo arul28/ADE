@@ -3283,6 +3283,36 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByTestId("codex-steering-question")).toBeTruthy();
   });
 
+  it("approves the composer card's non-steering request when a steering card is also live", async () => {
+    const session = buildSession("session-1", { awaitingInput: true });
+    installAdeMocks({
+      sessions: [session],
+      transcript: `${buildCodexSteeringTranscript(session.sessionId)}${buildPendingInputTranscript(session.sessionId)}`,
+    });
+
+    renderPane(session);
+
+    const steering = await screen.findByTestId("codex-steering-question");
+    expect(await screen.findByText("Which branch should I use?")).toBeTruthy();
+    const composerInput = screen.getAllByRole("textbox").find((node) => !steering.contains(node));
+    expect(composerInput).toBeTruthy();
+    fireEvent.change(composerInput!, { target: { value: "main" } });
+    const composerSend = screen.getAllByTestId("ask-question-send").find((button) => !steering.contains(button));
+    expect(composerSend).toBeTruthy();
+    fireEvent.click(composerSend!);
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.respondToInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.sessionId,
+          itemId: "approval-1",
+          decision: "accept",
+        }),
+        null,
+      );
+    });
+  });
+
   it("replaces the composer prompt with the pending question surface", async () => {
     const session = buildSession("session-1");
     const { send, steer } = installAdeMocks({

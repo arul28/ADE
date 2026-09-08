@@ -298,6 +298,13 @@ func workChatPendingInputHeaderVerb(
   return "\(name) asks"
 }
 
+/// Live steering is reported on the session row, the chat summary, or both.
+/// Either source is enough for the `?` pip; `??` would hide a true summary
+/// behind an explicit `false` on the session.
+func workCombineSteeringInput(session: Bool?, chatSummary: Bool?) -> Bool {
+  session == true || chatSummary == true
+}
+
 extension WorkPendingQuestionModel {
   /// Header verb shown beside the provider logo: "{Provider} asks".
   var providerHeaderVerb: String {
