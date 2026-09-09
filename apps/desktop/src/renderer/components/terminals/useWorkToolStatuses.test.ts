@@ -162,7 +162,8 @@ describe("isAppControlSessionLive", () => {
 });
 
 describe("workToolSummary", () => {
-  const definition = { id: "browser", label: "Browser" } as never;
+  const definition = { id: "browser", label: "Browser", hint: "Drive a real browser" } as never;
+  const hintless = { id: "files", label: "Files" } as never;
   const available = { available: true, reason: null } as const;
 
   it("gives the picker and the header the same line", () => {
@@ -171,11 +172,25 @@ describe("workToolSummary", () => {
     expect(summary.tooltipLabel).toBe("Browser — 3 tabs · 2 errors");
   });
 
-  it("says nothing at all when nothing has been measured", () => {
+  it("falls back to the catalogue hint when nothing has been measured", () => {
+    // The picker used to own this string, so a clipped card's tooltip — whose
+    // whole job is to be the rest of the sentence — said less than the card.
+    // One resolution, so both read the same words.
     const summary = workToolSummary(definition, undefined, available);
-    expect(summary.line).toBe("");
-    // …and the tooltip is then the tool's name, not "Browser — ".
-    expect(summary.tooltipLabel).toBe("Browser");
+    expect(summary.line).toBe("Drive a real browser");
+    expect(summary.tooltipLabel).toBe("Browser — Drive a real browser");
+  });
+
+  it("says nothing at all for a tool with no hint and no measurement", () => {
+    const summary = workToolSummary(hintless, undefined, available);
+    expect(summary.line).toBeNull();
+    // …and the tooltip is then the tool's name, not "Files — ".
+    expect(summary.tooltipLabel).toBe("Files");
+  });
+
+  it("prefers a measured status over the hint", () => {
+    const summary = workToolSummary(definition, { line: "3 tabs", live: true }, available);
+    expect(summary.line).toBe("3 tabs");
   });
 
   it("states the reason instead when the tool cannot run here", () => {

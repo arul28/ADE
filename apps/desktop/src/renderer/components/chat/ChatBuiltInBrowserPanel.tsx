@@ -42,6 +42,7 @@ import {
   type BrowserDevServer,
 } from "./browser/browserDevServers";
 import {
+  clearBrowserRecentUrls,
   forgetBrowserRecentUrl,
   readBrowserRecentUrls,
   rememberBrowserRecentUrl,
@@ -887,6 +888,17 @@ export function ChatBuiltInBrowserPanel({
     if (!api?.onRemoteRequest || !pin) return undefined;
     let cancelled = false;
     const unsubscribe = api.onRemoteRequest((request) => {
+      // One request, one answering panel.
+      //
+      // The preload fanout now delivers to every panel mounted for this pin, so
+      // a lane's Work pane and a project-level pane would both navigate and both
+      // ack the same request. A request that names a lane or a chat belongs to
+      // the panel that IS that lane/chat. A panel with no identity of its own
+      // still takes it — the project-level pane is the one that answers a
+      // request from outside any lane, and dropping those would make
+      // `ade browser open` silently do nothing.
+      if (request.laneId && contextLaneId && request.laneId !== contextLaneId) return;
+      if (request.chatSessionId && sessionId && request.chatSessionId !== sessionId) return;
       void (async () => {
         let accepted = false;
         let reason: string | null = null;
@@ -954,7 +966,15 @@ export function ChatBuiltInBrowserPanel({
       cancelled = true;
       unsubscribe();
     };
-  }, [prepareRemoteNavigation, refreshStatus, rememberTabTunnel, remotePin, withBrowserScope]);
+  }, [
+    contextLaneId,
+    prepareRemoteNavigation,
+    refreshStatus,
+    rememberTabTunnel,
+    remotePin,
+    sessionId,
+    withBrowserScope,
+  ]);
 
   const runBusy = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -2118,6 +2138,10 @@ export function ChatBuiltInBrowserPanel({
     setRecentUrls(forgetBrowserRecentUrl(recentScope, url));
   }, [recentScope]);
 
+  const handleClearRecents = useCallback(() => {
+    setRecentUrls(clearBrowserRecentUrls(recentScope));
+  }, [recentScope]);
+
   /**
    * The launchpad's groups.
    *
@@ -2179,10 +2203,18 @@ export function ChatBuiltInBrowserPanel({
           onSelect: () => handleSuggestion(entry.url),
           onForget: () => handleForgetRecent(entry.url),
         })),
+        onClear: { label: "Clear", run: handleClearRecents },
       });
     }
     return groups;
-  }, [clipboardUrl, devServers, handleForgetRecent, handleSuggestion, recentUrls]);
+  }, [
+    clipboardUrl,
+    devServers,
+    handleClearRecents,
+    handleForgetRecent,
+    handleSuggestion,
+    recentUrls,
+  ]);
 
   /* ── Layout ─────────────────────────────────────────────────────────────── */
 

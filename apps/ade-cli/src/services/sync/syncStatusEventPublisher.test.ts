@@ -92,3 +92,38 @@ describe("createSyncStatusEventPublisher", () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createSyncStatusEventPublisher — unserializable snapshots", () => {
+  it("treats an unserializable snapshot as new every time, with a readable sentinel", () => {
+    // The fallback sentinel used to be a literal NUL byte in a template
+    // literal, which made the whole source file binary to git: no textual diff
+    // in review, no `git blame`, no `git grep`, and an invisible character in
+    // every editor. A readable string cannot collide with a `JSON.stringify`
+    // result either — a string snapshot serializes with quotes around it.
+    const emit = vi.fn();
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const publisher = createSyncStatusEventPublisher<Record<string, unknown>>({
+      emit,
+      intervalMs: 0,
+    });
+
+    publisher.publish(cyclic);
+    publisher.publish(cyclic);
+
+    // The same object twice, but neither can be proven identical, so neither is
+    // silently swallowed.
+    expect(emit).toHaveBeenCalledTimes(2);
+    publisher.dispose();
+  });
+
+  it("keeps its own source file readable text rather than binary", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(
+      new URL("./syncStatusEventPublisher.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("unserializable:");
+    expect(source.includes("\u0000")).toBe(false);
+  });
+});

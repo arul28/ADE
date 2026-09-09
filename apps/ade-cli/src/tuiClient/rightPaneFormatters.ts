@@ -639,7 +639,7 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   terminal: "Terminal",
   git: "Git",
   files: "Files",
-  ios: "iOS Simulator",
+  ios: "Simulator",
   "app-control": "App Control",
   browser: "Browser",
 };

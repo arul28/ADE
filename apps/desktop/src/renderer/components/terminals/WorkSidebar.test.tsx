@@ -125,13 +125,11 @@ vi.mock("../chat/ChatTerminalDrawer", async () => {
   const React = await import("react");
   return {
     ChatTerminalDrawer: (props: {
-      variant?: string;
       laneId: string;
       chatSessionId?: string | null;
       open: boolean;
     }) => React.createElement("div", {
       "data-testid": "chat-terminal-drawer",
-      "data-variant": props.variant ?? "",
       "data-lane-id": props.laneId,
       "data-chat-session-id": props.chatSessionId ?? "",
       "data-open": props.open ? "true" : "false",
@@ -428,7 +426,6 @@ describe("WorkSidebar context targets", () => {
     });
 
     const drawer = screen.getByTestId("chat-terminal-drawer");
-    expect(drawer.getAttribute("data-variant")).toBe("panel");
     expect(drawer.getAttribute("data-lane-id")).toBe("lane-1");
     expect(drawer.getAttribute("data-chat-session-id")).toBe("term-1");
     expect(drawer.getAttribute("data-open")).toBe("true");

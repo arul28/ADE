@@ -45,6 +45,12 @@ import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLi
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
+  createRemoteRuntimeFanout,
+  dispatchRemoteRuntimeFanouts,
+  hasRemoteRuntimeFanoutSubscribers,
+  type RemoteRuntimeFanoutEntry,
+} from "./remoteRuntimeFanout";
+import {
   createPinnedRuntimeEvents,
   isPinnedRuntimeEventStale,
   normalizePinnedRuntimeEventEpoch,
@@ -115,6 +121,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppCommandPayload,
   AppMenuCommand,
   AppZoomCommand,
   AutoUpdatePreferences,
@@ -2151,102 +2158,281 @@ async function callProjectRuntimeSyncOr<T>(
   return localRuntime.handled ? localRuntime.result : local();
 }
 
-const remoteAgentChatEventCallbacks = new Set<
-  (payload: AgentChatEventEnvelope) => void
->();
+/**
+ * Every remote runtime event domain, in one table.
+ *
+ * `lib/../preload/remoteRuntimeFanout` explains why: a domain used to be four
+ * hand-copied edits in four places, two of which were independently maintained
+ * lists of thirty-four entries. Adding a domain is now one entry here, and the
+ * pump-liveness check and the dispatcher both read this array, so they cannot
+ * disagree about what is wired.
+ */
+const remoteAgentChatEventFanout = createRemoteRuntimeFanout<AgentChatEventEnvelope>({
+  eventType: "agent_chat_event",
+  label: "agent chat",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAgentChatEventEnvelope(payload),
+  invalidate: () => agentChatSummaryCache.clear(),
+});
 const pinnedLocalAgentChatEventCallbacks = new Map<
   string,
   Set<(event: RemoteRuntimeBufferedEvent) => void>
 >();
-const remoteSessionChangedCallbacks = new Set<
-  (payload: TerminalSessionChangedEvent) => void
->();
-const remoteLaneDeleteEventCallbacks = new Set<
-  (payload: LaneDeleteEvent) => void
->();
-const remoteLaneLifecycleEventCallbacks = new Set<
-  (payload: LaneLifecycleEvent) => void
->();
-const remoteLaneRebaseEventCallbacks = new Set<
-  (payload: RebaseRunEventPayload) => void
->();
-const remoteLaneRebaseSuggestionsEventCallbacks = new Set<
-  (payload: RebaseSuggestionsEventPayload) => void
->();
-const remoteLaneAutoRebaseEventCallbacks = new Set<
-  (payload: AutoRebaseEventPayload) => void
->();
-const remoteLaneEnvEventCallbacks = new Set<
-  (payload: LaneEnvInitEvent) => void
->();
-const remoteLanePortEventCallbacks = new Set<
-  (payload: PortAllocationEvent) => void
->();
-const remoteLaneProxyEventCallbacks = new Set<
-  (payload: LaneProxyEvent) => void
->();
-const remoteLaneOAuthEventCallbacks = new Set<
-  (payload: OAuthRedirectEvent) => void
->();
-const remoteOpenCodeOAuthStatusCallbacks = new Set<
-  (payload: OpenCodeOAuthStatusEvent) => void
->();
-const remotePiAuthStatusCallbacks = new Set<(payload: PiAuthStatusEvent) => void>();
-const remoteCursorAuthStatusCallbacks = new Set<(payload: CursorSdkAuthEvent) => void>();
-const remoteLaneDiagnosticsEventCallbacks = new Set<
-  (payload: RuntimeDiagnosticsEvent) => void
->();
-const remotePtyDataEventCallbacks = new Set<(payload: PtyDataEvent) => void>();
-const remotePtyExitEventCallbacks = new Set<(payload: PtyExitEvent) => void>();
+const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
+  eventType: "terminal_session_changed",
+  label: "session",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toTerminalSessionChangedEvent(payload),
+  invalidate: () => sessionDeltaCache.clear(),
+});
+const remoteLaneDeleteEventFanout = createRemoteRuntimeFanout<LaneDeleteEvent>({
+  eventType: "lane_delete_event",
+  label: "lane delete",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneLifecycleEventFanout = createRemoteRuntimeFanout<LaneLifecycleEvent>({
+  eventType: "lane_lifecycle_event",
+  label: "lane lifecycle",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneRebaseEventFanout = createRemoteRuntimeFanout<RebaseRunEventPayload>({
+  eventType: "lane_rebase_event",
+  label: "lane rebase",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneRebaseSuggestionsEventFanout =
+  createRemoteRuntimeFanout<RebaseSuggestionsEventPayload>({
+    eventType: "lane_rebase_suggestions_event",
+    label: "rebase suggestions",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteLaneAutoRebaseEventFanout = createRemoteRuntimeFanout<AutoRebaseEventPayload>({
+  eventType: "lane_auto_rebase_event",
+  label: "auto rebase",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneEnvEventFanout = createRemoteRuntimeFanout<LaneEnvInitEvent>({
+  eventType: "lane_env_event",
+  label: "lane env",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLanePortEventFanout = createRemoteRuntimeFanout<PortAllocationEvent>({
+  eventType: "lane_port_event",
+  label: "lane port",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneProxyEventFanout = createRemoteRuntimeFanout<LaneProxyEvent>({
+  eventType: "lane_proxy_event",
+  label: "lane proxy",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneOAuthEventFanout = createRemoteRuntimeFanout<OAuthRedirectEvent>({
+  eventType: "lane_oauth_event",
+  label: "lane OAuth",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteOpenCodeOAuthStatusFanout = createRemoteRuntimeFanout<OpenCodeOAuthStatusEvent>({
+  eventType: "opencodeOAuthStatus",
+  label: "OpenCode OAuth status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<OpenCodeOAuthStatusEvent>(
+    payload,
+    "opencodeOAuthStatus",
+    (event) => typeof event.providerId === "string",
+  ),
+});
+const remotePiAuthStatusFanout = createRemoteRuntimeFanout<PiAuthStatusEvent>({
+  eventType: "piAuthStatus",
+  label: "Pi sign-in status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<PiAuthStatusEvent>(
+    payload,
+    "piAuthStatus",
+    (event) => typeof event.providerId === "string",
+  ),
+});
+const remoteCursorAuthStatusFanout = createRemoteRuntimeFanout<CursorSdkAuthEvent>({
+  eventType: "cursorAuthStatus",
+  label: "Cursor sign-in status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<CursorSdkAuthEvent>(
+    payload,
+    "cursorAuthStatus",
+    (event) => event.providerId === "cursor",
+  ),
+});
+const remoteLaneDiagnosticsEventFanout = createRemoteRuntimeFanout<RuntimeDiagnosticsEvent>({
+  eventType: "lane_diagnostics_event",
+  label: "lane diagnostics",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remotePtyDataEventFanout = createRemoteRuntimeFanout<PtyDataEvent>({
+  eventType: "pty_data",
+  label: "pty data",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  shouldDeliver: (event) => shouldDispatchPtyDataEvent(event),
+});
+const remotePtyExitEventFanout = createRemoteRuntimeFanout<PtyExitEvent>({
+  eventType: "pty_exit",
+  label: "pty exit",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 let ptyDataSubscriptionsConfigured = false;
 let subscribedPtyDataIds = new Set<string>();
-const remoteTestEventCallbacks = new Set<(payload: TestEvent) => void>();
-const remoteFileChangeEventCallbacks = new Set<
-  (payload: FileChangeEvent) => void
->();
-const remotePrEventCallbacks = new Set<(payload: PrEventPayload) => void>();
-const remotePrAiResolutionEventCallbacks = new Set<
-  (payload: PrAiResolutionEventPayload) => void
->();
-const remoteProjectStateEventCallbacks = new Set<
-  (payload: AdeProjectEvent) => void
->();
-const remoteSyncStatusEventCallbacks = new Set<
-  (payload: SyncStatusEventPayload) => void
->();
-const remoteReviewEventCallbacks = new Set<
-  (payload: ReviewEventPayload) => void
->();
-const remoteUsageUpdateEventCallbacks = new Set<
-  (payload: UsageSnapshot) => void
->();
-const remoteAutomationsEventCallbacks = new Set<
-  (payload: AutomationsEventPayload) => void
->();
-const remoteConflictEventCallbacks = new Set<
-  (payload: ConflictEventPayload) => void
->();
-const remoteGitHubStatusChangedCallbacks = new Set<
-  (payload: GitHubStatus) => void
->();
-const remoteFeedbackEventCallbacks = new Set<
-  (payload: FeedbackSubmissionEvent) => void
->();
-const remoteComputerUseEventCallbacks = new Set<
-  (payload: ComputerUseEventPayload) => void
->();
-const remoteIosSimulatorEventCallbacks = new Set<
-  (payload: IosSimulatorEventPayload) => void
->();
-const remoteAppControlEventCallbacks = new Set<
-  (payload: AppControlEventPayload) => void
->();
-const remoteBuiltInBrowserRemoteRequestCallbacks = new Set<
-  (payload: BuiltInBrowserRemoteRequest) => void
->();
-const remoteOrchestrationEventCallbacks = new Set<
-  (payload: OrchestrationEventPayload) => void
->();
+const remoteTestEventFanout = createRemoteRuntimeFanout<TestEvent>({
+  eventType: "test_event",
+  label: "test",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toTestEvent(payload),
+});
+const remoteFileChangeEventFanout = createRemoteRuntimeFanout<FileChangeEvent>({
+  eventType: "file_change",
+  label: "file change",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remotePrEventFanout = createRemoteRuntimeFanout<PrEventPayload>({
+  eventType: "pr_event",
+  label: "PR",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remotePrAiResolutionEventFanout =
+  createRemoteRuntimeFanout<PrAiResolutionEventPayload>({
+    eventType: "pr_ai_resolution_event",
+    label: "PR AI resolution",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteProjectStateEventFanout = createRemoteRuntimeFanout<AdeProjectEvent>({
+  eventType: "project_state_event",
+  label: "project state",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteSyncStatusEventFanout = createRemoteRuntimeFanout<SyncStatusEventPayload>({
+  eventType: "sync-status",
+  label: "sync",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  // A status event is the envelope itself, not a wrapped `event`.
+  extract: (payload) => (
+    payload.type === "sync-status" && isRecord(payload.snapshot)
+      ? (payload as SyncStatusEventPayload)
+      : null
+  ),
+});
+const remoteReviewEventFanout = createRemoteRuntimeFanout<ReviewEventPayload>({
+  eventType: "review_event",
+  label: "review",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteUsageUpdateEventFanout = createRemoteRuntimeFanout<UsageSnapshot>({
+  eventType: "usage",
+  label: "usage",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => (
+    payload.type === "usage" && isRecord(payload.snapshot)
+      ? (payload.snapshot as unknown as UsageSnapshot)
+      : null
+  ),
+});
+const remoteAutomationsEventFanout = createRemoteRuntimeFanout<AutomationsEventPayload>({
+  eventType: "automations_event",
+  label: "automation",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAutomationsRuntimeEvent(payload),
+});
+const remoteConflictEventFanout = createRemoteRuntimeFanout<ConflictEventPayload>({
+  eventType: "conflict_event",
+  label: "conflict",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteGitHubStatusChangedFanout = createRemoteRuntimeFanout<GitHubStatus>({
+  eventType: "github_status_changed",
+  label: "GitHub status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => {
+    githubStatusCache.clear();
+    githubRemoteStatusCache.clear();
+    githubAppInstallationStatusCache.clear();
+  },
+});
+const remoteFeedbackEventFanout = createRemoteRuntimeFanout<FeedbackSubmissionEvent>({
+  eventType: "feedback_submission_event",
+  label: "feedback",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteComputerUseEventFanout = createRemoteRuntimeFanout<ComputerUseEventPayload>({
+  eventType: "computer_use_event",
+  label: "computer use",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => computerUseOwnerSnapshotCache.clear(),
+});
+const remoteIosSimulatorEventFanout = createRemoteRuntimeFanout<IosSimulatorEventPayload>({
+  eventType: "ios_simulator_event",
+  label: "iOS simulator",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearIosSimulatorStatusCaches(),
+});
+const remoteAppControlEventFanout = createRemoteRuntimeFanout<AppControlEventPayload>({
+  eventType: "app_control_event",
+  label: "App Control",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => appControlStatusCache.clear(),
+});
+const remoteBuiltInBrowserRemoteRequestFanout =
+  createRemoteRuntimeFanout<BuiltInBrowserRemoteRequest>({
+    eventType: BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+    label: "built-in browser request",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteOrchestrationEventFanout = createRemoteRuntimeFanout<OrchestrationEventPayload>({
+  eventType: "orchestration_event",
+  label: "orchestration",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toOrchestrationRuntimeEvent(payload),
+});
+
+/**
+ * The wiring itself. Exported so a test can assert every listed domain reaches
+ * its subscriber — a domain that is not in here is not wired at all.
+ */
+export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
+  remoteAgentChatEventFanout,
+  remoteSessionChangedFanout,
+  remoteLaneDeleteEventFanout,
+  remoteLaneLifecycleEventFanout,
+  remoteLaneRebaseEventFanout,
+  remoteLaneRebaseSuggestionsEventFanout,
+  remoteLaneAutoRebaseEventFanout,
+  remoteLaneEnvEventFanout,
+  remoteLanePortEventFanout,
+  remoteLaneProxyEventFanout,
+  remoteLaneOAuthEventFanout,
+  remoteOpenCodeOAuthStatusFanout,
+  remotePiAuthStatusFanout,
+  remoteCursorAuthStatusFanout,
+  remoteLaneDiagnosticsEventFanout,
+  remotePtyDataEventFanout,
+  remotePtyExitEventFanout,
+  remoteTestEventFanout,
+  remoteFileChangeEventFanout,
+  remotePrEventFanout,
+  remotePrAiResolutionEventFanout,
+  remoteProjectStateEventFanout,
+  remoteSyncStatusEventFanout,
+  remoteReviewEventFanout,
+  remoteUsageUpdateEventFanout,
+  remoteAutomationsEventFanout,
+  remoteConflictEventFanout,
+  remoteGitHubStatusChangedFanout,
+  remoteFeedbackEventFanout,
+  remoteComputerUseEventFanout,
+  remoteIosSimulatorEventFanout,
+  remoteAppControlEventFanout,
+  remoteBuiltInBrowserRemoteRequestFanout,
+  remoteOrchestrationEventFanout,
+];
 
 function createLocalIpcEventSubscription<T>(
   channel: string,
@@ -2278,6 +2464,44 @@ function createLocalIpcEventSubscription<T>(
         listener = null;
       }
     };
+  };
+}
+
+/** The command each menu-command kind carries, keyed by kind. */
+type AppCommandByKind = {
+  [TKind in AppCommandPayload["kind"]]: Extract<
+    AppCommandPayload,
+    { kind: TKind }
+  >["command"];
+};
+
+/**
+ * Native-menu commands, one channel down and two subscriptions out.
+ *
+ * Main sends every menu command on `IPC.appCommand` as `{ kind, command }`.
+ * The two pre-unification channels are still listened to here so a sender that
+ * has not moved over keeps working; main sends only the unified one, so nothing
+ * is delivered twice.
+ */
+function subscribeAppCommand<TKind extends AppCommandPayload["kind"]>(
+  kind: TKind,
+  cb: (command: AppCommandByKind[TKind]) => void,
+): () => void {
+  type Command = AppCommandByKind[TKind];
+  const legacyChannel = kind === "zoom" ? IPC.appZoomCommand : IPC.appMenuCommand;
+  const onUnified = (
+    _event: Electron.IpcRendererEvent,
+    payload: AppCommandPayload,
+  ) => {
+    if (!payload || payload.kind !== kind) return;
+    cb(payload.command as Command);
+  };
+  const onLegacy = (_event: Electron.IpcRendererEvent, command: Command) => cb(command);
+  ipcRenderer.on(IPC.appCommand, onUnified);
+  ipcRenderer.on(legacyChannel, onLegacy);
+  return () => {
+    ipcRenderer.removeListener(IPC.appCommand, onUnified);
+    ipcRenderer.removeListener(legacyChannel, onLegacy);
   };
 }
 
@@ -2385,52 +2609,13 @@ function shouldDispatchRemoteRuntimeEvent(
 }
 
 function hasRemoteRuntimeEventSubscribers(): boolean {
-  return (
-    remoteAgentChatEventCallbacks.size > 0 ||
-    remoteSyncStatusEventCallbacks.size > 0 ||
-    remoteReviewEventCallbacks.size > 0 ||
-    remoteSessionChangedCallbacks.size > 0 ||
-    remoteLaneDeleteEventCallbacks.size > 0 ||
-    remoteLaneLifecycleEventCallbacks.size > 0 ||
-    remoteLaneRebaseEventCallbacks.size > 0 ||
-    remoteLaneRebaseSuggestionsEventCallbacks.size > 0 ||
-    remoteLaneAutoRebaseEventCallbacks.size > 0 ||
-    remoteLaneEnvEventCallbacks.size > 0 ||
-    remoteLanePortEventCallbacks.size > 0 ||
-    remoteLaneProxyEventCallbacks.size > 0 ||
-    remoteLaneOAuthEventCallbacks.size > 0 ||
-    remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
-    remotePiAuthStatusCallbacks.size > 0 ||
-    remoteCursorAuthStatusCallbacks.size > 0 ||
-    remoteLaneDiagnosticsEventCallbacks.size > 0 ||
-    remotePtyDataEventCallbacks.size > 0 ||
-    remotePtyExitEventCallbacks.size > 0 ||
-    remoteTestEventCallbacks.size > 0 ||
-    remoteFileChangeEventCallbacks.size > 0 ||
-    remotePrEventCallbacks.size > 0 ||
-    remoteProjectStateEventCallbacks.size > 0 ||
-    remoteUsageUpdateEventCallbacks.size > 0 ||
-    remoteAutomationsEventCallbacks.size > 0 ||
-    remoteConflictEventCallbacks.size > 0 ||
-    remoteGitHubStatusChangedCallbacks.size > 0 ||
-    remoteFeedbackEventCallbacks.size > 0 ||
-    remoteComputerUseEventCallbacks.size > 0 ||
-    remoteIosSimulatorEventCallbacks.size > 0 ||
-    remoteAppControlEventCallbacks.size > 0 ||
-    remoteBuiltInBrowserRemoteRequestCallbacks.size > 0 ||
-    remoteOrchestrationEventCallbacks.size > 0 ||
-    remotePrAiResolutionEventCallbacks.size > 0
-  );
+  return hasRemoteRuntimeFanoutSubscribers(REMOTE_RUNTIME_FANOUTS);
 }
 
 function registerRemoteOrchestrationEventCallback(
   cb: (payload: OrchestrationEventPayload) => void,
 ): () => void {
-  remoteOrchestrationEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOrchestrationEventCallbacks.delete(cb);
-  };
+  return remoteOrchestrationEventFanout.subscribe(cb);
 }
 
 function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
@@ -2755,797 +2940,207 @@ ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
 function dispatchRemoteRuntimeEventPayload(
   payload: Record<string, unknown>,
 ): void {
-  if (payload.kind === "opencodeOAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (typeof event.providerId === "string" && typeof event.state === "string") {
-      for (const cb of [...remoteOpenCodeOAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as OpenCodeOAuthStatusEvent);
-        } catch (error) {
-          console.error("preload remote OpenCode OAuth status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.kind === "piAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (typeof event.providerId === "string" && typeof event.state === "string") {
-      for (const cb of [...remotePiAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as PiAuthStatusEvent);
-        } catch (error) {
-          console.error("preload remote Pi sign-in status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.kind === "cursorAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (event.providerId === "cursor" && typeof event.state === "string") {
-      for (const cb of [...remoteCursorAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as CursorSdkAuthEvent);
-        } catch (error) {
-          console.error("preload remote Cursor sign-in status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.type === "sync-status" && isRecord(payload.snapshot)) {
-    for (const cb of [...remoteSyncStatusEventCallbacks]) {
-      try {
-        cb(payload as SyncStatusEventPayload);
-      } catch (error) {
-        console.error("preload remote sync listener failed", error);
-      }
-    }
-  }
-
-  if (payload.type === "usage" && isRecord(payload.snapshot)) {
-    for (const cb of [...remoteUsageUpdateEventCallbacks]) {
-      try {
-        cb(payload.snapshot as unknown as UsageSnapshot);
-      } catch (error) {
-        console.error("preload remote usage listener failed", error);
-      }
-    }
-  }
-
-  const automationsEvent = toAutomationsRuntimeEvent(payload);
-  if (automationsEvent) {
-    for (const cb of [...remoteAutomationsEventCallbacks]) {
-      try {
-        cb(automationsEvent);
-      } catch (error) {
-        console.error("preload remote automation listener failed", error);
-      }
-    }
-  }
-
-  const orchestrationEvent = toOrchestrationRuntimeEvent(payload);
-  if (orchestrationEvent) {
-    for (const cb of [...remoteOrchestrationEventCallbacks]) {
-      try {
-        cb(orchestrationEvent);
-      } catch (error) {
-        console.error("preload remote orchestration listener failed", error);
-      }
-    }
-  }
-
-  const conflictEvent = toWrappedEvent<ConflictEventPayload>(
-    payload,
-    "conflict_event",
-  );
-  if (conflictEvent) {
-    for (const cb of [...remoteConflictEventCallbacks]) {
-      try {
-        cb(conflictEvent);
-      } catch (error) {
-        console.error("preload remote conflict listener failed", error);
-      }
-    }
-  }
-
-  const githubStatus = toWrappedEvent<GitHubStatus>(
-    payload,
-    "github_status_changed",
-  );
-  if (githubStatus) {
-    githubStatusCache.clear();
-    githubRemoteStatusCache.clear();
-    githubAppInstallationStatusCache.clear();
-    for (const cb of [...remoteGitHubStatusChangedCallbacks]) {
-      try {
-        cb(githubStatus);
-      } catch (error) {
-        console.error("preload remote GitHub status listener failed", error);
-      }
-    }
-  }
-
-  const feedbackEvent = toWrappedEvent<FeedbackSubmissionEvent>(
-    payload,
-    "feedback_submission_event",
-  );
-  if (feedbackEvent) {
-    for (const cb of [...remoteFeedbackEventCallbacks]) {
-      try {
-        cb(feedbackEvent);
-      } catch (error) {
-        console.error("preload remote feedback listener failed", error);
-      }
-    }
-  }
-
-  const computerUseEvent = toWrappedEvent<ComputerUseEventPayload>(
-    payload,
-    "computer_use_event",
-  );
-  if (computerUseEvent) {
-    computerUseOwnerSnapshotCache.clear();
-    for (const cb of [...remoteComputerUseEventCallbacks]) {
-      try {
-        cb(computerUseEvent);
-      } catch (error) {
-        console.error("preload remote computer use listener failed", error);
-      }
-    }
-  }
-
-  const iosSimulatorEvent = toWrappedEvent<IosSimulatorEventPayload>(
-    payload,
-    "ios_simulator_event",
-  );
-  if (iosSimulatorEvent) {
-    clearIosSimulatorStatusCaches();
-    for (const cb of [...remoteIosSimulatorEventCallbacks]) {
-      try {
-        cb(iosSimulatorEvent);
-      } catch (error) {
-        console.error("preload remote iOS simulator listener failed", error);
-      }
-    }
-  }
-
-  const appControlEvent = toWrappedEvent<AppControlEventPayload>(
-    payload,
-    "app_control_event",
-  );
-  if (appControlEvent) {
-    appControlStatusCache.clear();
-    for (const cb of [...remoteAppControlEventCallbacks]) {
-      try {
-        cb(appControlEvent);
-      } catch (error) {
-        console.error("preload remote App Control listener failed", error);
-      }
-    }
-  }
-
-  const builtInBrowserRemoteRequest = toWrappedEvent<BuiltInBrowserRemoteRequest>(
-    payload,
-    BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
-  );
-  if (builtInBrowserRemoteRequest) {
-    for (const cb of [...remoteBuiltInBrowserRemoteRequestCallbacks]) {
-      try {
-        cb(builtInBrowserRemoteRequest);
-      } catch (error) {
-        console.error(
-          "preload remote built-in browser request listener failed",
-          error,
-        );
-      }
-    }
-  }
-
-  const reviewEvent = toWrappedEvent<ReviewEventPayload>(
-    payload,
-    "review_event",
-  );
-  if (reviewEvent) {
-    for (const cb of [...remoteReviewEventCallbacks]) {
-      try {
-        cb(reviewEvent);
-      } catch (error) {
-        console.error("preload remote review listener failed", error);
-      }
-    }
-  }
-
-  const chatEvent = toAgentChatEventEnvelope(payload);
-  if (chatEvent) {
-    agentChatSummaryCache.clear();
-    for (const cb of [...remoteAgentChatEventCallbacks]) {
-      try {
-        cb(chatEvent);
-      } catch (error) {
-        console.error("preload remote agent chat listener failed", error);
-      }
-    }
-  }
-
-  const sessionChanged = toTerminalSessionChangedEvent(payload);
-  if (sessionChanged) {
-    sessionDeltaCache.clear();
-    for (const cb of [...remoteSessionChangedCallbacks]) {
-      try {
-        cb(sessionChanged);
-      } catch (error) {
-        console.error("preload remote session listener failed", error);
-      }
-    }
-  }
-
-  const laneDeleteEvent = toWrappedEvent<LaneDeleteEvent>(
-    payload,
-    "lane_delete_event",
-  );
-  if (laneDeleteEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneDeleteEventCallbacks]) {
-      try {
-        cb(laneDeleteEvent);
-      } catch (error) {
-        console.error("preload remote lane delete listener failed", error);
-      }
-    }
-  }
-
-  const laneLifecycleEvent = toWrappedEvent<LaneLifecycleEvent>(
-    payload,
-    "lane_lifecycle_event",
-  );
-  if (laneLifecycleEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneLifecycleEventCallbacks]) {
-      try {
-        cb(laneLifecycleEvent);
-      } catch (error) {
-        console.error("preload remote lane lifecycle listener failed", error);
-      }
-    }
-  }
-
-  const laneRebaseEvent = toWrappedEvent<RebaseRunEventPayload>(
-    payload,
-    "lane_rebase_event",
-  );
-  if (laneRebaseEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneRebaseEventCallbacks]) {
-      try {
-        cb(laneRebaseEvent);
-      } catch (error) {
-        console.error("preload remote lane rebase listener failed", error);
-      }
-    }
-  }
-
-  const rebaseSuggestionsEvent = toWrappedEvent<RebaseSuggestionsEventPayload>(
-    payload,
-    "lane_rebase_suggestions_event",
-  );
-  if (rebaseSuggestionsEvent) {
-    for (const cb of [...remoteLaneRebaseSuggestionsEventCallbacks]) {
-      try {
-        cb(rebaseSuggestionsEvent);
-      } catch (error) {
-        console.error(
-          "preload remote rebase suggestions listener failed",
-          error,
-        );
-      }
-    }
-  }
-
-  const autoRebaseEvent = toWrappedEvent<AutoRebaseEventPayload>(
-    payload,
-    "lane_auto_rebase_event",
-  );
-  if (autoRebaseEvent) {
-    for (const cb of [...remoteLaneAutoRebaseEventCallbacks]) {
-      try {
-        cb(autoRebaseEvent);
-      } catch (error) {
-        console.error("preload remote auto rebase listener failed", error);
-      }
-    }
-  }
-
-  const envEvent = toWrappedEvent<LaneEnvInitEvent>(payload, "lane_env_event");
-  if (envEvent) {
-    for (const cb of [...remoteLaneEnvEventCallbacks]) {
-      try {
-        cb(envEvent);
-      } catch (error) {
-        console.error("preload remote lane env listener failed", error);
-      }
-    }
-  }
-
-  const portEvent = toWrappedEvent<PortAllocationEvent>(
-    payload,
-    "lane_port_event",
-  );
-  if (portEvent) {
-    for (const cb of [...remoteLanePortEventCallbacks]) {
-      try {
-        cb(portEvent);
-      } catch (error) {
-        console.error("preload remote lane port listener failed", error);
-      }
-    }
-  }
-
-  const proxyEvent = toWrappedEvent<LaneProxyEvent>(
-    payload,
-    "lane_proxy_event",
-  );
-  if (proxyEvent) {
-    for (const cb of [...remoteLaneProxyEventCallbacks]) {
-      try {
-        cb(proxyEvent);
-      } catch (error) {
-        console.error("preload remote lane proxy listener failed", error);
-      }
-    }
-  }
-
-  const oauthEvent = toWrappedEvent<OAuthRedirectEvent>(
-    payload,
-    "lane_oauth_event",
-  );
-  if (oauthEvent) {
-    for (const cb of [...remoteLaneOAuthEventCallbacks]) {
-      try {
-        cb(oauthEvent);
-      } catch (error) {
-        console.error("preload remote lane OAuth listener failed", error);
-      }
-    }
-  }
-
-  const diagnosticsEvent = toWrappedEvent<RuntimeDiagnosticsEvent>(
-    payload,
-    "lane_diagnostics_event",
-  );
-  if (diagnosticsEvent) {
-    for (const cb of [...remoteLaneDiagnosticsEventCallbacks]) {
-      try {
-        cb(diagnosticsEvent);
-      } catch (error) {
-        console.error("preload remote lane diagnostics listener failed", error);
-      }
-    }
-  }
-
-  if (isRecord(payload) && payload.type === "lane_head_changed") {
-    clearGitReadCaches();
-  }
-
-  const ptyDataEvent = toWrappedEvent<PtyDataEvent>(payload, "pty_data");
-  if (ptyDataEvent) {
-    if (!shouldDispatchPtyDataEvent(ptyDataEvent)) return;
-    for (const cb of [...remotePtyDataEventCallbacks]) {
-      try {
-        cb(ptyDataEvent);
-      } catch (error) {
-        console.error("preload remote pty data listener failed", error);
-      }
-    }
-  }
-
-  const ptyExitEvent = toWrappedEvent<PtyExitEvent>(payload, "pty_exit");
-  if (ptyExitEvent) {
-    for (const cb of [...remotePtyExitEventCallbacks]) {
-      try {
-        cb(ptyExitEvent);
-      } catch (error) {
-        console.error("preload remote pty exit listener failed", error);
-      }
-    }
-  }
-
-  const testEvent = toTestEvent(payload);
-  if (testEvent) {
-    for (const cb of [...remoteTestEventCallbacks]) {
-      try {
-        cb(testEvent);
-      } catch (error) {
-        console.error("preload remote test listener failed", error);
-      }
-    }
-  }
-
-  const fileChangeEvent = toWrappedEvent<FileChangeEvent>(
-    payload,
-    "file_change",
-  );
-  if (fileChangeEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteFileChangeEventCallbacks]) {
-      try {
-        cb(fileChangeEvent);
-      } catch (error) {
-        console.error("preload remote file change listener failed", error);
-      }
-    }
-  }
-
-  const prAiResolutionEvent = toWrappedEvent<PrAiResolutionEventPayload>(
-    payload,
-    "pr_ai_resolution_event",
-  );
-  if (prAiResolutionEvent) {
-    for (const cb of [...remotePrAiResolutionEventCallbacks]) {
-      try {
-        cb(prAiResolutionEvent);
-      } catch (error) {
-        console.error("preload remote PR AI resolution listener failed", error);
-      }
-    }
-  }
-
-  const prEvent = toWrappedEvent<PrEventPayload>(payload, "pr_event");
-  if (prEvent) {
-    for (const cb of [...remotePrEventCallbacks]) {
-      try {
-        cb(prEvent);
-      } catch (error) {
-        console.error("preload remote PR listener failed", error);
-      }
-    }
-  }
-
-  const projectStateEvent = toWrappedEvent<AdeProjectEvent>(
-    payload,
-    "project_state_event",
-  );
-  if (projectStateEvent) {
-    for (const cb of [...remoteProjectStateEventCallbacks]) {
-      try {
-        cb(projectStateEvent);
-      } catch (error) {
-        console.error("preload remote project state listener failed", error);
-      }
-    }
-  }
-
+  // Not a domain: nothing subscribes to a head change, it only invalidates.
+  if (payload.type === "lane_head_changed") clearGitReadCaches();
+  dispatchRemoteRuntimeFanouts(REMOTE_RUNTIME_FANOUTS, payload);
 }
 
 function subscribeRemoteAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
 ): () => void {
-  remoteAgentChatEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAgentChatEventCallbacks.delete(cb);
-  };
+  return remoteAgentChatEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSyncStatusEvents(
   cb: (payload: SyncStatusEventPayload) => void,
 ): () => void {
-  remoteSyncStatusEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteSyncStatusEventCallbacks.delete(cb);
-  };
+  return remoteSyncStatusEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteReviewEvents(
   cb: (payload: ReviewEventPayload) => void,
 ): () => void {
-  remoteReviewEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteReviewEventCallbacks.delete(cb);
-  };
+  return remoteReviewEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSessionChangedEvents(
   cb: (payload: TerminalSessionChangedEvent) => void,
 ): () => void {
-  remoteSessionChangedCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteSessionChangedCallbacks.delete(cb);
-  };
+  return remoteSessionChangedFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneDeleteEvents(
   cb: (payload: LaneDeleteEvent) => void,
 ): () => void {
-  remoteLaneDeleteEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneDeleteEventCallbacks.delete(cb);
-  };
+  return remoteLaneDeleteEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneLifecycleEvents(
   cb: (payload: LaneLifecycleEvent) => void,
 ): () => void {
-  remoteLaneLifecycleEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneLifecycleEventCallbacks.delete(cb);
-  };
+  return remoteLaneLifecycleEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneRebaseEvents(
   cb: (payload: RebaseRunEventPayload) => void,
 ): () => void {
-  remoteLaneRebaseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneRebaseEventCallbacks.delete(cb);
-  };
+  return remoteLaneRebaseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneRebaseSuggestionsEvents(
   cb: (payload: RebaseSuggestionsEventPayload) => void,
 ): () => void {
-  remoteLaneRebaseSuggestionsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneRebaseSuggestionsEventCallbacks.delete(cb);
-  };
+  return remoteLaneRebaseSuggestionsEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneAutoRebaseEvents(
   cb: (payload: AutoRebaseEventPayload) => void,
 ): () => void {
-  remoteLaneAutoRebaseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneAutoRebaseEventCallbacks.delete(cb);
-  };
+  return remoteLaneAutoRebaseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneEnvEvents(
   cb: (payload: LaneEnvInitEvent) => void,
 ): () => void {
-  remoteLaneEnvEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneEnvEventCallbacks.delete(cb);
-  };
+  return remoteLaneEnvEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLanePortEvents(
   cb: (payload: PortAllocationEvent) => void,
 ): () => void {
-  remoteLanePortEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLanePortEventCallbacks.delete(cb);
-  };
+  return remoteLanePortEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneProxyEvents(
   cb: (payload: LaneProxyEvent) => void,
 ): () => void {
-  remoteLaneProxyEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneProxyEventCallbacks.delete(cb);
-  };
+  return remoteLaneProxyEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneOAuthEvents(
   cb: (payload: OAuthRedirectEvent) => void,
 ): () => void {
-  remoteLaneOAuthEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneOAuthEventCallbacks.delete(cb);
-  };
+  return remoteLaneOAuthEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteOpenCodeOAuthStatusEvents(
   cb: (payload: OpenCodeOAuthStatusEvent) => void,
 ): () => void {
-  remoteOpenCodeOAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOpenCodeOAuthStatusCallbacks.delete(cb);
-  };
+  return remoteOpenCodeOAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemotePiAuthStatusEvents(
   cb: (payload: PiAuthStatusEvent) => void,
 ): () => void {
-  remotePiAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePiAuthStatusCallbacks.delete(cb);
-  };
+  return remotePiAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemoteCursorAuthStatusEvents(
   cb: (payload: CursorSdkAuthEvent) => void,
 ): () => void {
-  remoteCursorAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteCursorAuthStatusCallbacks.delete(cb);
-  };
+  return remoteCursorAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneDiagnosticsEvents(
   cb: (payload: RuntimeDiagnosticsEvent) => void,
 ): () => void {
-  remoteLaneDiagnosticsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneDiagnosticsEventCallbacks.delete(cb);
-  };
+  return remoteLaneDiagnosticsEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
 ): () => void {
-  remotePtyDataEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePtyDataEventCallbacks.delete(cb);
-  };
+  return remotePtyDataEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePtyExitEvents(
   cb: (payload: PtyExitEvent) => void,
 ): () => void {
-  remotePtyExitEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePtyExitEventCallbacks.delete(cb);
-  };
+  return remotePtyExitEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteTestEvents(
   cb: (payload: TestEvent) => void,
 ): () => void {
-  remoteTestEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteTestEventCallbacks.delete(cb);
-  };
+  return remoteTestEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteFileChangeEvents(
   cb: (payload: FileChangeEvent) => void,
 ): () => void {
-  remoteFileChangeEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteFileChangeEventCallbacks.delete(cb);
-  };
+  return remoteFileChangeEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePrAiResolutionEvents(
   cb: (payload: PrAiResolutionEventPayload) => void,
 ): () => void {
-  remotePrAiResolutionEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePrAiResolutionEventCallbacks.delete(cb);
-  };
+  return remotePrAiResolutionEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePrEvents(
   cb: (payload: PrEventPayload) => void,
 ): () => void {
-  remotePrEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePrEventCallbacks.delete(cb);
-  };
+  return remotePrEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteProjectStateEvents(
   cb: (payload: AdeProjectEvent) => void,
 ): () => void {
-  remoteProjectStateEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteProjectStateEventCallbacks.delete(cb);
-  };
+  return remoteProjectStateEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteUsageUpdateEvents(
   cb: (payload: UsageSnapshot) => void,
 ): () => void {
-  remoteUsageUpdateEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteUsageUpdateEventCallbacks.delete(cb);
-  };
+  return remoteUsageUpdateEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteAutomationsEvents(
   cb: (payload: AutomationsEventPayload) => void,
 ): () => void {
-  remoteAutomationsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAutomationsEventCallbacks.delete(cb);
-  };
+  return remoteAutomationsEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteConflictEvents(
   cb: (payload: ConflictEventPayload) => void,
 ): () => void {
-  remoteConflictEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteConflictEventCallbacks.delete(cb);
-  };
+  return remoteConflictEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteGitHubStatusChangedEvents(
   cb: (payload: GitHubStatus) => void,
 ): () => void {
-  remoteGitHubStatusChangedCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteGitHubStatusChangedCallbacks.delete(cb);
-  };
+  return remoteGitHubStatusChangedFanout.subscribe(cb);
 }
 
 function subscribeRemoteFeedbackEvents(
   cb: (payload: FeedbackSubmissionEvent) => void,
 ): () => void {
-  remoteFeedbackEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteFeedbackEventCallbacks.delete(cb);
-  };
+  return remoteFeedbackEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteComputerUseEvents(
   cb: (payload: ComputerUseEventPayload) => void,
 ): () => void {
-  remoteComputerUseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteComputerUseEventCallbacks.delete(cb);
-  };
+  return remoteComputerUseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteIosSimulatorEvents(
   cb: (payload: IosSimulatorEventPayload) => void,
 ): () => void {
-  remoteIosSimulatorEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteIosSimulatorEventCallbacks.delete(cb);
-  };
+  return remoteIosSimulatorEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
 ): () => void {
-  remoteAppControlEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAppControlEventCallbacks.delete(cb);
-  };
+  return remoteAppControlEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteBuiltInBrowserRemoteRequests(
   cb: (payload: BuiltInBrowserRemoteRequest) => void,
 ): () => void {
-  remoteBuiltInBrowserRemoteRequestCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteBuiltInBrowserRemoteRequestCallbacks.delete(cb);
-  };
+  return remoteBuiltInBrowserRemoteRequestFanout.subscribe(cb);
 }
 
 function subscribeAgentChatEvents(
@@ -3909,6 +3504,22 @@ function toTerminalSessionChangedEvent(
   };
 }
 
+/**
+ * The `{ kind, event }` shape the auth-status domains use instead of the
+ * ordinary `{ type, event }` wrapper. `guard` is the domain's own check on the
+ * provider id; every one of them also requires a string `state`.
+ */
+function toAuthStatusEvent<T>(
+  payload: Record<string, unknown>,
+  kind: string,
+  guard: (event: Record<string, unknown>) => boolean,
+): T | null {
+  if (payload.kind !== kind || !isRecord(payload.event)) return null;
+  const event = payload.event;
+  if (typeof event.state !== "string" || !guard(event)) return null;
+  return event as unknown as T;
+}
+
 function toWrappedEvent<T>(payload: unknown, type: string): T | null {
   if (!isRecord(payload) || payload.type !== type || !isRecord(payload.event))
     return null;
@@ -4220,14 +3831,8 @@ const adeBridge = {
     requestWindowClose: async (): Promise<{ requested: boolean }> =>
       ipcRenderer.invoke(IPC.appRequestWindowClose),
     /** Native-menu commands (⌘F, ⌘W) offered to the renderer first. */
-    onMenuCommand: (cb: (command: AppMenuCommand) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AppMenuCommand,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appMenuCommand, listener);
-      return () => ipcRenderer.removeListener(IPC.appMenuCommand, listener);
-    },
+    onMenuCommand: (cb: (command: AppMenuCommand) => void) =>
+      subscribeAppCommand("menu", cb),
     onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -11244,14 +10849,8 @@ const adeBridge = {
       zoomFactor?: number;
     }): Promise<{ applied: boolean }> =>
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
-    onCommand: (cb: (command: AppZoomCommand) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AppZoomCommand,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appZoomCommand, listener);
-      return () => ipcRenderer.removeListener(IPC.appZoomCommand, listener);
-    },
+    onCommand: (cb: (command: AppZoomCommand) => void) =>
+      subscribeAppCommand("zoom", cb),
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>

@@ -193,6 +193,10 @@ const fakes = vi.hoisted(() => {
     setVisible = (visible: boolean): void => {
       this.visibleCalls.push(visible);
     };
+    borderRadiusCalls: number[] = [];
+    setBorderRadius = (radius: number): void => {
+      this.borderRadiusCalls.push(radius);
+    };
   }
 
   // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
@@ -894,6 +898,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     */
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
+    // On screen: the overlap only produces a surface if there is a window
+    // being composited to overlap with.
+    win.setVisibleOnScreen(true);
     win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
     fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
     service.attachToWindow(win as unknown as ServiceBrowserWindow);
@@ -926,6 +933,114 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(parked.y).toBe(720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
 
     service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("clips the warming pixel and never holds it longer than the warm bound", async () => {
+    // The overlap is a live web page composited over the ADE UI. Electron 41
+    // exposes no hit-test opt-out for a `View` — `setBorderRadius` is a layer
+    // mask — so the two things that keep it harmless are that the pixel is not
+    // painted and that it does not last. Both are pinned here.
+    expect(BUILT_IN_BROWSER_PREVIEW_WARM_MS).toBeLessThanOrEqual(120);
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      // Rounded while the corner pixel is on the UI, so it is outside the
+      // view's painted shape even on a window the OS does not round itself.
+      expect(view.borderRadiusCalls.at(-1)).toBeGreaterThan(0);
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+      // Square again once parked: a preview frame with four transparent
+      // notches in it is not what the corner card is asking for.
+      expect(view.borderRadiusCalls.at(-1)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("does not warm — or claim a surface — while the window is off screen", async () => {
+    // A minimised or hidden window has no surface to lend. Marking the tab
+    // surfaced on that evidence is how the black card comes back: nothing
+    // re-warms it until the view next leaves the window. And warming against it
+    // anyway would re-arm the 120 ms timer forever, because the warm can never
+    // complete.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      // Parked directly, never on the window's corner.
+      expect(view.boundsCalls.at(-1)).toMatchObject({
+        x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      });
+      const parkedCalls = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 5);
+      // No armed timer means no re-park storm behind a hidden window.
+      expect(view.boundsCalls.length).toBe(parkedCalls);
+
+      // The window comes back: now the warm happens, because now it can.
+      win.setVisibleOnScreen(true);
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+      expect(view.boundsCalls.at(-1)).toMatchObject({ x: 1279, y: 719 });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("drops the warming timer and surfaced entry when the tab is closed mid-warm", async () => {
+    // `closeTab` removes the view itself instead of going through
+    // `removeTabViewFromWindow`, so it has to drop the same warming state. An
+    // armed timer fires after the tab is gone, re-adds a dead id to the
+    // surfaced set and runs a pointless attach pass over every tab.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      expect(view.boundsCalls.at(-1)).toMatchObject({ x: 1279, y: 719 });
+
+      await service.closeTab({ tabId });
+      const afterClose = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 3);
+      // The timer that was armed for this tab is gone with it.
+      expect(view.boundsCalls.length).toBe(afterClose);
+    } finally {
+      vi.useRealTimers();
+    }
+
     service.dispose();
   });
 
@@ -1029,10 +1144,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(frames.length).toBeGreaterThan(0);
     expect(frames[0]).toMatchObject({ tabId, width: 320, height: 180 });
     expect(frames[0]).toHaveProperty("dataUrl", expect.stringContaining("data:image/jpeg;base64,"));
-    // The mechanism, pinned separately from the outcome: a future refactor that
-    // reintroduces `stayHidden` here brings the black card back with it.
+    // The mechanism, pinned separately from the outcome, in both directions.
+    //
+    // Before the view has a surface, the capture must NOT ask to stay hidden —
+    // forcing visibility is the only thing that makes a surfaceless view answer,
+    // and a refactor that reintroduces the flag there brings the black card back
+    // with it. After the warm the parked view is attached and visible, so the
+    // page is already steadily visible for the whole watch: asking to stay
+    // hidden changes nothing except that it stops toggling `visibilityState`
+    // up to 24 times a second under the page.
     expect(wc.capturePageCalls.length).toBeGreaterThan(0);
-    expect(wc.capturePageCalls.every((call) => call.stayHidden !== true)).toBe(true);
+    expect(wc.capturePageCalls.some((call) => call.stayHidden !== true)).toBe(true);
+    expect(wc.capturePageCalls.at(-1)?.stayHidden).toBe(true);
 
     service.stopPreviewStream({ tabId });
     service.dispose();

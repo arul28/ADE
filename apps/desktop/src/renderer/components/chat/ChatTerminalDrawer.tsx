@@ -65,7 +65,6 @@ type ChatTerminalDrawerProps = {
    * chat id; Work CLI sessions now use their terminal session id here too.
    */
   chatSessionId?: string | null;
-  variant?: "drawer" | "panel";
   /**
    * Machine the owning chat/CLI session lives on. Null (the default, and every
    * pre-existing call site) means the tab's bound machine. When set, terminal
@@ -93,7 +92,6 @@ type TabEntry = {
 };
 
 type DrawerUiState = {
-  height: number;
   activeTerminalId: string | null;
 };
 
@@ -117,9 +115,6 @@ function readDrawerUiState(key: string): DrawerUiState {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<DrawerUiState>;
       const state = {
-        height: typeof parsed.height === "number" && Number.isFinite(parsed.height)
-          ? Math.max(150, parsed.height)
-          : 300,
         activeTerminalId: typeof parsed.activeTerminalId === "string" ? parsed.activeTerminalId : null,
       };
       drawerUiStateByKey.set(key, state);
@@ -128,7 +123,7 @@ function readDrawerUiState(key: string): DrawerUiState {
   } catch {
     // Best-effort UI state only.
   }
-  return { height: 300, activeTerminalId: null };
+  return { activeTerminalId: null };
 }
 
 function writeDrawerUiState(key: string, state: DrawerUiState): void {
@@ -157,7 +152,6 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   laneId,
   chatSessionId,
   runtimePin = null,
-  variant = "drawer",
   autoCreateOnOpen = true,
   createRequestNonce = 0,
   disposeTabsOnUnmount = false,
@@ -165,12 +159,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   revealRequest,
 }: ChatTerminalDrawerProps) {
   const pin = runtimePin ?? null;
-  // Lane and chat ids are only unique per machine, so the persisted drawer
-  // state (height, active tab) is namespaced by machine too.
+  // Lane and chat ids are only unique per machine, so the persisted UI state
+  // (which shell was last active) is namespaced by machine too.
   const uiStateKey = drawerStateKey(chatSessionId, laneId, pin);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [drawerHeight, setDrawerHeight] = useState(() => readDrawerUiState(uiStateKey).height);
   const [creatingTab, setCreatingTab] = useState(false);
   const [restoringTabs, setRestoringTabs] = useState(false);
   const [appControlTabState, setAppControlTabState] = useState<AppControlTabState | null>(null);
@@ -182,8 +175,6 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
    * shell can retire the split without leaving an empty half behind.
    */
   const [splitTabId, setSplitTabId] = useState<string | null>(null);
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-  const isPanel = variant === "panel";
   const hadTabsRef = useRef(false);
   const previousOpenRef = useRef(open);
   const pendingAutoCreateRef = useRef(false);
@@ -211,7 +202,6 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     previousOpenRef.current = open;
     pendingAutoCreateRef.current = false;
     hadTabsRef.current = false;
-    setDrawerHeight(readDrawerUiState(uiStateKey).height);
     setTabs([]);
     setActiveTabId(null);
     if (!chatSessionId) restoringUiStateRef.current = false;
@@ -235,37 +225,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   useEffect(() => {
     if (restoringUiStateRef.current) return;
     const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-    writeDrawerUiState(uiStateKey, {
-      height: drawerHeight,
-      activeTerminalId: activeTab?.sessionId ?? null,
-    });
-  }, [activeTabId, drawerHeight, tabs, uiStateKey]);
-
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    if (isPanel) return;
-    e.preventDefault();
-    dragRef.current = { startY: e.clientY, startHeight: drawerHeight };
-
-    const handleDragMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startY - ev.clientY;
-      // Cap to viewport height minus a small reserved strip so the chat
-      // header is still grabbable; floor stays at 150 so a single line
-      // is always visible.
-      const maxHeight = Math.max(200, window.innerHeight - 80);
-      const nextHeight = Math.max(150, Math.min(maxHeight, dragRef.current.startHeight + delta));
-      setDrawerHeight(nextHeight);
-    };
-
-    const handleDragEnd = () => {
-      dragRef.current = null;
-      document.removeEventListener("mousemove", handleDragMove);
-      document.removeEventListener("mouseup", handleDragEnd);
-    };
-
-    document.addEventListener("mousemove", handleDragMove);
-    document.addEventListener("mouseup", handleDragEnd);
-  }, [drawerHeight, isPanel]);
+    writeDrawerUiState(uiStateKey, { activeTerminalId: activeTab?.sessionId ?? null });
+  }, [activeTabId, tabs, uiStateKey]);
 
   /**
    * Open a shell, and say which one.
@@ -557,11 +518,26 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
    * spare. Toggling off never closes anything — the shell stays in the strip.
    */
   const toggleSplit = useCallback(async () => {
-    if (splitTabId) {
+    /*
+      Gate on the pane that is actually SHOWING, not on the raw id.
+
+      Clicking the split shell's own pill makes it active, which retires the
+      second pane (the same runtime cannot fill both) while leaving `splitTabId`
+      truthy. Reading the id alone then made the next click a no-op "toggle off"
+      of a split nobody could see, and the button had already relabelled itself
+      "Split". Resolving the pane here means a stale id is simply overwritten by
+      the new split below.
+    */
+    const currentTabs = tabsRef.current;
+    const active = currentTabs.find((tab) => tab.id === activeTabId) ?? currentTabs.at(-1) ?? null;
+    const showing = splitTabId && splitTabId !== active?.id
+      ? currentTabs.find((tab) => tab.id === splitTabId) ?? null
+      : null;
+    if (showing) {
       setSplitTabId(null);
       return;
     }
-    const spare = tabsRef.current.find((tab) => tab.id !== activeTabId && !tab.exited);
+    const spare = currentTabs.find((tab) => tab.id !== activeTabId && !tab.exited);
     if (spare) {
       setSplitTabId(spare.id);
       return;
@@ -656,27 +632,9 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   };
 
   return (
-    <div
-      className={cn(
-        "flex flex-col bg-[var(--color-surface-recessed)]",
-        isPanel
-          ? "h-full min-h-0"
-          : "border-t border-white/[0.06] shadow-[inset_0_2px_8px_rgba(0,0,0,0.3)]",
-      )}
-      style={isPanel ? undefined : { height: drawerHeight }}
-    >
-      {!isPanel ? (
-        // Same splitter as the tools pane: 8px of hit area, a hairline only
-        // while you are on it. The rounded pill was a third treatment for a
-        // gesture the app already had two of.
-        <div
-          className="ade-pane-gutter ade-tool-gutter horizontal shrink-0"
-          onMouseDown={handleDragStart}
-        />
-      ) : null}
-
+    <div className="flex h-full min-h-0 flex-col bg-[var(--color-surface-recessed)]">
       {showEmptyState ? null : (
-        <div className={cn(WORK_TOOL_CHROME_ROW, !isPanel && "h-8")}>
+        <div className={WORK_TOOL_CHROME_ROW}>
           <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-none">
             {tabs.map(renderTabPill)}
             <WorkToolChromeButton

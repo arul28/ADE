@@ -6,7 +6,7 @@
  * against a mocked namespace. The interesting cases are all about ABSENCE:
  * every one below is a payload a real main process has sent at some point.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   booleanField,
   browserEventMatchesProject,
@@ -35,7 +35,11 @@ import {
 import {
   BROWSER_RECENT_URL_LIMIT,
   browserRecentUrlsKey,
+  clearBrowserRecentUrls,
   parseBrowserRecentUrls,
+  readBrowserRecentUrls,
+  rememberBrowserRecentUrl,
+  sanitizeBrowserRecentUrl,
   withBrowserRecentUrl,
 } from "./browserRecentUrls";
 
@@ -311,5 +315,70 @@ describe("launchpad recents", () => {
     // personal pane would be a leak dressed up as a convenience.
     expect(browserRecentUrlsKey("/repo")).not.toBe(browserRecentUrlsKey("personal"));
     expect(browserRecentUrlsKey(null)).toBe(browserRecentUrlsKey("  "));
+  });
+
+  it("stores origin + path only, never the query or the fragment", () => {
+    // This list is plaintext `localStorage` AND it is rendered on the empty
+    // state, so a per-site parameter nobody has audited is exactly the one that
+    // turns out to be a session id.
+    expect(sanitizeBrowserRecentUrl("https://app.test/docs?page=2&sort=asc#intro"))
+      .toBe("https://app.test/docs");
+    expect(sanitizeBrowserRecentUrl("https://app.test/")).toBe("https://app.test/");
+  });
+
+  it("refuses a URL carrying a credential in the query or the hash", () => {
+    // The same parameter names the browser's own URL redaction uses — one list,
+    // imported, so the two can never drift apart.
+    expect(sanitizeBrowserRecentUrl("https://app.test/auth/callback?code=abc&state=xyz")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("https://app.test/login?token=secret")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("https://app.test/cb#access_token=abc&id_token=d")).toBeNull();
+    // A parameter that is merely a parameter is not a reason to forget the page.
+    expect(sanitizeBrowserRecentUrl("https://app.test/list?page=2")).toBe("https://app.test/list");
+  });
+
+  it("refuses an ephemeral loopback port, and keeps a real dev server", () => {
+    // `http://127.0.0.1:52413` is a remote tunnel's forward: it dies with the
+    // transport and the OS can hand that number to something else tomorrow. A
+    // tunneled tab records the tunnel's remote-origin display URL instead.
+    expect(sanitizeBrowserRecentUrl("http://127.0.0.1:52413/app")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("http://localhost:41000/")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("http://localhost:3000/")).toBe("http://localhost:3000/");
+    expect(sanitizeBrowserRecentUrl("http://127.0.0.1:5173/x")).toBe("http://127.0.0.1:5173/x");
+  });
+
+  it("refuses anything that is not a navigable http(s) page", () => {
+    expect(sanitizeBrowserRecentUrl("about:blank")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("file:///etc/hosts")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("not a url")).toBeNull();
+    expect(sanitizeBrowserRecentUrl("")).toBeNull();
+  });
+
+  it("leaves the list untouched when a visit is refused, and clears on demand", () => {
+    // This suite runs in node, so the store gets a memory `localStorage` — the
+    // module only ever asks `window` for one and treats a missing one as "no
+    // recents", which is the other half of the contract.
+    const map = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => map.get(key) ?? null,
+        setItem: (key: string, value: string) => { map.set(key, value); },
+        removeItem: (key: string) => { map.delete(key); },
+      },
+    });
+    try {
+    const scope = "recents-spec";
+    rememberBrowserRecentUrl(scope, visit("https://app.test/home?utm=x"));
+    const afterCallback = rememberBrowserRecentUrl(
+      scope,
+      visit("https://app.test/auth/callback?code=abc"),
+    );
+    expect(afterCallback.map((entry) => entry.url)).toEqual(["https://app.test/home"]);
+    expect(readBrowserRecentUrls(scope).map((entry) => entry.url)).toEqual(["https://app.test/home"]);
+
+    expect(clearBrowserRecentUrls(scope)).toEqual([]);
+    expect(readBrowserRecentUrls(scope)).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

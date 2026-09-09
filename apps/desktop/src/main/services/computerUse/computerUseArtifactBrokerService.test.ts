@@ -194,7 +194,18 @@ describe("computerUseArtifactBrokerService", () => {
       expect(message).toContain(projectRoot);
       expect(message).toContain(os.tmpdir());
       expect(message).toContain(path.join(os.homedir(), ".agent-browser"));
-      expect(message).toContain("$TMPDIR");
+      // …and it has to name the roots THIS platform actually has. `/tmp` is a
+      // root only off Windows and `$TMPDIR` is not the Windows spelling, so a
+      // Windows agent told to copy its file there retries and fails again.
+      if (process.platform === "win32") {
+        expect(message).toContain("%TEMP%");
+        expect(message).not.toContain("$TMPDIR");
+        expect(message).not.toContain("/tmp");
+      } else {
+        expect(message).toContain("$TMPDIR");
+        expect(message).toContain("/tmp");
+        expect(message).not.toContain("%TEMP%");
+      }
     } finally {
       fs.rmSync(blockedPath, { force: true });
     }

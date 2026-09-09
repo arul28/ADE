@@ -854,6 +854,18 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("names the import roots this platform actually has in proof help", () => {
+    // `resolveTempImportRoots` adds `/tmp` only off Windows and `$TMPDIR` is
+    // not the Windows spelling, so unconditional POSIX guidance sends a Windows
+    // agent to a directory that is not a root — it retries and fails again.
+    const plan = buildCliPlan(["proof", "--help"]);
+    expect(plan.kind).toBe("help");
+    if (plan.kind !== "help") return;
+    expect(plan.text).toContain("$TMPDIR");
+    expect(plan.text).toContain("%TEMP%");
+    expect(plan.text).toContain("not a root on\n  Windows");
+  });
+
   it("keeps global help on the help surface", () => {
     const plan = buildCliPlan(["--help"]);
     expect(plan.kind).toBe("help");

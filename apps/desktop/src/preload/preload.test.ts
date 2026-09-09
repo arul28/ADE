@@ -9294,3 +9294,88 @@ describe("preload built-in browser remote requests", () => {
     unsubscribe();
   });
 });
+
+describe("preload remote runtime event fanout table", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  /**
+   * One representative payload per domain.
+   *
+   * Keyed by the fanout's own `eventType`, so a domain added to the table with
+   * no sample here fails this suite rather than shipping unproven — which is
+   * the point: the two hand-maintained lists this table replaced could drift
+   * with nothing failing anywhere.
+   */
+  const SAMPLE_PAYLOADS: Record<string, Record<string, unknown>> = {
+    agent_chat_event: {
+      sessionId: "session-1",
+      timestamp: "2026-09-08T00:00:00.000Z",
+      event: { type: "assistant-delta" },
+    },
+    terminal_session_changed: {
+      type: "terminal_session_changed",
+      event: { sessionId: "session-1", reason: "created" },
+    },
+    opencodeOAuthStatus: {
+      kind: "opencodeOAuthStatus",
+      event: { providerId: "anthropic", state: "authorized" },
+    },
+    piAuthStatus: { kind: "piAuthStatus", event: { providerId: "pi", state: "authorized" } },
+    cursorAuthStatus: {
+      kind: "cursorAuthStatus",
+      event: { providerId: "cursor", state: "authorized" },
+    },
+    pty_data: { type: "pty_data", event: { ptyId: "pty-1", data: "x" } },
+    test_event: { type: "run", run: { id: "run-1", suiteId: "suite-1" } },
+    "sync-status": { type: "sync-status", snapshot: { role: "host" } },
+    usage: { type: "usage", snapshot: { windows: [] } },
+    automations_event: { source: "automations", type: "runs-updated" },
+    orchestration_event: { runId: "run-1", etag: "etag-1", kind: "manifest" },
+  };
+
+  it("delivers every listed domain to its own subscriber", async () => {
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld: vi.fn() },
+      ipcRenderer: { invoke: vi.fn(async () => undefined), on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    const { REMOTE_RUNTIME_FANOUTS } = await import("./preload");
+
+    expect(REMOTE_RUNTIME_FANOUTS.length).toBeGreaterThan(0);
+    const eventTypes = REMOTE_RUNTIME_FANOUTS.map((fanout) => fanout.eventType);
+    // Two domains answering to one discriminator would deliver one event twice.
+    expect(new Set(eventTypes).size).toBe(eventTypes.length);
+
+    for (const entry of REMOTE_RUNTIME_FANOUTS) {
+      // The table is type-erased so it can hold every domain's payload type;
+      // a test that only pushes a value through does not need the real one.
+      const fanout = entry as typeof entry & {
+        subscribe: (cb: (payload: unknown) => void) => () => void;
+      };
+      const received: unknown[] = [];
+      const unsubscribe = fanout.subscribe((payload) => received.push(payload));
+
+      expect(fanout.hasSubscribers).toBe(true);
+      const payload = SAMPLE_PAYLOADS[fanout.eventType]
+        ?? { type: fanout.eventType, event: { wired: true } };
+      expect(fanout.dispatch(payload)).toBe(true);
+      expect(received).toHaveLength(1);
+
+      unsubscribe();
+      expect(fanout.hasSubscribers).toBe(false);
+    }
+  });
+});

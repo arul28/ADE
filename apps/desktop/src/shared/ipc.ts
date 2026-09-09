@@ -25,6 +25,13 @@ export const IPC = {
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
+  /**
+   * Every native-menu command main offers the renderer, on one channel:
+   * `{ kind: "zoom" | "menu", command }`. `appZoomCommand`/`appMenuCommand`
+   * below are the pre-unification channels, still bridged in the preload so a
+   * sender that has not moved over keeps working.
+   */
+  appCommand: "ade.app.command",
   appZoomCommand: "ade.app.zoomCommand",
   appMenuCommand: "ade.app.menuCommand",
   appRequestWindowClose: "ade.app.requestWindowClose",

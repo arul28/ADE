@@ -594,6 +594,48 @@ describe("ChatBuiltInBrowserPanel", () => {
     });
   });
 
+  it("ignores a forwarded open addressed to a different chat", async () => {
+    // The preload fanout now delivers to every panel mounted for this pin, so
+    // two panels would both navigate and both ack the same request. A request
+    // that names a chat belongs to the panel that IS that chat.
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-other",
+      url: "http://127.0.0.1:8080/admin",
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    await Promise.resolve();
+    expect(api.navigate).not.toHaveBeenCalled();
+    expect(api.acknowledgeRemoteRequest).not.toHaveBeenCalled();
+    expect(screen.queryByText("Allow once")).toBeNull();
+  });
+
+  it("still answers a forwarded open that names no chat of its own", async () => {
+    // A request from outside any chat is the project-level pane's to answer;
+    // dropping it would make `ade browser open` silently do nothing.
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-bare",
+      url: "http://127.0.0.1:8080/admin",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(await screen.findByText("Agent wants to reach port 8080 on Mac Studio")).toBeTruthy();
+  });
+
   it("acknowledges the moment the bar goes up, so the 5s CLI wait does not lapse", async () => {
     const { api } = installBrowserApi();
 

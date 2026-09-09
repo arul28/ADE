@@ -55,7 +55,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { modifierKeyLabel } from "../../lib/platform";
+import { isMac, modifierKeyLabel } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
@@ -1183,8 +1183,31 @@ export function TopBar({
     if (typeof onMenuCommand !== "function") return;
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
-      if (command !== "close-tab") return;
-      void window.ade?.app?.requestWindowClose?.().catch(() => {});
+      if (command === "close-tab") {
+        void window.ade?.app?.requestWindowClose?.().catch(() => {});
+        return;
+      }
+      /*
+        Unclaimed ⌘F. There is no app-wide find, so the last thing worth trying
+        is the surface that actually has the keyboard: replay the chord as a
+        keydown on the focused element, which is the path any panel with a
+        local `onKeyDown` find binding already listens on. The event is
+        untrusted, so it can trigger no browser default — if nothing handles
+        it, this is a no-op, which is the correct outcome for a screen with
+        nothing to find in.
+      */
+      const target = document.activeElement;
+      if (!(target instanceof HTMLElement) || !target.isConnected) return;
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          code: "KeyF",
+          metaKey: isMac,
+          ctrlKey: !isMac,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
   }, []);
 

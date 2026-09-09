@@ -31,7 +31,7 @@ export { laneWorkViewScopeKey as workToolScopeKey };
  * those would say what was being worked on. Returning to the picker emits
  * nothing: a null tool is not a tool.
  *
- * A per-tool 24-hour deduplication key holds this to at most SEVEN accepted
+ * A per-tool 24-hour deduplication key holds this to at most SIX accepted
  * events per installation per UTC day (one per id) no matter how often the user
  * flips between panes, which is well inside the existing `ade_feature_used`
  * 140-per-day / 30-per-minute limits and the shared 200-event ceiling. No

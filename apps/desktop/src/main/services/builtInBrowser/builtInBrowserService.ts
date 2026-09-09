@@ -2933,6 +2933,22 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   /**
+   * Was the host window actually on screen for this warm?
+   *
+   * The overlap only produces a surface if there was something to overlap with.
+   * A window that was minimised, hidden or on another Space for the whole
+   * ~120 ms may never have had one allocated, and marking the tab surfaced on
+   * that evidence is how the black corner card comes back: nothing re-warms it
+   * until the view next leaves the window.
+   */
+  const hostWindowIsOnScreen = (): boolean => Boolean(
+    win
+    && !win.isDestroyed()
+    && win.isVisible?.() !== false
+    && win.isMinimized?.() !== true,
+  );
+
+  /**
    * Where a watched view goes for the first ~two frames after it is attached.
    *
    * Parking preserves a compositor surface; it cannot create one. A view whose
@@ -2951,6 +2967,17 @@ function createBuiltInBrowserWindowService(args: {
    *
    * The size is the parked size, not a token 1x1: the page must lay out once, at
    * the size it will be captured at, rather than resize again on the way out.
+   *
+   * That one pixel is a live web page composited over the ADE UI, so it is kept
+   * as close to nothing as Electron allows. The bottom-right *content* corner is
+   * chosen because every modern window manager masks it away with the window's
+   * own rounded corner, so on macOS and Windows 11 it is not drawn at all; on a
+   * square-cornered window `warmingCornerRadius` clips it instead. Electron 41
+   * exposes no hit-test opt-out for a `View` — `setBorderRadius` is a layer
+   * mask, not a hit-test mask — so a click landing on exactly that pixel inside
+   * the warm window would still reach the page. `BUILT_IN_BROWSER_PREVIEW_WARM_MS`
+   * (120 ms) is the bound that makes that unreachable in practice, and is the
+   * reason this must not be lengthened.
    */
   const warmingPreviewRect = (tab: BrowserTabState): Electron.Rectangle | null => {
     const content = win && !win.isDestroyed()
@@ -2960,6 +2987,11 @@ function createBuiltInBrowserWindowService(args: {
     // and placing the view at 0,0 at full size would put a live page over the
     // whole UI for the warming window. Park it and take the empty frames.
     if (!content || !(content.width > 0) || !(content.height > 0)) return null;
+    // A window that is not on screen has no surface to lend, so warming against
+    // it burns the pixel budget for nothing and — worse — would re-arm the timer
+    // every 120 ms for as long as the window stayed hidden, because the warm can
+    // never be marked complete. Park directly and warm when the window is back.
+    if (!hostWindowIsOnScreen()) return null;
     const parked = parkedPreviewRect(tab);
     return {
       x: Math.round(content.width) - 1,
@@ -2968,6 +3000,14 @@ function createBuiltInBrowserWindowService(args: {
       height: parked.height,
     };
   };
+
+  /**
+   * Corner radius applied for the warm only, so the single overlapping pixel is
+   * outside the view's painted shape on a window the OS does not round itself.
+   * Two pixels: enough to clip the corner, small enough that a preview frame
+   * captured mid-warm is indistinguishable from a square one.
+   */
+  const warmingCornerRadius = 2;
 
   /**
    * Tabs whose view currently holds a compositor surface.
@@ -2997,7 +3037,7 @@ function createBuiltInBrowserWindowService(args: {
     if (warmingTimers.has(tabId)) return;
     const handle = setTimeout(() => {
       warmingTimers.delete(tabId);
-      surfacedTabIds.add(tabId);
+      if (hostWindowIsOnScreen()) surfacedTabIds.add(tabId);
       attachViewsToCurrentWindow();
     }, BUILT_IN_BROWSER_PREVIEW_WARM_MS);
     handle.unref?.();
@@ -3064,13 +3104,15 @@ function createBuiltInBrowserWindowService(args: {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
-          // Square while parked: the rounded corners belong to the panel's
-          // frame, and a preview frame with four transparent notches in it is
-          // not what the corner card is asking for.
-          applyTabViewCornerRadius(tab, 0);
           // Warm first if this view has no surface yet; the timer moves it to
           // the real park point two frames later.
           const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(tab);
+          // Square while parked: the rounded corners belong to the panel's
+          // frame, and a preview frame with four transparent notches in it is
+          // not what the corner card is asking for. The one exception is the
+          // warm, where the radius exists to clip the pixel that overlaps the
+          // UI rather than to decorate anything.
+          applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
           tab.view.setBounds(warming ?? parkedPreviewRect(tab));
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
@@ -4046,6 +4088,13 @@ function createBuiltInBrowserWindowService(args: {
     const [removed] = tabs.splice(index, 1);
     if (removed) {
       parkedTabIds.delete(removed.id);
+      // The close path removes the view itself rather than going through
+      // `removeTabViewFromWindow`, so it has to drop the same warming state:
+      // an armed timer fires after the tab is gone, re-adds a dead id to
+      // `surfacedTabIds` and runs a pointless attach pass, and both collections
+      // then grow with every closed tab for the life of the window.
+      surfacedTabIds.delete(removed.id);
+      clearWarmingTimer(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
@@ -5297,6 +5346,7 @@ function createBuiltInBrowserWindowService(args: {
     // just outside the window while somebody previews it, detached once nobody
     // does. `attachViewsToCurrentWindow` is the one place that decides that.
     onPreviewWatchersChanged: () => attachViewsToCurrentWindow(),
+    isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,
   });

@@ -167,10 +167,9 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(workToolsDisplayName("terminal"), "Terminal")
     XCTAssertEqual(workToolsDisplayName("git"), "Git")
     XCTAssertEqual(workToolsDisplayName("files"), "Files")
-    XCTAssertEqual(workToolsDisplayName("ios"), "iOS Simulator")
+    XCTAssertEqual(workToolsDisplayName("ios"), "Simulator")
     XCTAssertEqual(workToolsDisplayName("app-control"), "App Control")
     XCTAssertEqual(workToolsDisplayName("browser"), "Browser")
-    XCTAssertEqual(workToolsDisplayName("pr"), "PR")
     // A tool this build has no name for still reads as *something*: dropping it
     // would tell the user no tool is open when one is.
     XCTAssertEqual(workToolsDisplayName("holodeck"), "holodeck")

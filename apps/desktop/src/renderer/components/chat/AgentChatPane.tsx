@@ -12631,7 +12631,6 @@ export function AgentChatPane({
   );
   const terminalPanelContent = chatTerminalVisible ? (
     <ChatTerminalDrawer
-      variant="panel"
       open={terminalDrawerOpen}
       onToggle={() => setTerminalDrawerOpen((current) => !current)}
       laneId={laneId}

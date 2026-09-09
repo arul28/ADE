@@ -132,16 +132,23 @@ function isAllowedExternalArtifactSource(
 /**
  * Agents hit this rejection with a plausible-looking path, so the message has
  * to name the legal roots — an agent that only sees "outside allowed import
- * roots" re-runs the same command with the same path. Both temp conventions
- * (`$TMPDIR` and `/tmp`) are roots now, so the remaining common cause is a file
- * written somewhere else entirely, e.g. `~/Desktop`.
+ * roots" re-runs the same command with the same path. The temp conventions are
+ * roots now, so the remaining common cause is a file written somewhere else
+ * entirely, e.g. `~/Desktop`.
+ *
+ * The temp hint is platform-specific because the roots are: `resolveTempImportRoots`
+ * adds `/tmp` only off Windows, and `$TMPDIR` is not the Windows spelling. A
+ * Windows agent told to copy its file into `/tmp` retries and fails again.
  */
 function outsideImportRootsError(absolutePath: string, roots: string[]): Error {
   const unique = Array.from(new Set(roots.map((root) => root.trim()).filter(Boolean)));
+  const tempHint = process.platform === "win32"
+    ? "the OS temp dir %TEMP% qualifies"
+    : "the OS temp dir $TMPDIR and /tmp both qualify";
   return new Error(
     `Artifact path is outside allowed import roots: ${absolutePath}. `
     + `Allowed roots: ${unique.join(", ")}. `
-    + `Copy the file into one of them (the OS temp dir $TMPDIR and /tmp both qualify) and retry.`,
+    + `Copy the file into one of them (${tempHint}) and retry.`,
   );
 }
 

@@ -23,6 +23,28 @@ import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
 
 /**
+ * 40px. The one chrome-row height in the app.
+ *
+ * Named separately from the row below because the browser pane composes its own
+ * row (it has an overflow-hidden omnibox to fit) and App Control draws a
+ * bordered variant — both spend this height rather than re-typing `h-10`.
+ */
+export const WORK_TOOL_CHROME_ROW_HEIGHT = "h-10";
+
+/** The house transition for every chrome control: colour only, 120ms, ease-out. */
+export const WORK_TOOL_CHROME_MOTION = "transition-colors duration-[120ms] ease-out";
+
+/**
+ * The focus ring every chrome control wears.
+ *
+ * An inset accent hairline rather than the app-wide outline halo: these
+ * controls sit flush in a 40px row, and an outset ring on a 28px square
+ * overlaps its neighbours.
+ */
+export const WORK_TOOL_CHROME_FOCUS =
+  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+
+/**
  * The row itself: 40px, hairline below at 60% of the border token.
  *
  * `ade-pane-chrome` is what makes the whole row `select-none` — dragging the
@@ -31,7 +53,8 @@ import { PaneTooltip } from "../ui/PaneTooltip";
  * rows read as one piece of furniture rather than two boxes.
  */
 export const WORK_TOOL_CHROME_ROW = cn(
-  "ade-pane-chrome ade-tool-pane-rule flex h-10 min-w-0 shrink-0 items-center gap-1 px-2",
+  "ade-pane-chrome ade-tool-pane-rule flex min-w-0 shrink-0 items-center gap-1 px-2",
+  WORK_TOOL_CHROME_ROW_HEIGHT,
 );
 
 /*
@@ -44,22 +67,36 @@ export const WORK_TOOL_CHROME_ROW = cn(
   ghost skin is short enough to state outright, so it is stated outright.
 */
 
+/**
+ * The bare 28px ghost square: geometry, rest colour and hover fill.
+ *
+ * Split out from the button below because the browser pane's controls are the
+ * same square with a different disabled treatment, and two hand-typed copies of
+ * `h-7 w-7 … rounded-[7px] … hover:bg-white/[0.06]` is exactly how the two
+ * toolbars drifted apart the first time.
+ */
+export const WORK_TOOL_CHROME_GHOST = cn(
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border-0 bg-transparent",
+  "text-muted-fg/80 hover:bg-white/[0.06] hover:text-fg",
+);
+
 /** 28px ghost square. Hover and press are a fill change and nothing else. */
 export const WORK_TOOL_CHROME_BUTTON = cn(
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border-0 bg-transparent",
-  "text-muted-fg transition-colors duration-[120ms] ease-out",
-  "hover:bg-white/[0.06] hover:text-fg active:bg-white/[0.09]",
+  WORK_TOOL_CHROME_GHOST,
+  "text-muted-fg active:bg-white/[0.09]",
   "data-[state=open]:bg-white/[0.09] data-[state=open]:text-fg",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  WORK_TOOL_CHROME_MOTION,
+  WORK_TOOL_CHROME_FOCUS,
   "disabled:pointer-events-none disabled:opacity-35",
 );
 
 /** Same skin, but sized by its contents — a chip with an icon and a label. */
 export const WORK_TOOL_CHROME_CHIP = cn(
   "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-[7px] border-0 bg-transparent px-2",
-  "text-[12px] font-medium text-fg/80 transition-colors duration-[120ms] ease-out",
+  "text-[12px] font-medium text-fg/80",
   "hover:bg-white/[0.06] hover:text-fg active:bg-white/[0.09]",
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  WORK_TOOL_CHROME_MOTION,
+  WORK_TOOL_CHROME_FOCUS,
   "disabled:pointer-events-none disabled:opacity-35",
 );
 

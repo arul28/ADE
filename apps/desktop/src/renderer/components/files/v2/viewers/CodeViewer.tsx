@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import type * as Monaco from "monaco-editor";
+import { claimAppMenuCommands } from "../../../../lib/appMenuCommands";
 import { resolveLanguageId } from "../../filePresentation";
 import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
 import { takePendingReveal } from "../pendingReveals";
@@ -147,6 +148,33 @@ export function CodeViewer({
     registerApiForActiveTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, content.content, content.languageId]);
+
+  /**
+   * ⌘F while this editor holds the keyboard.
+   *
+   * `Edit ▸ Find…` is a native menu accelerator, and Electron consumes an
+   * accelerator in the browser process *before* the renderer sees a keydown —
+   * so Monaco's own ⌘F keybinding never fires on the packaged app. The menu
+   * sends a `find` command down instead; claim it here and run the same action
+   * Monaco would have. Declining when the editor does not own focus leaves the
+   * chord to whoever does (the built-in browser's find bar, or nothing).
+   */
+  useEffect(() => {
+    return claimAppMenuCommands((command) => {
+      if (command !== "find") return false;
+      const editor = editorRef.current;
+      const host = hostRef.current;
+      if (!editor || !host || !host.isConnected) return false;
+      // Single-surface Files keeps the inactive column mounted but `inert`.
+      if (host.closest("[inert]")) return false;
+      const active = document.activeElement;
+      const focused =
+        editor.hasTextFocus() || (active instanceof Node && host.contains(active));
+      if (!focused) return false;
+      void editor.getAction("actions.find")?.run();
+      return true;
+    });
+  }, []);
 
   // React to readOnly / theme without recreating the editor.
   useEffect(() => {

@@ -1,3 +1,8 @@
+import {
+  isRedactedBuiltInBrowserQueryParam,
+} from "../../../../shared/types/builtInBrowser";
+import { isLoopbackHostname } from "../../../../shared/remoteLoopbackUrl";
+
 /**
  * The launchpad's "Recently used" list.
  *
@@ -11,6 +16,11 @@
  * it, and a missing or failed read must degrade to "no recents" rather than to
  * a broken pane. Every entry point is total — bad JSON, a quota error and a
  * renderer with no `localStorage` at all are the same answer.
+ *
+ * Because the store is plaintext and its rows are RENDERED on the empty state,
+ * `sanitizeBrowserRecentUrl` below is the gate every write passes: it drops the
+ * query and the fragment, refuses anything that carried a credential in either,
+ * and refuses the ephemeral loopback ports a remote tunnel forwards through.
  */
 
 export type BrowserRecentUrl = {
@@ -45,6 +55,64 @@ function readStorage(): Storage | null {
     // A renderer with storage disabled simply has no recents.
     return null;
   }
+}
+
+/**
+ * Above this, a loopback port was handed out by the OS rather than chosen.
+ *
+ * A chat pinned to another machine reaches that machine's `localhost:3000`
+ * through an ephemeral TCP forward, so the browser really loads something like
+ * `http://127.0.0.1:52413`. That origin dies with the transport, and the OS is
+ * free to hand the same number to an unrelated local server tomorrow — so
+ * remembering it would offer a one-click destination that is, at best, not the
+ * page it claims to be. A tunneled tab records the tunnel's remote-origin
+ * display URL instead (the panel already shows that URL everywhere); when the
+ * mapping is unknown the raw forward origin reaches here and is refused.
+ *
+ * A dev server the human actually chose — 3000, 5173, 8080 — is well below
+ * this, so ordinary local browsing is unaffected.
+ */
+export const EPHEMERAL_LOOPBACK_PORT_MIN = 32_768;
+
+function carriesCredential(params: URLSearchParams): boolean {
+  for (const name of params.keys()) {
+    if (isRedactedBuiltInBrowserQueryParam(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * The URL this list may keep, or `null` when it may keep nothing.
+ *
+ * Refuses, in order: anything that is not a navigable http(s) URL; anything
+ * whose query OR fragment names a credential parameter (an IdP callback's
+ * `?code=`, an implicit-flow `#access_token=`, a magic link's `?token=`); and
+ * any loopback URL on an ephemeral port. What survives is stored as
+ * `origin + pathname` — the query and the fragment are dropped even when they
+ * look innocent, because a list of visited pages does not need them and a
+ * per-site parameter this list has never heard of is exactly the one that
+ * turns out to be a session id.
+ */
+export function sanitizeBrowserRecentUrl(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (carriesCredential(url.searchParams)) return null;
+  // Implicit-flow tokens live in the fragment, which `searchParams` never sees.
+  if (url.hash.length > 1 && carriesCredential(new URLSearchParams(url.hash.slice(1)))) {
+    return null;
+  }
+  if (isLoopbackHostname(url.hostname)) {
+    const port = Number(url.port);
+    if (Number.isInteger(port) && port >= EPHEMERAL_LOOPBACK_PORT_MIN) return null;
+  }
+  return `${url.origin}${url.pathname}`;
 }
 
 function isRecent(value: unknown): value is BrowserRecentUrl {
@@ -104,21 +172,33 @@ export function readBrowserRecentUrls(scope: string | null | undefined): Browser
   }
 }
 
-/** Record a visit and hand back the list the launchpad should now show. */
+function writeRecents(scope: string | null | undefined, entries: BrowserRecentUrl[]): void {
+  const storage = readStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(browserRecentUrlsKey(scope), JSON.stringify(entries));
+  } catch {
+    // A full or blocked store still leaves the in-memory list correct for this
+    // session, which is the half that the launchpad renders.
+  }
+}
+
+/**
+ * Record a visit and hand back the list the launchpad should now show.
+ *
+ * A URL `sanitizeBrowserRecentUrl` refuses is not an error: the list is simply
+ * returned unchanged, so a sign-in callback leaves no trace and the row before
+ * it stays where it was.
+ */
 export function rememberBrowserRecentUrl(
   scope: string | null | undefined,
   entry: BrowserRecentUrl,
 ): BrowserRecentUrl[] {
-  const next = withBrowserRecentUrl(readBrowserRecentUrls(scope), entry);
-  const storage = readStorage();
-  if (storage) {
-    try {
-      storage.setItem(browserRecentUrlsKey(scope), JSON.stringify(next));
-    } catch {
-      // A full or blocked store still leaves the in-memory list correct for
-      // this session, which is the half that the launchpad renders.
-    }
-  }
+  const current = readBrowserRecentUrls(scope);
+  const url = sanitizeBrowserRecentUrl(entry.url);
+  if (!url) return current;
+  const next = withBrowserRecentUrl(current, { ...entry, url });
+  writeRecents(scope, next);
   return next;
 }
 
@@ -127,13 +207,19 @@ export function forgetBrowserRecentUrl(
   url: string,
 ): BrowserRecentUrl[] {
   const next = readBrowserRecentUrls(scope).filter((entry) => entry.url !== url);
+  writeRecents(scope, next);
+  return next;
+}
+
+/** Drop the whole list for a scope — the group's "Clear" action. */
+export function clearBrowserRecentUrls(scope: string | null | undefined): BrowserRecentUrl[] {
   const storage = readStorage();
   if (storage) {
     try {
-      storage.setItem(browserRecentUrlsKey(scope), JSON.stringify(next));
+      storage.removeItem(browserRecentUrlsKey(scope));
     } catch {
-      // See `rememberBrowserRecentUrl`.
+      // See `writeRecents`.
     }
   }
-  return next;
+  return [];
 }

@@ -956,6 +956,36 @@ export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_
  */
 export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
 
+/**
+ * Query parameters whose value is a credential rather than a request detail.
+ *
+ * Redacting only headers left the bigger hole open: an IdP callback, a
+ * magic-link, and a presigned URL all carry the secret in the query string, and
+ * a HAR export explodes every parameter into the file by name and value.
+ *
+ * Lives in `shared/` rather than beside the HAR writer because the renderer
+ * needs the same list: the launchpad's "Recently used" store refuses to
+ * persist a URL carrying any of these, and a second hand-maintained copy there
+ * would be a list that silently stops matching this one.
+ */
+export const BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS: ReadonlySet<string> = new Set([
+  "code",
+  "access_token",
+  "id_token",
+  "token",
+  "state",
+  "session",
+  "sig",
+  "signature",
+  "api_key",
+  "refresh_token",
+  "client_secret",
+]);
+
+export function isRedactedBuiltInBrowserQueryParam(name: string): boolean {
+  return BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS.has(name.trim().toLowerCase());
+}
+
 export type BuiltInBrowserRecordingStatus = {
   startedAt: string;
   fps: number;

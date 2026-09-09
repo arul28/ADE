@@ -136,7 +136,7 @@ func workToolsDisplayName(_ toolId: String?) -> String? {
   case "terminal": return "Terminal"
   case "git": return "Git"
   case "files": return "Files"
-  case "ios": return "iOS Simulator"
+  case "ios": return "Simulator"
   case "app-control": return "App Control"
   case "browser": return "Browser"
   default: return toolId

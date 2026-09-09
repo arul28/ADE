@@ -259,6 +259,14 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * attach pass rather than this module reaching into the view.
    */
   onPreviewWatchersChanged?: (tabId: string) => void;
+  /**
+   * Whether this tab's view currently holds a compositor surface.
+   *
+   * Owned by the window service (it is the thing that attaches, parks and warms
+   * views). The preview loop only needs the answer to decide whether a capture
+   * has to force visibility to get a frame at all.
+   */
+  isTabSurfaced?: (tabId: string) => boolean;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
   targetTabFromInput: (
     input: BuiltInBrowserTabTargetArgs | undefined,
@@ -1025,22 +1033,30 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     capture: async (tabId, maxWidth) => {
       const tab = tabById(tabId);
       if (!tab || tab.webContents.isDestroyed()) return null;
-      // `stayHidden` is deliberately FALSE, and it is the whole reason the card
-      // paints at all.
+      // `stayHidden` follows the view's surface, and the difference matters at
+      // 12–24 frames a second.
       //
       // Parking a view off-screen keeps a surface Chromium already has; it does
       // not create one. A tab the panel has never shown — an agent's freshly
       // opened tab, a tab switched to while the pane was on Terminal, the very
-      // case the corner card exists for — therefore has no compositor frame,
-      // and `capturePage({ stayHidden: true })` resolves an EMPTY image against
-      // it forever. Silently: `isEmpty()` is not an error, so the loop kept
-      // ticking and the card stayed black with a live dot on it.
+      // case the corner card exists for — has no compositor frame, and
+      // `capturePage({ stayHidden: true })` against it resolves an EMPTY image.
+      // Silently: `isEmpty()` is not an error, so the loop kept ticking and the
+      // card stayed black with a live dot on it. Omitting the flag makes
+      // Electron treat the page as visible for the length of that one capture,
+      // which forces the frame to exist.
       //
-      // Omitting the flag makes Electron raise the capturer count and treat the
-      // page as visible for the duration of the capture, which is what forces
-      // the frame to exist. The page being "visible" while somebody is watching
-      // a live preview of it is also the honest answer for `visibilitychange`.
-      const image = await tab.webContents.capturePage();
+      // But paying that on *every* frame is a `visibilitychange` storm: the
+      // page went hidden → visible → hidden up to 24 times a second, which
+      // restarts `refetchOnWindowFocus` queries, flaps `<video>` autoplay and
+      // `requestAnimationFrame` throttling, and reconnects HMR clients. The
+      // service parks a watched view attached and `setVisible(true)`, so once
+      // it holds a surface the page is *already* steadily visible for the whole
+      // watch and the flag costs nothing but the churn. So: raise visibility
+      // only for the frames before the surface exists, and ask to stay hidden
+      // for every frame after it.
+      const surfaced = deps.isTabSurfaced?.(tabId) === true;
+      const image = await tab.webContents.capturePage(undefined, { stayHidden: surfaced });
       if (image.isEmpty()) return null;
       const size = image.getSize();
       // Downscale in main, not in the renderer: shipping a full-resolution

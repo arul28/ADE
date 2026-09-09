@@ -542,7 +542,7 @@ const WORK_TOOLS_NOW = Date.parse("2026-08-24T12:00:00Z");
 describe("work tools pane", () => {
   it("names known tools and passes unknown ids through", () => {
     expect(workToolLabel("app-control")).toBe("App Control");
-    expect(workToolLabel("ios")).toBe("iOS Simulator");
+    expect(workToolLabel("ios")).toBe("Simulator");
     // A newer desktop's tool must not be dropped just because this build has
     // no name for it.
     expect(workToolLabel("hologram")).toBe("hologram");

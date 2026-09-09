@@ -85,6 +85,15 @@ import { cn } from "../../ui/cn";
  */
 const EMBEDDED_SINGLE_SURFACE_PX = 520;
 
+/**
+ * `inert` for React 18, which has no boolean prop for it.
+ *
+ * React 19 types `inert` as a boolean; on 18 the only way through is the raw
+ * attribute, and `inert=""` is what the HTML spec asks for. Spread rather than
+ * written inline so the cast lives in exactly one place.
+ */
+const INERT_ATTR = { inert: "" } as Record<string, string>;
+
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 // Open-request keys remembered for dedup. Far above any real burst; exists so a
 // long-lived session cannot grow the set without bound.
@@ -1469,6 +1478,8 @@ export function FilesWorkbench({
   // and the editor beside it are each too narrow to read.
   const singleSurface = embedded && paneWidth > 0 && paneWidth < EMBEDDED_SINGLE_SURFACE_PX;
   const showEditorSurface = !singleSurface || (embeddedSurface === "editor" && openCount > 0);
+  const treeSurfaceHidden = singleSurface && showEditorSurface;
+  const editorSurfaceHidden = singleSurface && !showEditorSurface;
 
   return (
     <MonochromeFileIconsContext.Provider value={embedded === true}>
@@ -1575,10 +1586,24 @@ export function FilesWorkbench({
       >
         {/* Explorer column. Embedded it is `--color-surface`, the same token the
             editor and its gutter now paint with, so the pane is one surface
-            rather than a card-tinted tree beside Monaco's own grey. */}
-        {showEditorSurface && singleSurface ? null : (
+            rather than a card-tinted tree beside Monaco's own grey.
+
+            Below `EMBEDDED_SINGLE_SURFACE_PX` only one column shows, but both
+            stay MOUNTED and the other is hidden: rendering `null` disposed the
+            Monaco editor on every "Back to files", losing cursor, scroll,
+            selection, folding and the open find widget (the text model is
+            registry-owned, so edits survived — nothing held on the editor did),
+            and paying a full `create()` + re-tokenise on the way back. `hidden`
+            keeps it out of the grid, and `inert` keeps it out of the tab order
+            and out of the ⌘F claim. */}
         <div
-          className={cn("flex min-h-0 flex-col", singleSurface ? null : "border-r")}
+          data-testid="files-tree-column"
+          className={cn(
+            "flex min-h-0 flex-col",
+            singleSurface ? null : "border-r",
+            treeSurfaceHidden ? "hidden" : null,
+          )}
+          {...(treeSurfaceHidden ? INERT_ATTR : null)}
           style={{
             borderColor: COLORS.border,
             background: embedded
@@ -1645,10 +1670,10 @@ export function FilesWorkbench({
             </div>
           ) : null}
         </div>
-        )}
-        {singleSurface && !showEditorSurface ? null : (
         <div
-          className="min-h-0 min-w-0"
+          data-testid="files-editor-column"
+          className={cn("min-h-0 min-w-0", editorSurfaceHidden ? "hidden" : null)}
+          {...(editorSurfaceHidden ? INERT_ATTR : null)}
           style={embedded ? { background: "var(--color-surface)" } : undefined}
         >
           {openCount === 0 ? (
@@ -1693,7 +1718,6 @@ export function FilesWorkbench({
           />
           )}
         </div>
-        )}
       </div>
       <StatusBar
         activeTab={activeTab}

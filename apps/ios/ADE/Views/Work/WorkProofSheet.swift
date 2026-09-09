@@ -1,4 +1,3 @@
-import AVKit
 import SwiftUI
 import UIKit
 
@@ -408,7 +407,7 @@ private struct WorkProofVideoPage: View {
 
   var body: some View {
     if isVideo {
-      WorkProofVideoPlayer(url: url)
+      WorkArtifactVideoPlayerView(url: url)
     } else {
       VStack(spacing: 12) {
         Image(systemName: "play.rectangle")
@@ -419,23 +418,6 @@ private struct WorkProofVideoPage: View {
           .foregroundStyle(Color.white.opacity(0.72))
       }
     }
-  }
-}
-
-private struct WorkProofVideoPlayer: View {
-  let url: URL
-  @StateObject private var model: WorkArtifactVideoPlayerModel
-
-  init(url: URL) {
-    self.url = url
-    _model = StateObject(wrappedValue: WorkArtifactVideoPlayerModel(url: url))
-  }
-
-  var body: some View {
-    VideoPlayer(player: model.player)
-      .onChange(of: url) { _, newValue in
-        model.update(url: newValue)
-      }
   }
 }
 

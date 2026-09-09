@@ -3,6 +3,7 @@ import { resolvePathWithinRoot } from "../shared/utils";
 import {
   BUILT_IN_BROWSER_MAX_RECORDING_MS,
   BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
+  isRedactedBuiltInBrowserQueryParam,
 } from "../../../shared/types/builtInBrowser";
 import type {
   BuiltInBrowserNetworkHeader,
@@ -47,30 +48,15 @@ export const BUILT_IN_BROWSER_REDACTED_HEADERS: ReadonlySet<string> = new Set([
   "x-csrf-token",
 ]);
 
-/**
- * Query parameters whose value is a credential rather than a request detail.
- *
- * Redacting only headers left the bigger hole open: an IdP callback, a
- * magic-link, and a presigned URL all carry the secret in the query string, and
- * a HAR export explodes every parameter into the file by name and value.
- */
-export const BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS: ReadonlySet<string> = new Set([
-  "code",
-  "access_token",
-  "id_token",
-  "token",
-  "state",
-  "session",
-  "sig",
-  "signature",
-  "api_key",
-  "refresh_token",
-  "client_secret",
-]);
-
-export function isRedactedBuiltInBrowserQueryParam(name: string): boolean {
-  return BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS.has(name.trim().toLowerCase());
-}
+/*
+  The credential-parameter list moved to `shared/types/builtInBrowser` so the
+  renderer's recents store can refuse the same URLs this redacts. Re-exported
+  here because every existing caller reads it from this module.
+*/
+export {
+  BUILT_IN_BROWSER_REDACTED_QUERY_PARAMS,
+  isRedactedBuiltInBrowserQueryParam,
+} from "../../../shared/types/builtInBrowser";
 
 /**
  * Same URL with credential-bearing query values replaced. Returns the input

@@ -10,6 +10,12 @@ import type { ReactNode } from "react";
 import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
 import type { BrowserToolbarLayout } from "./builtInBrowserToolbar";
 import { cn } from "../../ui/cn";
+import {
+  WORK_TOOL_CHROME_FOCUS,
+  WORK_TOOL_CHROME_GHOST,
+  WORK_TOOL_CHROME_MOTION,
+  WORK_TOOL_CHROME_ROW_HEIGHT,
+} from "../../terminals/workToolChrome";
 
 /**
  * The chrome both toolbar pieces are handed, built once by the panel.
@@ -45,15 +51,19 @@ export type BrowserChromeShared = {
 };
 
 
-/**
- * The chrome row's height, and the one control size inside it.
- *
- * Every reference browser worth copying — Cursor, Arc, Zen — draws its chrome
- * as one 40px row of borderless glyphs over the window's own background. The
- * boxed, bordered, filled controls this pane used to ship are what made it read
- * as a form rather than as a browser.
- */
-export const CHROME_ROW_CLASS = "h-10";
+/*
+  The row geometry, the ghost control, the focus ring and the motion curve are
+  ALL owned by `terminals/workToolChrome` — the browser pane settled this look
+  first, but every Work tool spends it now, so the definitions live with the
+  tools and these names are aliases for the files in this folder (the same thing
+  this file already does for the menu tokens below).
+
+  Every reference browser worth copying — Cursor, Arc, Zen — draws its chrome as
+  one 40px row of borderless glyphs over the window's own background. The boxed,
+  bordered, filled controls this pane used to ship are what made it read as a
+  form rather than as a browser.
+*/
+export const CHROME_ROW_CLASS = WORK_TOOL_CHROME_ROW_HEIGHT;
 /** 16px, the size every glyph on the row is drawn at. */
 export const CHROME_ICON_SIZE = 16;
 
@@ -61,12 +71,12 @@ export const CHROME_ICON_SIZE = 16;
  * A control on the chrome row: 28px square, no border, no fill at rest.
  *
  * The row is quiet until you point at it. Hover is the only fill, and a
- * disabled control fades rather than growing a different box.
+ * disabled control fades rather than growing a different box. Motion and the
+ * focus ring are spent alongside it (`TOOLBAR_MOTION`, `TOOLBAR_FOCUS`) rather
+ * than baked in, because the find bar's 24px controls reuse those two on a
+ * different square.
  */
-export const CHROME_GHOST = [
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px]",
-  "text-muted-fg/80 hover:bg-white/[0.06] hover:text-fg",
-].join(" ");
+export const CHROME_GHOST = WORK_TOOL_CHROME_GHOST;
 
 /**
  * "On" is a colour, never a chip.
@@ -79,8 +89,8 @@ export const CHROME_GHOST_ON = "text-[var(--color-accent)] hover:text-[var(--col
 /** Recording is the one destructive-coloured state on the row. */
 export const CHROME_GHOST_REC = "text-rose-300 hover:text-rose-200";
 
-export const TOOLBAR_FOCUS = "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
-export const TOOLBAR_MOTION = "transition-colors duration-[120ms] ease-out disabled:cursor-not-allowed disabled:opacity-40";
+export const TOOLBAR_FOCUS = WORK_TOOL_CHROME_FOCUS;
+export const TOOLBAR_MOTION = `${WORK_TOOL_CHROME_MOTION} disabled:cursor-not-allowed disabled:opacity-40`;
 
 /**
  * The dot that says a toggle is on, without a word.

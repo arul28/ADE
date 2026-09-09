@@ -2439,9 +2439,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Where proof files may live
 
   Attach/ingest only import from these roots: the project root, the lane
-  worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp dir
-  (\`$TMPDIR\`, which on macOS is under /var/folders), the conventional temp
-  dir \`/tmp\` (\`/private/tmp\` on macOS), and ~/.agent-browser.
+  worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp directory
+  (\`$TMPDIR\` on macOS/Linux — under /var/folders on macOS; \`%TEMP%\` on
+  Windows), the conventional \`/tmp\` (\`/private/tmp\` on macOS; not a root on
+  Windows), and ~/.agent-browser.
 
   Which directory the call claims
 

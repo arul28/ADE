@@ -1,7 +1,10 @@
 import { CaretDown, ListChecks, WarningCircle, WifiSlash } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "../ui/cn";
-import { TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browser/browserChrome";
+import {
+  WORK_TOOL_CHROME_FOCUS,
+  WORK_TOOL_CHROME_MOTION,
+} from "../terminals/workToolChrome";
 import type { TraceRow } from "./appControlTrace";
 
 /** ADE's canonical reveal curve (chat/BottomDrawerSection.tsx). */
@@ -77,8 +80,8 @@ export function AppControlStatusRow({
           "inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-medium",
           "hover:bg-white/[0.06] hover:text-fg",
           traceOpen ? "bg-white/[0.06] text-fg/85" : "text-muted-fg/75",
-          TOOLBAR_MOTION,
-          TOOLBAR_FOCUS,
+          WORK_TOOL_CHROME_MOTION,
+          WORK_TOOL_CHROME_FOCUS,
         )}
       >
         <ListChecks size={11} />
@@ -129,8 +132,8 @@ export function AppControlTraceDrawer({
               className={cn(
                 "ml-auto inline-flex h-5 w-5 items-center justify-center rounded-md",
                 "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg",
-                TOOLBAR_MOTION,
-                TOOLBAR_FOCUS,
+                WORK_TOOL_CHROME_MOTION,
+                WORK_TOOL_CHROME_FOCUS,
               )}
             >
               <CaretDown size={10} weight="bold" />

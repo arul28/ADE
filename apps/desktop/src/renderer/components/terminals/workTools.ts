@@ -24,6 +24,19 @@ export type WorkToolDefinition = {
   /** Accent for the card glyph and the active header icon. */
   color: string;
   /**
+   * What this tool is FOR, in three to five words.
+   *
+   * Shown only when the tool has measured NOTHING yet — a live status ("2
+   * shells", "3 tabs · agent") is always the better answer, and a card carrying
+   * both is the over-explained layout the picker replaced. It lives on the
+   * catalogue rather than in a map beside the picker so the card, the header
+   * tooltip and the truncation tooltip all read one string: a picker-local copy
+   * meant a clipped card's tooltip showed LESS text than the card it was
+   * explaining. Omitted means the tool always has a real status (Files always
+   * knows whether the worktree is dirty), so a hint there could never render.
+   */
+  hint?: string;
+  /**
    * The one compact fact the active header shows beside the tool's name.
    *
    * On the definition rather than in a `if (tool === …)` cascade at the header:
@@ -45,18 +58,21 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Terminal",
     icon: Terminal,
     color: "#c4b5fd",
+    hint: "Run a shell here",
   },
   {
     id: "browser",
     label: "Browser",
     icon: Globe,
     color: "#22d3ee",
+    hint: "Drive a real browser",
   },
   {
     id: "git",
     label: "Git",
     icon: GitBranch,
     color: "#34d399",
+    hint: "Commit, push, rebase",
     // The branch, not the dirty count: the count is already the status line.
     contextLabel: ({ lane }) => lane?.branchRef ?? null,
   },
@@ -77,12 +93,14 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Simulator",
     icon: DeviceMobile,
     color: "#60a5fa",
+    hint: "Boot a simulator",
   },
   {
     id: "app-control",
     label: "App Control",
     icon: Desktop,
     color: "#a78bfa",
+    hint: "Drive a desktop app",
   },
 ];
 

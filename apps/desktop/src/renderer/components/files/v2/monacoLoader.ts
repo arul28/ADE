@@ -49,18 +49,20 @@ export async function loadMonaco(): Promise<typeof Monaco> {
 export const ADE_MONACO_DARK_THEME = "ade-dark";
 export const ADE_MONACO_LIGHT_THEME = "ade-light";
 
-/** The token every ADE surface reads, resolved to a literal Monaco understands. */
-function surfaceColor(fallback: string): string {
-  if (typeof window === "undefined" || typeof getComputedStyle !== "function") return fallback;
-  const value = getComputedStyle(document.documentElement).getPropertyValue("--color-surface").trim();
-  // Monaco parses hex only; anything else (a `color-mix`, an unset token on a
-  // detached document) has to fall back rather than throw the theme away.
-  return /^#[0-9a-f]{3,8}$/iu.test(value) ? value : fallback;
-}
+/*
+  The two surfaces, as literals rather than as the live `--color-surface` token.
+
+  `defineAdeThemes` runs once, inside the memoized `monacoInit` promise, so a
+  theme defined from the live token would freeze BOTH themes to whichever one
+  happened to be active when the first editor opened — a light editor then
+  paints `vs` syntax tokens on a near-black background. These are the same two
+  values `index.css` gives `--color-surface` under `[data-theme="dark"]` (:46)
+  and `[data-theme="light"]` (:243); keep them in step with that file.
+*/
+const DARK_SURFACE = "#16141E";
+const LIGHT_SURFACE = "#faf8f5";
 
 function defineAdeThemes(monaco: typeof Monaco): void {
-  const dark = surfaceColor("#16141E");
-  const light = surfaceColor("#faf8f5");
   const surfaces = (background: string) => ({
     "editor.background": background,
     "editorGutter.background": background,
@@ -73,13 +75,13 @@ function defineAdeThemes(monaco: typeof Monaco): void {
     base: "vs-dark",
     inherit: true,
     rules: [],
-    colors: surfaces(dark),
+    colors: surfaces(DARK_SURFACE),
   });
   monaco.editor.defineTheme(ADE_MONACO_LIGHT_THEME, {
     base: "vs",
     inherit: true,
     rules: [],
-    colors: surfaces(light),
+    colors: surfaces(LIGHT_SURFACE),
   });
 }
 

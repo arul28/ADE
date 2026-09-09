@@ -121,19 +121,28 @@ export function workToolDotColor(state: WorkToolDotState, toolColor: string): st
  * The picker card and the header's activity dots both answer "what is this tool
  * doing", and they used to answer it with two different spellings — one that
  * appended the error suffix, one that gated it and then regexed the separator
- * back off. This is the single rule: an unavailable tool says why, an available
- * one says its measured status plus any error tally, and a tool that has
- * measured nothing says NOTHING. The slot is for facts; a card that fills it
- * with a description of what the tool is for reads as a status you can act on
- * and is not one.
+ * back off. This is the single rule, in priority order: an unavailable tool
+ * says why; an available one says its measured status plus any error tally; and
+ * a tool that has measured nothing falls back to the catalogue's `hint`.
+ *
+ * The hint is LAST for a reason — a measured status is always the better answer
+ * and a slot carrying both is the over-explained card the picker replaced — but
+ * it is resolved HERE rather than at the picker, because the two disagreed
+ * otherwise: the card printed "Run a shell here" while the truncation tooltip,
+ * whose whole job is to be the rest of the sentence, said only "Terminal".
+ *
+ * `line` is `null`, never `""`, when there is nothing at all to say, so a
+ * caller cannot mistake "no status" for a rendered empty string.
  */
 export function workToolSummary(
   definition: WorkToolDefinition,
   status: WorkToolStatus | undefined,
   availability: WorkToolAvailability,
-): { line: string; tooltipLabel: string } {
+): { line: string | null; tooltipLabel: string } {
   const line = availability.available
-    ? (status?.line ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}` : "")
+    ? (status?.line
+      ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}`
+      : definition.hint ?? null)
     : availability.reason;
   return { line, tooltipLabel: line ? `${definition.label} — ${line}` : definition.label };
 }

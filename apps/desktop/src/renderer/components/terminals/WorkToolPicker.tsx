@@ -30,28 +30,6 @@ const CARD_MIN_TRACK_PX = 196;
 const COLUMN_MAX_PX = 512;
 
 /**
- * What a tool is FOR, in three to five words.
- *
- * Only ever shown when the tool has measured nothing yet: a live status ("2
- * shells", "3 tabs · agent") is always the better answer, and a card that
- * carries both a status and a blurb is the over-explained layout this page
- * replaced. Kept here rather than on the catalogue entry because it is picker
- * copy — the header, the palette and the activity dots have no use for it.
- */
-/*
- * Files has no entry: the lane store always knows whether the worktree is
- * dirty, so its card always has a real status ("Changes" / "Clean") and a
- * blurb there would be copy that can never render.
- */
-const WORK_TOOL_DESCRIPTIONS: Partial<Record<WorkSidebarTab, string>> = {
-  terminal: "Run a shell here",
-  browser: "Drive a real browser",
-  git: "Commit, push, rebase",
-  ios: "Boot a simulator",
-  "app-control": "Drive a desktop app",
-};
-
-/**
  * The tools pane's front page: every tool ADE can open beside this session, what
  * each one is doing right now, and one click to take it over the pane.
  *
@@ -154,11 +132,10 @@ export function WorkToolPicker({
             const availability = workToolAvailability(definition.id, context);
             const status = statuses[definition.id];
             const reasonId = `${reasonIdPrefix}-${definition.id}`;
-            const { line, tooltipLabel } = workToolSummary(definition, status, availability);
+            // Status, reason, or the catalogue's hint — `workToolSummary` owns
+            // that priority, and the tooltip below reads the same resolution.
+            const { line: detail, tooltipLabel } = workToolSummary(definition, status, availability);
             const showSkeleton = loading && availability.available && status?.line == null;
-            // The status when there is one, the reason when the tool cannot run
-            // here, and only otherwise the blurb. Never two of them.
-            const detail = line || (availability.available ? WORK_TOOL_DESCRIPTIONS[definition.id] ?? "" : "");
             const Icon = definition.icon;
             const isActive = activeTool === definition.id;
             const hasError = availability.available && workToolHasError(status);

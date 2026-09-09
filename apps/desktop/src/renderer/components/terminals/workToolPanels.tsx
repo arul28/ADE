@@ -195,7 +195,6 @@ function WorkTerminalTool({
       // Remount on a machine change so a foreign machine's tabs can never paint
       // into the machine you just switched to.
       key={`work-terminal:${runtimePin?.key ?? "bound"}:${terminalOwnerSessionId}`}
-      variant="panel"
       open
       onToggle={onClose}
       laneId={laneId}

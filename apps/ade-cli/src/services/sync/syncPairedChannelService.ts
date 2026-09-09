@@ -380,9 +380,19 @@ export function createSyncPairedChannelService<TPeer extends object>(
         // reopen. `fwd_data` has had this gate all along (see
         // `handleForwardSocketData`); the RPC writer was the one path without
         // it.
-        if (args.getBufferedAmount(peer) >= rpcBackpressureBytes) {
+        //
+        // The gate mirrors the forward path in both respects. It counts the
+        // payload we are about to add, because a single large response (a
+        // screenshot data URL, a wide artifact list) can cross the ceiling on
+        // its own from a buffer that was under it. And it is re-read between
+        // chunks, because a link that stalls part-way through a payload has to
+        // be caught before the rest of it is written. Only this channel is
+        // closed: forwards belong to the peer, not to this channel, and other
+        // lanes' live previews must not die because one response ran long.
+        const overBudget = (extraBytes: number): boolean =>
+          args.getBufferedAmount(peer) + extraBytes >= rpcBackpressureBytes;
+        if (overBudget(bytes.byteLength)) {
           closeRpc(peer, channelId, "Runtime RPC channel fell behind the sync connection.", true);
-          closePeerForwards(peer, "Runtime RPC channel fell behind the sync connection.", true);
           return;
         }
         for (let offset = 0; offset < bytes.byteLength; offset += RPC_DATA_CHUNK_BYTES) {
@@ -390,6 +400,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
             offset,
             Math.min(bytes.byteLength, offset + RPC_DATA_CHUNK_BYTES),
           );
+          if (offset > 0 && overBudget(chunk.byteLength)) {
+            closeRpc(peer, channelId, "Runtime RPC channel fell behind the sync connection.", true);
+            return;
+          }
           if (!args.send(peer, "rpc_data", {
             channelId,
             data: chunk.toString("base64"),

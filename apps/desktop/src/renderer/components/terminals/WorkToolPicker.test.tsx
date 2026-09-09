@@ -64,13 +64,13 @@ describe("WorkToolPicker", () => {
       />,
     );
 
-    // A tool with a status shows the status and NOT its blurb — never both.
+    // A tool with a status shows the status and NOT its hint — never both.
     expect(screen.getByText("Clean")).toBeTruthy();
     expect(screen.queryByText("Commit, push, rebase")).toBeNull();
     // A tool with nothing measured says what it is for, in four words.
     expect(screen.getByText("Drive a real browser")).toBeTruthy();
     expect(screen.getByText("Run a shell here")).toBeTruthy();
-    // Files has no blurb at all: the lane store always knows whether the
+    // Files has no hint at all: the lane store always knows whether the
     // worktree is dirty, so its slot is a status the pane never has to guess.
     expect(screen.getByText("Boot a simulator")).toBeTruthy();
   });
@@ -89,7 +89,7 @@ describe("WorkToolPicker", () => {
 
     const ios = cardFor("Simulator");
     expect(ios.disabled).toBe(true);
-    // The reason replaces the blurb rather than joining it.
+    // The reason replaces the hint rather than joining it.
     expect(screen.getByText("macOS only")).toBeTruthy();
     expect(screen.queryByText("Boot a simulator")).toBeNull();
     // Dimmed, not hidden: the tool still exists, it just cannot run here.

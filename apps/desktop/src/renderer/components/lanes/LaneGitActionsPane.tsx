@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -104,6 +104,55 @@ type LaneGitActionsCachedState = {
   conflictState: GitConflictState | null;
   stuckRebase: GitConflictState | null;
   updatedAtMs: number;
+};
+
+/**
+ * The two skins, side by side, instead of twenty inline `isPane ? … : …`.
+ *
+ * This component renders the same git surface twice: as the full-width Lanes
+ * PAGE, and as a column inside the Work tools pane. The difference is entirely
+ * chrome — every handler below is shared — but spelling it as a conditional at
+ * each of twenty `style={}` objects meant a reader had to grep the file to
+ * learn what "the pane skin" even IS, and each new visual decision added a
+ * twenty-first branch. One table, read once into `skin`.
+ *
+ * Structural differences (which ELEMENT renders, not which value it is given)
+ * stay as `isPane` branches in the JSX below: a table of JSX would not be more
+ * readable than the JSX.
+ */
+const SKIN = {
+  page: {
+    /** The commit toolbar strip. */
+    toolbarPadding: "6px 10px" as string,
+    toolbarBackground: COLORS.cardBg as string,
+    toolbarBorderBottom: `1px solid ${COLORS.border}`,
+    /** The Files/History grid below it. */
+    bodyPadding: 10 as string | number,
+    bodyGap: 10,
+    /** A section that draws its own faint fill rather than sitting on the pane. */
+    cardFill: { background: "rgba(255,255,255,0.03)" } as CSSProperties,
+    /** `SectionCard` chrome: the page keeps the card, the pane is flat. */
+    plain: false,
+    /** `CommitTimeline` draws its own header only on the page. */
+    hideTimelineHeader: false,
+    sectionLabelClass: undefined as string | undefined,
+    sectionLabelStyle: { padding: "0 8px 4px", ...LABEL_STYLE } as CSSProperties,
+    /** The page's label rank is uppercase mono; the pane's is sentence case. */
+    sectionLabel: (label: string, count: number) => `${label.toUpperCase()} (${count})`,
+  },
+  pane: {
+    toolbarPadding: "8px" as string,
+    toolbarBackground: "transparent" as string,
+    toolbarBorderBottom: "none",
+    bodyPadding: "0 8px 8px" as string | number,
+    bodyGap: 12,
+    cardFill: {} as CSSProperties,
+    plain: true,
+    hideTimelineHeader: true,
+    sectionLabelClass: WORK_TOOL_SECTION_LABEL_TEXT as string | undefined,
+    sectionLabelStyle: { padding: "0 8px 4px" } as CSSProperties,
+    sectionLabel: (label: string, count: number) => `${label} (${count})`,
+  },
 };
 
 const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
@@ -706,6 +755,7 @@ export function LaneGitActionsPane({
 }) {
   const navigate = useNavigate();
   const isPane = variant === "pane";
+  const skin = SKIN[variant];
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
@@ -2355,12 +2405,12 @@ export function LaneGitActionsPane({
           className="shrink-0"
           data-testid="action-toolbar"
           style={{
-            padding: isPane ? "8px" : "6px 10px",
+            padding: skin.toolbarPadding,
             display: "flex",
             flexDirection: "column",
             gap: 4,
-            background: isPane ? "transparent" : COLORS.cardBg,
-            borderBottom: isPane ? "none" : `1px solid ${COLORS.border}`,
+            background: skin.toolbarBackground,
+            borderBottom: skin.toolbarBorderBottom,
           }}
         >
           {isPane ? (
@@ -2880,8 +2930,8 @@ export function LaneGitActionsPane({
               : filesSectionIsEmpty
                 ? "auto minmax(0, 1fr)"
                 : "minmax(0, 1fr) minmax(0, 1fr)",
-            padding: isPane ? "0 8px 8px" : 10,
-            gap: isPane ? 12 : 10,
+            padding: skin.bodyPadding,
+            gap: skin.bodyGap,
             flex: "1 1 0",
             minWidth: 0,
             minHeight: 0,
@@ -2898,14 +2948,14 @@ export function LaneGitActionsPane({
                 : "Changed files. Stashes are saved snapshots below."
             }
             dataTestId="files-section"
-            plain={isPane}
+            plain={skin.plain}
             sectionStyle={{
               minHeight: 0,
               // `height: 100%` is what makes the section fill its row; in the
               // collapsed case the row IS the content, so filling it would put
               // the void back.
               ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
-              ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }),
+              ...skin.cardFill,
             }}
             headerStyle={{ background: "rgba(255,255,255,0.03)" }}
             bodyStyle={
@@ -2918,9 +2968,9 @@ export function LaneGitActionsPane({
                     display: "flex",
                     flexDirection: "column",
                     overflow: "hidden",
-                    ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }),
+                    ...skin.cardFill,
                   }
-                : { flex: 1, minHeight: 0, gap: 8, ...(isPane ? {} : { background: "rgba(255,255,255,0.03)" }) }
+                : { flex: 1, minHeight: 0, gap: 8, ...skin.cardFill }
             }
             aside={
               diffViewActive ? (
@@ -3258,10 +3308,10 @@ export function LaneGitActionsPane({
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div
-                    className={isPane ? WORK_TOOL_SECTION_LABEL_TEXT : undefined}
-                    style={isPane ? { padding: "0 8px 4px" } : { padding: "0 8px 4px", ...LABEL_STYLE }}
+                    className={skin.sectionLabelClass}
+                    style={skin.sectionLabelStyle}
                   >
-                    {isPane ? `Staged (${changes.staged.length})` : `STAGED (${changes.staged.length})`}
+                    {skin.sectionLabel("Staged", changes.staged.length)}
                   </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
@@ -3281,10 +3331,10 @@ export function LaneGitActionsPane({
               {changes.unstaged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div
-                    className={isPane ? WORK_TOOL_SECTION_LABEL_TEXT : undefined}
-                    style={isPane ? { padding: "0 8px 4px" } : { padding: "0 8px 4px", ...LABEL_STYLE }}
+                    className={skin.sectionLabelClass}
+                    style={skin.sectionLabelStyle}
                   >
-                    {isPane ? `Unstaged (${changes.unstaged.length})` : `UNSTAGED (${changes.unstaged.length})`}
+                    {skin.sectionLabel("Unstaged", changes.unstaged.length)}
                   </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
@@ -3321,13 +3371,13 @@ export function LaneGitActionsPane({
             title="History"
             description="Recent commits on this branch."
             dataTestId="history-section"
-            plain={isPane}
+            plain={skin.plain}
             sectionStyle={{ minHeight: 0, height: "100%" }}
             bodyStyle={{ flex: 1, minHeight: 0 }}
           >
             <div style={{ flex: 1, minHeight: 0 }}>
               <CommitTimeline
-                hideHeader={isPane}
+                hideHeader={skin.hideTimelineHeader}
                 laneId={laneId ?? null}
                 runtimePin={pin}
                 active={active}

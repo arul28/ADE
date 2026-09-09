@@ -689,16 +689,16 @@ Renderer surfaces:
   selection-driven diff), `files` (mounts `FilesTab` in `embedded` mode
   with the lane worktree pre-selected), `ios` (mounts
   `ChatIosSimulatorPanel` against the active lane), `app-control`
-  (mounts `ChatAppControlPanel`), and `pr` (mounts `ChatPrPane` for the
-  lane). Which tool is open persists **per lane**; open/closed and width
+  (mounts `ChatAppControlPanel`). Which tool is open persists **per lane**; open/closed and width
   stay per project. The pane hides the browser viewport whenever the user
   switches to another tool or closes the pane, by setting bounds to
   `{ x: 0, y: 0, width: 0, height: 0, visible: false }` and stopping any
   inspect mode. The browser is not lane-scoped: each ADE window owns its
   own tabs and active inspect state, while all windows share the same
   `persist:ade-browser` partition for authentication. On remote-bound Work
-  surfaces the local-only tools (browser, iOS, App Control) and `pr` render
-  as disabled cards explaining why, and an active tool that becomes
+  surfaces the local-only tools (`ios`, `app-control`) render as disabled
+  cards explaining why — the browser stays available, because a remote lane
+  drives this desktop's own browser window — and an active tool that becomes
   unavailable falls back to the picker. It still flows selections to the
   active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
@@ -1984,7 +1984,7 @@ in-memory reset stays separate.
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
   26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "files" |
-  "ios" | "app-control" | "pr" | null` (null = the picker page).
+  "ios" | "app-control" | null` (null = the picker page).
   `workSidebarTool` is read and written on the **lane** scope, falling back
   to the project scope when no lane is bound; the other two are always
   project-wide. Lane-scoped state uses a composite

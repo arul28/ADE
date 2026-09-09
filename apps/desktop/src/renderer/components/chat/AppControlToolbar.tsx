@@ -13,7 +13,11 @@ import type {
   AppControlTarget,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { CHROME_GHOST, CHROME_ICON_SIZE, CHROME_ROW_CLASS } from "./browser/browserChrome";
+import { CHROME_ICON_SIZE } from "./browser/browserChrome";
+import {
+  WORK_TOOL_CHROME_GHOST,
+  WORK_TOOL_CHROME_ROW_HEIGHT,
+} from "../terminals/workToolChrome";
 import { AppControlMenu, AppControlMenuItem, AppControlMenuLabel } from "./AppControlMenu";
 
 export type AppControlStatusTone = "idle" | "active" | "warn" | "muted" | "error";
@@ -129,7 +133,7 @@ export function AppControlToolbar({
   return (
     <div className={cn(
       "relative flex shrink-0 items-center gap-1 border-b border-white/[0.07] px-2",
-      CHROME_ROW_CLASS,
+      WORK_TOOL_CHROME_ROW_HEIGHT,
     )}>
       {/* App picker — the launch target, and everything that changes it. */}
       <AppControlMenu
@@ -435,7 +439,7 @@ export function AppControlToolbar({
           triggerIcon={<DotsThree size={CHROME_ICON_SIZE} weight="bold" />}
           showCaret={false}
           align="end"
-          triggerClassName={cn(CHROME_GHOST, "justify-center px-0")}
+          triggerClassName={cn(WORK_TOOL_CHROME_GHOST, "justify-center px-0")}
         >
           {renderOverflow}
         </AppControlMenu>

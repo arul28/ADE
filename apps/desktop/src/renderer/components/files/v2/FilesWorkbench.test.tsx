@@ -455,21 +455,33 @@ describe("FilesWorkbench", () => {
     await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
 
     const pane = () => screen.getByTestId("files-workbench-v2");
+    /*
+      Only one column SHOWS, but both stay mounted: the hidden one is `hidden`
+      + `inert`, not `null`. Unmounting disposed the Monaco editor on every
+      "Back to files", losing cursor, scroll, selection and folding (the text
+      model is registry-owned, so edits survived — nothing held on the editor
+      did) and paying a full re-create on the way back.
+    */
+    const tree = () => screen.getByTestId("files-tree-column");
+    const editor = () => screen.getByTestId("files-editor-column");
+    const hidden = (el: HTMLElement) => el.hasAttribute("inert") && el.className.includes("hidden");
+
     await waitFor(() => expect(pane().dataset.singleSurface).toBe("tree"));
-    // The tree is the whole pane; the editor column is not merely narrow, it is
-    // not mounted.
-    expect(screen.getByTestId("open-file")).toBeTruthy();
-    expect(screen.queryByTestId("tab-count")).toBeNull();
+    expect(hidden(tree())).toBe(false);
+    expect(hidden(editor())).toBe(true);
     expect(screen.queryByTestId("files-pane-back")).toBeNull();
 
     fireEvent.click(screen.getByTestId("open-file"));
     await waitFor(() => expect(pane().dataset.singleSurface).toBe("editor"));
+    expect(hidden(editor())).toBe(false);
+    expect(hidden(tree())).toBe(true);
     expect(screen.getByTestId("tab-count")).toBeTruthy();
-    expect(screen.queryByTestId("open-file")).toBeNull();
 
     fireEvent.click(screen.getByTestId("files-pane-back"));
     await waitFor(() => expect(pane().dataset.singleSurface).toBe("tree"));
-    expect(screen.getByTestId("open-file")).toBeTruthy();
+    expect(hidden(tree())).toBe(false);
+    // The editor column is still THERE, just parked — that is the whole point.
+    expect(screen.getByTestId("files-editor-column")).toBeTruthy();
   });
 
   it("keeps both surfaces side by side once the pane is wide enough", async () => {

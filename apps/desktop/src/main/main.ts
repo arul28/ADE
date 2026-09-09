@@ -148,6 +148,7 @@ import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
+import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
@@ -1718,6 +1719,10 @@ app.whenReady().then(async () => {
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
+  /** Native-menu commands (zoom, ⌘F, ⌘W) offered to the renderer before the app answers them. */
+  const appCommandSender = createAppCommandSender<BrowserWindow>({
+    hasRenderer: (windowId) => windowProjectRoots.has(windowId),
+  });
   const windowProjectTabRoots = new Map<number, Set<string>>();
   /**
    * Every local project root this window has actually opened during this
@@ -7584,50 +7589,44 @@ app.whenReady().then(async () => {
   };
 
   const installApplicationMenu = (): void => {
-    // Route menu/keyboard zoom through the renderer so it follows the same path
-    // as the in-app zoom counter (display %, persistence, macOS traffic-light
-    // inset). Falls back to the focused window when the click handler omits one
-    // (e.g. accelerator fired with no menu-provided window reference).
+    /**
+     * Every menu command the renderer gets first, on one route.
+     *
+     * Zoom (⌘+/−/0) follows the renderer so it takes the same path as the
+     * in-app zoom counter (display %, persistence, macOS traffic-light inset);
+     * ⌘F and ⌘W go down because Electron eats the accelerator in the browser
+     * process and the built-in browser's page has focus in a *different*
+     * WebContents, so a renderer keydown binding is shadowed on the packaged
+     * app while passing every jsdom test. The renderer decides
+     * (`lib/appCommandClaims`) and the app-wide default runs when nobody
+     * claims. See `appCommandDispatch.ts` for the fallback rules — a window
+     * with no ADE renderer, or one whose renderer cannot be shown to be alive,
+     * runs `fallback` instead of losing the keystroke.
+     */
+    const sendAppCommand = appCommandSender;
     const sendZoomCommand = (
       command: AppZoomCommand,
       browserWindow?: Electron.BaseWindow,
     ): void => {
-      const target =
+      sendAppCommand(
+        { kind: "zoom", command },
         browserWindow instanceof BrowserWindow
           ? browserWindow
-          : BrowserWindow.getFocusedWindow();
-      if (!target || target.isDestroyed()) return;
-      target.webContents.send(IPC.appZoomCommand, command);
+          : BrowserWindow.getFocusedWindow(),
+      );
     };
-    /**
-     * ⌘F and ⌘W, offered to the renderer before the app answers them.
-     *
-     * Same shape as the zoom route above and for the same reason: an
-     * accelerator is consumed in the browser process, and the built-in
-     * browser's page lives in a different WebContents, so a renderer keydown
-     * binding is shadowed on the packaged app while passing every jsdom test.
-     * The renderer decides (`lib/appMenuCommands`) and falls back to the
-     * app-wide default — nothing for Find, `appRequestWindowClose` for ⌘W —
-     * when no surface claims the command.
-     *
-     * A window we did not open (a DevTools window, a native panel) has no such
-     * renderer, so ⌘W there closes it directly rather than into the void.
-     */
     const sendMenuCommand = (
       command: AppMenuCommand,
       browserWindow: Electron.BaseWindow | undefined,
       fallback?: (win: BrowserWindow) => void,
     ): void => {
-      const target =
+      sendAppCommand(
+        { kind: "menu", command },
         browserWindow instanceof BrowserWindow
           ? browserWindow
-          : BrowserWindow.getFocusedWindow();
-      if (!target || target.isDestroyed()) return;
-      if (!windowProjectRoots.has(target.id)) {
-        fallback?.(target);
-        return;
-      }
-      target.webContents.send(IPC.appMenuCommand, command);
+          : BrowserWindow.getFocusedWindow(),
+        fallback,
+      );
     };
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"

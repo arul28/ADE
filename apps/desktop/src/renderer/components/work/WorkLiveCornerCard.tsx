@@ -468,14 +468,25 @@ export function WorkLiveCornerCard({
       frame = null;
       const hostRect = host.getBoundingClientRect();
       const obstructions: { top: number; bottom: number; height: number }[] = [];
+      const present = new Set<Element>();
       for (const element of root.querySelectorAll<HTMLElement>(WORK_LIVE_CARD_AVOID_SELECTOR)) {
         const rect = element.getBoundingClientRect();
         obstructions.push({ top: rect.top, bottom: rect.bottom, height: rect.height });
+        present.add(element);
         // Observed lazily: a composer that grows with a draft has to re-measure,
         // and one that has not been rendered yet cannot be observed up front.
         if (observed.has(element)) continue;
         observer.observe(element);
         observed.add(element);
+      }
+      // ...and unobserved as soon as it leaves. A `ResizeObserver` holds a
+      // strong reference to everything it watches, so a composer wrapper from a
+      // session the user switched away from could not be collected until
+      // `visible` next flipped — a slow leak across a long session.
+      for (const element of observed) {
+        if (present.has(element)) continue;
+        observer.unobserve(element);
+        observed.delete(element);
       }
       setBottomReserve(workLiveBottomReserve({
         host: { top: hostRect.top, bottom: hostRect.bottom, height: hostRect.height },

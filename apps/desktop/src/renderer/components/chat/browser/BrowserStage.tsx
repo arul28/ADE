@@ -55,6 +55,8 @@ export type BrowserLaunchpadGroup = {
   label: string;
   icon: "server" | "history";
   rows: BrowserLaunchpadRow[];
+  /** Group-level "drop all of these". Only groups the app remembers have one. */
+  onClear?: { label: string; run: () => void };
 };
 
 export type BrowserStageProps = {
@@ -122,6 +124,20 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
       <div className="flex items-center gap-2 px-1 text-[11px] font-medium text-muted-fg/75">
         {group.icon === "server" ? <RadioButton size={13} /> : <ClockCounterClockwise size={13} />}
         {group.label}
+        {group.onClear ? (
+          <button
+            type="button"
+            onClick={group.onClear.run}
+            className={cn(
+              "ml-auto rounded-md px-1.5 py-0.5 text-[11px] text-muted-fg/60",
+              "hover:bg-white/[0.06] hover:text-fg/85",
+              TOOLBAR_MOTION,
+              TOOLBAR_FOCUS,
+            )}
+          >
+            {group.onClear.label}
+          </button>
+        ) : null}
       </div>
       {/* One container, hairline-divided rows — not six floating cards. */}
       <div className="overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.07]">

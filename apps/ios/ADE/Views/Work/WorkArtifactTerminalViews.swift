@@ -17,6 +17,10 @@ final class WorkArtifactVideoPlayerModel: ObservableObject {
   }
 }
 
+/// The one AVKit player in the Work views. It carries no chrome of its own so
+/// that a caller wanting an inline card (fixed height, rounded) and a caller
+/// wanting a full-bleed proof page can both use it; the transcript adds its own
+/// via `.workArtifactInlineVideoChrome()`.
 struct WorkArtifactVideoPlayerView: View {
   let url: URL
   @StateObject var model: WorkArtifactVideoPlayerModel
@@ -28,11 +32,18 @@ struct WorkArtifactVideoPlayerView: View {
 
   var body: some View {
     VideoPlayer(player: model.player)
-      .frame(height: 220)
-      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
       .onChange(of: url) { _, newValue in
         model.update(url: newValue)
       }
+  }
+}
+
+extension View {
+  /// Inline-card chrome for a video in the chat transcript: the same fixed
+  /// height and corner radius the image branch beside it uses.
+  func workArtifactInlineVideoChrome() -> some View {
+    frame(height: 220)
+      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
   }
 }
 
@@ -96,9 +107,11 @@ struct WorkArtifactView: View {
             .accessibilityLabel("Open artifact image \(artifact.title)")
           case .video(let url):
             WorkArtifactVideoPlayerView(url: url)
+              .workArtifactInlineVideoChrome()
           case .remoteURL(let url):
             if artifact.artifactKind == "video_recording" {
               WorkArtifactVideoPlayerView(url: url)
+                .workArtifactInlineVideoChrome()
             } else {
               AsyncImage(url: url) { image in
                 image

@@ -87,7 +87,6 @@ describe("ChatTerminalDrawer", () => {
         onToggle={vi.fn()}
         laneId="lane-1"
         chatSessionId="chat-1"
-        variant="panel"
         autoCreateOnOpen={false}
       />,
     );
@@ -179,7 +178,6 @@ describe("ChatTerminalDrawer", () => {
         onToggle={vi.fn()}
         laneId="lane-1"
         chatSessionId="chat-1"
-        variant="panel"
         autoCreateOnOpen={false}
       />,
     );
@@ -216,7 +214,6 @@ describe("ChatTerminalDrawer", () => {
         onToggle={vi.fn()}
         laneId="lane-1"
         chatSessionId="chat-1"
-        variant="panel"
         autoCreateOnOpen={false}
       />,
     );
@@ -245,7 +242,6 @@ describe("ChatTerminalDrawer", () => {
           onToggle={vi.fn()}
           laneId="lane-1"
           chatSessionId="chat-1"
-          variant="panel"
           autoCreateOnOpen={false}
         />
       </>,
@@ -276,7 +272,6 @@ describe("ChatTerminalDrawer", () => {
         onToggle={vi.fn()}
         laneId="lane-1"
         chatSessionId="chat-1"
-        variant="panel"
         autoCreateOnOpen={false}
       />,
     );
@@ -309,7 +304,6 @@ describe("ChatTerminalDrawer", () => {
   it("uses the panel variant for CLI-owned attached terminals without a horizontal resize handle", async () => {
     const view = render(
       <ChatTerminalDrawer
-        variant="panel"
         open
         onToggle={vi.fn()}
         laneId="lane-1"
@@ -441,7 +435,10 @@ describe("ChatTerminalDrawer", () => {
     expect(screen.queryByText("First terminal")).toBeNull();
   });
 
-  it("resizes the drawer by dragging the resize handle", async () => {
+  it("fills its pane rather than carrying a draggable height of its own", async () => {
+    // There is one mode now. The bottom-drawer arm — a persisted pixel height
+    // and a resize gutter — had no caller left and is gone; the panel takes the
+    // height its pane gives it, and the pane's own splitter is the resize.
     const view = render(
       <ChatTerminalDrawer
         open
@@ -453,15 +450,9 @@ describe("ChatTerminalDrawer", () => {
     );
 
     await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
-    const drawer = view.container.firstElementChild as HTMLElement;
-    const handle = view.container.querySelector(".ade-tool-gutter.horizontal");
-    expect(handle).toBeTruthy();
-    expect(drawer.style.height).toBe("300px");
-
-    fireEvent.mouseDown(handle!, { clientY: 300 });
-    fireEvent.mouseMove(document, { clientY: 200 });
-    fireEvent.mouseUp(document);
-
-    expect(drawer.style.height).toBe("400px");
+    const panel = view.container.firstElementChild as HTMLElement;
+    expect(view.container.querySelector(".ade-tool-gutter.horizontal")).toBeNull();
+    expect(panel.style.height).toBe("");
+    expect(panel.className).toContain("h-full");
   });
 });

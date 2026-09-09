@@ -599,8 +599,8 @@ paints over the chat column and the window edge while you drag.
 
 The pane is a **picker page plus one active tool** — there is no tab
 strip and no multi-instance. The picker is a two-column grid of cards,
-one per tool, in the order Terminal, Browser, Git, Files, iOS
-Simulator, App Control
+one per tool, in the order Terminal, Browser, Git, Files, Simulator,
+App Control
 (`WorkToolPicker.tsx`, catalogue in `workTools.ts`). Each card carries
 the tool's icon, its name, one live status line, and a right-side dot
 that is filled when the tool has something running. Status comes only
@@ -615,9 +615,14 @@ skeleton for at most 300 ms while those reads settle
 
 A tool that cannot run in this context renders as a **disabled card with
 the reason as its status line** rather than disappearing: "Runs on this
-computer only" (browser / iOS / App Control on a remote project), "Desktop
-app only" (the same three in the hosted web client), and "macOS only" (iOS
-off a Mac). Availability is decided by
+computer only" (Simulator / App Control on a remote project), "Desktop
+app only" (Simulator in the hosted web client), and "macOS only"
+(Simulator off a Mac). Only those two tools are local-only — the browser
+is hosted by this desktop's main process and a remote lane drives that
+same window, so it stays available on remote lanes. In the hosted web
+client the browser and App Control render **read-only** — the tab list,
+attached app, and latest screenshot, with no way to drive them
+(`isReadOnlyWorkTool`). Availability is decided by
 capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
