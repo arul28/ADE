@@ -1622,6 +1622,17 @@ describe("product analytics producers", () => {
       action: "tool_opened",
       outcome: "tool_notebook",
     })).not.toHaveProperty("outcome");
+    // The retired PR tool. It was an allowed outcome until `pr` left
+    // `WORK_TOOL_IDS`; a stale writer (an older mirrored client, a
+    // hand-written call site) must now go anonymous rather than keep a
+    // dimension the product no longer has.
+    expect([...WORK_TOOL_IDS] as string[]).not.toContain("pr");
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "tool_opened",
+      outcome: "tool_pr",
+      source: "renderer_route",
+    })).not.toHaveProperty("outcome");
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
       action: "tool_opened",

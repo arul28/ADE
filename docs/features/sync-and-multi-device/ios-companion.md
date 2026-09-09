@@ -468,6 +468,12 @@ apps/ios/
 │   │   │                            #   44pt target, compact thumbnail/status,
 │   │   │                            #   expandable preview, and a friendly
 │   │   │                            #   unavailable fallback),
+│   │   │                            # WorkProofSheet (the Proof drawer: row
+│   │   │                            #   model, list, and full-screen paged
+│   │   │                            #   viewer, split out of
+│   │   │                            #   WorkArtifactTerminalViews),
+│   │   │                            # WorkPreviews (DEBUG-only fixture screens
+│   │   │                            #   + ADEPreviewScreenHost),
 │   │   │                            # TerminalSessionScreen + SwiftTermSessionView
 │   │   │                            #   (full-screen SwiftTerm terminal,
 │   │   │                            #   offset resume/history paging +
@@ -2542,7 +2548,10 @@ an empty "Tools ›" that opens onto "nothing here" is worse than no row.
 Tapping it opens `WorkToolsSheet.swift`: three cards in the order people
 ask about them — what the desktop has open now, with the last frame it
 captured; the browser's tabs; App Control's session — plus pull to
-refresh.
+refresh. Tool display names track the desktop catalogue, so `ios` reads
+**Simulator** (the icon is a phone and the availability rule already says
+macOS; the platform word was carrying nothing), and there is no `pr` tool
+name because the Work tools pane no longer has one.
 
 Refresh is a poll, not a subscription: the brain has no generic
 named-event channel to the phone (its push surface is cr-sqlite
@@ -2565,6 +2574,45 @@ them omits them and the phone hides the row instead of flipping the host
 into `limited` mode. Browser login handoff is surfaced read-only through
 `WorkToolsBrowserTab.handoffReason`. See
 [Chat › the Work tools pane on iOS and the hosted web client](../chat/README.md#the-work-tools-pane-on-ios-and-the-hosted-web-client).
+
+### The Proof sheet and viewer
+
+`WorkProofSheet.swift` is the phone's proof drawer, presented from the chat
+session view at `.medium`/`.large` detents with a drag indicator. It is a plain
+list of the chat's captured artifacts **newest first** (the host appends to the
+tail, so the sheet reverses it); a row is a thumbnail, a title, and one line of
+"kind · when". Refresh is pull-to-refresh only — nothing polls.
+
+`WorkProofRowModel` derives everything a row writes — title fallback (an empty
+title becomes the kind label), kind label, relative time, and the VoiceOver
+phrasing "Screenshot, Login page, 2m ago" — from the artifact alone and holds no
+view types, so the wording is unit-tested (`WorkProofRowModelTests.swift`).
+`workProofRelativeTime` is hand-rolled rather than
+`RelativeDateTimeFormatter` ("now", "2m ago", "3h ago", "4d ago") so a row reads
+the same short way at every Dynamic Type size and stays deterministic under
+test; a host clock running slightly ahead yields "now" rather than an error.
+
+Tapping a row opens `WorkProofViewer` full-screen: a `TabView` with **one page
+per artifact**, so the other captures are one swipe away — opened from a row it
+used to look like a single-artifact screen. Page dots appear only when there is
+somewhere to swipe to, in `.interactive` mode so they stay out of the way of the
+capture until the page actually moves. The caption position is 1-based and falls
+back to 1 when the selection has gone missing, so it can never contradict the
+page on screen. The nav bar floats over the capture (`ignoresSafeArea(.top)`)
+rather than shortening the screen the image is centred in, which used to push a
+tall screenshot's top edge under the title; images pinch/double-tap zoom on
+black, and video pages get their own player.
+
+### Fixture screens for simulator screenshots
+
+`WorkPreviews.swift` (DEBUG-only) holds in-process fixture data and
+`ADEPreviewScreenHost`. Launching with `-adePreviewScreen <name>` —
+`proof`, `proof-empty`, `proof-viewer`, or `tools` — renders that one screen
+full-bleed and starts **none** of the app's live machinery, so a simulator can
+screenshot a design change with no pairing, no brain, and no network. Absent the
+argument `ADEApp` is the normal app, and the whole branch is compiled out of
+release. `WorkToolsSheet` carries the matching `previewState` / `previewFrame`
+seam: when set, `refresh` installs them instead of asking the sync socket.
 
 ### Shipped
 

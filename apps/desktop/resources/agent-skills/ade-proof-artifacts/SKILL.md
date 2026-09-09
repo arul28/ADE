@@ -36,7 +36,9 @@ worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir
 (`$TMPDIR`, which on macOS resolves under `/var/folders`), the conventional temp
 dir `/tmp` (`/private/tmp` on macOS), and `~/.agent-browser`. Anywhere else —
 `~/Desktop`, `~/Downloads` — is rejected; copy the file into one of the roots
-first.
+first. `.ade/secrets` is denied even though it sits inside the project root, and
+both sides of that check are resolved through symlinks, so a link pointing into
+it is refused too.
 
 ## Which directory the call claims
 

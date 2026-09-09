@@ -282,6 +282,60 @@ async function showCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>
   return { ...view, card };
 }
 
+describe("WorkLiveCornerCard obstructions", () => {
+  it("stops watching an obstruction once it leaves the DOM", async () => {
+    /*
+      A14: obstructions were added to the `ResizeObserver` lazily and never
+      removed. A `ResizeObserver` holds a strong reference to everything it
+      watches, so composer wrappers from sessions the user switched away from
+      accumulated for as long as the card stayed visible — the effect only
+      re-ran on `visible`.
+    */
+    const observed: Element[] = [];
+    const unobserved: Element[] = [];
+    const notifiers: (() => void)[] = [];
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(private readonly callback: (entries: unknown[], observer: unknown) => void) {
+        notifiers.push(() => {
+          this.callback([{ target: document.body, contentRect: { width: 900, height: 600 } }], this);
+        });
+      }
+      observe(target: Element): void {
+        observed.push(target);
+        this.callback([{ target, contentRect: { width: 900, height: 600 } }], this);
+      }
+      unobserve(target: Element): void { unobserved.push(target); }
+      disconnect(): void {}
+    };
+
+    const { container } = render(
+      <NativeToolFeedsProvider active runtimePin={null}>
+        <div data-testid="obstruction-slot"><div data-chat-composer-wrapper="" /></div>
+        <WorkLiveCornerCard
+          active
+          laneId="lane-1"
+          activeTool="git"
+          runtimePin={null}
+          onPick={vi.fn()}
+        />
+      </NativeToolFeedsProvider>,
+    );
+
+    const composer = container.querySelector("[data-chat-composer-wrapper]");
+    expect(composer, "the composer the card measures against").toBeTruthy();
+    await waitFor(() => expect(observed).toContain(composer));
+    expect(unobserved).not.toContain(composer);
+
+    // The session switches away and its composer is torn down.
+    act(() => { composer?.remove(); });
+    act(() => { for (const notify of notifiers) notify(); });
+    await waitFor(() => expect(unobserved).toContain(composer));
+    // Only the detached child was released — the card's own host stays watched,
+    // because a card that stopped measuring itself would stop laying out.
+    expect(unobserved).toEqual([composer]);
+  });
+});
+
 describe("WorkLiveCornerCard placement", () => {
   it("restores a persisted position instead of always parking bottom-right", async () => {
     seedProject();

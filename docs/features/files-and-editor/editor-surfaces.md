@@ -202,6 +202,29 @@ branch, and dirty state.
 
 ## Monaco Model Lifecycle
 
+### ADE's own Monaco themes
+
+`monacoLoader.ts` defines `ade-dark` and `ade-light` (`ADE_MONACO_DARK_THEME` /
+`ADE_MONACO_LIGHT_THEME`, selected by `adeMonacoTheme(theme)`) rather than using
+stock `vs` / `vs-dark`. They inherit their base's tokenization and override only
+the surfaces — editor, gutter, sticky scroll and its hover, minimap, and overview
+ruler — so the editor sits on the same background as the pane around it instead
+of a near-black rectangle inside a themed panel. The two surface colours are
+literals (`#16141E`, `#faf8f5`) rather than a read of the live `--color-surface`
+token, because `defineAdeThemes` runs once inside the memoized `monacoInit`
+promise and a token read would freeze *both* themes to whichever was active when
+the first editor opened. Keep them in step with `index.css`.
+
+### ⌘F belongs to whoever has focus
+
+Monaco's own ⌘F keybinding never fires on the packaged app: ⌘F is a native menu
+accelerator that Electron consumes in the browser process. `CodeViewer` claims
+the `find` app-menu command instead (`lib/appMenuCommands.ts`) and runs the same
+`actions.find` Monaco would have — but only when the editor host is connected,
+not inside an `inert` single-surface column, and actually focused. Declining
+leaves the chord to whoever does own it (the built-in browser's find bar), or to
+nothing.
+
 `monacoModelRegistry.ts` keeps one Monaco text model per
 workspace-relative path. Switching tabs calls `editor.setModel(existing)`
 instead of dispose/recreate, preserving tokenization and undo stacks.
@@ -299,6 +322,26 @@ next `CodeViewer` mount jumps to the matching line.
 service calls, editor groups, viewers, tree behavior, and search as the
 standalone route, but uses a narrower explorer column, compact explorer
 controls, and no workspace picker.
+
+Embedded chrome is the pane's shared vocabulary, not a second one: the
+surviving controls collapse into a single `WORK_TOOL_CHROME_ROW` carrying the
+file-path breadcrumb, and `MonochromeFileIconsContext` is provided `true` so
+every file glyph paints `COLORS.textMuted` instead of its catalogue colour
+(`useFileIconColor` returns the mapper once per component, because most callers
+spend it inside a `.map()` where a hook cannot go).
+
+### Single-surface mode below 520 px
+
+Below `EMBEDDED_SINGLE_SURFACE_PX` (520) the 220 px tree and the editor beside
+it are each too narrow to read, so the embedded workbench shows **one surface at
+a time**, tracked as `embeddedSurface` (`"tree" | "editor"`) and exposed on the
+root as `data-single-surface`. The tree shows until a file is open; the editor
+then takes the pane with a "Back to files" crumb as the one way back — a crumb,
+not a tab bar, because there is only one other screen. The inactive column stays
+**mounted but `inert`**, which preserves scroll position and Monaco models; any
+focus-sensitive claim must therefore check `closest("[inert]")` before answering,
+as `CodeViewer`'s ⌘F claim does. Above the threshold the pane is the ordinary
+two-column grid (`220px 1fr` embedded, `260px 1fr` standalone).
 
 `FilesTab` / `FilesWorkbench` take an optional `pin` — the machine the files
 live on, for hosts that already know it is not this tab's machine (the Work

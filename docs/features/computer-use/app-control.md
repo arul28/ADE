@@ -116,6 +116,24 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - **Inspect** — overlays a DevTools-style outline on the screenshot or live frame. Hovering calls backend `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
 
   Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.
+
+  **Pane chrome.** The panel spends the shared Work-tool vocabulary
+  (`terminals/workToolChrome.tsx`): one 40 px row of ghost controls under the
+  pane header, and the stage — the screencast frame or the snapshot — inset
+  8 px inside a 10 px-radius surface with a 1 px inset ring, so the pane frames
+  the app instead of letting it bleed into the chrome. Overlays (the
+  attention/permission scrim, the empty state) are aligned to that inset edge
+  rather than the pane's own. `AppControlToolbar.tsx` owns the row: the app
+  picker (`APP_PICKER_WIDTH_CLASS`, wide enough for a real app name and narrow
+  enough to leave a 280 px pane room for the status and the ⋯ menu), a status
+  dot, and window segments past `MAX_WINDOW_SEGMENTS` (3) folded into a
+  "Windows…" menu. A 2 px **progress bar** rides the bottom of the row while a
+  connect or attach is in flight: attaching to a renderer takes as long as a
+  page load and used to be reported only by a spinner inside whichever menu you
+  happened to have open, so from the pane you could not tell "working" from
+  "wedged". Like the browser's, it races out and parks at 90 %, because neither
+  surface knows a real percentage; under `prefers-reduced-motion` it is a static
+  full bar.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus(chatRuntimePin)` to gate the header toggle on platform support only when lane tool drawers are visible. Support is a property of the machine the chat runs on, so it asks that machine; skipping the probe for a remote project left the toggle permanently hidden, and hiding the toggle is what kept the panel from ever opening to un-skip it. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat App Control drawer toggle and status poll are suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel as the `app-control` tool, keyed `work-appcontrol:<pinKey>` so a machine switch remounts it. The pane's shared status reads (`useWorkToolStatuses`) run one pinned `appControl.getStatus` / `onEvent` pair against the same machine for as long as the pane is open — feeding the picker card, the header's activity dots, and the mismatch banner — skipped entirely when that machine is known offline or App Control cannot run here. Lane names in its messages resolve against the pinned machine's lanes, since a foreign chat's lane is absent from the tab-bound lane list. When the active session's `laneId` differs from the pane's active lane it shows a `WarningBanner` ("App Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
 - `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` reads `AppControlSession` to decorate the App Control launch terminal tab with a status tone (`active` / `warn` / `error`).

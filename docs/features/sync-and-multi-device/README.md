@@ -993,6 +993,38 @@ Runtime support files outside `services/sync/`:
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
   reset stale cursors when a daemon restarts or history was evicted.
+- `apps/ade-cli/src/runtimeEventVolume.ts` — the one predicate for "this
+  runtime event carries a video frame, not a state change"
+  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events). App
+  Control's screencast is a CDP `Page.screencastFrame` pass-through at up to
+  1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at monitor
+  refresh, pushed whenever a session is attached whether or not anything is
+  watching. On a local socket that is merely wasteful; over a paired sync
+  transport it is fatal, because runtime RPC rides `rpc_data`, a **required**
+  send the host buffers rather than drops, so the peer was closed with 4001
+  "Required sync response backpressured" the moment `bufferedAmount` passed
+  16 MiB — roughly every ten seconds for a desktop bound to a remote runtime
+  with the Work tab open. The frames were not even rendered, since App Control
+  is reported unavailable for a remote project. Frames are therefore **opt-in
+  per subscription**: a subscriber that can actually paint them (a desktop on
+  its own local runtime) asks for them, and nobody else pays. Skipping is the
+  only correct response to a frame nobody asked for — a queued stale frame is
+  worse than none, because the next one is already better.
+- `apps/ade-cli/src/services/sync/syncStatusEventPublisher.ts` — coalescing
+  publisher for `sync-status` runtime events. Every status transition was
+  pushed straight onto the runtime event buffer carrying a full ~5 KB
+  `SyncRoleSnapshot`, so a connection storm (a peer reconnecting in a loop,
+  route arbitration retrying, a tunnel flapping) produced hundreds a second and
+  half a megabyte of status per 100-event poll — down the same `rpc_data`
+  backpressure path above, which reconnected, which produced more status. A
+  status snapshot is last-writer-wins state, not a log, so this drops both
+  redundancy and backlog: a snapshot equal to the last published is discarded
+  outright, and one arriving inside the `SYNC_STATUS_PUBLISH_INTERVAL_MS`
+  (250 ms) window replaces whatever was waiting so exactly one — the newest —
+  goes out when the window ends. The first snapshot in an idle period is
+  published immediately, so a real status change seconds apart is not delayed
+  at all. An unserializable snapshot can never be proven identical and is
+  always treated as new rather than silently swallowed.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
   surface for `projects.*`, `sync.*` (including `sync.runSelfProbe`, which
   resolves the active sync host and runs the tunnel client's relay end-to-end

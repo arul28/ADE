@@ -126,20 +126,18 @@ struct WorkToolsSheet: View {
   private var browserCard: some View {
     ADEGlassSection(title: "Browser", subtitle: browserSubtitle) {
       if let reason = handoffReason {
-        // The lane is not stuck, it is waiting on a person. Say so first —
-        // read-only, because the sign-in has to happen in the desktop browser.
-        HStack(alignment: .top, spacing: 8) {
+        // The lane is not stuck, it is waiting on a person. One line, worded
+        // exactly like the desktop's handoff bar (`BrowserHandoffBar`) — the
+        // phone is describing that bar, so it must not invent a second
+        // sentence for the same state. Read-only here: the sign-in has to
+        // happen in the desktop browser.
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
           Image(systemName: "hand.raised.fill")
-            .font(.caption)
+            .font(.caption2)
             .foregroundStyle(ADEColor.warning)
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Agent is waiting for you to sign in on the desktop")
-              .font(.footnote.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text(reason)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
+          Text("Agent needs you to sign in · “\(reason)”")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 8)

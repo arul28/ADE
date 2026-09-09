@@ -756,18 +756,22 @@ Renderer surfaces:
   path carries no machine.
 - `apps/desktop/src/renderer/components/terminals/workTools.ts` — the tool
   catalogue and the capability rules: `WORK_TOOL_DEFINITIONS` (order, icon,
-  label, header context string), `workToolAvailability` (available, or a
-  reason: local-only, desktop-only, macOS-only, "Open the PRs tab for remote
-  projects"), and `isReadOnlyWorkTool` for the hosted web client. Availability
-  is decided from capability flags, never `process.platform` — the web client
-  renders the same components.
+  label, a three-to-five-word `hint` for a tool that has measured nothing yet,
+  and a `contextLabel` rule for the header's one fact), `workToolAvailability`
+  (available, or a reason: local-only, desktop-only, macOS-only), and
+  `isReadOnlyWorkTool` for the hosted web client. Six tools, no Pull request
+  tool — PRs have their own tab. Availability is decided from capability flags,
+  never `process.platform` — the web client renders the same components.
 - `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
   `WorkToolHeader.tsx`, `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
-  the pane's two pages and the panel mounts. The picker is a two-column grid
-  of cards with one live status line each; the header is the 36 px bar with
-  the `⊞ Tools` button, the tool's icon/name/context, the other tools'
-  activity dots, and ✕; the read-only view replaces the browser and App
-  Control panels on the hosted web client; `workToolPanels.tsx` is one component per
+  the pane's two pages and the panel mounts. The picker is one centred 512 px
+  column of flat cards — name plus one line, which is the tool's measured
+  status, else its catalogue `hint`, else the reason it cannot run here — and
+  the only mark a card carries is a red dot for a broken tool; the header is
+  the 36 px bar with the `⊞ Tools` button, the tool's icon/name/context, the
+  other tools' state-coloured activity dots, and ✕; the read-only view replaces
+  the browser and App Control panels on the hosted web client;
+  `workToolPanels.tsx` is one component per
   tool id, replacing a 270-line `useMemo` in `WorkSidebar` that dispatched
   through seven sequential `if` blocks over a 28-entry dependency array and
   could never memoize; each panel now takes the same explicit props object,
@@ -781,6 +785,21 @@ Renderer surfaces:
   surfaces outside the Work page file instead of writing pane state directly,
   the pushed-diagnostics fold behind the red activity dots, and the two-unit
   splitter clamp.
+- `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
+  chrome vocabulary every tool panel spends instead of inventing: a single
+  40 px row per tool under the pane's 36 px header, ghost controls that change
+  fill only over 120 ms, an inset focus hairline, 16 px icons, no sentences in
+  the row, and an 8 px inset / 10 px radius / 1 px inset ring around any
+  content that is its own surface. The browser composes its own row and App
+  Control draws a bordered variant; both spend these constants.
+- `apps/desktop/src/renderer/components/terminals/workTerminalShells.ts` — the
+  shell count the terminal panel publishes for the pane header and picker. The
+  panel is the only thing that knows how many shells are on screen, so it says
+  so: one number per owning session, a plain subscription, no polling and no
+  IPC. The pane's own `terminal.list` read disagreed in both directions (a
+  just-opened shell was still absent from the daemon's list, a finished split
+  pane was filtered out of it). When no panel is mounted the count is absent
+  and the pane falls back to its own read.
 - `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`,
   `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
   subscription set, mounted once by `TerminalsPage` and shared with both the

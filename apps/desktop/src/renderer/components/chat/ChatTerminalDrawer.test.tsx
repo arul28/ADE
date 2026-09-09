@@ -198,6 +198,45 @@ describe("ChatTerminalDrawer", () => {
     expect(window.ade.pty.dispose).toHaveBeenCalled();
   });
 
+  it("splits again on one click after the split pane's own pill was activated", async () => {
+    /*
+      A13: clicking the split shell's pill makes it active, which retires the
+      second pane while leaving `splitTabId` truthy. Gating the toggle on the
+      raw id then read "a split is showing" and turned the next click into a
+      no-op toggle-off of something nobody could see — the button had already
+      relabelled itself "Split", so the user had to click it twice.
+    */
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "First terminal", status: "running" },
+      { terminalId: "terminal-2", ptyId: "pty-2", title: "Second terminal", status: "running" },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+
+    // Activate the split shell itself. One pane again — the same runtime
+    // cannot fill both — but the stale split id is still on state.
+    fireEvent.click(screen.getByText("Second terminal"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(1));
+
+    // ONE click brings the split back. No new PTY: the spare tab is reused.
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    expect(window.ade.pty.create).not.toHaveBeenCalled();
+  });
+
   it("opens a second shell when splitting with nothing to split against", async () => {
     vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
       {

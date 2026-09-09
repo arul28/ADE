@@ -274,8 +274,13 @@ Proof surfaces across chat and linked workflow contexts:
   collection view, not an approval workflow: there are no
   accept/reject/publish controls and local files are never handed to Finder
   just to see them.
-- **iOS chat** — proof stays in the message timeline and the existing artifact
-  sheet, with preview/share actions but no review-state chrome.
+- **iOS chat** — proof stays in the message timeline, and the Proof sheet
+  (`WorkProofSheet.swift`) is the phone's drawer: the chat's artifacts newest
+  first, each row a thumbnail plus "kind · when", pull-to-refresh only. Tapping
+  a row opens a full-screen viewer with **one page per artifact**, so the rest
+  of the set is one swipe away; page dots show only when there is somewhere to
+  swipe. Preview/share actions, no review-state chrome. See
+  [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the

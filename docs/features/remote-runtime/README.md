@@ -664,7 +664,25 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     the request, runs it through the same approval + forward path, and answers
     with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
     CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
-    wait, "no desktop is attached to this machine". Only navigation forwards;
+    wait, "no desktop is attached to this machine".
+
+    **One request, one answering panel.** The daemon publishes the request to
+    every desktop panel pinned to that machine. A request naming a lane or a
+    chat is filtered by the panels themselves, but one naming neither belongs to
+    whichever panel is willing to take it — which was every panel at once, so
+    two ADE windows both showing the Browser tool for the same machine both
+    navigated and both acked, opening the URL twice and landing the second ack
+    on a requestId nobody was waiting on. The racing panels live in different
+    renderers, so arbitration happens in the one process they share:
+    `main/services/builtInBrowser/remoteRequestClaims.ts` grants the first
+    claim for an id and refuses every later one. Claimed ids are remembered for
+    `REMOTE_REQUEST_CLAIM_TTL_MS` (60 s — long enough to outlive the requester's
+    own 5 s timeout and any retry, short enough that a week-old desktop is not
+    holding a day of ids), capped at `REMOTE_REQUEST_CLAIM_MAX` (500) with the
+    oldest evicted first. A request carrying no usable id cannot be arbitrated
+    and is let through, so an older daemon's unlabelled request stays answerable.
+
+    Only navigation forwards;
     `observe` / `click` and the rest act on a specific live tab and still fail,
     with an error that says where the browser runs.
   - **Read caches are namespaced by binding.** The preload process is shared by

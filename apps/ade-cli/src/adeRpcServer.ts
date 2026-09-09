@@ -574,7 +574,7 @@ const TOOL_SPECS: ToolSpec[] = [
               kind: { type: "string" },
               title: { type: "string" },
               description: { type: "string" },
-              path: { type: "string" },
+              path: { type: "string", description: "File to import, absolute or relative to callerRoot. Only these roots are importable: the project root, the lane worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp dir, /tmp (non-Windows), and ~/.agent-browser. .ade/secrets is denied, symlinks included; copy the file into an allowed root instead." },
               uri: { type: "string" },
               text: { type: "string" },
               json: {},

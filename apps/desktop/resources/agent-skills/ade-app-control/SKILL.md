@@ -66,6 +66,13 @@ Register visual evidence for the Work row with:
 ade --socket app-control proof --caption "Settings saved" --text
 ```
 
+To file a file you produced some other way, use `ade proof attach <path>
+--caption "…" --text`. It imports only from the project root, the lane worktree,
+`.ade/{artifacts,cache,tmp}`, the OS temp dir, `/tmp`, and `~/.agent-browser`
+(`.ade/secrets` is denied), and it ends with a confirmation line naming the lane
+and chat it filed under — read that line before reporting proof. The
+**ade-proof-artifacts** skill has the details.
+
 ## Windows and drivers
 
 ```bash

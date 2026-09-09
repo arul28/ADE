@@ -2444,6 +2444,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Windows), the conventional \`/tmp\` (\`/private/tmp\` on macOS; not a root on
   Windows), and ~/.agent-browser.
 
+  \`.ade/secrets\` is denied even though it sits under the project root, and the
+  check resolves symlinks on both sides — a link pointing into it is refused
+  too. Anywhere else (~/Desktop, ~/Downloads) is rejected: copy the file into
+  one of the roots above and retry.
+
   Which directory the call claims
 
   \`ADE_WORKSPACE_ROOT\` (the lane worktree) wins over the shell cwd, and with
@@ -2639,6 +2644,18 @@ const HELP_BY_COMMAND: Record<string, string> = {
   lane. An empty list means nothing printed a line ADE recognised, not that
   nothing is listening — start the server in an ADE shell, or just open the URL.
 
+  No desktop on this machine
+
+  When this machine has no ADE window, "open"/"new-tab"/"panel" are forwarded to
+  a desktop that has this lane pinned, which reaches this machine's localhost
+  over a TCP port-forward. The result prints "opened: on <desktop> via tunnel",
+  or "waiting for approval on <desktop> — reaching this port needs a yes in ADE"
+  the first time you name a port the human has not allowed, or "no desktop is
+  attached to this machine…" when nobody answered inside 5 seconds. All three
+  exit 0: the approval one means "asked, not yet loaded" — the page opens when
+  they click Allow, so do not re-issue the open to retry it. Page actions
+  (observe/click/fill/screenshot) are not forwarded and still fail here.
+
   Login handoff (you cannot sign in; a person must):
     $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
@@ -2741,6 +2758,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --width/--height <n> Custom emulation viewport for browser emulate.
     --scale <n>          Device scale factor for browser emulate.
     --factor <n>         Zoom factor for browser zoom (clamped 0.25-5).
+    --query, --find <text>
+                         Search text for browser find; the trailing positional
+                         works too ("browser find --tab <id> checkout").
+    --match-case         Case-sensitive browser find; alias: --case-sensitive.
+    --backward           Search upwards for browser find; aliases: --previous, --prev.
+    --next               Advance to the next hit of the current browser find
+                         instead of starting a new search; alias: --find-next.
     --mode <dock>        DevTools dock mode for browser devtools: right, bottom, detach.
     --filter <text>      Substring filter for browser network/har entries.
     --failed             Only failed/4xx-5xx entries for browser network/har.

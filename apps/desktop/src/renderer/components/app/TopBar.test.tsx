@@ -2329,7 +2329,8 @@ describe("TopBar", () => {
     expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
   });
 
-  // The native View-menu zoom items dispatch an appZoomCommand that the renderer
+  // The native View-menu zoom items dispatch a zoom command on the unified
+  // `IPC.appCommand` channel that the renderer
   // routes through the same applyZoom path as the in-app zoom counter, so the
   // applied level and persistence stay consistent. displayZoomToLevel is mocked
   // as identity, so setLevel receives the display percentage directly; the
