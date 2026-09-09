@@ -57,6 +57,14 @@ describe("sanitizeBrowserRecentFaviconUrl", () => {
     const fat = `data:image/png;base64,${"A".repeat(BROWSER_RECENT_FAVICON_MAX_BYTES)}`;
     expect(sanitizeBrowserRecentFaviconUrl(fat)).toBeNull();
   });
+
+  it("admits the largest icon main can inline", () => {
+    // Main fetches at most 64KB of image bytes through the tab session and
+    // republishes them as data, so the cap here has to clear that after base64
+    // expansion or the launchpad would refuse exactly the icons it just gained.
+    const inlined = `data:image/png;base64,${Buffer.alloc(64 * 1024, 1).toString("base64")}`;
+    expect(sanitizeBrowserRecentFaviconUrl(inlined)).toBe(inlined);
+  });
 });
 
 describe("cleanBrowserRecentTitle", () => {

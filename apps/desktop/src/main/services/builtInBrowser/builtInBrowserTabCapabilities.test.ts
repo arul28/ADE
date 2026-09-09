@@ -152,11 +152,20 @@ const fakes = vi.hoisted(() => {
   }
 
   const sessions = new Map<string, Record<string, unknown>>();
+  const sessionFetchCalls: string[] = [];
+  let sessionFetchImpl:
+    | ((url: string, init?: Record<string, unknown>) => Promise<unknown>)
+    | null = null;
   const sessionForPartition = (partition: string): Record<string, unknown> => {
     const existing = sessions.get(partition);
     if (existing) return existing;
     const next: Record<string, unknown> = {
       cookies: { flushStore: async () => undefined, get: async () => [] },
+      fetch: async (url: string, init?: Record<string, unknown>): Promise<unknown> => {
+        sessionFetchCalls.push(url);
+        if (!sessionFetchImpl) throw new Error("no session fetch stub installed");
+        return sessionFetchImpl(url, init);
+      },
       flushStorageData: () => undefined,
       getCacheSize: async () => 0,
       webRequest: {
@@ -182,6 +191,12 @@ const fakes = vi.hoisted(() => {
     webContentsInstances,
     sentCommands,
     sessionForPartition,
+    sessionFetchCalls,
+    setSessionFetch: (
+      impl: ((url: string, init?: Record<string, unknown>) => Promise<unknown>) | null,
+    ) => {
+      sessionFetchImpl = impl;
+    },
     appGetPath: (name: string) => (name === "downloads" ? "/tmp/downloads" : userDataPath),
     setUserDataPath: (next: string) => {
       userDataPath = next;
@@ -193,6 +208,8 @@ const fakes = vi.hoisted(() => {
       webContentsInstances.length = 0;
       sentCommands.length = 0;
       sessions.clear();
+      sessionFetchCalls.length = 0;
+      sessionFetchImpl = null;
       sendCommandImpl = async (method, params) => {
         sentCommands.push({ method, params });
         return {};
@@ -434,6 +451,148 @@ describe("built-in browser favicons", () => {
     wc.emit("page-favicon-updated", {}, ["http://localhost:4000/favicon.ico"]);
     wc.emit("did-navigate", {}, "http://localhost:4000/about");
     expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:4000/favicon.ico");
+  });
+});
+
+/**
+ * The renderer draws favicons under a CSP whose `img-src` is a fixed host list,
+ * so a real site's icon URL is simply blocked there. Main pulls the bytes
+ * through the tab's own session instead and republishes the icon as data in the
+ * same `faviconUrl` field — these cover the fetch, its refusals, and the cache.
+ */
+describe("built-in browser favicon inlining", () => {
+  const PNG = Buffer.from("89504e470d0a1a0a", "hex");
+
+  function faviconResponse(options?: {
+    body?: Buffer;
+    contentType?: string | null;
+    contentLength?: string | null;
+    ok?: boolean;
+  }): unknown {
+    const body = options?.body ?? PNG;
+    const contentType = options?.contentType === undefined ? "image/png" : options.contentType;
+    const contentLength = options?.contentLength === undefined
+      ? String(body.byteLength)
+      : options.contentLength;
+    return {
+      ok: options?.ok ?? true,
+      headers: {
+        get: (name: string): string | null => {
+          const key = name.toLowerCase();
+          if (key === "content-type") return contentType;
+          if (key === "content-length") return contentLength;
+          return null;
+        },
+      },
+      arrayBuffer: async (): Promise<ArrayBuffer> =>
+        body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
+    };
+  }
+
+  async function faviconAfter(
+    service: Awaited<ReturnType<typeof serviceWithTab>>["service"],
+    expected: string,
+  ): Promise<void> {
+    await vi.waitFor(() => {
+      expect(service.getStatus().tabs[0]?.faviconUrl).toBe(expected);
+    });
+  }
+
+  it("republishes the icon as a data URL fetched through the tab session", async () => {
+    fakes.setSessionFetch(async () => faviconResponse());
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+
+    wc.emit("page-favicon-updated", {}, ["http://localhost:5173/favicon.ico"]);
+
+    // The raw URL is published immediately so the pane never waits on a network
+    // round trip, then swapped for the bytes.
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:5173/favicon.ico");
+    await faviconAfter(service, `data:image/png;base64,${PNG.toString("base64")}`);
+    expect(fakes.sessionFetchCalls).toEqual(["http://localhost:5173/favicon.ico"]);
+  });
+
+  it("keeps the raw URL when the icon is not an image, fails, or is oversized", async () => {
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    const raw = "http://localhost:5173/favicon.ico";
+
+    // An HTML error page served with a 200 is not an icon.
+    fakes.setSessionFetch(async () => faviconResponse({ contentType: "text/html" }));
+    wc.emit("page-favicon-updated", {}, [raw]);
+    await vi.waitFor(() => expect(fakes.sessionFetchCalls.length).toBe(1));
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe(raw);
+
+    // A 404.
+    fakes.setSessionFetch(async () => faviconResponse({ ok: false }));
+    wc.emit("did-navigate", {}, "http://localhost:5174/");
+    wc.emit("page-favicon-updated", {}, ["http://localhost:5174/favicon.ico"]);
+    await vi.waitFor(() => expect(fakes.sessionFetchCalls.length).toBe(2));
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:5174/favicon.ico");
+
+    // A sprite sheet wearing an icon URL: refused on the declared length, and
+    // refused again on the real length when the header lies.
+    const fat = Buffer.alloc(65 * 1024, 1);
+    fakes.setSessionFetch(async () => faviconResponse({ body: fat, contentLength: "12" }));
+    wc.emit("did-navigate", {}, "http://localhost:5175/");
+    wc.emit("page-favicon-updated", {}, ["http://localhost:5175/favicon.ico"]);
+    await vi.waitFor(() => expect(fakes.sessionFetchCalls.length).toBe(3));
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:5175/favicon.ico");
+  });
+
+  it("keeps the raw URL when the fetch never answers", async () => {
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+    fakes.setSessionFetch(() => new Promise(() => undefined));
+
+    vi.useFakeTimers();
+    try {
+      wc.emit("page-favicon-updated", {}, ["http://localhost:5173/favicon.ico"]);
+      await vi.advanceTimersByTimeAsync(6_000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(service.getStatus().tabs[0]?.faviconUrl).toBe("http://localhost:5173/favicon.ico");
+  });
+
+  it("never fetches an icon the recents list would refuse to store", async () => {
+    fakes.setSessionFetch(async () => faviconResponse());
+    const { service } = await serviceWithTab();
+    const wc = fakes.webContentsInstances[0]!;
+
+    // An ephemeral loopback port is a dead tunnel, not a dev server.
+    wc.emit("page-favicon-updated", {}, ["http://127.0.0.1:52413/favicon.ico"]);
+    // A credential in the icon's query would be inlined and then stored.
+    wc.emit("did-navigate", {}, "https://example.com/");
+    wc.emit("page-favicon-updated", {}, ["https://example.com/i.png?access_token=abc"]);
+
+    await vi.waitFor(() => {
+      expect(service.getStatus().tabs[0]?.faviconUrl)
+        .toBe("https://example.com/i.png?access_token=abc");
+    });
+    expect(fakes.sessionFetchCalls).toEqual([]);
+  });
+
+  it("fetches an origin's icon once and serves later tabs from the cache", async () => {
+    fakes.setSessionFetch(async () => faviconResponse());
+    const { service } = await serviceWithTab();
+    const first = fakes.webContentsInstances[0]!;
+    const inlined = `data:image/png;base64,${PNG.toString("base64")}`;
+
+    first.emit("page-favicon-updated", {}, ["http://localhost:5173/favicon.ico"]);
+    await faviconAfter(service, inlined);
+
+    await service.createTab({});
+    const second = fakes.webContentsInstances[1]!;
+    second.currentUrl = "http://localhost:5173/other";
+    second.emit("did-navigate", {}, "http://localhost:5173/other");
+    second.emit("page-favicon-updated", {}, ["http://localhost:5173/favicon.ico"]);
+
+    await vi.waitFor(() => {
+      expect(service.getStatus().tabs[1]?.faviconUrl).toBe(inlined);
+    });
+    expect(fakes.sessionFetchCalls).toEqual(["http://localhost:5173/favicon.ico"]);
   });
 });
 

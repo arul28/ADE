@@ -47,6 +47,23 @@ const DEFAULT_PORT_BY_PROTOCOL: Record<string, number> = {
 };
 
 /**
+ * Above this, a loopback port was handed out by the OS rather than chosen.
+ *
+ * A chat pinned to another machine reaches that machine's `localhost:3000`
+ * through an ephemeral TCP forward, so the browser really loads something like
+ * `http://127.0.0.1:52413`. That origin dies with the transport, and the OS is
+ * free to hand the same number to an unrelated local server tomorrow — so
+ * remembering it — or fetching from it — would address something that is, at
+ * best, not the page it claims to be. A tunneled tab records the tunnel's remote-origin
+ * display URL instead (the panel already shows that URL everywhere); when the
+ * mapping is unknown the raw forward origin reaches the caller and is refused.
+ *
+ * A dev server the human actually chose — 3000, 5173, 8080 — is well below
+ * this, so ordinary local browsing is unaffected.
+ */
+export const EPHEMERAL_LOOPBACK_PORT_MIN = 32_768;
+
+/**
  * `0.0.0.0` is included deliberately: dev servers print it as their bind
  * address, so agents paste it, and on the pinned machine it resolves to that
  * machine's own stack exactly like `127.0.0.1` does.

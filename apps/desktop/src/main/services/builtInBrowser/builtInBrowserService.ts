@@ -102,6 +102,11 @@ import {
   BUILT_IN_BROWSER_PREVIEW_WARM_MS,
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
 } from "../../../shared/types";
+import { isRedactedBuiltInBrowserQueryParam } from "../../../shared/types/builtInBrowser";
+import {
+  EPHEMERAL_LOOPBACK_PORT_MIN,
+  isLoopbackHostname,
+} from "../../../shared/remoteLoopbackUrl";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
@@ -298,8 +303,17 @@ export type BrowserTabState = {
    * launchpad rather than a page. Cleared the moment it navigates anywhere.
    */
   isLaunchpad: boolean;
-  /** Last favicon Chromium reported, and the origin it belongs to. */
+  /**
+   * The favicon the renderer draws, and the origin it belongs to.
+   *
+   * `faviconUrl` is the http(s) URL Chromium reported until the bytes have
+   * been pulled through this tab's session, after which it is the same icon as
+   * a `data:` URL. `faviconSourceUrl` keeps the original address so a repeat
+   * of the same `page-favicon-updated` is recognised as a repeat rather than
+   * undoing the inlining.
+   */
   faviconUrl: string | null;
+  faviconSourceUrl: string | null;
   faviconOrigin: string | null;
   devToolsMode: BuiltInBrowserDevToolsMode | null;
   networkLoggingEnabled: boolean;
@@ -1953,6 +1967,57 @@ function createBuiltInBrowserWindowService(args: {
     return tabs.find((entry) => entry.webContents.id === wc.id) ?? null;
   };
 
+  /**
+   * Favicon URL -> inlined `data:` URL, for the life of this service.
+   *
+   * Favicons repeat relentlessly — every github.com tab, every reload, every
+   * restored session asks for the same square — so without this the pane would
+   * refetch the same 3 KB on every navigation. Insertion-ordered with a hard
+   * cap, so the oldest icon is evicted rather than letting a long session grow
+   * a map of every site it ever touched.
+   */
+  const faviconDataUrls = new Map<string, string>();
+
+  const cachedFaviconDataUrl = (sourceUrl: string): string | null => {
+    const hit = faviconDataUrls.get(sourceUrl);
+    if (hit === undefined) return null;
+    // Re-insert so the icons a session actually uses survive eviction.
+    faviconDataUrls.delete(sourceUrl);
+    faviconDataUrls.set(sourceUrl, hit);
+    return hit;
+  };
+
+  const rememberFaviconDataUrl = (sourceUrl: string, dataUrl: string): void => {
+    faviconDataUrls.delete(sourceUrl);
+    faviconDataUrls.set(sourceUrl, dataUrl);
+    while (faviconDataUrls.size > FAVICON_CACHE_MAX_ENTRIES) {
+      const oldest = faviconDataUrls.keys().next();
+      if (oldest.done) break;
+      faviconDataUrls.delete(oldest.value);
+    }
+  };
+
+  /**
+   * Replaces a tab's http(s) favicon with the same icon inlined as data.
+   *
+   * The raw URL is already published by the time this runs, so a failure here
+   * changes nothing: the renderer keeps the URL and draws it wherever its CSP
+   * allows. On success the field is swapped in place — same field, so nothing
+   * downstream of `faviconUrl` needs to know this happened.
+   */
+  const inlineTabFavicon = async (tab: BrowserTabState, sourceUrl: string): Promise<void> => {
+    const cached = cachedFaviconDataUrl(sourceUrl);
+    const dataUrl = cached ?? await fetchFaviconDataUrl(tab.webContents, sourceUrl);
+    if (!dataUrl) return;
+    if (!cached) rememberFaviconDataUrl(sourceUrl, dataUrl);
+    // The tab may have navigated, closed, or picked up a newer icon while the
+    // fetch was in flight, and only the icon we were handed owns the field.
+    if (!tabs.includes(tab)) return;
+    if (tab.faviconSourceUrl !== sourceUrl || tab.faviconUrl !== sourceUrl) return;
+    tab.faviconUrl = dataUrl;
+    emitStatus();
+  };
+
   const claimTabOwnerFromInput = (
     tab: BrowserTabState | null,
     input: BuiltInBrowserClaimArgs = {},
@@ -2669,6 +2734,7 @@ function createBuiltInBrowserWindowService(args: {
         const nextOrigin = originOrNull(url);
         if (tab.faviconOrigin !== nextOrigin) {
           tab.faviconUrl = null;
+          tab.faviconSourceUrl = null;
           tab.faviconOrigin = nextOrigin;
         }
       }
@@ -2687,10 +2753,12 @@ function createBuiltInBrowserWindowService(args: {
       const tab = tabForWebContents(wc);
       if (!tab) return;
       const next = pickBrowserFaviconUrl(favicons);
-      if (!next || next === tab.faviconUrl) return;
+      if (!next || next === tab.faviconSourceUrl) return;
+      tab.faviconSourceUrl = next;
       tab.faviconUrl = next;
       tab.faviconOrigin = wc.isDestroyed() ? null : originOrNull(wc.getURL());
       emitStatus();
+      void inlineTabFavicon(tab, next);
     });
     wc.on("found-in-page", (_event, result) => {
       const tab = tabForWebContents(wc);
@@ -2812,6 +2880,7 @@ function createBuiltInBrowserWindowService(args: {
       emulation: null,
       isLaunchpad: false,
       faviconUrl: null,
+      faviconSourceUrl: null,
       faviconOrigin: null,
       devToolsMode: null,
       networkLoggingEnabled: false,
@@ -5489,6 +5558,119 @@ function pickBrowserFaviconUrl(favicons: unknown): string | null {
     }
   }
   return inlineFallback;
+}
+
+/**
+ * The most favicon *bytes* this process will inline into a tab's state.
+ *
+ * A favicon is a 16px square; anything past this is a sprite sheet or a
+ * mislabelled download, and copying it into every status event would put it on
+ * the IPC path repeatedly. Over the cap the tab keeps the raw http(s) URL.
+ */
+const MAX_FETCHED_FAVICON_BYTES = 64 * 1024;
+
+/** How long a favicon fetch may take before the raw URL stands as the answer. */
+const FAVICON_FETCH_TIMEOUT_MS = 5_000;
+
+/** Icons remembered per service. Favicons repeat hard across tabs and reloads. */
+const FAVICON_CACHE_MAX_ENTRIES = 200;
+
+/** Mime types that may be spliced into a `data:` URL. */
+const FAVICON_MIME_PATTERN = /^image\/[a-z0-9.+-]+$/u;
+
+/**
+ * The favicon URL this process may fetch, or `null`.
+ *
+ * Deliberately narrower than "the URL Chromium handed us": the bytes come back
+ * through the tab's own session, so this is a request made on the page's
+ * behalf and it inherits the page's cookies. It must therefore refuse the same
+ * addresses the recents list refuses — a credential in the query or fragment
+ * (an icon URL is not supposed to carry one, and a redirect chain that lands on
+ * one must not be inlined and stored), an embedded userinfo, and loopback on an
+ * ephemeral port, which is somebody else's short-lived local server rather
+ * than a dev server the human chose.
+ */
+function faviconFetchTarget(value: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username || url.password) return null;
+  if (faviconParamsCarryCredential(url.searchParams)) return null;
+  if (url.hash.length > 1 && faviconParamsCarryCredential(new URLSearchParams(url.hash.slice(1)))) {
+    return null;
+  }
+  if (isLoopbackHostname(url.hostname)) {
+    const port = Number(url.port);
+    if (Number.isInteger(port) && port >= EPHEMERAL_LOOPBACK_PORT_MIN) return null;
+  }
+  return url;
+}
+
+function faviconParamsCarryCredential(params: URLSearchParams): boolean {
+  for (const name of params.keys()) {
+    if (isRedactedBuiltInBrowserQueryParam(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Pulls a favicon's bytes through a tab's session and returns them as a
+ * `data:` URL, or `null` when the raw URL should stand instead.
+ *
+ * The renderer runs under a CSP whose `img-src` list is a fixed set of known
+ * hosts, so an `<img src="https://news.ycombinator.com/favicon.ico">` is simply
+ * blocked and the row wears the fallback globe. Widening the CSP to `https:`
+ * would let any page ADE has ever visited become an image the renderer fetches;
+ * fetching here instead keeps that request inside the browser session that
+ * already made it, and hands the renderer bytes it is always allowed to draw.
+ *
+ * Every failure is silent and returns `null`: a missing icon is cosmetic, and
+ * the caller keeps the http(s) URL, which still works wherever the CSP allows.
+ */
+async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<string | null> {
+  const target = faviconFetchTarget(value);
+  if (!target) return null;
+  const session = wc.isDestroyed() ? null : wc.session;
+  if (!session || typeof session.fetch !== "function") return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FAVICON_FETCH_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    const response = await Promise.race([
+      session.fetch(target.toString(), {
+        method: "GET",
+        // The page's own cookies and nothing else: no Authorization header, no
+        // credentials this process invents.
+        credentials: "include",
+        redirect: "follow",
+        signal: controller.signal,
+      }),
+      // Electron's `net.fetch` honours the signal, but a body that trickles in
+      // forever would still hold the promise open, so the deadline is enforced
+      // here too rather than trusted to the abort.
+      new Promise<null>((resolve) => {
+        const deadline = setTimeout(() => resolve(null), FAVICON_FETCH_TIMEOUT_MS);
+        deadline.unref?.();
+      }),
+    ]);
+    if (!response || !response.ok) return null;
+    const mime = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+    if (!FAVICON_MIME_PATTERN.test(mime)) return null;
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_FETCHED_FAVICON_BYTES) return null;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_FETCHED_FAVICON_BYTES) return null;
+    return `data:${mime};base64,${bytes.toString("base64")}`;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 }
 
 function urlForBrowserLog(value: string): string | null {

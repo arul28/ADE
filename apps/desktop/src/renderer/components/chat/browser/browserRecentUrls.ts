@@ -1,7 +1,12 @@
 import {
   isRedactedBuiltInBrowserQueryParam,
 } from "../../../../shared/types/builtInBrowser";
-import { isLoopbackHostname } from "../../../../shared/remoteLoopbackUrl";
+import {
+  EPHEMERAL_LOOPBACK_PORT_MIN,
+  isLoopbackHostname,
+} from "../../../../shared/remoteLoopbackUrl";
+
+export { EPHEMERAL_LOOPBACK_PORT_MIN };
 
 /**
  * The launchpad's "Recently used" list.
@@ -66,23 +71,6 @@ function readStorage(): Storage | null {
   }
 }
 
-/**
- * Above this, a loopback port was handed out by the OS rather than chosen.
- *
- * A chat pinned to another machine reaches that machine's `localhost:3000`
- * through an ephemeral TCP forward, so the browser really loads something like
- * `http://127.0.0.1:52413`. That origin dies with the transport, and the OS is
- * free to hand the same number to an unrelated local server tomorrow — so
- * remembering it would offer a one-click destination that is, at best, not the
- * page it claims to be. A tunneled tab records the tunnel's remote-origin
- * display URL instead (the panel already shows that URL everywhere); when the
- * mapping is unknown the raw forward origin reaches here and is refused.
- *
- * A dev server the human actually chose — 3000, 5173, 8080 — is well below
- * this, so ordinary local browsing is unaffected.
- */
-export const EPHEMERAL_LOOPBACK_PORT_MIN = 32_768;
-
 function carriesCredential(params: URLSearchParams): boolean {
   for (const name of params.keys()) {
     if (isRedactedBuiltInBrowserQueryParam(name)) return true;
@@ -125,14 +113,18 @@ export function sanitizeBrowserRecentUrl(value: string | null | undefined): stri
 }
 
 /**
- * The most a stored data-URL favicon may weigh.
+ * The most a stored data-URL favicon may weigh, in characters.
  *
- * `localStorage` is a few megabytes for the whole renderer and this list holds
- * ten rows, so an inline icon is welcome and a 200KB one dressed as an icon is
- * not: past this the row falls back to the globe rather than evicting somebody
- * else's key.
+ * Main inlines a favicon by fetching at most 64KB of image bytes through the
+ * tab's own session, and base64 costs a third on top — so this is that same
+ * 64KB icon, expanded, with room for the `data:image/...;base64,` prefix. Real
+ * favicons are a couple of KB and never come near it; what the cap actually
+ * refuses is a mislabelled sprite sheet or download, which past this leaves the
+ * row wearing the globe rather than evicting somebody else's `localStorage`
+ * key. Ten rows at the worst case is still under a megabyte of a budget that is
+ * a few.
  */
-export const BROWSER_RECENT_FAVICON_MAX_BYTES = 2048;
+export const BROWSER_RECENT_FAVICON_MAX_BYTES = 90 * 1024;
 
 /**
  * The favicon this list may keep, or null.
