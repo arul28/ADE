@@ -439,6 +439,46 @@ stay stale until it is.
 See [terminals and sessions](../terminals-and-sessions/README.md#gotchas) for
 the lifecycle side of this invariant.
 
+### The host never exports from an uncorroborated peer cursor
+
+A replica peer names its own resume point: `hello.peer.dbVersionBySite` maps
+each host site id to the last `db_version` that peer believes it has applied
+from that host. The host exports strictly `db_version > cursor`, so an
+*inflated* claim is silent and permanent data loss — every host row inside the
+skipped span is never sent, and the reconnect plus the mobile replica reseed
+both start from the same claim.
+
+The host therefore keeps its own record of what it actually delivered:
+`sync_peer_changeset_watermarks(peer_device_id, host_site_id, db_version,
+updated_at)`. It is host-local — listed in kvDb's
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`, never a CRR, never synced — because it is
+keyed by *this* host's site id and describes *this* host's send progress.
+`syncHostService` writes it on the paths that advance a peer's send cursor (an
+`ok` changeset ack, the immediate advance for a peer without the `changesetAck`
+capability, and an empty-window advance), throttled to one write per second per
+peer, and flushes it when the peer socket closes.
+
+`resolveInitialPeerCursor` in `syncPeerCursorResolution.ts` is the single rule
+applied everywhere a claim seeds `lastKnownServerDbVersion` — first hello,
+listener-handoff adoption, and every reconnect:
+
+- A watermark exists → `min(claimed, watermark)`. The watermark is a **ceiling,
+  never a floor**: a reinstalled or reset phone legitimately claims *less* than
+  the host once delivered, and that lower claim wins so it is replayed rather
+  than clamped forward.
+- No watermark and `claimed > hostDbVersion` → `0`. This DB never produced that
+  version, so the claim is poisoned and the peer takes a full replay.
+- Otherwise → the claim.
+
+A resolved cursor below the claim is logged as `sync_host.peer_cursor_rewound`
+with `claimed`, `resolved`, and the reason. Because the rewind is recorded in
+the host's own watermark on the very next ack, an already-poisoned peer replays
+once, not on every reconnect.
+
+The peer-side half of the same bug is `SyncService.swift`'s
+`advanceRemoteDbCursor`: iOS advances the host's entry from the batch's
+`toDbVersion` only, never from its own local write clock.
+
 ## Architecture layers
 
 ```
@@ -1400,6 +1440,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `CONNECTION_ATTEMPT_MAX_FUTURE_MS`) plus `dbVersionBySite` and the
   application-compression offer. There is no second copy; the brain's narrower
   hand-rolled one is gone.
+- `syncPeerCursorResolution.ts` — `resolveInitialPeerCursor`, the pure rule
+  that reconciles a peer's claimed changeset cursor against the host's own
+  `sync_peer_changeset_watermarks` record before any export. See
+  [The host never exports from an uncorroborated peer cursor](#the-host-never-exports-from-an-uncorroborated-peer-cursor).
 - `syncAccountHelloAuth.ts` — the shared account-hello gate chain for both
   ingresses, and the canonical rejection strings
   (`SYNC_REPAIR_REQUIRED_MESSAGE`, `SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE`,

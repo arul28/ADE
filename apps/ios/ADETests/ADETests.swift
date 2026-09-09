@@ -9097,6 +9097,48 @@ final class ADETests: XCTestCase {
     target.close()
   }
 
+  func testLocalWritesMintDbVersionsInsideTheHostVersionSpace() throws {
+    // Regression for proof artifacts (and any other host row) never reaching the
+    // phone: the phone's CRR clock is seeded from the highest db_version it has
+    // ever APPLIED and then incremented once per local write, so it mints numbers
+    // inside the HOST's version space and runs ahead of the host's watermark.
+    // That is why `applyChanges(...).dbVersion` must never advance the host-site
+    // cursor in SyncService's `changeset_batch` handler — the host restores that
+    // cursor from `hello` and only exports `db_version > cursor`, so every host row
+    // below an inflated cursor is skipped permanently.
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    let hostDbVersion = 60_210_853
+    let packedPk = packedDesktopTextPrimaryKey("stash-host-authored")
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let applied = try database.applyChanges([
+      CrsqlChangeRow(
+        table: "prompt_stashes", pk: packedPk, cid: "text", val: .string("host draft"),
+        colVersion: 1, dbVersion: hostDbVersion, siteId: siteId, cl: 1, seq: 0
+      ),
+      CrsqlChangeRow(
+        table: "prompt_stashes", pk: packedPk, cid: "created_at",
+        val: .string("2026-09-09T12:00:00.000Z"),
+        colVersion: 1, dbVersion: hostDbVersion, siteId: siteId, cl: 1, seq: 1
+      ),
+    ])
+    XCTAssertEqual(applied.dbVersion, hostDbVersion)
+
+    try database.executeSqlForTesting("""
+      insert into prompt_stashes (id, text, created_at)
+      values ('stash-phone-authored', 'phone draft', '2026-09-09T12:01:00.000Z')
+    """)
+
+    XCTAssertGreaterThan(
+      database.currentDbVersion(),
+      hostDbVersion,
+      "a phone-local write advances the shared clock past the host watermark, so the local clock can never be reported as a host cursor"
+    )
+
+    database.close()
+  }
+
   func testDatabaseBootstrapAcceptsDesktopPromptStashChanges() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)

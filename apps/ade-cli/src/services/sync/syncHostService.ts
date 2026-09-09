@@ -253,6 +253,10 @@ import {
   type MobileReplicaReseedCache,
 } from "./mobileReplicaReseed";
 import {
+  resolveInitialPeerCursor,
+  type SyncPeerCursorReason,
+} from "./syncPeerCursorResolution";
+import {
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -293,6 +297,8 @@ export const ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD = true;
 // ranges quickly (a few polls per million versions), small enough that the
 // windowed crsql_changes scan completes in milliseconds.
 const SYNC_EXPORT_VERSION_WINDOW = 250_000;
+/** At most one `sync_peer_changeset_watermarks` write per second per peer. */
+const PEER_WATERMARK_WRITE_THROTTLE_MS = 1_000;
 
 // High-churn / large-row tables the phone never reads (verified against the
 // iOS Database.swift query surface). Excluding them from phone changesets is
@@ -1291,6 +1297,13 @@ export function initialSyncHostCursorForPeer(args: {
   peer: Pick<SyncPeerMetadata, "deviceType" | "dbVersion" | "dbVersionBySite" | "capabilities">;
   serverDbSiteId: string;
   serverDbVersion: number;
+  /**
+   * The host's own record of how far it has delivered to this peer, from
+   * `sync_peer_changeset_watermarks`. Omit it and the claim is only checked
+   * against this DB's current version.
+   */
+  hostWatermark?: number | null;
+  onCursorRewound?: (info: { claimed: number; resolved: number; reason: SyncPeerCursorReason }) => void;
 }): number {
   // A browser may explicitly negotiate an invalidation-only contract: it has
   // no SQLite replica, fully refetches its query domains after hello, and uses
@@ -1302,7 +1315,19 @@ export function initialSyncHostCursorForPeer(args: {
   }
   const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
     ?? (args.peer.dbVersionBySite ? 0 : args.peer.dbVersion);
-  return Math.max(0, Math.floor(cursorForThisDb));
+  const claimed = Math.max(0, Math.floor(cursorForThisDb));
+  // The cursor is peer-authored, and a peer can inflate it (an iOS build
+  // folded its local write clock into the value it advertised for the host's
+  // site). Never export from a claim the host cannot corroborate.
+  const resolution = resolveInitialPeerCursor({
+    claimed,
+    hostWatermark: args.hostWatermark,
+    hostDbVersion: args.serverDbVersion,
+  });
+  if (resolution.rewound) {
+    args.onCursorRewound?.({ claimed, resolved: resolution.cursor, reason: resolution.reason });
+  }
+  return resolution.cursor;
 }
 
 export function adoptedSyncHostCursorForPeer(args: {
@@ -1311,6 +1336,8 @@ export function adoptedSyncHostCursorForPeer(args: {
   serverDbVersion: number;
   snapshotServerDbSiteId?: string | null;
   snapshotLastKnownServerDbVersion?: number | null;
+  hostWatermark?: number | null;
+  onCursorRewound?: (info: { claimed: number; resolved: number; reason: SyncPeerCursorReason }) => void;
 }): number {
   const initialCursor = initialSyncHostCursorForPeer(args);
   if (
@@ -2090,6 +2117,13 @@ export function planChatEventResume(
 export function createSyncHostService(args: SyncHostServiceArgs) {
   const verifyAccountAttestation = args.verifyAccountAttestation
     ?? verifyClerkAccountAttestation;
+  // Per-peer delivered-changeset watermark bookkeeping. Declared here so the
+  // peer close handler and the handoff adoption path — both of which can run
+  // before the helpers further down are reached — never touch a TDZ binding.
+  const peerWatermarkWrites = new Map<string, { pendingDbVersion: number | null; lastWriteAtMs: number }>();
+  let peerWatermarkTableReady = false;
+  let peerWatermarkTableUnavailable = false;
+
   void recoverOrphanedNativeLanDiscoveryProcesses(args.logger);
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
@@ -3471,6 +3505,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
+      flushPeerDeliveredWatermark(peer);
       abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
       peer.envelopeChunks.reset();
@@ -3632,6 +3667,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           serverDbVersion: args.db.sync.getDbVersion(),
           snapshotServerDbSiteId: snapshot.serverDbSiteId,
           snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
+          hostWatermark: readPeerDeliveredWatermark(snapshot.metadata?.deviceId, serverDbSiteId),
+          onCursorRewound: (info) => logPeerCursorRewound(snapshot.metadata?.deviceId ?? null, info),
         });
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
@@ -5813,6 +5850,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Only advance through what was actually scanned — with a bounded
         // export, versions past the truncation point have not been seen.
         peer.lastKnownServerDbVersion = exportedThroughDbVersion;
+        notePeerDeliveredWatermark(peer);
         args.logger.debug("sync_host.changeset_advanced_without_send", {
           peerDeviceId: peer.metadata?.deviceId ?? null,
           fromDbVersion: previousDbVersion,
@@ -5836,10 +5874,138 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+          notePeerDeliveredWatermark(peer);
         }
         finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
       }
+  }
+
+  /**
+   * Host-local record of how far changesets have actually been delivered to
+   * each peer. Written on the paths that advance the send cursor, throttled to
+   * one write per second per peer, and always flushed when the socket closes.
+   *
+   * It is deliberately NOT a CRR (see kvDb's LOCAL_ONLY_CRR_EXCLUDED_TABLES):
+   * it is keyed by this host's site id and describes this host's send progress.
+   */
+  function peerWatermarkStorageReady(): boolean {
+    if (peerWatermarkTableUnavailable) return false;
+    if (peerWatermarkTableReady) return true;
+    if (typeof args.db.run !== "function" || typeof args.db.get !== "function") {
+      peerWatermarkTableUnavailable = true;
+      return false;
+    }
+    try {
+      args.db.run(`
+        create table if not exists sync_peer_changeset_watermarks (
+          peer_device_id text primary key,
+          host_site_id text not null,
+          db_version integer not null,
+          updated_at text not null
+        )
+      `);
+      peerWatermarkTableReady = true;
+      return true;
+    } catch (error) {
+      peerWatermarkTableUnavailable = true;
+      args.logger.debug("sync_host.peer_watermark_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  function readPeerDeliveredWatermark(peerDeviceId: string | null | undefined, hostSiteId: string): number | null {
+    if (!peerDeviceId || !peerWatermarkStorageReady()) return null;
+    try {
+      const row = args.db.get<{ db_version: number }>(
+        "select db_version from sync_peer_changeset_watermarks where peer_device_id = ? and host_site_id = ?",
+        [peerDeviceId, hostSiteId],
+      );
+      if (!row || typeof row.db_version !== "number" || !Number.isFinite(row.db_version)) return null;
+      return Math.max(0, Math.floor(row.db_version));
+    } catch (error) {
+      args.logger.debug("sync_host.peer_watermark_read_failed", {
+        peerDeviceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  function writePeerDeliveredWatermark(peerDeviceId: string, dbVersion: number): void {
+    if (!peerWatermarkStorageReady()) return;
+    try {
+      args.db.run(
+        `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
+         values (?, ?, ?, ?)
+         on conflict(peer_device_id) do update set
+           host_site_id = excluded.host_site_id,
+           db_version = case
+             when sync_peer_changeset_watermarks.host_site_id = excluded.host_site_id
+               then max(sync_peer_changeset_watermarks.db_version, excluded.db_version)
+             else excluded.db_version
+           end,
+           updated_at = excluded.updated_at`,
+        [peerDeviceId, args.db.sync.getSiteId(), Math.max(0, Math.floor(dbVersion)), nowIso()],
+      );
+    } catch (error) {
+      args.logger.debug("sync_host.peer_watermark_write_failed", {
+        peerDeviceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Record the peer's delivered cursor, at most one DB write per second. */
+  function notePeerDeliveredWatermark(peer: PeerState): void {
+    const peerDeviceId = peer.metadata?.deviceId ?? null;
+    if (!peerDeviceId) return;
+    // An invalidation-only browser starts at the host's current version by
+    // design and never applies CRR history, so its cursor is not a record of
+    // anything delivered — storing it would let the same device id skip a
+    // backlog if it ever reconnected as a replica.
+    if (isInvalidationOnlyBrowserPeer(peer.metadata)) return;
+    const dbVersion = Math.max(0, Math.floor(peer.lastKnownServerDbVersion));
+    const nowMs = Date.now();
+    const state = peerWatermarkWrites.get(peerDeviceId);
+    if (state && nowMs - state.lastWriteAtMs < PEER_WATERMARK_WRITE_THROTTLE_MS) {
+      state.pendingDbVersion = Math.max(state.pendingDbVersion ?? 0, dbVersion);
+      return;
+    }
+    peerWatermarkWrites.set(peerDeviceId, { pendingDbVersion: null, lastWriteAtMs: nowMs });
+    writePeerDeliveredWatermark(peerDeviceId, dbVersion);
+  }
+
+  /** Flush any throttled watermark. Called when the peer socket closes. */
+  function flushPeerDeliveredWatermark(peer: PeerState): void {
+    const peerDeviceId = peer.metadata?.deviceId ?? null;
+    if (!peerDeviceId) return;
+    if (isInvalidationOnlyBrowserPeer(peer.metadata)) {
+      peerWatermarkWrites.delete(peerDeviceId);
+      return;
+    }
+    const state = peerWatermarkWrites.get(peerDeviceId);
+    const pending = Math.max(
+      state?.pendingDbVersion ?? 0,
+      Math.max(0, Math.floor(peer.lastKnownServerDbVersion)),
+    );
+    peerWatermarkWrites.delete(peerDeviceId);
+    if (!peer.authenticated || pending <= 0) return;
+    writePeerDeliveredWatermark(peerDeviceId, pending);
+  }
+
+  function logPeerCursorRewound(
+    peerDeviceId: string | null,
+    info: { claimed: number; resolved: number; reason: SyncPeerCursorReason },
+  ): void {
+    args.logger.warn("sync_host.peer_cursor_rewound", {
+      peerDeviceId,
+      claimed: info.claimed,
+      resolved: info.resolved,
+      reason: info.reason,
+    });
   }
 
   function handleChangesetAck(peer: PeerState, payload: SyncChangesetAckPayload | null | undefined): void {
@@ -5876,6 +6042,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (payload.toDbVersion < pending.toDbVersion) return;
     const recoveryLevel = peer.changesetRecoveryLevel;
     peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+    notePeerDeliveredWatermark(peer);
     peer.pendingChangesetBatch = null;
     peer.changesetRecoveryLevel = 0;
     peer.changesetRecoveryNotBeforeMs = 0;
@@ -7496,6 +7663,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer: hello.peer,
         serverDbSiteId: ownSiteId,
         serverDbVersion,
+        hostWatermark: readPeerDeliveredWatermark(hello.peer.deviceId, ownSiteId),
+        onCursorRewound: (info) => logPeerCursorRewound(hello.peer.deviceId ?? null, info),
       });
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),

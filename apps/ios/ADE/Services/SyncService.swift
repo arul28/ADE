@@ -14481,6 +14481,25 @@ final class SyncService: ObservableObject {
     lastSyncAt = now
   }
 
+  /// Advance the cursor the host restores from `hello` (`dbVersionBySite`).
+  ///
+  /// ONLY a db_version the host itself sent may advance it. The phone's own CRR
+  /// clock (`applyChanges(...).dbVersion`) is NOT such a value: it is seeded from
+  /// the highest db_version ever applied from the host and then incremented once
+  /// per local write (`ade_next_db_version`), so it mints numbers INSIDE the
+  /// host's version space and runs ahead of the host's watermark. Folding it in
+  /// pushed `remoteDbVersionBySite[hostSite]` past host versions that were never
+  /// delivered, and the host's pump only exports `db_version > cursor` — so every
+  /// host row in the skipped span is lost permanently, surviving app restarts,
+  /// reconnects and the mobile replica reseed.
+  private func advanceRemoteDbCursor(appliedBatchToDbVersion: Int) {
+    latestRemoteDbVersion = max(latestRemoteDbVersion, appliedBatchToDbVersion)
+    scheduleRemoteDbCursorProfilePersist(
+      dbVersion: latestRemoteDbVersion,
+      cursorSite: activeRemoteDbSiteId
+    )
+  }
+
   private func scheduleRemoteDbCursorProfilePersist(dbVersion: Int, cursorSite: String?) {
     pendingRemoteProfileDbVersion = max(pendingRemoteProfileDbVersion ?? 0, dbVersion)
     if let cursorSite {
@@ -18408,11 +18427,8 @@ final class SyncService: ObservableObject {
         // ack belong to the dead connection — advancing the new site's cursor
         // here would make the host skip the new project DB's backlog.
         guard isCurrentConnectionGeneration(generation) else { return }
-        latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
+        advanceRemoteDbCursor(appliedBatchToDbVersion: batch.toDbVersion)
         markSyncActivity()
-        let advancedVersion = latestRemoteDbVersion
-        let cursorSite = activeRemoteDbSiteId
-        scheduleRemoteDbCursorProfilePersist(dbVersion: advancedVersion, cursorSite: cursorSite)
         sendChangesetAck(
           batch: batch,
           ok: true,

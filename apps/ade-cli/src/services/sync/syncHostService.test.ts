@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import { createSign, generateKeyPairSync } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
@@ -12856,6 +12858,204 @@ describe("createSyncHostService all-projects roster", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
+/**
+ * A phone can advertise a host cursor it never received: an iOS build folded
+ * its own local write clock into `dbVersionBySite[hostSiteId]`, so the host
+ * exported only `db_version > <inflated>` and silently skipped every row in
+ * between. The heal has to be host-side, because phones already in the field
+ * keep sending the inflated claim.
+ */
+describe("peer changeset cursor watermarks", () => {
+  const require_ = createRequire(import.meta.url);
+  const { DatabaseSync } = require_("node:sqlite") as {
+    DatabaseSync: new (p: string) => DatabaseSyncType;
+  };
+
+  function createWatermarkHost(
+    projectRoot: string,
+    state: { dbVersion: number; changes: CrsqlChangeRow[] },
+  ) {
+    const base = createHostArgs(projectRoot, []);
+    const logger = createDiscoveryLogger();
+    // Back `run`/`get` with real SQLite so the upsert statement itself is
+    // under test, not just the code that calls it.
+    const sqlite = new DatabaseSync(":memory:");
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        run: (sql: string, params: unknown[] = []) => {
+          sqlite.prepare(sql).run(...(params as never[]));
+        },
+        get: (sql: string, params: unknown[] = []) =>
+          sqlite.prepare(sql).get(...(params as never[])) ?? null,
+        sync: {
+          getSiteId: () => "site-host-watermark",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number, options?: { throughDbVersion?: number; maxRows?: number }) =>
+            state.changes
+              .filter((change) => Number(change.db_version) > fromDbVersion)
+              .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+              .slice(0, options?.maxRows ?? state.changes.length),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const readWatermark = (peerDeviceId: string) =>
+      sqlite
+        .prepare("select host_site_id, db_version from sync_peer_changeset_watermarks where peer_device_id = ?")
+        .get(peerDeviceId) as { host_site_id: string; db_version: number } | undefined;
+    return { host, logger, readWatermark };
+  }
+
+  const rewoundCalls = (logger: ReturnType<typeof createDiscoveryLogger>) =>
+    logger.warn.mock.calls.filter(([event]) => event === "sync_host.peer_cursor_rewound");
+
+  it("replays from zero for a poisoned claim, records the delivered watermark, and clamps the next hello", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 40,
+      changes: Array.from({ length: 40 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger, readWatermark } = createWatermarkHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let reconnected: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // The real inflated value observed in the field: a local write clock in
+      // the sixty-million range advertised as the HOST's cursor.
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-poisoned", {
+        capabilities: ["changesetAck"],
+        dbVersionBySite: { "site-host-watermark": 60_210_853 },
+      });
+
+      const batch = await waitForValue(
+        () => peer?.envelopes
+          .filter((envelope) => envelope.type === "changeset_batch")
+          .map((envelope) => envelope.payload as SyncChangesetBatchPayload)[0],
+        "poisoned-claim replay batch",
+      );
+      expect(batch.fromDbVersion).toBe(0);
+      expect(batch.changes.length).toBeGreaterThan(0);
+      expect(rewoundCalls(logger)[0]?.[1]).toMatchObject({
+        peerDeviceId: "ios-poisoned",
+        claimed: 60_210_853,
+        resolved: 0,
+        reason: "impossible_claim",
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: batch.batchId,
+        payload: {
+          batchId: batch.batchId,
+          fromDbVersion: batch.fromDbVersion,
+          toDbVersion: batch.toDbVersion,
+          appliedDbVersion: batch.toDbVersion,
+          appliedCount: batch.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+
+      const stored = await waitForValue(() => readWatermark("ios-poisoned"), "persisted peer watermark");
+      expect(stored.host_site_id).toBe("site-host-watermark");
+      expect(stored.db_version).toBe(batch.toDbVersion);
+
+      peer.ws.close();
+      peer = null;
+      // Same phone, same poisoned claim: the host now has its own record of
+      // what it delivered and refuses to skip past it.
+      reconnected = await connectPeer(port, host.getBootstrapToken(), "ios-poisoned", {
+        capabilities: ["changesetAck"],
+        dbVersionBySite: { "site-host-watermark": 60_210_853 },
+      });
+      const clamped = await waitForValue(
+        () => rewoundCalls(logger).find(([, detail]) =>
+          (detail as { reason?: string }).reason === "watermark_clamp"),
+        "clamped reconnect cursor",
+      );
+      expect(clamped[1]).toMatchObject({
+        peerDeviceId: "ios-poisoned",
+        claimed: 60_210_853,
+        resolved: stored.db_version,
+      });
+      // Nothing new was written, so the clamped cursor must not resend the
+      // backlog it already acknowledged.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(reconnected.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(0);
+    } finally {
+      peer?.ws.close();
+      reconnected?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps a reinstalled phone's lower claim rather than raising it to the stored watermark", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 12,
+      changes: Array.from({ length: 12 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger, readWatermark } = createWatermarkHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let reinstalled: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reinstalled", {
+        capabilities: ["changesetAck"],
+        dbVersionBySite: { "site-host-watermark": 0 },
+      });
+      const batch = await waitForValue(
+        () => peer?.envelopes
+          .filter((envelope) => envelope.type === "changeset_batch")
+          .map((envelope) => envelope.payload as SyncChangesetBatchPayload)[0],
+        "initial catch-up batch",
+      );
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: batch.batchId,
+        payload: {
+          batchId: batch.batchId,
+          fromDbVersion: batch.fromDbVersion,
+          toDbVersion: batch.toDbVersion,
+          appliedDbVersion: batch.toDbVersion,
+          appliedCount: batch.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      await waitForValue(() => readWatermark("ios-reinstalled"), "persisted peer watermark");
+      peer.ws.close();
+      peer = null;
+
+      reinstalled = await connectPeer(port, host.getBootstrapToken(), "ios-reinstalled", {
+        capabilities: ["changesetAck"],
+        dbVersionBySite: { "site-host-watermark": 0 },
+      });
+      const replay = await waitForValue(
+        () => reinstalled?.envelopes
+          .filter((envelope) => envelope.type === "changeset_batch")
+          .map((envelope) => envelope.payload as SyncChangesetBatchPayload)[0],
+        "reinstall replay batch",
+      );
+      expect(replay.fromDbVersion).toBe(0);
+      expect(rewoundCalls(logger)).toHaveLength(0);
+    } finally {
+      peer?.ws.close();
+      reinstalled?.ws.close();
       await host.dispose();
       cleanup();
     }

@@ -877,6 +877,12 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // so these tables must not be CRRs.
   "pull_request_ai_summaries",
   "runtime_processes",
+  // The sync host's per-peer delivered-changeset watermark. It is keyed by the
+  // host's own site id and describes this machine's send progress, so it must
+  // never replicate — a peer that received it back would be told about
+  // deliveries a different host made, and the host would then trust a value it
+  // did not author. It exists precisely to distrust peer-authored cursors.
+  "sync_peer_changeset_watermarks",
   // Compact local interaction ledger used by Stats. Phones and browsers read
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
@@ -1939,6 +1945,19 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       through_db_version integer not null,
       created_at text not null,
       primary key(table_name, site_id)
+    )
+  `);
+
+  // The host's own record of how far it has actually delivered changesets to
+  // each sync peer. Local-only on purpose: it describes THIS host's send
+  // progress, it is keyed by the host's site id, and replicating it would ship
+  // one machine's send progress to another that never sent those rows.
+  db.run(`
+    create table if not exists sync_peer_changeset_watermarks (
+      peer_device_id text primary key,
+      host_site_id text not null,
+      db_version integer not null,
+      updated_at text not null
     )
   `);
 
