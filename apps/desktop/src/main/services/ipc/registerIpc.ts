@@ -825,6 +825,7 @@ import {
   isBuiltInBrowserNoTabError,
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
 import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
@@ -2757,6 +2758,13 @@ export function registerIpc({
     }
     bucket.count += 1;
   };
+
+  /**
+   * Which window's panel gets a forwarded `ade browser open`. One registry per
+   * main process, because the panels that would race for it are in different
+   * renderers.
+   */
+  const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
 
   const guardBuiltInBrowserIpc = (
     event: IpcMainInvokeEvent,
@@ -9326,6 +9334,20 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserSetZoom, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetZoom, { windowMs: 10_000, max: 200 });
     return ensureBuiltInBrowser().setZoom(parseBuiltInBrowserSetZoomArgs(arg, IPC.builtInBrowserSetZoom), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserFocusHost, async (event) => {
+    // Rate limit sized for the chord that drives it: a human pressing ⌘F, not
+    // a loop. Nothing here reads the payload, so there is nothing to parse.
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFocusHost, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().focusHost(win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserClaimRemoteRequest, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClaimRemoteRequest, { windowMs: 10_000, max: 120 });
+    const record = isRecord(arg) ? arg : {};
+    const requestId = typeof record.requestId === "string" ? record.requestId : "";
+    return { claimed: builtInBrowserRemoteRequestClaims.claim(requestId) };
   });
 
   ipcMain.handle(IPC.builtInBrowserFindInPage, async (event, arg) => {

@@ -218,6 +218,47 @@ function requireBrowserApi(): BuiltInBrowserApi {
 }
 
 /**
+ * Does this pane own the app's chords (⌘F, ⌘W, ⌘+/−/0) right now?
+ *
+ * The panel is only mounted while the Browser tool is the pane's active tool —
+ * `WorkSidebar` unmounts it on a tool switch, `App.tsx` on a route change and
+ * `ProjectSurface` on a project-tab switch — so "mounted, connected, not inert,
+ * and holding a tab" IS "the Browser tool is what the user is looking at". What
+ * is left is deciding whether some OTHER widget has the keyboard:
+ *
+ * - No `activeElement` at all, or `<body>`: nothing in this renderer has it,
+ *   which is what having clicked into the page looks like from here. The page
+ *   is a different `WebContents` entirely, so there is no DOM focus to see.
+ * - Focus inside the panel: the omnibox, the find field, a toolbar button.
+ * - Focus on an ANCESTOR of the panel: the Work pane's `<aside>`, which
+ *   `selectTool` focuses when you switch the pane to Browser. That was the
+ *   reported ⌘W bug — the pane declined its own chord the moment you arrived at
+ *   it by the ordinary route, and `TopBar` fell through to a Quit prompt.
+ *
+ * A sibling — the chat composer, another pane's field — is none of those, so it
+ * still declines and the app-wide meaning of the chord stands.
+ */
+function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boolean {
+  if (!panel || !panel.isConnected || !hasTab) return false;
+  /*
+    A mounted panel is not necessarily a visible one.
+
+    The three `active` chains above unmount it today, but the app's habit is to
+    keep hidden surfaces MOUNTED behind `inert` + `opacity: 0`, and "focus is
+    nowhere in the DOM" is as true of a hidden pane as of one just clicked into.
+    If any of those guards ever becomes a CSS hide, this is what stops a parked
+    browser eating the app's chords.
+  */
+  if (panel.closest("[inert]")) return false;
+  const active = document.activeElement;
+  if (active == null) return true;
+  if (panel.contains(active)) return true;
+  // `contains` is true of self, and an ancestor of the panel is a container
+  // rather than a widget: `<body>`, the pane root, the tool `<aside>`.
+  return active.contains(panel);
+}
+
+/**
  * The browser window belongs to ONE computer: it is a view owned by that
  * desktop's main process, positioned over this panel's on-screen bounds. So the
  * pane always drives THIS window's browser, whatever machine the chat is on — a
@@ -900,6 +941,26 @@ export function ChatBuiltInBrowserPanel({
       if (request.laneId && contextLaneId && request.laneId !== contextLaneId) return;
       if (request.chatSessionId && sessionId && request.chatSessionId !== sessionId) return;
       void (async () => {
+        /*
+          The filters above are per-renderer, and the panels that race are not.
+
+          Two ADE windows both on Work, both showing the Browser tool for the
+          same pinned machine, both pass the tests above — so both navigated and
+          both acked, and the URL opened twice. The windows share exactly one
+          thing, the main process, so that is where the tie is broken: the first
+          panel to claim a requestId acts on it and every other is told no.
+
+          Feature-detected, and a refusal to answer is read as a yes: an older
+          main process with no claim route must keep working, and so must a
+          daemon whose request carries no id to arbitrate on.
+        */
+        const claimRemoteRequest = api.claimRemoteRequest;
+        if (claimRemoteRequest) {
+          const claimed = await claimRemoteRequest({ requestId: request.requestId })
+            .then((result) => result?.claimed !== false)
+            .catch(() => true);
+          if (!claimed) return;
+        }
         let accepted = false;
         let reason: string | null = null;
         const acknowledge = async (payload: {
@@ -1653,8 +1714,23 @@ export function ChatBuiltInBrowserPanel({
   /**
    * ⌘F on an open bar re-focuses and selects, the way every other find bar
    * behaves: the second press is "search for something else", not a no-op.
+   *
+   * Two things beyond `input.focus()`, both of them the difference between a
+   * bar that looks ready and one that is:
+   *
+   * - The OS keyboard. Once you have clicked the page, focus is in the tab's
+   *   own `WebContentsView` — `document.activeElement` becomes the find field
+   *   and `document.hasFocus()` stays false, so every letter typed goes to the
+   *   page. Only the browser process can move focus between two WebContents, so
+   *   the bar asks main for it (`focusHost`) and focuses the field again once
+   *   that has happened.
+   * - The previous query. Closing the bar ends the find session, so reopening
+   *   on a remembered query showed the text with no count beside it until you
+   *   retyped a character. Reopening re-runs it.
    */
   const findFocusFrameRef = useRef<number | null>(null);
+  const findTextRef = useRef(findText);
+  findTextRef.current = findText;
   const openFind = useCallback(() => {
     setFindOpen(true);
     const focusInput = () => {
@@ -1669,7 +1745,19 @@ export function ChatBuiltInBrowserPanel({
     // than into a zero-height container.
     if (findFocusFrameRef.current != null) window.cancelAnimationFrame(findFocusFrameRef.current);
     findFocusFrameRef.current = window.requestAnimationFrame(focusInput);
-  }, []);
+    // `Promise.resolve`, not a bare `.then`: an older main process has no
+    // `focusHost` and a stub namespace can return a non-thenable, and neither
+    // is a reason to lose the caret. The re-focus after it lands is what makes
+    // the field the OS-focused element rather than merely the DOM-focused one.
+    void Promise.resolve(getBrowserApi()?.focusHost?.())
+      .then(() => focusInput())
+      .catch(() => {
+        // No host-focus route on this build: the bar still opens, and a click
+        // into it works as it always did.
+      });
+    const pending = findTextRef.current.trim();
+    if (pending) runFind(pending);
+  }, [runFind]);
 
   /*
     Match counts belong to one page.
@@ -1928,22 +2016,25 @@ export function ChatBuiltInBrowserPanel({
    * the browser process before any keydown reaches this pane — and once you
    * click into the page, focus is in the page's own WebContents, so this
    * renderer sees no keystroke at all. That is the reported bug: ⋯ advertised
-   * ⌘F and the chord did nothing. The ownership test is the zoom claim's, for
-   * the same reasons spelled out there.
+   * ⌘F and the chord did nothing. Ownership is `panelOwnsAppCommands`, which is
+   * also what decides the zoom chords — one rule, so the two can never disagree
+   * about whose keyboard this is.
    */
   useEffect(() => {
     if (!apiAvailable) return undefined;
     return claimAppMenuCommands((command) => {
-      const panel = panelRef.current;
-      if (!panel || !panel.isConnected || !hasTabRef.current) return false;
-      if (panel.closest("[inert]")) return false;
-      const active = document.activeElement;
-      const ownsKeyboard = active == null || active === document.body || panel.contains(active);
-      if (!ownsKeyboard) return false;
+      if (!panelOwnsAppCommands(panelRef.current, hasTabRef.current)) return false;
       if (command === "find") {
         openFind();
         return true;
       }
+      /*
+        Always true here: the ownership test already required a tab, and the
+        only thing `handleCloseActiveTab` refuses is an empty pane. Returning
+        its answer rather than `true` keeps the two facts tied together, so a
+        ⌘W that this pane could not act on is never reported as taken — which
+        is what would turn it into a Quit prompt with a browser tab on screen.
+      */
       return handleCloseActiveTab();
     });
   }, [apiAvailable, handleCloseActiveTab, openFind]);
@@ -1951,31 +2042,14 @@ export function ChatBuiltInBrowserPanel({
   /**
    * Take the app's zoom chords while this pane owns the keyboard.
    *
-   * "Owns" includes focus being nowhere in the DOM: clicking into the page
-   * moves focus to the native view, which is a different WebContents entirely,
-   * so `document.activeElement` falls back to the body. Focus sitting in the
-   * chat composer, or any other pane, declines and the whole ADE UI zooms as
-   * before.
+   * Same rule as ⌘F/⌘W above (`panelOwnsAppCommands`): focus nowhere, inside
+   * the panel, or on one of its containers takes the chord; focus in the chat
+   * composer or any other pane declines and the whole ADE UI zooms as before.
    */
   useEffect(() => {
     if (!apiAvailable) return undefined;
     return claimAppZoomCommands((command) => {
-      const panel = panelRef.current;
-      if (!panel || !panel.isConnected || !hasTabRef.current) return false;
-      /*
-        A mounted panel is not necessarily a visible one.
-
-        `ProjectSurface` keeps inactive project tabs mounted behind `inert` +
-        `opacity: 0`, and `ProjectRouteContent` keeps the Work page mounted
-        after you navigate away from it. Today the `active &&` guard in
-        `WorkSidebar` unmounts this panel in both cases — but "focus is nowhere
-        in the DOM" is true of a hidden pane too, so relying on that alone would
-        make a hidden browser steal the app's zoom the day that guard changes.
-      */
-      if (panel.closest("[inert]")) return false;
-      const active = document.activeElement;
-      const ownsKeyboard = active == null || active === document.body || panel.contains(active);
-      if (!ownsKeyboard) return false;
+      if (!panelOwnsAppCommands(panelRef.current, hasTabRef.current)) return false;
       if (command === "in") handleZoomStep(1);
       else if (command === "out") handleZoomStep(-1);
       else handleZoomReset();

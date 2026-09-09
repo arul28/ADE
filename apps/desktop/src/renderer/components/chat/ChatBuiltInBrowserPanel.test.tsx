@@ -183,6 +183,10 @@ function installBrowserApi() {
       status: browserStatus,
     }),
     stopFindInPage: vi.fn().mockResolvedValue({ tabId: "tab-1", stopped: true, status: browserStatus }),
+    // Opening the find bar asks main to move the OS keyboard off the page's
+    // WebContentsView; the claim decides which window answers a forwarded open.
+    focusHost: vi.fn().mockResolvedValue({ focused: true }),
+    claimRemoteRequest: vi.fn().mockResolvedValue({ claimed: true }),
     setDevTools: vi.fn().mockResolvedValue({
       tabId: "tab-1",
       devToolsOpen: true,
@@ -622,6 +626,55 @@ describe("ChatBuiltInBrowserPanel", () => {
     // A request from outside any chat is the project-level pane's to answer;
     // dropping it would make `ade browser open` silently do nothing.
     const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-bare",
+      url: "http://127.0.0.1:8080/admin",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(await screen.findByText("Agent wants to reach port 8080 on Mac Studio")).toBeTruthy();
+    // Even the panel that takes it asks first: the windows that race for an
+    // unaddressed request are in different renderers, so main is the only place
+    // the tie can be broken.
+    expect(api.claimRemoteRequest).toHaveBeenCalledWith({ requestId: "bbr-bare" });
+  });
+
+  it("stands down from a forwarded open another window already claimed", async () => {
+    /*
+      The reported duplicate: two ADE windows on Work, both showing the Browser
+      tool for the same pinned machine, both passing the lane/chat filters
+      because the request names neither. Both used to navigate and both used to
+      ack. Main hands the request to exactly one of them.
+    */
+    const { api } = installBrowserApi();
+    api.claimRemoteRequest.mockResolvedValue({ claimed: false });
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+    await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
+
+    api.emitRemoteRequest({
+      requestId: "bbr-bare",
+      url: "http://127.0.0.1:8080/admin",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    await waitFor(() => expect(api.claimRemoteRequest).toHaveBeenCalled());
+    expect(screen.queryByText("Agent wants to reach port 8080 on Mac Studio")).toBeNull();
+    expect(api.navigate).not.toHaveBeenCalled();
+    expect(api.acknowledgeRemoteRequest).not.toHaveBeenCalled();
+  });
+
+  it("answers a forwarded open on a build whose main cannot arbitrate", async () => {
+    // An older main process has no claim route. Refusing to act would make
+    // `ade browser open` do nothing at all, which is worse than a duplicate.
+    const { api } = installBrowserApi();
+    api.claimRemoteRequest.mockRejectedValue(new Error("No handler registered"));
 
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
     await waitFor(() => expect(api.onRemoteRequest).toHaveBeenCalled());
@@ -1770,6 +1823,74 @@ describe("ChatBuiltInBrowserPanel", () => {
       await waitFor(() => expect(document.activeElement).toBe(input));
     });
 
+    /*
+      The half of ⌘F that `document.activeElement` cannot show you.
+
+      Clicking the page moves the OS keyboard into the tab's own
+      `WebContentsView`. The renderer can still put the caret in the find field
+      — the DOM lets it — but `document.hasFocus()` stays false and every letter
+      goes to the page, which is what "the bar opens and typing does nothing"
+      was. Only the browser process can move focus between two WebContents.
+    */
+    it("asks main for the keyboard back when the find bar opens", async () => {
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      act(() => {
+        consumeAppMenuCommand("find");
+      });
+
+      await waitFor(() => expect(api.focusHost).toHaveBeenCalled());
+      const input = await screen.findByLabelText("Find on page");
+      // Re-focused after the host focus lands, not only before it.
+      await waitFor(() => expect(document.activeElement).toBe(input));
+    });
+
+    it("opens the bar anyway on a build whose main cannot move focus", async () => {
+      const { api } = installBrowserApi();
+      api.focusHost.mockRejectedValue(new Error("No handler registered"));
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      act(() => {
+        consumeAppMenuCommand("find");
+      });
+
+      expect(await screen.findByTestId("browser-find-bar")).toBeTruthy();
+    });
+
+    it("re-runs the remembered query when the bar is reopened", async () => {
+      /*
+        Closing the bar ends the find session, so the count it was showing is
+        no longer true of the page. Reopening restored the TEXT and not the
+        count, which read as "no matches" until you retyped a character.
+      */
+      const { api } = installBrowserApi();
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      await screen.findByTestId("browser-toolbar-row");
+
+      act(() => {
+        consumeAppMenuCommand("find");
+      });
+      fireEvent.change(await screen.findByLabelText("Find on page"), { target: { value: "widget" } });
+      await waitFor(() => expect(api.findInPage).toHaveBeenCalled());
+      fireEvent.click(screen.getByLabelText("Close find bar"));
+      await waitFor(() => expect(screen.queryByTestId("browser-find-bar")).toBeNull());
+      api.findInPage.mockClear();
+
+      act(() => {
+        consumeAppMenuCommand("find");
+      });
+
+      await waitFor(() => expect(api.findInPage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "widget" }),
+        null,
+      ));
+    });
+
     it("declines the menu's ⌘F when the keyboard belongs to something else", async () => {
       installBrowserApi();
       render(
@@ -2256,6 +2377,70 @@ describe("ChatBuiltInBrowserPanel", () => {
         expect.objectContaining({ tabId: browserStatus.activeTabId }),
         null,
       ));
+    });
+
+    /*
+      The reported ⌘W bug, and the ordinary way into this pane.
+
+      `WorkSidebar` focuses its own `<aside>` when you pick a tool, so the very
+      act of switching the pane to Browser leaves focus on a CONTAINER of this
+      panel rather than on `<body>` or on anything inside it. The old ownership
+      rule accepted only null/body/inside-the-panel, so the panel declined its
+      own chord and `TopBar` fell through to `requestWindowClose()` — a Quit
+      prompt, with a browser tab on screen.
+    */
+    it("takes ⌘W with focus on the tool pane that wraps it", async () => {
+      const { api } = installBrowserApi();
+      render(
+        <aside tabIndex={-1} data-testid="work-tools-pane">
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </aside>,
+      );
+      await screen.findByTestId("browser-toolbar-row");
+      const pane = screen.getByTestId("work-tools-pane");
+      pane.focus();
+      expect(document.activeElement).toBe(pane);
+
+      expect(consumeAppMenuCommand("close-tab")).toBe(true);
+      await waitFor(() => expect(api.closeTab).toHaveBeenCalledWith(
+        expect.objectContaining({ tabId: browserStatus.activeTabId }),
+        null,
+      ));
+    });
+
+    it("takes ⌘F with focus on the tool pane that wraps it", async () => {
+      installBrowserApi();
+      render(
+        <aside tabIndex={-1} data-testid="work-tools-pane">
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </aside>,
+      );
+      await screen.findByTestId("browser-toolbar-row");
+      screen.getByTestId("work-tools-pane").focus();
+
+      let claimed = false;
+      act(() => {
+        claimed = consumeAppMenuCommand("find");
+      });
+      expect(claimed).toBe(true);
+      expect(await screen.findByTestId("browser-find-bar")).toBeTruthy();
+    });
+
+    it("still declines ⌘W for a sibling that has the keyboard", async () => {
+      // A container of the panel is not a widget; a sibling field is. The chat
+      // composer must keep meaning "close the window".
+      const { api } = installBrowserApi();
+      render(
+        <aside tabIndex={-1}>
+          <input aria-label="composer" />
+          <ChatBuiltInBrowserPanel sessionId="chat-1" />
+        </aside>,
+      );
+      await screen.findByTestId("browser-toolbar-row");
+      screen.getByLabelText("composer").focus();
+
+      expect(consumeAppMenuCommand("close-tab")).toBe(false);
+      expect(api.closeTab).not.toHaveBeenCalled();
     });
   });
 

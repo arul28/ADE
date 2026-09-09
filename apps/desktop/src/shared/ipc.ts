@@ -27,13 +27,20 @@ export const IPC = {
   appNavigate: "ade.app.navigate",
   /**
    * Every native-menu command main offers the renderer, on one channel:
-   * `{ kind: "zoom" | "menu", command }`. `appZoomCommand`/`appMenuCommand`
-   * below are the pre-unification channels, still bridged in the preload so a
-   * sender that has not moved over keeps working.
+   * `{ kind: "zoom" | "menu", command }`. Main and preload ship in one bundle,
+   * so there is no version in which they can disagree about the shape — the
+   * two pre-unification channels were deleted with their last sender.
    */
   appCommand: "ade.app.command",
-  appZoomCommand: "ade.app.zoomCommand",
-  appMenuCommand: "ade.app.menuCommand",
+  /**
+   * The renderer, once per load, saying "my menu-command subscriber is live".
+   *
+   * `executeJavaScript` proves a JS context exists, which is true seconds
+   * before React mounts — so without this ack ⌘W landed on a window with no
+   * listener and did nothing at all during boot. Until it arrives, a command
+   * with an app-wide fallback runs the fallback instead of being sent.
+   */
+  appCommandsReady: "ade.app.commandsReady",
   appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
   appProjectChanged: "ade.app.projectChanged",
@@ -482,6 +489,16 @@ export const IPC = {
   builtInBrowserSetZoom: "ade.builtInBrowser.setZoom",
   builtInBrowserFindInPage: "ade.builtInBrowser.findInPage",
   builtInBrowserStopFindInPage: "ade.builtInBrowser.stopFindInPage",
+  /**
+   * Move the OS keyboard focus off the page's `WebContentsView` and back onto
+   * the window's own renderer, so a control ADE just focused can be typed in.
+   */
+  builtInBrowserFocusHost: "ade.builtInBrowser.focusHost",
+  /**
+   * One forwarded `ade browser open`, one answering panel — decided in main,
+   * because the panels that would race for it live in different windows.
+   */
+  builtInBrowserClaimRemoteRequest: "ade.builtInBrowser.claimRemoteRequest",
   builtInBrowserSetDevTools: "ade.builtInBrowser.setDevTools",
   builtInBrowserSetNetworkLogging: "ade.builtInBrowser.setNetworkLogging",
   builtInBrowserGetNetworkLog: "ade.builtInBrowser.getNetworkLog",

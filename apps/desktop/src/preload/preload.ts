@@ -2476,19 +2476,18 @@ type AppCommandByKind = {
 };
 
 /**
- * Native-menu commands, one channel down and two subscriptions out.
+ * Native-menu commands, one channel down.
  *
  * Main sends every menu command on `IPC.appCommand` as `{ kind, command }`.
- * The two pre-unification channels are still listened to here so a sender that
- * has not moved over keeps working; main sends only the unified one, so nothing
- * is delivered twice.
+ * There is no second channel to bridge: main and preload ship in the same
+ * bundle, so the pre-unification channels could never have had a sender this
+ * one does not.
  */
 function subscribeAppCommand<TKind extends AppCommandPayload["kind"]>(
   kind: TKind,
   cb: (command: AppCommandByKind[TKind]) => void,
 ): () => void {
   type Command = AppCommandByKind[TKind];
-  const legacyChannel = kind === "zoom" ? IPC.appZoomCommand : IPC.appMenuCommand;
   const onUnified = (
     _event: Electron.IpcRendererEvent,
     payload: AppCommandPayload,
@@ -2496,12 +2495,13 @@ function subscribeAppCommand<TKind extends AppCommandPayload["kind"]>(
     if (!payload || payload.kind !== kind) return;
     cb(payload.command as Command);
   };
-  const onLegacy = (_event: Electron.IpcRendererEvent, command: Command) => cb(command);
   ipcRenderer.on(IPC.appCommand, onUnified);
-  ipcRenderer.on(legacyChannel, onLegacy);
+  // Main holds ⌘W back — and closes the window itself — until it hears that a
+  // subscriber exists, so announcing one is part of subscribing, not a
+  // separate step a caller can forget.
+  ipcRenderer.send(IPC.appCommandsReady);
   return () => {
     ipcRenderer.removeListener(IPC.appCommand, onUnified);
-    ipcRenderer.removeListener(legacyChannel, onLegacy);
   };
 }
 
@@ -8365,6 +8365,18 @@ const adeBridge = {
       isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStopFindInPageResult>(pin, "built_in_browser", "stopFindInPage", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserStopFindInPage, args),
+    /*
+      Deliberately never pin-routed, both of these.
+
+      `focusHost` moves the OS keyboard focus between two WebContents of THIS
+      Electron process; a daemon round trip cannot reach either. `claimRemoteRequest`
+      arbitrates between the windows of this desktop, so asking the remote runtime
+      which of them wins would be asking the wrong computer.
+    */
+    focusHost: async (): Promise<{ focused: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserFocusHost),
+    claimRemoteRequest: async (args: { requestId: string }): Promise<{ claimed: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserClaimRemoteRequest, args),
     setDevTools: async (
       args: BuiltInBrowserSetDevToolsArgs,
       pin?: OpenProjectBinding | null,

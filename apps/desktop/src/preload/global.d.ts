@@ -2556,6 +2556,16 @@ declare global {
           args?: BuiltInBrowserStopFindInPageArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStopFindInPageResult>;
+        /**
+         * Hand the OS keyboard back from the page's `WebContentsView` to this
+         * window's own renderer. Always local; feature-detect before use.
+         */
+        focusHost: () => Promise<{ focused: boolean }>;
+        /**
+         * First panel to claim a forwarded `ade browser open` acts on it; every
+         * other window's panel is told no. Always local; feature-detect before use.
+         */
+        claimRemoteRequest: (args: { requestId: string }) => Promise<{ claimed: boolean }>;
         setDevTools: (
           args: BuiltInBrowserSetDevToolsArgs,
           pin?: OpenProjectBinding | null,

@@ -1346,6 +1346,40 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
+  it("hands the keyboard back to the window's own renderer when the find bar opens", async () => {
+    /*
+      The reported ⌘F bug. Clicking the page moves the OS keyboard into the
+      tab's `WebContentsView`; the renderer can move `document.activeElement`
+      into the find field but not the OS focus, so every letter typed still went
+      to the page. Only the browser process can move focus between two
+      WebContents, which is why the bar asks for it here.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+
+    expect(service.focusHost(win as unknown as Parameters<typeof service.attachToWindow>[0]))
+      .toEqual({ focused: true });
+    expect(win.webContents.focusCalls).toBe(1);
+    service.dispose();
+  });
+
+  it("refuses to focus a window that is not the one in front", async () => {
+    // `WebContents.focus()` activates the owning window, so answering this for a
+    // background window would raise ADE over whatever the user is actually in.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    win.setFocused(false);
+
+    expect(service.focusHost(win as unknown as Parameters<typeof service.attachToWindow>[0]))
+      .toEqual({ focused: false });
+    expect(service.focusHost(null)).toEqual({ focused: false });
+    expect(win.webContents.focusCalls).toBe(0);
+    service.dispose();
+  });
+
   it("keeps the size the panel last showed a parked tab at", async () => {
     // Parking used to floor every hidden tab at 960x600, firing a real window
     // resize inside the page each way round.

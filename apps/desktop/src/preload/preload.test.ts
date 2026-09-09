@@ -9379,3 +9379,80 @@ describe("preload remote runtime event fanout table", () => {
     }
   });
 });
+
+describe("preload native-menu command bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  async function loadBridge() {
+    const on = vi.fn();
+    const send = vi.fn();
+    const removeListener = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke: vi.fn(async () => undefined), on, send, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return { bridge: (globalThis as any).__adeBridge, on, send, removeListener };
+  }
+
+  it("listens on the unified channel only, and announces the subscriber to main", async () => {
+    /*
+      Two things at once, because they are the same fact.
+
+      Main sends every menu command on one channel, so there is no second one to
+      bridge — main and preload ship in the same bundle and cannot disagree. And
+      main holds ⌘W back until it hears that a subscriber exists: a JS context
+      is not a listener, and for the second between them ⌘W used to do nothing
+      at all. Subscribing IS the announcement, so it cannot be forgotten.
+    */
+    const { bridge, on, send, removeListener } = await loadBridge();
+
+    const unsubscribe = bridge.app.onMenuCommand(() => {});
+
+    const channels = on.mock.calls.map(([channel]) => channel);
+    expect(channels.filter((channel: string) => channel === IPC.appCommand)).toHaveLength(1);
+    expect(channels).not.toContain("ade.app.menuCommand");
+    expect(channels).not.toContain("ade.app.zoomCommand");
+    expect(send).toHaveBeenCalledWith(IPC.appCommandsReady);
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC.appCommand, expect.any(Function));
+  });
+
+  it("delivers only the commands of the kind that was subscribed to", async () => {
+    const { bridge, on } = await loadBridge();
+    const menu: string[] = [];
+    const zoom: string[] = [];
+    bridge.app.onMenuCommand((command: string) => menu.push(command));
+    bridge.zoom.onCommand((command: string) => zoom.push(command));
+
+    const handlers = on.mock.calls
+      .filter(([channel]) => channel === IPC.appCommand)
+      .map(([, handler]) => handler as (event: unknown, payload: unknown) => void);
+    for (const handler of handlers) {
+      handler({}, { kind: "menu", command: "close-tab" });
+      handler({}, { kind: "zoom", command: "in" });
+    }
+
+    expect(menu).toEqual(["close-tab"]);
+    expect(zoom).toEqual(["in"]);
+  });
+});

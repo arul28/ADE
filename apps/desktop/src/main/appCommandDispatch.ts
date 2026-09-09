@@ -38,16 +38,28 @@ export type AppCommandWindow = {
  *
  * - A window we did not open (a DevTools window, a native panel) has no ADE
  *   renderer at all, so the command would vanish. Those run `fallback`.
- * - A window whose renderer has crashed, is wedged in a long task, or has not
- *   mounted its handlers yet *also* swallows the command — and for ⌘W that
- *   matters, because ⌘W is the escape hatch for exactly that window. The menu
- *   used `role: "close"` before this route existed, which closed from the
- *   browser process unconditionally; `fallback` restores that guarantee by
- *   running when the renderer cannot be shown to be alive.
+ * - A window whose renderer has crashed or is wedged in a long task *also*
+ *   swallows the command — and for ⌘W that matters, because ⌘W is the escape
+ *   hatch for exactly that window. The menu used `role: "close"` before this
+ *   route existed, which closed from the browser process unconditionally;
+ *   `fallback` restores that guarantee by running when the renderer cannot be
+ *   shown to be alive.
+ * - A window whose renderer has not MOUNTED its subscriber yet swallows it too,
+ *   and no probe can see that: `executeJavaScript` resolves as soon as the JS
+ *   context exists, which is a second or more before React mounts `TopBar`. So
+ *   readiness is announced rather than inferred (`hasCommandSubscriber`), and
+ *   until the ack arrives a command with a fallback runs the fallback.
  */
 export function createAppCommandSender<TWindow extends AppCommandWindow>(args: {
   /** True when this window id belongs to a window with an ADE renderer in it. */
   hasRenderer: (windowId: number) => boolean;
+  /**
+   * True once this window's renderer has said its command subscriber is live.
+   *
+   * Optional so a caller that cannot observe the ack keeps today's behaviour
+   * rather than falling back on every command forever.
+   */
+  hasCommandSubscriber?: (windowId: number) => boolean;
   livenessTimeoutMs?: number;
 }): (
   payload: AppCommandPayload,
@@ -90,6 +102,21 @@ export function createAppCommandSender<TWindow extends AppCommandWindow>(args: {
     const contents = window.webContents;
     if (!args.hasRenderer(window.id) || contents.isDestroyed() || contents.isCrashed()) {
       fallback?.(window);
+      return;
+    }
+    /*
+      Boot, and only boot.
+
+      Between "the renderer has a JS context" and "the renderer is listening"
+      there is a window of a second or more in which the liveness probe says
+      yes and the command is dropped on the floor. ⌘W is the one command that
+      cannot be allowed to do nothing, so while it has an app-wide fallback and
+      no subscriber has announced itself, main answers it the way the old
+      `role: "close"` menu item did. Commands with no fallback (zoom, find) are
+      still sent: losing one of those is a no-op, not a dead window.
+    */
+    if (fallback && args.hasCommandSubscriber && !args.hasCommandSubscriber(window.id)) {
+      fallback(window);
       return;
     }
     contents.send(IPC.appCommand, payload);

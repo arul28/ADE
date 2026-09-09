@@ -1399,6 +1399,33 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserStopFindInPageResult> {
       return serviceForInput(input, sourceWindow).stopFindInPage(input);
     },
+    /**
+     * Give the OS keyboard back to the window's own renderer.
+     *
+     * A tab's page lives in its own `WebContentsView`, and clicking it moves
+     * the OS focus there. The renderer can still move `document.activeElement`
+     * into the find field — the DOM lets it — but the keystrokes keep going to
+     * the page, which is exactly what "⌘F opens a find bar you cannot type in"
+     * looked like. Only the browser process can move focus BETWEEN two
+     * WebContents, so opening the bar asks for it here.
+     *
+     * Deliberately not routed through `serviceForInput`: this is a fact about
+     * one window, not about one project's tabs, and the caller's window is the
+     * only one that may be given focus. The `isFocused` guard is
+     * `returnFocusToHostWindow`'s, for the same reason — `WebContents.focus()`
+     * activates the owning window, so a background window would be raised.
+     */
+    focusHost(sourceWindow?: BrowserWindow | null): { focused: boolean } {
+      const win = sourceWindow ?? null;
+      if (!win || win.isDestroyed() || !win.isFocused?.()) return { focused: false };
+      try {
+        win.webContents?.focus?.();
+        return { focused: true };
+      } catch {
+        // A window mid-teardown has nothing to focus.
+        return { focused: false };
+      }
+    },
     setDevTools(
       input: BuiltInBrowserSetDevToolsArgs,
       sourceWindow?: BrowserWindow | null,

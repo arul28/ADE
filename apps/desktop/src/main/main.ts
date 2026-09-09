@@ -1719,9 +1719,21 @@ app.whenReady().then(async () => {
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
+  /**
+   * Windows whose renderer has announced that its menu-command subscriber is
+   * mounted. Cleared on every main-frame navigation and on window close, so a
+   * reload puts the window back to "answer ⌘W from here" until it re-acks.
+   */
+  const windowCommandSubscribers = new Set<number>();
   /** Native-menu commands (zoom, ⌘F, ⌘W) offered to the renderer before the app answers them. */
   const appCommandSender = createAppCommandSender<BrowserWindow>({
     hasRenderer: (windowId) => windowProjectRoots.has(windowId),
+    hasCommandSubscriber: (windowId) => windowCommandSubscribers.has(windowId),
+  });
+  ipcMain.on(IPC.appCommandsReady, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    windowCommandSubscribers.add(win.id);
   });
   const windowProjectTabRoots = new Map<number, Set<string>>();
   /**
@@ -7270,8 +7282,21 @@ app.whenReady().then(async () => {
       }
       builtInBrowserService.attachToWindow(win);
     });
+    /*
+      A committed main-frame navigation replaces the subscriber with a page
+      that has not mounted one yet — a dev reload, or the window being pointed
+      at a different entry point. Forgetting the ack here is what keeps ⌘W from
+      going dead for the second it takes React to come back.
+    */
+    win.webContents.on("did-navigate", () => {
+      windowCommandSubscribers.delete(win.id);
+    });
+    win.webContents.on("render-process-gone", () => {
+      windowCommandSubscribers.delete(win.id);
+    });
     win.on("closed", () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
+      windowCommandSubscribers.delete(win.id);
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
       windowKnownLocalProjectRoots.delete(win.id);

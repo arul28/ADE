@@ -60,6 +60,53 @@ describe("createAppCommandSender", () => {
     expect(fallback).toHaveBeenCalledWith(win);
   });
 
+  /*
+    The gap `executeJavaScript` cannot see.
+
+    The probe answers "alive" as soon as the renderer has a JS context, which is
+    a second or more before React mounts `TopBar` and subscribes. ⌘W landed on a
+    window with no listener for that whole stretch and did nothing at all — the
+    one command that must never be a no-op, because it is the escape hatch for a
+    window that is not answering.
+  */
+  it("closes the window itself until its renderer says the subscriber is live", () => {
+    const subscribers = new Set<number>();
+    const send = createAppCommandSender<FakeWindow>({
+      hasRenderer: () => true,
+      hasCommandSubscriber: (windowId) => subscribers.has(windowId),
+    });
+    const win = createWindow({ id: 7 });
+    const fallback = vi.fn();
+
+    send({ kind: "menu", command: "close-tab" }, win, fallback);
+    expect(win.sent).toEqual([]);
+    expect(fallback).toHaveBeenCalledWith(win);
+
+    subscribers.add(7);
+    fallback.mockClear();
+    send({ kind: "menu", command: "close-tab" }, win, fallback);
+    expect(win.sent).toEqual([
+      { channel: IPC.appCommand, payload: { kind: "menu", command: "close-tab" } },
+    ]);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("still sends a command with no fallback before the subscriber acks", () => {
+    // Zoom and find have no app-wide fallback to run instead, and losing one is
+    // a no-op rather than a dead window — so they are not held back.
+    const send = createAppCommandSender<FakeWindow>({
+      hasRenderer: () => true,
+      hasCommandSubscriber: () => false,
+    });
+    const win = createWindow();
+
+    send({ kind: "zoom", command: "in" }, win);
+
+    expect(win.sent).toEqual([
+      { channel: IPC.appCommand, payload: { kind: "zoom", command: "in" } },
+    ]);
+  });
+
   it("closes a crashed window itself instead of sending into the void", () => {
     // ⌘W is the escape hatch for a window that has stopped answering, so it
     // must not depend on that window answering. `role: "close"` closed
