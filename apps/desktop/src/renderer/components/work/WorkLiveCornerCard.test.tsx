@@ -353,6 +353,44 @@ describe("WorkLiveCornerCard placement", () => {
     expect(card.style.height).toBe("200px");
   });
 
+  /**
+   * The defect: a portrait frame in the fixed 320×200 card left half the card
+   * empty — two bars around a strip of page. jsdom never decodes an image, so
+   * the natural size is stubbed and `load` is fired by hand; that is exactly
+   * the pair of values the component reads.
+   */
+  it("takes its height from the frame's aspect and crops a tall one from the top", async () => {
+    seedProject();
+    const { card } = await showCard();
+    expect(card.style.height).toBe("200px");
+
+    const image = card.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 390 });
+    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 844 });
+    fireEvent.load(image);
+
+    // Clamped to the 320px envelope rather than the 692px the aspect asks for,
+    // and cropped from the top, where the page's header and the agent's last
+    // action are.
+    await waitFor(() => expect(card.style.height).toBe("320px"));
+    expect(card.style.width).toBe("320px");
+    expect(image.style.objectFit).toBe("cover");
+    expect(image.style.objectPosition).toBe("top");
+  });
+
+  it("keeps a landscape frame letterboxed rather than cropped", async () => {
+    seedProject();
+    const { card } = await showCard();
+    const image = card.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 1600 });
+    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 1200 });
+    fireEvent.load(image);
+
+    await waitFor(() => expect(card.style.height).toBe("240px"));
+    expect(image.style.objectFit).toBe("contain");
+    expect(image.style.objectPosition).toBe("");
+  });
+
   it("clamps a stored position that would hang outside the column", async () => {
     seedProject();
     useAppStore.setState({

@@ -162,6 +162,16 @@ describe("normalizeTab", () => {
     expect(normalizeTab({ id: "tab-1" })?.zoomFactor).toBe(1);
     expect(normalizeTab({ id: "tab-1", zoomFactor: 1.5 })?.zoomFactor).toBe(1.5);
   });
+
+  it("carries the favicon the recents list draws its rows with", () => {
+    // The launchpad's history rows render this, so a main process that predates
+    // the field has to leave a null here rather than an `undefined` the row
+    // then treats as a URL.
+    expect(normalizeTab({ id: "tab-1" })?.faviconUrl).toBeNull();
+    expect(normalizeTab({ id: "tab-1", faviconUrl: 42 })?.faviconUrl).toBeNull();
+    expect(normalizeTab({ id: "tab-1", faviconUrl: "https://a.test/favicon.ico" })?.faviconUrl)
+      .toBe("https://a.test/favicon.ico");
+  });
 });
 
 describe("normalizeTabHandoff", () => {
@@ -307,7 +317,7 @@ describe("launchpad recents", () => {
     expect(parseBrowserRecentUrls("not json")).toEqual([]);
     expect(parseBrowserRecentUrls('{"url":"https://a.test/"}')).toEqual([]);
     expect(parseBrowserRecentUrls('[{"nope":1},{"url":"https://a.test/"}]'))
-      .toEqual([{ url: "https://a.test/", title: null, visitedAt: 0 }]);
+      .toEqual([{ url: "https://a.test/", title: null, faviconUrl: null, visitedAt: 0 }]);
   });
 
   it("files a project's recents apart from the personal browser's", () => {

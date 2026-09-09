@@ -39,15 +39,23 @@ import { workToolAvailability, type WorkToolContext } from "./workTools";
 export type NativeToolFeedScope = { readonly isActive: () => boolean };
 
 /**
- * The one rule for "this App Control session is running".
+ * Whether an App Control session is actually DRIVING an app right now.
  *
- * `stopped` and `exited` are both terminal; `failed` is not (the session is
- * still attached, it is just in an error state, which is what makes the dot red
- * rather than grey).
+ * This used to be "the session has not been stopped", which was true of a
+ * launch terminal whose app has not attached yet (`running` with no CDP
+ * endpoint) and of one whose app quit out from under us — so the pane painted
+ * a green "live" dot beside a context line that read "No app". Attachment is
+ * what a green dot claims, so attachment is what it now means: `connected`, or
+ * `running` with an endpoint on the other end.
+ *
+ * The corner card asks a DIFFERENT question ("is this session still around, so
+ * should the preview stay up") and answers it in its own source adapter; the
+ * two are deliberately not the same rule.
  */
-export function isAppControlSessionLive(session: AppControlSession | null | undefined): boolean {
+export function isAppControlSessionAttached(session: AppControlSession | null | undefined): boolean {
   if (!session) return false;
-  return session.status !== "stopped" && session.status !== "exited";
+  if (session.status === "connected") return true;
+  return session.status === "running" && Boolean(session.cdpEndpoint);
 }
 
 /**

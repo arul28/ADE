@@ -299,6 +299,7 @@ export function WorkSidebar({
     lane: activeLane,
     runtimePin,
     terminalOwnerSessionId: statusOwnerSessionId,
+    activeTool: tool,
   });
 
   function resolveToolAttributionReason(): string | null {

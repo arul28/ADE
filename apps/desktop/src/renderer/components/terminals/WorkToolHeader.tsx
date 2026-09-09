@@ -82,7 +82,7 @@ export function WorkToolHeader({
   const Icon = definition.icon;
 
   return (
-    <div className="ade-pane-chrome ade-tool-pane-rule flex min-h-[36px] shrink-0 items-center gap-2 px-2">
+    <div className="ade-pane-chrome ade-tool-pane-rule ade-tool-header flex min-h-[36px] shrink-0 items-center gap-2 px-2">
       <PaneTooltip label="Back to tools" shortcut={backShortcut} side="bottom">
         <button
           type="button"
@@ -101,19 +101,22 @@ export function WorkToolHeader({
           what lets the context line be the thing that truncates at 280px. */}
       <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
         <Icon size={16} weight="regular" aria-hidden="true" className="shrink-0 text-muted-fg" />
-        <span className="shrink-0 truncate text-[13px] font-medium text-fg">{definition.label}</span>
+        <span className="shrink-0 text-[13px] font-medium text-fg">{definition.label}</span>
         {contextLabel ? (
-          <>
+          /* The header is 36px of a pane that can be 280px wide, so this is the
+             first thing to go: under 400px of pane the context drops entirely
+             (`ade-tool-header` is the container query in index.css) and the
+             tool's NAME survives whole, rather than both halves being sliced
+             into "Browser · No ta…". Above that it truncates with the tooltip
+             carrying the rest. */
+          <span className="ade-tool-header-context flex min-w-0 items-center gap-1.5">
             <span aria-hidden="true" className="shrink-0 text-[12px] text-muted-fg/45">·</span>
-            {/* The header is 36px of a pane that can be 280px wide, so this is
-                the line most likely to be cut. The tooltip is where the rest
-                of it lives. */}
             <PaneTooltip label={contextLabel} side="bottom" onlyWhenClipped className="min-w-0">
-              <span className="min-w-0 truncate text-[12px] text-muted-fg">
+              <span className="block min-w-0 truncate text-[12px] text-muted-fg">
                 {contextLabel}
               </span>
             </PaneTooltip>
-          </>
+          </span>
         ) : null}
       </div>
 

@@ -11,7 +11,7 @@
  * rather than butting a rounded pane against a square document — which is the
  * single cheapest thing that separates a premium browser from an iframe.
  */
-import type { MutableRefObject, PointerEvent } from "react";
+import { useState, type MutableRefObject, type PointerEvent } from "react";
 import {
   ArrowsLeftRight,
   ClipboardText,
@@ -45,6 +45,12 @@ export type BrowserLaunchpadRow = {
   /** Live local servers get a green dot; nothing else claims to be running. */
   live: boolean;
   icon: "server" | "clipboard" | "history";
+  /**
+   * The page's own mark, when the tab that was visited had one. Rendered at
+   * 16px inside the same tile the globe uses, so a list of six pages reads as
+   * six different pages rather than as the same glyph six times.
+   */
+  faviconUrl?: string | null;
   onSelect: () => void;
   /** Present only where forgetting a row means something. */
   onForget?: () => void;
@@ -118,18 +124,64 @@ function LaunchpadThumb({ label }: { label: string | null }) {
   );
 }
 
+/**
+ * The tile a non-server row wears: the page's favicon, or the glyph.
+ *
+ * The favicon is a remote image on a list that renders whatever the browser
+ * last visited, so it is allowed to fail: a 404, a blocked scheme, an icon that
+ * is really an HTML error page all land on `onError` and fall back to the globe
+ * rather than leaving a broken-image square in the column. State is keyed on
+ * the URL so a later row with a working icon is not poisoned by an earlier
+ * failure at the same list position.
+ */
+function LaunchpadGlyph({
+  icon,
+  faviconUrl,
+}: {
+  icon: "clipboard" | "history" | "server";
+  faviconUrl: string | null;
+}) {
+  const [failed, setFailed] = useState<string | null>(null);
+  const showFavicon = Boolean(faviconUrl) && failed !== faviconUrl;
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-[30px] w-12 shrink-0 items-center justify-center rounded-[5px] bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]"
+    >
+      {showFavicon && faviconUrl ? (
+        <img
+          key={faviconUrl}
+          src={faviconUrl}
+          alt=""
+          draggable={false}
+          width={16}
+          height={16}
+          className="h-4 w-4 rounded-[3px] object-contain"
+          onError={() => setFailed(faviconUrl)}
+        />
+      ) : icon === "clipboard" ? (
+        <ClipboardText size={14} className="text-muted-fg/70" />
+      ) : (
+        <Globe size={14} className="text-muted-fg/70" />
+      )}
+    </span>
+  );
+}
+
 function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
   return (
     <section aria-label={group.label} className="flex min-w-0 flex-col gap-2">
-      <div className="flex items-center gap-2 px-1 text-[11px] font-medium text-muted-fg/75">
-        {group.icon === "server" ? <RadioButton size={13} /> : <ClockCounterClockwise size={13} />}
-        {group.label}
+      <div className="flex min-w-0 items-center gap-2 px-1 text-[11px] font-medium text-muted-fg/75">
+        {group.icon === "server"
+          ? <RadioButton size={13} className="shrink-0" />
+          : <ClockCounterClockwise size={13} className="shrink-0" />}
+        <span className="min-w-0 truncate">{group.label}</span>
         {group.onClear ? (
           <button
             type="button"
             onClick={group.onClear.run}
             className={cn(
-              "ml-auto rounded-md px-1.5 py-0.5 text-[11px] text-muted-fg/60",
+              "ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-fg/60",
               "hover:bg-white/[0.06] hover:text-fg/85",
               TOOLBAR_MOTION,
               TOOLBAR_FOCUS,
@@ -140,7 +192,7 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
         ) : null}
       </div>
       {/* One container, hairline-divided rows — not six floating cards. */}
-      <div className="overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.07]">
+      <div className="min-w-0 overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.07]">
         {group.rows.map((row, index) => (
           <div
             key={row.key}
@@ -161,21 +213,12 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
               {row.icon === "server" ? (
                 <LaunchpadThumb label={row.thumbLabel} />
               ) : (
-                <span
-                  aria-hidden="true"
-                  className="flex h-[30px] w-12 shrink-0 items-center justify-center rounded-[5px] bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]"
-                >
-                  {row.icon === "clipboard" ? (
-                    <ClipboardText size={14} className="text-muted-fg/70" />
-                  ) : (
-                    <Globe size={14} className="text-muted-fg/70" />
-                  )}
-                </span>
+                <LaunchpadGlyph icon={row.icon} faviconUrl={row.faviconUrl ?? null} />
               )}
               <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                <span className="truncate text-[13px] font-medium text-fg/88">{row.title}</span>
+                <span className="min-w-0 truncate text-[13px] font-medium text-fg/88">{row.title}</span>
                 {row.subtitle ? (
-                  <span className="truncate text-[11.5px] text-muted-fg/70">{row.subtitle}</span>
+                  <span className="min-w-0 truncate text-[11.5px] text-muted-fg/70">{row.subtitle}</span>
                 ) : null}
               </span>
               {row.live ? (

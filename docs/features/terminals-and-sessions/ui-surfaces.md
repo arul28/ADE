@@ -974,9 +974,11 @@ agent starts driving the browser while you read a diff, the thing you
 most want to see is the thing you just navigated away from. The corner
 card is a live thumbnail of the most recently active screen tool that is
 **not** the one on screen, parked in a corner of the chat column and one
-click away from taking the pane back. It is 320×200 for the browser and
-App Control and 240×320 for the simulator — only the simulator is
-portrait — and it asks its source for frames at the card's width in
+click away from taking the pane back. It is 320 wide for the browser and
+App Control, with its height following the latest frame's aspect ratio
+clamped to 180–320 (`workLiveCardSizeForFrame`); a frame taller than the
+clamp is shown top-aligned with `object-fit: cover`, a landscape frame is
+contained. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
 *device* pixels, so a Retina card is not fed a thumbnail-sized image and
 upscaled into mush, nor a 5K panel a full-width one.
 

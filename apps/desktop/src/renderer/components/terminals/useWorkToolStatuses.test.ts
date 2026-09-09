@@ -1,10 +1,14 @@
+/* @vitest-environment jsdom */
+
 /**
  * The picker card gives a status ONE line, in a track that is 154px wide at two
  * columns. These tests are about length as much as content: every line here is
  * a fact, never a sentence, because the sentence version ("Shells attached to
  * this session", "3 ahead · uncommitted changes") is what truncated mid-word.
  */
-import { describe, expect, it } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserStatus, LaneSummary } from "../../../shared/types";
 import {
   appControlStatusLine,
@@ -13,9 +17,17 @@ import {
   gitStatusLine,
   iosStatusLine,
   terminalStatusLine,
+  workToolDotState,
   workToolSummary,
+  useWorkToolStatuses,
 } from "./useWorkToolStatuses";
-import { asBuiltInBrowserStatus, isAppControlSessionLive } from "./useNativeToolSessions";
+import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
+import {
+  publishWorkTerminalShellCount,
+  clearWorkTerminalShellCount,
+  resetWorkTerminalShellCounts,
+} from "./workTerminalShells";
+import { asBuiltInBrowserStatus, isAppControlSessionAttached } from "./useNativeToolSessions";
 import {
   EMPTY_WORK_TOOL_ERRORS,
   pruneWorkToolBrowserErrors,
@@ -150,14 +162,48 @@ describe("non-conforming browser status (web client stub)", () => {
   });
 });
 
-describe("isAppControlSessionLive", () => {
-  it("is the one rule both the pane and the corner card read", () => {
-    expect(isAppControlSessionLive(null)).toBe(false);
-    expect(isAppControlSessionLive({ status: "connected" } as never)).toBe(true);
-    // `failed` is still attached — that is what makes the dot red, not absent.
-    expect(isAppControlSessionLive({ status: "failed" } as never)).toBe(true);
-    expect(isAppControlSessionLive({ status: "stopped" } as never)).toBe(false);
-    expect(isAppControlSessionLive({ status: "exited" } as never)).toBe(false);
+describe("isAppControlSessionAttached", () => {
+  it("means an app is on the other end, not just that a session exists", () => {
+    expect(isAppControlSessionAttached(null)).toBe(false);
+    expect(isAppControlSessionAttached({ status: "connected" } as never)).toBe(true);
+    expect(isAppControlSessionAttached({ status: "running", cdpEndpoint: "ws://x" } as never)).toBe(true);
+    // The launch terminal is up but nothing has attached (or it quit).
+    expect(isAppControlSessionAttached({ status: "running", cdpEndpoint: null } as never)).toBe(false);
+    expect(isAppControlSessionAttached({ status: "starting" } as never)).toBe(false);
+    expect(isAppControlSessionAttached({ status: "failed" } as never)).toBe(false);
+    expect(isAppControlSessionAttached({ status: "stopped" } as never)).toBe(false);
+    expect(isAppControlSessionAttached({ status: "exited" } as never)).toBe(false);
+  });
+});
+
+describe("app control dot states", () => {
+  /**
+   * The regression: the header painted a green "live" dot for any session that
+   * had not been stopped, so a launch terminal with no app attached showed
+   * green beside a context line that read "No app".
+   */
+  it("is green only when an app is attached", () => {
+    expect(workToolDotState(appControlStatusLine(null))).toBe("idle");
+    expect(workToolDotState(appControlStatusLine({ label: "Zen", status: "connected" } as never)))
+      .toBe("live");
+    expect(workToolDotState(
+      appControlStatusLine({ label: "Zen", status: "running", cdpEndpoint: "ws://x" } as never),
+    )).toBe("live");
+  });
+
+  it("is amber for a session that exists but is not driving anything", () => {
+    for (const status of ["starting", "running", "stopping"]) {
+      expect(workToolDotState(appControlStatusLine({ label: "Zen", status } as never)))
+        .toBe("attention");
+    }
+  });
+
+  it("keeps red for failed and no dot at all once the session is over", () => {
+    expect(workToolDotState(appControlStatusLine({ label: "Zen", status: "failed" } as never)))
+      .toBe("error");
+    for (const status of ["stopped", "exited"]) {
+      expect(workToolDotState(appControlStatusLine({ label: "Zen", status } as never))).toBe("idle");
+    }
   });
 });
 
@@ -199,5 +245,64 @@ describe("workToolSummary", () => {
       reason: "Not available on this machine",
     });
     expect(summary.line).toBe("Not available on this machine");
+  });
+});
+
+/**
+ * The shell count the pane falls back to when no terminal panel is mounted.
+ *
+ * The regression: `terminal.list` was read once and then only re-read on a
+ * session change or a PTY exit, so starting a shell and switching away from the
+ * terminal left the header and the picker card saying "No shells" over a shell
+ * that was still running — the panel's published count had gone back to null
+ * and the stale list was all that was left.
+ */
+describe("useWorkToolStatuses shell re-reads", () => {
+  const OWNER = "chat-1";
+
+  afterEach(() => {
+    cleanup();
+    resetWorkTerminalShellCounts();
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  function wrapper({ children }: { children: ReactNode }) {
+    return createElement(NativeToolFeedsProvider, { active: true, runtimePin: null, children });
+  }
+
+  it("re-reads terminal.list when the panel's published count changes", async () => {
+    let shells: Array<{ title: string; status: string; active: boolean }> = [];
+    const list = vi.fn(async () => shells);
+    (window as unknown as { ade?: unknown }).ade = {
+      terminal: { list },
+      sessions: { onChanged: () => () => {} },
+      pty: { onExit: () => () => {} },
+    };
+
+    const { result } = renderHook(
+      () => useWorkToolStatuses({
+        enabled: true,
+        laneId: null,
+        lane: null,
+        runtimePin: null,
+        terminalOwnerSessionId: OWNER,
+        activeTool: "terminal",
+      }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    expect(result.current.statuses.terminal?.line).toBe("No shells");
+
+    // A panel mounts and reports a live shell; the daemon's list now has it too.
+    shells = [{ title: "zsh", status: "running", active: true }];
+    publishWorkTerminalShellCount(OWNER, 1);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+
+    // …and the panel unmounts. The published count is gone, so the pane's own
+    // read is the only answer left — and it has to be a FRESH one.
+    clearWorkTerminalShellCount(OWNER);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(result.current.statuses.terminal?.line).toBe("1 shell"));
   });
 });

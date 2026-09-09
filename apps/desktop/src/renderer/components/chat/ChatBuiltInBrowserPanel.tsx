@@ -2199,14 +2199,19 @@ export function ChatBuiltInBrowserPanel({
     a redirect chain would otherwise file three rows for one destination.
   */
   const settledTitle = activeTab?.title ?? null;
+  // The tab's own mark, as Chromium reported it for this document. Stored with
+  // the row so the launchpad can draw the page rather than a sixth globe; the
+  // store re-sanitizes it, so nothing here has to trust the payload.
+  const settledFaviconUrl = activeTab?.faviconUrl ?? null;
   useEffect(() => {
     if (loading || !currentUrl) return;
     setRecentUrls(rememberBrowserRecentUrl(recentScope, {
       url: currentUrl,
       title: settledTitle?.trim() ? settledTitle.trim() : null,
+      faviconUrl: settledFaviconUrl,
       visitedAt: Date.now(),
     }));
-  }, [currentUrl, loading, recentScope, settledTitle]);
+  }, [currentUrl, loading, recentScope, settledFaviconUrl, settledTitle]);
 
   const handleForgetRecent = useCallback((url: string) => {
     setRecentUrls(forgetBrowserRecentUrl(recentScope, url));
@@ -2274,6 +2279,7 @@ export function ChatBuiltInBrowserPanel({
           thumbLabel: null,
           live: false,
           icon: "history" as const,
+          faviconUrl: entry.faviconUrl ?? null,
           onSelect: () => handleSuggestion(entry.url),
           onForget: () => handleForgetRecent(entry.url),
         })),

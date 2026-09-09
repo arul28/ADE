@@ -2370,6 +2370,23 @@ button:active, [role="button"]:active {
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
 }
 
+/* The tools pane header measures itself, so the pane can be dragged to 280px
+   without the window knowing anything about it. */
+.ade-tool-header {
+  container-type: inline-size;
+  container-name: ade-tool-header;
+}
+
+/* Under 400px the header stops trying to say two things. The tool's NAME is
+   the one that has to survive — "Browser" is the answer to "what am I looking
+   at" — so the context drops whole rather than both halves being sliced into
+   "Browser · No ta…". The panel underneath still shows the same fact in full. */
+@container ade-tool-header (max-width: 399px) {
+  .ade-tool-header-context {
+    display: none;
+  }
+}
+
 /* Work tools picker: placeholder status lines held for at most 300ms while the
    tool reads settle. Stepped like the other idle animations here — a smooth
    sweep costs a compositor frame per display refresh for a shimmer nobody is

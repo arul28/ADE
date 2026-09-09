@@ -1102,7 +1102,7 @@ enum WorkProofPreviewData {
 /// A fixture screen selectable from the command line, so a screenshot of a
 /// design change needs a simulator and nothing else:
 ///
-///     xcrun simctl launch <udid> dev.ade.ADE -adePreviewScreen proof
+///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen proof
 ///
 /// DEBUG-only on both sides — the launch argument is ignored by a release
 /// build because `ADEApp` never reads it there.

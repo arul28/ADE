@@ -17,7 +17,7 @@ import {
   workToolErrorSuffix,
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
-import { asBuiltInBrowserStatus, isAppControlSessionLive } from "./useNativeToolSessions";
+import { asBuiltInBrowserStatus, isAppControlSessionAttached } from "./useNativeToolSessions";
 import {
   getWorkTerminalShellCount,
   subscribeWorkTerminalShells,
@@ -231,13 +231,30 @@ export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStat
   return statusLine(device, true);
 }
 
+/**
+ * App Control's dot, in three states rather than one.
+ *
+ * The dot used to be green for any session that had not been stopped, which
+ * included a launch terminal whose app has not attached yet and one whose app
+ * has since quit — so the header showed a live green dot beside a context line
+ * that read "No app". Green now means an app is actually on the other end
+ * ({@link isAppControlSessionAttached}); a session that exists but is not
+ * driving anything is amber, because it is a thing in flight rather than a
+ * thing running; `failed` stays red; and no session at all — or a stopped or
+ * exited one — has nothing to say and gets no dot.
+ */
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
   if (!session) return statusLine("No app", false);
   const label = session.label?.trim() || "App";
-  return statusLine(label, isAppControlSessionLive(session), {
+  const attached = isAppControlSessionAttached(session);
+  // Terminal states are the tool's idle: the session is a record of something
+  // that finished, not something to point at.
+  const settled = session.status === "stopped" || session.status === "exited";
+  return statusLine(label, attached, {
     // App Control has no pushed console/network tally today, so its red dot is
     // driven by the one error state its session reports.
     errored: session.status === "failed",
+    attention: !attached && !settled && session.status !== "failed",
   });
 }
 
@@ -291,6 +308,15 @@ export function useWorkToolStatuses(args: {
   runtimePin: OpenProjectBinding | null;
   /** Chat/CLI session that owns the attached terminals, if any. */
   terminalOwnerSessionId: string | null;
+  /**
+   * The tool on screen, or null for the picker page.
+   *
+   * Only ever a re-read TRIGGER, never part of an answer: arriving at the
+   * picker is the one moment every card is about to be read at once, so the
+   * shell list is refreshed then rather than shown at whatever age it happened
+   * to be.
+   */
+  activeTool?: WorkSidebarTab | null;
 }): {
   statuses: WorkToolStatusMap;
   loading: boolean;
@@ -302,7 +328,7 @@ export function useWorkToolStatuses(args: {
   iosSession: IosSimulatorSession | null;
   appControlSession: AppControlSession | null;
 } {
-  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, activeTool = null } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
@@ -356,6 +382,15 @@ export function useWorkToolStatuses(args: {
   // exits. Still not a poll — every re-read is caused by something that
   // happened. Before this the header could say "No shells" for the lifetime of
   // the pane while a shell you had just started scrolled past underneath it.
+  // The count the terminal PANEL is showing, when one is mounted. Subscribed
+  // rather than polled: the panel publishes on every tab change, so opening a
+  // shell or splitting one moves this line in the same commit that draws it.
+  const panelShellCount = useSyncExternalStore(
+    subscribeWorkTerminalShells,
+    () => getWorkTerminalShellCount(terminalOwnerSessionId),
+    () => null,
+  );
+
   const [terminalEpoch, setTerminalEpoch] = useState(0);
   useEffect(() => {
     if (!enabled || offline || !terminalOwnerSessionId) return undefined;
@@ -392,16 +427,14 @@ export function useWorkToolStatuses(args: {
     return () => {
       cancelled = true;
     };
-  }, [enabled, offline, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
-
-  // The count the terminal PANEL is showing, when one is mounted. Subscribed
-  // rather than polled: the panel publishes on every tab change, so opening a
-  // shell or splitting one moves this line in the same commit that draws it.
-  const panelShellCount = useSyncExternalStore(
-    subscribeWorkTerminalShells,
-    () => getWorkTerminalShellCount(terminalOwnerSessionId),
-    () => null,
-  );
+    // `panelShellCount` and `activeTool` are TRIGGERS, not inputs: the panel's
+    // own count wins while a panel is mounted, but the moment it unmounts the
+    // count goes back to null and this read becomes the only answer there is —
+    // and it was last taken before the shell existed, which is how the header
+    // and the picker card kept saying "No shells" over a shell you had started.
+    // Switching tools re-reads for the same reason: the picker shows every
+    // card at once, so that is the moment the list has to be current.
+  }, [activeTool, enabled, offline, panelShellCount, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles, panelShellCount),

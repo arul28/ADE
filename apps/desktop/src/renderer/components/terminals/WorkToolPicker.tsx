@@ -18,13 +18,20 @@ import {
  *
  * Expressed as a track minimum rather than a media/container query so it can
  * never disagree with the real width: with 24px of padding either side and an
- * 8px gutter, two 196px tracks need 448px of pane and three need 652px — more
+ * 8px gutter, two 188px tracks need 432px of pane and three need 628px — more
  * than the column is ever allowed to be. That arithmetic is the cap. A wide
  * pane used to reach three tracks and spend the extra width making every card
  * SMALLER (149px at 527px of pane); the cards now grow with the pane instead,
- * from 196px at the two-column threshold to 252px at the column's full width.
+ * from 188px at the two-column threshold to 252px at the column's full width.
+ *
+ * 188 rather than 196 because the pane's DEFAULT width is 447px, which cleared
+ * the old 448px threshold by exactly one pixel the wrong way: the picker
+ * everybody sees on first open rendered a single column of six cards down a
+ * pane wide enough for two. A 188px card still holds the 16px glyph, the label
+ * and the one status line at their current sizes with the 16px padding intact
+ * — the longest fixed line ("3 ahead · dirty") measures well inside it.
  */
-const CARD_MIN_TRACK_PX = 196;
+const CARD_MIN_TRACK_PX = 188;
 
 /** The column the whole page is built around — title, subline and grid alike. */
 const COLUMN_MAX_PX = 512;

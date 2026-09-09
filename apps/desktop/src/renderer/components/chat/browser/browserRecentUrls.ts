@@ -27,6 +27,15 @@ export type BrowserRecentUrl = {
   url: string;
   /** The page's own title, when it had one by the time it settled. */
   title: string | null;
+  /**
+   * The tab's favicon at the moment it settled, or null.
+   *
+   * Stored rather than re-fetched: this list renders with no network of its
+   * own, and asking six origins for `/favicon.ico` on every empty state would
+   * be six requests the person did not make. Passes the same gate the URL does
+   * — see {@link sanitizeBrowserRecentFaviconUrl}.
+   */
+  faviconUrl?: string | null;
   /** Epoch ms, so the newest is first without re-sorting on read. */
   visitedAt: number;
 };
@@ -115,6 +124,94 @@ export function sanitizeBrowserRecentUrl(value: string | null | undefined): stri
   return `${url.origin}${url.pathname}`;
 }
 
+/**
+ * The most a stored data-URL favicon may weigh.
+ *
+ * `localStorage` is a few megabytes for the whole renderer and this list holds
+ * ten rows, so an inline icon is welcome and a 200KB one dressed as an icon is
+ * not: past this the row falls back to the globe rather than evicting somebody
+ * else's key.
+ */
+export const BROWSER_RECENT_FAVICON_MAX_BYTES = 2048;
+
+/**
+ * The favicon this list may keep, or null.
+ *
+ * A favicon URL is a URL the pane renders, so it goes through the same refusals
+ * the page URL does — a credential in the query or fragment, an ephemeral
+ * loopback port — plus a length cap for the `data:` form. Only `http`, `https`
+ * and `data:` survive; anything else (a `chrome-extension://` icon, a `file:`
+ * path) is an address this renderer has no business fetching from a list.
+ */
+export function sanitizeBrowserRecentFaviconUrl(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  if (text.startsWith("data:")) {
+    // Only real image payloads, and only small ones. `data:text/html` in an
+    // <img> renders nothing, but storing it is storing arbitrary markup.
+    if (!/^data:image\/[a-z0-9.+-]+[;,]/iu.test(text)) return null;
+    return text.length <= BROWSER_RECENT_FAVICON_MAX_BYTES ? text : null;
+  }
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (carriesCredential(url.searchParams)) return null;
+  if (url.hash.length > 1 && carriesCredential(new URLSearchParams(url.hash.slice(1)))) return null;
+  if (isLoopbackHostname(url.hostname)) {
+    const port = Number(url.port);
+    if (Number.isInteger(port) && port >= EPHEMERAL_LOOPBACK_PORT_MIN) return null;
+  }
+  // The query survives here, unlike the page URL: a favicon is very often
+  // `?v=3` and dropping it serves a stale icon or a 404.
+  return url.toString();
+}
+
+/**
+ * The separators a site titles its pages with. All spaced, deliberately: an
+ * unspaced hyphen is part of a word ("sign-in"), not a segment break.
+ */
+const TITLE_SEGMENT_SEPARATORS = [" · ", " | ", " — ", " – ", " - "] as const;
+
+/** Past this a title is a sentence, and the site's name is stapled to the end of it. */
+const TITLE_SPLIT_THRESHOLD = 40;
+
+/** The hard cap, applied after any split. */
+const TITLE_MAX_LENGTH = 60;
+
+/**
+ * The title this list stores.
+ *
+ * Page titles are written for a browser tab that is 200px wide and a search
+ * result that is not — "Pull requests · ade/ade · GitHub", "Vite + React |
+ * Dashboard — Acme". In a 13px row the useful half is the FIRST segment, and
+ * the rest is the site's name, which the URL underneath already says. Only long
+ * titles are split: "Docs · ADE" is short enough to read whole, and cutting it
+ * would throw away the half that disambiguates it.
+ */
+export function cleanBrowserRecentTitle(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim().replace(/\s+/gu, " ");
+  if (!text) return null;
+  let kept = text;
+  if (text.length > TITLE_SPLIT_THRESHOLD) {
+    // The EARLIEST break wins, not the first separator in this list: a title
+    // that uses two of them ("Issue 12 - ade/ade | GitHub") has to cut at the
+    // one nearest the front, or the "first segment" keeps a second segment.
+    // A separator at index 0 would leave nothing, so it is not a break.
+    let cut = -1;
+    for (const separator of TITLE_SEGMENT_SEPARATORS) {
+      const index = text.indexOf(separator);
+      if (index > 0 && (cut < 0 || index < cut)) cut = index;
+    }
+    if (cut > 0) kept = text.slice(0, cut).trim();
+  }
+  if (!kept) kept = text;
+  return kept.length > TITLE_MAX_LENGTH ? kept.slice(0, TITLE_MAX_LENGTH).trimEnd() : kept;
+}
+
 function isRecent(value: unknown): value is BrowserRecentUrl {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -138,6 +235,11 @@ export function parseBrowserRecentUrls(raw: string | null | undefined): BrowserR
     entries.push({
       url: value.url,
       title: typeof value.title === "string" && value.title.trim() ? value.title : null,
+      // Re-sanitized on READ, not only on write: rows written by an older
+      // build (or hand-edited in devtools) are rendered by this one.
+      faviconUrl: sanitizeBrowserRecentFaviconUrl(
+        typeof value.faviconUrl === "string" ? value.faviconUrl : null,
+      ),
       visitedAt: typeof value.visitedAt === "number" && Number.isFinite(value.visitedAt)
         ? value.visitedAt
         : 0,
@@ -197,7 +299,12 @@ export function rememberBrowserRecentUrl(
   const current = readBrowserRecentUrls(scope);
   const url = sanitizeBrowserRecentUrl(entry.url);
   if (!url) return current;
-  const next = withBrowserRecentUrl(current, { ...entry, url });
+  const next = withBrowserRecentUrl(current, {
+    ...entry,
+    url,
+    title: cleanBrowserRecentTitle(entry.title),
+    faviconUrl: sanitizeBrowserRecentFaviconUrl(entry.faviconUrl),
+  });
   writeRecents(scope, next);
   return next;
 }

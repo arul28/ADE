@@ -8,7 +8,11 @@ import {
   WORK_LIVE_CARD_PORTRAIT_SIZE,
   WORK_LIVE_CARD_WIDTH,
   WORK_LIVE_SCRUB_BUFFER_SIZE,
+  WORK_LIVE_CARD_MIN_FRAME_HEIGHT,
+  WORK_LIVE_CARD_MAX_FRAME_HEIGHT,
+  workLiveCardObjectFit,
   workLiveCardSize,
+  workLiveCardSizeForFrame,
   commitWorkLiveScrubFrame,
   formatWorkLiveActionCaption,
   workLiveActionVerb,
@@ -603,5 +607,68 @@ describe("workLiveSource", () => {
         recording: null,
       });
     }
+  });
+});
+
+/**
+ * The card's height follows the frame.
+ *
+ * The defect: a portrait browser frame — a phone-emulated tab, a tall app —
+ * arrived in the fixed 320×200 card and spent half of it on empty pane, two
+ * bars around a strip of page.
+ */
+describe("frame-driven card size", () => {
+  it("keeps the tool's declared box until a frame has been measured", () => {
+    expect(workLiveCardSizeForFrame("browser", null)).toEqual(WORK_LIVE_CARD_LANDSCAPE_SIZE);
+    expect(workLiveCardSizeForFrame("app-control", 0)).toEqual(WORK_LIVE_CARD_LANDSCAPE_SIZE);
+    expect(workLiveCardSizeForFrame("browser", Number.NaN)).toEqual(WORK_LIVE_CARD_LANDSCAPE_SIZE);
+  });
+
+  it("leaves the simulator portrait, whatever its stream reports", () => {
+    // The sim is a phone; 240×320 is the honest frame and it does not move.
+    expect(workLiveCardSizeForFrame("ios", 16 / 9)).toEqual(WORK_LIVE_CARD_PORTRAIT_SIZE);
+    expect(workLiveCardSizeForFrame("ios", 3 / 4)).toEqual(WORK_LIVE_CARD_PORTRAIT_SIZE);
+    expect(workLiveCardObjectFit("ios", 3 / 4)).toBe("contain");
+  });
+
+  it("keeps 320 wide and takes the height from the aspect", () => {
+    const wide = workLiveCardSizeForFrame("browser", 16 / 10);
+    expect(wide).toEqual({ width: 320, height: 200 });
+    const squarish = workLiveCardSizeForFrame("browser", 4 / 3);
+    expect(squarish.width).toBe(WORK_LIVE_CARD_WIDTH);
+    expect(squarish.height).toBe(240);
+    expect(workLiveCardObjectFit("browser", 4 / 3)).toBe("contain");
+  });
+
+  it("clamps a very flat frame to the minimum height", () => {
+    const cinema = workLiveCardSizeForFrame("browser", 21 / 4);
+    expect(cinema.height).toBe(WORK_LIVE_CARD_MIN_FRAME_HEIGHT);
+    expect(cinema.width).toBe(WORK_LIVE_CARD_WIDTH);
+  });
+
+  it("clamps a portrait frame to the envelope and covers it from the top", () => {
+    // A 390×844 phone viewport: 320px wide would be 692px tall, which would
+    // cover the column the card floats over.
+    const phone = workLiveCardSizeForFrame("browser", 390 / 844);
+    expect(phone).toEqual({ width: 320, height: WORK_LIVE_CARD_MAX_FRAME_HEIGHT });
+    expect(workLiveCardObjectFit("browser", 390 / 844)).toBe("cover");
+    // A square frame is the exact edge of the envelope — 320 wide, 320 tall —
+    // so it is the last shape that still fits whole.
+    expect(workLiveCardSizeForFrame("browser", 1)).toEqual({ width: 320, height: 320 });
+    expect(workLiveCardObjectFit("browser", 1)).toBe("contain");
+    // And a 3:4 page, which would need 427px, is cropped from the top.
+    expect(workLiveCardObjectFit("browser", 3 / 4)).toBe("cover");
+  });
+
+  it("never leaves the clamp range", () => {
+    for (const aspect of [0.1, 0.5, 0.75, 1, 1.6, 4, 20]) {
+      const size = workLiveCardSizeForFrame("app-control", aspect);
+      expect(size.width).toBe(WORK_LIVE_CARD_WIDTH);
+      expect(size.height).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_FRAME_HEIGHT);
+      expect(size.height).toBeLessThanOrEqual(WORK_LIVE_CARD_MAX_FRAME_HEIGHT);
+    }
+    expect(WORK_LIVE_CARD_MAX_FRAME_HEIGHT).toBe(WORK_LIVE_CARD_MAX_SIZE);
+    expect(WORK_LIVE_CARD_MIN_HEIGHT).toBeLessThanOrEqual(WORK_LIVE_CARD_MIN_FRAME_HEIGHT);
+    expect(WORK_LIVE_CARD_MIN_WIDTH).toBeLessThanOrEqual(WORK_LIVE_CARD_WIDTH);
   });
 });

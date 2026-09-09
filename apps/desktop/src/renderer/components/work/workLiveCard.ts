@@ -467,6 +467,68 @@ export function workLiveCardSize(tool: WorkLiveScreenTool | null): WorkLiveCardS
 }
 
 /**
+ * How tall a 320px-wide card is allowed to get, and how short.
+ *
+ * 180 is the landscape card minus its rounding slack — anything flatter is a
+ * letterbox rather than a preview. 320 is the envelope: a card taller than it
+ * is wide starts covering the column it floats over, which is the thing the
+ * corner card must never do.
+ */
+export const WORK_LIVE_CARD_MIN_FRAME_HEIGHT = 180;
+export const WORK_LIVE_CARD_MAX_FRAME_HEIGHT = WORK_LIVE_CARD_MAX_SIZE;
+
+/**
+ * The card's box for the frame actually arriving, at the fixed 320px width.
+ *
+ * The browser and App Control preview whatever shape the page is, which is not
+ * always 16:10: a phone-emulated tab or a portrait app in the 320×200 card left
+ * half of it empty — two black bars around a thin strip of page. Width stays
+ * 320 (the card's place in the column is built on it, and the preview stream is
+ * sized against it) and the HEIGHT follows the frame, clamped so the card can
+ * neither flatten into a letterbox nor grow past the envelope.
+ *
+ * `aspect` is width ÷ height of the newest frame. Null — no frame yet, or a
+ * frame that has not decoded — keeps the tool's declared size, so the card
+ * opens at the shape it has always opened at rather than at a guess.
+ */
+export function workLiveCardSizeForFrame(
+  tool: WorkLiveScreenTool | null,
+  aspect: number | null,
+): WorkLiveCardSize {
+  // The simulator is a phone and stays one: its stream is already portrait and
+  // its 240×320 box is the honest frame for it.
+  if (tool === "ios" || aspect == null || !Number.isFinite(aspect) || aspect <= 0) {
+    return workLiveCardSize(tool);
+  }
+  const height = Math.round(WORK_LIVE_CARD_WIDTH / aspect);
+  return {
+    width: WORK_LIVE_CARD_WIDTH,
+    height: Math.max(
+      WORK_LIVE_CARD_MIN_FRAME_HEIGHT,
+      Math.min(WORK_LIVE_CARD_MAX_FRAME_HEIGHT, height),
+    ),
+  };
+}
+
+/**
+ * How the frame fills the box it was just given.
+ *
+ * When the clamp had to cut the height down — a tall portrait page whose full
+ * height would need more than 320px — `contain` would put the bars straight
+ * back, so the frame is `cover`ed and anchored to the TOP: the top of a page is
+ * where its header, its nav and whatever the agent just did all are, and the
+ * bottom is where the footer is. Anything the clamp did NOT cut fits exactly,
+ * and `contain` keeps it honest.
+ */
+export function workLiveCardObjectFit(
+  tool: WorkLiveScreenTool | null,
+  aspect: number | null,
+): "contain" | "cover" {
+  if (tool === "ios" || aspect == null || !Number.isFinite(aspect) || aspect <= 0) return "contain";
+  return WORK_LIVE_CARD_WIDTH / aspect > WORK_LIVE_CARD_MAX_FRAME_HEIGHT ? "cover" : "contain";
+}
+
+/**
  * The frame width to ask the source for: the card's own width in DEVICE
  * pixels, so a Retina card is not fed a 260px image and upscaled into mush —
  * and a 5K panel is not fed a 1280px one for a thumbnail.

@@ -25,6 +25,13 @@ function cardById(id: string): HTMLButtonElement {
   return card;
 }
 
+/**
+ * The pane at its default 36% on a normal window — 447px, which is what the
+ * visual review measured — and the column's own `px-6` padding.
+ */
+const DEFAULT_PANE_WIDTH_PX = 447;
+const COLUMN_PADDING_PX = 24;
+
 describe("WorkToolPicker", () => {
   afterEach(cleanup);
 
@@ -236,7 +243,7 @@ describe("WorkToolPicker", () => {
     }
   });
 
-  it("caps the grid at two columns and never lets a card shrink below 196px", () => {
+  it("caps the grid at two columns and fits two of them in the default pane", () => {
     render(
       <WorkToolPicker
         activeTool={null}
@@ -257,9 +264,15 @@ describe("WorkToolPicker", () => {
     const track = /minmax\(min\(100%, (\d+)px\)/u.exec(grid.style.gridTemplateColumns);
     expect(track).toBeTruthy();
     const minTrack = Number(track![1]);
-    expect(minTrack).toBeGreaterThanOrEqual(196);
+    // Three tracks stay arithmetically unreachable inside the column…
     expect(minTrack * 3 + 16).toBeGreaterThan(maxColumn);
+    // …and two always fit it.
     expect(minTrack * 2 + 8).toBeLessThanOrEqual(maxColumn);
+    // The regression this pins: at the pane's default width the old 196px
+    // track needed 448px and had 447 — so the picker everybody sees on first
+    // open rendered one column down a pane wide enough for two, missing it by
+    // a single pixel. `px-6` either side plus the 8px gutter is the budget.
+    expect(minTrack * 2 + 8 + COLUMN_PADDING_PX * 2).toBeLessThanOrEqual(DEFAULT_PANE_WIDTH_PX);
   });
 
   it("keeps the web client's watchable tools pickable and its undrivable one dimmed", () => {
