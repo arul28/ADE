@@ -254,7 +254,7 @@ import {
 } from "./mobileReplicaReseed";
 import {
   resolveInitialPeerCursor,
-  type SyncPeerCursorReason,
+  type SyncPeerCursorResolution,
 } from "./syncPeerCursorResolution";
 import {
   SYNC_HOST_BIND_HOST,
@@ -1293,17 +1293,28 @@ export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMet
     : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
 }
 
+/**
+ * Reported for every replica cursor the host resolves, so the caller can log
+ * the rewind and seed the delivery watermark that prevents repeating it.
+ */
+export type SyncPeerCursorResolutionInfo = SyncPeerCursorResolution & {
+  claimed: number;
+  resolved: number;
+};
+
 export function initialSyncHostCursorForPeer(args: {
   peer: Pick<SyncPeerMetadata, "deviceType" | "dbVersion" | "dbVersionBySite" | "capabilities">;
   serverDbSiteId: string;
   serverDbVersion: number;
   /**
-   * The host's own record of how far it has delivered to this peer, from
-   * `sync_peer_changeset_watermarks`. Omit it and the claim is only checked
-   * against this DB's current version.
+   * The host's own record of how far it has delivered to this peer from THIS
+   * host site, read from `sync_peer_changeset_watermarks`. Omit it (or pass
+   * null) and the peer takes a full replay: the claim alone is never enough,
+   * because a poisoned claim sits below this DB's version and is
+   * indistinguishable from an honest one.
    */
   hostWatermark?: number | null;
-  onCursorRewound?: (info: { claimed: number; resolved: number; reason: SyncPeerCursorReason }) => void;
+  onCursorResolved?: (info: SyncPeerCursorResolutionInfo) => void;
 }): number {
   // A browser may explicitly negotiate an invalidation-only contract: it has
   // no SQLite replica, fully refetches its query domains after hello, and uses
@@ -1324,9 +1335,7 @@ export function initialSyncHostCursorForPeer(args: {
     hostWatermark: args.hostWatermark,
     hostDbVersion: args.serverDbVersion,
   });
-  if (resolution.rewound) {
-    args.onCursorRewound?.({ claimed, resolved: resolution.cursor, reason: resolution.reason });
-  }
+  args.onCursorResolved?.({ ...resolution, claimed, resolved: resolution.cursor });
   return resolution.cursor;
 }
 
@@ -1337,7 +1346,7 @@ export function adoptedSyncHostCursorForPeer(args: {
   snapshotServerDbSiteId?: string | null;
   snapshotLastKnownServerDbVersion?: number | null;
   hostWatermark?: number | null;
-  onCursorRewound?: (info: { claimed: number; resolved: number; reason: SyncPeerCursorReason }) => void;
+  onCursorResolved?: (info: SyncPeerCursorResolutionInfo) => void;
 }): number {
   const initialCursor = initialSyncHostCursorForPeer(args);
   if (
@@ -1356,8 +1365,25 @@ export function adoptedSyncHostCursorForPeer(args: {
     return Math.min(Math.max(0, Math.floor(args.serverDbVersion)), snapshotCursor);
   }
   // Replica peers may have advertised a newer durable per-site cursor than
-  // the depositing host had observed, so retain the fresher same-DB value.
-  return Math.max(initialCursor, snapshotCursor);
+  // the depositing host had observed, so retain the fresher same-DB value —
+  // but the deposited snapshot can itself carry a poisoned claim forward
+  // (the depositing owner seeded it from the same hello). The host's own
+  // delivery record still wins, so clamp the merge by the watermark whenever
+  // one exists; without a record, the deposited cursor is all there is.
+  const merged = Math.max(initialCursor, snapshotCursor);
+  const hostWatermark = typeof args.hostWatermark === "number" && Number.isFinite(args.hostWatermark)
+    ? Math.max(0, Math.floor(args.hostWatermark))
+    : null;
+  if (hostWatermark == null || merged <= hostWatermark) return merged;
+  args.onCursorResolved?.({
+    cursor: hostWatermark,
+    reason: "watermark_clamp",
+    rewound: true,
+    claimExceededHostDbVersion: merged > Math.max(0, Math.floor(args.serverDbVersion)),
+    claimed: merged,
+    resolved: hostWatermark,
+  });
+  return hostWatermark;
 }
 
 function isInvalidationOnlyBrowserPeer(
@@ -3668,7 +3694,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           snapshotServerDbSiteId: snapshot.serverDbSiteId,
           snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
           hostWatermark: readPeerDeliveredWatermark(snapshot.metadata?.deviceId, serverDbSiteId),
-          onCursorRewound: (info) => logPeerCursorRewound(snapshot.metadata?.deviceId ?? null, info),
+          // Adoption inherits a cursor the depositing owner already resolved;
+          // log a clamp but do not seed a row from it, because the deposited
+          // value can legitimately be ahead of anything recorded here.
+          onCursorResolved: (info) => logPeerCursorRewound(snapshot.metadata?.deviceId ?? null, info),
         });
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
@@ -5897,12 +5926,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return false;
     }
     try {
+      // v1 shipped with `peer_device_id text primary key`, which collapsed a
+      // device's rows across host sites: switching the brain to another
+      // project DB overwrote the watermark for the previous one, and the
+      // upsert's conflict target could not name the site at all. The table is
+      // local-only bookkeeping (see kvDb's LOCAL_ONLY_CRR_EXCLUDED_TABLES), so
+      // recreating it is safe — the worst case is one extra full replay.
+      const existing = args.db.get<{ sql: string }>(
+        "select sql from sqlite_master where type = 'table' and name = 'sync_peer_changeset_watermarks'",
+      );
+      if (existing?.sql && !/primary\s+key\s*\(/i.test(existing.sql)) {
+        args.db.run("drop table sync_peer_changeset_watermarks");
+      }
       args.db.run(`
         create table if not exists sync_peer_changeset_watermarks (
-          peer_device_id text primary key,
+          peer_device_id text not null,
           host_site_id text not null,
           db_version integer not null,
-          updated_at text not null
+          updated_at text not null,
+          primary key (peer_device_id, host_site_id)
         )
       `);
       peerWatermarkTableReady = true;
@@ -5934,20 +5976,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function writePeerDeliveredWatermark(peerDeviceId: string, dbVersion: number): void {
+  function writePeerDeliveredWatermark(
+    peerDeviceId: string,
+    dbVersion: number,
+    mode: "advance" | "seed" = "advance",
+  ): void {
     if (!peerWatermarkStorageReady()) return;
     try {
+      // Rows are per (peer, host site): a brain that switches project DBs gets
+      // a second row rather than clobbering the first, and the old site's row
+      // simply stops being read.
       args.db.run(
-        `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
-         values (?, ?, ?, ?)
-         on conflict(peer_device_id) do update set
-           host_site_id = excluded.host_site_id,
-           db_version = case
-             when sync_peer_changeset_watermarks.host_site_id = excluded.host_site_id
-               then max(sync_peer_changeset_watermarks.db_version, excluded.db_version)
-             else excluded.db_version
-           end,
-           updated_at = excluded.updated_at`,
+        mode === "seed"
+          ? `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
+             values (?, ?, ?, ?)
+             on conflict(peer_device_id, host_site_id) do nothing`
+          : `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
+             values (?, ?, ?, ?)
+             on conflict(peer_device_id, host_site_id) do update set
+               db_version = max(sync_peer_changeset_watermarks.db_version, excluded.db_version),
+               updated_at = excluded.updated_at`,
         [peerDeviceId, args.db.sync.getSiteId(), Math.max(0, Math.floor(dbVersion)), nowIso()],
       );
     } catch (error) {
@@ -5992,20 +6040,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       Math.max(0, Math.floor(peer.lastKnownServerDbVersion)),
     );
     peerWatermarkWrites.delete(peerDeviceId);
-    if (!peer.authenticated || pending <= 0) return;
+    // `pending === 0` is a real fact, not "nothing to record": a peer that
+    // rewound to 0 and disconnected before its first ack must still leave a
+    // row behind, otherwise the next hello finds no watermark and restarts the
+    // replay from 0 all over again. The upsert only ever raises an existing
+    // row, so writing a zero can never lower a recorded delivery.
+    if (!peer.authenticated || pending < 0) return;
     writePeerDeliveredWatermark(peerDeviceId, pending);
   }
 
-  function logPeerCursorRewound(
-    peerDeviceId: string | null,
-    info: { claimed: number; resolved: number; reason: SyncPeerCursorReason },
-  ): void {
+  function logPeerCursorRewound(peerDeviceId: string | null, info: SyncPeerCursorResolutionInfo): void {
+    if (!info.rewound) return;
     args.logger.warn("sync_host.peer_cursor_rewound", {
       peerDeviceId,
       claimed: info.claimed,
       resolved: info.resolved,
       reason: info.reason,
+      claimExceededHostDbVersion: info.claimExceededHostDbVersion,
     });
+  }
+
+  /**
+   * Handle a resolved hello cursor: log any rewind, and write the watermark
+   * row immediately at the resolved version. Seeding it up front is what makes
+   * the full replay a one-time cost — a phone that dies partway through
+   * resumes from its last ack (the ack path raises this same row) instead of
+   * finding no watermark and restarting from 0 on every reconnect.
+   */
+  function notePeerCursorResolved(peerDeviceId: string | null, info: SyncPeerCursorResolutionInfo): void {
+    logPeerCursorRewound(peerDeviceId, info);
+    if (!peerDeviceId) return;
+    // `do nothing` on conflict: never lower a row another socket for the same
+    // device already advanced past this cursor.
+    writePeerDeliveredWatermark(peerDeviceId, info.cursor, "seed");
   }
 
   function handleChangesetAck(peer: PeerState, payload: SyncChangesetAckPayload | null | undefined): void {
@@ -7664,7 +7731,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         serverDbSiteId: ownSiteId,
         serverDbVersion,
         hostWatermark: readPeerDeliveredWatermark(hello.peer.deviceId, ownSiteId),
-        onCursorRewound: (info) => logPeerCursorRewound(hello.peer.deviceId ?? null, info),
+        onCursorResolved: (info) => notePeerCursorResolved(hello.peer.deviceId ?? null, info),
       });
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),

@@ -14492,21 +14492,29 @@ final class SyncService: ObservableObject {
   /// delivered, and the host's pump only exports `db_version > cursor` — so every
   /// host row in the skipped span is lost permanently, surviving app restarts,
   /// reconnects and the mobile replica reseed.
+  ///
+  /// The batch value is also AUTHORITATIVE, not a floor. `max()` against the
+  /// previously held value is what let a poisoned cursor survive the fix: the
+  /// host rewinds and replays from its own delivery watermark, and every
+  /// replayed batch carries a LOWER `toDbVersion` than the inflated value the
+  /// phone was holding — so a max would pin the phone to the poisoned number
+  /// forever. Batches arrive in order on one connection, and a new connection
+  /// re-seeds this from the profile, so plain assignment is correct.
   private func advanceRemoteDbCursor(appliedBatchToDbVersion: Int) {
-    latestRemoteDbVersion = max(latestRemoteDbVersion, appliedBatchToDbVersion)
+    latestRemoteDbVersion = appliedBatchToDbVersion
     scheduleRemoteDbCursorProfilePersist(
       dbVersion: latestRemoteDbVersion,
       cursorSite: activeRemoteDbSiteId
     )
   }
 
+  /// The debounce coalesces to the LAST value seen, not the highest: every
+  /// caller reaches here from `advanceRemoteDbCursor`, where the host's batch
+  /// boundary is authoritative in both directions.
   private func scheduleRemoteDbCursorProfilePersist(dbVersion: Int, cursorSite: String?) {
-    pendingRemoteProfileDbVersion = max(pendingRemoteProfileDbVersion ?? 0, dbVersion)
+    pendingRemoteProfileDbVersion = dbVersion
     if let cursorSite {
-      pendingRemoteProfileDbVersionBySite[cursorSite] = max(
-        pendingRemoteProfileDbVersionBySite[cursorSite] ?? 0,
-        dbVersion
-      )
+      pendingRemoteProfileDbVersionBySite[cursorSite] = dbVersion
     }
     remoteCursorProfilePersistTask?.cancel()
     remoteCursorProfilePersistTask = Task { @MainActor [weak self] in
@@ -14524,11 +14532,17 @@ final class SyncService: ObservableObject {
     remoteCursorProfilePersistTask = nil
 
     updateProfile { profile in
-      profile.lastRemoteDbVersion = max(profile.lastRemoteDbVersion, dbVersion)
+      // Assign, never max. `max` is only correct ACROSS sites (entries for
+      // other host DBs are left untouched below), never ACROSS TIME for the
+      // same site: the host is the authority on how far it has delivered, and
+      // it can legitimately move a peer's cursor DOWN when it replays from its
+      // own watermark. Maxing against the persisted value kept a poisoned
+      // cursor alive across the very replay meant to heal it.
+      profile.lastRemoteDbVersion = dbVersion
       if !dbVersionBySite.isEmpty {
         var bySite = profile.remoteDbVersionBySite ?? [:]
         for (siteId, version) in dbVersionBySite {
-          bySite[siteId] = max(bySite[siteId] ?? 0, version)
+          bySite[siteId] = version
         }
         profile.remoteDbVersionBySite = bySite
       }

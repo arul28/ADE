@@ -1952,12 +1952,25 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // each sync peer. Local-only on purpose: it describes THIS host's send
   // progress, it is keyed by the host's site id, and replicating it would ship
   // one machine's send progress to another that never sent those rows.
+  // v1 of this table used `peer_device_id text primary key`, which let a
+  // device's row for one host site overwrite its row for another: a brain that
+  // switches project DBs has a different site id and a different db_version
+  // sequence, so the surviving row described a delivery that never happened
+  // for the site being read. The table is local-only bookkeeping, so the
+  // migration just drops it — the cost is one extra changeset replay per peer.
+  const peerWatermarkTable = db.get<{ sql: string }>(
+    "select sql from sqlite_master where type = 'table' and name = 'sync_peer_changeset_watermarks'",
+  );
+  if (peerWatermarkTable?.sql && !/primary\s+key\s*\(/i.test(peerWatermarkTable.sql)) {
+    db.run("drop table sync_peer_changeset_watermarks");
+  }
   db.run(`
     create table if not exists sync_peer_changeset_watermarks (
-      peer_device_id text primary key,
+      peer_device_id text not null,
       host_site_id text not null,
       db_version integer not null,
-      updated_at text not null
+      updated_at text not null,
+      primary key (peer_device_id, host_site_id)
     )
   `);
 

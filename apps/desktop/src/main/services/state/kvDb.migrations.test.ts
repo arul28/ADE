@@ -241,6 +241,76 @@ describe("kvDb migrations - legacy upgrade paths", () => {
     }
   });
 
+  it("recreates sync_peer_changeset_watermarks when it still has the single-column primary key", async () => {
+    // v1 keyed the table by peer_device_id alone, so a device's row for one
+    // host site overwrote its row for another — and the upsert could not name
+    // the site as a conflict target at all. The table is local-only send
+    // bookkeeping, so the migration just drops it; the cost is one extra
+    // changeset replay per peer.
+    const dbPath = makeDbPath("ade-kvdb-peer-watermark-pk-");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec(`
+      create table sync_peer_changeset_watermarks (
+        peer_device_id text primary key,
+        host_site_id text not null,
+        db_version integer not null,
+        updated_at text not null
+      );
+      insert into sync_peer_changeset_watermarks
+        values ('device-1', 'site-a', 60210853, '2026-09-09T00:00:00.000Z');
+    `);
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      const pkColumns = db.all<{ name: string; pk: number }>("pragma table_info(sync_peer_changeset_watermarks)")
+        .filter((row) => Number(row.pk) > 0)
+        .map((row) => String(row.name))
+        .sort();
+      expect(pkColumns).toEqual(["host_site_id", "peer_device_id"]);
+      // The stale rows go with the old table: they were written under a key
+      // that could not distinguish host sites, so none of them is evidence of
+      // a delivery to any particular one.
+      expect(db.get("select 1 as present from sync_peer_changeset_watermarks limit 1")).toBeNull();
+      // Two host sites for one device now coexist.
+      for (const site of ["site-a", "site-b"]) {
+        db.run(
+          `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
+           values (?, ?, ?, ?)
+           on conflict(peer_device_id, host_site_id) do update set db_version = excluded.db_version`,
+          ["device-1", site, 7, "2026-09-09T00:00:01.000Z"],
+        );
+      }
+      expect(db.all("select 1 as present from sync_peer_changeset_watermarks where peer_device_id = ?", ["device-1"]))
+        .toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("leaves an already-migrated sync_peer_changeset_watermarks table alone", async () => {
+    const dbPath = makeDbPath("ade-kvdb-peer-watermark-pk-stable-");
+    const first = await openKvDb(dbPath, createLogger());
+    first.run(
+      `insert into sync_peer_changeset_watermarks (peer_device_id, host_site_id, db_version, updated_at)
+       values (?, ?, ?, ?)`,
+      ["device-1", "site-a", 4_090, "2026-09-09T00:00:00.000Z"],
+    );
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger());
+    try {
+      expect(reopened.get<{ db_version: number }>(
+        "select db_version from sync_peer_changeset_watermarks where peer_device_id = ? and host_site_id = ?",
+        ["device-1", "site-a"],
+      )?.db_version).toBe(4_090);
+    } finally {
+      reopened.close();
+    }
+  });
+
   it.skipIf(!isCrsqliteAvailable())("skips primary-key retrofit for tables that already have __crsql_clock companions", async () => {
     const dbPath = makeDbPath("ade-kvdb-pk-retrofit-skip-crr-");
     const first = await openKvDb(dbPath, createLogger());

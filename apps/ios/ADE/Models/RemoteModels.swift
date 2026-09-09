@@ -94,7 +94,20 @@ struct HostConnectionProfile: Codable, Equatable {
   /// from their account, while the underlying LAN/Tailscale pairing remains
   /// local-owned and survives sign-out.
   var relayAccountOwnerId: String?
+  /// Schema version for the *cursor* fields only (`lastRemoteDbVersion` and
+  /// `remoteDbVersionBySite`). A shipped build wrote a poisoned host cursor —
+  /// it folded the phone's own CRR write clock into the value it advertised
+  /// for the host's site — and that value survives an app upgrade in
+  /// UserDefaults, so a fixed build would keep advertising it. Decoding a
+  /// profile written below `currentCursorSchemaVersion` clears both fields
+  /// once; the host then replays from its own delivery watermark.
+  /// `nil` means "written before versioning", i.e. the poisoned era.
+  var cursorSchemaVersion: Int?
   var updatedAt: String
+
+  /// Bump this whenever a shipped build may have persisted an untrustworthy
+  /// changeset cursor. The cost of a bump is one full replay per host site.
+  static let currentCursorSchemaVersion = 2
 
   init(
     hostIdentity: String? = nil,
@@ -115,6 +128,7 @@ struct HostConnectionProfile: Codable, Equatable {
     networkRouteMemory: [HostConnectionNetworkRouteMemory]? = nil,
     accountOwnerId: String? = nil,
     relayAccountOwnerId: String? = nil,
+    cursorSchemaVersion: Int? = HostConnectionProfile.currentCursorSchemaVersion,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
   ) {
     self.hostIdentity = hostIdentity
@@ -135,7 +149,54 @@ struct HostConnectionProfile: Codable, Equatable {
     self.networkRouteMemory = networkRouteMemory
     self.accountOwnerId = accountOwnerId
     self.relayAccountOwnerId = relayAccountOwnerId
+    self.cursorSchemaVersion = cursorSchemaVersion
     self.updatedAt = updatedAt
+  }
+
+  /// Hand-written so the cursor migration runs at decode time, on every read
+  /// path (the active profile, the saved-machines dictionary, and any future
+  /// one) rather than only where someone remembered to call a migrator.
+  /// Every other field keeps exactly the synthesized requiredness so a profile
+  /// that used to fail to decode still fails, and one that used to decode
+  /// still decodes.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    hostIdentity = try container.decodeIfPresent(String.self, forKey: .hostIdentity)
+    hostName = try container.decodeIfPresent(String.self, forKey: .hostName)
+    siteId = try container.decodeIfPresent(String.self, forKey: .siteId)
+    port = try container.decode(Int.self, forKey: .port)
+    authKind = try container.decode(String.self, forKey: .authKind)
+    pairedDeviceId = try container.decodeIfPresent(String.self, forKey: .pairedDeviceId)
+    lastHostDeviceId = try container.decodeIfPresent(String.self, forKey: .lastHostDeviceId)
+    lastSuccessfulAddress = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulAddress)
+    savedAddressCandidates = try container.decode([String].self, forKey: .savedAddressCandidates)
+    discoveredLanAddresses = try container.decode([String].self, forKey: .discoveredLanAddresses)
+    tailscaleAddress = try container.decodeIfPresent(String.self, forKey: .tailscaleAddress)
+    savedRelayCandidates = try container.decodeIfPresent([String].self, forKey: .savedRelayCandidates)
+    endpointStates = try container.decodeIfPresent([HostConnectionEndpointState].self, forKey: .endpointStates)
+    networkRouteMemory = try container.decodeIfPresent(
+      [HostConnectionNetworkRouteMemory].self, forKey: .networkRouteMemory
+    )
+    accountOwnerId = try container.decodeIfPresent(String.self, forKey: .accountOwnerId)
+    relayAccountOwnerId = try container.decodeIfPresent(String.self, forKey: .relayAccountOwnerId)
+    updatedAt = try container.decode(String.self, forKey: .updatedAt)
+
+    let persistedCursorSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .cursorSchemaVersion) ?? 1
+    let storedLastRemoteDbVersion = try container.decode(Int.self, forKey: .lastRemoteDbVersion)
+    let storedRemoteDbVersionBySite = try container.decodeIfPresent(
+      [String: Int].self, forKey: .remoteDbVersionBySite
+    )
+    if persistedCursorSchemaVersion < HostConnectionProfile.currentCursorSchemaVersion {
+      // One-time clear on first launch after upgrade. Starting the host cursor
+      // over is cheap and self-healing; keeping an inflated one silently loses
+      // every host row below it, forever.
+      lastRemoteDbVersion = 0
+      remoteDbVersionBySite = nil
+    } else {
+      lastRemoteDbVersion = storedLastRemoteDbVersion
+      remoteDbVersionBySite = storedRemoteDbVersionBySite
+    }
+    cursorSchemaVersion = HostConnectionProfile.currentCursorSchemaVersion
   }
 
   init(legacy draft: ConnectionDraft) {
@@ -143,7 +204,10 @@ struct HostConnectionProfile: Codable, Equatable {
       port: draft.port,
       authKind: draft.authKind,
       pairedDeviceId: draft.pairedDeviceId,
-      lastRemoteDbVersion: draft.lastRemoteDbVersion,
+      // The legacy draft predates per-site cursors and the poisoned-cursor
+      // fix alike, so its single cursor is not trustworthy against any host
+      // DB. Start from 0 and let the host replay from its own watermark.
+      lastRemoteDbVersion: 0,
       lastHostDeviceId: draft.lastBrainDeviceId,
       lastSuccessfulAddress: draft.host,
       savedAddressCandidates: [draft.host],

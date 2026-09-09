@@ -9139,6 +9139,53 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testUpgradingClearsAPoisonedHostCursorFromAPersistedProfile() throws {
+    // A shipped build folded the phone's own CRR write clock into the host
+    // cursor it advertised (`dbVersionBySite[hostSiteId]`). That value lives in
+    // UserDefaults, so simply fixing the write path is not enough: a fixed
+    // build would decode the poisoned number and keep advertising it, and the
+    // host exports only `db_version > cursor`. Decoding a profile written
+    // before `currentCursorSchemaVersion` must therefore clear both cursor
+    // fields exactly once.
+    let legacyJson = """
+    {
+      "hostIdentity": "manual-host",
+      "hostName": "My Mac",
+      "siteId": "b00e9b92c864a27958669c1595fcb2c3",
+      "port": 8787,
+      "authKind": "paired",
+      "pairedDeviceId": "phone",
+      "lastRemoteDbVersion": 60210853,
+      "remoteDbVersionBySite": { "b00e9b92c864a27958669c1595fcb2c3": 60210853 },
+      "lastHostDeviceId": "manual-host",
+      "lastSuccessfulAddress": "192.168.1.2",
+      "savedAddressCandidates": ["192.168.1.2"],
+      "discoveredLanAddresses": ["192.168.1.2"],
+      "updatedAt": "2026-09-09T12:00:00.000Z"
+    }
+    """.data(using: .utf8)!
+
+    let migrated = try JSONDecoder().decode(HostConnectionProfile.self, from: legacyJson)
+    XCTAssertEqual(migrated.lastRemoteDbVersion, 0)
+    XCTAssertNil(migrated.remoteDbVersionBySite)
+    XCTAssertEqual(migrated.cursorSchemaVersion, HostConnectionProfile.currentCursorSchemaVersion)
+    // Everything else survives — this is a cursor migration, not a re-pairing.
+    XCTAssertEqual(migrated.hostIdentity, "manual-host")
+    XCTAssertEqual(migrated.pairedDeviceId, "phone")
+    XCTAssertEqual(migrated.savedAddressCandidates, ["192.168.1.2"])
+
+    // Once re-encoded at the current version the clear does NOT repeat, so
+    // ordinary cursor progress persists across launches as before.
+    var advanced = migrated
+    advanced.lastRemoteDbVersion = 4_120
+    advanced.remoteDbVersionBySite = ["b00e9b92c864a27958669c1595fcb2c3": 4_120]
+    let roundTripped = try JSONDecoder().decode(
+      HostConnectionProfile.self, from: JSONEncoder().encode(advanced)
+    )
+    XCTAssertEqual(roundTripped.lastRemoteDbVersion, 4_120)
+    XCTAssertEqual(roundTripped.remoteDbVersionBySite?["b00e9b92c864a27958669c1595fcb2c3"], 4_120)
+  }
+
   func testDatabaseBootstrapAcceptsDesktopPromptStashChanges() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
