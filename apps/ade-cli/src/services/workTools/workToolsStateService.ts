@@ -5,9 +5,11 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type { AppControlStatus } from "../../../../desktop/src/shared/types";
 import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
+import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserPresence";
 import {
   isWorkToolId,
   type WorkToolId,
+  type WorkToolsAgentBrowserPresence,
   type WorkToolsAppControlState,
   type WorkToolsGetLaneStateArgs,
   type WorkToolsReadObservationPreviewArgs,
@@ -25,8 +27,9 @@ import {
  *
  * Three different owners feed this, and the difference matters:
  *
- * - `activeTool` is **published by the desktop renderer**. Nothing else knows
- *   which tab is showing — it is renderer UI state, not runtime state. It is
+ * - `activeTool` and `openTools` are **published by the desktop renderer**.
+ *   Nothing else knows which tabs the pane has or which one is showing — it is
+ *   renderer UI state, not runtime state. They are
  *   held in memory only: a lost desktop must not leave the phone claiming a
  *   pane is open, and the desktop re-publishes on reconnect. Deliberately NOT a
  *   cr-sqlite table, because a replicated row would outlive the desktop that
@@ -103,8 +106,32 @@ export type WorkToolsStateServiceArgs = {
   logger?: Logger | null;
 };
 
+/**
+ * How long after an agent's last browser command this service keeps EXPECTING
+ * presence, so it knows when to tell clients to look again.
+ *
+ * The same window the desktop expires on, plus a margin: the re-read this
+ * schedules must land after the desktop has actually dropped the entry, or
+ * every client would refresh once, still see the agent, and then sit on a stale
+ * badge until something else moved.
+ */
+export const WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS = BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS + 500;
+
 export type WorkToolsStateService = {
   setActiveTool(args: WorkToolsSetActiveToolArgs): { ok: true };
+  /**
+   * An agent-authenticated browser command just passed through this daemon.
+   *
+   * Event scheduling only — it publishes nothing. The presence STATE is the
+   * desktop's (see `agentBrowserPresence` on the lane state, read through the
+   * bridge), and this side deliberately keeps no copy of it to disagree with.
+   * What the daemon uniquely knows is *when* a client's answer just went stale:
+   * it proxies every `ade browser` call, so it can fire the lane-state event the
+   * moment an agent starts browsing, and again once the desktop's twenty-second
+   * window has elapsed. Without it a phone would learn both edges only on
+   * whatever poll happened next.
+   */
+  noteAgentBrowserActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
   getLaneState(args: WorkToolsGetLaneStateArgs): Promise<WorkToolsLaneState>;
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
@@ -116,8 +143,39 @@ export type WorkToolsStateService = {
 
 type ActiveToolEntry = {
   tool: WorkToolId | null;
+  /** The lane's open tabs in strip order, `tool` among them. */
+  openTools: WorkToolId[];
   updatedAt: string;
 };
+
+/**
+ * The published tab strip, normalized.
+ *
+ * Unknown ids are dropped rather than rejected — a newer desktop may know a
+ * tool this daemon does not, and a mirror that refuses the whole publish would
+ * blank the phone's view of a pane that is perfectly fine. Duplicates are
+ * collapsed because the strip is a set with an order, and the active tool is
+ * appended when it is missing: a tab is on screen, so it is open by definition.
+ *
+ * An absent list is the older desktop's publish, which had exactly one tab.
+ */
+function normalizeOpenTools(
+  value: readonly unknown[] | null | undefined,
+  activeTool: WorkToolId | null,
+): WorkToolId[] {
+  if (value == null) return activeTool ? [activeTool] : [];
+  const open: WorkToolId[] = [];
+  for (const entry of value) {
+    if (!isWorkToolId(entry) || open.includes(entry)) continue;
+    open.push(entry);
+  }
+  if (activeTool && !open.includes(activeTool)) open.push(activeTool);
+  return open;
+}
+
+function sameTools(a: readonly WorkToolId[], b: readonly WorkToolId[]): boolean {
+  return a.length === b.length && a.every((tool, index) => tool === b[index]);
+}
 
 type ObservationRecord = {
   filePath: string;
@@ -260,6 +318,36 @@ function summarizeBrowser(
   };
 }
 
+/**
+ * Which chats in THIS lane are driving the browser right now.
+ *
+ * The desktop scopes its answer to the project; the lane is this side's cut,
+ * and it follows the tab rule exactly: an entry stamped with another lane
+ * belongs to that lane's pane, and one with no lane at all (a personal chat) is
+ * shared browsing that stays visible. A phone showing lane A must not light up
+ * because a chat in lane B opened a page.
+ *
+ * `status.presence` is optional on the wire — a desktop older than this field
+ * simply cannot say — and an absent list reads as "nobody", never as an error.
+ */
+function summarizeAgentPresence(
+  status: BuiltInBrowserRuntimeStatus,
+  laneId: string,
+): WorkToolsAgentBrowserPresence[] {
+  return (status.presence ?? [])
+    .filter((entry) => {
+      const entryLane = trimmedOrNull(entry?.laneId);
+      return !entryLane || entryLane === laneId;
+    })
+    .flatMap((entry) => {
+      const chatSessionId = trimmedOrNull(entry?.chatSessionId);
+      const since = trimmedOrNull(entry?.since);
+      const lastActivityAt = trimmedOrNull(entry?.lastActivityAt);
+      if (!chatSessionId || !since || !lastActivityAt) return [];
+      return [{ chatSessionId, tabId: trimmedOrNull(entry?.tabId), since, lastActivityAt }];
+    });
+}
+
 function summarizeAppControl(status: AppControlStatus): WorkToolsAppControlState | null {
   const session = status.activeSession;
   if (!session) return null;
@@ -278,6 +366,10 @@ export function createWorkToolsStateService(
   const debounceMs = args.debounceMs ?? WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS;
   const activeToolByLane = new Map<string, ActiveToolEntry>();
   const pendingEventTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // One timer per browsing chat, holding nothing but "expect this to be gone by
+  // then". See `noteAgentBrowserActivity`: presence itself belongs to the
+  // desktop, and a second copy here would be a second answer to disagree with.
+  const presenceWindowTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
 
   const browserObservationRoot = path.join(projectRoot, BROWSER_OBSERVATION_CACHE_DIR);
@@ -299,9 +391,13 @@ export function createWorkToolsStateService(
 
   const readBrowser = async (
     laneId: string,
-  ): Promise<{ browser: WorkToolsBrowserState | null; unavailable: WorkToolsLaneState["browserUnavailable"] }> => {
+  ): Promise<{
+    browser: WorkToolsBrowserState | null;
+    unavailable: WorkToolsLaneState["browserUnavailable"];
+    presence: WorkToolsAgentBrowserPresence[];
+  }> => {
     const reader = args.getBrowserStatus;
-    if (!reader) return { browser: null, unavailable: "desktop_not_attached" };
+    if (!reader) return { browser: null, unavailable: "desktop_not_attached", presence: [] };
     let status: BuiltInBrowserRuntimeStatus;
     try {
       status = await reader();
@@ -320,15 +416,17 @@ export function createWorkToolsStateService(
       } else {
         args.logger?.warn("work_tools.browser_status_failed", { err: reason });
       }
-      return { browser: null, unavailable: "desktop_not_attached" };
+      return { browser: null, unavailable: "desktop_not_attached", presence: [] };
     }
     // A desktop answered, but it has no window open for this daemon's project.
     // Deliberately NOT falling back to whatever else that desktop has open: the
     // tabs would belong to another project.
-    if (status.unavailable) return { browser: null, unavailable: status.unavailable };
+    if (status.unavailable) {
+      return { browser: null, unavailable: status.unavailable, presence: [] };
+    }
     const browser = summarizeBrowser(status, laneId);
     browser.latestObservation = await findLatestObservation(browserObservationRoot, laneId);
-    return { browser, unavailable: null };
+    return { browser, unavailable: null, presence: summarizeAgentPresence(status, laneId) };
   };
 
   const readAppControl = async (laneId: string): Promise<WorkToolsAppControlState | null> => {
@@ -350,15 +448,43 @@ export function createWorkToolsStateService(
   };
 
   return {
+    noteAgentBrowserActivity(input) {
+      const laneId = trimmedOrNull(input?.laneId);
+      const chatSessionId = trimmedOrNull(input?.chatSessionId);
+      // A lane-less caller (a personal chat) has no lane state to invalidate,
+      // and a call with no chat cannot be an agent's.
+      if (!laneId || !chatSessionId || disposed) return;
+      const key = `${laneId}\u0000${chatSessionId}`;
+      const existing = presenceWindowTimers.get(key) ?? null;
+      // Only the edges are news. A busy agent lands here many times a second,
+      // and every one of those would otherwise wake every phone pinned to the
+      // lane to re-read a state that has not changed since the last command.
+      if (existing) clearTimeout(existing);
+      else emitStateChanged(laneId);
+      const timer = setTimeout(() => {
+        presenceWindowTimers.delete(key);
+        if (disposed) return;
+        emitStateChanged(laneId);
+      }, WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS);
+      timer.unref?.();
+      presenceWindowTimers.set(key, timer);
+    },
+
     setActiveTool(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.setActiveTool");
       const tool = input?.tool ?? null;
       if (tool !== null && !isWorkToolId(tool)) {
         throw new Error(`work_tools.setActiveTool got an unknown tool "${String(tool)}".`);
       }
+      const openTools = normalizeOpenTools(
+        Array.isArray(input?.openTools) ? input.openTools : null,
+        tool,
+      );
       const previous = activeToolByLane.get(laneId);
-      if (previous && previous.tool === tool) return { ok: true };
-      activeToolByLane.set(laneId, { tool, updatedAt: new Date().toISOString() });
+      if (previous && previous.tool === tool && sameTools(previous.openTools, openTools)) {
+        return { ok: true };
+      }
+      activeToolByLane.set(laneId, { tool, openTools, updatedAt: new Date().toISOString() });
       emitStateChanged(laneId);
       return { ok: true };
     },
@@ -366,16 +492,18 @@ export function createWorkToolsStateService(
     async getLaneState(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.getLaneState");
       const active = activeToolByLane.get(laneId) ?? null;
-      const [{ browser, unavailable }, appControl] = await Promise.all([
+      const [{ browser, unavailable, presence }, appControl] = await Promise.all([
         readBrowser(laneId),
         readAppControl(laneId),
       ]);
       return {
         laneId,
         activeTool: active?.tool ?? null,
+        openTools: active?.openTools ?? [],
         activeToolUpdatedAt: active?.updatedAt ?? null,
         browser,
         browserUnavailable: unavailable,
+        agentBrowserPresence: presence,
         appControl,
         capturedAt: new Date().toISOString(),
       };
@@ -439,6 +567,8 @@ export function createWorkToolsStateService(
       disposed = true;
       for (const timer of pendingEventTimers.values()) clearTimeout(timer);
       pendingEventTimers.clear();
+      for (const timer of presenceWindowTimers.values()) clearTimeout(timer);
+      presenceWindowTimers.clear();
       activeToolByLane.clear();
     },
   };

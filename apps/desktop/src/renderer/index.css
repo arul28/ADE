@@ -2300,67 +2300,114 @@ button:active, [role="button"]:active {
   }
 }
 
-/* Work tools picker: one flat card per tool.
-   Flat means flat — no shadow, no gradient, no lift, no scale. The card is
-   separated from the pane by exactly one hairline: a real 1px border in light,
-   and an INSET white ring in dark, because a light border on a near-black
-   surface reads as a drawn box while an inset ring reads as an edge catching
-   light. Hover tints the fill and darkens that hairline over 120ms — the
-   house hover duration — and press deepens the fill only, so nothing about
-   the card's geometry moves under the cursor. */
+/* Work tools picker: a shader backdrop with cards floating on it.
+
+   The backdrop is a <canvas> (or, with no WebGL, this same box painted as a
+   static gradient) pinned behind the column and untouchable — a canvas that
+   swallowed a click meant for a card would be a decoration breaking the page
+   it decorates. */
+.ade-tool-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
+   would be the most expensive thing in the window. */
+.ade-tool-picker-static {
+  background:
+    radial-gradient(
+      120% 90% at 16% 10%,
+      color-mix(in srgb, var(--color-accent-deep) 30%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      110% 80% at 86% 82%,
+      color-mix(in srgb, var(--color-accent) 18%, transparent),
+      transparent 60%
+    ),
+    var(--color-bg);
+}
+
+[data-theme="light"] .ade-tool-picker-static {
+  background:
+    radial-gradient(
+      120% 90% at 16% 10%,
+      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      110% 80% at 86% 82%,
+      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
+      transparent 60%
+    ),
+    var(--color-surface);
+}
+
+/* The card. Now that there is something behind it, the card is a piece of
+   glass rather than a flat rectangle: a translucent fill over an 8px blur, one
+   hairline, and nothing else at rest. Hover is the only place this page spends
+   colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
+   over 160ms. Press settles back to a 0.99 scale, so the card gives under the
+   cursor rather than jumping out from under it. */
 .ade-tool-card {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: var(--color-card);
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  /* 82%, not the 50-ish a "glass" card wants to be: the mesh peaks at a
+     luminance of ~118 and a card thin enough to show that peak takes its own
+     12px muted line down to a 2.4:1 contrast. 82% keeps every line at or above
+     4:1 over the brightest spot the backdrop can produce, and the blur still
+     carries the violet through. */
+  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transition:
-    background-color 120ms ease-out,
-    border-color 120ms ease-out,
-    box-shadow 120ms ease-out;
+    transform 160ms ease-out,
+    background-color 160ms ease-out,
+    border-color 160ms ease-out,
+    box-shadow 160ms ease-out;
 }
 
 [data-theme="light"] .ade-tool-card {
-  border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
-}
-
-[data-theme="dark"] .ade-tool-card {
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 84%, transparent);
 }
 
 .ade-tool-card:not(:disabled):hover,
 .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-card));
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+  box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--color-accent) 55%, transparent);
 }
 
-[data-theme="light"] .ade-tool-card:not(:disabled):hover,
-[data-theme="light"] .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  border-color: var(--color-border);
-}
-
-[data-theme="dark"] .ade-tool-card:not(:disabled):hover,
-[data-theme="dark"] .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
-}
-
-/* Press: fill only. */
+/* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
-  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-card));
+  transform: translateY(-1px) scale(0.99);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
 }
 
 /* The last-opened tool is `aria-current` but carries NO fill: the picker is a
    page for choosing, and a card pre-tinted in the same colour hover uses reads
    as "already hovered" from across the pane. The state is still announced. */
 
-/* Listed after — and at the same specificity as — the dark hover rule above,
-   so a card that is both hovered and keyboard-focused still shows the ring. */
-.ade-tool-card:focus-visible,
-[data-theme="dark"] .ade-tool-card:not(:disabled):focus-visible {
+.ade-tool-card:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 1px var(--color-accent);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
+/* Motion off: the fill and hairline still answer the cursor, the geometry does
+   not. A lift is the part of this that moves. */
 @media (prefers-reduced-motion: reduce) {
   .ade-tool-card {
     transition: none;
+  }
+
+  .ade-tool-card:not(:disabled):hover,
+  .ade-tool-card:not(:disabled)[data-highlighted="true"],
+  .ade-tool-card:not(:disabled):active {
+    transform: none;
   }
 }
 
@@ -2375,16 +2422,6 @@ button:active, [role="button"]:active {
 .ade-tool-header {
   container-type: inline-size;
   container-name: ade-tool-header;
-}
-
-/* Under 400px the header stops trying to say two things. The tool's NAME is
-   the one that has to survive — "Browser" is the answer to "what am I looking
-   at" — so the context drops whole rather than both halves being sliced into
-   "Browser · No ta…". The panel underneath still shows the same fact in full. */
-@container ade-tool-header (max-width: 399px) {
-  .ade-tool-header-context {
-    display: none;
-  }
 }
 
 /* Work tools picker: placeholder status lines held for at most 300ms while the

@@ -35,7 +35,7 @@ import {
 } from "./workToolErrors";
 
 /** The longest a status can be before the two-column card cuts it. */
-const ONE_LINE_BUDGET = 16;
+const ONE_LINE_BUDGET = 22;
 
 function browserStatus(partial: Partial<BuiltInBrowserStatus>): BuiltInBrowserStatus {
   return {
@@ -71,16 +71,31 @@ describe("work tool status lines", () => {
     expect(terminalStatusLine(["zsh"], null).line).toBe("1 shell");
   });
 
-  it("gives Files the one fact the lane store carries, and names the surface otherwise", () => {
-    const lane = (status: Partial<NonNullable<LaneSummary["status"]>>) => ({
-      status: { ahead: 0, behind: 0, dirty: false, rebaseInProgress: false, ...status },
+  it("shows the cached file total and changed-entry count", () => {
+    const lane = (
+      status: Partial<NonNullable<LaneSummary["status"]>>,
+      extra: Partial<LaneSummary> = {},
+    ) => ({
+      ...extra,
+      status: {
+        ahead: 0,
+        behind: 0,
+        dirty: false,
+        rebaseInProgress: false,
+        trackedFileCount: null,
+        changedFileCount: 0,
+        ...status,
+      },
     } as LaneSummary);
-    expect(filesStatusLine(lane({ dirty: true })).line).toBe("Changes");
-    expect(filesStatusLine(lane({ dirty: false })).line).toBe("Clean");
-    expect(filesStatusLine(null).line).toBe("Worktree");
+    expect(filesStatusLine(lane({ changedFileCount: 3 }, { trackedFileCount: 1_240 })).line)
+      .toBe("1,240 files · 3 changed");
+    expect(filesStatusLine(lane({}, { trackedFileCount: 12 })).line).toBe("12 files");
+    expect(filesStatusLine(lane({ dirty: true, staged: 1, unstaged: 2, untracked: 1 })).line)
+      .toBe("Browse");
+    expect(filesStatusLine(null).line).toBe("Browse");
     // Never "live": a worktree with edits in it is not a running tool, and an
     // activity dot for one would be a dot that never goes out.
-    expect(filesStatusLine(lane({ dirty: true })).live).toBe(false);
+    expect(filesStatusLine(lane({ changedFileCount: 3 }, { trackedFileCount: 12 })).live).toBe(false);
   });
 
   it("says how many tabs and who holds them, in two words", () => {
@@ -102,18 +117,46 @@ describe("work tool status lines", () => {
     expect(handoff.attention).toBe(true);
   });
 
-  it("keeps git to counts and one word of state", () => {
-    const lane = (status: Partial<NonNullable<LaneSummary["status"]>>) => ({
-      status: { ahead: 0, behind: 0, dirty: false, rebaseInProgress: false, ...status },
+  it("prioritizes useful git state and keeps each line short", () => {
+    const lane = (
+      status: Partial<NonNullable<LaneSummary["status"]>>,
+      extra: Partial<LaneSummary> = {},
+    ) => ({
+      ...extra,
+      status: {
+        ahead: 0,
+        behind: 0,
+        dirty: false,
+        remoteBehind: -1,
+        rebaseInProgress: false,
+        lastCommitAt: null,
+        ...status,
+      },
     } as LaneSummary);
-    // Capitalised like every other tool's line, so a column of cards does not
-    // read as five sentences and one typo.
-    expect(gitStatusLine(lane({})).line).toBe("Clean");
-    expect(gitStatusLine(lane({ dirty: true })).line).toBe("Dirty");
-    // Only the FIRST character: a line that already opens with a count is left
-    // exactly as it was, and the state word stays lowercase mid-line.
-    expect(gitStatusLine(lane({ ahead: 3, dirty: true })).line).toBe("3 ahead · dirty");
-    expect(gitStatusLine(lane({ rebaseInProgress: true })).line).toBe("Rebasing");
+    const commitAt = "2026-09-09T16:00:00.000Z";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-09T18:00:00.000Z"));
+    try {
+      expect(gitStatusLine(null).line).toBeNull();
+      expect(gitStatusLine(lane({})).line).toBe("Unpublished");
+      expect(gitStatusLine(lane({ dirty: true, unstaged: 3 }, { lastCommitAt: commitAt })).line)
+        .toBe("3 unstaged");
+      expect(gitStatusLine(lane({ dirty: true, staged: 1 }, { lastCommitAt: commitAt })).line)
+        .toBe("1 staged");
+      expect(gitStatusLine(lane({ dirty: true, untracked: 2 }, { lastCommitAt: commitAt })).line)
+        .toBe("2 untracked");
+      expect(gitStatusLine(lane({ dirty: true, unstaged: 3, staged: 1, untracked: 4 }, { lastCommitAt: commitAt })).line)
+        .toBe("3 unstaged · 1 staged");
+      expect(gitStatusLine(lane({ ahead: 2 }, { lastCommitAt: commitAt })).line).toBe("2 ahead");
+      expect(gitStatusLine(lane({ behind: 1 }, { lastCommitAt: commitAt })).line).toBe("1 behind");
+      expect(gitStatusLine(lane({ ahead: 2, behind: 1 }, { lastCommitAt: commitAt })).line)
+        .toBe("2 ahead · 1 behind");
+      expect(gitStatusLine(lane({ remoteBehind: 0 }, { lastCommitAt: commitAt })).line).toBe("Pushed 2h ago");
+      expect(gitStatusLine(lane({}, { lastCommitAt: commitAt })).line).toBe("Committed 2h ago");
+      expect(gitStatusLine(lane({ rebaseInProgress: true })).line).toBe("Rebasing");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the other tools to a fact each", () => {
@@ -124,7 +167,7 @@ describe("work tool status lines", () => {
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {
-    for (const line of ["No shells", "2 shells", "No tabs", "Clean", "3 ahead · dirty", "Not booted", "No app"]) {
+    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
   });

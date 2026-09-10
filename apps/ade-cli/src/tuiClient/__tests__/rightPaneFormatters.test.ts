@@ -528,9 +528,11 @@ function workToolsState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsL
   return {
     laneId: "lane-1",
     activeTool: "browser",
+    openTools: ["browser"],
     activeToolUpdatedAt: "2026-08-24T11:58:00Z",
     browser: { activeTabId: "tab-1", tabs: [], latestObservation: null },
     browserUnavailable: null,
+    agentBrowserPresence: [],
     appControl: null,
     capturedAt: "2026-08-24T12:00:00Z",
     ...overrides,
@@ -594,6 +596,20 @@ describe("work tools pane", () => {
     expect(body).toContain("last frame: click · Sign in · 1m ago");
   });
 
+  it("mirrors the desktop's tab strip, marking the tool on screen", () => {
+    const body = formatWorkToolsLaneState(
+      workToolsState({ activeTool: "git", openTools: ["terminal", "git", "browser"] }),
+      WORK_TOOLS_NOW,
+    );
+    expect(body).toContain("○ Terminal  ● Git  ○ Browser");
+    expect(formatWorkToolsSummary(
+      workToolsState({ activeTool: "git", openTools: ["terminal", "git", "browser"] }),
+    )).toContain("3 tools open");
+
+    // One tab is what the section title already says, so no strip line.
+    expect(formatWorkToolsLaneState(workToolsState(), WORK_TOOLS_NOW)).not.toContain("●");
+  });
+
   it("renders the shared unavailable sentence instead of inventing one", () => {
     const body = formatWorkToolsLaneState(
       workToolsState({ browser: null, browserUnavailable: "browser_pane_not_opened" }),
@@ -604,7 +620,7 @@ describe("work tools pane", () => {
 
   it("says so plainly when the desktop has no tool open", () => {
     const body = formatWorkToolsLaneState(
-      workToolsState({ activeTool: null, activeToolUpdatedAt: null }),
+      workToolsState({ activeTool: null, openTools: [], activeToolUpdatedAt: null }),
       WORK_TOOLS_NOW,
     );
     expect(body.split("\n")[0]).toBe("No tool open on the desktop.");

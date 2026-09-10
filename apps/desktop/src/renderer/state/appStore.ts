@@ -208,6 +208,17 @@ export type WorkProjectViewState = {
    * — the pane's geometry is a workspace preference, its contents are not.
    */
   workSidebarTool: WorkSidebarTab | null;
+  /**
+   * Every tool open as a tab in the pane's strip, in strip order, with
+   * `workSidebarTool` among them (the strip's active tab). Lane-scoped for the
+   * same reason the active tool is: the lane you are shipping a UI change in
+   * keeps its Browser and Terminal tabs, the lane you are rebasing keeps Git.
+   *
+   * An empty strip means the picker page with nothing open. Persisted state
+   * written before the strip existed has no such field and normalizes to
+   * `[workSidebarTool]`, so the one tool that build had open becomes its one tab.
+   */
+  workSidebarOpenTools: WorkSidebarTab[];
   workSidebarWidthPct: number;
   /**
    * Where the Work tab's floating live-preview card sits, as fractions of the
@@ -311,6 +322,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarTool: null,
+    workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
     workLiveCardPosition: null,
     workLiveCardDismissed: null,
@@ -358,6 +370,30 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
   return null;
 }
 
+/**
+ * The persisted tab strip.
+ *
+ * Unknown ids are dropped (a blob written by a newer build, or hand-edited),
+ * duplicates collapse — the strip is an ordered set — and the active tool is
+ * appended when absent, because a tool on screen is open by definition. A blob
+ * with no `workSidebarOpenTools` at all is pre-strip state: its one tool becomes
+ * its one tab, which is exactly the pane that build had.
+ */
+function normalizeWorkSidebarOpenTools(
+  value: unknown,
+  activeTool: WorkSidebarTab | null,
+): WorkSidebarTab[] {
+  if (!Array.isArray(value)) return activeTool ? [activeTool] : [];
+  const open: WorkSidebarTab[] = [];
+  for (const entry of value) {
+    const tool = normalizeWorkSidebarTool(entry);
+    if (!tool || open.includes(tool)) continue;
+    open.push(tool);
+  }
+  if (activeTool && !open.includes(activeTool)) open.push(activeTool);
+  return open;
+}
+
 function normalizeWorkSidebarWidthPct(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return 36;
@@ -368,6 +404,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
     : {};
+  // Resolved before the object literal because the strip is normalized against
+  // it: the active tab has to be in the strip it is the active tab of.
+  const activeWorkSidebarTool = normalizeWorkSidebarTool(candidate.workSidebarTool);
   return {
     openItemIds: normalizeStringArray(candidate.openItemIds),
     activeItemId: normalizeOptionalString(candidate.activeItemId),
@@ -396,7 +435,11 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
-    workSidebarTool: normalizeWorkSidebarTool(candidate.workSidebarTool),
+    workSidebarTool: activeWorkSidebarTool,
+    workSidebarOpenTools: normalizeWorkSidebarOpenTools(
+      candidate.workSidebarOpenTools,
+      activeWorkSidebarTool,
+    ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
     workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
@@ -473,8 +516,12 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
  *    thing everyone meets, and the next choice is remembered per lane from then
  *    on. `workSidebarOpen` and `workSidebarWidthPct` are untouched, so a pane
  *    that was open stays open at the width it had.
+ * 6: adds `workSidebarOpenTools`, the pane's tab strip. Purely additive:
+ *    `normalizeWorkSidebarOpenTools` turns a v5 blob's single `workSidebarTool`
+ *    into a one-tab strip, so upgrading lands on the pane the user left rather
+ *    than on an empty picker.
  */
-const WORK_VIEW_STATE_VERSION = 5;
+const WORK_VIEW_STATE_VERSION = 6;
 /** The version whose one-time Settled collapse must not re-run on later bumps. */
 const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
 

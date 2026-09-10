@@ -4162,6 +4162,16 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+      // The scoping above is the gate: reaching this line means an agent with a
+      // real browser capability is about to drive the browser. The desktop
+      // records the presence itself (it is the only side that sees tabs close
+      // and recordings end); this tells the Work-tools mirror that every
+      // client's copy just went stale, so a phone learns an agent picked up the
+      // browser without waiting for its next poll.
+      runtime.workToolsStateService?.noteAgentBrowserActivity({
+        laneId: resolveChatSessionLaneId(runtime, session),
+        chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+      });
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {

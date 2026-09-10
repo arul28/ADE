@@ -763,13 +763,19 @@ Renderer surfaces:
   tool — PRs have their own tab. Availability is decided from capability flags,
   never `process.platform` — the web client renders the same components.
 - `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
-  `WorkToolHeader.tsx`, `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
-  the pane's two pages and the panel mounts. The picker is one centred 512 px
-  column of flat cards — name plus one line, which is the tool's measured
+  `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
+  `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
+  the pane's tab strip, its two pages, and the panel mounts. The picker is one centred 512 px
+  column of translucent cards over a slow violet WebGL mesh (the backdrop, at
+  DPR 1 / 600 k pixels / 30 fps, paused when unwatched and a static CSS
+  gradient with no WebGL) — name plus one line, which is the tool's measured
   status, else its catalogue `hint`, else the reason it cannot run here — and
   the only mark a card carries is a red dot for a broken tool; the header is
-  the 36 px bar with the `⊞ Tools` button, the tool's icon/name/context, the
-  other tools' state-coloured activity dots, and ✕; the read-only view replaces
+  the 36 px tab strip — the `⊞ Tools` button, one tab per open tool with a
+  hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
+  those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
+  for tools with no tab, and ✕; the active tool's one fact is its tab's tooltip
+  and accessible name, not a header line; the read-only view replaces
   the browser and App Control panels on the hosted web client;
   `workToolPanels.tsx` is one component per
   tool id, replacing a 270-line `useMemo` in `WorkSidebar` that dispatched
@@ -779,8 +785,10 @@ Renderer surfaces:
   plus one in `WORK_TOOL_DEFINITIONS`.
 - `apps/desktop/src/renderer/components/terminals/useWorkSidebarTool.ts`,
   `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
-  `workSidebarSplitter.ts` — which tool is open (per lane, and published to
-  the runtime as `work_tools.setActiveTool` on a 250 ms debounce), the status
+  `workSidebarSplitter.ts` — which tools are open and which one is on screen
+  (per lane, `openWorkToolTab` / `closeWorkToolTab` for the strip arithmetic,
+  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce),
+  the status
   lines assembled only from reads the pane already makes, the request queue
   surfaces outside the Work page file instead of writing pane state directly,
   the pushed-diagnostics fold behind the red activity dots, and the two-unit

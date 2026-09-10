@@ -190,6 +190,16 @@ export type BuiltInBrowserStatus = {
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
   ownerLeaseExpiresAt: string | null;
+  /**
+   * Chats driving this collection's browser right now.
+   *
+   * Present on a `getStatus` read so a surface that mounts mid-flight has an
+   * answer immediately; after that the `agent-presence` event keeps it current.
+   * Optional because most status objects are built by callers that know nothing
+   * about presence (the web client's stub, test fixtures), and for them
+   * "nobody is browsing" is the right reading of an absent field.
+   */
+  agentPresence?: BuiltInBrowserAgentPresence[];
 };
 
 export type BuiltInBrowserPermissionDecision = {
@@ -611,7 +621,42 @@ export type BuiltInBrowserEventPayload =
       status: BuiltInBrowserStatus;
       detectedAt: string;
     }
+  /**
+   * Which chats are driving the browser right now, in full each time.
+   *
+   * A whole-set event rather than a per-chat delta: presence is read as "is
+   * THIS chat browsing", by surfaces that mount and unmount constantly (a
+   * session card scrolls, a chat header switches sessions), and a surface that
+   * arrived between two deltas would have no way to know what it had missed.
+   * The set is small by construction — one entry per chat currently touching
+   * the browser — so sending it whole is cheaper than making every reader keep
+   * a reconciled copy.
+   *
+   * Fires when a chat starts or stops browsing, never on a heartbeat.
+   */
+  | { type: "agent-presence"; presence: BuiltInBrowserAgentPresence[]; updatedAt: string }
   | { type: "error"; message: string; occurredAt: string };
+
+/**
+ * One chat that is using the browser, as every surface renders it.
+ *
+ * Never set by the agent — see `builtInBrowserPresence.ts` in main, which
+ * derives it from the browser commands themselves. The collection this presence
+ * belongs to is deliberately absent: a chat session id is unique across
+ * projects, so a surface keys on it directly rather than filtering, and the
+ * projected shape carries nothing a window that is not showing that chat could
+ * do anything with.
+ */
+export type BuiltInBrowserAgentPresence = {
+  chatSessionId: string;
+  /** The chat's lane, when it has one; personal chats have none. */
+  laneId: string | null;
+  /** The tab the last command addressed, when it named one. */
+  tabId: string | null;
+  /** When this stretch of browsing started, not when the chat did. */
+  since: string;
+  lastActivityAt: string;
+};
 
 /* ── Dev servers ──────────────────────────────────────────────────────────── */
 

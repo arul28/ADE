@@ -32,8 +32,10 @@ Use Inspect mode or `select` to return screenshot-backed DOM, selector, and sour
 
 ## Observe and act
 
-App Control uses the same observe-then-act loop as `ade browser`. Start with an
-observation, then act on the handles it hands you — never guess coordinates.
+App Control follows the same observe-then-act loop as the [ADE browser skill]
+(`../ade-browser/SKILL.md`): observe, use a current handle, act, and verify.
+Start with an observation, then act on the handles it hands you — never guess
+coordinates. Use the App Control commands below for this surface.
 
 ```bash
 ade --socket app-control observe --map --text        # screenshot + numbered element map + handles

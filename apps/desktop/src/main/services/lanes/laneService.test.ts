@@ -171,6 +171,80 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
+  it("includes cached git age, file totals, and split change counts", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-git-summary-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-git-summary", repoRoot });
+      const childPath = path.join(repoRoot, "child");
+      const commitAt = "2026-09-09T16:00:00.000Z";
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") {
+          return {
+            exitCode: 0,
+            stdout: cwd === childPath
+              ? [
+                "# branch.head feature/child",
+                "1 MM N... 100644 100644 100644 aaa bbb src/both.ts",
+                "1 M. N... 100644 100644 100644 aaa bbb src/staged.ts",
+                "1 .M N... 100644 100644 100644 aaa bbb src/unstaged.ts",
+                "? new.txt",
+              ].join("\n")
+              : "# branch.head feature/parent\n",
+            stderr: "",
+          } as any;
+        }
+        if (args[0] === "log") return { exitCode: 0, stdout: `${commitAt}\n`, stderr: "" } as any;
+        if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          return { exitCode: 0, stdout: "2\t3\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 0, stdout: "origin/feature/child\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}") {
+          return { exitCode: 0, stdout: "4\n", stderr: "" } as any;
+        }
+        return { exitCode: 1, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-git-summary",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const summary = await service.getSummary("lane-child", { includeStatus: true });
+
+      expect(summary).toMatchObject({
+        lastCommitAt: commitAt,
+        trackedFileCount: 3,
+        status: {
+          dirty: true,
+          changedFileCount: 4,
+          staged: 2,
+          unstaged: 2,
+          untracked: 1,
+          ahead: 3,
+          behind: 2,
+          remoteBehind: 4,
+          lastCommitAt: commitAt,
+          trackedFileCount: 3,
+        },
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("preserves agent summaries during status-only snapshot refreshes", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-status-snapshot-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -4498,6 +4572,12 @@ describe("laneService stale worktree status", () => {
       ahead: 0,
       behind: 0,
       remoteBehind: -1,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      lastCommitAt: null,
+      trackedFileCount: null,
       rebaseInProgress: false,
       headBranchRef: null,
     });

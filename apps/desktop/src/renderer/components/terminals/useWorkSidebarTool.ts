@@ -53,20 +53,58 @@ function captureWorkToolOpened(tool: WorkToolId): void {
 }
 
 /**
- * Reads and writes "which tool is open in the Work tools pane".
+ * Appends a tool to the strip, or leaves it where it already is.
+ *
+ * Re-picking an open tool must not move its tab: the strip is the user's own
+ * ordering, and a picker choice that reshuffled it would make the tabs jump
+ * every time you came back to one.
+ */
+export function openWorkToolTab(
+  openTools: readonly WorkSidebarTab[],
+  tool: WorkSidebarTab,
+): WorkSidebarTab[] {
+  return openTools.includes(tool) ? [...openTools] : [...openTools, tool];
+}
+
+/**
+ * Closes a tab and says what is on screen afterwards.
+ *
+ * The neighbour to the RIGHT inherits, falling back to the left and then to the
+ * picker — the same rule every tabbed editor uses, and the only one where
+ * closing a run of tabs left-to-right does not throw you across the strip.
+ * Closing a background tab never changes what you are looking at.
+ */
+export function closeWorkToolTab(
+  openTools: readonly WorkSidebarTab[],
+  activeTool: WorkSidebarTab | null,
+  tool: WorkSidebarTab,
+): { openTools: WorkSidebarTab[]; activeTool: WorkSidebarTab | null } {
+  const index = openTools.indexOf(tool);
+  if (index < 0) return { openTools: [...openTools], activeTool };
+  const next = openTools.filter((entry) => entry !== tool);
+  if (activeTool !== tool) return { openTools: next, activeTool };
+  return { openTools: next, activeTool: next[index] ?? next[index - 1] ?? null };
+}
+
+/**
+ * Reads and writes the Work tools pane's tab strip.
  *
  * Per LANE, because that is the unit of work: the lane you are shipping a UI
  * change in wants the browser, the lane you are rebasing wants Git, and
  * flipping between them should not make you re-pick. Falls back to the
  * project-scoped copy when no lane is bound — a projectless or personal chat
- * still gets a tool it can return to.
+ * still gets a strip it can return to.
  *
- * Openness and width stay project-wide (`workSidebarOpen`,
- * `workSidebarWidthPct`); only the contents follow the lane.
+ * `tool` is the tab on screen (null = the picker page, with the strip still
+ * showing); `openTools` is the strip itself. `setTool` opens or activates a tab,
+ * `closeTool` removes one. Openness and width stay project-wide
+ * (`workSidebarOpen`, `workSidebarWidthPct`); only the contents follow the lane.
  */
 export function useWorkSidebarTool(laneId: string | null): {
   tool: WorkSidebarTab | null;
+  openTools: WorkSidebarTab[];
   setTool: (tool: WorkSidebarTab | null) => void;
+  closeTool: (tool: WorkSidebarTab) => void;
 } {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const laneWorkViewByScope = useAppStore((state) => state.laneWorkViewByScope);
@@ -76,23 +114,43 @@ export function useWorkSidebarTool(laneId: string | null): {
 
   const scopeKey = laneWorkViewScopeKey(projectStateKey, laneId);
 
-  const tool = useMemo<WorkSidebarTab | null>(() => {
+  // Both fields come from ONE resolved record: reading the active tool from the
+  // lane scope and the strip from the project fallback would produce a strip
+  // that does not contain its own active tab.
+  const { tool, openTools } = useMemo<{
+    tool: WorkSidebarTab | null;
+    openTools: WorkSidebarTab[];
+  }>(() => {
     const scoped: WorkProjectViewState | undefined = scopeKey
       ? laneWorkViewByScope?.[scopeKey]
       : undefined;
-    if (scoped) return scoped.workSidebarTool ?? null;
-    if (!projectStateKey) return null;
-    return workViewByProject?.[projectStateKey]?.workSidebarTool ?? null;
+    const view = scoped
+      ?? (projectStateKey ? workViewByProject?.[projectStateKey] : undefined);
+    const active = view?.workSidebarTool ?? null;
+    const strip = view?.workSidebarOpenTools ?? [];
+    // A tool on screen is open by definition. State written before the strip
+    // existed has an active tool and no strip at all, and a lane that inherited
+    // its tool from the project scope has the same shape — both become the
+    // one-tab strip that build's pane actually had.
+    return {
+      tool: active,
+      openTools: active && !strip.includes(active) ? [...strip, active] : strip,
+    };
   }, [laneWorkViewByScope, projectStateKey, scopeKey, workViewByProject]);
 
-  const setTool = useCallback(
-    (next: WorkSidebarTab | null) => {
+  // The setters are pointer-driven and must not close over a stale render's
+  // strip: two clicks inside one commit would otherwise both write against the
+  // strip as it was before the first.
+  const latestStrip = useRef({ tool, openTools });
+  latestStrip.current = { tool, openTools };
+
+  const write = useCallback(
+    (next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] }) => {
       if (!projectStateKey) return;
-      if (next) captureWorkToolOpened(next);
       if (laneId) {
-        setLaneWorkViewState(projectStateKey, laneId, { workSidebarTool: next });
+        setLaneWorkViewState(projectStateKey, laneId, next);
       } else {
-        setWorkViewState(projectStateKey, { workSidebarTool: next });
+        setWorkViewState(projectStateKey, next);
       }
       // Picking a tool always reveals the pane — every entry point that used to
       // call `setWorkSidebarTab` relied on that, and returning to the picker is
@@ -102,9 +160,37 @@ export function useWorkSidebarTool(laneId: string | null): {
     [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState],
   );
 
-  usePublishActiveWorkTool(laneId, tool);
+  const setTool = useCallback(
+    (next: WorkSidebarTab | null) => {
+      const current = latestStrip.current;
+      if (next) captureWorkToolOpened(next);
+      write({
+        workSidebarTool: next,
+        // Going back to the picker keeps the strip: the tabs are still open, the
+        // pane is just showing the page you pick a new one from.
+        workSidebarOpenTools: next
+          ? openWorkToolTab(current.openTools, next)
+          : [...current.openTools],
+      });
+    },
+    [write],
+  );
 
-  return { tool, setTool };
+  const closeTool = useCallback(
+    (target: WorkSidebarTab) => {
+      const current = latestStrip.current;
+      const next = closeWorkToolTab(current.openTools, current.tool, target);
+      write({
+        workSidebarTool: next.activeTool,
+        workSidebarOpenTools: next.openTools,
+      });
+    },
+    [write],
+  );
+
+  usePublishActiveWorkTool(laneId, tool, openTools);
+
+  return { tool, openTools, setTool, closeTool };
 }
 
 /**
@@ -118,8 +204,8 @@ export function useWorkSidebarTool(laneId: string | null): {
 export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
 
 /**
- * Tells the runtime which tool this lane's pane is showing, so iOS and the
- * hosted web client can mirror it read-only.
+ * Tells the runtime which tabs this lane's pane has and which one is showing, so
+ * iOS and the hosted web client can mirror it read-only.
  *
  * The renderer is the only thing that knows this — it is view state, not
  * runtime state — so it has to be pushed rather than read. The brain holds it
@@ -131,9 +217,17 @@ export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
  * Failures are swallowed on purpose. This is a mirror for other devices; a
  * runtime that cannot take the publish must not disturb the pane it describes.
  */
-function usePublishActiveWorkTool(laneId: string | null, tool: WorkSidebarTab | null): void {
-  const latest = useRef<{ laneId: string | null; tool: WorkSidebarTab | null }>({ laneId, tool });
-  latest.current = { laneId, tool };
+function usePublishActiveWorkTool(
+  laneId: string | null,
+  tool: WorkSidebarTab | null,
+  openTools: readonly WorkSidebarTab[],
+): void {
+  const latest = useRef<{
+    laneId: string | null;
+    tool: WorkSidebarTab | null;
+    openTools: readonly WorkSidebarTab[];
+  }>({ laneId, tool, openTools });
+  latest.current = { laneId, tool, openTools };
   // Incremented by binding/status changes so a reconnect re-publishes through
   // the same debounced effect instead of duplicating the call.
   const [republishToken, setRepublishToken] = useState(0);
@@ -150,6 +244,10 @@ function usePublishActiveWorkTool(laneId: string | null, tool: WorkSidebarTab | 
     };
   }, []);
 
+  // The strip is joined into the dependency rather than compared by identity: a
+  // memo rebuilt from an unchanged store still yields a new array on some
+  // renders, and publishing on that would defeat the debounce it sits behind.
+  const stripKey = openTools.join(",");
   useEffect(() => {
     if (!laneId) return;
     const publish = window.ade?.workTools?.setActiveTool;
@@ -157,8 +255,8 @@ function usePublishActiveWorkTool(laneId: string | null, tool: WorkSidebarTab | 
     const timer = window.setTimeout(() => {
       const current = latest.current;
       if (!current.laneId) return;
-      void publish(current.laneId, current.tool).catch(() => {});
+      void publish(current.laneId, current.tool, [...current.openTools]).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [laneId, tool, republishToken]);
+  }, [laneId, tool, stripKey, republishToken]);
 }

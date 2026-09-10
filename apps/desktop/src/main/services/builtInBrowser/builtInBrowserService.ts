@@ -175,6 +175,7 @@ import type {
   BuiltInBrowserRecordingSession,
   CaptureWindowLike,
 } from "./builtInBrowserRecording";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
@@ -691,10 +692,69 @@ export function createBuiltInBrowserService(args: {
       })
     : Promise.resolve(null);
 
+  /**
+   * Agent-presence side effects that only the event stream can see.
+   *
+   * Both are read off events rather than off the methods that cause them,
+   * because the interesting cases are the ones no agent asked for: a recording
+   * that hit its wall-clock cap, or one a login handoff suspended, stops without
+   * a `stopRecording` call, and a handoff can be started by the auto-offer.
+   * Driving presence from the announcement means the badge cannot outlive the
+   * fact — there is no path that ends a capture or opens a handoff quietly.
+   */
+  const notePresenceFromEvent = (payload: BuiltInBrowserEventPayload): void => {
+    if (payload.type === "recording") {
+      // A capture runs for minutes with no commands. Hold presence while it
+      // does, and let go the moment it stops for ANY reason.
+      if (payload.recording) builtInBrowserAgentPresence.holdForTab(payload.tabId);
+      else builtInBrowserAgentPresence.releaseHoldForTab(payload.tabId);
+      return;
+    }
+    if (payload.type === "handoff-started") {
+      // The agent has explicitly stepped back from this tab so a human can sign
+      // in. A globe still pulsing beside the chat would contradict the one
+      // banner asking the person to act.
+      builtInBrowserAgentPresence.clearForTab(payload.tabId);
+      const owner = payload.handoff.previousOwner.chatSessionId
+        ?? payload.handoff.requestedByChatSessionId;
+      // Also by chat: an agent whose last command named no tab has presence with
+      // a null `tabId`, which the tab-scoped clear above cannot match.
+      if (owner) builtInBrowserAgentPresence.clearForChatSession(owner);
+    }
+  };
+
+  const forwardEvent = (
+    payload: BuiltInBrowserEventPayload,
+    targetWindow: BrowserWindow | null,
+  ): void => {
+    notePresenceFromEvent(payload);
+    args.onEvent?.(payload, targetWindow);
+  };
+
+  // Presence changes are pushed, not polled: the surfaces that show it (session
+  // cards, the chat header, the tool tab's dot) are already subscribed to this
+  // stream, and expiry happens on a timer with nothing else to ride along with.
+  // Broadcast rather than window-targeted, because a chat session id identifies
+  // exactly one chat across every window and a presence entry is meaningless to
+  // a window not showing it.
+  const presenceSubscription = builtInBrowserAgentPresence.subscribe(() => {
+    args.onEvent?.({
+      type: "agent-presence",
+      presence: builtInBrowserAgentPresence.list().map((entry) => ({
+        chatSessionId: entry.chatSessionId,
+        laneId: entry.laneId,
+        tabId: entry.tabId,
+        since: entry.since,
+        lastActivityAt: entry.lastActivityAt,
+      })),
+      updatedAt: new Date().toISOString(),
+    }, null);
+  });
+
   const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
     createBuiltInBrowserWindowService({
       getLogger: args.getLogger,
-      onEvent: (payload) => args.onEvent?.(payload, win),
+      onEvent: (payload) => forwardEvent(payload, win),
       collection,
       restoredState: stateStore?.restore(collection.key) ?? null,
       onStateChange: (state) => stateStore?.record(collection.key, state),
@@ -817,7 +877,7 @@ export function createBuiltInBrowserService(args: {
     if (!fallbackService) {
       fallbackService = createBuiltInBrowserWindowService({
         getLogger: args.getLogger,
-        onEvent: (payload) => args.onEvent?.(payload, null),
+        onEvent: (payload) => forwardEvent(payload, null),
         collection: collectionForProjectRoot(null, "window"),
         restoredState: stateStore?.restore("window") ?? null,
         onStateChange: (state) => stateStore?.record("window", state),
@@ -871,7 +931,7 @@ export function createBuiltInBrowserService(args: {
       if (!fallbackService) {
         fallbackService = createBuiltInBrowserWindowService({
           getLogger: args.getLogger,
-          onEvent: (payload) => args.onEvent?.(payload, null),
+          onEvent: (payload) => forwardEvent(payload, null),
           collection: collectionForProjectRoot(null, "personal"),
           restoredState: stateStore?.restore("personal") ?? null,
           onStateChange: (state) => stateStore?.record("personal", state),
@@ -1221,7 +1281,22 @@ export function createBuiltInBrowserService(args: {
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).getStatusForInput(input ?? {});
+      const status = serviceForInput(input, win).getStatusForInput(input ?? {});
+      // Seed value for a surface that mounted mid-flight; the `agent-presence`
+      // event carries every change after this. Scoped to the collection the
+      // status describes, so one project's pane cannot report another's agent.
+      return {
+        ...status,
+        agentPresence: builtInBrowserAgentPresence
+          .list({ projectRoot: status.collectionProjectRoot })
+          .map((entry) => ({
+            chatSessionId: entry.chatSessionId,
+            laneId: entry.laneId,
+            tabId: entry.tabId,
+            since: entry.since,
+            lastActivityAt: entry.lastActivityAt,
+          })),
+      };
     },
     /**
      * Side-effect-free status for one project's collection, for the desktop
@@ -1302,8 +1377,22 @@ export function createBuiltInBrowserService(args: {
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceForInput(input, sourceWindow).switchTab(input);
     },
+    /**
+     * Closing a tab ends whatever the agent was doing on it, and the closure is
+     * the last moment its id is knowable — a status emitted afterwards simply
+     * lacks the tab, and "a tab I do not see" is not the same fact in a process
+     * that hosts several collections. So presence is cleared here, from the tab
+     * the call is about, resolved before the tab is gone.
+     */
     closeTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceForInput(input, sourceWindow).closeTab(input);
+      const closing = serviceForInput(input, sourceWindow).closeTab(input);
+      // After the close resolves, not before: a close that throws (unknown tab,
+      // a lease it may not take) has ended nothing.
+      return closing.then((status) => {
+        const closedTabId = input.tabId?.trim();
+        if (closedTabId) builtInBrowserAgentPresence.clearForTab(closedTabId);
+        return status;
+      });
     },
     reload(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
@@ -1521,6 +1610,9 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).stopPreviewStream(input, owner);
     },
     dispose(): void {
+      // Only this service's subscription. The presence registry itself is
+      // process-wide and outlives any one service instance (tests build several).
+      presenceSubscription();
       for (const { win, listener } of windowClosedListeners.values()) {
         if (!win.isDestroyed()) {
           try {

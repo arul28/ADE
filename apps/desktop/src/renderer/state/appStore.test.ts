@@ -1102,7 +1102,7 @@ describe("appStore", () => {
           version?: number;
           workViewByProject?: Record<string, Record<string, unknown>>;
         };
-        expect(persisted.version).toBe(5);
+        expect(persisted.version).toBe(6);
         expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");
@@ -1256,6 +1256,43 @@ describe("appStore", () => {
       expect(restored.workSessionFilters).toEqual({
         status: ["running"], tool: [], hasPr: false, dirtyLane: false,
       });
+    });
+
+    it("turns a pre-strip blob's single tool into a one-tab strip", async () => {
+      mockStorage.set("ade.workViewState.v1", JSON.stringify({
+        version: 5,
+        workViewByProject: {
+          "/project/strip": { workSidebarTool: "browser" },
+          "/project/picker": { workSidebarTool: null },
+        },
+        laneWorkViewByScope: {},
+      }));
+
+      vi.resetModules();
+      const mod = await import("./appStore");
+      const restored = mod.useAppStore.getState().getWorkViewState("/project/strip");
+      // Upgrading lands on the pane the user left, not on an empty picker.
+      expect(restored.workSidebarOpenTools).toEqual(["browser"]);
+      expect(mod.useAppStore.getState().getWorkViewState("/project/picker").workSidebarOpenTools)
+        .toEqual([]);
+    });
+
+    it("drops unknown and duplicated strip entries and keeps the active tab in the strip", async () => {
+      mockStorage.set("ade.workViewState.v1", JSON.stringify({
+        version: 6,
+        workViewByProject: {
+          "/project/strip2": {
+            workSidebarTool: "git",
+            workSidebarOpenTools: ["browser", "browser", "nonsense", 7],
+          },
+        },
+        laneWorkViewByScope: {},
+      }));
+
+      vi.resetModules();
+      const mod = await import("./appStore");
+      const restored = mod.useAppStore.getState().getWorkViewState("/project/strip2");
+      expect(restored.workSidebarOpenTools).toEqual(["browser", "git"]);
     });
   });
 

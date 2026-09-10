@@ -659,6 +659,10 @@ export function formatWorkToolsSummary(state: WorkToolsLaneState): string {
   const parts: string[] = [];
   const label = workToolLabel(state.activeTool);
   if (label) parts.push(`${label} active`);
+  // The pane is a tab strip, so "how many other tools are open" is part of what
+  // it is doing. `?? []` because an older desktop publishes no strip at all.
+  const openCount = (state.openTools ?? []).length;
+  if (openCount > 1) parts.push(`${openCount} tools open`);
   const tabCount = state.browser?.tabs.length ?? 0;
   if (tabCount > 0) parts.push(tabCount === 1 ? "1 tab" : `${tabCount} tabs`);
   const appName = asString(state.appControl?.appName);
@@ -712,9 +716,28 @@ export function formatWorkToolsLaneState(
       ? `${activeLabel}${state.activeToolUpdatedAt ? ` · ${formatRelativePastTime(state.activeToolUpdatedAt, nowMs)}` : ""}`
       : "No tool open on the desktop.",
   );
+  // The desktop's strip, mirrored: `●` is the tab on screen, `○` is open behind
+  // it. One line, because the strip is a list of names and nothing else. An
+  // older desktop publishes no strip (`?? []`) and gets no line.
+  const openTools = state.openTools ?? [];
+  if (openTools.length > 1) {
+    lines.push(openTools
+      .map((tool) => `${tool === state.activeTool ? "●" : "○"} ${workToolLabel(tool) ?? tool}`)
+      .join("  "));
+  }
 
   lines.push("", "Browser");
   if (state.browser) {
+    // Leads the section, above the tab list: "an agent is on this right now" is
+    // the fact that changes how everything under it reads. Derived by the
+    // desktop from the commands themselves — never something an agent claimed —
+    // and `?? []` because a desktop older than the field cannot say.
+    const browsing = (state.agentBrowserPresence ?? []).length;
+    if (browsing > 0) {
+      lines.push(browsing === 1
+        ? "◍ An agent is using the browser"
+        : `◍ ${browsing} agents are using the browser`);
+    }
     const handoff = state.browser.tabs
       .map((tab) => asString(tab.handoffReason))
       .find((reason): reason is string => Boolean(reason));

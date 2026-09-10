@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
+import { relativeWhen } from "../../lib/format";
 import {
   EMPTY_WORK_TOOL_ERRORS,
   pruneWorkToolBrowserErrors,
@@ -203,24 +204,56 @@ export function browserStatusLine(
 
 export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   if (!lane?.status) return IDLE;
-  const { ahead, behind, dirty, rebaseInProgress } = lane.status;
+  const { dirty, rebaseInProgress } = lane.status;
   if (rebaseInProgress) return statusLine("Rebasing", true);
-  const parts: string[] = [];
-  if (ahead > 0) parts.push(`${ahead} ahead`);
-  if (behind > 0) parts.push(`${behind} behind`);
-  // "dirty" rather than "uncommitted changes": this is a status slot, not a
-  // sentence, and at two columns the sentence became "3 ahead · uncommitt…".
-  parts.push(dirty ? "dirty" : "clean");
-  // Every other tool's line opens with a capital ("No tabs", "Not booted", "No
-  // app"), and git was the one that opened lowercase — a column of cards where
-  // five lines start capitalised and one does not reads as a typo. Only the
-  // first character: a line that already starts with a count ("3 ahead ·
-  // clean") is untouched, and the word mid-line stays lowercase.
-  return statusLine(capitalizeFirst(parts.join(" · ")), dirty || ahead > 0);
+  const ahead = nonNegativeCount(lane.status.ahead);
+  const behind = nonNegativeCount(lane.status.behind);
+  const lastCommitAt = lane.lastCommitAt ?? lane.status.lastCommitAt ?? null;
+  const hasUpstream = typeof lane.status.remoteBehind === "number" && lane.status.remoteBehind >= 0;
+
+  // An empty branch has no useful age or sync state to show. Keep this ahead
+  // of the dirty check so a brand-new repository says what happened: nothing
+  // has been published yet.
+  if (!hasUpstream && !lastCommitAt && ahead === 0 && behind === 0) {
+    return statusLine("Unpublished", false);
+  }
+
+  if (dirty) {
+    const dirtyParts: Array<[number | null | undefined, string]> = [
+      [lane.status.unstaged, "unstaged"],
+      [lane.status.staged, "staged"],
+      [lane.status.untracked, "untracked"],
+    ];
+    const parts = dirtyParts
+      .filter(([count]) => nonNegativeCount(count) > 0)
+      .map(([count, label]) => `${formatStatusCount(nonNegativeCount(count))} ${label}`)
+      .slice(0, 2);
+    // A legacy/remote payload can still carry only the boolean. Preserve an
+    // honest dirty state until its next lane refresh supplies the split.
+    return statusLine(parts.join(" · ") || "Dirty", true);
+  }
+
+  const syncParts: string[] = [];
+  if (ahead > 0) syncParts.push(`${formatStatusCount(ahead)} ahead`);
+  if (behind > 0) syncParts.push(`${formatStatusCount(behind)} behind`);
+  if (syncParts.length > 0) return statusLine(syncParts.join(" · "), ahead > 0);
+
+  const age = relativeCommitAge(lastCommitAt);
+  if (age) return statusLine(`${hasUpstream ? "Pushed" : "Committed"} ${age}`, false);
+  return statusLine(hasUpstream ? "Pushed" : "Committed", false);
 }
 
-function capitalizeFirst(line: string): string {
-  return line.charAt(0).toUpperCase() + line.slice(1);
+function nonNegativeCount(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function formatStatusCount(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+function relativeCommitAge(iso: string | null | undefined): string | null {
+  if (!iso || Number.isNaN(Date.parse(iso))) return null;
+  return relativeWhen(iso);
 }
 
 export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
@@ -280,16 +313,25 @@ export function terminalStatusLine(
   return statusLine(pluralize(count, "shell", "shells"), true);
 }
 
-/**
- * Files measures nothing of its own, so it reports the one fact the lane store
- * already carries: whether the worktree is dirty. `LaneSummary.status` holds a
- * BOOLEAN, not a tally, so this says "Changes" rather than inventing "14
- * changed" — a real count is a git read the pane would then have to keep fresh.
- * With no lane status at all the slot names the surface instead of guessing.
- */
+/** Render the cached tracked-file total and unique changed-entry count. */
 export function filesStatusLine(lane: LaneSummary | null): WorkToolStatus {
-  if (!lane?.status) return statusLine("Worktree", false);
-  return statusLine(lane.status.dirty ? "Changes" : "Clean", false);
+  if (!lane?.status) return statusLine("Browse", false);
+  const trackedFileCount = lane.trackedFileCount ?? lane.status.trackedFileCount;
+  if (trackedFileCount == null) return statusLine("Browse", false);
+
+  const changedFileCount = lane.status.changedFileCount ?? (
+    lane.status.dirty
+      ? nonNegativeCount(lane.status.staged)
+        + nonNegativeCount(lane.status.unstaged)
+        + nonNegativeCount(lane.status.untracked)
+      : 0
+  );
+  const fileCount = formatStatusCount(nonNegativeCount(trackedFileCount));
+  const changedCount = nonNegativeCount(changedFileCount);
+  return statusLine(
+    changedCount > 0 ? `${fileCount} files · ${formatStatusCount(changedCount)} changed` : `${fileCount} files`,
+    false,
+  );
 }
 
 /**

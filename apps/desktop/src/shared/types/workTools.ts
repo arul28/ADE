@@ -148,14 +148,51 @@ export type WorkToolsAppControlState = {
   latestObservation: WorkToolsObservation | null;
 };
 
+/**
+ * A chat in this lane that is using the browser right now.
+ *
+ * Never claimed by the agent: the desktop derives it from the browser commands
+ * themselves (`builtInBrowserPresence.ts` in Electron main), so it says an
+ * agent IS browsing rather than that one said so. It expires about twenty
+ * seconds after the last command, which is why a client renders it as a live
+ * indicator and never as a durable property of the chat.
+ *
+ * The lane is implied — every entry here belongs to the lane being read — so
+ * only the chat, the tab it is on, and the two timestamps travel.
+ */
+export type WorkToolsAgentBrowserPresence = {
+  chatSessionId: string;
+  /** The tab the last command addressed, when it named one. */
+  tabId: string | null;
+  /** When this stretch of browsing began, not when the chat did. */
+  since: string;
+  lastActivityAt: string;
+};
+
 export type WorkToolsLaneState = {
   laneId: string;
   /** Last tool the desktop published for this lane; null if it never did. */
   activeTool: WorkToolId | null;
+  /**
+   * Every tool the desktop has OPEN as a tab in this lane, in strip order, with
+   * `activeTool` among them. The pane is a tab strip: one tool is on screen and
+   * the rest are one click away, so a mirror that reported only the active one
+   * would describe a pane with one tab in it.
+   *
+   * Empty means the pane is on its picker page with nothing open. Read it as
+   * `openTools ?? []` on the wire — an older desktop publishes no such field.
+   */
+  openTools: WorkToolId[];
   activeToolUpdatedAt: string | null;
   browser: WorkToolsBrowserState | null;
   /** Non-null exactly when `browser` is null. */
   browserUnavailable: WorkToolsUnavailableReason | null;
+  /**
+   * Chats in this lane driving the browser right now. Empty is the normal
+   * state — including whenever `browser` is null, since a desktop that cannot
+   * describe its browser cannot vouch for anyone using it.
+   */
+  agentBrowserPresence: WorkToolsAgentBrowserPresence[];
   appControl: WorkToolsAppControlState | null;
   capturedAt: string;
 };
@@ -163,6 +200,12 @@ export type WorkToolsLaneState = {
 export type WorkToolsSetActiveToolArgs = {
   laneId: string;
   tool: WorkToolId | null;
+  /**
+   * The lane's open tabs, in strip order. Optional because an older desktop
+   * publishes only `tool`; the aggregator then treats the active tool as the
+   * one open tab, which is exactly what that build's pane had.
+   */
+  openTools?: WorkToolId[] | null;
 };
 
 export type WorkToolsGetLaneStateArgs = {

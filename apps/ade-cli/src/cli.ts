@@ -22928,6 +22928,14 @@ function formatWorkToolsState(value: unknown): string {
     renderKeyValues("ADE work tools", [
       ["lane", state.laneId],
       ["active tool", state.activeTool ?? "(desktop has published none)"],
+      // The pane is a tab strip; the active tool is only the tab on screen.
+      [
+        "open tools",
+        (Array.isArray(state.openTools) ? state.openTools : [])
+          .map((tool) => asString(tool))
+          .filter((tool): tool is string => Boolean(tool))
+          .join(", "),
+      ],
       ["active tool updated", state.activeToolUpdatedAt],
       ["captured", state.capturedAt],
       [

@@ -595,34 +595,75 @@ frame's own laid-out rect, which lags a pointer-driven resize by a frame
 or two — without that trim the composited page keeps its old width and
 paints over the chat column and the window edge while you drag.
 
-### Picker page, then one tool
+### A tab strip, and a picker page behind it
 
-The pane is a **picker page plus one active tool** — there is no tab
-strip and no multi-instance. There are six tools and no Pull request
-tool: PRs live on their own tab, and a seventh card that opened a
-read-only summary was the one card in the grid that did not take the
-pane over.
+The pane is a **tab strip plus one page**: one tab per open tool, one of
+them on screen, and the picker page whenever you press the grid button or
+the `+`. There is no multi-instance — a tool is open once. There are six
+tools and no Pull request tool: PRs live on their own tab, and a seventh
+card that opened a read-only summary was the one card in the grid that did
+not take the pane over.
 
-The picker is one **centred 512 px column** (`COLUMN_MAX_PX`) — a "Tools"
-title, the subline "Pick what this lane works with", then a grid of flat
-cards in the order Terminal, Browser, Git, Files, Simulator, App Control
-(`WorkToolPicker.tsx`, catalogue in `workTools.ts`). The column is
-vertically centred against the **whole pane** rather than against the
-space left under the 36 px header, which is what the extra bottom pad
-buys; it centres with `m-auto` rather than `justify-center`, because a
-centred flex child in an overflow container has its overflowing top
-clipped and unreachable. The grid is `auto-fit` over a `CARD_MIN_TRACK_PX`
-(196) minimum, so it is **two columns or one, never three**: with 24 px
-of padding either side and an 8 px gutter, three tracks would need 652 px
-of pane and the column is capped below that. Cards therefore *grow* with
-the pane (196 → 252 px) instead of multiplying and shrinking. An odd card
+The picker is one **centred 512 px column** (`COLUMN_MAX_PX`) — no title
+and no subline, just a grid of cards in the order Terminal, Browser, Git,
+Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
+`workTools.ts`). The page does not name itself: the strip above it already
+carries the word "Tools", and six labelled cards do not need introducing.
+The column is vertically centred against the **whole pane** rather than
+against the space left under the 36 px header, which is what the extra
+bottom pad buys; it centres with `m-auto` rather than `justify-center`,
+because a centred flex child in an overflow container has its overflowing
+top clipped and unreachable. The grid is `auto-fit` over a
+`CARD_MIN_TRACK_PX` (188) minimum, so it is **two columns or one, never
+three**: with 24 px of padding either side and an 8 px gutter, two tracks
+need 432 px of pane and three would need 628 px, and the column is capped
+below that. 188 rather than 196 because the pane's default width is
+447 px, which missed the old threshold by a single pixel and gave everyone
+one column down a pane wide enough for two. Cards therefore *grow* with
+the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
 count lets the last card span the full row rather than orphaning it.
 
+Behind the grid is the pane's one decorated surface: a slow violet mesh
+(`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
+"Mesh drift"). Nothing in its GLSL names a colour — `backdropThemeFor`
+hands the shader ADE's own tokens as uniforms, `--color-bg` →
+`--color-accent-deep` → `--color-accent` → `--color-accent-bright` in
+dark, and `--color-surface` up the same violet hues at well under half
+the intensity in light, since on a light canvas the same amount of colour
+reads as a stain. The theme comes from the store (`s.theme`), the same
+value `App.tsx` writes to `data-theme`.
+
+Its budget is a hard requirement, because this is decoration on a page you
+land on constantly inside a renderer that is also running a terminal, a
+browser view and a chat stream. It draws at **DPR 1**, never more than
+`BACKDROP_PIXEL_BUDGET` (600 k) pixels — past that the canvas keeps its
+CSS size and the drawing buffer is floored down, which a mesh this soft
+cannot show — and never faster than **30 fps**, gated on the rAF
+timestamp rather than a timer so a 240 Hz panel costs seven cheap no-ops
+instead of seven mesh evaluations. It stops entirely while the window is
+blurred, the document hidden, or the canvas out of the intersection
+observer's view; `prefers-reduced-motion` paints exactly one frame and
+never starts the loop; the cursor swirl is wired only on `(hover: hover)`
+and `(pointer: fine)` devices, since a touchscreen "cursor" is a tap that
+would yank the background sideways. Unmount releases the context through a
+deferred `pendingContextReleases` timer, cancelled if the same canvas
+comes straight back — which it does on every picker ↔ tool crossfade. With
+no WebGL there is **no canvas at all**: the same box renders
+`.ade-tool-picker-static`, the same corner light as flat CSS, because a
+software-rendered mesh would be the most expensive thing in the window.
+The canvas is `aria-hidden` and `pointer-events: none` — a decoration that
+swallowed a click meant for a card would be breaking the page it
+decorates. `resolveBackdropSize` owns the whole size/budget policy and is
+unit-tested without a GPU.
+
 A card is deliberately thin: a monochrome 16 px glyph, the name, and
-exactly one line underneath. No tinted square, no key cap, no shadow, and
-**no per-card activity dot** — the only mark a card can carry is a red
-6 px dot when that tool is actually broken (`workToolHasError`), because
-that is the one fact worth interrupting a calm page for. Nothing is
+exactly one line underneath. No tinted square, no key cap, and **no
+per-card activity dot** — the only mark a card can carry is a red 6 px dot
+when that tool is actually broken (`workToolHasError`), because that is
+the one fact worth interrupting a calm page for. Now that there is
+something behind it the card is glass rather than a flat rectangle
+(`.ade-tool-card`): a translucent fill over an 8 px `backdrop-filter`
+blur and one hairline at 12 % white (a border token in light). Nothing is
 highlighted on entry; arrow keys move a highlight and take focus with
 them, so Enter is the browser's own activation, and a pointer move drops
 the keyboard highlight so two cards never look hovered at once.
@@ -631,11 +672,12 @@ The line under the name is resolved by `workToolSummary` in one priority:
 the tool's measured status (plus an error-count suffix), else the
 catalogue's short `hint` ("Run a shell here", "Drive a real browser",
 "Commit, push, rebase", "Boot a simulator", "Drive a desktop app"), else
-the availability reason. Files has no hint, because it always knows
-whether the worktree is dirty. Status comes only from reads the pane
+the availability reason. Git shows the lane's unpublished, dirty-count,
+ahead/behind, or pushed/committed-age state; Files shows the cached tracked-file
+total and unique changed-entry count. Status comes only from reads the pane
 already makes — the `builtInBrowser` / `iosSimulator` / `appControl`
 status subscriptions, the terminal panel's published shell count, and the
-lane's git status — so nothing here polls. Lines hold a stepped-shimmer
+lane's cached git summary — so nothing here polls. Lines hold a stepped-shimmer
 skeleton for at most 300 ms while those reads settle
 (`useWorkToolStatuses.ts`). A card's tooltip is `"<Tool> — <line>"` and
 appears **only when the card clipped its text** (`onlyWhenClipped`), so a
@@ -657,20 +699,35 @@ capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
 
-While a tool is open the pane shows a 36 px header
-(`WorkToolHeader.tsx`): a `⊞ Tools` button
-back to the picker (Escape does the same, bound as `work.tools.picker`
-with scope `work` so it only fires inside the pane), the tool's icon,
-name, and one compact context string, then **activity dots** for the
-other tools that are usable here and not idle. Everything decorative is
-gone — no tinted halo behind the icon, no rules between the three groups,
-no colour on the glyph; one hairline along the bottom is the only line in
-the bar. The close ✕ keeps its place on the right.
+The pane's one 36 px header (`WorkToolHeader.tsx`) is the strip, and it is
+the same bar on both pages. Left edge is the `⊞ Tools` button back to the
+picker (Escape does the same, bound as `work.tools.picker` with scope
+`work` so it only fires inside the pane), lit while the picker is up.
+Immediately right of it, one tab per OPEN tool in strip order — glyph,
+name, a `×` on hover — with the tool on screen filled; then a `+` that
+opens the picker, dropped while the picker is already showing, because two
+controls opening one page is one too many. Activity dots for tools with
+**no tab** that are usable here and not idle sit to the right of that, and
+the close ✕ keeps its place at the end. There is no centred title: the lit
+tab is the title.
 
 The header's one fact per tool is a rule on the catalogue
 (`workToolContextLabel`), not an `if` cascade at the header: Git shows the
 branch (the dirty count is already its status line), Files shows the lane
-name, and every other tool shows its own status line.
+name, and every other tool shows its own status line. It rides in the
+active tab's tooltip and accessible name (`Browser · example.com`), never
+as a header line — an icon-only tab would otherwise have no name at all,
+and a bar that spelled out what the lit tab already says was saying one
+thing twice in 36 px.
+
+The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
+below **420 px** of header the tabs drop their words and become glyphs, a
+pane too narrow to spell every open tool drops the words rather than
+hiding tabs, and only when even the glyphs do not fit do the extras move
+into a `…` menu (Radix, on the pane's shared `MENU_CONTENT_CLASS`). The
+tool on screen is never the one that overflows, and at least one tab is
+always drawn. Six glyphs fit inside the splitter's 280 px minimum, so the
+menu is genuinely the last resort.
 
 A dot's colour is its **state**, not its tool
 (`workToolDotState` / `workToolDotColor`): red for an error, amber for
@@ -683,16 +740,23 @@ line; clicking it switches, and the dot animates into the header icon
 through a shared `layoutId`.
 
 Motion: picker ↔ tool is a 180 ms crossfade with a 4 px y-shift on
-`cubic-bezier(0.4, 0, 0.2, 1)`; dots enter on the overshoot curve
-`cubic-bezier(0.34, 1.56, 0.64, 1)`. A card (`.ade-tool-card` in
-`index.css`) never moves or resizes — hover, keyboard highlight, and press
-change **fill only**, over 120 ms, with an inset hairline in dark mode and
-a border in light. The last-opened tool carries `aria-current` but **no**
-fill: the picker is a page for choosing, and a card pre-tinted in the
-colour hover uses reads as already-hovered. All of it is disabled under
-`prefers-reduced-motion`.
+`cubic-bezier(0.4, 0, 0.2, 1)`; tab → tab is the shorter, flatter version
+of it — 120 ms of opacity and no y-shift, because switching tabs is a
+lateral move inside one surface rather than the pane re-opening; dots
+enter on the overshoot curve
+`cubic-bezier(0.34, 1.56, 0.64, 1)`. A card's hover is the one place the
+page spends colour: a 2 px lift, its hairline to 45 % accent, the glyph
+tinted to accent, and one soft accent glow, over 160 ms ease-out; press
+collapses the lift and takes the card to `scale(0.99)`, so it gives under
+the cursor rather than jumping out from under it. The keyboard highlight
+draws exactly the hover state, so the two can never disagree. The
+last-opened tool carries `aria-current` but **no** fill: the picker is a
+page for choosing, and a card pre-tinted in the colour hover uses reads as
+already-hovered. Under `prefers-reduced-motion` the transitions and the
+lift both go; the fill and hairline still answer the cursor.
 
-Inactive tools **unmount their view and keep their service alive**.
+Only the ACTIVE tab is mounted. Inactive tools **unmount their view and
+keep their service alive**.
 Terminals, browser tabs, App Control sessions, and iOS simulator streams
 all live in the main process and keep running; only the React views go.
 The browser is the one tool with an explicit obligation, since its
@@ -700,12 +764,22 @@ The browser is the one tool with an explicit obligation, since its
 parks it on every switch away, on close, when the pane goes inactive, on
 unmount, and when the Work route deactivates.
 
-### Which tool is open is per lane
+### Which tools are open is per lane
 
-`workSidebarTool` (`WorkSidebarTab | null`, null = picker) is stored per
-lane in `laneWorkViewByScope` under `"<projectKey>::<laneId>"`, read and
-written through `useWorkSidebarTool(laneId)`. A lane with no stored choice
-falls back to the project-scoped copy of the same field, which is also
+`workSidebarTool` (`WorkSidebarTab | null`, null = picker) and
+`workSidebarOpenTools` (the strip, in order, with the active tool among
+it) are stored per lane in `laneWorkViewByScope` under
+`"<projectKey>::<laneId>"`, read and written through
+`useWorkSidebarTool(laneId)`. Picking a tool appends it, or activates the
+tab it already has without moving it; closing one hands the pane to the
+tab on its **right**, then its left, then the picker
+(`openWorkToolTab` / `closeWorkToolTab`, pure). Going back to the picker
+keeps the strip — the tabs are still open, the pane is just showing the
+page you pick from. Persisted state written before the strip existed
+(`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
+strip, so upgrading lands on the pane you left rather than an empty
+picker. A lane with no stored choice
+falls back to the project-scoped copy of the same fields, which is also
 where a lane-less (projectless / personal) Work surface reads and writes.
 `workSidebarOpen` and `workSidebarWidthPct` stay project-wide: the pane's
 geometry is a workspace preference, its contents are not. Picking any tool
@@ -974,11 +1048,10 @@ agent starts driving the browser while you read a diff, the thing you
 most want to see is the thing you just navigated away from. The corner
 card is a live thumbnail of the most recently active screen tool that is
 **not** the one on screen, parked in a corner of the chat column and one
-click away from taking the pane back. It is 320 wide for the browser and
-App Control, with its height following the latest frame's aspect ratio
-clamped to 180–320 (`workLiveCardSizeForFrame`); a frame taller than the
-clamp is shown top-aligned with `object-fit: cover`, a landscape frame is
-contained. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
+click away from taking the pane back. Browser and App Control use a fixed
+288×180 landscape rectangle (16:10), smaller than the main pane; every frame
+uses `object-fit: cover` with `object-position: top`, so a portrait page shows
+its top. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
 *device* pixels, so a Retina card is not fed a thumbnail-sized image and
 upscaled into mush, nor a 5K panel a full-width one.
 

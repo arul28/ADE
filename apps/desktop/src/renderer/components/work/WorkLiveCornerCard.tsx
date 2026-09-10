@@ -22,7 +22,7 @@ import {
   useAppStore,
   type WorkSidebarTab,
 } from "../../state/appStore";
-import { EMPHASIZED_EASE, exitTransition, revealTransition } from "../../lib/motion";
+import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "../terminals/workTools";
 import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
@@ -50,7 +50,7 @@ import {
   workLiveCardPositionFromRect,
   workLiveCardRect,
   workLiveCardObjectFit,
-  workLiveCardSizeForFrame,
+  workLiveCardSize,
   workLivePreviewMaxWidth,
   WORK_LIVE_CARD_AVOID_SELECTOR,
   workLiveScrubFrameKey,
@@ -67,7 +67,7 @@ import {
  *
  * The Work tab has exactly one pane for a screen tool, so the moment an agent
  * starts driving a browser while you read its diff, the thing you most want to
- * see is the thing you just navigated away from. This is that: a 320px live
+ * see is the thing you just navigated away from. This is that: a 288px live
  * thumbnail of the most recently active screen tool that is NOT the one on
  * screen, parked in the corner of the chat column, one click away from taking
  * the pane back.
@@ -180,17 +180,6 @@ export function WorkLiveCornerCard({
   const [scrubFrameId, setScrubFrameId] = useState<string | null>(null);
   const [hovering, setHovering] = useState(false);
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
-  /**
-   * Width ÷ height of the newest decoded frame, or null before one arrives.
-   *
-   * The card is 320px wide whatever it is showing, but a portrait page in the
-   * 320×200 box spent half the card on empty pane — so the HEIGHT follows the
-   * picture. Measured from the `<img>` that is already painting it rather than
-   * carried on the frame payload: App Control's screencast and the browser's
-   * preview frames describe their size differently, and `naturalWidth` is the
-   * one number both of them are guaranteed to agree with.
-   */
-  const [frameAspect, setFrameAspect] = useState<number | null>(null);
   const [bottomReserve, setBottomReserve] = useState(0);
   const [scrubBuffer, setScrubBuffer] = useState<readonly WorkLiveScrubFrame[]>([]);
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -270,20 +259,6 @@ export function WorkLiveCornerCard({
       window.cancelAnimationFrame(frameRafRef.current);
       frameRafRef.current = null;
     }
-  }, []);
-
-  /**
-   * The frame decoded, so its shape is now known.
-   *
-   * Rounded to three places before it reaches state: a stream whose height
-   * wobbles by a pixel between frames would otherwise re-measure the card on
-   * every paint, and a card that resizes 30 times a second is worse than one
-   * with black bars.
-   */
-  const measureFrame = useCallback((image: HTMLImageElement | null) => {
-    if (!image || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
-    const next = Math.round((image.naturalWidth / image.naturalHeight) * 1000) / 1000;
-    setFrameAspect((current) => (current === next ? current : next));
   }, []);
 
   const paintFrame = useCallback((tool: WorkLiveScreenTool, dataUrl: string) => {
@@ -445,10 +420,8 @@ export function WorkLiveCornerCard({
   );
   dismissalsRef.current = dismissals;
 
-  // Per tool, because the aspect is: a phone in a 16:10 frame is two black
-  // columns with a sliver of app between them.
-  const cardSize = useMemo(() => workLiveCardSizeForFrame(tool, frameAspect), [frameAspect, tool]);
-  const objectFit = workLiveCardObjectFit(tool, frameAspect);
+  const cardSize = workLiveCardSize(tool);
+  const objectFit = workLiveCardObjectFit(tool);
 
   const fits = workLiveCardFits(hostSize, bottomReserve, cardSize);
   const visible = active && tool != null && fits;
@@ -663,10 +636,6 @@ export function WorkLiveCornerCard({
     appControlTraceIdRef.current = null;
     setScrubBuffer([]);
     setScrubFrameId(null);
-    // …nor the previous tool's SHAPE. The blank frame is 1×1, so leaving the
-    // measurement behind would size an App Control card to the last page the
-    // browser was on until its first frame decoded.
-    setFrameAspect(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
   }, [tool, visible]);
@@ -840,14 +809,11 @@ export function WorkLiveCornerCard({
               left: rect.left,
               top: rect.top,
               width: cardSize.width,
+              height: cardSize.height,
             }}
-            // Height is ANIMATED, not styled: it follows the frame's aspect, so
-            // the first frame of a portrait page would otherwise snap the card
-            // from 200px to 320px in one commit. The house reveal curve, the
-            // same 180ms every other in-place resize in the app uses.
             animate={reduceMotion
-              ? { opacity: 1, height: cardSize.height }
-              : { opacity: 1, scale: 1, height: cardSize.height }}
+              ? { opacity: 1 }
+              : { opacity: 1, scale: 1 }}
             onDragStart={() => {
               draggingRef.current = true;
               suppressClickRef.current = true;
@@ -862,14 +828,14 @@ export function WorkLiveCornerCard({
               }, 0);
             }}
             initial={reduceMotion
-              ? { opacity: 0, height: cardSize.height }
-              : { opacity: 0, scale: 0.96, height: cardSize.height }}
+              ? { opacity: 0 }
+              : { opacity: 0, scale: 0.96 }}
             exit={reduceMotion
               ? { opacity: 0, transition: { duration: 0 } }
               : { opacity: 0, scale: 0.97, transition: EXIT }}
             transition={reduceMotion
               ? { duration: 0 }
-              : { ...ENTER, height: revealTransition }}
+              : ENTER}
             data-work-live-card={tool}
             className={cn(
               "group pointer-events-auto absolute cursor-pointer overflow-hidden",
@@ -897,15 +863,8 @@ export function WorkLiveCornerCard({
                 "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--color-accent)]",
               )}
             >
-              {/*
-                `contain` wherever the card could take the frame's whole shape:
-                a 16:10 crop of a 3:2 page slices a button in half and calls it
-                a preview. The card's height now follows the frame, so almost
-                nothing letterboxes — and the one case that cannot fit, a page
-                taller than the 320px envelope, is `cover`ed from the TOP
-                instead, because the top of a page is where its header, its nav
-                and whatever the agent just did all are.
-              */}
+              {/* Browser and App Control use the full fixed card and crop every
+                  frame from the top, keeping a portrait page's header visible. */}
               {tool === "ios" ? (
                 <video
                   ref={setVideoRef}
@@ -918,9 +877,8 @@ export function WorkLiveCornerCard({
                   ref={setImageRef}
                   alt=""
                   src={BLANK_FRAME}
-                  onLoad={(event) => measureFrame(event.currentTarget)}
                   className="h-full w-full"
-                  style={{ objectFit, objectPosition: objectFit === "cover" ? "top" : undefined }}
+                  style={{ objectFit, objectPosition: "top" }}
                 />
               )}
               <img
@@ -935,7 +893,7 @@ export function WorkLiveCornerCard({
                 style={{
                   opacity: scrubbedFrame?.dataUrl ? 1 : 0,
                   objectFit,
-                  objectPosition: objectFit === "cover" ? "top" : undefined,
+                  objectPosition: "top",
                 }}
               />
             </button>
@@ -977,7 +935,7 @@ export function WorkLiveCornerCard({
             {/*
               At rest: one 8px dot. It is the whole chrome, and it is enough —
               the card's job is to show you the screen, and a title bar over a
-              320px picture spends a tenth of it saying what the picture
+              288px picture spends a tenth of it saying what the picture
               already says.
             */}
             <span
@@ -1023,7 +981,7 @@ export function WorkLiveCornerCard({
               {/*
                 `min-w-0` + a shrink budget rather than `shrink-0`: a page title
                 can be sixty characters, and pinning it at full width pushed the
-                action, the ✕ and everything else out of a 320px pill.
+                action, the ✕ and everything else out of a 288px pill.
               */}
               <span
                 className="min-w-0 shrink truncate text-[11px] font-medium text-fg"

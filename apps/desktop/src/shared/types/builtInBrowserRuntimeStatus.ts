@@ -13,6 +13,8 @@
  * capability protects — no cookies, no observation bytes, no network log, no
  * screenshot, no page content, and no way to act on a tab.
  */
+import type { BuiltInBrowserAgentPresence } from "./builtInBrowser";
+
 export type BuiltInBrowserRuntimeTabStatus = {
   id: string;
   url: string | null;
@@ -49,6 +51,16 @@ export type BuiltInBrowserRuntimeStatus = {
    * project that is already open sends them chasing the wrong thing.
    */
   unavailable: "desktop_not_attached_for_project" | "browser_pane_not_opened" | null;
+  /**
+   * Chats driving the browser right now, scoped to the asking daemon's project.
+   *
+   * Optional because it is version skew, not absence: a daemon that outruns the
+   * desktop build serving this socket gets a status with no presence field at
+   * all, and "this desktop cannot tell me" must read as "nobody is browsing"
+   * rather than crash the Work-tools mirror. Absent and empty therefore mean the
+   * same thing here, which is why nothing downstream distinguishes them.
+   */
+  presence?: BuiltInBrowserAgentPresence[];
 };
 
 /** Bridge method name for {@link BuiltInBrowserRuntimeStatus}. */

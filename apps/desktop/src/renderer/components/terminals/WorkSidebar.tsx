@@ -34,7 +34,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings"
 import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
-import { WorkToolHeader, WorkToolPickerHeader } from "./WorkToolHeader";
+import { WorkToolHeader } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -170,7 +170,9 @@ export function WorkSidebar({
   lanes,
   activeSession,
   tool,
+  openTools = [],
   onToolChange,
+  onToolClose,
   onClose,
   contextTarget,
   contextDisabledReason: targetDisabledReason,
@@ -180,9 +182,13 @@ export function WorkSidebar({
   laneId: string | null;
   lanes: LaneSummary[];
   activeSession: TerminalSessionSummary | null;
-  /** The one tool on screen, or null for the picker page. */
+  /** The tab on screen, or null for the picker page. */
   tool: WorkSidebarTab | null;
+  /** Every tool open as a tab, in strip order. */
+  openTools?: readonly WorkSidebarTab[];
   onToolChange: (tool: WorkSidebarTab | null) => void;
+  /** Removes a tab. Omitted on surfaces with no strip to close from. */
+  onToolClose?: (tool: WorkSidebarTab) => void;
   onClose: () => void;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason: string | null;
@@ -219,6 +225,19 @@ export function WorkSidebar({
   // non-sequitur, and the picker says why the card is dimmed.
   const effectiveTool: WorkSidebarTab | null =
     tool && isAvailableWorkSidebarTab(tool, toolContext) ? tool : null;
+  /**
+   * The strip as the header draws it.
+   *
+   * Two rules, both defensive: a tab this surface cannot open is dropped (a
+   * remote lane's persisted Simulator tab would answer nothing when clicked),
+   * and the tool on screen is always in the strip — a pane showing a tool with
+   * no tab for it would have no mark anywhere saying what you are looking at.
+   */
+  const availableOpenTools = useMemo(() => {
+    const strip = openTools.filter((entry) => isAvailableWorkSidebarTab(entry, toolContext));
+    if (effectiveTool && !strip.includes(effectiveTool)) strip.push(effectiveTool);
+    return strip;
+  }, [effectiveTool, openTools, toolContext]);
 
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
@@ -566,6 +585,13 @@ export function WorkSidebar({
     onToolChange(next);
   }, [browserViewRoot, effectiveTool, onToolChange]);
 
+  const closeTool = useCallback((target: WorkSidebarTab) => {
+    // Same obligation as switching away: the native browser view keeps painting
+    // over whatever replaces it unless it is parked here, synchronously.
+    if (target === "browser") hideBuiltInBrowserView(browserViewRoot);
+    onToolClose?.(target);
+  }, [browserViewRoot, onToolClose]);
+
   const closePane = useCallback(() => {
     if (effectiveTool === "browser") hideBuiltInBrowserView(browserViewRoot);
     onClose();
@@ -698,9 +724,27 @@ export function WorkSidebar({
       : null
   ), [activeLane, effectiveTool, statuses]);
 
+  /**
+   * Tab → tab is a shorter, flatter fade than picker → tool.
+   *
+   * Switching tabs is a lateral move inside one surface: 120ms of opacity and no
+   * y-shift, so the strip does not feel like it re-opened the pane. Arriving from
+   * (or leaving for) the picker keeps the page-level reveal.
+   */
+  const previousPaneKeyRef = useRef<string | null>(null);
+  const paneKey = effectiveTool ?? "picker";
+  const tabSwitch = previousPaneKeyRef.current !== null
+    && previousPaneKeyRef.current !== "picker"
+    && paneKey !== "picker"
+    && previousPaneKeyRef.current !== paneKey;
+  useEffect(() => {
+    previousPaneKeyRef.current = paneKey;
+  }, [paneKey]);
   const transition = reduceMotion
     ? { duration: 0 }
-    : revealTransition;
+    : tabSwitch
+      ? { duration: 0.12, ease: "easeOut" as const }
+      : revealTransition;
 
   return (
     <aside
@@ -716,22 +760,23 @@ export function WorkSidebar({
       // (`clampWorkSidebarWidthPct`); the pane itself just never escapes.
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85 outline-none"
     >
-      {effectiveTool ? (
-        <WorkToolHeader
-          tool={effectiveTool}
-          context={toolContext}
-          contextLabel={headerContextLabel}
-          statuses={statuses}
-          // Reads the real binding rather than a hard-coded "Esc", so a
-          // rebound `work.tools.picker` never advertises the wrong key.
-          backShortcut={effectiveTool === "terminal" ? terminalPickerBinding : pickerBinding}
-          onShowPicker={() => selectTool(null)}
-          onPick={selectTool}
-          onClose={closePane}
-        />
-      ) : (
-        <WorkToolPickerHeader onClose={closePane} />
-      )}
+      {/* One bar for both states. The strip does not disappear when the picker
+          comes up — the tabs are still open, and a picker page that hid them
+          would look like it had closed them. */}
+      <WorkToolHeader
+        activeTool={effectiveTool}
+        openTools={availableOpenTools}
+        context={toolContext}
+        contextLabel={headerContextLabel}
+        statuses={statuses}
+        // Reads the real binding rather than a hard-coded "Esc", so a
+        // rebound `work.tools.picker` never advertises the wrong key.
+        backShortcut={effectiveTool === "terminal" ? terminalPickerBinding : pickerBinding}
+        onShowPicker={() => selectTool(null)}
+        onPick={selectTool}
+        onCloseTool={closeTool}
+        onClose={closePane}
+      />
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and
           the outgoing one stops taking pointer events the moment it starts to
@@ -742,10 +787,12 @@ export function WorkSidebar({
         <AnimatePresence initial={false}>
           <motion.div
             key={effectiveTool ?? "picker"}
+            role={effectiveTool ? "tabpanel" : undefined}
+            aria-label={effectiveTool ? workToolLabel(effectiveTool) : undefined}
             className="absolute inset-0 min-h-0"
-            initial={{ opacity: 0, y: 4 }}
+            initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4, pointerEvents: "none" }}
+            exit={{ opacity: 0, y: tabSwitch ? 0 : -4, pointerEvents: "none" }}
             transition={transition}
           >
             {effectiveTool ? content : (

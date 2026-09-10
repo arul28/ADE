@@ -1059,6 +1059,7 @@ enum WorkProofPreviewData {
   static let toolsState = WorkToolsLaneState(
     laneId: laneId,
     activeTool: "browser",
+    openTools: ["terminal", "browser", "git"],
     browser: WorkToolsBrowserState(
       tabs: [
         WorkToolsBrowserTab(

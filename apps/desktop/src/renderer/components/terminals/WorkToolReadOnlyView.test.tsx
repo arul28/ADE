@@ -11,6 +11,7 @@ function laneState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneSt
   return {
     laneId: "lane-1",
     activeTool: "browser",
+    openTools: ["browser"],
     activeToolUpdatedAt: "2026-01-01T00:00:00.000Z",
     browser: {
       activeTabId: "tab-1",
@@ -32,6 +33,7 @@ function laneState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneSt
       },
     },
     browserUnavailable: null,
+    agentBrowserPresence: [],
     appControl: {
       appName: "ADE Dev",
       status: "connected",

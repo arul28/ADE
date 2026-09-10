@@ -4,7 +4,12 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import { useAppStore } from "../../state/appStore";
-import { useWorkSidebarTool, workToolScopeKey } from "./useWorkSidebarTool";
+import {
+  closeWorkToolTab,
+  openWorkToolTab,
+  useWorkSidebarTool,
+  workToolScopeKey,
+} from "./useWorkSidebarTool";
 import {
   clearPendingWorkToolRequest,
   requestWorkTool,
@@ -110,11 +115,111 @@ describe("useWorkSidebarTool", () => {
     expect(useAppStore.getState().laneWorkViewByScope).toEqual({});
   });
 
+  it("opens each picked tool as a tab and keeps the strip's order", () => {
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1"));
+
+    act(() => result.current.setTool("terminal"));
+    rerender();
+    act(() => result.current.setTool("browser"));
+    rerender();
+    expect(result.current.openTools).toEqual(["terminal", "browser"]);
+
+    // Re-picking an open tool activates its tab where it already is; a strip
+    // that reshuffled would make the tabs jump every time you came back.
+    act(() => result.current.setTool("terminal"));
+    rerender();
+    expect(result.current.openTools).toEqual(["terminal", "browser"]);
+    expect(result.current.tool).toBe("terminal");
+  });
+
+  it("keeps the strip open when the picker page is shown", () => {
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1"));
+    act(() => result.current.setTool("git"));
+    rerender();
+
+    act(() => result.current.setTool(null));
+    rerender();
+    expect(result.current.tool).toBe(null);
+    expect(result.current.openTools).toEqual(["git"]);
+  });
+
+  it("activates the neighbour when the tab on screen is closed", () => {
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1"));
+    for (const tool of ["terminal", "browser", "git"] as const) {
+      act(() => result.current.setTool(tool));
+      rerender();
+    }
+
+    act(() => result.current.setTool("browser"));
+    rerender();
+    act(() => result.current.closeTool("browser"));
+    rerender();
+    // The tab to the RIGHT inherits.
+    expect(result.current.openTools).toEqual(["terminal", "git"]);
+    expect(result.current.tool).toBe("git");
+
+    // Closing the last one falls back to the left, then to the picker.
+    act(() => result.current.closeTool("git"));
+    rerender();
+    expect(result.current.tool).toBe("terminal");
+    act(() => result.current.closeTool("terminal"));
+    rerender();
+    expect(result.current.tool).toBe(null);
+    expect(result.current.openTools).toEqual([]);
+  });
+
+  it("leaves the tool on screen alone when a background tab is closed", () => {
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1"));
+    act(() => result.current.setTool("terminal"));
+    rerender();
+    act(() => result.current.setTool("git"));
+    rerender();
+
+    act(() => result.current.closeTool("terminal"));
+    rerender();
+    expect(result.current.tool).toBe("git");
+    expect(result.current.openTools).toEqual(["git"]);
+  });
+
+  it("migrates a lane that only ever stored one tool into a one-tab strip", () => {
+    // Exactly the shape a pre-strip build persisted: an active tool and no
+    // `workSidebarOpenTools` at all.
+    useAppStore.getState().setLaneWorkViewState(PROJECT_ROOT, "lane-old", {
+      workSidebarTool: "files",
+      workSidebarOpenTools: [],
+    } as never);
+    const { result } = renderHook(() => useWorkSidebarTool("lane-old"));
+    expect(result.current.tool).toBe("files");
+    expect(result.current.openTools).toEqual(["files"]);
+  });
+
   it("builds a lane scope key only when both halves are present", () => {
     expect(workToolScopeKey(PROJECT_ROOT, "lane-1")).toBe("/repo::lane-1");
     expect(workToolScopeKey(PROJECT_ROOT, null)).toBe("");
     expect(workToolScopeKey(null, "lane-1")).toBe("");
     expect(workToolScopeKey("  ", " ")).toBe("");
+  });
+});
+
+describe("work tool strip arithmetic", () => {
+  it("appends on open and never moves a tab that is already there", () => {
+    expect(openWorkToolTab([], "git")).toEqual(["git"]);
+    expect(openWorkToolTab(["git", "files"], "browser")).toEqual(["git", "files", "browser"]);
+    expect(openWorkToolTab(["git", "files"], "git")).toEqual(["git", "files"]);
+  });
+
+  it("hands the active tab to its right neighbour, then its left, then the picker", () => {
+    expect(closeWorkToolTab(["git", "files", "ios"], "files", "files"))
+      .toEqual({ openTools: ["git", "ios"], activeTool: "ios" });
+    expect(closeWorkToolTab(["git", "files"], "files", "files"))
+      .toEqual({ openTools: ["git"], activeTool: "git" });
+    expect(closeWorkToolTab(["git"], "git", "git"))
+      .toEqual({ openTools: [], activeTool: null });
+  });
+
+  it("is a no-op for a tab that is not in the strip", () => {
+    expect(closeWorkToolTab(["git"], "git", "files"))
+      .toEqual({ openTools: ["git"], activeTool: "git" });
   });
 });
 

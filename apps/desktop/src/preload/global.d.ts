@@ -3354,7 +3354,15 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
-        setActiveTool: (laneId: string, tool: WorkToolId | null) => Promise<void>;
+        /**
+         * `openTools` is the pane's whole tab strip in order; `tool` is the one
+         * on screen. Defaulted so an older caller still publishes coherently.
+         */
+        setActiveTool: (
+          laneId: string,
+          tool: WorkToolId | null,
+          openTools?: WorkToolId[],
+        ) => Promise<void>;
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;

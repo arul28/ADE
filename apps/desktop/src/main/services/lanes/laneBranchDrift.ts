@@ -17,6 +17,14 @@ const DETACHED_HEAD_SENTINEL = "(detached)";
 
 export type WorktreeStatusPorcelainV2 = {
   dirty: boolean;
+  /** Number of changed tracked entries in the worktree. */
+  changedFileCount: number;
+  /** Number of entries with index/staged changes. */
+  staged: number;
+  /** Number of entries with worktree/unstaged changes. */
+  unstaged: number;
+  /** Number of untracked entries. */
+  untracked: number;
   /** `null` for a detached HEAD or when git did not report the header. */
   headBranchRef: string | null;
 };
@@ -31,6 +39,10 @@ export type WorktreeStatusPorcelainV2 = {
  */
 export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPorcelainV2 {
   let dirty = false;
+  let changedFileCount = 0;
+  let staged = 0;
+  let unstaged = 0;
+  let untracked = 0;
   let headBranchRef: string | null = null;
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
@@ -44,8 +56,21 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
       continue;
     }
     dirty = true;
+    changedFileCount += 1;
+    if (line.startsWith("?")) {
+      untracked += 1;
+      continue;
+    }
+    // Porcelain v2 tracked entries are `1 XY`, `2 XY`, or `u XY`: X is the
+    // index/staged state and Y is the worktree/unstaged state. A file that has
+    // both kinds of change is counted in both breakdowns, but only once in the
+    // total entry count above.
+    const stagedCode = line[2] ?? " ";
+    const unstagedCode = line[3] ?? " ";
+    if (stagedCode !== " " && stagedCode !== "." && stagedCode !== "?") staged += 1;
+    if (unstagedCode !== " " && unstagedCode !== "." && unstagedCode !== "?") unstaged += 1;
   }
-  return { dirty, headBranchRef };
+  return { dirty, changedFileCount, staged, unstaged, untracked, headBranchRef };
 }
 
 /**

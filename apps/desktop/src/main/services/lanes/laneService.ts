@@ -176,7 +176,19 @@ type SessionLinearIssueLinkRow = {
 
 type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
 
-const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
+const DEFAULT_LANE_STATUS: LaneStatus = {
+  dirty: false,
+  ahead: 0,
+  behind: 0,
+  remoteBehind: -1,
+  changedFileCount: 0,
+  staged: 0,
+  unstaged: 0,
+  untracked: 0,
+  lastCommitAt: null,
+  trackedFileCount: null,
+  rebaseInProgress: false,
+};
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 /**
  * How many lanes' git status probes may be in flight at once while building a
@@ -348,6 +360,12 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     ahead: status.ahead,
     behind: status.behind,
     remoteBehind: status.remoteBehind,
+    changedFileCount: status.changedFileCount ?? 0,
+    staged: status.staged ?? 0,
+    unstaged: status.unstaged ?? 0,
+    untracked: status.untracked ?? 0,
+    lastCommitAt: status.lastCommitAt ?? null,
+    trackedFileCount: status.trackedFileCount ?? null,
     rebaseInProgress: status.rebaseInProgress,
     headBranchRef: status.headBranchRef ?? null
   };
@@ -739,6 +757,8 @@ function toLaneSummary(args: {
     folder: row.folder,
     createdAt: row.created_at,
     archivedAt: row.archived_at,
+    lastCommitAt: status.lastCommitAt ?? null,
+    trackedFileCount: status.trackedFileCount ?? null,
     activeBranchProfile: activeBranchProfile ?? null,
     linearIssue: linearIssue ?? null,
     linearIssueLinks
@@ -753,6 +773,15 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
     if (value && value !== "HEAD") return value;
   }
   return fallback;
+}
+
+function countGitFiles(stdout: string): number {
+  // The status refresh asks for NUL-delimited output so filenames containing
+  // newlines still count as one file. The line fallback keeps test doubles and
+  // older Git wrappers useful if they return the default git ls-files shape.
+  return stdout.includes("\0")
+    ? stdout.split("\0").filter(Boolean).length
+    : stdout.split(/\r?\n/).filter(Boolean).length;
 }
 
 async function computeLaneStatus(
@@ -770,12 +799,34 @@ async function computeLaneStatus(
 
   // `--porcelain=v2 --branch` carries the live HEAD branch in its header, so
   // branch-drift detection rides along on the dirty check with no extra spawn.
-  const dirtyRes = await runGit(["status", "--porcelain=v2", "--branch"], { cwd: worktreePath, timeoutMs: 8_000 });
-  const parsedStatus = dirtyRes.exitCode === 0
+  const optionalGit = async (args: string[], timeoutMs: number) => {
+    try {
+      return await runGit(args, { cwd: worktreePath, timeoutMs });
+    } catch {
+      // Older callers and test doubles may not implement these metadata reads.
+      // A missing age/file total must not hide the status we already measured.
+      return null;
+    }
+  };
+  const [dirtyRes, lastCommitRes, trackedFilesRes] = await Promise.all([
+    runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=all"], { cwd: worktreePath, timeoutMs: 8_000 }),
+    optionalGit(["log", "-1", "--format=%cI"], 6_000),
+    optionalGit(["ls-files", "-z"], 8_000),
+  ]);
+  const parsedStatus = dirtyRes?.exitCode === 0
     ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
-    : { dirty: false, headBranchRef: null };
+    : {
+        dirty: false,
+        changedFileCount: 0,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        headBranchRef: null,
+      };
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
+  const lastCommitAt = lastCommitRes?.exitCode === 0 ? lastCommitRes.stdout.trim() || null : null;
+  const trackedFileCount = trackedFilesRes?.exitCode === 0 ? countGitFiles(trackedFilesRes.stdout) : null;
 
   const countsRes = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
     cwd: worktreePath,
@@ -821,7 +872,20 @@ async function computeLaneStatus(
     // ignore
   }
 
-  return { dirty, ahead, behind, remoteBehind, rebaseInProgress, headBranchRef };
+  return {
+    dirty,
+    ahead,
+    behind,
+    remoteBehind,
+    changedFileCount: parsedStatus.changedFileCount,
+    staged: parsedStatus.staged,
+    unstaged: parsedStatus.unstaged,
+    untracked: parsedStatus.untracked,
+    lastCommitAt,
+    trackedFileCount,
+    rebaseInProgress,
+    headBranchRef,
+  };
 }
 
 async function resolveParentRebaseTarget(args: {

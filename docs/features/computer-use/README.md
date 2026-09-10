@@ -96,6 +96,15 @@ for a reviewer. Only an explicit proof call writes a record:
   scratch file path. It reaches the proof drawer as a `video_recording` artifact
   **only** when `record start` was given a `--caption`, mirroring
   `ade browser proof`; without one, nothing is ingested.
+- **Browser use is visible to the human, automatically.** Every
+  capability-validated `ade browser …` command marks the calling chat as using
+  the browser, so a globe appears on its session card and chat header, the
+  Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
+  Nothing is asked of the agent — there is no "announce it" instruction to
+  follow or forget — and the mark expires about twenty seconds after the last
+  command (held while a tab is recording, cleared when the tab closes or a login
+  handoff passes it to a person). See
+  [An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
 - **The `computer_use_artifacts` action domain** exposes reads and record
   lifecycle (list, delete, broken/prune/recover, review, preview, owner
   snapshot, backend status) but **not** `ingest`. It used to be a spread of the

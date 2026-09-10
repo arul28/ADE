@@ -8,7 +8,10 @@ import type {
   BuiltInBrowserRuntimeTabStatus,
 } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
-import { createWorkToolsStateService } from "./workToolsStateService";
+import {
+  createWorkToolsStateService,
+  WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS,
+} from "./workToolsStateService";
 
 /** A 1x1 PNG. Enough for the preview reader to accept and encode. */
 const PNG_BYTES = Buffer.from(
@@ -149,6 +152,87 @@ describe("workToolsStateService", () => {
     service.dispose();
   });
 
+  it("publishes the lane's agent browser presence and hides another lane's", async () => {
+    const service = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: async () => browserStatus({
+        presence: [
+          { chatSessionId: "chat-1", laneId: "lane-1", tabId: "tab-1", since: "2026-09-09T10:00:00Z", lastActivityAt: "2026-09-09T10:00:05Z" },
+          { chatSessionId: "chat-other", laneId: "lane-other", tabId: "tab-9", since: "2026-09-09T10:00:00Z", lastActivityAt: "2026-09-09T10:00:05Z" },
+          // A personal chat has no lane: shared browsing, same rule as an
+          // unclaimed tab.
+          { chatSessionId: "chat-personal", laneId: null, tabId: null, since: "2026-09-09T10:00:00Z", lastActivityAt: "2026-09-09T10:00:05Z" },
+        ],
+      }),
+    });
+
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.agentBrowserPresence.map((entry) => entry.chatSessionId))
+      .toEqual(["chat-1", "chat-personal"]);
+    expect(state.agentBrowserPresence[0]).toMatchObject({ tabId: "tab-1" });
+    service.dispose();
+  });
+
+  it("reads a desktop that cannot report presence as nobody browsing", async () => {
+    const service = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: async () => browserStatus({ tabs: [tab()] }),
+    });
+
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.agentBrowserPresence).toEqual([]);
+    service.dispose();
+  });
+
+  it("reports no presence when there is no browser to vouch for it", async () => {
+    const service = createWorkToolsStateService({
+      projectRoot,
+      getBrowserStatus: async () => {
+        throw new DesktopBridgeUnavailableError("/tmp/desktop-bridge.sock", "no desktop");
+      },
+    });
+
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.browser).toBeNull();
+    expect(state.agentBrowserPresence).toEqual([]);
+    service.dispose();
+  });
+
+  it("announces the edges of a browsing stretch and nothing in between", () => {
+    vi.useFakeTimers();
+    const onStateChanged = vi.fn();
+    const service = createWorkToolsStateService({ projectRoot, onStateChanged, debounceMs: 10 });
+
+    service.noteAgentBrowserActivity({ laneId: "lane-1", chatSessionId: "chat-1" });
+    vi.advanceTimersByTime(10);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    // A busy agent: many commands, no new news.
+    for (let i = 0; i < 5; i += 1) {
+      service.noteAgentBrowserActivity({ laneId: "lane-1", chatSessionId: "chat-1" });
+      vi.advanceTimersByTime(1_000);
+    }
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    // Then it stops, and the window closes: clients are told to look again.
+    vi.advanceTimersByTime(WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS + 10);
+    expect(onStateChanged).toHaveBeenCalledTimes(2);
+    expect(onStateChanged).toHaveBeenLastCalledWith("lane-1");
+    service.dispose();
+  });
+
+  it("ignores browser activity with no lane or no chat to attribute it to", () => {
+    vi.useFakeTimers();
+    const onStateChanged = vi.fn();
+    const service = createWorkToolsStateService({ projectRoot, onStateChanged, debounceMs: 10 });
+
+    service.noteAgentBrowserActivity({ laneId: null, chatSessionId: "chat-1" });
+    service.noteAgentBrowserActivity({ laneId: "lane-1", chatSessionId: null });
+    vi.advanceTimersByTime(WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS + 100);
+    expect(onStateChanged).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it("reports absence, not failure, when no desktop is attached", async () => {
     const service = createWorkToolsStateService({
       projectRoot,
@@ -253,6 +337,78 @@ describe("workToolsStateService", () => {
     service.setActiveTool({ laneId: "lane-1", tool: "browser" });
     vi.advanceTimersByTime(10);
     expect(onStateChanged).toHaveBeenCalledTimes(1);
+    service.dispose();
+  });
+
+  it("mirrors the whole tab strip, not just the tool on screen", async () => {
+    const service = createWorkToolsStateService({ projectRoot });
+
+    service.setActiveTool({
+      laneId: "lane-1",
+      tool: "browser",
+      openTools: ["terminal", "browser", "git"],
+    });
+    expect((await service.getLaneState({ laneId: "lane-1" })).openTools)
+      .toEqual(["terminal", "browser", "git"]);
+
+    // Closing a tab is just the next publish.
+    service.setActiveTool({ laneId: "lane-1", tool: "git", openTools: ["terminal", "git"] });
+    const closed = await service.getLaneState({ laneId: "lane-1" });
+    expect(closed.openTools).toEqual(["terminal", "git"]);
+    expect(closed.activeTool).toBe("git");
+
+    // Back to the picker with tabs still open.
+    service.setActiveTool({ laneId: "lane-1", tool: null, openTools: ["terminal", "git"] });
+    const picker = await service.getLaneState({ laneId: "lane-1" });
+    expect(picker.activeTool).toBeNull();
+    expect(picker.openTools).toEqual(["terminal", "git"]);
+    service.dispose();
+  });
+
+  it("treats a desktop that publishes no strip as the one-tab pane it has", async () => {
+    const service = createWorkToolsStateService({ projectRoot });
+
+    service.setActiveTool({ laneId: "lane-1", tool: "files" });
+    expect((await service.getLaneState({ laneId: "lane-1" })).openTools).toEqual(["files"]);
+
+    service.setActiveTool({ laneId: "lane-2", tool: null });
+    expect((await service.getLaneState({ laneId: "lane-2" })).openTools).toEqual([]);
+
+    // A lane nobody has published for has no strip at all.
+    expect((await service.getLaneState({ laneId: "lane-3" })).openTools).toEqual([]);
+    service.dispose();
+  });
+
+  it("drops unknown and duplicated strip entries and keeps the active tab in it", async () => {
+    const service = createWorkToolsStateService({ projectRoot });
+    service.setActiveTool({
+      laneId: "lane-1",
+      tool: "git",
+      openTools: ["browser", "browser", "nope", 7] as never,
+    });
+    expect((await service.getLaneState({ laneId: "lane-1" })).openTools).toEqual(["browser", "git"]);
+    service.dispose();
+  });
+
+  it("emits when only the strip changed", () => {
+    vi.useFakeTimers();
+    const onStateChanged = vi.fn();
+    const service = createWorkToolsStateService({ projectRoot, onStateChanged, debounceMs: 10 });
+
+    service.setActiveTool({ laneId: "lane-1", tool: "git", openTools: ["git"] });
+    vi.advanceTimersByTime(10);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    // Same tool on screen, one more tab behind it: a client showing the strip
+    // would otherwise never hear about the new tab.
+    service.setActiveTool({ laneId: "lane-1", tool: "git", openTools: ["git", "browser"] });
+    vi.advanceTimersByTime(10);
+    expect(onStateChanged).toHaveBeenCalledTimes(2);
+
+    // …and a true re-publish still says nothing.
+    service.setActiveTool({ laneId: "lane-1", tool: "git", openTools: ["git", "browser"] });
+    vi.advanceTimersByTime(10);
+    expect(onStateChanged).toHaveBeenCalledTimes(2);
     service.dispose();
   });
 

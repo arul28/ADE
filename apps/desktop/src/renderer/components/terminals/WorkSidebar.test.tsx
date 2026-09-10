@@ -849,15 +849,21 @@ describe("WorkSidebar live tool status", () => {
       />
     )));
 
-    // The defect: the header committed to this and never moved again.
-    await waitFor(() => expect(screen.getByText("No shells")).toBeTruthy());
+    // The defect: the header committed to this and never moved again. The live
+    // fact now rides on the active tab's accessible name (it is the tab's
+    // tooltip), not on a header line.
+    await waitFor(() => expect(
+      screen.getByRole("tab", { name: /No shells/ }),
+    ).toBeTruthy());
     const paneBefore = container.querySelector("aside");
 
     live.startShell("zsh");
 
     // The count is the whole line: shell titles are unbounded and truncated the
     // status at pane widths people actually use.
-    await waitFor(() => expect(screen.getByText("1 shell")).toBeTruthy());
+    await waitFor(() => expect(
+      screen.getByRole("tab", { name: /1 shell/ }),
+    ).toBeTruthy());
     expect(live.list).toHaveBeenCalledTimes(2);
     // Same <aside> node: the status is live, not the product of a remount.
     expect(container.querySelector("aside")).toBe(paneBefore);
@@ -1018,6 +1024,89 @@ describe("WorkSidebar pane chrome", () => {
     field.value = "";
     fireEvent.keyDown(field, { key: "Escape" });
     expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("shows the picker with an empty strip, and keeps the strip up behind it", () => {
+    const { rerender } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        openTools={[]}
+        onToolChange={vi.fn()}
+        onToolClose={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    // Nothing open: the bar is the grid button and the ✕, and the page is the
+    // picker.
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(cardFor("Terminal")).toBeTruthy();
+
+    // Tabs stay drawn while the picker is showing — they are still open.
+    rerender(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        openTools={["git", "files"]}
+        onToolChange={vi.fn()}
+        onToolClose={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(cardFor("Terminal")).toBeTruthy();
+  });
+
+  it("closes a tab through the pane's own ×", () => {
+    const onToolClose = vi.fn();
+    render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        openTools={["git", "files"]}
+        onToolChange={vi.fn()}
+        onToolClose={onToolClose}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Files" }));
+    expect(onToolClose).toHaveBeenCalledWith("files");
+  });
+
+  it("puts the tool on screen in the strip even when the caller forgot to", () => {
+    render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        openTools={[]}
+        onToolChange={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    // A pane showing a tool with no tab would have no mark anywhere saying what
+    // you are looking at.
+    expect(screen.getByRole("tab", { selected: true }).getAttribute("data-tool-tab")).toBe("git");
   });
 
   it("closes the pane on Escape at the picker, where there is nothing to go back to", () => {

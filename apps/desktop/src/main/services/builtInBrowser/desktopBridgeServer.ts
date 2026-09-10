@@ -28,6 +28,7 @@ import {
   resolveBuiltInBrowserActorCapability,
   revokeBuiltInBrowserActorCapability,
 } from "./builtInBrowserActorCapabilities";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 
@@ -201,6 +202,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         );
       }
       revokeBuiltInBrowserActorCapability(requestedChatSessionId);
+      // The chat is over (or its capability was rotated): it cannot issue
+      // another browser command, so leaving a globe pulsing beside it for the
+      // rest of the expiry window would outlive the only thing that could
+      // refresh it.
+      builtInBrowserAgentPresence.clearForChatSession(requestedChatSessionId);
       return { revoked: true };
     }
     // Read-only Work-tools mirror. Bridge auth only, exactly like the two
@@ -234,6 +240,17 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
       const runtimeStatus: BuiltInBrowserRuntimeStatus = {
         unavailable: null,
+        // Project-scoped for the same reason the tab list is: a phone bound to
+        // one project must not learn that a chat in another one is browsing.
+        presence: builtInBrowserAgentPresence
+          .list({ projectRoot: scopeProjectRoot })
+          .map((entry) => ({
+            chatSessionId: entry.chatSessionId,
+            laneId: entry.laneId,
+            tabId: entry.tabId,
+            since: entry.since,
+            lastActivityAt: entry.lastActivityAt,
+          })),
         activeTabId: status.activeTabId,
         tabs: status.tabs.map((tab) => ({
           id: tab.id,
@@ -297,6 +314,18 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
       );
     }
+    // The command is authenticated and about to run, so the chat IS using the
+    // browser — recorded before dispatch rather than after, because a `wait` or
+    // a slow navigation is exactly the stretch a person is trying to explain.
+    // Every method lands here, reads included: `status` and `observe` are how an
+    // agent looks at the page, and a badge that lit only for clicks would go
+    // dark while it read.
+    builtInBrowserAgentPresence.touch({
+      chatSessionId: actor.chatSessionId,
+      laneId: actor.laneId,
+      projectRoot: actor.projectRoot,
+      tabId: normalizedString(rawParams.tabId),
+    });
     const params = {
       ...rawParams,
       chatSessionId: actor.chatSessionId,

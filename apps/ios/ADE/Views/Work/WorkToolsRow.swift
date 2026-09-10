@@ -75,6 +75,17 @@ struct WorkToolsRow: View {
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
           .truncationMode(.tail)
+        // A globe while an agent is driving the browser. A glyph rather than
+        // another word in the summary: this row truncates at the width of a
+        // phone, and the one thing that must survive the truncation is the fact
+        // that something is happening RIGHT NOW. It sits outside the elastic
+        // text so it cannot be truncated away.
+        if isAgentUsingBrowser {
+          Image(systemName: "globe")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .accessibilityHidden(true)
+        }
         Spacer(minLength: 0)
         Image(systemName: "chevron.right")
           .font(.system(size: 9, weight: .semibold))
@@ -96,7 +107,11 @@ struct WorkToolsRow: View {
     }
     .buttonStyle(.plain)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Tools on your Mac. \(summary)")
+    .accessibilityLabel(
+      isAgentUsingBrowser
+        ? "Tools on your Mac. \(summary). An agent is using the browser."
+        : "Tools on your Mac. \(summary)"
+    )
     .accessibilityHint("Opens a read-only view of this lane's tools")
     .accessibilityAddTraits(.isButton)
   }
@@ -115,8 +130,18 @@ struct WorkToolsRow: View {
     if let appControl = state.appControl {
       parts.append(appControl.appName)
     }
-    guard !parts.isEmpty else { return nil }
+    // An agent on the browser is reason enough for the row to exist even when
+    // there is nothing else to name — the glyph beside this text is the news,
+    // so it adds no words of its own.
+    guard !parts.isEmpty else { return isAgentUsingBrowser ? "Tools" : nil }
     return (["Tools"] + parts).joined(separator: " · ")
+  }
+
+  /// Whether a chat in this lane is driving the browser right now. Derived on the
+  /// Mac from the browser commands themselves, and it expires on its own — so a
+  /// row that stops seeing it simply stops showing it.
+  private var isAgentUsingBrowser: Bool {
+    !(state?.agentBrowserPresence ?? []).isEmpty
   }
 
   private func refresh() async {

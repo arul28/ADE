@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
@@ -33,9 +33,16 @@ const DEFAULT_PANE_WIDTH_PX = 447;
 const COLUMN_PADDING_PX = 24;
 
 describe("WorkToolPicker", () => {
+  // jsdom has no WebGL, so the backdrop takes its static-gradient path here.
+  // Stubbed rather than left to fail, because jsdom's own "not implemented"
+  // notice is a page of stderr per test for a fallback that is working.
+  beforeAll(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  });
+
   afterEach(cleanup);
 
-  it("renders a titled column of cards, each with its live status line", () => {
+  it("renders an untitled column of cards, each with its live status line", () => {
     const statuses: WorkToolStatusMap = {
       terminal: { line: "2 shells", live: true },
       browser: { line: "3 tabs · agent", live: true },
@@ -50,10 +57,10 @@ describe("WorkToolPicker", () => {
       />,
     );
 
-    // The page names itself once, above the grid — the pane header no longer
-    // repeats it.
-    expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
-    expect(screen.getByText("Pick what this lane works with")).toBeTruthy();
+    // No title and no subline: the tab strip above the page already says
+    // "Tools", and six labelled cards do not need introducing.
+    expect(screen.queryByRole("heading", { name: "Tools" })).toBeNull();
+    expect(screen.queryByText("Pick what this lane works with")).toBeNull();
 
     expect(screen.getAllByRole("button")).toHaveLength(WORK_TOOL_DEFINITIONS.length);
     expect(screen.getByText("2 shells")).toBeTruthy();
@@ -241,6 +248,27 @@ describe("WorkToolPicker", () => {
     } else {
       expect(gridItem.style.gridColumn).toBe("");
     }
+  });
+
+  it("paints the shader backdrop behind the grid, out of the way of clicks", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+
+    const backdrop = document.querySelector(".ade-tool-picker-backdrop");
+    expect(backdrop).toBeTruthy();
+    // Decoration, never a target and never announced.
+    expect(backdrop?.getAttribute("aria-hidden")).toBe("true");
+    // Behind the column, not in front of it.
+    expect(backdrop?.nextElementSibling?.contains(
+      screen.getByRole("group", { name: "Work tools" }),
+    )).toBe(true);
   });
 
   it("caps the grid at two columns and fits two of them in the default pane", () => {

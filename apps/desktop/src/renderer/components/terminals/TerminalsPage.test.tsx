@@ -1111,7 +1111,8 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
       "/repo-one",
       "lane-primary",
-      { workSidebarTool: "browser" },
+      // The strip is written with it: opening a tool opens its tab.
+      { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
     );
   });
 
@@ -1166,7 +1167,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
       "/repo-one",
       "lane-primary",
-      { workSidebarTool: "terminal" },
+      { workSidebarTool: "terminal", workSidebarOpenTools: ["terminal"] },
     );
 
     vi.clearAllMocks();

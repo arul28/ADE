@@ -345,50 +345,36 @@ describe("WorkLiveCornerCard placement", () => {
       },
     });
     const { card } = await showCard();
-    // 900-wide host, 320-wide card: half of the 580px of travel. The browser's
-    // card is 320×200, so the vertical span is 600 - 200.
-    expect(card.style.left).toBe("290px");
-    expect(card.style.top).toBe(`${0.25 * (600 - 200)}px`);
-    expect(card.style.width).toBe("320px");
-    expect(card.style.height).toBe("200px");
+    // 900-wide host, 288-wide card: half of the 612px of travel. The browser's
+    // card is 288×180, so the vertical span is 600 - 180.
+    expect(card.style.left).toBe("306px");
+    expect(card.style.top).toBe(`${0.25 * (600 - 180)}px`);
+    expect(card.style.width).toBe("288px");
+    expect(card.style.height).toBe("180px");
   });
 
-  /**
-   * The defect: a portrait frame in the fixed 320×200 card left half the card
-   * empty — two bars around a strip of page. jsdom never decodes an image, so
-   * the natural size is stubbed and `load` is fired by hand; that is exactly
-   * the pair of values the component reads.
-   */
-  it("takes its height from the frame's aspect and crops a tall one from the top", async () => {
+  it("keeps a fixed landscape card and covers a portrait frame from the top", async () => {
     seedProject();
     const { card } = await showCard();
-    expect(card.style.height).toBe("200px");
+    expect(card.style.width).toBe("288px");
+    expect(card.style.height).toBe("180px");
 
     const image = card.querySelector("img") as HTMLImageElement;
-    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 390 });
-    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 844 });
-    fireEvent.load(image);
-
-    // Clamped to the 320px envelope rather than the 692px the aspect asks for,
-    // and cropped from the top, where the page's header and the agent's last
-    // action are.
-    await waitFor(() => expect(card.style.height).toBe("320px"));
-    expect(card.style.width).toBe("320px");
+    // A portrait page is cropped inside the fixed card, rather than changing
+    // the card's height after the image decodes.
     expect(image.style.objectFit).toBe("cover");
     expect(image.style.objectPosition).toBe("top");
-  });
 
-  it("keeps a landscape frame letterboxed rather than cropped", async () => {
-    seedProject();
-    const { card } = await showCard();
-    const image = card.querySelector("img") as HTMLImageElement;
-    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 1600 });
-    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 1200 });
-    fireEvent.load(image);
-
-    await waitFor(() => expect(card.style.height).toBe("240px"));
-    expect(image.style.objectFit).toBe("contain");
-    expect(image.style.objectPosition).toBe("");
+    emitBrowserEvent({
+      type: "preview-frame",
+      tabId: "tab-1",
+      dataUrl: "data:image/jpeg;base64,cG9ydHJhaXQ=",
+      width: 390,
+      height: 844,
+      capturedAt: new Date().toISOString(),
+    });
+    await waitFor(() => expect(image.getAttribute("src")).toContain("cG9ydHJhaXQ"));
+    expect(card.style.height).toBe("180px");
   });
 
   it("clamps a stored position that would hang outside the column", async () => {
@@ -485,7 +471,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     card.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
+      x: 0, y: 0, left: 0, top: 0, right: 288, bottom: 180, width: 288, height: 180,
       toJSON: () => ({}),
     });
 
@@ -494,7 +480,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(await screen.findByTitle(/Clicked 'Sign in'/)).toBeTruthy();
 
     // Right edge is the newest.
-    scrubTo(card, 320);
+    scrubTo(card, 288);
     expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
     fireEvent.pointerLeave(card);
@@ -506,7 +492,7 @@ describe("WorkLiveCornerCard scrubbing", () => {
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
     card.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
+      x: 0, y: 0, left: 0, top: 0, right: 288, bottom: 180, width: 288, height: 180,
       toJSON: () => ({}),
     });
     scrubTo(card, 130);
@@ -538,10 +524,10 @@ describe("WorkLiveCornerCard scrubbing", () => {
     expect(strip()).toBeNull();
 
     card.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 320, bottom: 200, width: 320, height: 200,
+      x: 0, y: 0, left: 0, top: 0, right: 288, bottom: 180, width: 288, height: 180,
       toJSON: () => ({}),
     });
-    scrubTo(card, 160);
+    scrubTo(card, 144);
     await waitFor(() => expect(strip()).not.toBeNull());
     expect(strip()?.style.height).toBe("2px");
 

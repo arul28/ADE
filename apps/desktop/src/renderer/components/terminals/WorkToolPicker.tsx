@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import type { WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import {
   WORK_TOOL_DEFINITIONS,
@@ -33,20 +34,26 @@ import {
  */
 const CARD_MIN_TRACK_PX = 188;
 
-/** The column the whole page is built around — title, subline and grid alike. */
+/** The column the whole page is built around. */
 const COLUMN_MAX_PX = 512;
 
 /**
  * The tools pane's front page: every tool ADE can open beside this session, what
  * each one is doing right now, and one click to take it over the pane.
  *
- * One centred 512px column — a titled two-column grid of flat cards, vertically
- * centred against the whole pane rather than against the space left under the
- * header. The card is deliberately thin: a monochrome 16px glyph, the name, and
- * exactly one line underneath. No tinted squares, no key caps, no shadows, no
- * per-card activity dot; the only mark a card can carry is a red dot when that
- * tool is actually broken, because that is the one fact worth interrupting a
- * calm page for.
+ * One centred 512px column — a two-column grid of cards, vertically centred
+ * against the whole pane rather than against the space left under the header.
+ * There is no title and no subline: the tab strip above already says "Tools",
+ * and a page with six labelled cards on it does not need to be introduced.
+ *
+ * Behind the grid, a slow violet mesh (`WorkToolPickerBackdrop`) — the one
+ * decorated surface in the pane, because it is the one surface with nothing on
+ * it. The cards float on it: translucent, blurred, one hairline each, lifting
+ * 2px under the cursor. Each is still deliberately thin — a monochrome 16px
+ * glyph, the name, and exactly one line underneath. No tinted squares, no key
+ * caps, no per-card activity dot; the only mark a card can carry is a red dot
+ * when that tool is actually broken, because that is the one fact worth
+ * interrupting a calm page for.
  */
 export function WorkToolPicker({
   activeTool,
@@ -61,6 +68,7 @@ export function WorkToolPicker({
   loading: boolean;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
+  const theme = useAppStore((s) => s.theme);
   const reasonIdPrefix = useId();
   const cardCount = WORK_TOOL_DEFINITIONS.length;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -107,20 +115,20 @@ export function WorkToolPicker({
   return (
     <div
       ref={rootRef}
-      className="ade-pane-chrome flex h-full min-h-0 flex-col overflow-auto"
+      className="ade-pane-chrome relative flex h-full min-h-0 flex-col overflow-auto"
     >
+      {/* Behind everything and untouchable: the canvas must never eat a click
+          meant for the card on top of it, and it is never in the tab order. */}
+      <WorkToolPickerBackdrop theme={theme} className="ade-tool-picker-backdrop" />
       {/* `m-auto` rather than `justify-center`: a centred flex child in an
           overflow container has its overflowing top clipped and unreachable,
           and this column is taller than a short pane. The extra bottom pad is
           the 36px header — spending it here centres the block against the
           WHOLE pane, not against the leftover space beneath the header. */}
-      <div className="m-auto w-full px-6 pb-[60px] pt-6" style={{ maxWidth: COLUMN_MAX_PX }}>
-        <div className="mb-5 text-center">
-          <h2 className="text-[14px] font-medium leading-5 text-fg">Tools</h2>
-          <p className="mt-1 text-[12px] leading-4 text-muted-fg">
-            Pick what this lane works with
-          </p>
-        </div>
+      <div
+        className="relative m-auto w-full px-6 pb-[60px] pt-6"
+        style={{ maxWidth: COLUMN_MAX_PX }}
+      >
         <div
           ref={gridRef}
           role="group"
@@ -182,7 +190,7 @@ export function WorkToolPicker({
                       size={16}
                       weight="regular"
                       aria-hidden="true"
-                      className="shrink-0 text-muted-fg transition-colors duration-[120ms] ease-out group-hover:text-fg group-data-[highlighted=true]:text-fg"
+                      className="shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
                     />
                     <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
                       {definition.label}

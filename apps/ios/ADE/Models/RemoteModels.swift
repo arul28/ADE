@@ -6230,12 +6230,29 @@ struct WorkToolsAppControlState: Codable, Equatable {
   var latestObservation: WorkToolsObservation?
 }
 
+/// A chat in this lane that is using the desktop's browser right now.
+///
+/// Derived on the Mac from the browser commands themselves — an agent cannot
+/// claim it — and it expires about twenty seconds after the last one, which is
+/// why the phone renders it as a live indicator and never as a property of the
+/// chat. The host also sends `since` and `lastActivityAt`; nothing here shows a
+/// duration, so neither is decoded.
+struct WorkToolsAgentBrowserPresence: Codable, Equatable {
+  var chatSessionId: String
+  /// The tab the last command addressed, when it named one.
+  var tabId: String?
+}
+
 /// The host also sends `activeToolUpdatedAt` and `capturedAt`; the phone shows
 /// live state rather than "as of" timestamps, so neither is decoded.
 struct WorkToolsLaneState: Codable, Equatable {
   var laneId: String
   /// Which pane the desktop has open. Nil when no desktop has published one.
   var activeTool: String?
+  /// Every tool the desktop has open as a tab, in strip order, with
+  /// `activeTool` among them. Nil from a desktop older than the tab strip;
+  /// empty means the pane is on its picker with nothing open.
+  var openTools: [String]?
   /// Nil when no desktop is attached to the machine — see `browserUnavailable`.
   var browser: WorkToolsBrowserState?
   /// Why `browser` is nil. Mirrors the desktop's `WorkToolsUnavailableReason`
@@ -6243,6 +6260,9 @@ struct WorkToolsLaneState: Codable, Equatable {
   /// `browser_pane_not_opened` | `unsupported` | `error`) and is kept as a raw
   /// string so a newer reason falls back instead of failing to decode.
   var browserUnavailable: String?
+  /// Chats in this lane driving the browser right now. Nil from a desktop older
+  /// than the field, and empty is the normal state; both read as "nobody".
+  var agentBrowserPresence: [WorkToolsAgentBrowserPresence]?
   var appControl: WorkToolsAppControlState?
 }
 

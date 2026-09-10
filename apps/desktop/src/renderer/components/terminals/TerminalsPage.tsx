@@ -1144,7 +1144,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
-  const { tool: workSidebarTool, setTool: setWorkSidebarTool } = useWorkSidebarTool(activeLaneId);
+  const {
+    tool: workSidebarTool,
+    openTools: workSidebarOpenTools,
+    setTool: setWorkSidebarTool,
+    closeTool: closeWorkSidebarTool,
+  } = useWorkSidebarTool(activeLaneId);
   const { setOrchestratorEnabled } = work;
   useEffect(() => {
     if (!active) return;
@@ -1577,7 +1582,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   lanes={sortedLanes}
                   activeSession={activeWorkSession}
                   tool={workSidebarTool}
+                  openTools={workSidebarOpenTools}
                   onToolChange={setWorkSidebarTool}
+                  onToolClose={closeWorkSidebarTool}
                   onClose={closeWorkSidebar}
                   contextTarget={contextTarget}
                   contextDisabledReason={contextDisabledReason}
@@ -1613,7 +1620,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       closeWorkSidebar,
       sortedLanes,
       setWorkSidebarTool,
+      closeWorkSidebarTool,
       workSidebarTool,
+      workSidebarOpenTools,
       work.workSidebarWidthPct,
       workSidebarVisible,
       workViewArea,

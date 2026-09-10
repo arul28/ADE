@@ -97,6 +97,34 @@ struct WorkToolsSheet: View {
       title: toolLabel.map { "\($0) is open" } ?? "No tool is open",
       subtitle: latestObservation?.caption
     ) {
+      // The desktop's tab strip, mirrored read-only: the active tool is filled,
+      // the rest are outlined. Shown only when there is more than one tab —
+      // with a single tab the section title already names it.
+      if openTools.count > 1 {
+        HStack(spacing: 6) {
+          ForEach(openTools, id: \.self) { tool in
+            let isActive = tool == state?.activeTool
+            Text(workToolsDisplayName(tool) ?? tool)
+              .font(.caption.weight(isActive ? .semibold : .regular))
+              .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(
+                Capsule().fill(isActive ? ADEColor.textPrimary.opacity(0.12) : Color.clear)
+              )
+              .overlay(
+                Capsule().stroke(ADEColor.textMuted.opacity(isActive ? 0 : 0.35), lineWidth: 1)
+              )
+              .accessibilityLabel(
+                isActive
+                  ? "\(workToolsDisplayName(tool) ?? tool), open and showing"
+                  : "\(workToolsDisplayName(tool) ?? tool), open"
+              )
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 4)
+      }
       if let frame, loadedFramePath == latestObservation?.path {
         Image(uiImage: frame)
           .resizable()
@@ -125,6 +153,23 @@ struct WorkToolsSheet: View {
   @ViewBuilder
   private var browserCard: some View {
     ADEGlassSection(title: "Browser", subtitle: browserSubtitle) {
+      // Leads the card, above the handoff bar and the tabs: "an agent is on this
+      // right now" changes how everything under it reads. One line, no count —
+      // which chat it is is the desktop's business, and the phone cannot open
+      // it from here anyway.
+      if isAgentUsingBrowser {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Image(systemName: "globe")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.accent)
+          Text("Agent is using the browser")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 8)
+        .accessibilityLabel("An agent is using the browser right now")
+      }
       if let reason = handoffReason {
         // The lane is not stuck, it is waiting on a person. One line, worded
         // exactly like the desktop's handoff bar (`BrowserHandoffBar`) — the
@@ -207,9 +252,23 @@ struct WorkToolsSheet: View {
 
   // MARK: - Data
 
+  /// The desktop's tab strip. A desktop older than the strip publishes none, so
+  /// its one active tool stands in for the one tab that build had.
+  private var openTools: [String] {
+    guard let state else { return [] }
+    if let published = state.openTools { return published }
+    return state.activeTool.map { [$0] } ?? []
+  }
+
   /// The first open login handoff in this lane, if any.
   private var handoffReason: String? {
     state?.browser?.tabs.compactMap(\.handoffReason).first
+  }
+
+  /// Whether any chat in this lane is driving the browser right now. Nil from an
+  /// older desktop and empty both read as "nobody".
+  private var isAgentUsingBrowser: Bool {
+    !(state?.agentBrowserPresence ?? []).isEmpty
   }
 
   private var browserUnavailableMessage: String {

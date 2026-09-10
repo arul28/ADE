@@ -207,6 +207,7 @@ import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { AgentBrowserPresenceBadge } from "../terminals/AgentBrowserPresenceBadge";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
@@ -12948,7 +12949,12 @@ export function AgentChatPane({
         laneChipName={chatHeaderLaneName}
         laneChipColor={chatHeaderLaneColor}
         showLaneChip={showWorkspaceChrome}
-        titleAccessory={selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
+        /* Two accessories, one slot: the live browser badge leads because it is
+           the only one that is TRUE RIGHT NOW — the Cursor Cloud link is a
+           property of the chat and will still be there in an hour. */
+        titleAccessory={<>
+        <AgentBrowserPresenceBadge chatSessionId={selectedSessionId} size={13} />
+        {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
             type="button"
             data-testid="cursor-cloud-header-link"
@@ -12964,6 +12970,7 @@ export function AgentChatPane({
             <span>Cursor Cloud</span>
           </button>
         ) : null}
+        </>}
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
