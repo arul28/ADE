@@ -25,6 +25,17 @@ export type BuiltInBrowserPresenceRouter = {
   presenceForWindow(win: BrowserWindow | null | undefined): BuiltInBrowserAgentPresence[];
   /** The `getStatus` seed, scoped to the collection the status describes. */
   presenceForProjectRoot(projectRoot: string | null): BuiltInBrowserAgentPresence[];
+  /**
+   * Suspend expiry for whoever is on this tab, and let go again.
+   *
+   * The other two things that run for minutes with no command behind them: a
+   * recording (held from the event stream above) and a preview/observe
+   * subscription (held by the window service, which is the only side that sees
+   * a watcher arrive or a renderer die). Both go through the router so a test
+   * that injects its own tracker sees every write to it.
+   */
+  holdForTab(tabId: string): void;
+  releaseHoldForTab(tabId: string): void;
   /** A window's services are being disposed: end its agents' turn at every tab. */
   noteWindowTabsClosed(tabIds: readonly string[]): void;
   /** One tab closed, resolved before the tab is gone. */
@@ -137,6 +148,12 @@ export function createBuiltInBrowserPresenceRouter(args: {
     },
     presenceForProjectRoot(projectRoot) {
       return presence.list({ projectRoot }).map(toPublicPresence);
+    },
+    holdForTab(tabId) {
+      presence.holdForTab(tabId);
+    },
+    releaseHoldForTab(tabId) {
+      presence.releaseHoldForTab(tabId);
     },
     noteWindowTabsClosed(tabIds) {
       presence.clearForTabs(tabIds);

@@ -4898,8 +4898,9 @@ describe("adeRpcServer", () => {
     const navigate = vi.fn(async () => ({ status: "forwarded_to_desktop" }));
     const captureScreenshot = vi.fn(async (args: unknown) => args);
     fixture.runtime.builtInBrowserService = { navigate, captureScreenshot };
-    const noteAgentBrowserActivity = vi.fn();
-    fixture.runtime.workToolsStateService = { noteAgentBrowserActivity };
+    const noteAgentBrowserActivity = vi.fn(() => ({ started: true }));
+    const clearAgentBrowserActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentBrowserActivity, clearAgentBrowserActivity };
 
     // The headless carve-out: no capability to mint, so the call is published to
     // a desktop on another machine. Nothing on THIS machine is browsing, and a
@@ -4948,6 +4949,63 @@ describe("adeRpcServer", () => {
     });
     expect(shot?.isError).toBeUndefined();
     expect(noteAgentBrowserActivity).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
+    // Both edges: once before the dispatch, so a phone sees a slow navigate for
+    // the whole of it, and once after, so the staleness window is measured from
+    // when the agent finished.
+    expect(noteAgentBrowserActivity).toHaveBeenCalledTimes(2);
+    expect(clearAgentBrowserActivity).not.toHaveBeenCalled();
+  });
+
+  it("retracts the browser-activity edge it opened when the command then fails", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-1" ? { id: "chat-1", laneId: "lane-1" } : null
+    ));
+    const captureScreenshot = vi.fn(async () => {
+      throw new Error("No ADE browser window is open for project: /tmp/project");
+    });
+    fixture.runtime.builtInBrowserService = { captureScreenshot };
+    // `started: false` on the second call — the window this daemon opened for
+    // the first one is still inside its event window.
+    const noteAgentBrowserActivity = vi.fn()
+      .mockReturnValueOnce({ started: true })
+      .mockReturnValue({ started: false });
+    const clearAgentBrowserActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentBrowserActivity, clearAgentBrowserActivity };
+
+    const actorToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "agent-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+      browserActorToken: actorToken,
+    });
+
+    const failed = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1" },
+    });
+    expect(failed.isError).toBe(true);
+    // The leading edge went out, so the retraction has to as well.
+    expect(clearAgentBrowserActivity).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
+
+    // A failure that did NOT open the window retracts nothing: the rest of a
+    // busy agent's stream still justifies the presence it is showing.
+    clearAgentBrowserActivity.mockClear();
+    const failedAgain = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1" },
+    });
+    expect(failedAgain.isError).toBe(true);
+    expect(clearAgentBrowserActivity).not.toHaveBeenCalled();
   });
 
   it("scopes work_tools to the caller's own lane and refuses agent writes", async () => {

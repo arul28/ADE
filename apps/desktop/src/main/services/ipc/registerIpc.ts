@@ -9111,7 +9111,9 @@ export function registerIpc({
   // persisted tab — and the presence badge is mounted by every session card and
   // the chat header, so seeding the badge through it background-loaded the
   // browser for a user who never opened the pane. This reads the tracker and
-  // nothing else.
+  // subscribes the asking window to the pushed `agent-presence` event — one
+  // `once("closed")` listener, no service constructed — so a window that only
+  // ever seeds is not left holding that first seed forever.
   ipcMain.handle(IPC.builtInBrowserGetAgentPresence, async (event) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetAgentPresence, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getAgentPresence(win);

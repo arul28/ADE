@@ -74,8 +74,14 @@ export type BuiltInBrowserAgentPresenceTouch = {
 };
 
 export type BuiltInBrowserAgentPresenceTracker = {
-  /** Records one agent-authenticated browser command. */
-  touch(input: BuiltInBrowserAgentPresenceTouch): void;
+  /**
+   * Records one agent-authenticated browser command.
+   *
+   * Reports whether this call is what created the entry, and the activity
+   * stamp it wrote — the two things a caller needs to take its own touch back
+   * if the command it was announcing then failed. See `clearForChatSession`.
+   */
+  touch(input: BuiltInBrowserAgentPresenceTouch): { created: boolean; lastActivityAt: number };
   /**
    * Suspends expiry for whichever chat is on this tab — a recording, which runs
    * for minutes without a command. Keyed by the tab so two concurrent captures
@@ -84,8 +90,16 @@ export type BuiltInBrowserAgentPresenceTracker = {
    */
   holdForTab(tabId: string): void;
   releaseHoldForTab(tabId: string): void;
-  /** The chat ended, or its capability was revoked. */
-  clearForChatSession(chatSessionId: string): void;
+  /**
+   * The chat ended, its capability was revoked — or a command that had already
+   * announced itself never ran.
+   *
+   * `ifLastActivityAt` makes the clear conditional on the entry not having
+   * moved since: an undo is only ever correct for the exact touch it is
+   * retracting, and a concurrent command from the same chat that landed in
+   * between is a live agent whose globe must stay lit.
+   */
+  clearForChatSession(chatSessionId: string, options?: { ifLastActivityAt?: number }): void;
   /** The tab went away — closed, released, or handed to a human. */
   clearForTab(tabId: string): void;
   /**
@@ -234,7 +248,12 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
 
   return {
     touch(input) {
-      upsert(input);
+      const existing = records.get(trimmedOrNull(input.chatSessionId) ?? "") ?? null;
+      const record = upsert(input);
+      return {
+        created: Boolean(record) && !existing,
+        lastActivityAt: record?.lastActivityAt ?? 0,
+      };
     },
 
     holdForTab(tabId) {
@@ -266,11 +285,12 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       }
     },
 
-    clearForChatSession(chatSessionId) {
+    clearForChatSession(chatSessionId, options) {
       const key = trimmedOrNull(chatSessionId);
       if (!key) return;
       const record = records.get(key) ?? null;
       if (!record) return;
+      if (options?.ifLastActivityAt != null && record.lastActivityAt !== options.ifLastActivityAt) return;
       clearTimer(record);
       records.delete(key);
       emit();

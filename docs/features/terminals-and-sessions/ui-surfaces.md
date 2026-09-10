@@ -697,7 +697,10 @@ the availability reason. Git shows the lane's unpublished, dirty-count,
 ahead/behind, or pushed/committed-age state; Files shows the cached tracked-file
 total and unique changed-entry count — entries, so a file with both index
 and worktree changes counts once, and a new untracked directory counts as
-one entry rather than as everything inside it. Status comes only from reads the pane
+one entry rather than as everything inside it. A legacy or remote lane payload
+that carries no changed-entry count says `dirty` rather than a number: the
+per-side staged/unstaged totals count entries on each side, so no arithmetic
+over them recovers how many files are involved. Status comes only from reads the pane
 already makes — the `builtInBrowser` / `iosSimulator` / `appControl`
 status subscriptions, the terminal panel's published shell count, and the
 lane's cached git summary — so nothing here polls. Lines hold a stepped-shimmer

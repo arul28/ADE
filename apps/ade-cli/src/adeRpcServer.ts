@@ -3968,8 +3968,10 @@ async function runTool(args: {
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
-    /** Set by the browser branch; fired only once the dispatch has returned. */
+    /** Set by the browser branch; fired again once the dispatch has returned. */
     let noteBrowserActivityOnSuccess: (() => void) | null = null;
+    /** Set only when the pre-dispatch edge is what opened the presence window. */
+    let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
     if (domain === "analytics" && action === "capture") {
@@ -4169,9 +4171,15 @@ async function runTool(args: {
       // records presence itself (it is the only side that sees tabs close and
       // recordings end); this tells the Work-tools mirror that every client's
       // copy just went stale, so a phone learns an agent picked up the browser
-      // without waiting for its next poll. Armed here, fired after the dispatch
-      // returns: a call that throws did nothing to any browser, and a phone
-      // must not be told an agent picked one up because it failed to.
+      // without waiting for its next poll.
+      //
+      // Fired on BOTH edges, matching the desktop bridge. A `wait`, a slow
+      // navigate or a long `observe` is exactly the stretch a person is trying
+      // to explain, and firing only after the dispatch left the phone saying
+      // nobody was browsing for the whole of it. A call that throws did nothing
+      // to any browser, so the failure path retracts — but only when this call
+      // is what opened the window, so one failure inside a busy agent's stream
+      // cannot retract presence the rest of that stream still justifies.
       //
       // Only for a caller carrying a browser actor capability. The one caller
       // the scoping lets through without one is the remote-forwarding carve-out
@@ -4184,11 +4192,19 @@ async function runTool(args: {
         asOptionalTrimmedString(session.identity.browserActorToken),
       );
       if (bearsBrowserCapability) {
+        const presenceArgs = {
+          laneId: resolveChatSessionLaneId(runtime, session),
+          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+        };
+        const started = runtime.workToolsStateService
+          ?.noteAgentBrowserActivity(presenceArgs).started ?? false;
+        if (started) {
+          undoBrowserActivityOnFailure = () => {
+            runtime.workToolsStateService?.clearAgentBrowserActivity(presenceArgs);
+          };
+        }
         noteBrowserActivityOnSuccess = () => {
-          runtime.workToolsStateService?.noteAgentBrowserActivity({
-            laneId: resolveChatSessionLaneId(runtime, session),
-            chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
-          });
+          runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs);
         };
       }
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
@@ -4226,17 +4242,22 @@ async function runTool(args: {
         if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
       }
     }
-    if (!scopedResultHandled) {
-      if (argsList) {
-        result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
-      } else if (hasScalarArg) {
-        result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
-      } else {
-        result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
-          service,
-          Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
-        );
+    try {
+      if (!scopedResultHandled) {
+        if (argsList) {
+          result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
+        } else if (hasScalarArg) {
+          result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
+        } else {
+          result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
+            Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
+          );
+        }
       }
+    } catch (error) {
+      undoBrowserActivityOnFailure?.();
+      throw error;
     }
     noteBrowserActivityOnSuccess?.();
     if (domain === "account" && action === "status") {

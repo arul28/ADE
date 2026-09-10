@@ -133,7 +133,21 @@ export type WorkToolsStateService = {
    * window has elapsed. Without it a phone would learn both edges only on
    * whatever poll happened next.
    */
-  noteAgentBrowserActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  noteAgentBrowserActivity(
+    args: { laneId: string | null; chatSessionId: string | null },
+  ): { started: boolean };
+  /**
+   * That command never ran, and this call is what said it had.
+   *
+   * The leading edge fires BEFORE the dispatch, so a `wait` or a slow navigate
+   * is visible for the minutes it takes rather than only once it is over. The
+   * price is that a call which throws has already told every phone an agent
+   * picked up the browser. Undoing is only correct for the caller that opened
+   * the window — a failure in the middle of a busy agent's stream must not
+   * retract presence the rest of that stream still justifies — so this is
+   * called only when {@link noteAgentBrowserActivity} reported `started`.
+   */
+  clearAgentBrowserActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
   getLaneState(args: WorkToolsGetLaneStateArgs): Promise<WorkToolsLaneState>;
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
@@ -455,7 +469,7 @@ export function createWorkToolsStateService(
       const chatSessionId = trimmedOrNull(input?.chatSessionId);
       // A lane-less caller (a personal chat) has no lane state to invalidate,
       // and a call with no chat cannot be an agent's.
-      if (!laneId || !chatSessionId || disposed) return;
+      if (!laneId || !chatSessionId || disposed) return { started: false };
       const key = `${laneId}\u0000${chatSessionId}`;
       const existing = presenceWindowTimers.get(key) ?? null;
       // Only the edges are news. A busy agent lands here many times a second,
@@ -470,6 +484,22 @@ export function createWorkToolsStateService(
       }, WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS);
       timer.unref?.();
       presenceWindowTimers.set(key, timer);
+      return { started: !existing };
+    },
+
+    clearAgentBrowserActivity(input) {
+      const laneId = trimmedOrNull(input?.laneId);
+      const chatSessionId = trimmedOrNull(input?.chatSessionId);
+      if (!laneId || !chatSessionId || disposed) return;
+      const key = `${laneId}\u0000${chatSessionId}`;
+      const existing = presenceWindowTimers.get(key) ?? null;
+      if (!existing) return;
+      clearTimeout(existing);
+      presenceWindowTimers.delete(key);
+      // The opening edge already went out, so the retraction has to as well:
+      // clients re-read the desktop's presence, which the bridge has by now
+      // rolled back for the same failed call.
+      emitStateChanged(laneId);
     },
 
     setActiveTool(input) {

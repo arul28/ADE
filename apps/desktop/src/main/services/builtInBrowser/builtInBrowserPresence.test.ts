@@ -3,6 +3,7 @@ import {
   createBuiltInBrowserAgentPresenceTracker,
   type BuiltInBrowserAgentPresenceTracker,
 } from "./builtInBrowserPresence";
+import { createBuiltInBrowserPresenceRouter } from "./builtInBrowserPresenceRouter";
 
 const EXPIRY_MS = 20_000;
 const HOLD_MAX_MS = 600_000;
@@ -186,11 +187,71 @@ describe("builtInBrowserAgentPresence", () => {
     expect(entry?.lastActivityAt).not.toBe(since);
   });
 
+  it("reports the touch that created an entry, and takes only that one back", () => {
+    // The bridge announces a command BEFORE dispatching it, so a `wait` is
+    // visible for the minutes it runs. A call that then fails did nothing to
+    // any browser and has to retract — but only its own announcement.
+    const opened = presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    expect(opened.created).toBe(true);
+    vi.advanceTimersByTime(5);
+    expect(presence.touch({ chatSessionId: "chat-1" }).created).toBe(false);
+
+    // A concurrent command from the same chat moved the entry on: this undo is
+    // no longer the one being retracted, and a live agent keeps its globe.
+    presence.clearForChatSession("chat-1", { ifLastActivityAt: opened.lastActivityAt });
+    expect(presence.list()).toHaveLength(1);
+
+    const stamp = presence.list()[0]?.lastActivityAt;
+    expect(stamp).toBeTruthy();
+    presence.clearForChatSession("chat-1", { ifLastActivityAt: Date.parse(stamp as string) });
+    expect(presence.list()).toHaveLength(0);
+  });
+
   it("ignores a listener that throws", () => {
     presence.subscribe(() => {
       throw new Error("listener fault");
     });
     expect(() => presence.touch({ chatSessionId: "chat-1" })).not.toThrow();
     expect(presence.list()).toHaveLength(1);
+  });
+});
+
+describe("builtInBrowserPresenceRouter", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("writes preview holds to the tracker it was given, not the process-wide one", () => {
+    // The window service's preview/observe holds used to go straight to the
+    // module singleton, so a test that injected its own tracker saw the clears
+    // and the events but never the holds — and the hold path could regress
+    // green.
+    vi.useFakeTimers();
+    const injected = createBuiltInBrowserAgentPresenceTracker({
+      expiryMs: EXPIRY_MS,
+      holdMaxMs: HOLD_MAX_MS,
+    });
+    const router = createBuiltInBrowserPresenceRouter({
+      listWindows: () => [],
+      scopeForWindow: () => [],
+      projectRootsMatch: (left, right) => left === right,
+      isLiveWindow: () => false,
+      presence: injected,
+    });
+
+    try {
+      injected.touch({ chatSessionId: "chat-preview", tabId: "tab-1" });
+      router.holdForTab("tab-1");
+      // Well past the expiry, and still present: something is watching.
+      vi.advanceTimersByTime(EXPIRY_MS * 3);
+      expect(injected.list().map((entry) => entry.chatSessionId)).toEqual(["chat-preview"]);
+
+      router.releaseHoldForTab("tab-1");
+      vi.advanceTimersByTime(EXPIRY_MS + 1);
+      expect(injected.list()).toHaveLength(0);
+    } finally {
+      router.dispose();
+      injected.dispose();
+    }
   });
 });

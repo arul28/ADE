@@ -177,6 +177,7 @@ import type {
   CaptureWindowLike,
 } from "./builtInBrowserRecording";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
+import type { BuiltInBrowserAgentPresenceTracker } from "./builtInBrowserPresence";
 import { createBuiltInBrowserPresenceRouter } from "./builtInBrowserPresenceRouter";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
@@ -752,6 +753,7 @@ export function createBuiltInBrowserService(args: {
       networkRouter,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       onHandoff: args.onHandoff ?? null,
+      presenceHolds: presenceRouter,
       createRecordingWindow: args.createRecordingWindow ?? null,
       createTabRecorder: args.createTabRecorder ?? null,
     });
@@ -880,6 +882,7 @@ export function createBuiltInBrowserService(args: {
         networkRouter,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         onHandoff: args.onHandoff ?? null,
+        presenceHolds: presenceRouter,
         createRecordingWindow: args.createRecordingWindow ?? null,
         createTabRecorder: args.createTabRecorder ?? null,
       });
@@ -934,6 +937,7 @@ export function createBuiltInBrowserService(args: {
           networkRouter,
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
+          presenceHolds: presenceRouter,
         });
         fallbackServices.set("personal", fallbackService);
       }
@@ -1282,6 +1286,15 @@ export function createBuiltInBrowserService(args: {
      * the seed and the stream cannot disagree.
      */
     getAgentPresence(sourceWindow?: BrowserWindow | null): BuiltInBrowserAgentPresence[] {
+      // Asking for presence subscribes the asking window to it. The pushed
+      // `agent-presence` event is routed per window, and the routing list is
+      // `windowClosedListeners` — which only a window that opened the browser
+      // pane was ever put on. A window that seeds here and never activates the
+      // Browser tool (offline, browser unavailable, a chat living outside Work)
+      // would take this one seed and then never hear another word, leaving the
+      // globe frozen at whatever it was when the badge mounted. One
+      // `once("closed")` listener; still constructs no service.
+      if (isLiveWindow(sourceWindow)) ensureWindowClosedListener(sourceWindow);
       return presenceRouter.presenceForWindow(sourceWindow);
     },
     getStatus(
@@ -1728,11 +1741,21 @@ function createBuiltInBrowserWindowService(args: {
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
   waitForProfileMigration: () => Promise<void>;
   onHandoff?: BuiltInBrowserHandoffListener | null;
+  /**
+   * Where preview/observe holds are written.
+   *
+   * The coordinator's presence router, so the one tracker a test injects sees
+   * the holds as well as the clears and the events. Defaults to the
+   * process-wide tracker for the fallback services the coordinator builds
+   * before it has a window.
+   */
+  presenceHolds?: Pick<BuiltInBrowserAgentPresenceTracker, "holdForTab" | "releaseHoldForTab">;
   /** Test seam for the hidden recording renderer. */
   createRecordingWindow?: (() => CaptureWindowLike) | null;
   /** Test seam that replaces the whole recorder (skips Electron entirely). */
   createTabRecorder?: BuiltInBrowserRecorderFactory | null;
 }) {
+  const presenceHolds = args.presenceHolds ?? builtInBrowserAgentPresence;
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
   /**
@@ -3497,13 +3520,13 @@ function createBuiltInBrowserWindowService(args: {
     // `onPreviewWatchersChanged`, so they release the presence hold themselves.
     if (owner) {
       const ended = tabCapabilities.stopPreviewStreamsForOwner(owner);
-      for (const tabId of ended) builtInBrowserAgentPresence.releaseHoldForTab(tabId);
+      for (const tabId of ended) presenceHolds.releaseHoldForTab(tabId);
       stoppedAny = ended.length > 0;
     } else {
       for (const tab of tabs) {
         if (!hasPreviewWatchers(tab.id)) continue;
         tabCapabilities.stopPreviewStreamsForTab(tab.id);
-        builtInBrowserAgentPresence.releaseHoldForTab(tab.id);
+        presenceHolds.releaseHoldForTab(tab.id);
         stoppedAny = true;
       }
     }
@@ -5545,9 +5568,9 @@ function createBuiltInBrowserWindowService(args: {
       // the agent set up and is now reading. Same hold API as a recording, and
       // released the moment the last subscriber leaves.
       if (tabCapabilities.hasPreviewWatchers(tabId)) {
-        builtInBrowserAgentPresence.holdForTab(tabId);
+        presenceHolds.holdForTab(tabId);
       } else {
-        builtInBrowserAgentPresence.releaseHoldForTab(tabId);
+        presenceHolds.releaseHoldForTab(tabId);
       }
       attachViewsToCurrentWindow();
     },

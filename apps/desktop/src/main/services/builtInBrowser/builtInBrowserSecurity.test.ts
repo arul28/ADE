@@ -40,6 +40,7 @@ import {
   shouldAllowGoogleAuthPermissionRequest,
 } from "./builtInBrowserPermissions";
 import { startBuiltInBrowserDesktopBridgeServer } from "./desktopBridgeServer";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 
@@ -1023,6 +1024,100 @@ describe("built-in browser desktop bridge", () => {
       server.dispose();
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "lights presence for the whole of a long command, and takes back only a failed first one",
+    async () => {
+      // A `wait`, a slow navigation or a long `observe` is exactly the stretch a
+      // person is trying to explain. Announcing only on completion left the
+      // globe dark for the whole of it — and indefinitely for back-to-back long
+      // calls, since the expiry window would not even start until one returned.
+      const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+      const slow: { release: (() => void) | null } = { release: null };
+      const navigate = vi.fn(async (input: { url?: string }) => {
+        if (input?.url?.includes("unreachable")) {
+          throw new Error("No ADE browser window is open for project: /issued/project");
+        }
+        await new Promise<void>((resolve) => {
+          slow.release = resolve;
+        });
+        return { ok: true };
+      });
+      const server = startBuiltInBrowserDesktopBridgeServer({
+        socketPath,
+        service: { navigate } as unknown as BuiltInBrowserService,
+        logger: createLogger(),
+      });
+      const client = createBuiltInBrowserDesktopBridgeClient({
+        socketPath,
+        getAuthToken: () => server.authToken,
+        projectRoot: "/issued/project",
+        logger: createLogger(),
+      });
+      const present = (chatSessionId: string): boolean =>
+        builtInBrowserAgentPresence.list().some((entry) => entry.chatSessionId === chatSessionId);
+      try {
+        await waitForPath(socketPath);
+
+        // A first command that never reaches a tab must not light the globe for
+        // twenty seconds: the announcement it made pre-dispatch is its own, and
+        // it takes it back.
+        const failedToken = issueBuiltInBrowserActorCapability({
+          chatSessionId: "chat-failed",
+          laneId: null,
+          projectRoot: "/issued/project",
+          tabCollection: null,
+        });
+        const failingNavigate = {
+          url: "https://unreachable.example.test",
+          chatSessionId: "chat-failed",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: failedToken,
+        };
+        await expect(client.navigate(failingNavigate))
+          .rejects.toThrow(/No ADE browser window is open/);
+        expect(present("chat-failed")).toBe(false);
+
+        // A long command in flight is visible for its whole duration.
+        const slowToken = issueBuiltInBrowserActorCapability({
+          chatSessionId: "chat-slow",
+          laneId: null,
+          projectRoot: "/issued/project",
+          tabCollection: null,
+        });
+        const slowNavigate = {
+          url: "https://slow.example.test",
+          chatSessionId: "chat-slow",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: slowToken,
+        };
+        const pending = client.navigate(slowNavigate);
+        const deadline = Date.now() + 2_000;
+        while (!present("chat-slow") && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(present("chat-slow")).toBe(true);
+        slow.release?.();
+        await pending;
+        expect(present("chat-slow")).toBe(true);
+
+        // And a failure AFTER that agent is already browsing retracts nothing:
+        // this call did not open the window it would be closing.
+        const failingAgain = {
+          url: "https://unreachable.example.test/again",
+          chatSessionId: "chat-slow",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: slowToken,
+        };
+        await expect(client.navigate(failingAgain))
+          .rejects.toThrow(/No ADE browser window is open/);
+        expect(present("chat-slow")).toBe(true);
+      } finally {
+        slow.release?.();
+        builtInBrowserAgentPresence.clearForChatSession("chat-slow");
+        builtInBrowserAgentPresence.clearForChatSession("chat-failed");
+        client.dispose();
+        server.dispose();
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")("validates opaque actor capabilities in their issuing desktop process", async () => {
     const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");

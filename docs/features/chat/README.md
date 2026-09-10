@@ -416,7 +416,10 @@ Two paths carry it, because two kinds of client need it:
   is side-effect-free: `getStatus` is a *creating* resolver whose factory
   restores and `loadURL`s every persisted tab, and the badge is mounted by every
   session card and the chat header, so seeding through it background-loaded the
-  browser for a user who never opened the pane. The event is sent per window and
+  browser for a user who never opened the pane. Asking for the seed does
+  subscribe the asking window to the pushed event — a window that never
+  activates the Browser tool is on no other path that would register it, and
+  would otherwise hold its first seed forever. The event is sent per window and
   scoped to the projects that window has open, the same routing every other
   browser event takes and the same scoping the seed applies, so one project's
   window never lights a dot for another project's agent. `agentBrowserPresence.ts` in the renderer
@@ -428,10 +431,14 @@ Two paths carry it, because two kinds of client need it:
   every `ade browser` call, so it also fires `work_tools_state_changed` on both
   edges of a browsing stretch — once when an agent picks the browser up and once
   when the desktop's window has elapsed — instead of leaving a phone to discover
-  either edge on its next poll. Both edges are recorded only once the proxied
-  call has actually returned: a command that throws touched no browser, and a
-  globe lit for twenty seconds on a failure says an agent is browsing when it
-  could not reach a tab. The daemon deliberately keeps no copy of the
+  either edge on its next poll. Presence is recorded on **both edges of each
+  call**, in the daemon and in the bridge alike: a `wait`, a slow navigation or
+  a long `observe` is exactly the stretch a person is trying to explain, and
+  waiting for the call to return left the globe dark for the whole of it. A
+  command that throws touched no browser, so the failure path retracts what it
+  announced — but only when that call is what opened the window, so one failure
+  inside a busy agent's stream cannot dark the globe the rest of that stream
+  still justifies. The daemon deliberately keeps no copy of the
   presence itself: the desktop is the only side that sees tabs close and
   recordings end, so a second copy would only be a second answer to disagree
   with.

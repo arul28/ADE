@@ -94,13 +94,17 @@ describe("work tool status lines", () => {
       .toBe("Browse");
     expect(filesStatusLine(null).line).toBe("Browse");
     // Legacy/remote payload with no `changedFileCount`: the split counts
-    // ENTRIES per side, so a file with both index and worktree changes is in
-    // `staged` AND `unstaged` and adding the three double-counted it. Two
-    // tracked entries (one of them both-sided) plus one untracked = 3.
+    // ENTRIES PER SIDE, so no arithmetic over it recovers a file count — three
+    // staged-only and two unstaged-only files are five files, one file dirty on
+    // both sides is one, and `staged`/`unstaged` cannot tell those apart. Say
+    // what is actually known instead of inventing a total.
     expect(filesStatusLine(
       lane({ dirty: true, staged: 2, unstaged: 1, untracked: 1, changedFileCount: undefined },
         { trackedFileCount: 12 }),
-    ).line).toBe("12 files · 3 changed");
+    ).line).toBe("12 files · dirty");
+    expect(filesStatusLine(
+      lane({ dirty: false, changedFileCount: undefined }, { trackedFileCount: 12 }),
+    ).line).toBe("12 files");
     // Never "live": a worktree with edits in it is not a running tool, and an
     // activity dot for one would be a dot that never goes out.
     expect(filesStatusLine(lane({ changedFileCount: 3 }, { trackedFileCount: 12 })).live).toBe(false);

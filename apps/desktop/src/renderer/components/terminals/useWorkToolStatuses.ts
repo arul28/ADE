@@ -318,21 +318,24 @@ export function filesStatusLine(lane: LaneSummary | null): WorkToolStatus {
   if (!lane?.status) return statusLine("Browse", false);
   const trackedFileCount = lane.trackedFileCount ?? lane.status.trackedFileCount;
   if (trackedFileCount == null) return statusLine("Browse", false);
-
-  // The split counts ENTRIES per side, so a file with both index and worktree
-  // changes is in `staged` AND `unstaged` — adding the three double-counts it.
-  // `Math.max` is the unique tracked-entry count the fresh payload's
-  // `changedFileCount` already carries; only a legacy/remote payload without
-  // that field gets here. An untracked DIRECTORY counts as one entry either
-  // way: `--untracked-files=normal` reports the folder, not its contents, and
-  // that is intended — "12 changed" should not become "412" for one new folder.
-  const changedFileCount = lane.status.changedFileCount ?? (
-    lane.status.dirty
-      ? Math.max(nonNegativeCount(lane.status.staged), nonNegativeCount(lane.status.unstaged))
-        + nonNegativeCount(lane.status.untracked)
-      : 0
-  );
   const fileCount = formatStatusCount(nonNegativeCount(trackedFileCount));
+
+  // `changedFileCount` is the only unique entry count there is: the split
+  // counts ENTRIES PER SIDE, so a file with both index and worktree changes is
+  // in `staged` AND `unstaged` while two files dirty on one side each are in
+  // only one — no sum and no max of the two recovers the number of files. A
+  // legacy or remote payload that carries no `changedFileCount` therefore
+  // knows only WHETHER the worktree is dirty, and says exactly that rather
+  // than inventing a total that is wrong in one direction or the other. Same
+  // word `gitStatusLine` falls back to for the same payload.
+  const changedFileCount = lane.status.changedFileCount;
+  if (changedFileCount == null) {
+    return statusLine(lane.status.dirty ? `${fileCount} files · dirty` : `${fileCount} files`, false);
+  }
+
+  // An untracked DIRECTORY counts as one entry: `--untracked-files=normal`
+  // reports the folder, not its contents, and that is intended — "12 changed"
+  // should not become "412" for one new folder.
   const changedCount = nonNegativeCount(changedFileCount);
   return statusLine(
     changedCount > 0 ? `${fileCount} files · ${formatStatusCount(changedCount)} changed` : `${fileCount} files`,

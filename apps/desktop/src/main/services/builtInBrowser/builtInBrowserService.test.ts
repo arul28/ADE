@@ -1818,6 +1818,44 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("keeps pushing presence to a window that only ever seeded it", async () => {
+    // Presence events are routed per window, and the routing list is the set of
+    // windows that opened the browser pane. A window whose Work tab never
+    // activated the browser tool — offline, browser unavailable, a chat living
+    // outside Work — seeds the badge through `getAgentPresence` and nothing
+    // else, so without registering here it would take one seed and then never
+    // hear another word: a globe frozen at whatever it was when it mounted.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
+    });
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    try {
+      // The seed, and only the seed: no tab, no attach, nothing constructed.
+      expect(service.getAgentPresence(browserWin)).toEqual([]);
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+
+      const event = seen.find(
+        (entry) => entry.windowId === win.id && entry.payload.type === "agent-presence",
+      );
+      expect(event?.payload.type === "agent-presence"
+        ? event.payload.presence.map((entry) => entry.chatSessionId)
+        : null).toEqual(["chat-alpha"]);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+    }
+  });
+
   it("clears agent presence for every tab of a window that closes", async () => {
     // Closing the window destroys its tabs without a `closeTab` call and without
     // the `recording:false` that would release a capture's hold, so nothing else

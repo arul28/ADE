@@ -330,23 +330,40 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Desktop bridge cannot dispatch built_in_browser.${name}.`,
       );
     }
+    // Recorded on BOTH edges of the call.
+    //
+    // Before, because a `wait`, a slow navigation or a long `observe` is
+    // exactly the stretch a person is trying to explain, and a globe that lit
+    // only on completion stayed dark for the whole of it — indefinitely, for
+    // back-to-back long calls, since the twenty-second window would not even
+    // start until one returned. After, because that window should be measured
+    // from when the agent finished, not from when it began.
+    //
+    // Every method counts, reads included: `status` and `observe` are how an
+    // agent looks at the page, and a badge that lit only for writes would go
+    // dark while it read.
+    const presenceTouch = {
+      chatSessionId: actor.chatSessionId,
+      laneId: actor.laneId,
+      projectRoot: actor.projectRoot,
+      tabId: normalizedString(rawParams.tabId),
+    };
+    const opened = builtInBrowserAgentPresence.touch(presenceTouch);
     try {
       const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
-      // Recorded only once the command actually ran. A call that throws
-      // ("No ADE browser window is open for project…") did nothing to the
-      // browser, and lighting the globe for twenty seconds on it tells the
-      // person the agent is browsing when it could not even reach a tab.
-      // Every method that gets here counts, reads included: `status` and
-      // `observe` are how an agent looks at the page, and a badge that lit only
-      // for clicks would go dark while it read.
-      builtInBrowserAgentPresence.touch({
-        chatSessionId: actor.chatSessionId,
-        laneId: actor.laneId,
-        projectRoot: actor.projectRoot,
-        tabId: normalizedString(rawParams.tabId),
-      });
+      builtInBrowserAgentPresence.touch(presenceTouch);
       return result;
     } catch (error) {
+      // The call did nothing to the browser ("No ADE browser window is open for
+      // project…"), so the announcement is taken back — but only when this call
+      // is what made it. A failure inside a stream of commands leaves presence
+      // the earlier ones earned, and the `ifLastActivityAt` guard drops the undo
+      // if a concurrent command from the same chat moved the entry meanwhile.
+      if (opened.created) {
+        builtInBrowserAgentPresence.clearForChatSession(actor.chatSessionId, {
+          ifLastActivityAt: opened.lastActivityAt,
+        });
+      }
       if (error instanceof JsonRpcError) throw error;
       throw new JsonRpcError(
         JsonRpcErrorCode.internalError,
