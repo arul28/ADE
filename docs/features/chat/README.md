@@ -395,18 +395,24 @@ keyed by:
 - It is **held** while a tab is recording — a capture runs for minutes without a
   command — and the hold is released by the same `recording` event that tells
   every other surface the capture stopped, including the ones no agent asked for
-  (the wall-clock cap, a login handoff). A hold cannot outlive its reason, and
-  the expiry timer re-arms rather than pinning presence if a release is missed.
-- It **clears** when the tab closes, when the chat's capability is revoked, and
-  when a login handoff moves the tab to a human — the one state whose whole
-  point is that the agent has stepped back.
+  (the wall-clock cap, a login handoff). Because that event is the only release,
+  each hold also carries a ten-minute deadline and is dropped when it passes, so
+  a release lost to a torn-down renderer costs one deadline rather than the life
+  of the process.
+- It **clears** when the tab closes, when the chat's capability is revoked, when
+  a login handoff moves the tab to a human — the one state whose whole point is
+  that the agent has stepped back — and for every tab of a window that closes,
+  which destroys its tabs without a `closeTab` call of its own.
 
 Two paths carry it, because two kinds of client need it:
 
 - The **desktop renderer** gets an `agent-presence` browser event (the whole set
   each time, so a badge that mounted between two changes has nothing to
   reconcile) plus the `agentPresence` field on a `getStatus` read as a seed for
-  a surface that mounted mid-stretch. `agentBrowserPresence.ts` in the renderer
+  a surface that mounted mid-stretch. The event is sent per window and scoped to
+  the projects that window has open, the same routing every other browser event
+  takes and the same scoping the seed applies, so one project's window never
+  lights a dot for another project's agent. `agentBrowserPresence.ts` in the renderer
   is one module store with a single shared subscription for every badge.
 - The **read-only clients** get `agentBrowserPresence` on the Work-tools lane
   state, projected from the bridge's `getStatusForRuntime` and filtered to the

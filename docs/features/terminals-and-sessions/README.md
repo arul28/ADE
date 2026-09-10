@@ -774,8 +774,13 @@ Renderer surfaces:
   the 36 px tab strip — the `⊞ Tools` button, one tab per open tool with a
   hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
   those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
-  for tools with no tab, and ✕; the active tool's one fact is its tab's tooltip
-  and accessible name, not a header line; the read-only view replaces
+  for tools with no tab, and ✕; the `×` is untouchable until the tab is
+  hovered or it is focused, and on a glyph-only tab it is a top-right corner
+  badge rather than a centred target that would swallow the tab's own click;
+  the strip is a roving-tabindex `tablist` (arrows move focus, activation
+  stays manual, the overflow menu button sits outside it) whose selected tab
+  names its pane with `aria-controls` (`workToolPanelId`); the active tool's
+  one fact is its tab's tooltip and accessible name, not a header line; the read-only view replaces
   the browser and App Control panels on the hosted web client;
   `workToolPanels.tsx` is one component per
   tool id, replacing a 270-line `useMemo` in `WorkSidebar` that dispatched

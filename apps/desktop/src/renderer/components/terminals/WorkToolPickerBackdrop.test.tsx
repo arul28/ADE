@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   BACKDROP_FRAME_MS,
   BACKDROP_MAX_DPR,
@@ -11,6 +11,87 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./WorkToolPickerBackdrop";
+
+/**
+ * A WebGL context that answers every call the backdrop makes.
+ *
+ * Deliberately not `getContext → null`: the paths that matter here are the ones
+ * where the context is REAL and the component decides not to use it, and a null
+ * context cannot prove a context was released.
+ */
+function stubGl() {
+  const loseContext = vi.fn();
+  const lose = { loseContext };
+  let renderer = "ANGLE (Apple, Apple M3 Max, OpenGL 4.1)";
+  const gl = {
+    VERTEX_SHADER: 1,
+    FRAGMENT_SHADER: 2,
+    LINK_STATUS: 3,
+    ARRAY_BUFFER: 4,
+    STATIC_DRAW: 5,
+    FLOAT: 6,
+    TRIANGLES: 7,
+    getExtension: (name: string) => {
+      if (name === "WEBGL_lose_context") return lose;
+      if (name === "WEBGL_debug_renderer_info") return { UNMASKED_RENDERER_WEBGL: 37446 };
+      return null;
+    },
+    getParameter: () => renderer,
+    createShader: () => ({}),
+    shaderSource: () => {},
+    compileShader: () => {},
+    deleteShader: () => {},
+    createProgram: () => ({}),
+    attachShader: () => {},
+    linkProgram: () => {},
+    getProgramParameter: () => true,
+    useProgram: () => {},
+    deleteProgram: () => {},
+    createBuffer: () => ({}),
+    bindBuffer: () => {},
+    bufferData: () => {},
+    deleteBuffer: () => {},
+    getAttribLocation: () => 0,
+    enableVertexAttribArray: () => {},
+    vertexAttribPointer: () => {},
+    getUniformLocation: () => ({}),
+    uniform3fv: () => {},
+    uniform4f: () => {},
+    viewport: () => {},
+    drawArrays: vi.fn(),
+  };
+  return {
+    gl,
+    loseContext,
+    setRenderer: (name: string) => {
+      renderer = name;
+    },
+  };
+}
+
+/** Installs the stub and hands back the canvas the component asked for. */
+function useStubGl(gl: object): { canvas: () => HTMLCanvasElement | null } {
+  let seen: HTMLCanvasElement | null = null;
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    function getContext(this: HTMLCanvasElement) {
+      seen = this;
+      return gl as unknown as RenderingContext;
+    } as HTMLCanvasElement["getContext"],
+  );
+  return { canvas: () => seen };
+}
+
+const RECT = {
+  width: 400,
+  height: 300,
+  top: 0,
+  left: 0,
+  right: 400,
+  bottom: 300,
+  x: 0,
+  y: 0,
+  toJSON: () => ({}),
+} as DOMRect;
 
 describe("resolveBackdropSize", () => {
   it("never renders above DPR 1, whatever the display claims", () => {
@@ -146,5 +227,114 @@ describe("WorkToolPickerBackdrop", () => {
     expect(() => view.unmount()).not.toThrow();
     // Nothing to cancel on the fallback path — the loop was never started.
     expect(cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkToolPickerBackdrop context lifecycle", () => {
+  beforeAll(() => {
+    // jsdom ships neither observer; the backdrop uses both.
+    class NoopObserver {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    if (typeof globalThis.ResizeObserver === "undefined") {
+      globalThis.ResizeObserver = NoopObserver as unknown as typeof ResizeObserver;
+    }
+    if (typeof globalThis.IntersectionObserver === "undefined") {
+      globalThis.IntersectionObserver = NoopObserver as unknown as typeof IntersectionObserver;
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("hands the context back when it refuses a software rasteriser", () => {
+    // The refuse paths are where this bites: the component remounts on every
+    // picker ↔ tool crossfade, so a context that is only abandoned means a new
+    // one per crossfade until the driver's cap starts evicting other canvases.
+    const { gl, loseContext, setRenderer } = stubGl();
+    setRenderer("Google SwiftShader");
+    const { canvas } = useStubGl(gl);
+
+    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
+
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(container.querySelector("[data-backdrop='static']")).toBeTruthy();
+    expect(loseContext).toHaveBeenCalledTimes(1);
+    // And the drawing buffer is gone even where the extension is not.
+    expect(canvas()?.width).toBe(1);
+    expect(canvas()?.height).toBe(1);
+  });
+
+  it("hands the context back when the program will not link", () => {
+    const { gl, loseContext } = stubGl();
+    const linkFailure = { ...gl, getProgramParameter: () => false };
+    useStubGl(linkFailure);
+
+    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
+
+    expect(container.querySelector("[data-backdrop='static']")).toBeTruthy();
+    expect(loseContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the static gradient when the GPU takes the context back", () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    // jsdom reports the document as unfocused, and the loop is gated on focus:
+    // without this there would be no frame in flight to prove was cancelled.
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+
+    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
+    const canvas = container.querySelector("canvas");
+    expect(canvas).toBeTruthy();
+
+    act(() => {
+      canvas?.dispatchEvent(new Event("webglcontextlost"));
+    });
+
+    // No `preventDefault`, so no restore: a machine that just lost its context
+    // gets the cheap gradient rather than a rebuilt shader.
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(container.querySelector("[data-backdrop='static']")).toBeTruthy();
+    // …and the loop stopped rather than spinning on a dead context.
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("measures the layout once per frame, not once per scroll event", async () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    // The pointer effect is what wires the capture-phase scroll listener at
+    // all, so this is the only configuration where the cost exists.
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: query.includes("hover") || query.includes("pointer"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia);
+    const rect = vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect")
+      .mockReturnValue(RECT);
+
+    render(<WorkToolPickerBackdrop theme="dark" />);
+    const baseline = rect.mock.calls.length;
+
+    for (let i = 0; i < 12; i += 1) window.dispatchEvent(new Event("scroll"));
+    // `getBoundingClientRect` forces layout; a wheel gesture must not force a
+    // dozen of them in one frame.
+    expect(rect.mock.calls.length).toBe(baseline);
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    expect(rect.mock.calls.length - baseline).toBe(1);
   });
 });

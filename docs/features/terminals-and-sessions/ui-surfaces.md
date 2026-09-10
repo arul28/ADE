@@ -647,13 +647,29 @@ never starts the loop; the cursor swirl is wired only on `(hover: hover)`
 and `(pointer: fine)` devices, since a touchscreen "cursor" is a tap that
 would yank the background sideways. Unmount releases the context through a
 deferred `pendingContextReleases` timer, cancelled if the same canvas
-comes straight back — which it does on every picker ↔ tool crossfade. With
-no WebGL there is **no canvas at all**: the same box renders
+comes straight back — which it does on every picker ↔ tool crossfade. Every
+path that decides not to use a context releases it through the same
+`releaseContext` helper (lose the context, shrink the drawing buffer to
+1×1), refusals included: on the machines that refuse — SwiftShader, a
+blacklisted Windows driver — a merely abandoned context per crossfade walks
+the browser's context cap until it starts evicting other canvases. A
+`webglcontextlost` on the canvas flips the page to the static backdrop and
+stops the loop; it does **not** `preventDefault`, since asking for a
+restore would mean rebuilding the program on a machine that has just proven
+it is short of GPU. Layout measurement is rAF-coalesced to one
+`getBoundingClientRect` per frame — the listener is capture-phase scroll,
+so a wheel gesture over the picker would otherwise force a dozen synchronous
+reflows a frame — and it is wired only when the cursor effect is enabled.
+With no WebGL there is **no canvas at all**: the same box renders
 `.ade-tool-picker-static`, the same corner light as flat CSS, because a
 software-rendered mesh would be the most expensive thing in the window.
 The canvas is `aria-hidden` and `pointer-events: none` — a decoration that
 swallowed a click meant for a card would be breaking the page it
-decorates. `resolveBackdropSize` owns the whole size/budget policy and is
+decorates. It is pinned to a **non-scrolling wrapper** around the picker's
+scroll container rather than inside it: `inset: 0` inside a scroller
+resolves against the scroll origin, so on a pane too short for the column
+the mesh ended at the fold and the rest of the page scrolled onto bare
+chrome. `resolveBackdropSize` owns the whole size/budget policy and is
 unit-tested without a GPU.
 
 A card is deliberately thin: a monochrome 16 px glyph, the name, and
@@ -710,6 +726,29 @@ controls opening one page is one too many. Activity dots for tools with
 **no tab** that are usable here and not idle sit to the right of that, and
 the close ✕ keeps its place at the end. There is no centred title: the lit
 tab is the title.
+
+The `×` is a sibling of the tab button, never a child — a button inside a
+button is invalid and the browser resolves it by dropping one of the two
+click targets — and it is `pointer-events: none` until the tab is hovered
+or the `×` itself is focused, because `opacity: 0` alone still hit-tests.
+In the labelled strip it holds reserved space on the tab's right edge, so
+pointing at a strip does not shuffle the tabs under the pointer. On a 24 px
+icon-only tab there is no space to reserve, so it becomes a small badge in
+the tab's **top-right corner** rather than a target over its middle: a
+centred close button on a 24 px tab means the obvious click, dead centre on
+the glyph, closes the tool instead of opening it. The tab's activity dot
+shares that corner and yields it on hover.
+
+The strip is a real `tablist`: only tabs are inside it (the `…` overflow
+button is a menu button and sits outside), the selected tab names its pane
+with `aria-controls` (`workToolPanelId`, per tool because the pane
+crossfades and two panels are briefly in the document at once), and the
+strip carries a **roving tabindex** — one Tab stop, landing on the tool you
+are looking at, with `←`/`→`/`Home`/`End` moving focus between tabs.
+Activation is manual: arrowing past a tool must not attach its terminal or
+show its `WebContentsView`, so Enter and Space are the button's own
+activation and there is no second key handler to disagree with the click
+path.
 
 The header's one fact per tool is a rule on the catalogue
 (`workToolContextLabel`), not an `if` cascade at the header: Git shows the

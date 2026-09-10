@@ -102,6 +102,49 @@ describe("parseWorktreeStatusPorcelainV2", () => {
     });
   });
 
+  it("keeps newlines inside NUL-delimited filenames", () => {
+    const parsed = parseWorktreeStatusPorcelainV2([
+      "# branch.head feature/child",
+      "1 .M N... 100644 100644 100644 aaa bbb src/with\nnewline.ts",
+      "? untracked\npath/",
+    ].join("\0") + "\0");
+
+    expect(parsed).toMatchObject({
+      dirty: true,
+      changedFileCount: 2,
+      staged: 0,
+      unstaged: 1,
+      untracked: 1,
+      headBranchRef: "feature/child",
+    });
+  });
+
+  it("counts a NUL-delimited rename record once and consumes its old path", () => {
+    const parsed = parseWorktreeStatusPorcelainV2([
+      "# branch.head feature/child",
+      "2 R. N... 100644 100644 100644 aaa bbb src/new-name.ts",
+      "src/old\nname.ts",
+    ].join("\0") + "\0");
+
+    expect(parsed).toMatchObject({
+      dirty: true,
+      changedFileCount: 1,
+      staged: 1,
+      unstaged: 0,
+      untracked: 0,
+    });
+  });
+
+  it("counts an untracked directory as one entry", () => {
+    expect(parseWorktreeStatusPorcelainV2("? generated/\0")).toMatchObject({
+      dirty: true,
+      changedFileCount: 1,
+      staged: 0,
+      unstaged: 0,
+      untracked: 1,
+    });
+  });
+
   it("keeps slashes in branch names and does not treat them as path separators", () => {
     const parsed = parseWorktreeStatusPorcelainV2("# branch.head ade/start-skill/read-tweet\n");
     expect(parsed.headBranchRef).toBe("ade/start-skill/read-tweet");

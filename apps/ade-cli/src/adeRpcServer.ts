@@ -4162,16 +4162,29 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-      // The scoping above is the gate: reaching this line means an agent with a
-      // real browser capability is about to drive the browser. The desktop
-      // records the presence itself (it is the only side that sees tabs close
-      // and recordings end); this tells the Work-tools mirror that every
-      // client's copy just went stale, so a phone learns an agent picked up the
-      // browser without waiting for its next poll.
-      runtime.workToolsStateService?.noteAgentBrowserActivity({
-        laneId: resolveChatSessionLaneId(runtime, session),
-        chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
-      });
+      // The allowlist and the scoping above are both behind us, so reaching this
+      // line means a real, exposed browser action is about to run. The desktop
+      // records presence itself (it is the only side that sees tabs close and
+      // recordings end); this tells the Work-tools mirror that every client's
+      // copy just went stale, so a phone learns an agent picked up the browser
+      // without waiting for its next poll.
+      //
+      // Only for a caller carrying a browser actor capability. The one caller
+      // the scoping lets through without one is the remote-forwarding carve-out
+      // — a chat on a headless box publishing "put this URL on a screen" to a
+      // desktop somewhere else — which drives no browser here and must not make
+      // this machine's Work-tools mirror claim an agent picked one up. (A user
+      // client cannot reach this branch at all: the scoping denies a caller with
+      // no chat session, and a session carrying one is not a user client.)
+      const bearsBrowserCapability = Boolean(
+        asOptionalTrimmedString(session.identity.browserActorToken),
+      );
+      if (bearsBrowserCapability) {
+        runtime.workToolsStateService?.noteAgentBrowserActivity({
+          laneId: resolveChatSessionLaneId(runtime, session),
+          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+        });
+      }
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {

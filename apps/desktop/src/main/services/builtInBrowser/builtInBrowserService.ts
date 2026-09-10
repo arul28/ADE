@@ -630,6 +630,8 @@ export function createBuiltInBrowserService(args: {
   type WindowBrowserEntry = {
     win: BrowserWindow;
     service: WindowBrowserService;
+    /** Which project's tabs this entry holds, for routing project-scoped events. */
+    collection: BrowserCollection;
   };
 
   const windowServices = new Map<string, WindowBrowserEntry>();
@@ -731,24 +733,65 @@ export function createBuiltInBrowserService(args: {
     args.onEvent?.(payload, targetWindow);
   };
 
+  /**
+   * The project collections one window holds, for scoping what it may be told.
+   *
+   * A window's own binding is not the whole answer: a window can have several
+   * projects open as tabs, and the collections it has actually browsed are the
+   * honest list of whose agents it may hear about.
+   */
+  const presenceScopeForWindow = (win: BrowserWindow): Array<string | null> => {
+    const roots: Array<string | null> = [projectRootForWindow(win)];
+    for (const entry of windowServices.values()) {
+      if (entry.win.id !== win.id) continue;
+      roots.push(entry.collection.projectRoot);
+    }
+    return roots;
+  };
+
   // Presence changes are pushed, not polled: the surfaces that show it (session
   // cards, the chat header, the tool tab's dot) are already subscribed to this
   // stream, and expiry happens on a timer with nothing else to ride along with.
-  // Broadcast rather than window-targeted, because a chat session id identifies
-  // exactly one chat across every window and a presence entry is meaningless to
-  // a window not showing it.
+  //
+  // Sent per window and scoped to that window's projects, the same routing every
+  // other browser event takes. A broadcast of the whole set lit a dot beside a
+  // chat in project A for an agent browsing in project B — and it contradicted
+  // the `getStatus` seed, which has always been scoped to the collection it
+  // describes, so the same window disagreed with itself depending on which of
+  // the two arrived last.
   const presenceSubscription = builtInBrowserAgentPresence.subscribe(() => {
-    args.onEvent?.({
-      type: "agent-presence",
-      presence: builtInBrowserAgentPresence.list().map((entry) => ({
-        chatSessionId: entry.chatSessionId,
-        laneId: entry.laneId,
-        tabId: entry.tabId,
-        since: entry.since,
-        lastActivityAt: entry.lastActivityAt,
-      })),
-      updatedAt: new Date().toISOString(),
-    }, null);
+    const updatedAt = new Date().toISOString();
+    const entries = builtInBrowserAgentPresence.list();
+    const emitScoped = (targetWindow: BrowserWindow | null, roots: Array<string | null> | null): void => {
+      args.onEvent?.({
+        type: "agent-presence",
+        presence: entries
+          // A personal-collection agent belongs to no project and is visible to
+          // whoever asks — the rule `list({ projectRoot })` already applies.
+          .filter((entry) => !roots
+            || entry.projectRoot == null
+            || roots.some((root) => projectRootsMatch(root, entry.projectRoot)))
+          .map((entry) => ({
+            chatSessionId: entry.chatSessionId,
+            laneId: entry.laneId,
+            tabId: entry.tabId,
+            since: entry.since,
+            lastActivityAt: entry.lastActivityAt,
+          })),
+        updatedAt,
+      }, targetWindow);
+    };
+    const windows = [...windowClosedListeners.values()]
+      .map(({ win }) => win)
+      .filter((win) => isLiveWindow(win));
+    // No window has opened the browser at all (a fallback-service process, a
+    // test): there is no window whose scope could be read, so the unscoped
+    // broadcast is the only thing left to say.
+    if (windows.length === 0) {
+      emitScoped(null, null);
+      return;
+    }
+    for (const win of windows) emitScoped(win, presenceScopeForWindow(win));
   });
 
   const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
@@ -822,6 +865,13 @@ export function createBuiltInBrowserService(args: {
   const disposeWindowServices = (win: BrowserWindow): void => {
     for (const [key, entry] of windowServices) {
       if (entry.win.id !== win.id) continue;
+      // Closing the window ends the agent's turn at every tab it held, and no
+      // other event will say so: `closeTab` is not called for any of them, and a
+      // recording torn down with the window never emits its `recording:false`.
+      // Read the ids before `dispose`, which is what destroys them.
+      for (const tabId of entry.service.listTabIds()) {
+        builtInBrowserAgentPresence.clearForTab(tabId);
+      }
       entry.service.dispose();
       windowServices.delete(key);
     }
@@ -856,7 +906,7 @@ export function createBuiltInBrowserService(args: {
     fallbackServices.clear();
     ensureWindowClosedListener(win);
     const service = createServiceForWindow(win, collection);
-    windowServices.set(key, { win, service });
+    windowServices.set(key, { win, service, collection });
     return service;
   };
 
@@ -5557,6 +5607,15 @@ function createBuiltInBrowserWindowService(args: {
     detachFromWindow,
     getStatus,
     getStatusForInput,
+    /**
+     * Every tab this collection holds, including ones whose `webContents` are
+     * already gone.
+     *
+     * `getStatus` filters destroyed tabs out — correct for a status nobody can
+     * act on, wrong for teardown, which is exactly the moment the tabs are being
+     * destroyed and the last moment their ids are knowable.
+     */
+    listTabIds: (): string[] => tabs.map((tab) => tab.id),
     requestOriginAccess,
     claim,
     startHandoff,

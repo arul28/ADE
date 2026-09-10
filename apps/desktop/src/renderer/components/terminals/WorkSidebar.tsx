@@ -34,7 +34,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings"
 import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
-import { WorkToolHeader } from "./WorkToolHeader";
+import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -788,6 +788,8 @@ export function WorkSidebar({
           <motion.div
             key={effectiveTool ?? "picker"}
             role={effectiveTool ? "tabpanel" : undefined}
+            // The id its tab points at with `aria-controls`.
+            id={effectiveTool ? workToolPanelId(effectiveTool) : undefined}
             aria-label={effectiveTool ? workToolLabel(effectiveTool) : undefined}
             className="absolute inset-0 min-h-0"
             initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}

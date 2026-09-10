@@ -4,8 +4,10 @@ import { resolvePathWithinRoot } from "../../../../desktop/src/main/services/sha
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AppControlStatus } from "../../../../desktop/src/shared/types";
 import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
+// Shared, not main: this is a plain Node process, and a value-import of an
+// Electron-main module would pull `electron` into it.
+import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
-import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserPresence";
 import {
   isWorkToolId,
   type WorkToolId,

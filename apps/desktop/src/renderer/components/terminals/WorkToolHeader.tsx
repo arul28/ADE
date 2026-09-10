@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { DotsThree, Plus, SquaresFour, X } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { motion, useReducedMotion } from "motion/react";
@@ -46,6 +46,18 @@ const CHROME_WIDTH_WITH_LABEL_PX = 134;
 const CHROME_WIDTH_ICON_ONLY_PX = 96;
 /** The "…" trigger, added only when something actually overflows. */
 const OVERFLOW_WIDTH_PX = 28;
+
+/**
+ * The id of the pane that a tab controls.
+ *
+ * Per tool rather than one shared id because the pane crossfades: for the
+ * length of that transition the outgoing tool's panel and the incoming one are
+ * both in the document, and two elements answering to one id would make
+ * `aria-controls` ambiguous exactly while it is being read.
+ */
+export function workToolPanelId(tool: WorkSidebarTab): string {
+  return `work-tool-panel-${tool}`;
+}
 
 export type WorkToolTabLayout = {
   /** Tabs drawn in the strip, in strip order. */
@@ -178,6 +190,7 @@ export function WorkToolHeader({
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const { ref, width } = useMeasuredWidth();
+  const tabListRef = useRef<HTMLDivElement | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   // OP3 additive: an agent is driving the browser right now. Read from the
   // shared presence store rather than `statuses`, which describes tabs.
@@ -198,6 +211,35 @@ export function WorkToolHeader({
   ));
 
   const layout = workToolTabLayout(openTools, activeTool, width);
+
+  /**
+   * Arrows walk the strip; they do not switch tools.
+   *
+   * Manual activation, per the tabs pattern: moving focus is free, but a tool
+   * costs a terminal attach or a WebContentsView show, so arrowing across six
+   * tabs must not open six tools on the way past. Enter/Space is the button's
+   * own activation, so there is no second key handler to disagree with the
+   * click path.
+   */
+  const onTabStripKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    const edge = event.key === "Home" ? 0 : event.key === "End" ? -1 : null;
+    if (step === 0 && edge === null) return;
+    const tabs = Array.from(
+      tabListRef.current?.querySelectorAll<HTMLButtonElement>('button[role="tab"]') ?? [],
+    );
+    if (tabs.length === 0) return;
+    event.preventDefault();
+    if (edge !== null) {
+      (edge === 0 ? tabs[0] : tabs[tabs.length - 1])?.focus();
+      return;
+    }
+    const current = tabs.findIndex((node) => node === document.activeElement);
+    const next = current < 0
+      ? (step > 0 ? 0 : tabs.length - 1)
+      : (current + step + tabs.length) % tabs.length;
+    tabs[next]?.focus();
+  };
 
   /** A tab's tooltip: its status summary, plus the active tool's own one fact. */
   const tabTooltip = (tool: WorkSidebarTab): string => {
@@ -244,16 +286,23 @@ export function WorkToolHeader({
       <div className="flex min-w-0 flex-1 items-center gap-1">
       {openTools.length > 0 ? (
         <div
+          ref={tabListRef}
           role="tablist"
           aria-label="Open tools"
           aria-orientation="horizontal"
+          onKeyDown={onTabStripKeyDown}
           className="flex min-w-0 items-center gap-0.5"
         >
-          {layout.visible.map((tool) => (
+          {layout.visible.map((tool, index) => (
             <WorkToolTab
               key={tool}
               tool={tool}
               active={tool === activeTool}
+              // Roving tabindex: one stop for the whole strip, and Tab lands on
+              // the tool you are looking at rather than walking six tabs to
+              // reach the pane. With the picker up nothing is selected, so the
+              // first tab holds the stop instead.
+              focusable={activeTool === null ? index === 0 : tool === activeTool}
               showLabel={layout.showLabels}
               tooltip={tabTooltip(tool)}
               /* An agent driving the browser is live activity the browser's own
@@ -266,7 +315,11 @@ export function WorkToolHeader({
               onCloseTool={() => onCloseTool(tool)}
             />
           ))}
-          {layout.overflow.length > 0 ? (
+        </div>
+      ) : null}
+      {/* Outside the tablist on purpose: a `tablist` whose children are not all
+          tabs is a broken tablist, and this is a menu button, not a tool. */}
+      {layout.overflow.length > 0 ? (
             <DropdownMenu.Root open={overflowOpen} onOpenChange={setOverflowOpen}>
               <DropdownMenu.Trigger asChild>
                 <button
@@ -297,8 +350,6 @@ export function WorkToolHeader({
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
-          ) : null}
-        </div>
       ) : null}
 
       {/* Nothing to add while the picker is already up — that button IS the
@@ -376,12 +427,21 @@ export function WorkToolHeader({
  *
  * The ✕ is a sibling of the tab button rather than a child — a button inside a
  * button is invalid, and the browser resolves it by dropping one of the two
- * click targets. Its space is reserved at rest instead of appearing on hover, so
- * pointing at a strip does not shuffle the tabs under the pointer.
+ * click targets. In the labelled strip its space is reserved at rest instead of
+ * appearing on hover, so pointing at a strip does not shuffle the tabs under the
+ * pointer.
+ *
+ * At 24px there is no room to reserve, so the ✕ becomes a corner badge on the
+ * tab's top-right rather than a full-size target over its middle: an invisible
+ * close button centred on a 24px tab means the obvious click — dead centre, on
+ * the glyph — closes the tool instead of opening it. It is `pointer-events-none`
+ * until the tab is hovered or the ✕ itself is focused, so it can never take a
+ * click meant for the tab even for the frame before hover resolves.
  */
 function WorkToolTab({
   tool,
   active,
+  focusable,
   showLabel,
   tooltip,
   dotState,
@@ -390,6 +450,8 @@ function WorkToolTab({
 }: {
   tool: WorkSidebarTab;
   active: boolean;
+  /** Holds the strip's single tab stop; the rest are reached with arrows. */
+  focusable: boolean;
   showLabel: boolean;
   tooltip: string;
   dotState: WorkToolDotState;
@@ -406,6 +468,11 @@ function WorkToolTab({
           type="button"
           role="tab"
           aria-selected={active}
+          // Only the selected tab names a panel: the others control nothing
+          // that is in the document, and an `aria-controls` pointing at an id
+          // that is not there is worse than none.
+          aria-controls={active ? workToolPanelId(tool) : undefined}
+          tabIndex={focusable ? 0 : -1}
           // The tooltip string doubles as the accessible name: an icon-only tab
           // has no text at all, and a name of "Browser" would drop the one fact
           // (the page, the shell count) the tab is carrying.
@@ -426,12 +493,7 @@ function WorkToolTab({
             size={16}
             weight="regular"
             aria-hidden="true"
-            className={cn(
-              "shrink-0",
-              // Icon-only tabs hand their square to the ✕ on hover: it is the
-              // only place a close target can go at 24px.
-              !showLabel && "transition-opacity duration-[120ms] group-hover/tab:opacity-0",
-            )}
+            className="shrink-0"
           />
           {showLabel ? (
             <span className="min-w-0 truncate">{definition.label}</span>
@@ -442,7 +504,11 @@ function WorkToolTab({
               data-tool-tab-dot={dotState}
               className={cn(
                 "h-[5px] w-[5px] shrink-0 rounded-full",
-                showLabel ? undefined : "absolute right-[3px] top-[3px]",
+                // The corner is the ✕'s on hover, so the dot yields it: two
+                // 5px marks stacked in one corner is a smudge.
+                showLabel
+                  ? undefined
+                  : "absolute right-[3px] top-[3px] transition-opacity duration-[120ms] group-hover/tab:opacity-0",
               )}
               style={{ background: workToolDotColor(dotState, definition.color) }}
             />
@@ -453,13 +519,19 @@ function WorkToolTab({
         type="button"
         onClick={onCloseTool}
         aria-label={`Close ${definition.label}`}
+        data-tool-tab-close={tool}
         className={cn(
-          "absolute inset-y-0 right-0 my-auto inline-flex h-4 w-4 items-center justify-center rounded-[4px]",
+          "absolute inline-flex items-center justify-center rounded-[4px]",
           "text-muted-fg opacity-0 transition-opacity duration-[120ms] ease-out",
-          "hover:bg-white/[0.09] hover:text-fg focus-visible:opacity-100",
+          "hover:bg-white/[0.09] hover:text-fg",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-          "group-hover/tab:opacity-100",
-          showLabel ? "mr-[2px]" : "left-0 mx-auto",
+          // Invisible AND untouchable. `opacity-0` alone still hit-tests, which
+          // is how the centred icon-only ✕ used to swallow the tab's own click.
+          "pointer-events-none group-hover/tab:pointer-events-auto",
+          "group-hover/tab:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
+          showLabel
+            ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4"
+            : "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
         )}
       >
         <X size={10} weight="bold" />

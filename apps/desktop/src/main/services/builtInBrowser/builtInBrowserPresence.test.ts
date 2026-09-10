@@ -5,13 +5,14 @@ import {
 } from "./builtInBrowserPresence";
 
 const EXPIRY_MS = 20_000;
+const HOLD_MAX_MS = 600_000;
 
 describe("builtInBrowserAgentPresence", () => {
   let presence: BuiltInBrowserAgentPresenceTracker;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    presence = createBuiltInBrowserAgentPresenceTracker({ expiryMs: EXPIRY_MS });
+    presence = createBuiltInBrowserAgentPresenceTracker({ expiryMs: EXPIRY_MS, holdMaxMs: HOLD_MAX_MS });
   });
 
   afterEach(() => {
@@ -74,6 +75,48 @@ describe("builtInBrowserAgentPresence", () => {
     expect(presence.list()).toHaveLength(1);
     vi.advanceTimersByTime(2);
     expect(presence.list()).toHaveLength(0);
+  });
+
+  it("drops a hold whose release never arrived, and lets presence expire", () => {
+    const changes = vi.fn();
+    presence.subscribe(changes);
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.holdForTab("tab-1");
+
+    // A window closed under a capture, a renderer torn down mid-recording: no
+    // `recording:false` is ever delivered.
+    vi.advanceTimersByTime(HOLD_MAX_MS - 1);
+    expect(presence.list()).toHaveLength(1);
+
+    vi.advanceTimersByTime(EXPIRY_MS + 2);
+    expect(presence.list()).toHaveLength(0);
+    expect(changes).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the hold deadline while the capture keeps announcing itself", () => {
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    for (let i = 0; i < 4; i += 1) {
+      presence.holdForTab("tab-1");
+      vi.advanceTimersByTime(HOLD_MAX_MS - 1_000);
+    }
+    expect(presence.list()).toHaveLength(1);
+    presence.releaseHoldForTab("tab-1");
+    vi.advanceTimersByTime(EXPIRY_MS + 1);
+    expect(presence.list()).toHaveLength(0);
+  });
+
+  it("sleeps through a hold instead of re-arming on every tick", () => {
+    const armed = vi.spyOn(globalThis, "setTimeout");
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.holdForTab("tab-1");
+    const armedAfterHold = armed.mock.calls.length;
+
+    vi.advanceTimersByTime(EXPIRY_MS * 10);
+    // The expiry window lapses under the hold. Arming on it would wake this
+    // record every millisecond for the length of the recording.
+    expect(armed.mock.calls.length).toBe(armedAfterHold);
+    expect(presence.list()).toHaveLength(1);
+    armed.mockRestore();
   });
 
   it("does not resurrect a cleared chat when a hold arrives for its tab", () => {

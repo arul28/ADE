@@ -218,8 +218,10 @@ export function backdropThemeFor(theme: ThemeId): WorkToolPickerBackdropTheme {
     // the card fill (`--color-card`, ~26) and inverts the page — the mesh would
     // be reading as the content and the cards as holes in it. -0.16 lands the
     // mean at ~37 and the peak at ~118: still violet, still moving, and still
-    // underneath.
-    brightness: -0.16,
+    // underneath. -0.24 takes the peak down again to ~92, because at ~118 the
+    // upper lobe was measurably brighter than a card sitting ON it (~71) and
+    // the eye went to the empty gradient instead of to the six cards.
+    brightness: -0.24,
     saturation: 0.9,
   };
 }
@@ -303,6 +305,29 @@ export function isSoftwareRenderer(renderer: string): boolean {
  */
 const pendingContextReleases = new WeakMap<HTMLCanvasElement, number>();
 
+/**
+ * Hand the GPU context back, from anywhere that decides not to use it.
+ *
+ * Every refuse path runs through here, not just unmount. A context that is
+ * merely abandoned stays alive until the driver's own cap evicts it, and this
+ * component remounts on every picker ↔ tool crossfade: on the exact machines
+ * that refuse (SwiftShader, a blacklisted Windows driver) that meant a fresh
+ * context created and dropped per crossfade, walking the browser's 8–16 context
+ * limit until it started killing OTHER canvases in the window. Shrinking the
+ * drawing buffer to 1×1 releases the backing store even where the extension is
+ * missing.
+ */
+function releaseContext(gl: WebGLRenderingContext, canvas: HTMLCanvasElement): void {
+  try {
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  } catch {
+    // An already-lost context throws on some drivers. The shrink below is the
+    // part that always matters.
+  }
+  canvas.width = 1;
+  canvas.height = 1;
+}
+
 function matches(query: string): boolean {
   try {
     return window.matchMedia?.(query).matches ?? false;
@@ -368,6 +393,7 @@ export function WorkToolPickerBackdrop({
       ? String(context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) ?? "")
       : "";
     if (isSoftwareRenderer(rendererName)) {
+      releaseContext(context, canvas);
       setWebglRefused(true);
       return;
     }
@@ -383,6 +409,10 @@ export function WorkToolPickerBackdrop({
     const vertexShader = compile(context.VERTEX_SHADER, VERT);
     const fragmentShader = compile(context.FRAGMENT_SHADER, FRAG);
     if (!program || !vertexShader || !fragmentShader) {
+      if (vertexShader) context.deleteShader(vertexShader);
+      if (fragmentShader) context.deleteShader(fragmentShader);
+      if (program) context.deleteProgram(program);
+      releaseContext(context, canvas);
       setWebglRefused(true);
       return;
     }
@@ -393,6 +423,7 @@ export function WorkToolPickerBackdrop({
     context.deleteShader(fragmentShader);
     if (!context.getProgramParameter(program, context.LINK_STATUS)) {
       context.deleteProgram(program);
+      releaseContext(context, canvas);
       setWebglRefused(true);
       return;
     }
@@ -463,6 +494,7 @@ export function WorkToolPickerBackdrop({
     let pointerClientX = 0;
     let pointerClientY = 0;
     let raf = 0;
+    let layoutRaf = 0;
     let lastNow: number | null = null;
     let lastDrawn = 0;
     let visible = document.visibilityState === "visible";
@@ -571,11 +603,27 @@ export function WorkToolPickerBackdrop({
       targetPresence = 0;
       requestRender();
     };
-    const updateLayout = () => {
+    const measureLayout = () => {
       bounds = canvas.getBoundingClientRect();
       if (resizeCanvas() && reduceMotion) draw(0);
       updatePointerTarget();
       requestRender();
+    };
+    /**
+     * One measurement per frame, never one per event.
+     *
+     * `getBoundingClientRect` forces layout, and this is wired to capture-phase
+     * scroll: a wheel gesture over the picker fires it dozens of times a frame,
+     * and every one of those was a synchronous reflow of a pane that also holds
+     * a terminal and a chat stream. The rect cannot change more than once per
+     * frame anyway, so coalescing loses nothing.
+     */
+    const updateLayout = () => {
+      if (layoutRaf !== 0 || disposed) return;
+      layoutRaf = requestAnimationFrame(() => {
+        layoutRaf = 0;
+        if (!disposed) measureLayout();
+      });
     };
     const onVisibilityChange = () => {
       visible = document.visibilityState === "visible";
@@ -592,6 +640,22 @@ export function WorkToolPickerBackdrop({
       pointerKnown = false;
       stop();
     };
+
+    /**
+     * The GPU took the context back — a driver reset, a tab evicted for being
+     * over the context limit, a machine waking from sleep.
+     *
+     * No `preventDefault`: that asks for `webglcontextrestored`, and this
+     * component would then have to rebuild the program on a machine that has
+     * just proven it is short of GPU. The static gradient is the honest answer,
+     * and it costs nothing.
+     */
+    const onContextLost = () => {
+      disposed = true;
+      stop();
+      setWebglRefused(true);
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
 
     window.addEventListener("resize", updateLayout);
     window.addEventListener("focus", onWindowFocus);
@@ -622,6 +686,11 @@ export function WorkToolPickerBackdrop({
     return () => {
       disposed = true;
       stop();
+      if (layoutRaf !== 0) {
+        cancelAnimationFrame(layoutRaf);
+        layoutRaf = 0;
+      }
+      canvas.removeEventListener("webglcontextlost", onContextLost);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -639,9 +708,7 @@ export function WorkToolPickerBackdrop({
       const releaseTimer = window.setTimeout(() => {
         if (pendingContextReleases.get(canvas) !== releaseTimer) return;
         pendingContextReleases.delete(canvas);
-        context.getExtension("WEBGL_lose_context")?.loseContext();
-        canvas.width = 1;
-        canvas.height = 1;
+        releaseContext(context, canvas);
       }, 0);
       pendingContextReleases.set(canvas, releaseTimer);
     };

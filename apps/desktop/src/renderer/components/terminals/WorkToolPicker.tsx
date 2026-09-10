@@ -113,114 +113,121 @@ export function WorkToolPicker({
   }, [cardCount, focusCard]);
 
   return (
-    <div
-      ref={rootRef}
-      className="ade-pane-chrome relative flex h-full min-h-0 flex-col overflow-auto"
-    >
+    // Two boxes, because the backdrop must not scroll. `inset: 0` inside the
+    // scroller resolves against the scroll ORIGIN, so on a pane too short for
+    // the column the mesh ended at the fold and the rest of the page scrolled
+    // onto bare chrome. Pinned to this non-scrolling wrapper it always covers
+    // exactly what you can see.
+    <div ref={rootRef} className="ade-pane-chrome relative h-full min-h-0">
       {/* Behind everything and untouchable: the canvas must never eat a click
           meant for the card on top of it, and it is never in the tab order. */}
       <WorkToolPickerBackdrop theme={theme} className="ade-tool-picker-backdrop" />
-      {/* `m-auto` rather than `justify-center`: a centred flex child in an
-          overflow container has its overflowing top clipped and unreachable,
-          and this column is taller than a short pane. The extra bottom pad is
-          the 36px header — spending it here centres the block against the
-          WHOLE pane, not against the leftover space beneath the header. */}
       <div
-        className="relative m-auto w-full px-6 pb-[60px] pt-6"
-        style={{ maxWidth: COLUMN_MAX_PX }}
+        data-tool-picker-scroll=""
+        className="relative flex h-full min-h-0 flex-col overflow-auto"
       >
+        {/* `m-auto` rather than `justify-center`: a centred flex child in an
+            overflow container has its overflowing top clipped and unreachable,
+            and this column is taller than a short pane. The extra bottom pad is
+            the 36px header — spending it here centres the block against the
+            WHOLE pane, not against the leftover space beneath the header. */}
         <div
-          ref={gridRef}
-          role="group"
-          aria-label="Work tools"
-          // The pointer takes the highlight back the moment it moves: hover is
-          // already drawn by `:hover`, so a stale keyboard highlight left on a
-          // card the mouse has since left is a second card that looks hovered.
-          onPointerMove={() => setHighlight((current) => (current === -1 ? current : -1))}
-          className="grid gap-2"
-          // `min()` rather than the bare minimum: below one card's width the
-          // track must shrink with the pane, or the grid overflows the column
-          // it is centred in and the cards clip on the right.
-          style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+          className="relative m-auto w-full px-6 pb-[60px] pt-6"
+          style={{ maxWidth: COLUMN_MAX_PX }}
         >
-          {WORK_TOOL_DEFINITIONS.map((definition, index) => {
-            const availability = workToolAvailability(definition.id, context);
-            const status = statuses[definition.id];
-            const reasonId = `${reasonIdPrefix}-${definition.id}`;
-            // Status, reason, or the catalogue's hint — `workToolSummary` owns
-            // that priority, and the tooltip below reads the same resolution.
-            const { line: detail, tooltipLabel } = workToolSummary(definition, status, availability);
-            const showSkeleton = loading && availability.available && status?.line == null;
-            const Icon = definition.icon;
-            const isActive = activeTool === definition.id;
-            const hasError = availability.available && workToolHasError(status);
-            // An odd card count leaves the last one alone on its row. Letting it
-            // span the full width finishes the block instead of orphaning it;
-            // with one column every card already spans, so this is a no-op there.
-            const spansRow = cardCount % 2 === 1 && index === cardCount - 1;
-            return (
-              <PaneTooltip
-                key={definition.id}
-                // Only when the card actually cut something off. A tooltip that
-                // repeats a line you can already read is a panel over the NEXT
-                // card for no reason; a tooltip over a truncated one is the rest
-                // of the sentence.
-                label={tooltipLabel}
-                side="bottom"
-                onlyWhenClipped
-                disabled={showSkeleton}
-                className="min-w-0"
-                style={spansRow ? { gridColumn: "1 / -1" } : undefined}
-              >
-                <button
-                  type="button"
-                  disabled={!availability.available}
-                  aria-current={isActive ? "true" : undefined}
-                  aria-describedby={availability.available ? undefined : reasonId}
-                  onClick={() => onPick(definition.id)}
-                  data-tool-id={definition.id}
-                  data-highlighted={highlight === index ? "true" : undefined}
-                  className={cn(
-                    "ade-tool-card group flex w-full flex-col items-start p-4 text-left",
-                    !availability.available && "cursor-not-allowed opacity-40",
-                  )}
+          <div
+            ref={gridRef}
+            role="group"
+            aria-label="Work tools"
+            // The pointer takes the highlight back the moment it moves: hover is
+            // already drawn by `:hover`, so a stale keyboard highlight left on a
+            // card the mouse has since left is a second card that looks hovered.
+            onPointerMove={() => setHighlight((current) => (current === -1 ? current : -1))}
+            className="grid gap-2"
+            // `min()` rather than the bare minimum: below one card's width the
+            // track must shrink with the pane, or the grid overflows the column
+            // it is centred in and the cards clip on the right.
+            style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+          >
+            {WORK_TOOL_DEFINITIONS.map((definition, index) => {
+              const availability = workToolAvailability(definition.id, context);
+              const status = statuses[definition.id];
+              const reasonId = `${reasonIdPrefix}-${definition.id}`;
+              // Status, reason, or the catalogue's hint — `workToolSummary` owns
+              // that priority, and the tooltip below reads the same resolution.
+              const { line: detail, tooltipLabel } = workToolSummary(definition, status, availability);
+              const showSkeleton = loading && availability.available && status?.line == null;
+              const Icon = definition.icon;
+              const isActive = activeTool === definition.id;
+              const hasError = availability.available && workToolHasError(status);
+              // An odd card count leaves the last one alone on its row. Letting it
+              // span the full width finishes the block instead of orphaning it;
+              // with one column every card already spans, so this is a no-op there.
+              const spansRow = cardCount % 2 === 1 && index === cardCount - 1;
+              return (
+                <PaneTooltip
+                  key={definition.id}
+                  // Only when the card actually cut something off. A tooltip that
+                  // repeats a line you can already read is a panel over the NEXT
+                  // card for no reason; a tooltip over a truncated one is the rest
+                  // of the sentence.
+                  label={tooltipLabel}
+                  side="bottom"
+                  onlyWhenClipped
+                  disabled={showSkeleton}
+                  className="min-w-0"
+                  style={spansRow ? { gridColumn: "1 / -1" } : undefined}
                 >
-                  <span className="flex w-full min-w-0 items-center gap-2">
-                    <Icon
-                      size={16}
-                      weight="regular"
-                      aria-hidden="true"
-                      className="shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
-                      {definition.label}
-                    </span>
-                    {hasError ? (
-                      <span
-                        role="img"
-                        aria-label={`${definition.label} · errors`}
-                        data-tool-error-dot={definition.id}
-                        className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-error)]"
+                  <button
+                    type="button"
+                    disabled={!availability.available}
+                    aria-current={isActive ? "true" : undefined}
+                    aria-describedby={availability.available ? undefined : reasonId}
+                    onClick={() => onPick(definition.id)}
+                    data-tool-id={definition.id}
+                    data-highlighted={highlight === index ? "true" : undefined}
+                    className={cn(
+                      "ade-tool-card group flex w-full flex-col items-start p-4 text-left",
+                      !availability.available && "cursor-not-allowed opacity-40",
+                    )}
+                  >
+                    <span className="flex w-full min-w-0 items-center gap-2">
+                      <Icon
+                        size={16}
+                        weight="regular"
+                        aria-hidden="true"
+                        className="shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
                       />
-                    ) : null}
-                  </span>
-                  {showSkeleton ? (
-                    <span
-                      aria-hidden="true"
-                      className="ade-tool-skeleton mt-1.5 h-[10px] w-3/5 rounded-full"
-                    />
-                  ) : detail ? (
-                    <span
-                      id={availability.available ? undefined : reasonId}
-                      className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
-                    >
-                      {detail}
+                      <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
+                        {definition.label}
+                      </span>
+                      {hasError ? (
+                        <span
+                          role="img"
+                          aria-label={`${definition.label} · errors`}
+                          data-tool-error-dot={definition.id}
+                          className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-error)]"
+                        />
+                      ) : null}
                     </span>
-                  ) : null}
-                </button>
-              </PaneTooltip>
-            );
-          })}
+                    {showSkeleton ? (
+                      <span
+                        aria-hidden="true"
+                        className="ade-tool-skeleton mt-1.5 h-[10px] w-3/5 rounded-full"
+                      />
+                    ) : detail ? (
+                      <span
+                        id={availability.available ? undefined : reasonId}
+                        className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
+                      >
+                        {detail}
+                      </span>
+                    ) : null}
+                  </button>
+                </PaneTooltip>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>

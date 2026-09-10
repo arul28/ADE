@@ -3,7 +3,7 @@ import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
-import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
+import { getHeadSha, runGit, runGitOrThrow, type GitRunResult } from "../git/git";
 import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -190,6 +190,17 @@ const DEFAULT_LANE_STATUS: LaneStatus = {
   rebaseInProgress: false,
 };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
+/** Tracked-file totals change with the committed tree, not every status poll. */
+const TRACKED_FILE_COUNT_CACHE_TTL_MS = 10 * 60_000;
+
+type TrackedFileCountCache = {
+  entries: Map<string, { count: number | null; expiresAt: number }>;
+  inFlight: Map<string, Promise<number | null>>;
+};
+
+function createTrackedFileCountCache(): TrackedFileCountCache {
+  return { entries: new Map(), inFlight: new Map() };
+}
 /**
  * How many lanes' git status probes may be in flight at once while building a
  * lane list. Each lane costs ~6 short-lived `git` processes; running them one
@@ -776,19 +787,73 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
 }
 
 function countGitFiles(stdout: string): number {
-  // The status refresh asks for NUL-delimited output so filenames containing
-  // newlines still count as one file. The line fallback keeps test doubles and
-  // older Git wrappers useful if they return the default git ls-files shape.
-  return stdout.includes("\0")
-    ? stdout.split("\0").filter(Boolean).length
-    : stdout.split(/\r?\n/).filter(Boolean).length;
+  // `git ls-files -z` terminates every path with one NUL byte. Count the bytes
+  // directly so a repository with a large index does not allocate an array of
+  // every pathname. The line fallback keeps test doubles and older Git wrappers
+  // useful if they return the default `git ls-files` shape.
+  const bytes = Buffer.from(stdout, "utf8");
+  let nulCount = 0;
+  let lineCount = 0;
+  let lineHasContent = false;
+  for (const byte of bytes) {
+    if (byte === 0) {
+      nulCount += 1;
+      continue;
+    }
+    if (byte === 10) {
+      if (lineHasContent) lineCount += 1;
+      lineHasContent = false;
+      continue;
+    }
+    if (byte !== 13) lineHasContent = true;
+  }
+  if (nulCount > 0) return nulCount;
+  return lineCount + (lineHasContent ? 1 : 0);
+}
+
+async function resolveTrackedFileCount(
+  worktreePath: string,
+  treeHashRes: GitRunResult | null,
+  cache: TrackedFileCountCache,
+): Promise<number | null> {
+  const treeHash = treeHashRes?.exitCode === 0 ? treeHashRes.stdout.trim() : "";
+  if (!treeHash) return null;
+
+  const now = Date.now();
+  const cached = cache.entries.get(treeHash);
+  if (cached && cached.expiresAt > now) return cached.count;
+  if (cached) cache.entries.delete(treeHash);
+
+  const inFlight = cache.inFlight.get(treeHash);
+  if (inFlight) return await inFlight;
+
+  const request = (async (): Promise<number | null> => {
+    let count: number | null = null;
+    try {
+      const trackedFilesRes = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
+      if (trackedFilesRes.exitCode === 0) count = countGitFiles(trackedFilesRes.stdout);
+    } catch {
+      // A missing tracked-file total must not hide the status we already read.
+    }
+    cache.entries.set(treeHash, {
+      count,
+      expiresAt: now + TRACKED_FILE_COUNT_CACHE_TTL_MS,
+    });
+    return count;
+  })();
+  cache.inFlight.set(treeHash, request);
+  try {
+    return await request;
+  } finally {
+    if (cache.inFlight.get(treeHash) === request) cache.inFlight.delete(treeHash);
+  }
 }
 
 async function computeLaneStatus(
   worktreePath: string,
   baseRef: string,
   branchRef: string,
-  options: { worktreeRootVerified?: boolean } = {},
+  options: { worktreeRootVerified?: boolean; trackedFileCountCache: TrackedFileCountCache },
 ): Promise<LaneStatus> {
   // Callers that just proved the worktree root pass `worktreeRootVerified` so
   // the same `rev-parse --show-toplevel` is not spawned twice per lane. Every
@@ -808,10 +873,10 @@ async function computeLaneStatus(
       return null;
     }
   };
-  const [dirtyRes, lastCommitRes, trackedFilesRes] = await Promise.all([
-    runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=all"], { cwd: worktreePath, timeoutMs: 8_000 }),
+  const [dirtyRes, lastCommitRes, treeHashRes] = await Promise.all([
+    runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"], { cwd: worktreePath, timeoutMs: 8_000 }),
     optionalGit(["log", "-1", "--format=%cI"], 6_000),
-    optionalGit(["ls-files", "-z"], 8_000),
+    optionalGit(["rev-parse", "HEAD^{tree}"], 8_000),
   ]);
   const parsedStatus = dirtyRes?.exitCode === 0
     ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
@@ -826,7 +891,7 @@ async function computeLaneStatus(
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
   const lastCommitAt = lastCommitRes?.exitCode === 0 ? lastCommitRes.stdout.trim() || null : null;
-  const trackedFileCount = trackedFilesRes?.exitCode === 0 ? countGitFiles(trackedFilesRes.stdout) : null;
+  const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHashRes, options.trackedFileCountCache);
 
   const countsRes = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
     cwd: worktreePath,
@@ -841,6 +906,8 @@ async function computeLaneStatus(
     behind = Number.isFinite(left) ? left : 0;
     ahead = Number.isFinite(right) ? right : 0;
   }
+
+  const trackedFileCount = await trackedFileCountPromise;
 
   // Check how far behind the remote tracking branch we are
   let remoteBehind = -1; // -1 = no upstream configured
@@ -1840,6 +1907,17 @@ export function createLaneService({
     invalidateLaneListCache();
     invalidateProjectPathInspectionCache();
   };
+
+  const trackedFileCountCache = createTrackedFileCountCache();
+  const computeServiceLaneStatus = (
+    worktreePath: string,
+    baseRef: string,
+    branchRef: string,
+    options: { worktreeRootVerified?: boolean } = {},
+  ): Promise<LaneStatus> => computeLaneStatus(worktreePath, baseRef, branchRef, {
+    ...options,
+    trackedFileCountCache,
+  });
 
   const normalizeBranchKey = (ref: string): string =>
     normalizeBranchName(ref).trim();
@@ -3058,7 +3136,7 @@ export function createLaneService({
       // `resolveWorktreeAvailable` above already ran the identical
       // `rev-parse --show-toplevel` probe for this worktree and returned true,
       // so computeLaneStatus must not spawn it a second time.
-      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
+      const status = await computeServiceLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
         worktreeRootVerified: true,
       });
       statusCache.set(laneId, status);
@@ -3482,7 +3560,7 @@ export function createLaneService({
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
     const rowsById = new Map(getAllLaneRows(true).map((entry) => [entry.id, entry] as const));
-    const status = await computeLaneStatus(worktreePath, args.baseRef, branchRef);
+    const status = await computeServiceLaneStatus(worktreePath, args.baseRef, branchRef);
     const parentStatus = args.parentLaneId
       ? await (async () => {
         const parentId = args.parentLaneId;
@@ -3490,7 +3568,7 @@ export function createLaneService({
         const parent = rowsById.get(parentId);
         if (!parent) return null;
         const grandParent = parent.parent_lane_id ? rowsById.get(parent.parent_lane_id) : null;
-        return await computeLaneStatus(parent.worktree_path, grandParent?.branch_ref ?? parent.base_ref, parent.branch_ref);
+        return await computeServiceLaneStatus(parent.worktree_path, grandParent?.branch_ref ?? parent.base_ref, parent.branch_ref);
       })()
       : null;
 
@@ -5105,8 +5183,8 @@ export function createLaneService({
         const row = getLaneRow(laneId);
         if (!row) throw new Error(`Failed to import lane: ${laneId}`);
         const rowsById = getRowsById(true);
-        const status = await computeLaneStatus(worktreePath, baseRef, branchRef);
-        const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+        const status = await computeServiceLaneStatus(worktreePath, baseRef, branchRef);
+        const parentStatus = parent ? await computeServiceLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
 
         if (onHeadChanged) {
           try {
@@ -5147,14 +5225,14 @@ export function createLaneService({
           let parentStatus: Awaited<ReturnType<typeof computeLaneStatus>> | null = null;
           let stackDepth = 0;
           try {
-            status = await computeLaneStatus(worktreePath, persistedRow.base_ref, branchRef);
+            status = await computeServiceLaneStatus(worktreePath, persistedRow.base_ref, branchRef);
           } catch {
             status = null;
           }
           try {
             const parent = persistedRow.parent_lane_id ? getLaneRow(persistedRow.parent_lane_id) : null;
             if (parent) {
-              parentStatus = await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref);
+              parentStatus = await computeServiceLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref);
             }
           } catch {
             parentStatus = null;
@@ -5623,7 +5701,7 @@ export function createLaneService({
       if (parentRow) {
         const grandParent = parentRow.parent_lane_id ? rowsById.get(parentRow.parent_lane_id) : null;
         try {
-          parentStatus = await computeLaneStatus(
+          parentStatus = await computeServiceLaneStatus(
             parentRow.worktree_path,
             grandParent?.branch_ref ?? parentRow.base_ref,
             parentRow.branch_ref
@@ -5639,7 +5717,7 @@ export function createLaneService({
         let status: LaneStatus;
         try {
           const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-          status = await computeLaneStatus(
+          status = await computeServiceLaneStatus(
             row.worktree_path,
             parent?.branch_ref ?? row.base_ref,
             row.branch_ref
@@ -5733,7 +5811,7 @@ export function createLaneService({
         const cached = statusCache.get(row.id);
         if (cached) return cached;
         const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-        const status = await computeLaneStatus(
+        const status = await computeServiceLaneStatus(
           row.worktree_path,
           rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref,
           row.branch_ref,

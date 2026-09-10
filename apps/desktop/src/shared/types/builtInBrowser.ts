@@ -658,6 +658,27 @@ export type BuiltInBrowserAgentPresence = {
   lastActivityAt: string;
 };
 
+/**
+ * How long after an agent's last browser command presence survives.
+ *
+ * Shared rather than owned by main: the runtime daemon's Work-tools mirror
+ * derives its own "an agent touched the browser just now" window from this
+ * number, and a daemon that value-imported an Electron-main module to read it
+ * would drag that module's `electron` import graph into a plain Node process.
+ */
+export const BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS = 20_000;
+
+/**
+ * The hard cap on a single presence hold.
+ *
+ * A hold suspends expiry for a capture that runs for minutes without a command,
+ * and is released by the `recording` event that ends it. This is the backstop
+ * for a release that never arrives — a renderer torn down mid-capture, a window
+ * closed under a recording — so a missed event costs at most this long instead
+ * of pinning a globe beside the chat for the life of the process.
+ */
+export const BUILT_IN_BROWSER_PRESENCE_HOLD_MAX_MS = 10 * 60_000;
+
 /* ── Dev servers ──────────────────────────────────────────────────────────── */
 
 /**

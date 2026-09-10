@@ -33,7 +33,25 @@ function renderHeader(overrides: Partial<Parameters<typeof WorkToolHeader>[0]> =
 }
 
 describe("WorkToolHeader tab strip", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  /** Forces the strip below its label threshold, so the tabs are 24px glyphs. */
+  function measureNarrow(px: number): void {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      width: px,
+      height: 36,
+      top: 0,
+      left: 0,
+      right: px,
+      bottom: 36,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+  }
 
   it("draws one tab per open tool and lights the one on screen", () => {
     renderHeader();
@@ -87,6 +105,66 @@ describe("WorkToolHeader tab strip", () => {
     // Terminal is a tab, so its state rides on the tab.
     expect(document.querySelector('[data-tool-dot="terminal"]')).toBeNull();
     expect(document.querySelector('[data-tool-dot="git"]')).toBeTruthy();
+  });
+
+  it("keeps the centre of an icon-only tab a select target, never a close one", () => {
+    measureNarrow(WORK_TOOL_TAB_LABEL_MIN_PX - 120);
+    const { props } = renderHeader();
+
+    const tab = screen.getByRole("tab", { name: /^Terminal/ });
+    // The 24px square: no room for a label, and none for a centred ✕ either.
+    expect(tab.className).toContain("w-6");
+
+    const close = document.querySelector<HTMLElement>('[data-tool-tab-close="terminal"]');
+    expect(close).toBeTruthy();
+    // `opacity-0` alone still hit-tests, which is how a click dead centre on
+    // the glyph used to close the tool instead of opening it.
+    expect(close?.className).toContain("pointer-events-none");
+    expect(close?.className).toContain("group-hover/tab:pointer-events-auto");
+    // A corner badge, not a full-size target laid over the tab's middle.
+    expect(close?.className).not.toContain("mx-auto");
+    expect(close?.className).toContain("right-0");
+    expect(close?.className).toContain("top-0");
+
+    fireEvent.click(tab);
+    expect(props.onPick).toHaveBeenCalledWith("terminal");
+    expect(props.onCloseTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps the overflow menu button out of the tablist", () => {
+    measureNarrow(180);
+    renderHeader({
+      openTools: ["terminal", "browser", "git", "files"],
+      activeTool: "terminal",
+    });
+
+    const trigger = screen.getByRole("button", { name: /more open tools/ });
+    // A tablist whose children are not all tabs is a broken tablist.
+    expect(trigger.closest('[role="tablist"]')).toBeNull();
+    const tablist = screen.getByRole("tablist");
+    for (const child of Array.from(tablist.children)) {
+      expect(child.querySelector('[role="tab"]')).toBeTruthy();
+    }
+  });
+
+  it("gives the strip one tab stop and moves between tabs with the arrows", () => {
+    const { props } = renderHeader();
+    const tabs = screen.getAllByRole("tab");
+    // Roving tabindex: Tab lands on the tool you are looking at, not on the
+    // first of six.
+    expect(tabs[0].getAttribute("tabindex")).toBe("-1");
+    expect(tabs[1].getAttribute("tabindex")).toBe("0");
+    expect(tabs[1].getAttribute("aria-controls")).toBe("work-tool-panel-browser");
+    expect(tabs[0].getAttribute("aria-controls")).toBeNull();
+
+    tabs[1].focus();
+    fireEvent.keyDown(tabs[1], { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(tabs[0]);
+    // Manual activation: arrowing past a tool must not attach its terminal.
+    expect(props.onPick).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(tabs[0], { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(tabs[1]);
   });
 
   it("renders the strip with no tabs at all", () => {

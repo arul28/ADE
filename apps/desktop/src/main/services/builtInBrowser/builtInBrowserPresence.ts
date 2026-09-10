@@ -1,5 +1,9 @@
 import path from "node:path";
 import { pathsEqual } from "../shared/pathCompare";
+import {
+  BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS,
+  BUILT_IN_BROWSER_PRESENCE_HOLD_MAX_MS,
+} from "../../../shared/types/builtInBrowser";
 import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInBrowser";
 
 /**
@@ -24,12 +28,15 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  *   entry is dropped, on a timer — never on a poll, because a poller for a
  *   badge nobody is looking at is exactly the kind of idle cost the Work
  *   surfaces have been stripping out.
- * - It can be HELD. A recording runs for minutes without a single command, and
- *   dropping presence mid-capture would say the agent had walked away from the
- *   tab it is filming. A hold suspends expiry; the hold is released by the same
- *   `recording` event that tells every other surface the capture stopped
- *   (including the ones the agent did not ask for — a cap, a login handoff), so
- *   a hold cannot outlive its reason.
+ * - It can be HELD, but not forever. A recording runs for minutes without a
+ *   single command, and dropping presence mid-capture would say the agent had
+ *   walked away from the tab it is filming. A hold suspends expiry; the hold is
+ *   released by the same `recording` event that tells every other surface the
+ *   capture stopped (including the ones the agent did not ask for — a cap, a
+ *   login handoff). That event is the only release, so every hold also carries a
+ *   deadline ({@link BUILT_IN_BROWSER_PRESENCE_HOLD_MAX_MS}) and is dropped when
+ *   it passes: a release lost to a torn-down renderer or a window closed under
+ *   a capture must cost one deadline, not the life of the process.
  * - It CLEARS on the events that end the agent's turn at the tab: the tab
  *   closes, the capability is revoked when the chat ends, or a login handoff
  *   moves the tab to the human. A handoff especially: the whole point of that
@@ -40,10 +47,12 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  * keyed by. Presence is a statement about a live process; a replicated row
  * would outlive the Electron main that meant it and leave a phone claiming an
  * agent is browsing on a Mac that has quit.
+ *
+ * Both windows — the expiry and the hold deadline — live in
+ * `shared/types/builtInBrowser` rather than here, because the runtime daemon
+ * sizes its own staleness window from the expiry and must not value-import an
+ * Electron-main module to read it.
  */
-
-/** How long after an agent's last browser command presence survives. */
-export const BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS = 20_000;
 
 export type BuiltInBrowserAgentPresenceEntry = BuiltInBrowserAgentPresence & {
   /**
@@ -70,7 +79,8 @@ export type BuiltInBrowserAgentPresenceTracker = {
   /**
    * Suspends expiry for whichever chat is on this tab — a recording, which runs
    * for minutes without a command. Keyed by the tab so two concurrent captures
-   * cannot have one's end release the other's hold.
+   * cannot have one's end release the other's hold, and deadlined so a release
+   * that never arrives cannot suspend expiry forever.
    */
   holdForTab(tabId: string): void;
   releaseHoldForTab(tabId: string): void;
@@ -92,14 +102,17 @@ type PresenceRecord = {
   tabId: string | null;
   since: number;
   lastActivityAt: number;
-  holds: Set<string>;
+  /** Tab id → the moment the hold stops counting, whatever it is waiting for. */
+  holds: Map<string, number>;
   timer: ReturnType<typeof setTimeout> | null;
 };
 
 export function createBuiltInBrowserAgentPresenceTracker(args?: {
   expiryMs?: number;
+  holdMaxMs?: number;
 }): BuiltInBrowserAgentPresenceTracker {
   const expiryMs = Math.max(1, args?.expiryMs ?? BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS);
+  const holdMaxMs = Math.max(1, args?.holdMaxMs ?? BUILT_IN_BROWSER_PRESENCE_HOLD_MAX_MS);
   const records = new Map<string, PresenceRecord>();
   const listeners = new Set<() => void>();
   let disposed = false;
@@ -126,21 +139,32 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
   const armTimer = (record: PresenceRecord): void => {
     clearTimer(record);
     if (disposed) return;
-    const remaining = Math.max(0, record.lastActivityAt + expiryMs - Date.now());
+    const now = Date.now();
+    // A held record wakes at its earliest hold deadline, not at the expiry it
+    // is suspending: expiry has usually already passed under a long capture, and
+    // arming on that would spin a 1ms timer for the length of the recording.
+    const wakeAt = record.holds.size > 0
+      ? Math.min(...record.holds.values())
+      : record.lastActivityAt + expiryMs;
     const timer = setTimeout(() => {
       record.timer = null;
-      // A hold means the agent is still on the tab with nothing to say — a
-      // recording in progress. Re-arm rather than expire, so the hold is
-      // checked again on the next window instead of pinning presence forever if
-      // its release is ever missed.
-      if (record.holds.size > 0) {
+      if (records.get(record.chatSessionId) !== record) return;
+      // A hold whose deadline has passed is a release that never arrived. Drop
+      // it and judge the record on what is left, so a missed `recording:false`
+      // cannot pin presence for the life of the process.
+      const firedAt = Date.now();
+      for (const [tabId, deadline] of [...record.holds]) {
+        if (deadline <= firedAt) record.holds.delete(tabId);
+      }
+      // Still held, or touched while the timer was pending: both mean the agent
+      // is still on the tab, so re-arm on the fact that is now nearest.
+      if (record.holds.size > 0 || record.lastActivityAt + expiryMs > firedAt) {
         armTimer(record);
         return;
       }
-      if (records.get(record.chatSessionId) !== record) return;
       records.delete(record.chatSessionId);
       emit();
-    }, remaining || 1);
+    }, Math.max(1, wakeAt - now));
     // Presence is UI decoration; it must never hold the process open.
     timer.unref?.();
     record.timer = timer;
@@ -176,7 +200,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       tabId,
       since: now,
       lastActivityAt: now,
-      holds: new Set<string>(),
+      holds: new Map<string, number>(),
       timer: null,
     };
     records.set(chatSessionId, record);
@@ -197,9 +221,12 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       // always armed by a command that just touched presence with this tab id,
       // so there is nothing to invent here — and nothing to resurrect if the
       // chat's presence has since been cleared by a handoff or a closed tab.
+      const deadline = Date.now() + holdMaxMs;
       for (const record of records.values()) {
         if (record.tabId !== key) continue;
-        record.holds.add(key);
+        // Re-holding refreshes the deadline: a `recording:true` for a tab that
+        // is already held is a live capture saying so again.
+        record.holds.set(key, deadline);
         armTimer(record);
       }
     },

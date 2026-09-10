@@ -4890,6 +4890,66 @@ describe("adeRpcServer", () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
+  it("notes agent browser activity only for a caller carrying a browser capability", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-1" ? { id: "chat-1", laneId: "lane-1" } : null
+    ));
+    const navigate = vi.fn(async () => ({ status: "forwarded_to_desktop" }));
+    const captureScreenshot = vi.fn(async (args: unknown) => args);
+    fixture.runtime.builtInBrowserService = { navigate, captureScreenshot };
+    const noteAgentBrowserActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentBrowserActivity };
+
+    // The headless carve-out: no capability to mint, so the call is published to
+    // a desktop on another machine. Nothing on THIS machine is browsing, and a
+    // phone reading this daemon's Work-tools mirror must not be told otherwise.
+    const forwardingHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(forwardingHandler, {
+      callerId: "agent-headless",
+      role: "agent",
+      chatSessionId: "chat-1",
+    });
+    const opened = await callTool(forwardingHandler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "navigate",
+      args: { url: "https://x.test/" },
+    });
+    expect(opened?.isError).toBeUndefined();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(noteAgentBrowserActivity).not.toHaveBeenCalled();
+
+    // A denied call notes nothing either: the scoping throws before the note.
+    const denied = await callTool(forwardingHandler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "clearPermissions",
+      args: {},
+    });
+    expect(denied.isError).toBe(true);
+    expect(noteAgentBrowserActivity).not.toHaveBeenCalled();
+
+    const actorToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "agent-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+      browserActorToken: actorToken,
+    });
+    const shot = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1" },
+    });
+    expect(shot?.isError).toBeUndefined();
+    expect(noteAgentBrowserActivity).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
+  });
+
   it("scopes work_tools to the caller's own lane and refuses agent writes", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (

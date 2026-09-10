@@ -42,6 +42,32 @@ describe("WorkToolPicker", () => {
 
   afterEach(cleanup);
 
+  it("paints the backdrop from outside the scroll container", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+
+    const backdrop = document.querySelector("[data-backdrop]");
+    const scroller = document.querySelector("[data-tool-picker-scroll]");
+    expect(backdrop).toBeTruthy();
+    expect(scroller).toBeTruthy();
+    // `inset: 0` inside a scroller resolves against the scroll ORIGIN, so a
+    // pane too short for the column would scroll the mesh off the top and show
+    // bare chrome underneath the rest of the cards.
+    expect(scroller?.contains(backdrop as Node)).toBe(false);
+    expect(backdrop?.parentElement).toBe(scroller?.parentElement);
+    // Still behind the cards: painted first, so the scrolling column sits on
+    // top of it without needing a z-index.
+    expect(backdrop?.className).toContain("ade-tool-picker-backdrop");
+    expect(backdrop?.nextElementSibling).toBe(scroller);
+  });
+
   it("renders an untitled column of cards, each with its live status line", () => {
     const statuses: WorkToolStatusMap = {
       terminal: { line: "2 shells", live: true },

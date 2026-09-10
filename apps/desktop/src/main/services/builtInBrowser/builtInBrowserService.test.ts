@@ -16,6 +16,7 @@ import {
   isBuiltInBrowserNoTabError,
 } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -1702,6 +1703,85 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       expect(fakes.webContentsViewInstances).toHaveLength(0);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends agent presence to each window scoped to that window's projects", async () => {
+    // A broadcast of the whole set lit a globe beside a chat in project A for an
+    // agent browsing in project B — and disagreed with the `getStatus` seed,
+    // which has always been scoped to the collection it describes.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
+    });
+    const service = scoped.service;
+    const { win: alphaWin, browserWin: alphaBrowserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: betaWin, browserWin: betaBrowserWin } = scoped.openWindow("/Users/ade/project-beta");
+    service.attachToWindow(alphaBrowserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, alphaBrowserWin);
+    service.attachToWindow(betaBrowserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, betaBrowserWin);
+
+    const presenceFor = (windowId: number): string[] => {
+      const event = [...seen].reverse().find(
+        (entry) => entry.windowId === windowId && entry.payload.type === "agent-presence",
+      );
+      if (!event || event.payload.type !== "agent-presence") return [];
+      return event.payload.presence.map((entry) => entry.chatSessionId);
+    };
+
+    try {
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        laneId: "lane-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+      const targets = seen
+        .filter((entry) => entry.payload.type === "agent-presence")
+        .map((entry) => entry.windowId);
+      // Both windows hear, and neither hears the other's agent.
+      expect([...targets].sort()).toEqual([alphaWin.id, betaWin.id].sort());
+      expect(presenceFor(alphaWin.id)).toEqual(["chat-alpha"]);
+      expect(presenceFor(betaWin.id)).toEqual([]);
+
+      // A personal-collection chat belongs to no project and is visible to both.
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({ chatSessionId: "chat-personal", tabId: "tab-personal" });
+      expect([...presenceFor(alphaWin.id)].sort()).toEqual(["chat-alpha", "chat-personal"]);
+      expect(presenceFor(betaWin.id)).toEqual(["chat-personal"]);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+      builtInBrowserAgentPresence.clearForChatSession("chat-personal");
+    }
+  });
+
+  it("clears agent presence for every tab of a window that closes", async () => {
+    // Closing the window destroys its tabs without a `closeTab` call and without
+    // the `recording:false` that would release a capture's hold, so nothing else
+    // in the process ever says the agent's turn at those tabs ended.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    service.attachToWindow(browserWin);
+    const status = await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+    const tabId = status.activeTabId;
+    expect(tabId).toBeTruthy();
+
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId,
+      });
+      builtInBrowserAgentPresence.holdForTab(tabId as string);
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(1);
+
+      win.emit("closed");
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
     }
   });
 

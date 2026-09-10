@@ -200,6 +200,7 @@ describe("laneService createFromUnstaged", () => {
           } as any;
         }
         if (args[0] === "log") return { exitCode: 0, stdout: `${commitAt}\n`, stderr: "" } as any;
+        if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") return { exitCode: 0, stdout: "tree-child\n", stderr: "" } as any;
         if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
           return { exitCode: 0, stdout: "2\t3\n", stderr: "" } as any;
@@ -242,6 +243,86 @@ describe("laneService createFromUnstaged", () => {
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("caches tracked-file totals by tree hash and refreshes them after the TTL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
+
+    const repoRoot = makeTempRepoRoot("ade-lane-service-tracked-file-cache-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-tracked-file-cache", repoRoot });
+      let treeHash = "tree-a";
+      let trackedFiles = "src/a.ts\0src/b.ts\0";
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") {
+          expect(args).toEqual([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+            "-z",
+          ]);
+          return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
+        }
+        if (args[0] === "log") return { exitCode: 0, stdout: "2026-09-09T15:00:00.000Z\n", stderr: "" } as any;
+        if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") {
+          return { exitCode: 0, stdout: `${treeHash}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "ls-files") return { exitCode: 0, stdout: trackedFiles, stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-tracked-file-cache",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const first = await service.getSummary("lane-child", { includeStatus: true });
+      expect(first?.trackedFileCount).toBe(2);
+      const callCountAfterFirst = vi.mocked(runGit).mock.calls.length;
+
+      const sameTree = await service.getSummary("lane-child", { includeStatus: true });
+      expect(sameTree?.trackedFileCount).toBe(2);
+      const secondRefreshCalls = vi.mocked(runGit).mock.calls.slice(callCountAfterFirst);
+      expect(secondRefreshCalls.filter(([args]) => args[0] === "ls-files")).toHaveLength(0);
+      expect(secondRefreshCalls.filter(([args]) =>
+        args[0] === "ls-files" || (args[0] === "rev-parse" && args[1] === "HEAD^{tree}")
+      ).length).toBeLessThanOrEqual(2);
+
+      treeHash = "tree-b";
+      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0";
+      const changedTree = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedTree?.trackedFileCount).toBe(3);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(2);
+
+      vi.advanceTimersByTime(10 * 60_000 + 1);
+      const expired = await service.getSummary("lane-child", { includeStatus: true });
+      expect(expired?.trackedFileCount).toBe(3);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(3);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      vi.useRealTimers();
     }
   });
 
