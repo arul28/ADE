@@ -390,6 +390,34 @@ describe("auto-resume arm ordering and state exposure", () => {
     expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
   });
 
+  it("rearm reports paused when the scheduler parks the restored row", async () => {
+    const { coordinator, rows, scheduler, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    const armed = rows.get("auto-resume:chat-1");
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // A session or project pause is applied by scheduler.upsert itself. The
+    // row remains durable, but it cannot fire until the pause is lifted.
+    const upsert = scheduler.upsert;
+    scheduler.upsert = async (input) => {
+      const row = await upsert(input);
+      const paused = { ...row, status: "paused" as const, pausedFlag: true };
+      rows.set(paused.id, paused);
+      return paused;
+    };
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("paused");
+    expect(rows.get("auto-resume:chat-1")).toMatchObject({
+      status: "paused",
+      pausedFlag: true,
+      fireAt,
+    });
+    expect(armed).toBeTruthy();
+  });
+
   it("rearm reports failed when the row cannot be written", async () => {
     const harness = createHarness();
     const { coordinator, scheduler } = harness;

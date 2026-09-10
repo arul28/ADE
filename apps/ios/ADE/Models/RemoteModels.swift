@@ -942,10 +942,13 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? false
-    reason = try c.decodeIfPresent(String.self, forKey: .reason)
-    message = try c.decodeIfPresent(String.self, forKey: .message)
-    turnId = try c.decodeIfPresent(String.self, forKey: .turnId)
+    // A malformed response is still a refusal. The host's command result is
+    // optional across older runtimes, and a parser error must not turn a
+    // failed resume into an apparent transport failure (or success).
+    ok = (try? c.decodeIfPresent(Bool.self, forKey: .ok)) ?? false
+    reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? nil
+    message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
+    turnId = (try? c.decodeIfPresent(String.self, forKey: .turnId)) ?? nil
   }
 
   /// The sentence to show the user, or nil when the prompt actually went out.

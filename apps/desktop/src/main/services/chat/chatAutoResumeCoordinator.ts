@@ -103,10 +103,12 @@ export type ChatAutoResumeArmArgs = {
  *
  * `superseded` is not a failure: something newer than the state being restored
  * (a user message, an opt-out) already governs the chat, so the caller must
- * publish nothing. `failed` is, and the caller has to stop claiming a resume is
- * armed when no row exists to fire it.
+ * publish nothing. `paused` means the row was restored durably but cannot fire
+ * until scheduled work is unpaused, so the caller publishes `no_reset` rather
+ * than an armed countdown. `failed` is a write failure, and the caller has to
+ * stop claiming a resume is armed when no row exists to fire it.
  */
-export type ChatAutoResumeRearmOutcome = "armed" | "superseded" | "failed";
+export type ChatAutoResumeRearmOutcome = "armed" | "paused" | "superseded" | "failed";
 
 export type ChatAutoResumeCoordinator = {
   maybeArmAfterUsageLimit: (args: ChatAutoResumeArmArgs) => void;
@@ -869,6 +871,19 @@ export function createChatAutoResumeCoordinator(
       if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== epochAtDispatch) {
         await cancelPendingRow(sessionId, "cancelled_while_rearming");
         return "superseded";
+      }
+      // The scheduler can accept the restore while this session or the whole
+      // project is paused. The row is durable, but it will not fire, so the
+      // caller must publish the countdown-free state instead of claiming that
+      // an armed resume is waiting.
+      if (schedule.status === "paused" || schedule.pausedFlag) {
+        if (!findPendingRow(sessionId)) return "superseded";
+        logger.info("agent_chat.auto_resume_rearm_paused", {
+          sessionId,
+          scheduleId: schedule.id,
+          fireAt: new Date(fireAt).toISOString(),
+        });
+        return "paused";
       }
       // The row was written and is already gone again: the only thing that
       // removes a pending row is a cancel, so this is a newer writer (a user

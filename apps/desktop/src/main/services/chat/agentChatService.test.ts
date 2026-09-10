@@ -11916,6 +11916,7 @@ describe("createAgentChatService", () => {
           updatedAt: new Date(createdAt).toISOString(),
         });
         expect(summary?.usageLimitParkedUntil).toBe(new Date(fireAt).toISOString());
+        restarted.forceDisposeAll();
         service.forceDisposeAll();
       });
 
@@ -11953,6 +11954,7 @@ describe("createAgentChatService", () => {
         // project it onto, so the chat reports no resume at all.
         expect(summary?.usageLimitResume ?? null).toBeNull();
         expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        restarted.forceDisposeAll();
         service.forceDisposeAll();
       });
 
@@ -12112,6 +12114,7 @@ describe("createAgentChatService", () => {
           turnId: "turn-limit",
         });
         expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        restarted.forceDisposeAll();
       });
 
       it("resumeUsageLimitNow refuses when no usage limit is live", async () => {

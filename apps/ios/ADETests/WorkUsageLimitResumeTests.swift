@@ -1140,5 +1140,17 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       from: Data(#"{"ok":false,"reason":"resume_in_flight","message":"   "}"#.utf8)
     )
     XCTAssertEqual(blank.refusalMessage, "This chat can\u{2019}t be resumed right now.")
+
+    // A present field with the wrong JSON type is just as untrusted as a
+    // missing field: fail closed and keep the mobile action total.
+    let malformed = try JSONDecoder().decode(
+      AgentChatResumeUsageLimitNowResult.self,
+      from: Data(#"{"ok":"false","reason":42,"message":true,"turnId":[]}"#.utf8)
+    )
+    XCTAssertFalse(malformed.ok)
+    XCTAssertNil(malformed.reason)
+    XCTAssertNil(malformed.message)
+    XCTAssertNil(malformed.turnId)
+    XCTAssertEqual(malformed.refusalMessage, "This chat can\u{2019}t be resumed right now.")
   }
 }
