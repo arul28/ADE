@@ -153,7 +153,7 @@ export type WorkToolsStateService = {
    * the next command healed it.
    */
   clearAgentBrowserActivity(
-    args: { laneId: string | null; chatSessionId: string | null; sequence?: number },
+    args: { laneId: string | null; chatSessionId: string | null; sequence: number },
   ): void;
   getLaneState(args: WorkToolsGetLaneStateArgs): Promise<WorkToolsLaneState>;
   readObservationPreview(
@@ -508,8 +508,10 @@ export function createWorkToolsStateService(
       const existing = presenceWindowTimers.get(key) ?? null;
       if (!existing) return;
       // A later command re-armed the window: that agent is browsing now, and
-      // this failed call has no standing to retract it.
-      if (input?.sequence != null && existing.sequence !== input.sequence) return;
+      // this failed call has no standing to retract it. The sequence is
+      // required, so there is no shape of this call that skips the guard; an
+      // unconditional lifecycle clear would have to be its own named method.
+      if (existing.sequence !== input.sequence) return;
       clearTimeout(existing.timer);
       presenceWindowTimers.delete(key);
       // The opening edge already went out, so the retraction has to as well:

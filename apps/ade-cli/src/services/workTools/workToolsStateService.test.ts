@@ -247,6 +247,16 @@ describe("workToolsStateService", () => {
     vi.advanceTimersByTime(20);
     expect(onStateChanged).toHaveBeenCalledTimes(1);
 
+    // A sequence that never opened anything is not a licence to clear either:
+    // the guard is the only shape this call has.
+    service.clearAgentBrowserActivity({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      sequence: second.sequence + 1000,
+    });
+    vi.advanceTimersByTime(20);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
     // The live call's own retraction still lands.
     service.clearAgentBrowserActivity({
       laneId: "lane-1",

@@ -3321,8 +3321,41 @@ function standalonePositionals(args: string[]): string[] {
   }
 }
 
+/**
+ * The index of the `--` that ends this command's own argv, or -1.
+ *
+ * A `--` directly after a value-carrying flag is that flag's value, not the
+ * terminator: `--value --`, `--text --`, `--url --` and `--reason --` are how a
+ * person passes a literal `--`, and `readValue` consumes it. Only a `--` that
+ * no flag is waiting on fences off the tail. This is the same value-carrier
+ * rule {@link firstStandalonePositional} applies to positionals.
+ */
+function firstTerminatorIndex(args: string[]): number {
+  let previousTokenWasValueCarrier = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") {
+      if (previousTokenWasValueCarrier) {
+        previousTokenWasValueCarrier = false;
+        continue;
+      }
+      return index;
+    }
+    if (token.startsWith("-")) {
+      const flagName = token.includes("=")
+        ? token.slice(0, token.indexOf("="))
+        : token;
+      previousTokenWasValueCarrier =
+        !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+      continue;
+    }
+    previousTokenWasValueCarrier = false;
+  }
+  return -1;
+}
+
 function takeArgsAfterTerminator(args: string[]): string[] | null {
-  const index = args.indexOf("--");
+  const index = firstTerminatorIndex(args);
   if (index < 0) return null;
   const rest = args.slice(index + 1);
   args.splice(index);
@@ -11697,7 +11730,12 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   ];
   const firstBrowserPositional = (rest: string[]): string | null =>
     browserPositionals(rest)[0] ?? null;
-  const sub = firstPositional(args) ?? "status";
+  // `browserPositionals` drains EVERY positional in one pass, so a branch that
+  // needs two of them (`browser session end s1`) shifts from one queue instead
+  // of collecting twice and getting an empty second read.
+  // The subcommand goes through the same grammar as its arguments, so
+  // `browser --tab-id t1 close` dispatches on "close" and not on "t1".
+  const sub = firstStandalonePositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
   if (sub === "actions")
     return {
@@ -11759,7 +11797,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   if (sub === "session" || sub === "sessions") {
-    const mode = sub === "sessions" ? "list" : firstPositional(args) ?? "list";
+    // The mode word comes from the pre-terminator argv only — a fenced literal
+    // is a value, not a subcommand — and through the same grammar as the rest,
+    // so `browser session --tab t1 end s1` reads "end" and not "t1".
+    const mode = sub === "sessions" ? "list" : firstStandalonePositional(args) ?? "list";
     if (mode === "start" || mode === "begin" || mode === "claim") {
       return {
         kind: "execute",
@@ -11784,7 +11825,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         steps: [
           actionStep("result", "built_in_browser", "endSession", {
             sessionId: requireValue(
-              explicitSessionId ?? genericSessionId ?? firstPositional(args),
+              explicitSessionId ?? genericSessionId ?? firstBrowserPositional(args),
               "sessionId",
             ),
             ...genericArgs,
@@ -11808,10 +11849,17 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     }
     if (isBrowserSessionActionMode(mode)) {
       const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
-      const sessionId = requireValue(explicitSessionId ?? firstPositional(args), "sessionId");
+      // Exactly one positional: everything after it belongs to the wrapped
+      // command, and the fenced tail is forwarded untouched unless the id had
+      // to come out of it.
+      const tail = [...literalTail];
+      const sessionId = requireValue(
+        explicitSessionId ?? firstStandalonePositional(args) ?? tail.shift() ?? null,
+        "sessionId",
+      );
       return buildBrowserPlanWithLiteralTail(
         [mode, "--browser-session", sessionId, ...args],
-        literalTail,
+        tail,
       );
     }
     throw new CliUsageError(`Unknown browser session command: ${mode}`);
@@ -11949,8 +11997,11 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
-    const url =
-      explicitUrl ?? genericUrl ?? (args.length ? args.join(" ") : undefined);
+    // `browserPositionals`, not `args.join(" ")`: the tail was spliced out of
+    // `args` at the boundary, so `browser new-tab -- https://x.test` would open
+    // a blank tab. Same collector as `open`.
+    const positionalUrl = browserPositionals(args).join(" ");
+    const url = explicitUrl ?? genericUrl ?? (positionalUrl || undefined);
     return {
       kind: "execute",
       label: "browser new tab",
@@ -11981,7 +12032,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       steps: [
         actionStep("result", "built_in_browser", "switchTab", {
           tabId: requireValue(
-            explicitTabId ?? genericTabId ?? firstPositional(args),
+            explicitTabId ?? genericTabId ?? firstBrowserPositional(args),
             "tabId",
           ),
           openPanel: !noPanel,
@@ -12002,7 +12053,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       steps: [
         actionStep("result", "built_in_browser", "closeTab", {
           tabId: requireValue(
-            explicitTabId ?? genericTabId ?? firstPositional(args),
+            explicitTabId ?? genericTabId ?? firstBrowserPositional(args),
             "tabId",
           ),
           ...genericArgs,
@@ -12253,7 +12304,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const reset = readFlag(args, ["--reset", "--off", "--default"]);
     const factor = readNumberOption(args, ["--factor", "--zoom", "--level"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
-    const positional = reset || factor != null ? null : firstPositional(args);
+    const positional = reset || factor != null ? null : firstBrowserPositional(args);
     const resolvedFactor = factor ?? (positional ? Number(positional) : null);
     if (!reset && (resolvedFactor == null || !Number.isFinite(resolvedFactor))) {
       throw new CliUsageError("browser zoom requires --factor <n> or --reset.");
@@ -12299,7 +12350,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const findNext = readFlag(args, ["--next", "--find-next"]);
     const timeoutMs = readNumberOption(args, ["--timeout-ms", "--timeout"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
-    const text = explicitText ?? args.join(" ");
+    // `browserPositionals`, not `args.join(" ")`: the tail was spliced out at
+    // the boundary, so `browser find -- hello` had no search text left.
+    const text = explicitText ?? browserPositionals(args).join(" ");
     if (!text.trim()) throw new CliUsageError("browser find requires search text.");
     return {
       kind: "execute",
@@ -12326,7 +12379,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const open = readFlag(args, ["--open", "--on", "--show"]);
     const mode = readValue(args, ["--mode", "--dock", "--position"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
-    const positional = (firstPositional(args) ?? "").toLowerCase();
+    const positional = (firstBrowserPositional(args) ?? "").toLowerCase();
     const explicitClose = close || positional === "close" || positional === "off";
     const explicitOpen = open || positional === "open" || positional === "on";
     if (explicitClose && explicitOpen) {
@@ -12359,7 +12412,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const limit = readNumberOption(args, ["--limit", "--entries"]);
     const filter = readValue(args, ["--filter", "--match", "--grep"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
-    const positional = (firstPositional(args) ?? "").toLowerCase();
+    const positional = (firstBrowserPositional(args) ?? "").toLowerCase();
     const turnOn = enable || positional === "on" || positional === "start" || positional === "enable";
     const turnOff = disable || positional === "off" || positional === "stop" || positional === "disable";
     if (turnOn || turnOff) {
@@ -12526,7 +12579,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       throw new CliUsageError("browser upload requires --selector, --text-match, --test-id, --element, or --handle.");
     }
     const actionArgs = readBrowserAgentActionArgs(args);
-    const paths = explicitPaths.length ? explicitPaths : args.filter((entry) => !entry.startsWith("--"));
+    // `browserPositionals`, not a raw filter: the filter both kept flag values
+    // and lost the tail, so `browser upload --selector x -- foo.txt` failed.
+    const paths = explicitPaths.length ? explicitPaths : browserPositionals(args);
     if (!paths.length) throw new CliUsageError("browser upload requires at least one file path.");
     return {
       kind: "execute",
@@ -12546,7 +12601,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   if (isBrowserSubcommand(sub, "record")) {
-    const mode = (firstPositional(args) ?? "status").toLowerCase();
+    const mode = (firstBrowserPositional(args) ?? "status").toLowerCase();
     if (mode === "start" || mode === "begin") {
       const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
       const caption = readValue(args, ["--caption", "--description", "--desc"]);
@@ -14285,6 +14340,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--file",
   "--for",
   "--fps",
+  "--frame-rate",
   "--from",
   "--from-file",
   "--group",

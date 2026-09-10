@@ -12407,6 +12407,143 @@ describe("ADE CLI", () => {
     ).toMatchObject({ selector: "x", text: "--literal" });
   }));
 
+  it("routes every browser positional through the shared grammar, fenced or not", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // The `--` tail is spliced out of `args` once, at the top of the parser, so
+    // any branch still reading `args.join(" ")` / `args.filter(...)` / a raw
+    // `firstPositional` silently lost it (`browser new-tab -- https://x.test`
+    // opened a blank tab). Every branch below reads the one collector.
+    const planOf = (argv: string[]): { label: string; args: Record<string, unknown>; action: string } => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { action: string; args: Record<string, unknown> };
+      };
+      return { label: plan.label, action: params.arguments.action, args: params.arguments.args };
+    };
+    const bothWays = (
+      bare: string[],
+      fenced: string[],
+      action: string,
+      expected: Record<string, unknown>,
+    ): void => {
+      for (const argv of [bare, fenced]) {
+        const plan = planOf(argv);
+        expect(plan.action, argv.join(" ")).toBe(action);
+        expect(plan.args, argv.join(" ")).toMatchObject(expected);
+      }
+    };
+
+    bothWays(
+      ["browser", "new-tab", "https://x.example.test"],
+      ["browser", "new-tab", "--", "https://x.example.test"],
+      "createTab",
+      { url: "https://x.example.test" },
+    );
+    bothWays(
+      ["browser", "find", "hello"],
+      ["browser", "find", "--", "hello"],
+      "findInPage",
+      { text: "hello" },
+    );
+    bothWays(
+      ["browser", "upload", "--selector", "x", "foo.txt"],
+      ["browser", "upload", "--selector", "x", "--", "foo.txt"],
+      "uploadFile",
+      { selector: "x", paths: ["foo.txt"] },
+    );
+    bothWays(
+      ["browser", "session", "end", "s1"],
+      ["browser", "session", "end", "--", "s1"],
+      "endSession",
+      { sessionId: "s1" },
+    );
+    bothWays(
+      ["browser", "switch", "t1"],
+      ["browser", "switch", "--", "t1"],
+      "switchTab",
+      { tabId: "t1" },
+    );
+    bothWays(
+      ["browser", "close", "t1"],
+      ["browser", "close", "--", "t1"],
+      "closeTab",
+      { tabId: "t1" },
+    );
+    bothWays(
+      ["browser", "zoom", "1.5"],
+      ["browser", "zoom", "--", "1.5"],
+      "setZoom",
+      { factor: 1.5 },
+    );
+    bothWays(
+      ["browser", "devtools", "close"],
+      ["browser", "devtools", "--", "close"],
+      "setDevTools",
+      { open: false },
+    );
+    bothWays(
+      ["browser", "network", "on"],
+      ["browser", "network", "--", "on"],
+      "setNetworkLogging",
+      { enabled: true },
+    );
+    bothWays(
+      ["browser", "record", "start"],
+      ["browser", "record", "--", "start"],
+      "startRecording",
+      {},
+    );
+
+    // The same grammar means a flag's own value is never mistaken for the mode
+    // word or the subcommand: these all used to read the value instead.
+    expect(planOf(["browser", "record", "--fps", "30", "start"]).args).toMatchObject({ fps: 30 });
+    expect(planOf(["browser", "record", "--frame-rate", "30", "start"]).args).toMatchObject({
+      fps: 30,
+    });
+    expect(planOf(["browser", "devtools", "--mode", "bottom", "close"]).args).toMatchObject({
+      open: false,
+      mode: "bottom",
+    });
+    expect(planOf(["browser", "--tab", "t1", "close"]).action).toBe("closeTab");
+  }));
+
+  it("lets a value flag carry a literal `--`", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // A `--` directly after a value-carrying flag is that flag's value, not the
+    // terminator; splitting the tail on it made `--value --` throw
+    // "--value requires a value."
+    const argsOf = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { args: Record<string, unknown> };
+      };
+      return params.arguments.args;
+    };
+
+    expect(argsOf(["browser", "select-option", "--selector", "x", "--value", "--"]))
+      .toMatchObject({ selector: "x", value: "--" });
+    expect(argsOf(["browser", "fill", "--selector", "x", "--value", "--"]))
+      .toMatchObject({ selector: "x", text: "--" });
+    expect(argsOf(["browser", "open", "--url", "--"])).toMatchObject({ url: "--" });
+    // `find` carries it on `--query`; `--text` stays out of the value-carrier
+    // set because it is also the global `ade --text` output switch.
+    expect(argsOf(["browser", "find", "--query", "--"])).toMatchObject({ text: "--" });
+    expect(argsOf(["browser", "handoff", "--reason", "--"])).toMatchObject({ reason: "--" });
+    // A `--` no flag is waiting on still fences the tail off.
+    expect(argsOf(["browser", "open", "--new-tab", "--", "--url"])).toMatchObject({
+      url: "--url",
+      newTab: true,
+    });
+  }));
+
   it("browser open --device applies emulation after navigating", () => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
