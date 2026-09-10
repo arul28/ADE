@@ -479,6 +479,18 @@ func workSessionRowPresentation(
   )
 }
 
+/// The phases whose status slot the usage-limit overlay may take.
+///
+/// One list, mirroring desktop's `phase === "ready" || phase === "idle" ||
+/// phase === "failed"` gate, so the two clients cannot drift on which rows a
+/// live limit is allowed to quiet.
+private func workUsageLimitStatusMayOwnSlot(_ phase: CanonicalSessionPhase) -> Bool {
+  switch phase {
+  case .ready, .idle, .failed: return true
+  case .starting, .running, .needsYou, .stale, .stopped, .ended, .settled: return false
+  }
+}
+
 /// The status slot for one Work row, mirroring the desktop
 /// `sessionStatusPresentation()` precedence exactly:
 ///
@@ -543,10 +555,23 @@ private func workSessionStatusSlot(
     if phase == .settled { return (nil, false) }
   }
 
-  // Above the phase table on purpose, and with no phase gate: the turn that hit
-  // the limit usually settles as `failed`, and "Failed" is exactly the wrong
-  // word for a chat that is going to pick itself back up at 7:31 PM.
-  if let usageLimitStatus {
+  // Above the phase table on purpose: the turn that hit the limit usually
+  // settles as `failed`, and "Failed" is exactly the wrong word for a chat that
+  // is going to pick itself back up at 7:31 PM.
+  //
+  // Gated on exactly the three phases desktop gates its own branch on
+  // (`sessionStatusPresentation.ts`: `ready`, `idle`, `failed`) — the resting
+  // states where the limit IS the whole story:
+  //   • `needsYou` outranks it. Desktop returns `PHASE_PRESENTATION.needs_you`
+  //     before it ever reaches the branch, and a chat can be parked on a limit
+  //     AND holding a question; burying the question would also cost the row
+  //     its actionable badge.
+  //   • `running` outranks it too: a live turn is happening NOW, and a row that
+  //     is visibly working must not claim it is waiting on a reset.
+  //   • `starting` / `stale` / `stopped` / `ended` keep their own word for the
+  //     same reason — the resume row is stale news next to what the row is
+  //     actually doing.
+  if workUsageLimitStatusMayOwnSlot(phase), let usageLimitStatus {
     return (WorkSessionStatusPresentation(
       label: usageLimitStatus.label,
       tone: usageLimitStatus.tone,

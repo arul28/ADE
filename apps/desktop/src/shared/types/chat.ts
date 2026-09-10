@@ -740,6 +740,14 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
   unprocessedMessageResolution?: AgentChatUnprocessedMessageResolutionMetadata;
+  /**
+   * Marks the continue prompt the host sends for Resume now. That path cancels
+   * the durable row itself, and AWAITS the cancellation, before dispatching —
+   * so the dispatch commit points must not run their own auto-resume sweep for
+   * it. A second cancel there moves the epoch the resume captured and turns a
+   * failed send into an unrecoverable one.
+   */
+  usageLimitResume?: "manual";
 };
 
 export type AgentChatScheduledWorkKind =

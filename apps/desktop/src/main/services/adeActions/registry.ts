@@ -67,6 +67,7 @@ import type {
   PromptStashDeleteArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
+import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
 import {
@@ -1246,6 +1247,27 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
   },
 };
 
+
+/**
+ * Caller-supplied chat metadata, minus the keys only the host may set.
+ *
+ * `scheduledWake` and `usageLimitResume: "manual"` each exempt their message
+ * from the auto-resume cancel sweep. That exemption is the host telling itself
+ * "I already dealt with the row"; an action caller saying it is just a message
+ * that leaves the chat's resume armed through real activity, to fire
+ * unattended later. The host's own paths build their metadata internally and
+ * never come through here.
+ */
+function withoutHostOnlyChatMetadata(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata = record.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return record;
+  const { metadata: _hostOnlyStripped, ...rest } = record;
+  const stripped = stripHostOnlyChatMetadata(metadata as Record<string, unknown>);
+  return stripped ? { ...rest, metadata: stripped } : rest;
+}
+
 export function getAdeActionInputContract(
   domain: AdeActionDomain,
   action: string,
@@ -1774,7 +1796,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = requireNonEmptyString(record.text, "text");
-      await agentChatService.sendMessage({ ...record, sessionId, text } as never);
+      await agentChatService.sendMessage({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
       return {
         ok: true,
         accepted: true,
@@ -1789,7 +1815,27 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (typeof agentChatService.messageSession !== "function") {
         throw new Error("Chat messageSession is not available in this runtime.");
       }
-      return agentChatService.messageSession({ ...record, sessionId, text } as never);
+      return agentChatService.messageSession({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
+    },
+    steer: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.steer");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const text = requireNonEmptyString(record.text, "text");
+      if (typeof agentChatService.steer !== "function") {
+        throw new Error("Chat steer is not available in this runtime.");
+      }
+      // Steer reaches the same dispatch commit point a send does — the
+      // accepted branch of the steer queue runs the auto-resume sweep — so the
+      // host-only markers have to be stripped here for the same reason.
+      return agentChatService.steer({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
     },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");

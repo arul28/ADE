@@ -206,3 +206,37 @@ export function sessionAutoContinueAtUsageLimit(
 ): boolean {
   return session?.autoContinueAtUsageLimit !== false;
 }
+
+/**
+ * Metadata keys only the HOST may set on a chat message.
+ *
+ * Both change what the dispatch commit points do rather than describing the
+ * message: `scheduledWake` marks a turn the durable scheduler fired, and
+ * `usageLimitResume: "manual"` marks the continue prompt Resume now sends. Each
+ * one exempts its message from the auto-resume cancel sweep, which is correct
+ * exactly once — for the host path that owns the row and has already dealt with
+ * it — and wrong for anything that merely inherits or supplies the key: a
+ * replayed turn, or a caller passing metadata through an action or IPC. The
+ * cost of getting it wrong is an armed row that survives real user activity and
+ * later fires an unattended prompt into the chat.
+ */
+export const HOST_ONLY_CHAT_METADATA_KEYS = ["scheduledWake", "usageLimitResume"] as const;
+
+/**
+ * Copies `metadata` without the host-only keys. Returns `undefined` when there
+ * is nothing left to send, so call sites can spread the result without
+ * inventing an empty metadata object for a message that had none.
+ */
+export function stripHostOnlyChatMetadata<T extends Record<string, unknown>>(
+  metadata: T | null | undefined,
+): Partial<T> | undefined {
+  if (!metadata) return undefined;
+  const stripped: Record<string, unknown> = {};
+  let kept = 0;
+  for (const [key, value] of Object.entries(metadata)) {
+    if ((HOST_ONLY_CHAT_METADATA_KEYS as readonly string[]).includes(key)) continue;
+    stripped[key] = value;
+    kept += 1;
+  }
+  return kept > 0 ? stripped as Partial<T> : undefined;
+}

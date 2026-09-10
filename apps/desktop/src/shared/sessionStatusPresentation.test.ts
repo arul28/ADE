@@ -141,6 +141,22 @@ describe("sessionStatusPresentation usage-limit resume", () => {
       .toMatchObject({ label: "Failed", tone: "red" });
   });
 
+  it("keeps the paused row prominent and lets the countdown recede", () => {
+    const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+    // Amber means "your move", and SessionCard fades every non-prominent row to
+    // 70%. A streak that stopped retrying is exactly the row that must not fade
+    // — same claim `needs_you` and `woke` make, same prominence.
+    expect(sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("paused", "2026-08-17T21:30:00.000Z"),
+      nowMs,
+    })).toMatchObject({ tone: "amber", prominent: true });
+    // An armed countdown is not asking for anything, so it stays quiet.
+    expect(sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("armed", "2026-08-17T12:47:00.000Z"),
+      nowMs,
+    })).toMatchObject({ tone: "neutral", prominent: false });
+  });
+
   it("falls back to the ordinary phase label when no limit is live", () => {
     expect(sessionStatusPresentation("idle", {}, {
       usageLimitResume: null,

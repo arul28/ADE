@@ -226,6 +226,64 @@ describe("ChatUsageLimitResumePill", () => {
       .toBe("5-hour limit resets at 7:31 PM ET");
   });
 
+  it("orphans an action the host state outran, instead of letting it publish late", async () => {
+    // The pill's state is replaced under it while a press is in flight — the
+    // host armed a resume, or the user opted out from another surface. The old
+    // promise must land on the floor: no refusal sentence about a state nobody
+    // is looking at, and no `busy` clear stealing the newer press.
+    const bridge = installBridge();
+    let settle: ((value: { ok: boolean; reason: string; message: string }) => void) | null = null;
+    bridge.resumeUsageLimitNow!.mockReturnValue(new Promise((resolveWith) => { settle = resolveWith; }));
+    const view = render(
+      <ChatUsageLimitResumePill sessionId="session-1" resume={resume()} />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByTestId("usage-limit-resume-primary"));
+    expect(screen.getByTestId("usage-limit-resume-primary").hasAttribute("disabled")).toBe(true);
+
+    // The host publishes a new state while the send is still in flight.
+    view.rerender(<ChatUsageLimitResumePill sessionId="session-1" resume={resume({ state: "resuming" })} />);
+    expect(screen.getByTestId("usage-limit-resume-primary").hasAttribute("disabled")).toBe(false);
+
+    await act(async () => {
+      settle!({ ok: false, reason: "resume_in_flight", message: "This chat is already resuming." });
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("usage-limit-resume-popover")).toBeTruthy();
+
+    // And the freed pill still takes a new press.
+    fireEvent.click(screen.getByTestId("usage-limit-resume-primary"));
+    expect(bridge.resumeUsageLimitNow).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not carry an open popover, an error, or a stale send across a chat switch", async () => {
+    // The pane renders ONE pill instance and swaps its `sessionId`, so nothing
+    // that belongs to the outgoing chat may survive the swap.
+    const bridge = installBridge();
+    let settle: ((value: { ok: boolean; reason: string; message: string }) => void) | null = null;
+    bridge.resumeUsageLimitNow!.mockReturnValue(new Promise((resolveWith) => { settle = resolveWith; }));
+    const view = render(
+      <ChatUsageLimitResumePill sessionId="session-1" resume={resume()} />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByTestId("usage-limit-resume-primary"));
+
+    view.rerender(<ChatUsageLimitResumePill sessionId="session-2" resume={resume()} />);
+    expect(screen.queryByTestId("usage-limit-resume-popover")).toBeNull();
+
+    await act(async () => {
+      settle!({ ok: false, reason: "no_live_usage_limit", message: "Nothing to resume." });
+      await Promise.resolve();
+    });
+    // Session 1's refusal must not surface under session 2.
+    openPopover();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("usage-limit-resume-primary"));
+    expect(bridge.resumeUsageLimitNow).toHaveBeenLastCalledWith({ sessionId: "session-2" }, null);
+  });
+
   it("closes on Escape", () => {
     installBridge();
     render(<ChatUsageLimitResumePill sessionId="session-1" resume={resume()} />);

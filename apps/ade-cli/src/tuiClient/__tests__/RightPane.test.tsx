@@ -658,7 +658,12 @@ describe("RightPane chat info", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("⏳ resume Resumes in");
+    // The pill label is already a whole sentence ("Resumes in 3 min · usage
+    // limit"), so the row carries the glyph and the label and nothing else — a
+    // static "resume" tag in front of it would read as "resume Won't
+    // auto-resume" for the opted-out state.
+    expect(frame).toContain("⏳ Resumes in");
+    expect(frame).not.toContain("resume Resumes in");
     // The hint sits at the END of the head line, after the rule, so the pin has
     // to be on that line: no scheduled work means no count, not "0" counting
     // something the user never asked about.

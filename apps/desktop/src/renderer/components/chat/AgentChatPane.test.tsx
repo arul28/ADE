@@ -4169,6 +4169,38 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("shows the pill on the first paint, before the session list has arrived", async () => {
+    // The mount flash, in the TABBED pane: the pane knows the chat is parked on
+    // a limit from `initialSessionSummary` long before `listSessions` answers
+    // (the locked single-session mode seeds its list from that summary, the
+    // tabbed one does not). Deriving the resume state from the SELECTED session
+    // — which only ever comes out of that list — left the pill missing, and the
+    // failed turn wearing a red FAILED line instead of its quiet footer, for
+    // the whole round trip. `renderedSession` carries the same fallback the
+    // transcript is already rendered from.
+    const session = buildSession("session-1", {
+      status: "idle",
+      awaitingInput: false,
+      usageLimitResume: {
+        state: "armed",
+        provider: "codex",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
+        scheduleId: "auto-resume:session-1",
+        attempts: 1,
+        providerDetail: "Resets at 4:30 PM ET",
+        turnId: "turn-limit",
+        updatedAt: "2026-07-10T18:19:00.000Z",
+      },
+    });
+    installAdeMocks({ sessions: [] });
+
+    renderTabbedPane(session);
+
+    const pill = await screen.findByTestId("usage-limit-resume-pill");
+    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
+  });
+
   it("renders no pill at all when the host reports no live usage limit", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     installAdeMocks({ sessions: [session] });
@@ -4281,6 +4313,115 @@ describe("AgentChatPane submit recovery", () => {
         metadata: { hostContinuation: { reason: "provider_schedule_cleanup" } },
       }), null);
     });
+  });
+
+  it("drops the manual-resume marker when the user retries a Resume now turn", async () => {
+    // `usageLimitResume: "manual"` is the OTHER host-only exemption: the Resume
+    // now path cancels the durable row itself and awaits it, so its own send
+    // must skip the sweep. A user Retry of that same turn is not that path —
+    // replaying the marker leaves the armed row alive to fire an unattended
+    // prompt later. Neither host-only key may survive a replay.
+    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:00.000Z",
+            sequence: 1,
+            event: {
+              type: "user_message" as const,
+              text: "The provider usage limit has reset. Continue the interrupted task.",
+              turnId: "turn-manual-resume",
+              metadata: {
+                usageLimitResume: "manual" as const,
+                hostContinuation: { reason: "provider_schedule_cleanup" as const },
+              },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.000Z",
+            sequence: 2,
+            event: {
+              type: "error" as const,
+              message: "Usage limit exceeded again.",
+              turnId: "turn-manual-resume",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
+    expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
+    expect(sent.metadata).not.toHaveProperty("usageLimitResume");
+    expect(sent.metadata).not.toHaveProperty("scheduledWake");
+  });
+
+  it("sends no metadata at all when the host-only marker was all there was", async () => {
+    // The replay must not invent an empty metadata object for a message whose
+    // only metadata was the exemption marker.
+    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:00.000Z",
+            sequence: 1,
+            event: {
+              type: "user_message" as const,
+              text: "Continue the interrupted task.",
+              turnId: "turn-manual-resume",
+              metadata: { usageLimitResume: "manual" as const },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.000Z",
+            sequence: 2,
+            event: {
+              type: "error" as const,
+              message: "Usage limit exceeded again.",
+              turnId: "turn-manual-resume",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0]![0]).not.toHaveProperty("metadata");
   });
 
   it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {

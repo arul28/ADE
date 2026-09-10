@@ -394,7 +394,11 @@ export function sessionStatusDot(
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
     // Same forward as the full slot: without it a chat parked on a published
-    // usage-limit reset paints the red dot that means "it broke".
+    // usage-limit reset paints the red dot that means "it broke". `nowMs`
+    // travels with it — the resume state is resolved against a clock, so a dot
+    // that fell back to `Date.now()` could call a limit live that the text slot
+    // beside it has already read as expired.
+    nowMs: session.nowMs,
     usageLimitResume: session.usageLimitResume ?? null,
   });
   if (presentation) {

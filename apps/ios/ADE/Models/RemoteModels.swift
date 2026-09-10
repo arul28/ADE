@@ -914,10 +914,12 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
 /// chat stays parked — so the sentence is decoded here and shown as-is, exactly
 /// like the desktop popover does.
 ///
-/// Decoding is total. An older or unexpected payload that carries no `ok` key
-/// is read as success rather than throwing: the caller has already confirmed
-/// the host advertises the action, and a decode failure would replace a real
-/// outcome with a parser message.
+/// Decoding is total: an older or unexpected payload never throws, because a
+/// decode failure would replace a real outcome with a parser message. It is also
+/// fail-closed. A payload with no `ok` key is read as a refusal, not a success —
+/// an empty object is no evidence the host sent the continue prompt, and reading
+/// it as success would clear the resume error and quietly retire the pill while
+/// the chat is still parked. Every conforming host sends `ok` explicitly.
 struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
   var ok: Bool
   /// `no_live_usage_limit` or `resume_in_flight`. Nil on success.
@@ -940,7 +942,7 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+    ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? false
     reason = try c.decodeIfPresent(String.self, forKey: .reason)
     message = try c.decodeIfPresent(String.self, forKey: .message)
     turnId = try c.decodeIfPresent(String.self, forKey: .turnId)
@@ -1032,6 +1034,16 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// Host-computed usage-limit resume state — the only source the resume pill,
   /// sheet, and session-list badge render from. Older hosts omit it.
   var usageLimitResume: AgentChatUsageLimitResume? = nil
+  /// True once a host that speaks `usageLimitResume` has explicitly cleared the
+  /// row (`usageLimitResume: null` on a `session_meta_updated` event).
+  ///
+  /// The clear arrives as an event, not a refetch, so the deprecated
+  /// `usageLimitParkedUntil` mirror on this summary is still holding the old —
+  /// and now false — park instant. Without this marker the resume model falls
+  /// straight back onto that stale mirror and the pill reappears the moment the
+  /// limit lifts. Nil means "no structured clear seen", which is exactly the
+  /// state an older host leaves the summary in, so its fallback still works.
+  var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
   var threadId: String?
@@ -1101,6 +1113,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
       && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
       && lhs.usageLimitResume == rhs.usageLimitResume
+      && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
@@ -1293,8 +1306,16 @@ extension AgentChatSessionSummary {
     // rather than skipped.
     if let v = update.usageLimitResume {
       usageLimitResume = v
+      // A live row is proof enough that the host speaks the structured field,
+      // and it outranks the mirror on its own — drop the marker so a later
+      // legitimate old-host fallback is never suppressed by stale state.
+      usageLimitResumeWasCleared = false
     } else if update.usageLimitResumeWasCleared {
       usageLimitResume = nil
+      // Record the clear: `usageLimitParkedUntil` on this summary is a stale
+      // mirror the event did not touch, and the render model must not fall back
+      // onto it now that the host has said the limit lifted.
+      usageLimitResumeWasCleared = true
     }
   }
 
@@ -1333,6 +1354,15 @@ extension AgentChatSessionSummary {
     // Mirrored unconditionally, nil included: the cache is authoritative for the
     // resume lifecycle, and a lifted limit must clear the live view's pill.
     usageLimitResume = other.usageLimitResume
+    if other.usageLimitResume != nil {
+      usageLimitResumeWasCleared = false
+    } else if let cleared = other.usageLimitResumeWasCleared {
+      // The clear marker travels with the cleared row. Without it the merged
+      // live summary looks like an old-host summary again and the deprecated
+      // `usageLimitParkedUntil` mirror resurrects the pill the cache just
+      // retired. A cache with no marker leaves the live value alone.
+      usageLimitResumeWasCleared = cleared
+    }
   }
 }
 

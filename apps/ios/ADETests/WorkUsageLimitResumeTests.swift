@@ -194,6 +194,61 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(cached.usageLimitResume?.state, .armed)
   }
 
+  /// The clear arrives as an event, and `usageLimitParkedUntil` is a mirror that
+  /// event never touches — so without a marker the summary reads exactly like an
+  /// old host's and the fallback resurrects the pill the host just retired.
+  func testStructuredClearSuppressesTheDeprecatedParkedFallback() throws {
+    var cached = summary(
+      resume: AgentChatUsageLimitResume(state: .armed, provider: "claude"),
+      // Still in the future, and now a lie.
+      parkedUntil: "2026-07-08T09:00:00.000Z"
+    )
+
+    let cleared = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: Data(#"{"usageLimitResume":null}"#.utf8)
+    )
+    cached.applyModeUpdate(cleared)
+    XCTAssertEqual(cached.usageLimitResumeWasCleared, true)
+    XCTAssertEqual(
+      cached.usageLimitParkedUntil,
+      "2026-07-08T09:00:00.000Z",
+      "the event does not touch the mirror — that is exactly the problem"
+    )
+    XCTAssertNil(
+      workUsageLimitResumeModel(for: cached, now: now),
+      "a host that speaks the structured row has said the limit lifted"
+    )
+
+    // The clear travels into an open view's live summary through the cache fold.
+    var live = summary(
+      resume: AgentChatUsageLimitResume(state: .armed, provider: "claude"),
+      parkedUntil: "2026-07-08T09:00:00.000Z"
+    )
+    live.mergeModeFields(from: cached)
+    XCTAssertNil(live.usageLimitResume)
+    XCTAssertEqual(live.usageLimitResumeWasCleared, true)
+    XCTAssertNil(workUsageLimitResumeModel(for: live, now: now))
+
+    // A later live row resets the marker, so a real limit is never suppressed.
+    let rearmed = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: Data(#"{"usageLimitResume":{"state":"armed","provider":"claude","updatedAt":"x"}}"#.utf8)
+    )
+    cached.applyModeUpdate(rearmed)
+    XCTAssertEqual(cached.usageLimitResumeWasCleared, false)
+    XCTAssertEqual(workUsageLimitResumeModel(for: cached, now: now)?.state, .armed)
+
+    live.mergeModeFields(from: cached)
+    XCTAssertEqual(live.usageLimitResumeWasCleared, false)
+    XCTAssertEqual(workUsageLimitResumeModel(for: live, now: now)?.state, .armed)
+
+    // An old host never sets the marker, so its fallback still works.
+    let old = summary(resume: nil, parkedUntil: "2026-07-08T00:47:00.000Z")
+    XCTAssertNil(old.usageLimitResumeWasCleared)
+    XCTAssertEqual(workUsageLimitResumeModel(for: old, now: now)?.isLegacyFallback, true)
+  }
+
   // MARK: - Render model
 
   func testRenderModelPrefersHostRowAndFallsBackToLegacyParkedField() {
@@ -322,6 +377,28 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(workUsageLimitTickInterval(fireAt: now.addingTimeInterval(600), now: now), 60)
     XCTAssertEqual(workUsageLimitTickInterval(fireAt: now.addingTimeInterval(299), now: now), 1)
     XCTAssertEqual(workUsageLimitTickInterval(fireAt: nil, now: now), 60)
+  }
+
+  /// Past the target the interval has already dropped to one second and the
+  /// label is frozen at "Resuming…", so a stale armed model left behind by a
+  /// disconnected host would tick forever with nothing to redraw.
+  func testCountdownStopsBeingLiveOnceItsTargetPasses() {
+    XCTAssertTrue(workUsageLimitCountdownIsLive(target: now.addingTimeInterval(1), now: now))
+    XCTAssertFalse(workUsageLimitCountdownIsLive(target: now, now: now))
+    XCTAssertFalse(workUsageLimitCountdownIsLive(target: now.addingTimeInterval(-1), now: now))
+    XCTAssertFalse(workUsageLimitCountdownIsLive(target: nil, now: now), "no target, no timer")
+
+    // `resuming` and `paused` have nothing to count to at all.
+    XCTAssertFalse(
+      workUsageLimitCountdownIsLive(
+        target: WorkUsageLimitResumeModel(state: .resuming, provider: "claude").countdownTarget,
+        now: now
+      )
+    )
+    XCTAssertFalse(
+      workUsageLimitCountdownIsLive(target: armed(minutes: -2).countdownTarget, now: now),
+      "an armed row already past its fire time stops the ticker"
+    )
   }
 
   // MARK: - Sheet copy
@@ -799,6 +876,204 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     )
   }
 
+  /// `WorkChatTimelineSnapshot.==` compares nothing but the signature, so the
+  /// anchor has to be IN the signature: a rebuild driven purely by the summary's
+  /// resume row would otherwise compare equal to the stale snapshot and the
+  /// footer would keep saying "Failed" for a chat that is only paused.
+  func testSnapshotSignatureFollowsTheUsageLimitTurnAnchor() {
+    let transcript = [doneEnvelope(turnId: "turn-1", apiErrorStatus: nil, sequence: 1)]
+    func snapshot(_ usageLimitTurnId: String?) -> WorkChatTimelineSnapshot {
+      buildWorkChatTimelineSnapshot(
+        transcript: transcript,
+        fallbackEntries: [],
+        artifacts: [],
+        localEchoMessages: [],
+        usageLimitTurnId: usageLimitTurnId
+      )
+    }
+
+    let unanchored = snapshot(nil)
+    let anchored = snapshot("turn-1")
+    XCTAssertNotEqual(anchored.signature, unanchored.signature)
+    XCTAssertNotEqual(anchored, unanchored, "the rebuilt snapshot must not look stale")
+    XCTAssertNotEqual(anchored, snapshot("turn-other"))
+    XCTAssertEqual(snapshot("turn-1"), anchored, "and the same inputs still settle")
+  }
+
+  // MARK: - Raw transcript parity
+
+  /// The sync decoder accepts both spellings; the raw parser has to as well, or
+  /// a snake-case transcript loses its 429 and the turn reads as a failure.
+  func testRawTranscriptAcceptsTheSnakeCaseApiErrorStatus() {
+    func parsed(_ key: String) -> [WorkChatEnvelope] {
+      parseWorkChatTranscript("""
+      {
+        "sessionId": "chat-1",
+        "timestamp": "2026-07-08T00:00:00.000Z",
+        "sequence": 1,
+        "event": { "type": "status", "turnStatus": "started", "turnId": "turn-1" }
+      }
+      {
+        "sessionId": "chat-1",
+        "timestamp": "2026-07-08T00:01:30.000Z",
+        "sequence": 2,
+        "event": {
+          "type": "done",
+          "turnId": "turn-1",
+          "status": "failed",
+          "terminalReason": "api_error",
+          "\(key)": 429
+        }
+      }
+      """)
+    }
+
+    for key in ["apiErrorStatus", "api_error_status"] {
+      let transcript = parsed(key)
+      XCTAssertEqual(transcript.last?.apiErrorStatus, 429, "key \(key)")
+      XCTAssertTrue(workTurnEndMarkers(from: transcript)[0].usageLimitPaused, "key \(key)")
+    }
+
+    // An explicit `null` on the camel-case key is PRESENT in the dictionary as
+    // an `NSNull`, so coalescing the raw values would swallow the real status
+    // sitting beside it. Each key is coerced on its own.
+    let bothKeys = parseWorkChatTranscript("""
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:01:30.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "done",
+        "turnId": "turn-1",
+        "status": "failed",
+        "apiErrorStatus": null,
+        "api_error_status": 429
+      }
+    }
+    """)
+    XCTAssertEqual(bothKeys.last?.apiErrorStatus, 429, "a null camel key must not shadow the snake one")
+  }
+
+  /// The raw parser flags `subagent.completed` as the legacy twin, so it also has
+  /// to DECODE it as a result — left `.unknown` the flag was dead weight and the
+  /// collapse never ran, which is the doubled-result wall all over again.
+  func testRawTranscriptDecodesAndCollapsesTheLegacySubagentTwin() throws {
+    let raw = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:01.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "subagent_result",
+        "taskId": "task-1",
+        "agentId": "agent-1",
+        "status": "failed",
+        "summary": "Canonical result",
+        "turnId": "turn-1"
+      }
+    }
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:02.000Z",
+      "sequence": 2,
+      "event": {
+        "type": "subagent.completed",
+        "agentId": "agent-1",
+        "turnId": "turn-1"
+      }
+    }
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+    let twin = try XCTUnwrap(transcript.last)
+    XCTAssertTrue(twin.isLegacySubagentCompletedFrame)
+    guard case .subagentResult(let taskId, let agentId, _, _, let status, let summary, _, _, _, _) = twin.event else {
+      return XCTFail("the legacy twin has to decode as the result it is")
+    }
+    // Same normalization the sync decoder applies: the agent id doubles as the
+    // task id, and an absent status/summary defaults to completed.
+    XCTAssertEqual(taskId, "agent-1")
+    XCTAssertEqual(agentId, "agent-1")
+    XCTAssertEqual(status, "completed")
+    XCTAssertEqual(summary, "Completed")
+
+    let collapsed = collapseLegacyWorkSubagentResultEnvelopes(transcript)
+    XCTAssertEqual(collapsed.count, 1, "the canonical frame already claims this agent")
+    XCTAssertEqual(collapsed.first?.sequence, 1)
+    XCTAssertEqual(
+      buildWorkSubagentSnapshots(from: transcript).count,
+      1,
+      "one finished agent is one row"
+    )
+
+    // A legacy frame with no canonical twin is still kept verbatim.
+    let orphan = parseWorkChatTranscript("""
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:03.000Z",
+      "sequence": 3,
+      "event": { "type": "subagent.completed", "agentId": "agent-2", "summary": "Done" }
+    }
+    """)
+    XCTAssertEqual(collapseLegacyWorkSubagentResultEnvelopes(orphan).count, 1)
+  }
+
+  /// The typed decoder REQUIRES `agentId` on a legacy twin and drops the frame
+  /// without one. The raw path has to agree: an identity-less twin has nothing
+  /// to collapse on, so keying a row by the empty string would put a phantom
+  /// subagent on the timeline that the synced transcript never shows.
+  func testRawLegacySubagentTwinWithoutAnAgentIdIsNotARow() throws {
+    let raw = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:01.000Z",
+      "sequence": 1,
+      "event": { "type": "subagent.completed", "summary": "No identity at all" }
+    }
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    let frame = try XCTUnwrap(transcript.first)
+    guard case .unknown(let type) = frame.event else {
+      return XCTFail("an identity-less legacy twin is not a result")
+    }
+    XCTAssertEqual(type, "subagent.completed")
+    XCTAssertTrue(
+      buildWorkSubagentSnapshots(from: transcript).isEmpty,
+      "no identity, no subagent row"
+    )
+    // The typed decoder agrees — it throws the same frame away entirely.
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(raw.utf8))
+    )
+
+    // The twin's own fields still ride through when the id IS there, including
+    // `parentAgentId` staying OUT of `parentToolUseId` (the typed decoder pins
+    // that to nil).
+    let parented = parseWorkChatTranscript("""
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:02.000Z",
+      "sequence": 2,
+      "event": {
+        "type": "subagent.completed",
+        "agentId": "agent-3",
+        "parentAgentId": "parent-9",
+        "status": "failed",
+        "summary": "Ran out of budget"
+      }
+    }
+    """)
+    guard case .subagentResult(let taskId, _, _, let parentToolUseId, let status, let summary, _, _, _, _) =
+      try XCTUnwrap(parented.first).event
+    else {
+      return XCTFail("a twin with an agent id is a result")
+    }
+    XCTAssertEqual(taskId, "agent-3", "the agent id doubles as the task id")
+    XCTAssertNil(parentToolUseId, "parentAgentId is not a parent tool use id on this frame")
+    XCTAssertEqual(status, "failed", "an explicit status still wins over the completed default")
+    XCTAssertEqual(summary, "Ran out of budget")
+  }
+
   // MARK: - Resume-now result
 
   /// A refused `Resume now` is an ordinary answer with `ok: false`, not a
@@ -848,14 +1123,17 @@ final class WorkUsageLimitResumeTests: XCTestCase {
   }
 
   /// Decoding stays total: an unexpected payload must not turn a real outcome
-  /// into a parser error, and a refusal without copy still says something.
+  /// into a parser error, and a refusal without copy still says something. It is
+  /// also fail-closed — a payload with no `ok` is a refusal, because reading it
+  /// as success would clear the error and retire the pill on a chat that is
+  /// still parked.
   func testResumeUsageLimitNowDecodingIsTotal() throws {
     let bare = try JSONDecoder().decode(
       AgentChatResumeUsageLimitNowResult.self,
       from: Data("{}".utf8)
     )
-    XCTAssertTrue(bare.ok)
-    XCTAssertNil(bare.refusalMessage)
+    XCTAssertFalse(bare.ok, "an empty payload is no evidence the prompt went out")
+    XCTAssertEqual(bare.refusalMessage, "This chat can\u{2019}t be resumed right now.")
 
     let blank = try JSONDecoder().decode(
       AgentChatResumeUsageLimitNowResult.self,

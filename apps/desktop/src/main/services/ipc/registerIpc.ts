@@ -32,6 +32,7 @@ import type { Server as NetServer } from "node:net";
 import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { IPC } from "../../../shared/ipc";
 import {
   editorTargetDefinition,
@@ -8084,12 +8085,33 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
-    await ctx.agentChatService.sendMessage(arg, { awaitDispatch: true });
+    // Host-only metadata is stripped at the boundary. `scheduledWake` and
+    // `usageLimitResume: "manual"` exempt a message from the auto-resume cancel
+    // sweep, which is the host telling itself it already dealt with the durable
+    // row. A renderer (or a replayed payload) claiming either one is just a
+    // user message, and honouring it would leave the resume armed through real
+    // activity to fire unattended later. The host's own resume-now path builds
+    // its metadata inside the service and never crosses this boundary.
+    const metadata = stripHostOnlyChatMetadata(
+      arg?.metadata as Record<string, unknown> | null | undefined,
+    );
+    await ctx.agentChatService.sendMessage(
+      { ...arg, ...(metadata ? { metadata } : { metadata: undefined }) } as AgentChatSendArgs,
+      { awaitDispatch: true },
+    );
   });
 
   ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.steerUserMessage(arg);
+    // Same boundary strip as `agentChatSend`: the accepted branch of the steer
+    // queue is a dispatch commit point too, so a caller-asserted host-only
+    // marker would exempt this message from the auto-resume cancel sweep.
+    const metadata = stripHostOnlyChatMetadata(
+      arg?.metadata as Record<string, unknown> | null | undefined,
+    );
+    return await ctx.agentChatService.steerUserMessage(
+      { ...arg, ...(metadata ? { metadata } : { metadata: undefined }) } as AgentChatSteerArgs,
+    );
   });
 
   ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {

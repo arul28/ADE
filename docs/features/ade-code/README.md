@@ -236,7 +236,10 @@ prompt immediately. It prints `Resume sent · turn <turn-id>` on success (the
 turn reads `pending` when the provider has not minted one yet). A refusal is an
 ordinary answer, not an error: the host declines with `no_live_usage_limit` or
 `resume_in_flight` and a ready-to-render `message`, and the formatter prints
-that message — never the machine-readable reason code — and exits non-zero.
+that message — never the machine-readable reason code — and exits non-zero. A
+dispatch that fails after the host committed to the send is a genuine error, not
+a refusal: the host restores the armed state and its durable row and throws, so
+the command reports the failure and the chat still resumes on schedule.
 
 `ade chat status <session> --text` keeps its `RUNNING` / `BLOCKED` / `IDLE`
 status and adds a `resume` line when the session summary has a live

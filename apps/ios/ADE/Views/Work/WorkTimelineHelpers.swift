@@ -16,7 +16,8 @@ func buildWorkChatTimelineSnapshot(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
     artifacts: artifacts,
-    localEchoMessages: localEchoMessages
+    localEchoMessages: localEchoMessages,
+    usageLimitTurnId: usageLimitTurnId
   )
   // Raw derivation. `pendingInputs` is the transcript-only view of it and is
   // what suppresses the originating approval/tool envelopes below; the full
@@ -85,9 +86,15 @@ private func workChatTimelineSnapshotSignature(
   transcript: [WorkChatEnvelope],
   fallbackEntries: [AgentChatTranscriptEntry],
   artifacts: [ComputerUseArtifactSummary],
-  localEchoMessages: [WorkLocalEchoMessage]
+  localEchoMessages: [WorkLocalEchoMessage],
+  /// Part of the signature, not just an input: `WorkChatTimelineSnapshot.==`
+  /// compares nothing else, so a rebuild triggered purely by the summary's
+  /// resume row would compare equal to the stale snapshot and the turn footer
+  /// would never flip between "Failed" and the quiet pause.
+  usageLimitTurnId: String?
 ) -> Int {
   var hasher = Hasher()
+  combineOptional(usageLimitTurnId, into: &hasher)
   hasher.combine(transcript.count)
   for envelope in transcript {
     hasher.combine(envelope.sessionId)

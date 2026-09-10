@@ -604,6 +604,7 @@ import {
   isUsageLimitChatError,
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
+  stripHostOnlyChatMetadata,
   usageLimitParkedUntilMirror,
 } from "../../../shared/chatAutoResume";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
@@ -9031,6 +9032,8 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, notice);
     },
     ...(onAutoResumeOutcome ? { captureAnalytics: onAutoResumeOutcome } : {}),
+    readResumeState: (sessionId) =>
+      managedSessions.get(sessionId)?.usageLimitResume ?? null,
     onResumeStateChanged: (sessionId, resume) => {
       const managed = managedSessions.get(sessionId);
       if (!managed) return;
@@ -21126,6 +21129,40 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * `whenArmed`, with a ceiling.
+   *
+   * The arm resolves through the scheduler's startup, which has no timeout of
+   * its own, so a wedged load would otherwise hold the quota-rejection settle
+   * path open indefinitely and leave the chat busy with no way back. The wait
+   * is worth a few seconds and nothing more.
+   */
+  const AUTO_RESUME_ARM_WAIT_MS = 5_000;
+  const waitForArmedResumeBounded = async (sessionId: string): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), AUTO_RESUME_ARM_WAIT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        // A rejected arm is a finished arm: the wait exists to order the reap
+        // after the upsert, not to make the reap depend on the upsert working.
+        autoResume.whenArmed(sessionId)
+          .then(() => "armed" as const)
+          .catch(() => "armed" as const),
+        deadline,
+      ]);
+      if (outcome === "timeout") {
+        logger.warn("agent_chat.auto_resume_arm_wait_timeout", {
+          sessionId,
+          waitMs: AUTO_RESUME_ARM_WAIT_MS,
+        });
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  /**
    * Settlement contract when Claude rejects the plan quota mid-idle-turn: the
    * rejected quota cannot run queued steers, a bare query reset leaves the open
    * idle turn wedged busy forever (no reader restart, no finalization), and
@@ -21139,8 +21176,11 @@ export function createAgentChatService(args: {
     cancelQueuedSteers(managed, runtime, "interrupted");
     // The durable resume is written BEFORE the query is reaped. Reaping first
     // tore the runtime down while the upsert was still in flight, which is how
-    // a real limit could end up with nothing armed.
-    await autoResume.whenArmed(managed.session.id);
+    // a real limit could end up with nothing armed. Bounded, though: the arm
+    // waits on the scheduler's startup, and a scheduler that never finishes
+    // loading must not wedge the turn this settles — losing the arm is
+    // recoverable, a chat stuck busy forever is not.
+    await waitForArmedResumeBounded(managed.session.id);
     await resetClaudeQuerySession(managed, runtime, "session_reset");
     await finishClaudeIdleTurn(managed, runtime, state, "interrupted");
   };
@@ -24499,8 +24539,10 @@ export function createAgentChatService(args: {
       // same Claude UUID (current ~/.claude login). A successful later turn
       // dismisses the card. Do not clear sdkSessionId.
       if (runtimeStillCurrent && quotaTrippedThisTurn) {
-        // Same ordering rule as the idle-turn settlement: arm, then reap.
-        await autoResume.whenArmed(managed.session.id);
+        // Same ordering rule as the idle-turn settlement: arm, then reap — and
+        // the same ceiling, so a scheduler that never finishes loading cannot
+        // hold the finished turn open.
+        await waitForArmedResumeBounded(managed.session.id);
         await resetClaudeQuerySession(managed, runtime, "session_reset");
       } else if (runtimeStillCurrent && finalStatus === "completed") {
         dismissClaudeSessionQuota(managed);
@@ -33699,9 +33741,12 @@ export function createAgentChatService(args: {
     }
     // Past the drop, so a steer the queue refused is not mistaken for activity
     // and leaves any pending auto-resume armed. The queued message itself is
-    // real user input, and it will run.
-    if (!metadata?.scheduledWake) {
-      autoResume.cancelForSession(sessionId, "user_message");
+    // real user input, and it will run. Same two exemptions as the send commit
+    // point: a fired resume must not cancel itself, and Resume now already
+    // awaited its own cancel (a second one moves the epoch its failure path
+    // needs to undo the swap).
+    if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
+      void autoResume.cancelForSession(sessionId, "user_message");
     }
     const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
     const uuid = randomUUID();
@@ -42592,10 +42637,16 @@ export function createAgentChatService(args: {
     // route a message can take — send, steer, wake queue, continuity capsule
     // and the headless `runSessionTurn`, which reaches the provider through
     // here and so can no longer walk past the sweep. A message that was refused
-    // upstream never gets here, so it leaves the resume armed. Scheduled wakes
-    // are excluded: a fired resume must not cancel itself.
-    if (!metadata?.scheduledWake) {
-      autoResume.cancelForSession(sessionId, "user_message");
+    // upstream never gets here, so it leaves the resume armed.
+    //
+    // Two senders are exempt. A scheduled wake must not cancel itself — it IS
+    // the fired resume. And Resume now already cancelled the row and waited for
+    // it: sweeping again here moves the cancel epoch it captured before
+    // dispatching, which would make its own failure path (restore the streak,
+    // re-arm the row, republish the state) read as "someone newer took over"
+    // and leave the chat with a live limit, no state and no schedule.
+    if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
+      void autoResume.cancelForSession(sessionId, "user_message");
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
@@ -45970,7 +46021,14 @@ export function createAgentChatService(args: {
         ...(original.attachments?.length ? { attachments: original.attachments } : {}),
         ...(original.contextAttachments?.length ? { contextAttachments: original.contextAttachments } : {}),
         metadata: {
-          ...(original.metadata ?? {}),
+          // Host-only markers do NOT survive a replay. `scheduledWake` and
+          // `usageLimitResume: "manual"` both exempt their message from the
+          // auto-resume cancel sweep, and that exemption belongs to the host
+          // path that owned the row — not to a user pressing Run next on the
+          // message it left behind. Inheriting either one leaves the chat's
+          // resume armed through real user activity, and it fires an
+          // unattended prompt hours later.
+          ...(stripHostOnlyChatMetadata(original.metadata) ?? {}),
           replayedFromUnprocessedSteer: {
             sourceSteerId: steerId,
             action: "run_next",
@@ -46227,6 +46285,14 @@ export function createAgentChatService(args: {
       });
     }
     const pendingAutoResume = scheduledWork.find((item) => isPendingAutoResumeScheduledWork(item));
+    // Only a row that can still deliver speaks for the resume. A paused one is
+    // pending in the scheduler's sense but is not going to fire, so it must not
+    // set a fire time the clients count down to — see the `no_reset` projection
+    // the pause transition publishes.
+    const deliverableAutoResume = pendingAutoResume
+      && (pendingAutoResume.status === "scheduled" || pendingAutoResume.status === "fired")
+      ? pendingAutoResume
+      : null;
     const storedUsageLimitResume = liveManaged?.usageLimitResume
       ?? persisted?.usageLimitResume
       ?? null;
@@ -46234,14 +46300,52 @@ export function createAgentChatService(args: {
     // or the scheduler can defer it; the stored state is the authority on
     // everything else. `armed` flips to `resuming` here rather than on a state
     // event, so a due row stops counting down in every client at once.
-    const usageLimitResume = resolveUsageLimitResumeState(
-      storedUsageLimitResume && pendingAutoResume?.nextRunAt
+    // A pending row with NO stored state is not "no limit": the row is the
+    // durable half and can outlive the state (an arm reported while the chat
+    // was not resident in memory, a persisted state lost to an older heal).
+    // The countdown a client renders comes from the row, so derive the minimum
+    // `armed` state from it rather than reporting nothing while a resume is
+    // still on disk waiting to fire.
+    const rowOnlyUsageLimitResume: AgentChatUsageLimitResume | null =
+      !storedUsageLimitResume && deliverableAutoResume?.nextRunAt
         ? {
-            ...storedUsageLimitResume,
-            fireAt: pendingAutoResume.nextRunAt,
-            scheduleId: pendingAutoResume.id,
+            state: "armed",
+            provider,
+            fireAt: deliverableAutoResume.nextRunAt,
+            resetAt: null,
+            scheduleId: deliverableAutoResume.id,
+            attempts: autoResume.streakState(row.id).attempts,
+            providerDetail: null,
+            turnId: null,
+            // Stamped from the row, not from now: this state is a reading of
+            // something that was decided when the row was written, and a fresh
+            // stamp on every summary read would make clients treat an unchanged
+            // resume as a change.
+            updatedAt: deliverableAutoResume.createdAt,
           }
-        : storedUsageLimitResume,
+        : null;
+    // A stored `armed` state sitting on a row that cannot deliver: the pause
+    // that parked the row was applied while this chat was not resident (a
+    // project-wide sweep, or a restart that loaded an already-paused row), so
+    // the transition-time projection never ran for it. Derived at read time for
+    // the same reason `armed` becomes `resuming` here — every client has to
+    // agree, and none of them should count down to a fire time that is parked.
+    const pausedRowUsageLimitResume: AgentChatUsageLimitResume | null =
+      storedUsageLimitResume
+        && pendingAutoResume
+        && !deliverableAutoResume
+        && (storedUsageLimitResume.state === "armed" || storedUsageLimitResume.state === "resuming")
+        ? { ...storedUsageLimitResume, state: "no_reset", fireAt: null, scheduleId: null }
+        : null;
+    const usageLimitResume = resolveUsageLimitResumeState(
+      pausedRowUsageLimitResume
+        ?? (storedUsageLimitResume && deliverableAutoResume?.nextRunAt
+          ? {
+              ...storedUsageLimitResume,
+              fireAt: deliverableAutoResume.nextRunAt,
+              scheduleId: deliverableAutoResume.id,
+            }
+          : storedUsageLimitResume ?? rowOnlyUsageLimitResume),
     );
     const usageLimitParkedUntil = usageLimitParkedUntilMirror(usageLimitResume);
     // Preserve an explicit null from the live session instead of falling back
@@ -46831,15 +46935,136 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Is this chat's auto-resume row paused?
+   *
+   * A paused row delivers nothing, so the "already delivering" refusal must not
+   * fire for it — that would leave a paused chat with a state that reads
+   * `resuming` forever and no way to resume by hand. No row at all is NOT the
+   * same case: a stored state whose fire time has passed with the row already
+   * consumed is exactly the race the refusal exists for.
+   */
+  const autoResumeRowIsPaused = (sessionId: string): boolean => {
+    // PENDING rows only. A cancelled or delivered row can still carry a stale
+    // `pausedFlag`, and letting that suppress the refusal would re-open the
+    // double-prompt race the refusal exists to close.
+    const row = (scheduledWorkScheduler?.list(sessionId) ?? [])
+      .find((schedule) => isPendingAutoResumeScheduledWork(schedule));
+    return row != null && (row.status === "paused" || row.pausedFlag === true);
+  };
+
+  /**
+   * Undo a manual Resume now that never dispatched.
+   *
+   * Manual resume trades the armed state for a turn: it cancels the durable row
+   * and clears the visible resume before the send. When the send fails, that
+   * trade bought nothing, and leaving it in place is the worst of both outcomes
+   * — no manual turn AND no automatic recovery, with the limit still live.
+   *
+   * Both halves go back: the stored `usageLimitResume` (which restores the
+   * deprecated `usageLimitParkedUntil` mirror through its single writer) and
+   * the durable row, re-armed through the coordinator so it lands under the
+   * same guards the arm path uses. An already-due row is re-armed too — the
+   * scheduler simply delivers it at the next turn boundary, which is the
+   * recovery this path is restoring.
+   *
+   * Everything it writes is conditional on nothing newer having happened: the
+   * opt-out, the schedulability check and the cancel epoch each say "the user
+   * moved on, leave their state alone".
+   */
+  const restoreUsageLimitResumeAfterFailedManualResume = async (
+    managed: ManagedChatSession,
+    previous: AgentChatUsageLimitResume | null,
+    context: {
+      streak: { attempts: number; paused: boolean };
+      epochAtDispatch: number;
+    },
+  ): Promise<void> => {
+    if (!previous) return;
+    // The streak first, and unconditionally. `cancelForSession` zeroes the
+    // counter and the pause flag on its way past, which is right for a user
+    // message and wrong for a resume whose turn never dispatched: leaving it
+    // zeroed hands a capped chat two more arms and quietly un-pauses a streak
+    // that had already spent both. Nothing below this line can spend an arm, so
+    // the restore is safe even on the paths that publish no state.
+    autoResume.restoreStreak(managed.session.id, {
+      ...context.streak,
+      lastArmedFireAtMs: previous.fireAt ? Date.parse(previous.fireAt) : null,
+      epochAtDispatch: context.epochAtDispatch,
+    });
+    // Anything the user did WHILE the send was in flight outranks this undo.
+    // Turning auto-continue off mid-dispatch already cancelled the row and left
+    // the chat `opted_out`; re-arming over that would resurrect a schedule the
+    // user just declined. Same for a chat that stopped being schedulable.
+    if (!sessionAutoContinueAtUsageLimit(managed.session)) {
+      // Don't continue ends ADE's answer to the limit, not the limit. It ran
+      // while this send was in flight, so it found the state already cleared
+      // and had nothing to convert; publish the same `opted_out` projection it
+      // would have written — but only over our own clearing, never over a state
+      // the opt-out (or anything newer) did manage to write.
+      if (!managed.usageLimitResume) {
+        setUsageLimitResume(managed, {
+          ...previous,
+          state: "opted_out",
+          fireAt: null,
+          scheduleId: null,
+          updatedAt: nowIso(),
+        });
+      }
+      return;
+    }
+    const row = sessionService.get(managed.session.id);
+    if (!row || row.archivedAt || !isSchedulableAgentSession(row)) return;
+    // The epoch is the test for "is this state still ours to write". Anything
+    // that cancels — a user message taking the chat over, an opt-out — moves it,
+    // and whatever that writer published is newer than the state being undone.
+    const stateStillOurs = (): boolean =>
+      autoResume.cancelEpochFor(managed.session.id) === context.epochAtDispatch;
+    if (previous.state !== "armed" || !previous.fireAt) {
+      if (stateStillOurs()) setUsageLimitResume(managed, previous);
+      return;
+    }
+    // No drain before the re-arm: the manual resume's own cancellation was
+    // awaited, so the row is already terminal, and the `user_message` sweep the
+    // dispatch fired only ever cancels a PENDING row — it finds nothing,
+    // whenever it runs.
+    //
+    // The row is written BEFORE the state, so the state can describe what
+    // actually happened. `superseded` means a user message or an opt-out landed
+    // while the send was in flight and already published its own state, which
+    // outranks this undo. A re-arm that failed outright leaves the chat with a
+    // live limit and no schedule — `no_reset` is exactly that, and it is the one
+    // state the stale-limit heal will not clean up behind us.
+    const outcome = await autoResume.rearm(
+      managed.session.id,
+      previous,
+      context.epochAtDispatch,
+    );
+    if (outcome === "superseded" || !stateStillOurs()) return;
+    setUsageLimitResume(managed, outcome === "armed" ? previous : {
+      ...previous,
+      state: "no_reset",
+      fireAt: null,
+      scheduleId: null,
+      updatedAt: nowIso(),
+    });
+  };
+
+  /**
    * Resume now: stop waiting for the published reset and send the continue
    * prompt immediately.
    *
    * It is exactly the turn the durable row would have sent — same prompt — as
    * an ordinary user turn, so the provider sees nothing unusual and a limit
-   * that has NOT lifted simply fails again and re-arms. The streak resets
-   * because a human asking for a retry is the intervening event the two-arm cap
-   * waits for, and the quota card is dismissed because it offers a stale
+   * that has NOT lifted simply fails again and re-arms. The streak resets on a
+   * turn that actually starts — a human asking for a retry is the intervening
+   * event the two-arm cap waits for, and a resume that never dispatched is not
+   * that event — and the quota card is dismissed because it offers a stale
    * "send again after reset" next to a send that just happened.
+   *
+   * The swap is ordered so the chat is never left with nothing: the durable row
+   * is cancelled and AWAITED before the dispatch (never two prompts), and a
+   * dispatch that fails puts the armed state and the row back before the error
+   * surfaces (never zero).
    *
    * It refuses rather than sending in the two cases where the turn it would
    * spend is not the user's to spend: no live limit at all (a stale button, a
@@ -46862,25 +47087,74 @@ export function createAgentChatService(args: {
         message: "No usage limit is live for this chat.",
       };
     }
-    if (liveLimit.state === "resuming") {
+    if (liveLimit.state === "resuming" && !autoResumeRowIsPaused(normalizedSessionId)) {
       return {
         ok: false,
         reason: "resume_in_flight",
         message: "This chat is already resuming. Wait for the current turn to start.",
       };
     }
-    autoResume.cancelForSession(normalizedSessionId, "manual_resume");
-    autoResume.resetStreak(normalizedSessionId);
+    // Read BEFORE the cancel, because the cancel destroys both: it clears the
+    // stored resume state and zeroes the streak counter on its way past. A
+    // resume that never dispatches has to be able to put them back.
+    const previousResume = managed.usageLimitResume ?? null;
+    const previousStreak = autoResume.streakState(normalizedSessionId);
+    // Awaited, not fired off: this path is about to send the row's own prompt
+    // itself, so the durable row has to be gone BEFORE the dispatch rather than
+    // shortly after it. Waiting also makes the restore below safe — a sweep
+    // still in flight could otherwise cancel the row the failure path re-arms.
+    await autoResume.cancelForSession(normalizedSessionId, "manual_resume");
+    // Captured after the cancel and handed to the restore: anything that
+    // cancels between here and the failure (a user message, an opt-out) moves
+    // the epoch and outranks the undo.
+    const epochAtDispatch = autoResume.cancelEpochFor(normalizedSessionId);
     setUsageLimitResume(managed, null);
     if (managed.session.provider === "claude") dismissClaudeSessionQuota(managed);
-    await sendMessage(
-      {
-        sessionId: normalizedSessionId,
-        text: AUTO_RESUME_PROMPT,
-        metadata: { usageLimitResume: "manual" },
-      },
-      { awaitDispatch: true },
-    );
+    // The acknowledgement, not the return, is what proves a turn started:
+    // `sendMessage` also has refusal paths (disk pressure, an empty prepare)
+    // that report themselves in the transcript and then resolve normally.
+    let dispatched = false;
+    try {
+      await sendMessage(
+        {
+          sessionId: normalizedSessionId,
+          text: AUTO_RESUME_PROMPT,
+          metadata: { usageLimitResume: "manual" },
+        },
+        {
+          awaitDispatch: true,
+          onBackendDispatched: () => {
+            dispatched = true;
+          },
+        },
+      );
+    } catch (error) {
+      // The turn never dispatched, so the chat must not be left with neither
+      // the manual send nor its automatic recovery: put the armed state and the
+      // durable row back exactly as they were and let the caller see the
+      // failure. The quota card stays dismissed — it is derived from a snapshot
+      // this attempt already superseded.
+      await restoreUsageLimitResumeAfterFailedManualResume(managed, previousResume, {
+        streak: previousStreak,
+        epochAtDispatch,
+      });
+      throw error;
+    }
+    if (!dispatched) {
+      await restoreUsageLimitResumeAfterFailedManualResume(managed, previousResume, {
+        streak: previousStreak,
+        epochAtDispatch,
+      });
+      // Not a refusal: the two refusal reasons are decided BEFORE anything is
+      // spent, and this one is only knowable after the attempt. The transcript
+      // already carries why the send was refused; the caller needs to know the
+      // resume did not happen.
+      throw new Error("ADE could not start the resume turn. The usage limit resume is still armed.");
+    }
+    // No `resetStreak` here: the awaited cancel above already zeroed the counter
+    // and the pause flag, and only a turn that actually started gets to keep
+    // that. The failure paths put the streak back, so a refused resume cannot
+    // widen the two-arm cap or quietly un-pause a chat that spent both attempts.
     return { ok: true, turnId: managed.runtime?.activeTurnId ?? null };
   };
 
@@ -49503,7 +49777,7 @@ export function createAgentChatService(args: {
         // so the chat keeps a live `opted_out` state with a Turn on affordance
         // instead of silently looking like nothing ever happened.
         const liveLimit = managed.usageLimitResume;
-        autoResume.cancelForSession(sessionId, "opted_out_of_auto_continue");
+        void autoResume.cancelForSession(sessionId, "opted_out_of_auto_continue");
         if (liveLimit) {
           setUsageLimitResume(managed, {
             ...liveLimit,
@@ -52229,6 +52503,18 @@ export function createAgentChatService(args: {
         return;
       }
       durableScheduleUiStatusById.set(schedule.id, status);
+      // Pausing this chat's scheduled work pauses its auto-resume row too, and
+      // the state clients render has to follow the row rather than keep
+      // counting down to a fire time that will not happen. The coordinator owns
+      // that mapping; this is only the seam that reports the transition.
+      if (isAutoResumeScheduledWork(schedule)) {
+        autoResume.noteRowStatusChanged(schedule.sessionId, {
+          id: schedule.id,
+          status,
+          pausedFlag: schedule.pausedFlag,
+          fireAt: schedule.fireAt,
+        });
+      }
 
       const row = sessionService.get(schedule.sessionId);
       if (!row || row.archivedAt) return;

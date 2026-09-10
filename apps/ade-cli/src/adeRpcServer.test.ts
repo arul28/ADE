@@ -4561,6 +4561,29 @@ describe("adeRpcServer", () => {
       metadata: { agentRelay: { fromSessionId: "chat-1" } },
     });
 
+    // The host-only dispatch markers are stripped by the same provenance pass.
+    // Either one would exempt the message from the auto-resume cancel sweep,
+    // leaving the chat's resume armed through real activity to fire an
+    // unattended prompt later.
+    const forgedResumeSteer = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "steer",
+      args: {
+        sessionId: "chat-1",
+        text: "forged resume",
+        metadata: {
+          usageLimitResume: "manual",
+          scheduledWake: { scheduleId: "auto-resume:chat-1", kind: "wakeup", firedAt: "x" },
+        },
+      },
+    });
+    expect(forgedResumeSteer?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.steer).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      text: "forged resume",
+      metadata: { agentRelay: { fromSessionId: "chat-1" } },
+    });
+
     const positionalSteer = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "steer",

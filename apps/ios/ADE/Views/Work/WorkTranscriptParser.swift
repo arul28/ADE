@@ -416,7 +416,14 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       // Host-attached HTTP status on a terminal SDK API error (429 = usage
       // limit). The only limit signal the transcript itself carries; never
       // inferred from assistant prose (`.specs/CONTRACT.md`).
+      // Both spellings, exactly like the sync decoder's `EventRawFields`: a raw
+      // transcript that used the snake-case key would otherwise lose its 429 and
+      // render the turn as failed instead of paused on a limit.
+      // Each key is coerced on its own: `??` on the raw values would treat an
+      // explicit `"apiErrorStatus": null` (an `NSNull`, not a missing key) as
+      // present and swallow a real snake-case status sitting beside it.
       let apiErrorStatus = optionalWorkInt(eventDict["apiErrorStatus"])
+        ?? optionalWorkInt(eventDict["api_error_status"])
       let event: WorkChatEvent
 
       switch type {
@@ -527,19 +534,53 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           reasoningEffort: optionalString(eventDict["reasoningEffort"]),
           turnId: turnId
         )
-      case "subagent_result":
-        event = .subagentResult(
-          taskId: stringValue(eventDict["taskId"]),
-          agentId: optionalString(eventDict["agentId"]),
-          agentType: optionalString(eventDict["agentType"]),
-          parentToolUseId: optionalString(eventDict["parentToolUseId"]) ?? optionalString(eventDict["parentAgentId"]),
-          status: stringValue(eventDict["status"]),
-          summary: stringValue(eventDict["summary"]),
-          label: optionalString(eventDict["label"]),
-          model: optionalString(eventDict["model"]),
-          reasoningEffort: optionalString(eventDict["reasoningEffort"]),
-          turnId: turnId
-        )
+      // The legacy `subagent.completed` twin decodes to the same case here for
+      // the same reason it does in `AgentChatEvent.init(from:)`: it IS a result,
+      // it carries only an `agentId` (which doubles as the task id), and leaving
+      // it `.unknown` stranded `isLegacySubagentCompletedFrame` below — the flag
+      // was set, but `collapseLegacyWorkSubagentResultEnvelopes` only ever looks
+      // at `.subagentResult`, so the twin never collapsed.
+      case "subagent_result", "subagent.completed":
+        let subagentAgentId = optionalString(eventDict["agentId"])
+        let isLegacyTwin = type == "subagent.completed"
+        if isLegacyTwin, let legacyAgentId = subagentAgentId {
+          // Field-for-field with the typed decoder's `subagent.completed` case:
+          // `agentId` is required and doubles as the task id, `parentAgentId` is
+          // pinned to nil rather than folded into `parentToolUseId`, and an
+          // absent status/summary defaults to completed.
+          event = .subagentResult(
+            taskId: legacyAgentId,
+            agentId: legacyAgentId,
+            agentType: optionalString(eventDict["agentType"]),
+            parentToolUseId: optionalString(eventDict["parentToolUseId"]),
+            status: optionalString(eventDict["status"]) ?? "completed",
+            summary: optionalString(eventDict["summary"]) ?? "Completed",
+            label: optionalString(eventDict["label"]),
+            model: optionalString(eventDict["model"]),
+            reasoningEffort: optionalString(eventDict["reasoningEffort"]),
+            turnId: turnId
+          )
+        } else if isLegacyTwin {
+          // The typed decoder throws this frame away (`decode`, not
+          // `decodeIfPresent`), and so must this one: a legacy twin with no
+          // agent id has no identity to collapse on, and minting a row keyed by
+          // the empty string would put a phantom subagent on the timeline that
+          // the sync path never shows.
+          event = .unknown(type: type)
+        } else {
+          event = .subagentResult(
+            taskId: optionalString(eventDict["taskId"]) ?? "",
+            agentId: subagentAgentId,
+            agentType: optionalString(eventDict["agentType"]),
+            parentToolUseId: optionalString(eventDict["parentToolUseId"]) ?? optionalString(eventDict["parentAgentId"]),
+            status: optionalString(eventDict["status"]) ?? "",
+            summary: optionalString(eventDict["summary"]) ?? "",
+            label: optionalString(eventDict["label"]),
+            model: optionalString(eventDict["model"]),
+            reasoningEffort: optionalString(eventDict["reasoningEffort"]),
+            turnId: turnId
+          )
+        }
       case "scheduled_work_update":
         event = .scheduledWorkUpdate(
           id: stringValue(eventDict["id"]),

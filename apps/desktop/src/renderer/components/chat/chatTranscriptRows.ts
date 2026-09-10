@@ -2995,7 +2995,10 @@ function stoppedGroupCauseOf(
   const reason = event.error?.trim() || event.summaryPreview?.trim() || null;
   // A failed subagent carries only the string its runtime handed back, so the
   // usage-limit verdict has to come from the text — this is the surface
-  // `isUsageLimitFailureText` exists for.
+  // `isUsageLimitFailureText` exists for. One field is enough: the card's
+  // `error` is either null or the same string as `summaryPreview` (see the
+  // builder above — `state.error = state.resultSummary ?? state.error`, and
+  // nothing else ever writes it), so the two can never disagree here.
   return isUsageLimitFailureText(reason) ? "usage_limit" : null;
 }
 

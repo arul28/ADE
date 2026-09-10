@@ -57,6 +57,11 @@ export function ChatUsageLimitResumePill({
   const [busy, setBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
+  // Monotonic id for the in-flight popover action. `busy` state drives the
+  // disabled buttons; `busyRef` is what `run` actually gates on, because a
+  // second press can arrive within the same render as the first.
+  const runTokenRef = React.useRef(0);
+  const busyRef = React.useRef(false);
 
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   const pill = resume ? usageLimitResumePill(resume, nowMs) : null;
@@ -93,10 +98,29 @@ export function ChatUsageLimitResumePill({
 
   // The state this pill renders is gone the moment an action lands, so a
   // half-finished action must not outlive it as a stuck spinner.
+  //
+  // Bumping the run token is the other half of that: clearing `busy` alone
+  // would let the OLD promise still settle into this pill and publish a refusal
+  // sentence about a state nobody is looking at, close a popover the user has
+  // since re-opened, or clear a `busy` that belongs to a newer press. Anything
+  // started before the bump is orphaned — see `run`.
+  //
+  // `sessionId` is in the same list because this component is NOT keyed by it:
+  // switching chats re-renders the same instance, so an action fired for the
+  // previous chat must not land on this one.
   React.useEffect(() => {
+    runTokenRef.current += 1;
+    busyRef.current = false;
     setBusy(false);
     setActionError(null);
-  }, [resume?.state]);
+  }, [resume?.state, sessionId]);
+
+  // The popover is a decision about ONE chat. Carrying it across a session
+  // switch would leave the next chat's composer under an open dialog whose
+  // buttons were aimed at the chat that just left.
+  React.useEffect(() => {
+    setOpen(false);
+  }, [sessionId]);
 
   if (!resume || !pill) return null;
 
@@ -113,17 +137,30 @@ export function ChatUsageLimitResumePill({
    * `action` returns the sentence to show, or null when it went through.
    */
   const run = async (action: () => Promise<string | null>) => {
-    if (busy) return;
+    if (busyRef.current) return;
+    // Captured before the await. If the resume state or the chat changes while
+    // the bridge call is in flight, the reset effect bumps the token and this
+    // run publishes nothing at all — no error, no popover close, no `busy`
+    // clear that would cancel a newer press.
+    const token = runTokenRef.current;
+    busyRef.current = true;
     setBusy(true);
     setActionError(null);
     try {
       const refusal = await action();
+      if (token !== runTokenRef.current) return;
       if (refusal) setActionError(refusal);
       else setOpen(false);
     } catch (error) {
+      if (token !== runTokenRef.current) return;
       setActionError(errorMessage(error));
     } finally {
-      setBusy(false);
+      // A stale run leaves `busy` alone: the effect already cleared it, and a
+      // newer press may own it by now.
+      if (token === runTokenRef.current) {
+        busyRef.current = false;
+        setBusy(false);
+      }
     }
   };
 

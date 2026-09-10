@@ -96,6 +96,13 @@ func workUsageLimitResumeModel(
     )
   }
 
+  // A host that speaks `usageLimitResume` has already told us the limit lifted.
+  // `usageLimitParkedUntil` on this summary is a mirror the clearing event never
+  // touched, so reading it here would resurrect the pill the host just retired.
+  // Only summaries with no structured clear on record — i.e. older hosts — reach
+  // the fallback below.
+  if summary.usageLimitResumeWasCleared == true { return nil }
+
   // Older host: the deprecated mirror is the only signal there is. Reconstruct
   // the armed case only — the mirror carries no streak, no detail, and no way to
   // tell paused from opted out.
@@ -212,6 +219,18 @@ func workUsageLimitRelativePhrase(to date: Date, now: Date) -> String {
   let hours = seconds / 3_600
   let minutes = (seconds % 3_600) / 60
   return minutes == 0 ? "in \(hours) hr" : "in \(hours) hr \(minutes) min"
+}
+
+/// Is there still a countdown left to redraw?
+///
+/// The pill's ticker asks this before every sleep. Past the target the label is
+/// frozen at "Resuming…" and nothing on screen changes, but the tick interval
+/// has already dropped to one second — so a stale armed model (a host that went
+/// away before it could clear the row) would spin a one-second timer forever
+/// with nothing to show for it. Nil target means there was never a countdown.
+func workUsageLimitCountdownIsLive(target: Date?, now: Date) -> Bool {
+  guard let target else { return false }
+  return target > now
 }
 
 /// Per-second under five minutes, per-minute above it. One timer, two rates.

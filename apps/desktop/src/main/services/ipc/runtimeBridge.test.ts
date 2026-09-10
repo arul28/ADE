@@ -3226,6 +3226,54 @@ describe("registerIpc sync bridge", () => {
     expect(resolveUnprocessedMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("strips host-only chat metadata from renderer sends and steers", async () => {
+    const sendMessage = vi.fn(async () => undefined);
+    const steerUserMessage = vi.fn(async () => ({ status: "queued" }));
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        agentChatService: { sendMessage, steerUserMessage },
+      }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    // Both markers exempt a message from the auto-resume cancel sweep, which is
+    // the host telling itself it already dealt with the durable row. A renderer
+    // (or a replayed payload) asserting either one is just a user message, and
+    // honouring it would leave the resume armed to fire unattended later.
+    await ipcHandlers.get(IPC.agentChatSend)?.(eventForSender(), {
+      sessionId: "chat-1",
+      text: "next",
+      metadata: {
+        usageLimitResume: "manual",
+        scheduledWake: { scheduleId: "auto-resume:chat-1", kind: "wakeup", firedAt: "x" },
+        agentRelay: { fromSessionId: "chat-2" },
+      },
+    });
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "chat-1",
+        text: "next",
+        metadata: { agentRelay: { fromSessionId: "chat-2" } },
+      }),
+      { awaitDispatch: true },
+    );
+
+    // Nothing left to send: the message carries no metadata rather than an
+    // empty object.
+    await ipcHandlers.get(IPC.agentChatSteer)?.(eventForSender(), {
+      sessionId: "chat-1",
+      text: "redirect",
+      metadata: { usageLimitResume: "manual" },
+    });
+    expect(steerUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-1", text: "redirect", metadata: undefined }),
+    );
+  });
+
   it("preserves and validates exact lookup and launch overrides across external-session IPC parsing", async () => {
     const list = vi.fn(async () => []);
     const importExternalSession = vi.fn(async () => ({

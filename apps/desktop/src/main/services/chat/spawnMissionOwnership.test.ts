@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { HOST_ONLY_CHAT_METADATA_KEYS } from "../../../shared/chatAutoResume";
 
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
   isHumanChildMessage,
+  HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS,
   stripHostAuthoredMessageProvenance,
 } from "./spawnMissionOwnership";
 
@@ -109,5 +111,26 @@ describe("stripHostAuthoredMessageProvenance", () => {
     };
     stripHostAuthoredMessageProvenance(metadata);
     expect(metadata).toEqual({ requestId: "req-1" });
+  });
+
+  it("removes the host-only dispatch markers too", () => {
+    // Both keys exempt their message from the auto-resume cancel sweep, so an
+    // untrusted caller that could assert either one would leave a chat's resume
+    // armed through real activity to fire unattended later.
+    const metadata: Record<string, unknown> = {
+      requestId: "req-2",
+      usageLimitResume: "manual",
+      scheduledWake: { scheduleId: "s", kind: "wakeup", firedAt: "x" },
+    };
+    stripHostAuthoredMessageProvenance(metadata);
+    expect(metadata).toEqual({ requestId: "req-2" });
+  });
+
+  it("contains every host-only chat metadata key", () => {
+    // Spread, not copied: a key added to the dispatch-exemption set must reach
+    // the untrusted edges without anyone remembering to update this list.
+    for (const key of HOST_ONLY_CHAT_METADATA_KEYS) {
+      expect(HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS).toContain(key);
+    }
   });
 });

@@ -1227,7 +1227,7 @@ function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: C
       />
       {resume ? (
         <Text color={theme.color.t2} wrap="truncate-end">
-          {` ⏳ resume ${resume}`}
+          {` ⏳ ${resume}`}
         </Text>
       ) : null}
       {resumeNotice ? (

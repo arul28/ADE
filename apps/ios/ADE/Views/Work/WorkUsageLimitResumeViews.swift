@@ -75,10 +75,13 @@ struct WorkUsageLimitResumePill: View {
   }
 
   /// One timer, two rates: per second inside the last five minutes, per minute
-  /// above it. A pill with nothing to count down to never starts a timer at all.
+  /// above it. A pill with nothing to count down to — or one whose target has
+  /// already passed — never starts, or stops, rather than burning a per-second
+  /// tick on a label that cannot change again. `.task(id: model)` restarts it
+  /// whenever the host sends a new target.
   private func runCountdownTicker() async {
     now = Date()
-    guard model.countdownTarget != nil else { return }
+    guard workUsageLimitCountdownIsLive(target: model.countdownTarget, now: now) else { return }
     while !Task.isCancelled {
       let interval = workUsageLimitTickInterval(fireAt: model.countdownTarget, now: now)
       do {
@@ -87,6 +90,7 @@ struct WorkUsageLimitResumePill: View {
         return
       }
       now = Date()
+      guard workUsageLimitCountdownIsLive(target: model.countdownTarget, now: now) else { return }
     }
   }
 }

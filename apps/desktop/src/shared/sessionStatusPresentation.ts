@@ -258,7 +258,13 @@ export function sessionStatusPresentation(
         tone: rowStatus.tone === "attention" ? "amber" : "neutral",
         glyph: rowStatus.glyph,
         showsElapsed: false,
-        prominent: false,
+        // A paused streak is the one resume state that wants a person: it
+        // stopped trying and will not restart itself. That is the same claim
+        // `needs_you` and `woke` make, and they are prominent — a non-prominent
+        // amber row is faded to 70% by SessionCard's recede rule, which is
+        // exactly the row you must not lose. The neutral countdown states stay
+        // quiet: they are going to resume on their own.
+        prominent: rowStatus.tone === "attention",
       };
     }
   }

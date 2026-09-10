@@ -1,3 +1,4 @@
+import { HOST_ONLY_CHAT_METADATA_KEYS } from "../../../shared/chatAutoResume";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } from "../../../shared/types/chat";
 
 /**
@@ -75,6 +76,14 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   // count above.
   "orchestrationOrigin",
   ...NON_DIRECTIVE_METADATA_KEYS,
+  // Host-only dispatch markers are host-authored provenance too, and they are
+  // the load-bearing kind: each one exempts its message from the auto-resume
+  // cancel sweep, so a caller that could assert one would leave a chat's
+  // resume armed through real activity and have it fire unattended later.
+  // Spread rather than listed, so this set can never drift from the one the
+  // dispatch commit points honour. `scheduledWake` appears in both lists; the
+  // strip is a delete loop, so the overlap costs nothing.
+  ...HOST_ONLY_CHAT_METADATA_KEYS,
 ] as const;
 
 export const stripHostAuthoredMessageProvenance = (metadata: Record<string, unknown>): void => {

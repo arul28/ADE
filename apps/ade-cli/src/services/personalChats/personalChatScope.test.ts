@@ -513,6 +513,42 @@ describe("PersonalChatScope", () => {
     expect(service.sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "continue" });
   });
 
+  it("strips host-authored metadata from an embedder send and steer", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    // `personalChats.call` is an untrusted edge: it does not pass through the
+    // RPC's trusted-provenance stamp. `usageLimitResume` and `scheduledWake`
+    // would exempt the message from the auto-resume cancel sweep and leave a
+    // chat's resume armed to fire unattended; `spawnDispatch` /
+    // `orchestrationOrigin` would let a caller manufacture mission ownership.
+    await expect(scope.call("send", {
+      sessionId: "chat-1",
+      text: "continue",
+      metadata: {
+        requestId: "req-1",
+        usageLimitResume: "manual",
+        scheduledWake: { scheduleId: "auto-resume:chat-1", kind: "wakeup", firedAt: "x" },
+        spawnDispatch: { parentSessionId: "chat-parent", dispatchedAt: "x" },
+        orchestrationOrigin: { runId: "run-1" },
+      },
+    })).resolves.toMatchObject({ action: "send" });
+    expect(service.sendMessage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "continue",
+      metadata: { requestId: "req-1" },
+    });
+
+    await expect(scope.call("steer", {
+      sessionId: "chat-1",
+      text: "redirect",
+      metadata: { usageLimitResume: "manual" },
+    })).resolves.toMatchObject({ action: "steer" });
+    // Nothing survived, so the message carries no metadata at all rather than
+    // an empty object.
+    expect(service.steer).toHaveBeenCalledWith({ sessionId: "chat-1", text: "redirect" });
+  });
+
   it("routes recovery and durable message resolution only for personal sessions", async () => {
     const { createRuntime, service } = fixture();
     const scope = new PersonalChatScope({ createRuntime });
