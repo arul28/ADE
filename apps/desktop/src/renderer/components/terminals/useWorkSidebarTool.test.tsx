@@ -181,13 +181,14 @@ describe("useWorkSidebarTool", () => {
     expect(result.current.openTools).toEqual(["git"]);
   });
 
-  it("migrates a lane that only ever stored one tool into a one-tab strip", () => {
-    // Exactly the shape a pre-strip build persisted: an active tool and no
-    // `workSidebarOpenTools` at all.
+  it("repairs an empty strip around the tool the lane is already showing", () => {
+    // Not the persisted-state migration — `appStore.test.ts` owns that. This is
+    // the same shape arriving at runtime: an active tool with an empty strip,
+    // which the hook must not render as a pane with no tab for what is on it.
     useAppStore.getState().setLaneWorkViewState(PROJECT_ROOT, "lane-old", {
       workSidebarTool: "files",
       workSidebarOpenTools: [],
-    } as never);
+    });
     const { result } = renderHook(() => useWorkSidebarTool("lane-old"));
     expect(result.current.tool).toBe("files");
     expect(result.current.openTools).toEqual(["files"]);

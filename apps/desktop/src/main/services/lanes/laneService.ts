@@ -1676,13 +1676,7 @@ export function createLaneService({
   const laneSummaryForLinearNotification = (row: LaneRow): LaneSummary =>
     toLaneSummary({
       row,
-      status: {
-        dirty: false,
-        ahead: 0,
-        behind: 0,
-        remoteBehind: -1,
-        rebaseInProgress: false,
-      },
+      status: cloneLaneStatus(DEFAULT_LANE_STATUS),
       parentStatus: null,
       childCount: 0,
       stackDepth: 0,
@@ -5290,7 +5284,7 @@ export function createLaneService({
           }
           return toLaneSummary({
             row: persistedRow,
-            status: status ?? { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+            status: status ?? cloneLaneStatus(DEFAULT_LANE_STATUS),
             parentStatus,
             childCount: 0,
             stackDepth,
@@ -5753,11 +5747,11 @@ export function createLaneService({
             parentRow.branch_ref
           );
         } catch {
-          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
+          parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
         }
       }
 
-      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
+      const defaultStatus: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
       const out: LaneSummary[] = [];
       for (const row of childRows) {
         let status: LaneStatus;

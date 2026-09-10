@@ -84,13 +84,6 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
 }
 
 /**
- * Compare the lane's recorded branch against the worktree's live HEAD.
- *
- * Returns `null` (no drift) when either side is unknown — an unavailable
- * worktree or a detached HEAD is not something the drift affordances can act
- * on, and nagging about it would be noise.
- */
-/**
  * True when the lane's display name is just restating the branch it tracks —
  * either the whole ref (`ade/fix-auth`) or its last segment (`fix-auth`).
  *
@@ -109,6 +102,13 @@ export function laneNameAdvertisesBranch(
   return Boolean(lastSegment) && name === lastSegment;
 }
 
+/**
+ * Compare the lane's recorded branch against the worktree's live HEAD.
+ *
+ * Returns `null` (no drift) when either side is unknown — an unavailable
+ * worktree or a detached HEAD is not something the drift affordances can act
+ * on, and nagging about it would be noise.
+ */
 export function detectLaneBranchDrift(args: {
   expectedBranchRef: string | null | undefined;
   headBranchRef: string | null | undefined;

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
@@ -38,6 +38,11 @@ describe("WorkToolPicker", () => {
   // notice is a page of stderr per test for a fallback that is working.
   beforeAll(() => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  });
+  // Restored, not leaked: a platform mock left on the prototype outlives this
+  // file and would quietly hide a later suite's real WebGL path.
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   afterEach(cleanup);

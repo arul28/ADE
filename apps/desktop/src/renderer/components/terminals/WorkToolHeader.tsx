@@ -46,6 +46,8 @@ const CHROME_WIDTH_WITH_LABEL_PX = 134;
 const CHROME_WIDTH_ICON_ONLY_PX = 96;
 /** The "…" trigger, added only when something actually overflows. */
 const OVERFLOW_WIDTH_PX = 28;
+/** `gap-1` on the header row, between the strip's box and the dot group. */
+const HEADER_GAP_PX = 4;
 
 /**
  * The id of the pane that a tab controls.
@@ -57,6 +59,27 @@ const OVERFLOW_WIDTH_PX = 28;
  */
 export function workToolPanelId(tool: WorkSidebarTab): string {
   return `work-tool-panel-${tool}`;
+}
+
+/**
+ * What the tab strip may actually spend, once the activity dots have taken
+ * theirs.
+ *
+ * The dots are a dynamic sibling of the strip's flex box — nought to six of
+ * them, appearing and vanishing with the tools they describe — so they cannot
+ * live in the fixed chrome constants above. Measuring them and subtracting here
+ * leaves ONE number describing the row: without it the strip budgeted for space
+ * the dots were already standing in and answered with truncated tabs, or with
+ * no "…" where one was needed.
+ */
+export function workToolStripBudget(headerWidth: number, activityWidth: number): number {
+  // Unmeasured stays unmeasured: `workToolTabLayout` reads a non-positive width
+  // as "show everything", which is what the first paint should do.
+  if (headerWidth <= 0) return headerWidth;
+  if (!(activityWidth > 0)) return headerWidth;
+  // Never back to zero, which would read as unmeasured and show every tab in a
+  // row that provably cannot hold them.
+  return Math.max(1, headerWidth - activityWidth - HEADER_GAP_PX);
 }
 
 export type WorkToolTabLayout = {
@@ -194,6 +217,8 @@ export function WorkToolHeader({
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const { ref, width } = useMeasuredWidth();
+  // The dot group is measured rather than estimated — see `workToolStripBudget`.
+  const { ref: activityRef, width: activityWidth } = useMeasuredWidth();
   const tabListRef = useRef<HTMLDivElement | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   // OP3 additive: an agent is driving the browser right now. Read from the
@@ -214,7 +239,11 @@ export function WorkToolHeader({
     && workToolDotState(statuses[entry.id]) !== "idle"
   ));
 
-  const layout = workToolTabLayout(openTools, activeTool, width);
+  const layout = workToolTabLayout(
+    openTools,
+    activeTool,
+    workToolStripBudget(width, activityTools.length > 0 ? activityWidth : 0),
+  );
 
   /**
    * Arrows walk the strip; they do not switch tools.
@@ -387,6 +416,7 @@ export function WorkToolHeader({
 
       {activityTools.length > 0 ? (
         <div
+          ref={activityRef}
           className="flex shrink-0 items-center gap-1"
           role="group"
           aria-label="Other active tools"
@@ -541,6 +571,10 @@ function WorkToolTab({
         tabIndex={-1}
         aria-label={`Close ${definition.label}`}
         data-tool-tab-close={tool}
+        // The layout contract, named rather than left to be read back out of
+        // the class string: `corner` is the 24px tab's top-right badge,
+        // `inline` the reserved slot inside a labelled tab.
+        data-tool-tab-close-mode={showLabel ? "inline" : "corner"}
         className={cn(
           "absolute inline-flex items-center justify-center rounded-[4px]",
           "text-muted-fg opacity-0 transition-opacity duration-[120ms] ease-out",

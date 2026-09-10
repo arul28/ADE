@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WorkToolHeader,
   WORK_TOOL_TAB_LABEL_MIN_PX,
+  workToolStripBudget,
   workToolTabLayout,
 } from "./WorkToolHeader";
 import type { WorkToolContext } from "./workTools";
@@ -51,6 +52,26 @@ describe("WorkToolHeader tab strip", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
+  }
+
+  /** Header and dot group measured separately, as the real ResizeObservers do. */
+  function measureGroup(headerPx: number, groupPx: number): void {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const px = this.getAttribute("aria-label") === "Other active tools" ? groupPx : headerPx;
+      return {
+        width: px,
+        height: 36,
+        top: 0,
+        left: 0,
+        right: px,
+        bottom: 36,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
   }
 
   it("draws one tab per open tool and lights the one on screen", () => {
@@ -112,23 +133,67 @@ describe("WorkToolHeader tab strip", () => {
     const { props } = renderHeader();
 
     const tab = screen.getByRole("tab", { name: /^Terminal/ });
-    // The 24px square: no room for a label, and none for a centred ✕ either.
-    expect(tab.className).toContain("w-6");
-
     const close = document.querySelector<HTMLElement>('[data-tool-tab-close="terminal"]');
     expect(close).toBeTruthy();
-    // `opacity-0` alone still hit-tests, which is how a click dead centre on
-    // the glyph used to close the tool instead of opening it.
+    // The contract, not the class string: on a 24px tab the ✕ is a corner
+    // badge, because a full-size target over the middle means the obvious
+    // click — dead centre, on the glyph — closes the tool instead of opening
+    // it. One style smoke check for the part CSS alone enforces: `opacity-0`
+    // still hit-tests, so the badge must also be untouchable at rest.
+    expect(close?.getAttribute("data-tool-tab-close-mode")).toBe("corner");
     expect(close?.className).toContain("pointer-events-none");
-    expect(close?.className).toContain("group-hover/tab:pointer-events-auto");
-    // A corner badge, not a full-size target laid over the tab's middle.
-    expect(close?.className).not.toContain("mx-auto");
-    expect(close?.className).toContain("right-0");
-    expect(close?.className).toContain("top-0");
 
     fireEvent.click(tab);
     expect(props.onPick).toHaveBeenCalledWith("terminal");
     expect(props.onCloseTool).not.toHaveBeenCalled();
+  });
+
+  it("reserves the ✕ inside a labelled tab instead of badging its corner", () => {
+    renderHeader();
+    const close = document.querySelector<HTMLElement>('[data-tool-tab-close="terminal"]');
+    expect(close?.getAttribute("data-tool-tab-close-mode")).toBe("inline");
+  });
+
+  it("budgets the strip around the activity dots it is standing beside", () => {
+    // Four live tools with no tab, in a 200px row: the dot group is a measured
+    // sibling of the strip, so the space it stands in is not the strip's to
+    // spend. Same row, same tabs, dots or no dots:
+    const statuses: WorkToolStatusMap = {
+      git: { line: "3 changes", live: true },
+      files: { line: "open", live: true },
+      ios: { line: "booted", live: true },
+      "app-control": { line: "attached", live: true },
+    };
+    const strip = ["terminal", "browser"] as const;
+
+    measureNarrow(200);
+    renderHeader({ openTools: strip, activeTool: "browser" });
+    // Nothing beside the strip: both glyphs fit and there is no menu.
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /more open tools/ })).toBeNull();
+    cleanup();
+    vi.restoreAllMocks();
+
+    measureGroup(200, 120);
+    renderHeader({ statuses, openTools: strip, activeTool: "browser" });
+    expect(screen.getByRole("group", { name: "Other active tools" })).toBeTruthy();
+    // 200 − 120 dots − 4 gap: the second tab goes to the menu instead of being
+    // drawn into space the dots are already occupying.
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /more open tools/ })).toBeTruthy();
+    // The tool on screen is still the one drawn.
+    expect(screen.getByRole("tab").getAttribute("data-tool-tab")).toBe("browser");
+  });
+
+  it("keeps an unmeasured row unmeasured and never budgets the strip to nothing", () => {
+    expect(workToolStripBudget(360, 120)).toBe(236);
+    expect(workToolStripBudget(360, 0)).toBe(360);
+    // Zero reads as "not measured yet, show everything", so a dot group wider
+    // than the row must still leave a measured budget.
+    expect(workToolStripBudget(0, 120)).toBe(0);
+    expect(workToolStripBudget(100, 400)).toBe(1);
+    expect(workToolTabLayout(["terminal", "browser"], "browser", 1).overflow)
+      .toEqual(["terminal"]);
   });
 
   it("keeps the overflow menu button out of the tablist", () => {

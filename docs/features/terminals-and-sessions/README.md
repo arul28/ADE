@@ -788,6 +788,21 @@ Renderer surfaces:
   could never memoize; each panel now takes the same explicit props object,
   keeps its own guards and empty states, and adding a tool is one entry here
   plus one in `WORK_TOOL_DEFINITIONS`.
+- `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
+  `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
+  `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
+  data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
+  — no colour is named in the fragment shader, so a token change is one line
+  here), the builder's non-colour uniforms, and the pure size policy
+  (`resolveBackdropSize`, `BACKDROP_MAX_DPR` / `BACKDROP_PIXEL_BUDGET` /
+  `BACKDROP_FRAME_MS`, `isSoftwareRenderer`) that is testable without a GPU.
+  The renderer module is React-free: `createBackdropRenderer` takes a canvas
+  and an `onRefused` callback, owns the context, the program, the rAF loop and
+  every listener and observer that gates it, and returns a `dispose` — or
+  `null` when it refuses (no WebGL, a software rasteriser, a shader that will
+  not compile or link), having already handed the context back. The deferred
+  context release lives here too, so a picker ↔ tool crossfade cancels it
+  instead of churning a context per remount.
 - `apps/desktop/src/renderer/components/terminals/useWorkSidebarTool.ts`,
   `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
   `workSidebarSplitter.ts` — which tools are open and which one is on screen

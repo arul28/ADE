@@ -24,6 +24,11 @@ const listeners = new Set<() => void>();
 
 let refCount = 0;
 let detach: (() => void) | null = null;
+/**
+ * Bumped every time the shared feed closes, so an in-flight seed can tell
+ * whether the subscription it was started for is still the live one.
+ */
+let subscriptionGeneration = 0;
 
 function emit(): void {
   for (const listener of [...listeners]) listener();
@@ -69,9 +74,13 @@ function attach(listener: () => void): () => void {
       replace(event.presence);
     }) ?? null;
     detach = () => stop?.();
+    const seedGeneration = subscriptionGeneration;
     void browser?.getAgentPresence?.().then((presence) => {
       // Only as a seed. An answer that raced past a newer event would undo it,
-      // so it is dropped unless the store is still empty.
+      // so it is dropped unless the store is still empty — and unless the
+      // subscription it was started for has since closed, which would refill
+      // the store for nobody and then rob the NEXT reader of its own seed.
+      if (seedGeneration !== subscriptionGeneration) return;
       if (sinceByChatSession.size === 0) replace(presence ?? []);
     }).catch(() => {
       // No browser on this build, or no runtime yet: nobody is browsing.
@@ -81,6 +90,7 @@ function attach(listener: () => void): () => void {
     listeners.delete(listener);
     refCount = Math.max(0, refCount - 1);
     if (refCount > 0) return;
+    subscriptionGeneration += 1;
     detach?.();
     detach = null;
     // Dropped rather than kept: with no reader there is nothing keeping it
