@@ -118,6 +118,63 @@ function flagsReadFor(pattern: RegExp, source: string): Set<string> {
   return flags;
 }
 
+/** Every value-reading call, with its argument text (one level of nesting). */
+const VALUE_READER_CALL =
+  /\bread(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\(((?:[^()]|\([^()]*\))*)\)/g;
+
+/** Split a call's argument text on the commas that sit at bracket depth 0. */
+function topLevelArgs(text: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]!;
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) depth -= 1;
+    else if (char === "," && depth === 0) {
+      args.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  args.push(text.slice(start));
+  return args.map((arg) => arg.trim());
+}
+
+/**
+ * The flag names a reader's flag argument denotes, or `null` when the scan
+ * cannot see them. A literal (`"--foo"` / `["--foo", "--bar"]`) resolves
+ * directly; a bare identifier or a spread resolves through a `const NAME =
+ * [...]` of string literals declared anywhere in cli.ts. Anything else — a
+ * computed list, a parameter, a call — is unreadable, and a browser flag
+ * added that way would need no entry in `BROWSER_VALUE_FLAGS` with every scan
+ * below still green, so it must fail loudly instead.
+ */
+function resolveFlagList(arg: string): string[] | null {
+  const text = arg.trim();
+  if (/^"(--?[^"]+)"$/.test(text)) return [text.slice(1, -1)];
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
+    const decl = new RegExp(`\\bconst ${text}\\b[^=\\n]*=\\s*(\\[[^\\]]*\\])`).exec(SOURCE);
+    return decl ? resolveFlagList(decl[1]!) : null;
+  }
+  if (!text.startsWith("[") || !text.endsWith("]")) return null;
+  const flags: string[] = [];
+  for (const element of topLevelArgs(text.slice(1, -1))) {
+    if (element === "") continue;
+    const resolved = resolveFlagList(element.startsWith("...") ? element.slice(3) : element);
+    if (!resolved) return null;
+    flags.push(...resolved);
+  }
+  return flags;
+}
+
+/** Every value-reader call in `source`, paired with its resolved flag names. */
+function valueReaderCalls(source: string): { call: string; flags: string[] | null }[] {
+  return [...source.matchAll(VALUE_READER_CALL)].map((match) => {
+    const args = topLevelArgs(match[1]!);
+    return { call: match[0], flags: args.length < 2 ? null : resolveFlagList(args[1]!) };
+  });
+}
+
 const TOP_LEVEL_FUNCTIONS = new Set(
   [...SOURCE.matchAll(/\nfunction (\w+)\b/g)].map((m) => m[1]!),
 );
@@ -245,7 +302,10 @@ describe("browser value flags", () => {
     ).toEqual([]);
     // A drop here means bodies stopped parsing and the coverage scans below
     // went quietly blind; a rise means a new argv reader exists.
-    expect(ARGV_READERS.size).toBe(ARGV_READER_COUNT);
+    expect(
+      ARGV_READERS.size,
+      "bodies stopped parsing (drop) or a new argv reader exists (rise): the flag-coverage scans below only see what these bodies contain",
+    ).toBe(ARGV_READER_COUNT);
   });
 
   it("keeps the argv-splicing primitives out of the browser plan", () => {
@@ -271,7 +331,10 @@ describe("browser value flags", () => {
       /primaryHelpKey === "browser"\s*\?\s*BROWSER_VALUE_CARRIER_FLAGS/,
     );
     const calls = [...dispatch.matchAll(/\bhasHelpFlag\(((?:[^()]|\([^()]*\))*)\)/g)];
-    expect(calls.length).toBe(BUILD_CLI_PLAN_HELP_CALL_SITES);
+    expect(
+      calls.length,
+      "buildCliPlan gained or lost a hasHelpFlag call site: a new one must pass helpCarriers or `browser --tab-id t1 --help` narrows back to the global carrier set",
+    ).toBe(BUILD_CLI_PLAN_HELP_CALL_SITES);
     expect(
       calls.filter(([, callArgs]) => !callArgs!.includes("helpCarriers")).map(([call]) => call),
     ).toEqual([]);
@@ -287,14 +350,29 @@ describe("browser value flags", () => {
     );
   });
 
+  it("reads every value-flag argument the browser plan passes", () => {
+    // A flag list the scan cannot read is a flag list that needs no table
+    // entry: `const names = ["--zzz"]; readValue(args, names)` in the plan
+    // leaves the coverage scan below with an empty diff and every pin intact.
+    // `resolveFlagList` follows a same-file `const NAME = [...]` of string
+    // literals; anything it still cannot see must not exist in this region.
+    // "Nothing unreadable" is only meaningful if the scan can read and refuse:
+    // a same-file const resolves, an unknown name and a spread of one do not.
+    expect(valueReaderCalls('readValue(args, idFlags)')[0]!.flags).toContain("--issue-id");
+    expect(valueReaderCalls('readValue(args, zzNames)')[0]!.flags).toBeNull();
+    expect(valueReaderCalls('readValue(args, [...zzMore])')[0]!.flags).toBeNull();
+    expect(
+      valueReaderCalls(PLAN_SOURCE)
+        .filter(({ flags }) => flags == null)
+        .map(({ call }) => call),
+    ).toEqual([]);
+  });
+
   it("covers every flag the browser plan reads a value for", () => {
     // `readRepeatedValues` is in the scan too: it consumes exactly like
     // `readValue`, so `--upload` carries a value and must be in the table or
     // `browser --upload path upload` dispatches on "path".
-    const read = flagsReadFor(
-      /read(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
-      PLAN_SOURCE,
-    );
+    const read = new Set(valueReaderCalls(PLAN_SOURCE).flatMap(({ flags }) => flags ?? []));
     expect(read.size).toBeGreaterThan(80);
     expect([...read].filter((flag) => !BROWSER_VALUE_FLAGS.includes(flag))).toEqual([]);
   });
@@ -313,7 +391,10 @@ describe("browser value flags", () => {
         /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator|hasHelpFlag)\(((?:[^()]|\([^()]*\))*)\)/g,
       ),
     ];
-    expect(calls.length).toBe(CARRIER_AWARE_CALL_SITES);
+    expect(
+      calls.length,
+      "the browser plan gained or lost a carrier-aware positional read: a dropped call site makes the table check below vacuous, a new one must pass BROWSER_VALUE_CARRIER_FLAGS",
+    ).toBe(CARRIER_AWARE_CALL_SITES);
     expect(
       calls
         .filter(([, , callArgs]) => !callArgs!.includes("BROWSER_VALUE_CARRIER_FLAGS"))
