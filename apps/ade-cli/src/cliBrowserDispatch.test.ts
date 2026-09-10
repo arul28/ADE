@@ -11,18 +11,6 @@ import { buildCliPlan } from "./cli";
  * These tests read only `buildCliPlan`'s output.
  */
 
-describe("browser value flags", () => {
-  it("does not widen any other command's grammar", () => {
-    // The regression the table caused: `--text` carried a value CLI-wide.
-    expect(actionArgs(buildCliPlan(["session", "show", "--text", "s1"]))).toMatchObject({
-      sessionId: "s1",
-    });
-    expect(actionArgs(buildCliPlan(["chat", "send", "--text", "s1", "hello"]))).toMatchObject({
-      sessionId: "s1",
-    });
-  });
-});
-
 // label prefix | every subcommand word that must reach it, in any argv shape.
 const SUBCOMMANDS = [
   "browser actions|actions",
@@ -201,5 +189,17 @@ describe("browser positional grammar", () => {
     // a `--help` past the terminator are the two ways to pass the literal.
     expect(buildCliPlan(["browser", "open", "--url", "--help"]).kind).toBe("help");
     expect(buildCliPlan(["lanes", "list", "--text", "--help"]).kind).toBe("help");
+  });
+});
+
+describe("browser value flags do not widen other commands", () => {
+  it("does not widen any other command's grammar", () => {
+    // The regression the table caused: `--text` carried a value CLI-wide.
+    expect(actionArgs(buildCliPlan(["session", "show", "--text", "s1"]))).toMatchObject({
+      sessionId: "s1",
+    });
+    expect(actionArgs(buildCliPlan(["chat", "send", "--text", "s1", "hello"]))).toMatchObject({
+      sessionId: "s1",
+    });
   });
 });

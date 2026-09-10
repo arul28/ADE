@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { BROWSER_VALUE_FLAGS, VALUE_CARRIER_FLAGS, buildCliPlan } from "./cli";
+import { BROWSER_VALUE_FLAGS, VALUE_CARRIER_FLAGS } from "./cli";
 
 const SOURCE = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "cli.ts"),
@@ -232,6 +232,18 @@ function functionBody(name: string): string {
   return bodyNode(name).getText(FILE);
 }
 
+/**
+ * Everything of a top-level function the scans must read: its body AND its
+ * parameter list. A default reads argv as readily as a statement does —
+ * `function buildActionRunStep(args, target = parseActionRunTarget(args))` is
+ * real code in cli.ts — and a signature-only reader would otherwise be
+ * classified as reading nothing, so its flags would need no table entry.
+ */
+function scanRoots(name: string): ts.Node[] {
+  const declaration = TOP_LEVEL_FUNCTION_NODES.get(name)!;
+  return [bodyNode(name), ...declaration.parameters];
+}
+
 const bodyOf = functionBody;
 
 /**
@@ -272,7 +284,7 @@ function calleesIn(roots: readonly ts.Node[]): string[] {
  */
 const ARGV_READERS = (() => {
   const callees = new Map<string, string[]>();
-  for (const name of TOP_LEVEL_FUNCTIONS) callees.set(name, calleesIn([bodyNode(name)]));
+  for (const name of TOP_LEVEL_FUNCTIONS) callees.set(name, calleesIn(scanRoots(name)));
   const readers = new Set<string>(ARGV_PRIMITIVES);
   for (let changed = true; changed; ) {
     changed = false;
@@ -299,19 +311,30 @@ const ARGV_READERS = (() => {
  * property arrow or accessor, a class expression bound to a const, and an
  * arrow handed to a wrapper such as `memoize(…)` are all equally unreachable.
  *
- * So the rule is one property, not a list of shapes. `ts.isFunctionLike` finds
- * every callable that is not itself a top-level function declaration, and the
- * scan refuses the ones whose body reaches argv. Refusing by shape instead
- * would do both jobs badly: it would miss the shapes nobody enumerated (a
- * wrapper call is not an arrow), and it would refuse a harmless top-level
- * `const compare = (a, b) => …` that reads no flag at all.
+ * So the rule is one property, not a list of shapes. `ts.isFunctionLike` plus
+ * a class static block covers every callable form, and the scan refuses the
+ * ones whose body reaches argv. Refusing by shape instead would do both jobs
+ * badly: it would miss the shapes nobody enumerated (a wrapper call is not an
+ * arrow), and it would refuse a harmless top-level `const compare = (a, b) =>
+ * …` that reads no flag at all.
  *
- * A callable nested inside a top-level `function` IS indexed — the graph reads
- * that function's whole body — so those statements are skipped outright.
+ * Only a NAMED top-level function declaration is skipped, because only a named
+ * one is indexed: `TOP_LEVEL_FUNCTION_NODES` keys on the name, so an anonymous
+ * `export default function (argv) { … }` enters no graph and is refused here.
+ * Its callees are covered through `scanRoots`, which reads the signature as
+ * well as the body — so nothing in an indexed function escapes by hiding in a
+ * parameter default.
  *
- * The reader names come from cli.ts's own graph, not from `file`. `file`
- * supplies the callables; a synthetic snippet must therefore spell cli.ts's
- * own primitive or reader names to be seen.
+ * Reader names come from cli.ts's own graph, not from `file`. `file` supplies
+ * the callables; a synthetic snippet must therefore spell cli.ts's own
+ * primitive or reader names to be seen.
+ *
+ * `touchesArgv` matches on `calleeName`, so it counts `store.readValue(…)` as
+ * well as `readValue(…)`, where the graph's `calleesIn` takes bare identifiers
+ * only. That is deliberate — an unindexable callable often reads argv through
+ * `this` — and it is the one place this scan can raise a false red, on an
+ * unrelated object whose method happens to be named `readFlag`. Rename the
+ * local method, or give the callable a top-level `function` declaration.
  */
 function unindexableArgvReaders(file: ts.SourceFile): string[] {
   const touchesArgv = (body: ts.Node): boolean =>
@@ -326,15 +349,20 @@ function unindexableArgvReaders(file: ts.SourceFile): string[] {
       const name = (scope as ts.NamedDeclaration).name;
       if (name) parts.unshift(name.getText(file));
       else if (ts.isConstructorDeclaration(scope)) parts.unshift("constructor");
+      else if (ts.isClassStaticBlockDeclaration(scope)) parts.unshift("static");
     }
     return parts.join(".") || "<anonymous>";
   };
   const found: string[] = [];
   for (const statement of file.statements) {
-    if (ts.isFunctionDeclaration(statement)) continue;
+    if (ts.isFunctionDeclaration(statement) && statement.name) continue;
     walk(statement, (node) => {
-      if (node === statement || !ts.isFunctionLike(node)) return;
-      const body = (node as ts.FunctionLikeDeclaration).body;
+      // A static initializer is callable but is not `isFunctionLike`.
+      const body = ts.isClassStaticBlockDeclaration(node)
+        ? node.body
+        : ts.isFunctionLike(node)
+          ? (node as ts.FunctionLikeDeclaration).body
+          : undefined;
       if (body && touchesArgv(body)) found.push(label(node));
     });
   }
@@ -368,7 +396,7 @@ const PLAN_FUNCTIONS = (() => {
   return names;
 })();
 
-const PLAN_NODES = PLAN_FUNCTIONS.map(bodyNode);
+const PLAN_NODES = PLAN_FUNCTIONS.flatMap(scanRoots);
 
 /* ── the value-reader scan ───────────────────────────────────────────────── */
 
@@ -566,11 +594,18 @@ describe("browser value flags", () => {
         '  get eta() { return readValue(process.argv, ["--eta"]); }',
         '  theta(args: string[]) { return readValue(args, ["--theta"]); }',
         "}",
+        'class Boot { static { readValue(process.argv, ["--boot"]); } }',
+        'export default function (args: string[]) { return readValue(args, ["--dft"]); }',
         'const NAMES = ["--zz"].map((flag) => flag.slice(2));',
         "const compare = (a: string, b: string) => a.localeCompare(b);",
+        'function named(args: string[]) { const q = () => readValue(args, ["--q"]); return q(); }',
       ].join("\n"),
     );
     expect(unindexableArgvReaders(synthetic)).toEqual([
+      // A named top-level declaration is indexed, so `named`'s inner arrow is
+      // absent here: the graph reads that function through `scanRoots`.
+      "<anonymous>",
+      "Boot.static",
       "Decl.eta",
       "Decl.theta",
       "Decl.zeta",

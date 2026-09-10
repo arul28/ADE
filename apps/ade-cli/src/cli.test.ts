@@ -1021,6 +1021,10 @@ describe("ADE CLI", () => {
     });
   });
 
+  // Spawns a real owner process, writes a lock, then boots `serve` — the same
+  // class of work as the sibling below, so it carries the sibling's timeout.
+  // The 5s default only ever passed because of how the runner happened to
+  // schedule this file.
   crdtHostIt("serve fails instead of exiting successfully when another channel owns mobile sync", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-serve-conflict-"));
     const projectRoot = path.join(adeHome, "project");
@@ -1083,7 +1087,7 @@ describe("ADE CLI", () => {
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  });
+  }, 150_000);
 
   /**
    * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.
