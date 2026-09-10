@@ -13,12 +13,25 @@ const SOURCE = fs.readFileSync(
 function functionBody(name: string): string {
   const match = new RegExp(`\\nfunction ${name}\\b`).exec(SOURCE);
   if (!match) throw new Error(`no function ${name} in cli.ts`);
-  const start = SOURCE.indexOf("{", match.index + match[0].length);
+  // Skip the parameter list before looking for the body brace: a default like
+  // `base: JsonObject = {}` opens and closes before the body does, and taking
+  // it as the start returned an EMPTY body — which is how
+  // `collectGenericObjectArgs` read argv with no scan ever seeing it.
+  let cursor = SOURCE.indexOf("(", match.index);
+  for (let parens = 0; cursor < SOURCE.length; cursor += 1) {
+    if (SOURCE[cursor] === "(") parens += 1;
+    else if (SOURCE[cursor] === ")" && (parens -= 1) === 0) break;
+  }
+  const start = SOURCE.indexOf("{", cursor);
   let depth = 0;
   for (let i = start; i < SOURCE.length; i += 1) {
     if (SOURCE[i] === "{") depth += 1;
     else if (SOURCE[i] === "}" && (depth -= 1) === 0) return SOURCE.slice(start, i);
   }
+  // A brace inside a string or a regex literal unbalances the scan. Top-level
+  // functions close on a `}` in column 0, which is enough to bound the body.
+  const end = SOURCE.indexOf("\n}", start);
+  if (end > 0) return SOURCE.slice(start, end);
   throw new Error(`unbalanced ${name}`);
 }
 
@@ -45,10 +58,48 @@ const ARGV_PRIMITIVES = [
   "readRepeatedValues",
 ];
 
-/** Named `read*` helpers a body calls, minus the primitives themselves. */
+const BODY_BY_NAME = new Map<string, string>();
+function bodyOf(name: string): string {
+  const cached = BODY_BY_NAME.get(name);
+  if (cached != null) return cached;
+  const body = functionBody(name);
+  BODY_BY_NAME.set(name, body);
+  return body;
+}
+
+/** Every top-level function a body calls. */
+function calleesIn(source: string): string[] {
+  return [...new Set([...source.matchAll(/\b(\w+)\s*\(/g)].map((m) => m[1]!))].filter((name) =>
+    TOP_LEVEL_FUNCTIONS.has(name),
+  );
+}
+
+/**
+ * Every top-level helper that consumes argv, found by BODY rather than by
+ * name. A `read[A-Z]` name pattern was the same hand-kept subset one more
+ * time: `collectGenericObjectArgs` reads `--arg-json` & co. and is called
+ * straight out of the browser plan, but matched no pattern, so its flags never
+ * had to be in the browser table.
+ */
+const ARGV_READERS = (() => {
+  const readers = new Set<string>(ARGV_PRIMITIVES);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const name of TOP_LEVEL_FUNCTIONS) {
+      if (readers.has(name)) continue;
+      if (!calleesIn(bodyOf(name)).some((callee) => readers.has(callee))) continue;
+      readers.add(name);
+      changed = true;
+    }
+  }
+  for (const primitive of ARGV_PRIMITIVES) readers.delete(primitive);
+  return readers;
+})();
+
+/** Argv-reading helpers a body calls, minus the primitives themselves. */
 function readerCallsIn(source: string): string[] {
-  return [...new Set([...source.matchAll(/\b(read[A-Z]\w*)\s*\(/g)].map((m) => m[1]!))]
-    .filter((name) => TOP_LEVEL_FUNCTIONS.has(name) && !ARGV_PRIMITIVES.includes(name))
+  return calleesIn(source)
+    .filter((name) => ARGV_READERS.has(name))
     .sort();
 }
 
@@ -236,6 +287,9 @@ const SHAPES = (sub: string): string[][] => [
   // A repeatable value flag before the word: `browser --upload path upload`
   // must dispatch on "upload", not on "path".
   ["--upload", "path", sub],
+  // `collectGenericObjectArgs` carries a value too, and it is called from the
+  // browser plan: without it in the table the JSON was the subcommand.
+  ["--arg-json", "{}", sub],
 ];
 
 /** The `args` the plan's first step would send to the daemon. */
@@ -275,6 +329,18 @@ describe("browser positional grammar", () => {
     }
   });
 
+  it("keeps a carrier's literal `--` from fencing --help out of the scan", () => {
+    // `--upload` carries a value, so the `--` after it is that value, not a
+    // terminator. Scanning with the global table stopped there and `--help`
+    // was never seen — the upload ran instead of printing help.
+    expect(
+      buildCliPlan(["browser", "upload", "--selector", "input", "--upload", "--", "--help"]).kind,
+    ).toBe("help");
+    // A real terminator still fences the literal string through.
+    expect(actionArgs(buildCliPlan(["browser", "open", "--", "--help"])))
+      .toMatchObject({ url: "--help" });
+  });
+
   it("keeps a fenced literal out of the flag it follows", () => {
     const labelOf = (argv: string[]): string => {
       const plan = buildCliPlan(argv);
@@ -293,35 +359,31 @@ describe("browser positional grammar", () => {
       .toMatchObject({ preset: "--iphone" });
   });
 
-  it("keeps a leftover flag name out of the free-text handoff reason", () => {
-    // `--text` survives `parseCliArgs` when a word follows it, so the reason
-    // fallback must not join it — it is quoted back at the human in the phone
-    // alert body and the progress notice.
-    expect(actionArgs(buildCliPlan(["browser", "handoff", "--text", "sign in"])))
+  it("refuses a flag-shaped leftover instead of guessing at the handoff reason", () => {
+    // Both repairs were worse than the refusal: joining the token quoted
+    // "--text sign in" back at the human in the alert body, and dropping it
+    // ate the next word when the name was a carrier (`--path sign in` → "in").
+    for (const argv of [
+      ["browser", "handoff", "--text", "sign in"],
+      ["browser", "handoff", "---x", "sign", "in"],
+      ["browser", "handoff", "--path", "sign", "in"],
+      ["browser", "handoff", "--foo", "bar", "sign", "in"],
+      ["browser", "handoff", "--url=x.test", "sign", "in"],
+    ]) {
+      expect(() => buildCliPlan(argv)).toThrow(/--reason/);
+    }
+  });
+
+  it("keeps the two spellings that never needed guessing", () => {
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "--reason", "sign in"])))
       .toMatchObject({ reason: "sign in" });
-  });
-
-  it("keeps real words that merely start with a dash in the reason", () => {
-    // Dropping every `-`-prefixed leftover deleted a word out of the sentence
-    // quoted back at the human.
-    expect(actionArgs(buildCliPlan(["browser", "handoff", "fix", "the", "-2fa", "prompt"])))
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "sign", "in", "to", "staging"])))
+      .toMatchObject({ reason: "sign in to staging" });
+    // A literal tail is the person's own words, not argv: dashes survive it.
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "--", "-2fa", "prompt"])))
+      .toMatchObject({ reason: "-2fa prompt" });
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "--", "fix", "the", "-2fa", "prompt"])))
       .toMatchObject({ reason: "fix the -2fa prompt" });
-  });
-
-  it("drops a leftover flag's value only when the flag carries one", () => {
-    // `--url` is a browser carrier, so its orphan value goes with it; `--foo`
-    // is not, so "bar" is a word of the sentence and stays visible rather than
-    // disappearing from the alert body.
-    expect(
-      actionArgs(buildCliPlan(["browser", "handoff", "--foo", "bar", "sign", "in"])),
-    ).toMatchObject({ reason: "bar sign in" });
-    expect(
-      actionArgs(buildCliPlan(["browser", "handoff", "--url", "x.test", "sign", "in"])),
-    ).toMatchObject({ reason: "sign in" });
-    // `--flag=value` carries its value in the same token: the next word stays.
-    expect(
-      actionArgs(buildCliPlan(["browser", "handoff", "--url=x.test", "sign", "in"])),
-    ).toMatchObject({ reason: "sign in" });
   });
 
   it("dispatches past a proof owner flag", () => {

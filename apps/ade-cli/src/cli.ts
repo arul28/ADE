@@ -2660,6 +2660,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+  Trailing words are the reason without --reason. A dashed word is read as a
+  flag, so fence the sentence: handoff -- fix the -2fa prompt
   Blocks until the person presses Hand back (default 15m), so your next step
   naturally waits. It raises the Work row's hand and pushes to their phone.
   While the handoff is open every agent action on that tab fails with
@@ -11678,33 +11680,6 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
  *    drops this step; the desktop still clears the hand-raise on hand-back, so
  *    the row does not stay raised just because nobody was blocked on it.
  */
-/**
- * Free-text reason words, with unconsumed flag tokens removed.
- *
- * Flag-shaped leftovers are dropped rather than joined: `--text` survives argv
- * when a word follows it, and joining it raw made the reason read "--text sign
- * in" in the phone alert body and the progress notice. Dropping every
- * `-`-prefixed token was too wide — it ate the word out of "fix the -2fa
- * prompt". Only a token that *looks* like a flag (`-x` / `--long`) goes, and
- * its neighbour goes with it only when the browser carrier table says that
- * flag takes a value; an orphan value after an unknown flag stays in the
- * sentence rather than vanishing from it.
- */
-function dropUnconsumedFlagTokens(args: string[]): string[] {
-  const words: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index]!;
-    if (!/^--?[A-Za-z]/.test(token)) {
-      words.push(token);
-      continue;
-    }
-    const name = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
-    // `--flag=value` carries its value in the same token: nothing follows to eat.
-    if (!token.includes("=") && BROWSER_VALUE_CARRIER_FLAGS.has(name)) index += 1;
-  }
-  return words;
-}
-
 function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): CliPlan {
   // Not `--text`: it is the global output switch, and every `browser handoff`
   // example ends with it.
@@ -11720,12 +11695,25 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
   const target = readBrowserTabTargetArgs(args);
   // Everything left over after the flags is the reason, so
   // `ade browser handoff sign in to staging` works without quoting.
+  //
+  // The free-text fallback is refused outright once a leftover token is
+  // flag-shaped. Guessing was worse either way: joining `--text` raw quoted
+  // "--text sign in" back at the human in the phone alert body, and dropping
+  // it silently ate the next word out of the sentence when the name happened
+  // to be a carrier (`handoff --path sign in` → "in"). A literal tail after
+  // `--` is a person's own words, never argv, so it is taken verbatim —
+  // `handoff -- fix the -2fa prompt` still works.
+  const namedReason = explicitReason ?? collectGenericObjectArgs(args).reason;
+  if (namedReason == null) {
+    const flagLike = args.find((token) => token.startsWith("-"));
+    if (flagLike != null) {
+      throw new CliUsageError(
+        `browser handoff read ${flagLike} as a flag, not as part of the reason. Pass --reason "…", or put the literal words after --.`,
+      );
+    }
+  }
   const reason = requireValue(
-    (explicitReason ??
-      collectGenericObjectArgs(args).reason ??
-      [...dropUnconsumedFlagTokens(args), ...literalTail].join(" ")) as
-      | string
-      | null,
+    (namedReason ?? [...args, ...literalTail].join(" ")) as string | null,
     "reason",
   ).trim();
   if (!reason) {
@@ -14355,6 +14343,11 @@ function buildUpdatePlan(args: string[]): CliPlan {
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--action",
+  // `collectGenericObjectArgs` is called straight out of the browser plan and
+  // consumes these, so they carry a value here like any other browser flag —
+  // without them `ade browser --arg-json '{}' open` dispatched on the JSON.
+  "--arg",
+  "--arg-json",
   "--browser-session",
   "--browser-session-id",
   "--button",
@@ -14397,6 +14390,9 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--height",
   "--idle-ms",
   "--index",
+  "--input",
+  "--input-json",
+  "--json-input",
   "--keep",
   "--keep-count",
   "--key",
@@ -14430,6 +14426,8 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--scale",
   "--selection",
   "--selector",
+  "--set",
+  "--set-json",
   "--session",
   "--session-id",
   "--settle-ms",
@@ -14703,8 +14701,17 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--y",
 ]);
 
-function hasHelpFlag(args: string[]): boolean {
-  const terminatorIndex = firstTerminatorIndex(args);
+/**
+ * `carriers` is the command family's value-flag table, not the global one.
+ * `--` after a flag that carries a value is that flag's value, not a
+ * terminator, so scanning `browser upload --selector input --upload -- --help`
+ * with the global set stopped at the `--` and hid a real `--help`.
+ */
+function hasHelpFlag(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): boolean {
+  const terminatorIndex = firstTerminatorIndex(args, carriers);
   const searchable =
     terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
   // Help wins over any value: this scan does not skip the token after a
@@ -14781,17 +14788,21 @@ function buildCliPlan(
     logout: "auth",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
+  // The browser grammar carries values the global table does not, and a `--`
+  // that belongs to one of them must not fence `--help` out of the scan.
+  const helpCarriers =
+    primaryHelpKey === "browser" ? BROWSER_VALUE_CARRIER_FLAGS : VALUE_CARRIER_FLAGS;
   // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
   // client. Keep ordinary `ade code --help` on the established top-level help
   // page, but let the remote subcommand render its actual connection guidance.
   if (
     primary === "code"
     && firstStandalonePositional([...args]) === "remote"
-    && hasHelpFlag(args)
+    && hasHelpFlag(args, helpCarriers)
   ) {
     return { kind: "ade-code", rest: args };
   }
-  if (hasHelpFlag(args)) {
+  if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "ios-sim") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
