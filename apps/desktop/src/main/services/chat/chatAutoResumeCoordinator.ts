@@ -180,6 +180,12 @@ export type ChatAutoResumeCoordinator = {
     sessionId: string,
     row: { id: string; status: string; pausedFlag?: boolean; fireAt?: number | undefined },
   ) => void;
+  /**
+   * Records an explicit session pause even when there is no row to emit a
+   * transition for. A manual Resume now cancels its row before dispatch; a
+   * pause that lands in that gap still has to outrank a failed-send restore.
+   */
+  noteSessionPaused: (sessionId: string) => void;
   noteScheduleDismissed: (sessionId: string) => void;
   noteResumeTurnStarted: (sessionId: string) => void;
   noteTurnFinished: (sessionId: string) => void;
@@ -496,6 +502,18 @@ export function createChatAutoResumeCoordinator(
       scheduleId: row.id,
       updatedAt: new Date().toISOString(),
     });
+  };
+
+  /**
+   * A session pause is a user decision, even when the auto-resume row was
+   * already cancelled by another operation and therefore emits no transition.
+   * Advance the same epoch used by arm/recovery so an older failed manual
+   * resume cannot resurrect an unpaused row behind that decision.
+   */
+  const noteSessionPaused = (sessionId: string): void => {
+    const state = stateBySession.get(sessionId);
+    if (!state) return;
+    state.cancelEpoch += 1;
   };
 
   /**
@@ -928,6 +946,7 @@ export function createChatAutoResumeCoordinator(
     cancelEpochFor: (sessionId: string): number => ensureState(sessionId).cancelEpoch,
     restoreStreak,
     noteRowStatusChanged,
+    noteSessionPaused,
     whenArmed: (sessionId: string): Promise<void> =>
       stateBySession.get(sessionId)?.armPromise ?? Promise.resolve(),
     streakState: (sessionId: string): { attempts: number; paused: boolean } => {

@@ -11322,6 +11322,73 @@ describe("createAgentChatService", () => {
         });
       });
 
+      it("resumeUsageLimitNow does not restore after a concurrent scheduled-work pause", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-pause-race", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-pause-race",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-pause-race",
+        } as any);
+
+        let refuseSends = false;
+        let pause: Promise<unknown> | null = null;
+        let serviceRef: ReturnType<typeof createService>["service"] | null = null;
+        let sessionIdForPauseRace = "";
+        const { service } = createService({
+          db: scheduledWork.db,
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => {
+              if (!refuseSends) return { allowed: true };
+              // The user pauses after Resume now has cancelled its row but
+              // before the refused send's restore can run. The pause method
+              // records that decision synchronously before awaiting the
+              // scheduler, so the restore must see a newer epoch.
+              pause ??= serviceRef!.setScheduledWorkPaused({
+                sessionId: sessionIdForPauseRace,
+                paused: true,
+              });
+              return {
+                allowed: false,
+                state: "exhausted",
+                code: "disk_full",
+                message: "Your computer is almost out of storage.",
+              };
+            }),
+          },
+        });
+        serviceRef = service;
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        sessionIdForPauseRace = session.id;
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        refuseSends = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        expect(pause).not.toBeNull();
+        await pause;
+
+        // The pause won the race. A failed manual resume must not put the
+        // cancelled row or the cleared state back behind that decision.
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume ?? null).toBeNull();
+      });
+
       it("resumeUsageLimitNow does not re-arm after a mid-flight Don't continue", async () => {
         const scheduledWork = createScheduledWorkDb();
         const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);

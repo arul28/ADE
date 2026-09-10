@@ -46918,6 +46918,11 @@ export function createAgentChatService(args: {
     if (!scheduledWorkScheduler) {
       throw new Error("Scheduled work is unavailable for this project runtime.");
     }
+    // Record the user's pause before awaiting the scheduler. A manual Resume
+    // now may already have cancelled its row, so no row transition would
+    // otherwise advance the coordinator epoch and a failed-send restore could
+    // resurrect the schedule behind this decision.
+    if (paused) autoResume.noteSessionPaused(normalizedSessionId);
     await scheduledWorkScheduler.setSessionPaused(normalizedSessionId, paused);
     const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId);
     const effectivelyPaused = scheduledWorkScheduler.isSessionPaused(normalizedSessionId)

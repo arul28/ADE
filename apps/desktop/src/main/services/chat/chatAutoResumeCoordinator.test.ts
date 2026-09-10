@@ -373,6 +373,23 @@ describe("auto-resume arm ordering and state exposure", () => {
     expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
   });
 
+  it("rearm reports superseded when an explicit pause has no row transition", async () => {
+    const { coordinator, rows, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // Manual Resume now has already cancelled the row, so pausing the session
+    // emits no row transition. It is still a newer user decision and must
+    // invalidate the restore through the coordinator epoch.
+    coordinator.noteSessionPaused("chat-1");
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("superseded");
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
+  });
+
   it("rearm reports failed when the row cannot be written", async () => {
     const harness = createHarness();
     const { coordinator, scheduler } = harness;
