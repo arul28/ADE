@@ -215,6 +215,59 @@ for (const statement of FILE.statements)
 const TOP_LEVEL_FUNCTIONS = new Set(TOP_LEVEL_FUNCTION_NODES.keys());
 
 /**
+ * Every top-level callable BOUND BY A VARIABLE in cli.ts. The call graph
+ * follows `function <name>` declarations only, so a reader written as
+ * `const readFoo = (args) => …` or as a method on a top-level namespace
+ * object never enters PLAN_FUNCTIONS: the flags it reads need no
+ * `BROWSER_VALUE_FLAGS` entry and every coverage scan in this file stays green
+ * while the grammar drifts. The scan is fail-closed — it lists those shapes
+ * rather than supporting them, so the first reader written in one fails here
+ * and has to be converted or the graph widened.
+ *
+ * Only initializer positions that BIND a callable are followed. A callback is
+ * not a named callable: the arrow in `const NAMES = FLAGS.map((f) => f.text)`
+ * is unreachable from the plan, so a subtree walk would refuse it for nothing.
+ *
+ * Top-level CLASS methods are the third un-indexable shape, and they are not
+ * refused by shape: cli.ts already declares JSON-RPC transports whose methods
+ * are legitimate and would need a hand-kept allowlist here — the same subset
+ * this file keeps replacing. `argvReadingClassMethods` below holds them to
+ * the property that actually matters instead.
+ */
+function namedCallableShapes(file: ts.SourceFile): string[] {
+  const found: string[] = [];
+
+  function fromValue(value: ts.Expression, name: string): void {
+    const node = unwrap(value);
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      found.push(name);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(node)) fromObject(node, name);
+  }
+
+  function fromObject(object: ts.ObjectLiteralExpression, owner: string): void {
+    for (const property of object.properties) {
+      const key = property.name ? property.name.getText(file) : "<computed>";
+      if (ts.isMethodDeclaration(property)) {
+        found.push(`${owner}.${key}`);
+        continue;
+      }
+      if (ts.isPropertyAssignment(property)) fromValue(property.initializer, `${owner}.${key}`);
+    }
+  }
+
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations)
+      if (declaration.initializer)
+        fromValue(declaration.initializer, declaration.name.getText(file));
+  }
+
+  return found.sort();
+}
+
+/**
  * The body block of a top-level `function <name>`. The parser draws the
  * boundary, so a default parameter (`base: JsonObject = {}`), a return-type
  * annotation (`): { key: string } {`) and a `"{"` inside a string literal are
@@ -286,6 +339,30 @@ const ARGV_READERS = (() => {
   for (const primitive of ARGV_PRIMITIVES) readers.delete(primitive);
   return readers;
 })();
+
+/**
+ * Top-level class methods in cli.ts that reach argv. A class method is the one
+ * un-indexable shape the scan cannot refuse outright — the JSON-RPC transports
+ * here are classes and their methods are legitimate — so it is held to the
+ * property the call graph exists to protect: a method that reads argv is a
+ * reader the plan scan cannot see, and its flags would need no table entry.
+ */
+function argvReadingClassMethods(file: ts.SourceFile): string[] {
+  const found: string[] = [];
+  const touchesArgv = (body: ts.Node): boolean =>
+    calleesIn([body]).some(
+      (name) => ARGV_PRIMITIVES.includes(name) || ARGV_READERS.has(name),
+    );
+  for (const statement of file.statements) {
+    if (!ts.isClassDeclaration(statement)) continue;
+    const owner = statement.name ? statement.name.text : "<anonymous class>";
+    for (const member of statement.members) {
+      if (!ts.isMethodDeclaration(member) || !member.body) continue;
+      if (touchesArgv(member.body)) found.push(`${owner}.${member.name.getText(file)}`);
+    }
+  }
+  return found.sort();
+}
 
 /** Argv-reading helpers the given subtrees call, minus the primitives. */
 function readerCallsIn(roots: readonly ts.Node[]): string[] {
@@ -480,6 +557,51 @@ describe("browser value flags", () => {
       ARGV_READERS.size,
       "bodies stopped parsing (drop) or a new argv reader exists (rise): the flag-coverage scans below only see what these bodies contain",
     ).toBe(ARGV_READER_COUNT);
+  });
+
+  it("refuses a top-level callable the call graph cannot index", () => {
+    // The call graph reaches a helper only through its `function <name>`
+    // declaration. `const readFoo = (args) => readValue(args, ["--foo"])` in
+    // cli.ts is invisible to it, so `--foo` needs no `BROWSER_VALUE_FLAGS`
+    // entry and every scan in this file stays green. Fail closed: refuse the
+    // shape here rather than teach the graph a shape nothing uses yet.
+    expect(
+      namedCallableShapes(FILE),
+      "a top-level callable in cli.ts is not a `function` declaration: the call graph cannot index it, so the flags it reads need no BROWSER_VALUE_FLAGS entry and every coverage scan in this file stays green",
+    ).toEqual([]);
+    // "None in cli.ts" only means something if the scan can find the shapes
+    // it refuses. The last line is the precision claim: a callback argument
+    // binds no name the plan could call, so it must not trip the guard.
+    const synthetic = parseSource(
+      "synthetic.ts",
+      [
+        'const readAlpha = (args: string[]) => readValue(args, ["--alpha"]);',
+        "const READERS = {",
+        '  beta(args: string[]) { return readValue(args, ["--beta"]); },',
+        '  gamma: (args: string[]) => readValue(args, ["--gamma"]),',
+        "};",
+        'const NAMES = ["--zeta"].map((flag) => flag.slice(2));',
+      ].join("\n"),
+    );
+    expect(namedCallableShapes(synthetic)).toEqual([
+      "READERS.beta",
+      "READERS.gamma",
+      "readAlpha",
+    ]);
+    // A class method cannot be refused by shape — cli.ts declares JSON-RPC
+    // transports — so it is refused for reading argv instead.
+    expect(
+      argvReadingClassMethods(FILE),
+      "a top-level class method in cli.ts reads argv: the call graph cannot index it, so the flags it reads need no BROWSER_VALUE_FLAGS entry",
+    ).toEqual([]);
+    const transports = parseSource(
+      "transports.ts",
+      [
+        'class Delta { epsilon(args: string[]) { return readValue(args, ["--epsilon"]); } }',
+        "class Theta { iota(line: string) { return line.trim(); } }",
+      ].join("\n"),
+    );
+    expect(argvReadingClassMethods(transports)).toEqual(["Delta.epsilon"]);
   });
 
   it("keeps the argv-splicing primitives out of the browser plan", () => {
