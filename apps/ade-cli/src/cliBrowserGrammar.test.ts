@@ -29,17 +29,65 @@ function flagsReadFor(pattern: RegExp, source: string): Set<string> {
   return flags;
 }
 
-const PLAN_SOURCE = [
+const TOP_LEVEL_FUNCTIONS = new Set(
+  [...SOURCE.matchAll(/\nfunction (\w+)\b/g)].map((m) => m[1]!),
+);
+
+/**
+ * The primitives that actually consume argv. They are where the scan reads its
+ * flag names, so they are the leaves of the call graph, never expanded.
+ */
+const ARGV_PRIMITIVES = [
+  "readValue",
+  "readFlag",
+  "readNumberOption",
+  "readIntOption",
+  "readRepeatedValues",
+];
+
+/** Named `read*` helpers a body calls, minus the primitives themselves. */
+function readerCallsIn(source: string): string[] {
+  return [...new Set([...source.matchAll(/\b(read[A-Z]\w*)\s*\(/g)].map((m) => m[1]!))]
+    .filter((name) => TOP_LEVEL_FUNCTIONS.has(name) && !ARGV_PRIMITIVES.includes(name))
+    .sort();
+}
+
+// A hand-listed set of function names is the same hand-kept subset the table
+// itself failed as: `readProofOwnerBase` reads `--owner-kind|--owner|--owner-id`
+// and is called from `browser record stop` and `browser proof`, but matched no
+// name pattern, so `browser --owner-id o1 proof` dispatched on "o1" with the
+// coverage test green. The region now follows the call graph instead.
+const PLAN_ENTRY_POINTS = [
   "buildBrowserPlan",
   "buildBrowserPlanWithLiteralTail",
   "buildBrowserHandoffPlan",
   "readToolClaimArgs",
   ...[...SOURCE.matchAll(/\nfunction (readBrowser\w+)\b/g)].map((m) => m[1]!),
-]
-  .map(functionBody)
-  .join("\n");
+];
+
+const PLAN_FUNCTIONS = (() => {
+  const names = [...PLAN_ENTRY_POINTS];
+  for (const name of readerCallsIn(PLAN_ENTRY_POINTS.map(functionBody).join("\n")))
+    if (!names.includes(name)) names.push(name);
+  return names;
+})();
+
+const PLAN_SOURCE = PLAN_FUNCTIONS.map(functionBody).join("\n");
+
+/** Every carrier-aware positional read the browser plan makes today. */
+const CARRIER_AWARE_CALL_SITES = 5;
 
 describe("browser value flags", () => {
+  it("pulls the argv readers the plan calls into the scanned region", () => {
+    expect(PLAN_FUNCTIONS).toContain("readProofOwnerBase");
+    // One level is the whole graph: nothing the pulled-in readers call reads
+    // argv in turn. If that stops being true this fails instead of quietly
+    // scanning less than the plan consumes.
+    expect(readerCallsIn(PLAN_SOURCE).filter((name) => !PLAN_FUNCTIONS.includes(name))).toEqual(
+      [],
+    );
+  });
+
   it("covers every flag the browser plan reads a value for", () => {
     // `readRepeatedValues` is in the scan too: it consumes exactly like
     // `readValue`, so `--upload` carries a value and must be in the table or
@@ -59,10 +107,14 @@ describe("browser value flags", () => {
     // dispatches on "t1" again — with no other test failing.
     const calls = [
       ...PLAN_SOURCE.matchAll(
-        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator)\(([^()]*)\)/g,
+        // One level of nesting is matched, so a future
+        // `firstStandalonePositional(readBrowserArgs(args))` is still scanned
+        // rather than skipped — the floor below is the real count, not a
+        // number a skipped call site could still clear.
+        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator)\(((?:[^()]|\([^()]*\))*)\)/g,
       ),
     ];
-    expect(calls.length).toBeGreaterThanOrEqual(5);
+    expect(calls.length).toBe(CARRIER_AWARE_CALL_SITES);
     expect(
       calls
         .filter(([, , callArgs]) => !callArgs!.includes("BROWSER_VALUE_CARRIER_FLAGS"))
@@ -247,6 +299,41 @@ describe("browser positional grammar", () => {
     // alert body and the progress notice.
     expect(actionArgs(buildCliPlan(["browser", "handoff", "--text", "sign in"])))
       .toMatchObject({ reason: "sign in" });
+  });
+
+  it("keeps real words that merely start with a dash in the reason", () => {
+    // Dropping every `-`-prefixed leftover deleted a word out of the sentence
+    // quoted back at the human.
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "fix", "the", "-2fa", "prompt"])))
+      .toMatchObject({ reason: "fix the -2fa prompt" });
+  });
+
+  it("drops a leftover flag's value only when the flag carries one", () => {
+    // `--url` is a browser carrier, so its orphan value goes with it; `--foo`
+    // is not, so "bar" is a word of the sentence and stays visible rather than
+    // disappearing from the alert body.
+    expect(
+      actionArgs(buildCliPlan(["browser", "handoff", "--foo", "bar", "sign", "in"])),
+    ).toMatchObject({ reason: "bar sign in" });
+    expect(
+      actionArgs(buildCliPlan(["browser", "handoff", "--url", "x.test", "sign", "in"])),
+    ).toMatchObject({ reason: "sign in" });
+    // `--flag=value` carries its value in the same token: the next word stays.
+    expect(
+      actionArgs(buildCliPlan(["browser", "handoff", "--url=x.test", "sign", "in"])),
+    ).toMatchObject({ reason: "sign in" });
+  });
+
+  it("dispatches past a proof owner flag", () => {
+    // `readProofOwnerBase` reads these, so they must carry their value here
+    // too or the subcommand is read out of the flag's value.
+    const labelOf = (argv: string[]): string => {
+      const plan = buildCliPlan(argv);
+      return plan.kind === "execute" ? plan.label : plan.kind;
+    };
+    expect(labelOf(["browser", "--owner-id", "o1", "proof"])).toBe("browser proof");
+    expect(labelOf(["browser", "--owner-kind", "lane", "proof"])).toBe("browser proof");
+    expect(labelOf(["browser", "--owner", "lane", "record", "stop"])).toBe("browser record stop");
   });
 
   it("lets --help win over a value flag that would otherwise eat it", () => {

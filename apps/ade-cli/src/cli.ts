@@ -11678,6 +11678,33 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
  *    drops this step; the desktop still clears the hand-raise on hand-back, so
  *    the row does not stay raised just because nobody was blocked on it.
  */
+/**
+ * Free-text reason words, with unconsumed flag tokens removed.
+ *
+ * Flag-shaped leftovers are dropped rather than joined: `--text` survives argv
+ * when a word follows it, and joining it raw made the reason read "--text sign
+ * in" in the phone alert body and the progress notice. Dropping every
+ * `-`-prefixed token was too wide — it ate the word out of "fix the -2fa
+ * prompt". Only a token that *looks* like a flag (`-x` / `--long`) goes, and
+ * its neighbour goes with it only when the browser carrier table says that
+ * flag takes a value; an orphan value after an unknown flag stays in the
+ * sentence rather than vanishing from it.
+ */
+function dropUnconsumedFlagTokens(args: string[]): string[] {
+  const words: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (!/^--?[A-Za-z]/.test(token)) {
+      words.push(token);
+      continue;
+    }
+    const name = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+    // `--flag=value` carries its value in the same token: nothing follows to eat.
+    if (!token.includes("=") && BROWSER_VALUE_CARRIER_FLAGS.has(name)) index += 1;
+  }
+  return words;
+}
+
 function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): CliPlan {
   // Not `--text`: it is the global output switch, and every `browser handoff`
   // example ends with it.
@@ -11693,15 +11720,12 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
   const target = readBrowserTabTargetArgs(args);
   // Everything left over after the flags is the reason, so
   // `ade browser handoff sign in to staging` works without quoting.
-  // Flag-shaped leftovers are dropped rather than joined: `--text` survives
-  // argv when a word follows it, and joining it raw made the reason read
-  // "--text sign in" in the phone alert body and the progress notice.
   const reason = requireValue(
     (explicitReason ??
       collectGenericObjectArgs(args).reason ??
-      [...args.filter((token) => !token.startsWith("-")), ...literalTail].join(
-        " ",
-      )) as string | null,
+      [...dropUnconsumedFlagTokens(args), ...literalTail].join(" ")) as
+      | string
+      | null,
     "reason",
   ).trim();
   if (!reason) {
@@ -14394,6 +14418,9 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--option-index",
   "--option-label",
   "--option-value",
+  "--owner",
+  "--owner-id",
+  "--owner-kind",
   "--path",
   "--position",
   "--preset",
