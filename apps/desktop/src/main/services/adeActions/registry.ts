@@ -54,6 +54,7 @@ import type {
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
 import type {
+  AdeChatSessionSummaryActionResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -662,6 +663,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setClaudeOutputStyle",
     "setParallelLaunchState",
     "cancelScheduledWork",
+    "resumeUsageLimitNow",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -1120,7 +1122,7 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
     },
     getSessionSummary: {
-      description: "Read one chat session summary.",
+      description: "Read one chat session summary, plus the IANA timeZone of the ADE brain that produced its timestamps.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
     },
@@ -1148,6 +1150,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Cancel one ADE-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
       input: "object { sessionId: string, scheduleId: string }",
       example: "ade actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
+    },
+    resumeUsageLimitNow: {
+      description: "Send the usage-limit continue prompt now instead of waiting for the published reset. Cancels the armed auto-resume row and clears the paused streak.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.resumeUsageLimitNow --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
     readTranscript: {
       description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
@@ -1905,8 +1912,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       agentChatService.getAvailableModels(readObjectActionArg(args, "chat.getAvailableModels") as never);
   }
   if (typeof base.getSessionSummary === "function") {
-    service.getSessionSummary = (args?: unknown) =>
-      agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
+    service.getSessionSummary = async (
+      args?: unknown,
+    ): Promise<AdeChatSessionSummaryActionResult | null> => {
+      const summary = await agentChatService.getSessionSummary(
+        readStringActionArg(args, "sessionId"),
+      );
+      if (!summary) return null;
+      // The host zone is added here rather than on `AgentChatSessionSummary`
+      // itself so the per-row list payload does not carry the same constant N
+      // times; `chat.createScheduledWork` reports the same value the same way.
+      // See `AdeChatSessionSummaryActionResult` for the full reasoning.
+      return { ...summary, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    };
   }
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
@@ -1940,6 +1958,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       return agentChatService.cancelScheduledWork({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
         scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
+  }
+  if (typeof base.resumeUsageLimitNow === "function") {
+    service.resumeUsageLimitNow = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
+      return agentChatService.resumeUsageLimitNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
     };
   }

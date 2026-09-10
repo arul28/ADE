@@ -22,6 +22,7 @@ import {
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
+import { chatInfoResumeRow } from "../chatInfo";
 import {
   isEarlierBackgroundItem,
   isEarlierScheduleItem,
@@ -1173,8 +1174,15 @@ function nextWakeCountdown(value: string | null | undefined, nowMs: number): str
 }
 
 function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: ChatInfoSnapshot; brandColor: string; width: number; viewState: SubagentPaneViewState }) {
-  const nextWake = nextWakeCountdown(info.nextWakeAt, Date.now());
-  if (!info.scheduledWork.length && !nextWake) return null;
+  const nowMs = Date.now();
+  const nextWake = nextWakeCountdown(info.nextWakeAt, nowMs);
+  // A live usage limit is the reason the chat is idle, so it shows even when
+  // there is no schedule and no wake to report.
+  const resume = chatInfoResumeRow(info.usageLimitResume, nowMs);
+  // A refusal outlives the press that caused it, so the block stays open for it
+  // even when the limit it was about has since cleared.
+  const resumeNotice = info.usageLimitResumeNotice?.trim() || null;
+  if (!info.scheduledWork.length && !nextWake && !resume && !resumeNotice) return null;
   const inner = Math.max(10, width - 4);
   const clearedIds = new Set(viewState.cleared?.schedule ?? []);
   const grouped = groupPaneSectionItems(info.scheduledWork, {
@@ -1212,6 +1220,16 @@ function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: C
         color={brandColor}
         width={width}
       />
+      {resume ? (
+        <Text color={theme.color.t2} wrap="truncate-end">
+          {` ⏳ resume ${resume}`}
+        </Text>
+      ) : null}
+      {resumeNotice ? (
+        <Text color={theme.color.t3} wrap="truncate-end">
+          {`    ${resumeNotice}`}
+        </Text>
+      ) : null}
       {nextWake ? (
         <Text color={theme.color.t2} wrap="truncate-end">
           {` ⏰ next wake ${nextWake}`}

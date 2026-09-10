@@ -16,6 +16,7 @@ import {
   subagentIndexForPaneLine,
   subagentModelAttribution,
   subagentSnapshotsFromEvents,
+  collapseLegacySubagentEndEvents,
   type SubagentSnapshot,
 } from "./chatSubagents";
 
@@ -557,5 +558,59 @@ describe("subagent model attribution", () => {
     const snapshots = subagentSnapshotsFromEvents(events);
     expect(snapshots.find((snapshot) => snapshot.id === "child-1")?.model).toBe("opus");
     expect(snapshots.find((snapshot) => snapshot.id === "child-2")?.model ?? null).toBeNull();
+  });
+});
+
+/**
+ * The host used to commit BOTH `subagent_result` and `subagent.completed` for
+ * every subagent end. It now commits one; old transcripts still hold pairs, and
+ * replaying a pair counted one finished subagent twice.
+ */
+describe("legacy subagent end-event pairs", () => {
+  const legacyPair = (agentId: string): AgentChatEventEnvelope[] => [
+    {
+      sessionId: "session-1",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      event: { type: "subagent_started", taskId: agentId, agentId, description: "Scan files", turnId: "turn-1" },
+    },
+    {
+      sessionId: "session-1",
+      timestamp: "2026-09-07T12:00:01.000Z",
+      event: { type: "subagent_result", taskId: agentId, agentId, status: "completed", summary: "Done", turnId: "turn-1" },
+    },
+    {
+      sessionId: "session-1",
+      timestamp: "2026-09-07T12:00:01.000Z",
+      event: { type: "subagent.completed", agentId, status: "completed", summary: "Done", turnId: "turn-1" },
+    },
+  ];
+
+  it("collapses a pair to the canonical subagent_result", () => {
+    const collapsed = collapseLegacySubagentEndEvents(
+      legacyPair("agent-1"),
+      (envelope) => envelope.event,
+    );
+    expect(collapsed.map((envelope) => envelope.event.type)).toEqual([
+      "subagent_started",
+      "subagent_result",
+    ]);
+  });
+
+  it("keeps a subagent.completed that has no canonical partner", () => {
+    const events: AgentChatEvent[] = [
+      { type: "subagent.completed", agentId: "agent-2", status: "completed", summary: "Done", turnId: "turn-1" },
+    ];
+    expect(collapseLegacySubagentEndEvents(events, (event) => event)).toEqual(events);
+  });
+
+  it("reports one finished subagent when replaying a legacy pair", () => {
+    const events = legacyPair("agent-1");
+    expect(subagentSnapshotsFromEvents(events)).toEqual([
+      expect.objectContaining({ id: "agent-1", status: "completed" }),
+    ]);
+    expect(subagentActivitySummaryFromEvents(events)).toEqual({
+      totalCount: 1,
+      runningCount: 0,
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentChatUsageLimitResume } from "../../../shared/types/chat";
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import type { ChatScheduledWorkRecord } from "./chatScheduledWorkScheduler";
@@ -31,15 +32,28 @@ function createHarness() {
       return row ?? null;
     },
   };
+  const resumeStates: Array<AgentChatUsageLimitResume | null> = [];
+  let releaseScheduler: (() => void) | null = null;
   const coordinator = createChatAutoResumeCoordinator({
     getScheduler: () => scheduler as never,
-    whenSchedulerReady: () => Promise.resolve(),
+    whenSchedulerReady: () => (releaseScheduler
+      ? new Promise<void>((resolve) => {
+          const previous = releaseScheduler;
+          releaseScheduler = () => {
+            previous?.();
+            resolve();
+          };
+        })
+      : Promise.resolve()),
     isSessionSchedulable: () => true,
     emitNotice: (sessionId, notice) => {
       notices.push({ sessionId, message: notice.message });
     },
     captureAnalytics: (properties) => {
       captures.push(properties);
+    },
+    onResumeStateChanged: (_sessionId, resume) => {
+      resumeStates.push(resume);
     },
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } as never,
   });
@@ -61,7 +75,26 @@ function createHarness() {
   const failAtUsageLimit = (sessionId: string, minutes: number): Promise<void> =>
     failAtResetInstant(sessionId, Date.now() + minutes * 60_000);
 
-  return { coordinator, rows, notices, captures, failAtUsageLimit, failAtResetInstant };
+  /** Holds every `whenSchedulerReady` open until `release()` is called. */
+  const gateScheduler = (): (() => void) => {
+    releaseScheduler = () => {};
+    return () => {
+      const release = releaseScheduler;
+      releaseScheduler = null;
+      release?.();
+    };
+  };
+
+  return {
+    coordinator,
+    rows,
+    notices,
+    captures,
+    resumeStates,
+    gateScheduler,
+    failAtUsageLimit,
+    failAtResetInstant,
+  };
 }
 
 describe("createChatAutoResumeCoordinator", () => {
@@ -72,7 +105,7 @@ describe("createChatAutoResumeCoordinator", () => {
     await failAtUsageLimit("chat-1", 30);
     await failAtUsageLimit("chat-1", 90);
     await failAtUsageLimit("chat-1", 150);
-    expect(notices.filter((notice) => notice.message.startsWith("Auto-resume paused")))
+    expect(notices.filter((notice) => notice.message === "Paused after 2 tries"))
       .toHaveLength(1);
 
     // The chat is archived or deleted. Nothing about the old streak may survive
@@ -83,7 +116,7 @@ describe("createChatAutoResumeCoordinator", () => {
     notices.length = 0;
     await failAtUsageLimit("chat-1", 210);
     expect(notices.map((notice) => notice.message))
-      .toEqual([expect.stringContaining("Auto-resume scheduled for")]);
+      .toEqual([expect.stringMatching(/^Resumes at /)]);
   });
 });
 
@@ -175,5 +208,99 @@ describe("auto-resume analytics", () => {
       expect(serialized).not.toContain("usage limit");
       expect(serialized).not.toMatch(/\d{5,}/);
     }
+  });
+});
+
+/**
+ * The chat service reaps the Claude query the moment a limit lands. If that
+ * happens while the upsert is still in flight, the durable row never gets
+ * written and a real limit resumes nothing — the exact production failure.
+ * `whenArmed` is the seam that orders the two.
+ */
+describe("auto-resume arm ordering and state exposure", () => {
+  it("whenArmed does not resolve until the durable row is written", async () => {
+    const { coordinator, rows, gateScheduler } = createHarness();
+    const releaseScheduler = gateScheduler();
+
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "claude",
+      resetAtMs: Date.now() + 30 * 60_000,
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+
+    let armed = false;
+    const waiter = coordinator.whenArmed("chat-1").then(() => { armed = true; });
+    // Drain every microtask the arm could be parked on. It is still blocked on
+    // the scheduler, so nothing may be written and nothing may have resolved.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(armed).toBe(false);
+    expect(rows.size).toBe(0);
+
+    releaseScheduler();
+    await waiter;
+    expect(armed).toBe(true);
+    expect([...rows.values()].map((row) => row.id)).toEqual(["auto-resume:chat-1"]);
+  });
+
+  it("whenArmed resolves immediately for a chat with no arm in flight", async () => {
+    const { coordinator } = createHarness();
+    await expect(coordinator.whenArmed("chat-never-limited")).resolves.toBeUndefined();
+  });
+
+  it("reports armed, paused, and cancelled resume states with the streak", async () => {
+    const { coordinator, resumeStates, failAtUsageLimit } = createHarness();
+
+    await failAtUsageLimit("chat-1", 30);
+    expect(resumeStates.at(-1)).toMatchObject({
+      state: "armed",
+      provider: "codex",
+      scheduleId: "auto-resume:chat-1",
+      attempts: 1,
+    });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 1, paused: false });
+
+    await failAtUsageLimit("chat-1", 90);
+    await failAtUsageLimit("chat-1", 150);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "paused", attempts: 2 });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 2, paused: true });
+
+    coordinator.cancelForSession("chat-1", "user_message");
+    expect(resumeStates.at(-1)).toBeNull();
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 0, paused: false });
+  });
+
+  it("reports no_reset when the limit is live but the provider published no reset", async () => {
+    const { coordinator, resumeStates, rows } = createHarness();
+
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "claude",
+      resetAtMs: null,
+      providerDetail: "100% utilized",
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resumeStates.at(-1)).toMatchObject({
+      state: "no_reset",
+      fireAt: null,
+      providerDetail: "100% utilized",
+    });
+    expect(rows.size).toBe(0);
+  });
+
+  it("resetStreak lets a capped chat arm once more", async () => {
+    const { coordinator, resumeStates, failAtUsageLimit } = createHarness();
+
+    await failAtUsageLimit("chat-1", 30);
+    await failAtUsageLimit("chat-1", 90);
+    await failAtUsageLimit("chat-1", 150);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "paused" });
+
+    coordinator.resetStreak("chat-1");
+    await failAtUsageLimit("chat-1", 210);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "armed", attempts: 1 });
   });
 });

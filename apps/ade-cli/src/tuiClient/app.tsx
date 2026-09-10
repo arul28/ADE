@@ -54,6 +54,7 @@ import type {
   AgentChatScheduledWorkState,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatUsageLimitResume,
   AgentChatSlashCommand,
   AgentChatStopMode,
   ClaudeActiveGoal,
@@ -142,10 +143,12 @@ import {
   resizeTerminal,
   reloadClaudePlugins,
   respondToInput,
+  resumeUsageLimitNow,
   runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
   sendToTerminalSession,
+  setChatAutoContinueAtUsageLimit,
   setChatSpawnKind,
   signalTerminal,
   setClaudeOutputStyle,
@@ -3168,6 +3171,32 @@ export function resolveTerminalPaneWidth(centerWidth: number): number {
   return safeCenterWidth(centerWidth);
 }
 
+/**
+ * Apply a host `session_meta_updated` usage-limit patch to the session list.
+ *
+ * Exported (and pure) because the rule it encodes is easy to get wrong in three
+ * ways at once: a patch with NO `usageLimitResume` key is about something else
+ * and must leave a live limit alone, an explicit `null` is the host saying the
+ * limit is over, and an unchanged value must return the SAME array so the
+ * chat-info memo below does not rebuild on every unrelated meta event.
+ */
+export function applyUsageLimitResumeMeta(
+  sessions: AgentChatSessionSummary[],
+  sessionId: string,
+  event: { usageLimitResume?: AgentChatUsageLimitResume | null },
+): AgentChatSessionSummary[] {
+  if (event.usageLimitResume === undefined) return sessions;
+  const nextResume = event.usageLimitResume;
+  let changed = false;
+  const next = sessions.map((session) => {
+    if (session.sessionId !== sessionId) return session;
+    if ((session.usageLimitResume ?? null) === nextResume) return session;
+    changed = true;
+    return { ...session, usageLimitResume: nextResume };
+  });
+  return changed ? next : sessions;
+}
+
 export function resolveDrawerPaneWidth(columns: number, drawerOpen: boolean): number {
   if (!drawerOpen) return 0;
   const safeColumns = finiteFloor(columns, DRAWER_PANE_MIN_WIDTH);
@@ -3437,6 +3466,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [prByLaneId, setPrByLaneId] = useState<Record<string, LanePrSummary>>({});
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
+  /**
+   * The host's answer when a manual `/resume-now` was refused, kept per session
+   * so switching chats cannot show one chat's refusal against another's limit.
+   * Cleared as soon as the host reports the next usage-limit transition, which
+   * is the point the sentence stops being true.
+   */
+  const [usageLimitResumeNotice, setUsageLimitResumeNotice] = useState<{ sessionId: string; message: string } | null>(null);
   const [terminalSessions, setTerminalSessions] = useState<ChatTerminalSession[]>([]);
   const [terminalScheduledWorkById, setTerminalScheduledWorkById] = useState<Record<string, AgentChatScheduledWorkState>>({});
   const [terminalPreview, setTerminalPreview] = useState<ChatTerminalPreviewResult | null>(null);
@@ -4705,6 +4741,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       inspectedSubagentId,
       pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
+      usageLimitResumeNotice: usageLimitResumeNotice
+        && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
+        ? usageLimitResumeNotice.message
+        : null,
     });
   }, [
     activeDisplaySession,
@@ -4722,6 +4762,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     statusLineStats,
     streaming,
     subagentSnapshots,
+    usageLimitResumeNotice,
   ]);
   const buildChatInfoSnapshot = useCallback(() => {
     const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
@@ -4745,6 +4786,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       inspectedSubagentId,
       pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
+      usageLimitResumeNotice: usageLimitResumeNotice
+        && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
+        ? usageLimitResumeNotice.message
+        : null,
     });
   }, [
     activeDisplaySession,
@@ -4764,6 +4809,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     statusLineStats,
     streaming,
     subagentSnapshots,
+    usageLimitResumeNotice,
   ]);
   const chatInfoRef = useRef(chatInfo);
   const buildChatInfoSnapshotRef = useRef(buildChatInfoSnapshot);
@@ -8971,6 +9017,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ) {
         void refreshStateRef.current({ hydrateHistory: true }).catch(() => undefined);
       }
+      // A usage-limit transition (arm, fire, cancel, pause, opt-out, heal)
+      // arrives as a session_meta_updated patch on the session summary. Apply
+      // it at once instead of waiting out the 15s summary poll: the Resume row
+      // and the Work-list label ARE this feature, and a row still promising
+      // "Resumes 7:31 PM" a quarter-minute after it fired is telling the user
+      // something untrue. Key absent = this patch is about something else;
+      // explicit null = the limit is over.
+      if (
+        envelope.event.type === "session_meta_updated"
+        && envelope.event.usageLimitResume !== undefined
+      ) {
+        setSessions((current) => applyUsageLimitResumeMeta(current, envelope.sessionId, envelope.event));
+        // Whatever the host last refused is about the state that just changed,
+        // so the sentence stops being true here.
+        setUsageLimitResumeNotice((prev) => (prev?.sessionId === envelope.sessionId ? null : prev));
+      }
       // A cross-client mode change (iOS/desktop re-moding the session the TUI is
       // viewing) arrives as a transient session_meta_updated carrying the new
       // permission/interaction fields. The composer footer reads modelState, not
@@ -11927,6 +11989,74 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       openSubagentsPane();
+      return;
+    }
+    // Usage-limit resume controls — the terminal twin of the desktop pill's
+    // "Resume now" / "Don't continue" / "Turn on", over the same two host
+    // actions (`chat.resumeUsageLimitNow`, `chat.updateSession
+    // autoContinueAtUsageLimit`) that `ade chat resume-now` and iOS use.
+    if (name === "/resume-now" || name === "/chat resume-now" || name === "/chat auto-resume") {
+      const targetSessionId = activeSessionIdRef.current;
+      if (!targetSessionId) {
+        setRightPane({
+          kind: "details",
+          title: "Usage limit",
+          body: "No active chat is selected. Open the chat that hit the limit first.",
+        });
+        return;
+      }
+      if (name === "/chat auto-resume") {
+        const value = args.trim().toLowerCase();
+        if (value !== "on" && value !== "off") {
+          setRightPane({
+            kind: "details",
+            title: "Usage limit",
+            body: [
+              "Usage: /chat auto-resume <on|off>",
+              "",
+              "  on   ADE waits out the published reset and continues this chat",
+              "  off  don't continue — the chat stays parked until you send something",
+              "",
+              "Run /resume-now to send the continue prompt without waiting.",
+            ].join("\n"),
+          });
+          return;
+        }
+        try {
+          await setChatAutoContinueAtUsageLimit(conn, targetSessionId, value === "on");
+          addNotice(
+            value === "on"
+              ? "Auto-resume is on for this chat."
+              : "Auto-resume is off for this chat.",
+            "success",
+          );
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      try {
+        const result = await resumeUsageLimitNow(conn, targetSessionId);
+        if (!result.ok) {
+          // A refusal is an answer, not a failure: the host declined to spend a
+          // turn because nothing is waiting, or because the armed row is
+          // already delivering. Its sentence is written to be shown as-is, and
+          // it belongs next to the Resume row it is about.
+          setUsageLimitResumeNotice({ sessionId: targetSessionId, message: result.message });
+          addNotice(result.message, "info");
+          // Put the pane the sentence renders in on screen; the chat-info
+          // effect re-syncs it from the live snapshot on the next render, so
+          // the refusal lands under the Resume row it explains.
+          openSubagentsPane();
+          return;
+        }
+        setUsageLimitResumeNotice(null);
+        addNotice("Sent the usage-limit continue prompt.", "success");
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
       return;
     }
     if (

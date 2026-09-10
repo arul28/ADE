@@ -204,6 +204,10 @@ export function toWorkSessionSummary(
     wokeReason: session.wokeReason ?? null,
     resumeCommand: summary?.resumeCommand ?? null,
     nextWakeAt: session.nextWakeAt ?? summary?.nextWakeAt ?? null,
+    // The Work-list label for a usage-limited chat is computed by the shared
+    // `sessionStatusPresentation` from this field alone; if the projection
+    // drops it the row falls back to "Failed" for a chat that will resume.
+    usageLimitResume: session.usageLimitResume ?? summary?.usageLimitResume ?? null,
     chatActivityMode: session.chatActivityMode ?? summary?.chatActivityMode ?? null,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount ?? summary?.activeBackgroundTaskCount,
     backgroundWork: session.backgroundWork ?? summary?.backgroundWork,

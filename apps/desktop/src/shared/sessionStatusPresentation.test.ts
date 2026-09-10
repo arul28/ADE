@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation } from "./sessionStatusPresentation";
+import type { AgentChatUsageLimitResume } from "./types/chat";
 
 /**
  * `sessionElapsedAnchor` is the shared answer to "how long", read by the
@@ -67,23 +68,83 @@ describe("sessionElapsedAnchor", () => {
   });
 });
 
-describe("sessionStatusPresentation usage-limit park", () => {
-  it("reads Parked instead of Waiting or Done while a usage-limit reset is in the future", () => {
+describe("sessionStatusPresentation usage-limit resume", () => {
+  const resume = (
+    state: AgentChatUsageLimitResume["state"],
+    fireAt: string | null,
+  ): AgentChatUsageLimitResume => ({
+    state,
+    provider: "claude",
+    fireAt,
+    resetAt: fireAt,
+    scheduleId: state === "armed" ? "auto-resume:chat-1" : null,
+    attempts: state === "paused" ? 2 : 1,
+    providerDetail: null,
+    turnId: "turn-1",
+    updatedAt: "2026-08-17T11:59:00.000Z",
+  });
+
+  it("names the resume instant instead of Waiting or Done while a resume is armed", () => {
     const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
-    const parked = sessionStatusPresentation("idle", {}, {
-      usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",
+    const armed = sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("armed", "2026-08-17T12:47:00.000Z"),
       nextWakeAt: "2026-08-17T12:10:00.000Z",
       nowMs,
     });
-    expect(parked).toMatchObject({ label: "Parked", tone: "neutral" });
+    expect(armed).toMatchObject({ tone: "neutral", glyph: "waiting" });
+    expect(armed?.label.startsWith("Resumes ")).toBe(true);
   });
 
-  it("does not park after the reset instant has passed", () => {
+  it("reads Resuming — not a past clock — once the row is due", () => {
     const nowMs = Date.parse("2026-08-17T13:00:00.000Z");
-    const done = sessionStatusPresentation("idle", {}, {
-      usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",
+    const resuming = sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("armed", "2026-08-17T12:47:00.000Z"),
       nowMs,
     });
-    expect(done?.label).not.toBe("Parked");
+    // The row still speaks for the chat, but "Resumes 12:47 PM" would be
+    // promising an instant that is already thirteen minutes gone.
+    expect(resuming).toMatchObject({ label: "Resuming", tone: "neutral", glyph: "waiting" });
+  });
+
+  it("labels a capped streak as attention, and leaves the rest to the phase", () => {
+    const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+    expect(sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("paused", "2026-08-17T21:30:00.000Z"),
+      nowMs,
+    })).toMatchObject({ label: "Paused · limit", tone: "amber", glyph: "waiting" });
+    // Neither of these is waiting for anything, so the row keeps its ordinary
+    // presentation instead of being quieted into a limit label.
+    expect(sessionStatusPresentation("idle", {}, {
+      usageLimitResume: resume("opted_out", null),
+      nowMs,
+    })?.label).toBe("Done");
+    expect(sessionStatusPresentation("failed", {}, {
+      usageLimitResume: resume("no_reset", null),
+      nowMs,
+    })).toMatchObject({ label: "Failed", tone: "red" });
+  });
+
+  it("outranks the red Failed label for the turn that died at the limit", () => {
+    const armed = sessionStatusPresentation("failed", {}, {
+      usageLimitResume: resume("armed", "2026-08-17T12:47:00.000Z"),
+      nowMs: Date.parse("2026-08-17T12:00:00.000Z"),
+    });
+    expect(armed).toMatchObject({ tone: "neutral", glyph: "waiting" });
+    expect(armed?.label.startsWith("Resumes ")).toBe(true);
+    // A capped streak still outranks failed — the chat stopped on a limit.
+    expect(sessionStatusPresentation("failed", {}, {
+      usageLimitResume: resume("paused", "2026-08-17T21:30:00.000Z"),
+      nowMs: Date.parse("2026-08-17T12:00:00.000Z"),
+    })).toMatchObject({ label: "Paused · limit", tone: "amber" });
+    // A failure with no live limit is still a failure.
+    expect(sessionStatusPresentation("failed", {}, { usageLimitResume: null }))
+      .toMatchObject({ label: "Failed", tone: "red" });
+  });
+
+  it("falls back to the ordinary phase label when no limit is live", () => {
+    expect(sessionStatusPresentation("idle", {}, {
+      usageLimitResume: null,
+      nowMs: Date.parse("2026-08-17T12:00:00.000Z"),
+    })?.label).toBe("Done");
   });
 });

@@ -19,6 +19,7 @@ import type {
   AgentChatRecoverTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatResumeUsageLimitNowResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -1146,6 +1147,42 @@ export async function tagChat(connection: AdeCodeConnection, sessionId: string, 
   return await connection.action("chat", "updateSession", {
     sessionId,
     tag,
+  });
+}
+
+/**
+ * Send the usage-limit continue prompt now instead of waiting for the published
+ * reset — the terminal twin of the desktop pill's "Resume now" and of
+ * `ade chat resume-now`.
+ *
+ * The host answers a refusal (`ok: false`) rather than throwing when there is
+ * no live limit, or when the armed row is already delivering. That is a normal
+ * answer, not an error, and its `message` is written to be shown as-is, so the
+ * caller renders it rather than inventing a second vocabulary for the same two
+ * facts.
+ */
+export async function resumeUsageLimitNow(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatResumeUsageLimitNowResult> {
+  return await connection.action<AgentChatResumeUsageLimitNowResult>("chat", "resumeUsageLimitNow", {
+    sessionId,
+  });
+}
+
+/**
+ * Per-chat auto-resume switch — `false` is the "Don't continue" the desktop
+ * popover offers, `true` the "Turn on" that re-arms an opted-out or twice-paused
+ * chat. Same `chat.updateSession` field every client writes.
+ */
+export async function setChatAutoContinueAtUsageLimit(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  autoContinueAtUsageLimit: boolean,
+): Promise<AgentChatSession> {
+  return await connection.action("chat", "updateSession", {
+    sessionId,
+    autoContinueAtUsageLimit,
   });
 }
 

@@ -52,9 +52,10 @@ describe("runtimeEvents", () => {
   });
 
   it("round-trips subagent display metadata through the canonical runtime shape", () => {
+    // The legacy `subagent.completed` shape still arrives from runtimes and
+    // from old transcripts, so it must survive the round trip intact.
     const runtime = agentChatEventToRuntimeEvent({
-      type: "subagent_result",
-      taskId: "task-1",
+      type: "subagent.completed",
       agentId: "agent-1",
       parentToolUseId: "parent-1",
       agentType: "reviewer",
@@ -93,6 +94,31 @@ describe("runtimeEvents", () => {
       usage: { totalTokens: 42 },
       turnId: "turn-1",
     });
+  });
+
+  it("mints no second end event for a finished subagent", () => {
+    // `subagent_result` is THE end event. Minting a canonical
+    // `subagent.completed` beside it made every client count, group, and render
+    // each finished subagent twice. It is not translated at all now, so there
+    // is no second end event to filter back out.
+    const endEvent = {
+      type: "subagent_result",
+      taskId: "task-1",
+      agentId: "agent-1",
+      status: "completed",
+      summary: "Done",
+      turnId: "turn-1",
+    } as const;
+    expect(agentChatEventToRuntimeEvent(endEvent)).toBeNull();
+    expect(buildCanonicalAgentChatRuntimeEvent(endEvent)).toBeNull();
+    // The start event still gets its canonical twin — only the END is single.
+    expect(buildCanonicalAgentChatRuntimeEvent({
+      type: "subagent_started",
+      taskId: "task-1",
+      agentId: "agent-1",
+      description: "scan files",
+      turnId: "turn-1",
+    })).toMatchObject({ type: "subagent.started", agentId: "agent-1" });
   });
 
   it("round-trips tool failure events through runtime shape", () => {

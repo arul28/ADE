@@ -18,6 +18,9 @@ import {
   describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatChatResumeNow,
+  formatChatResumeRelativeDelta,
+  formatChatStatus,
   formatDiagnosticError,
   formatOutput,
   graphWaitState,
@@ -5027,9 +5030,248 @@ describe("ADE CLI", () => {
         argsList: ["chat-2"],
       },
     });
+    // Second step: the session summary carries `usageLimitResume`. It is optional
+    // so a brain too old to answer it still reports the turn phase.
+    expect(status.steps[1]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSessionSummary",
+        argsList: ["chat-2"],
+      },
+    });
+    expect(status.steps[1]?.optional).toBe(true);
     expect(status.exitCodeFromResult?.({ phase: "running", sessionId: "chat-2" })).toBe(0);
     expect(status.exitCodeFromResult?.({ phase: "idle", sessionId: "chat-2" })).toBe(1);
     expect(status.exitCodeFromResult?.({ phase: "blocked", sessionId: "chat-2" })).toBe(2);
+    // The turn status stays flat once the summary enrichment is merged in, so
+    // the phase — and the exit code — are still read off the top level.
+    expect(status.exitCodeFromResult?.({
+      phase: "blocked",
+      sessionId: "chat-2",
+      usageLimitResume: { state: "armed" },
+      timeZone: "America/New_York",
+    })).toBe(2);
+  });
+
+  function chatStatusConnectionStub() {
+    return {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+  }
+
+  it("builds chat resume-now (and its 'resume' alias) as chat.resumeUsageLimitNow", () => {
+    for (const verb of ["resume-now", "resume"]) {
+      const plan = buildCliPlan(["chat", verb, "chat-9"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.label).toBe("chat resume-now");
+      expect(plan.formatter).toBe("chat-resume-now");
+      expect(inferFormatter(plan)).toBe("chat-resume-now");
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "resumeUsageLimitNow",
+          args: { sessionId: "chat-9" },
+        },
+      });
+      // `ok: false` means the host found no live limit: a failed request.
+      expect(plan.exitCodeFromResult?.({ ok: true, turnId: "turn-3" })).toBe(0);
+      expect(plan.exitCodeFromResult?.({ result: { ok: true, turnId: "turn-3" } })).toBe(0);
+      expect(plan.exitCodeFromResult?.({ ok: false, reason: "No usage limit is live." })).toBe(1);
+      expect(plan.exitCodeFromResult?.({})).toBe(1);
+    }
+  });
+
+  it("formats chat resume-now as a sent turn, or a one-line reason when it was refused", () => {
+    expect(formatChatResumeNow({ ok: true, turnId: "turn-3" })).toBe("Resume sent · turn turn-3");
+    expect(formatChatResumeNow({ result: { ok: true, turnId: null } })).toBe("Resume sent · turn pending");
+    // `message` is the host's ready-to-render sentence; `reason` is the refusal
+    // CODE, so it is only a fallback for a brain that sent no message.
+    expect(formatChatResumeNow({
+      ok: false,
+      reason: "no_live_usage_limit",
+      message: "No usage limit is live\n for chat-9.",
+    })).toBe("No usage limit is live for chat-9.");
+    expect(formatChatResumeNow({ ok: false, reason: "resume_in_flight" })).toBe("resume_in_flight");
+    expect(formatChatResumeNow({ ok: false })).toBe("No live usage limit to resume.");
+  });
+
+  it("prints one resume line per usage-limit state, from an injected clock", () => {
+    const NOW = Date.parse("2026-09-07T23:28:30.000Z");
+    const turn = { sessionId: "chat-1", phase: "idle", queuedMessageCount: 0, subagents: [] };
+    // `chat status` renders one FLAT record: the turn status plus the summary
+    // step's `usageLimitResume` / `timeZone` as siblings.
+    const resume = (overrides: Record<string, unknown> = {}) => ({
+      ...turn,
+      usageLimitResume: {
+        state: "armed",
+        provider: "claude",
+        fireAt: "2026-09-07T23:31:30.000Z",
+        resetAt: "2026-09-07T23:30:00.000Z",
+        scheduleId: "auto-resume:chat-1",
+        attempts: 1,
+        providerDetail: null,
+        turnId: "turn-1",
+        updatedAt: "2026-09-07T23:28:00.000Z",
+        ...overrides,
+      },
+    });
+
+    expect(formatChatStatus(resume(), NOW)).toContain(
+      "  resume     resumes 2026-09-07T23:31:30.000Z (in 3 min) · usage limit · attempts 1/2",
+    );
+    expect(formatChatStatus(resume({ state: "resuming" }), NOW)).toContain(
+      "  resume     resuming now · usage limit · attempts 1/2",
+    );
+    expect(formatChatStatus(resume({ state: "paused", attempts: 2 }), NOW)).toContain(
+      "  resume     paused after 2 tries · turn auto-resume back on"
+      + " to try at 2026-09-07T23:31:30.000Z (in 3 min)",
+    );
+    expect(formatChatStatus(resume({ state: "opted_out" }), NOW)).toContain(
+      "  resume     won't auto-resume (opted out)",
+    );
+    expect(formatChatStatus(resume({ state: "no_reset", fireAt: null, resetAt: null }), NOW)).toContain(
+      "  resume     usage limit · no reset time",
+    );
+    // A paused streak with no published reset still says what to do.
+    expect(formatChatStatus(resume({ state: "paused", fireAt: null, resetAt: null }), NOW)).toContain(
+      "turn auto-resume back on to try at the next reset",
+    );
+    // A past instant reads as elapsed rather than a negative countdown.
+    expect(formatChatStatus(resume(), Date.parse("2026-09-07T23:41:30.000Z"))).toContain(
+      "(10 min ago)",
+    );
+    // One unit table now, and only the long wording takes an `s`: a two-day wait
+    // reads `in 2 days` (it printed `in 2 day`), while `min`/`hr`/`sec` never do.
+    expect(formatChatStatus(
+      resume({ fireAt: "2026-09-09T23:31:30.000Z", resetAt: null }),
+      NOW,
+    )).toContain("(in 2 days)");
+    expect(formatChatResumeRelativeDelta("2026-09-08T23:31:30.000Z", NOW)).toBe("in 1 day");
+    expect(formatChatResumeRelativeDelta("2026-09-07T23:29:30.000Z", NOW)).toBe("in 1 min");
+    expect(formatChatResumeRelativeDelta("2026-09-08T01:31:30.000Z", NOW)).toBe("in 2 hr");
+    expect(formatChatResumeRelativeDelta("2026-09-07T23:28:32.000Z", NOW)).toBe("now");
+  });
+
+  it("omits the resume line when no usage limit is live, and adds the brain zone when the host sends one", () => {
+    const turn = { sessionId: "chat-1", phase: "idle", queuedMessageCount: 0, subagents: [] };
+    expect(formatChatStatus(turn)).not.toContain("resume");
+    expect(formatChatStatus({ ...turn, usageLimitResume: null })).not.toContain("resume");
+    // An unrecognised state is not printed rather than rendered as a blank row.
+    expect(formatChatStatus({ ...turn, usageLimitResume: { state: "wat" } }))
+      .not.toContain("resume");
+    // Old brain: the optional summary step contributed nothing at all.
+    expect(formatChatStatus(turn)).toContain("IDLE");
+
+    const withZone = formatChatStatus(
+      {
+        ...turn,
+        timeZone: "America/New_York",
+        usageLimitResume: {
+          state: "armed",
+          provider: "claude",
+          fireAt: "2026-09-07T23:31:30.000Z",
+          resetAt: null,
+          scheduleId: null,
+          attempts: 1,
+          providerDetail: null,
+          turnId: null,
+          updatedAt: "2026-09-07T23:28:00.000Z",
+        },
+      },
+      Date.parse("2026-09-07T23:28:30.000Z"),
+    );
+    expect(withZone).toContain("brain local");
+    expect(withZone).toContain("(America/New_York)");
+  });
+
+  it("keeps the resume line in the header block, above the subagent tree", () => {
+    const text = formatChatStatus(
+      {
+        sessionId: "chat-1",
+        phase: "running",
+        queuedMessageCount: 0,
+        subagents: [{
+          taskId: "task-1",
+          agentId: "agent-1",
+          description: "Explore",
+          status: "running",
+          durationMs: 1_000,
+          children: [],
+        }],
+        usageLimitResume: {
+          state: "opted_out",
+          provider: "claude",
+          fireAt: null,
+          resetAt: null,
+          scheduleId: null,
+          attempts: 0,
+          providerDetail: null,
+          turnId: null,
+          updatedAt: "2026-09-07T23:28:00.000Z",
+        },
+      },
+      Date.parse("2026-09-07T23:28:30.000Z"),
+    );
+    const lines = text.split("\n");
+    const resumeIndex = lines.findIndex((line) => line.includes("resume"));
+    const blankIndex = lines.indexOf("");
+    expect(resumeIndex).toBeGreaterThanOrEqual(0);
+    expect(blankIndex).toBeGreaterThan(resumeIndex);
+  });
+
+  it("carries the raw usageLimitResume object into chat status --json", () => {
+    const plan = buildCliPlan(["chat", "status", "chat-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const usageLimitResume = {
+      state: "armed",
+      provider: "claude",
+      fireAt: "2026-09-07T23:31:30.000Z",
+      resetAt: "2026-09-07T23:30:00.000Z",
+      scheduleId: "auto-resume:chat-1",
+      attempts: 1,
+      providerDetail: null,
+      turnId: "turn-1",
+      updatedAt: "2026-09-07T23:28:00.000Z",
+    };
+    const json = summarizeExecution({
+      plan,
+      connection: chatStatusConnectionStub(),
+      values: {
+        result: { domain: "chat", action: "getTurnStatus", result: { sessionId: "chat-1", phase: "idle" } },
+        summary: {
+          domain: "chat",
+          action: "getSessionSummary",
+          result: { sessionId: "chat-1", usageLimitResume, timeZone: "America/New_York" },
+        },
+      },
+    }) as Record<string, unknown>;
+    // Flat: `--json` parsers read `.phase` at the top level, with the summary
+    // step's enrichment beside it rather than nested under `summary`.
+    expect(json).toEqual({
+      sessionId: "chat-1",
+      phase: "idle",
+      usageLimitResume,
+      timeZone: "America/New_York",
+    });
+
+    // A brain that could not answer the optional step contributes no enrichment.
+    const withoutSummary = summarizeExecution({
+      plan,
+      connection: chatStatusConnectionStub(),
+      values: {
+        result: { domain: "chat", action: "getTurnStatus", result: { sessionId: "chat-1", phase: "idle" } },
+      },
+    }) as Record<string, unknown>;
+    expect(withoutSummary).toEqual({ sessionId: "chat-1", phase: "idle" });
   });
 
   it("formats chat turn status as a RUNNING/BLOCKED/IDLE tree", () => {

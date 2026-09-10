@@ -585,17 +585,6 @@ struct WorkUsageLimitOptOut: Equatable {
   static func pendingSchedule(_ scheduledWork: [AgentChatScheduledWorkItem]?) -> AgentChatScheduledWorkItem? {
     scheduledWork?.first(where: isPendingAutoResume)
   }
-
-  static func resetLabel(
-    usageLimitParkedUntil: String?,
-    scheduledWork: [AgentChatScheduledWorkItem]?,
-    now: Date = Date()
-  ) -> String {
-    workUsageLimitResetLabel(
-      usageLimitParkedUntil ?? pendingSchedule(scheduledWork)?.nextRunAt,
-      now: now
-    )
-  }
 }
 
 /// Native Claude Task subagents can be stopped one-at-a-time. Spawned ADE chats
@@ -1065,6 +1054,14 @@ struct WorkTurnEndMarker: Equatable {
   let provider: String
   let modelLabel: String
   let modelId: String?
+  /// This turn ended at a provider usage limit (`apiErrorStatus == 429`, or it
+  /// is the turn the host's resume row is anchored to). The footer then reads
+  /// one quiet line instead of a red FAILED divider — a limit is a wait, not a
+  /// fault of the turn.
+  var usageLimitPaused: Bool = false
+  /// Usage for a usage-limit turn, folded in from the standalone USAGE row so it
+  /// moves behind the footer's details toggle instead of shouting beside it.
+  var usage: WorkUsageSummary? = nil
 }
 
 func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
@@ -1156,10 +1153,27 @@ struct WorkSubagentTimelineRow: Identifiable, Equatable {
 /// `SubagentStoppedGroupEvent`). Carries the original result rows so the card
 /// can list each agent's title and reopen its detail on tap.
 struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
+  /// Why the run stopped. The two causes read differently and must not be
+  /// merged: an interrupt is something you did, a usage limit is something that
+  /// happened to every agent at once.
+  enum Reason: Equatable {
+    case interrupted
+    case usageLimit
+  }
+
   let id: String
   let rows: [WorkSubagentTimelineRow]
+  var reason: Reason = .interrupted
 
   var count: Int { rows.count }
+
+  var headline: String {
+    let noun = count == 1 ? "agent" : "agents"
+    switch reason {
+    case .interrupted: return "\(count) \(noun) stopped when you interrupted"
+    case .usageLimit: return "\(count) \(noun) stopped · usage limit"
+    }
+  }
 }
 
 struct WorkSubagentSelection: Identifiable, Equatable {
@@ -1489,6 +1503,16 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let subagentParentAgentId: String?
   let subagentSpawnDepth: Int?
   let subagentResourceLinks: [AgentChatResourceLink]
+  /// HTTP status attached to an SDK terminal API error on a `done` frame
+  /// (notably 429). Kept beside the event for the same reason as the subagent
+  /// fields above: the turn footer needs "this turn ended at a usage limit"
+  /// without growing `WorkChatEvent.done`'s already-wide associated values.
+  let apiErrorStatus: Int?
+  /// True when this row decoded from the legacy `subagent.completed` wire type
+  /// rather than the canonical `subagent_result`. Both normalize to
+  /// `.subagentResult`, so only this flag can tell an old host's duplicate twin
+  /// apart from two genuine results for the same agent.
+  let isLegacySubagentCompletedFrame: Bool
 
   init(
     sessionId: String,
@@ -1500,7 +1524,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     subagentSpawnKind: AgentChatSpawnKind? = nil,
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
-    subagentResourceLinks: [AgentChatResourceLink] = []
+    subagentResourceLinks: [AgentChatResourceLink] = [],
+    apiErrorStatus: Int? = nil,
+    isLegacySubagentCompletedFrame: Bool = false
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1512,6 +1538,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.apiErrorStatus = apiErrorStatus
+    self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
   }
 }
 

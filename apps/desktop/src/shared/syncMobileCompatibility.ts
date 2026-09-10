@@ -34,6 +34,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Metadata regeneration is an explicit chat affordance. Optional so older
   // phones can keep their connection and simply omit the newer action.
   "chat.regenerateSessionMetadata",
+  // Usage-limit "Resume now". The phone hides the button unless the host
+  // advertises this action, and a viewer-role tap is refused with the standard
+  // policy message rather than silently doing nothing. Optional so an older
+  // phone does not go limited against a newer host, and an older host simply
+  // omits the action.
+  "chat.resumeUsageLimitNow",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",

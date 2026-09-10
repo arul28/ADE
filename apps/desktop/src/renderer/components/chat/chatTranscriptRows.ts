@@ -17,6 +17,7 @@ import {
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
+import { isUsageLimitFailureText } from "../../../shared/usageLimitResumePresentation";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -200,14 +201,22 @@ export type SubagentStoppedGroupItem = {
 };
 
 /**
- * A run of 2+ consecutive interrupt-stopped subagent result cards, folded into
- * one calm card so a mass interrupt (a dozen — or fifty — agents) renders as a
- * single line instead of a wall of identical "stopped" cards. Produced by the
- * second-layer grouping pass; never emitted by the first-layer collapse.
- * Row key: `subagent-stopped-group:${firstAgentKey}`.
+ * Why a run of subagents all ended at once. Only same-cause runs fold together:
+ * "12 agents stopped" is a useful sentence exactly when the twelve share one
+ * explanation, and a lie the moment they do not.
+ */
+export type SubagentStoppedGroupCause = "interrupt" | "usage_limit";
+
+/**
+ * A run of 2+ consecutive subagent result cards that all ended for the same
+ * reason, folded into one calm card so a mass stop (a dozen — or fifty —
+ * agents) renders as a single line instead of a wall of identical cards.
+ * Produced by the second-layer grouping pass; never emitted by the first-layer
+ * collapse. Row key: `subagent-stopped-group:${cause}:${firstAgentKey}`.
  */
 export type SubagentStoppedGroupEvent = {
   type: "subagent_stopped_group";
+  cause: SubagentStoppedGroupCause;
   count: number;
   items: SubagentStoppedGroupItem[];
 };
@@ -2964,20 +2973,37 @@ function groupBackgroundJobLines(
   return result;
 }
 
-// A `stopped` terminal status is only ever emitted when the user interrupts a
-// turn (see stopActiveClaudeSubagents — it settles every live subagent with
-// status "stopped" + summary "Interrupted"). So a stopped result card is always
-// an interrupt casualty carrying no summary the user needs to read individually.
-function isInterruptStoppedResultCard(
+// Why a settled subagent card can be folded away, or null when it carries a
+// result the user has to read for itself.
+//
+// - `interrupt`: a `stopped` terminal status is only ever emitted when the user
+//   interrupts a turn (see stopActiveClaudeSubagents — it settles every live
+//   subagent with status "stopped" + summary "Interrupted"), so it is always an
+//   interrupt casualty carrying no individual summary.
+// - `usage_limit`: a `failed` card whose reason is the provider's limit. When
+//   the limit lands, EVERY live agent fails within the same second with the
+//   same sentence; N identical cards say nothing the count does not.
+//
+// Every other failure keeps its own card — a real error is exactly the thing
+// that must not be summarized into a number.
+function stoppedGroupCauseOf(
   event: ChatTranscriptGroupedEnvelope["event"],
-): event is SubagentResultCardRenderEvent {
-  return event.type === "subagent_result_card" && event.status === "stopped";
+): SubagentStoppedGroupCause | null {
+  if (event.type !== "subagent_result_card") return null;
+  if (event.status === "stopped") return "interrupt";
+  if (event.status !== "failed") return null;
+  const reason = event.error?.trim() || event.summaryPreview?.trim() || null;
+  // A failed subagent carries only the string its runtime handed back, so the
+  // usage-limit verdict has to come from the text — this is the surface
+  // `isUsageLimitFailureText` exists for.
+  return isUsageLimitFailureText(reason) ? "usage_limit" : null;
 }
 
-// Fold a run of 2+ consecutive interrupt-stopped result cards into one compact
-// `subagent_stopped_group` card. Completed/failed cards (which carry real
-// summaries) and a lone stopped card stay individual. The group key is derived
-// from the first agent so it stays stable across the virtualizer's re-renders.
+// Fold a run of 2+ consecutive same-cause result cards into one compact
+// `subagent_stopped_group` card. Cards with real summaries and a lone stopped
+// card stay individual, and a run that changes cause splits at the boundary.
+// The group key is derived from the first agent so it stays stable across the
+// virtualizer's re-renders.
 function groupStoppedSubagentResultCards(
   rows: ChatTranscriptGroupedEnvelope[],
 ): ChatTranscriptGroupedEnvelope[] {
@@ -2985,19 +3011,20 @@ function groupStoppedSubagentResultCards(
   let index = 0;
   while (index < rows.length) {
     const row = rows[index]!;
-    if (!isInterruptStoppedResultCard(row.event)) {
+    const cause = stoppedGroupCauseOf(row.event);
+    if (!cause) {
       result.push(row);
       index += 1;
       continue;
     }
 
     let end = index;
-    while (end < rows.length && isInterruptStoppedResultCard(rows[end]!.event)) end += 1;
+    while (end < rows.length && stoppedGroupCauseOf(rows[end]!.event) === cause) end += 1;
     const run = rows.slice(index, end);
     index = end;
 
     if (run.length < 2) {
-      // A single lone stopped result stays a normal result card (no group of one).
+      // A single lone casualty stays a normal result card (no group of one).
       result.push(run[0]!);
       continue;
     }
@@ -3013,9 +3040,13 @@ function groupStoppedSubagentResultCards(
     const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
     const lastInRun = run[run.length - 1]!;
     result.push({
-      key: `subagent-stopped-group:${firstAgentKey}`,
+      // The cause is part of the identity: an interrupt group and a usage-limit
+      // group can both start at the same agent (a stop that lands on the same
+      // run a limit already claimed), and sharing a key would make React reuse
+      // one card's state for the other.
+      key: `subagent-stopped-group:${cause}:${firstAgentKey}`,
       timestamp: lastInRun.timestamp,
-      event: { type: "subagent_stopped_group", count: run.length, items },
+      event: { type: "subagent_stopped_group", cause, count: run.length, items },
     });
   }
   return result;

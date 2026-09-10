@@ -4653,6 +4653,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       sessionId: requireString(payload.sessionId, "chat.cancelScheduledWork requires sessionId."),
       scheduleId: requireString(payload.scheduleId, "chat.cancelScheduledWork requires scheduleId."),
     }));
+  // Owner-only: unlike cancelling a row, resuming now spends a provider turn.
+  register("chat.resumeUsageLimitNow", { viewerAllowed: false, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resumeUsageLimitNow({
+      sessionId: requireString(payload.sessionId, "chat.resumeUsageLimitNow requires sessionId."),
+    }));
   register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
     if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");

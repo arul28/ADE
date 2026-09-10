@@ -451,17 +451,31 @@ func workSessionRowPresentation(
     )
   }
 
+  // A chat waiting on a provider usage limit is not broken — it has an
+  // appointment. When the host says a resume is armed, the row must not wear the
+  // red failed dot or the Failed capsule it would otherwise inherit from the
+  // turn that hit the limit.
+  let usageLimit = workUsageLimitResumeModel(for: summary, now: now)
+  let usageLimitStatus = workUsageLimitRowStatus(usageLimit, now: now)
+  let slot = workSessionStatusSlot(
+    session: session,
+    phase: phase,
+    resolved: resolved,
+    now: now,
+    usageLimitStatus: usageLimitStatus
+  )
+  // Whether the usage-limit overlay actually took the slot is the slot
+  // function's own answer, not something to re-derive from the rendered glyph:
+  // the parked glyph is a presentation choice the overlay is free to change,
+  // and inferring ownership from it would silently hand the row back its red
+  // "Failed" capsule the day it does.
+  let usageLimitOwnsSlot = slot.ownedByUsageLimit
+
   return WorkSessionRowPresentation(
     phase: phase,
-    badge: badge,
-    tone: resolved.presentation.tone,
-    status: workSessionStatusSlot(
-      session: session,
-      phase: phase,
-      resolved: resolved,
-      now: now,
-      parkedUntil: summary?.usageLimitParkedUntil
-    )
+    badge: usageLimitOwnsSlot ? nil : badge,
+    tone: usageLimitOwnsSlot ? (usageLimitStatus?.tone ?? .neutral) : resolved.presentation.tone,
+    status: slot.presentation
   )
 }
 
@@ -480,6 +494,11 @@ func workSessionRowPresentation(
 ///      never a canonical phase. Already folded into `resolved` by the caller.
 ///   5. the phase table.
 ///
+/// `ownedByUsageLimit` is true only when the usage-limit overlay below actually
+/// took the slot. The caller needs that fact to drop the badge and borrow the
+/// overlay's tone, and it is a fact only this function knows — reading it back
+/// off the rendered glyph would couple row chrome to a presentation detail.
+///
 /// Returns nil for `settled`, matching desktop's `null`: a settled row lives in
 /// the collapsed tail where the section itself is the status, and the free slot
 /// belongs to the timestamp — the only thing worth reading down there. This is
@@ -490,13 +509,13 @@ private func workSessionStatusSlot(
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
   now: Date,
-  parkedUntil: String?
-) -> WorkSessionStatusPresentation? {
+  usageLimitStatus: WorkUsageLimitRowStatus?
+) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
   // needsYou skips the overlay gate entirely and falls straight through to the
   // phase table below, which already says "Needs you" in amber.
   if phase != .needsYou {
     if session.isSnoozed(now: now) {
-      return WorkSessionStatusPresentation(
+      return (WorkSessionStatusPresentation(
         // Falling back to the bare word keeps the slot meaningful when the
         // deadline is missing or unparseable.
         label: workSnoozeWakeLabel(session.snoozedUntil, now: now) ?? "Snoozed",
@@ -507,45 +526,45 @@ private func workSessionStatusSlot(
         showsElapsed: false,
         prominent: false,
         kind: nil
-      )
+      ), false)
     }
 
     if session.wokeMarker(now: now) != nil {
-      return WorkSessionStatusPresentation(
+      return (WorkSessionStatusPresentation(
         label: "Woke",
         tone: .amber,
         glyph: nil,
         showsElapsed: false,
         prominent: true,
         kind: nil
-      )
+      ), false)
     }
 
-    if phase == .settled { return nil }
+    if phase == .settled { return (nil, false) }
   }
 
-  if (phase == .ready || phase == .idle),
-     let parkedUntil,
-     let parkedDate = workParsedDate(parkedUntil),
-     parkedDate > now {
-    return WorkSessionStatusPresentation(
-      label: "Parked",
-      tone: .neutral,
-      glyph: .waiting,
+  // Above the phase table on purpose, and with no phase gate: the turn that hit
+  // the limit usually settles as `failed`, and "Failed" is exactly the wrong
+  // word for a chat that is going to pick itself back up at 7:31 PM.
+  if let usageLimitStatus {
+    return (WorkSessionStatusPresentation(
+      label: usageLimitStatus.label,
+      tone: usageLimitStatus.tone,
+      glyph: usageLimitStatus.glyph,
       showsElapsed: false,
       prominent: false,
       kind: nil
-    )
+    ), true)
   }
 
-  return WorkSessionStatusPresentation(
+  return (WorkSessionStatusPresentation(
     label: resolved.presentation.label,
     tone: resolved.presentation.tone,
     glyph: resolved.presentation.glyph,
     showsElapsed: resolved.presentation.showsElapsed,
     prominent: resolved.presentation.prominent,
     kind: resolved.kind
-  )
+  ), false)
 }
 
 /// The italic line-3 preview, with the provenance the renderer needs.

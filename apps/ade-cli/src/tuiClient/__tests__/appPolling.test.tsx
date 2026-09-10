@@ -2,7 +2,7 @@ import React from "react";
 import { act } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "ink-testing-library";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatEventEnvelope, AgentChatSessionSummary, AgentChatUsageLimitResume } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { BufferedEvent } from "../../eventBuffer";
 import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
@@ -74,7 +74,7 @@ vi.mock("node:fs", async () => {
   };
 });
 
-import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, rankMentionSuggestions, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, applyUsageLimitResumeMeta, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, rankMentionSuggestions, shouldHydrateRefreshHistory } from "../app";
 import type { MentionSuggestion } from "../types";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
@@ -713,6 +713,122 @@ describe("AdeCodeApp polling", () => {
     expect(stripAnsi(instance.lastFrame() ?? "")).not.toContain("References ·");
     await unmountApp(instance);
   });
+
+  /**
+   * Usage-limit resume from the terminal. The TUI owns no policy here: every
+   * command below is a thin dispatch to the same two host actions the desktop
+   * pill and `ade chat resume-now` use, so what is worth pinning is which
+   * command reaches which action — and that a refusal is shown rather than
+   * swallowed.
+   */
+  it("dispatches /resume-now to the host's manual usage-limit resume", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "chat" && action === "resumeUsageLimitNow") {
+        return { ok: true, turnId: "turn-resumed" };
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={{ ...project, sessionHint: "chat-1" }} />);
+    await act(async () => { instance.stdin.write("/resume-now"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("\r"); });
+    await flushInkFrame();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "resumeUsageLimitNow")).toEqual([
+      ["chat", "resumeUsageLimitNow", { sessionId: "chat-1" }],
+    ]);
+    // Resume now sends a turn; it must never be confused with the per-chat
+    // switch, which is what "Turn on" writes.
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "updateSession")).toEqual([]);
+    await waitForFrame(instance, "Sent the usage-limit continue prompt.");
+
+    await unmountApp(instance);
+  });
+
+  it("writes the per-chat auto-resume switch, and explains the bare command instead of guessing", async () => {
+    const actionMock = vi.fn(async () => []);
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(<AdeCodeApp project={{ ...project, sessionHint: "chat-1" }} />);
+    await act(async () => { instance.stdin.write("/chat auto-resume"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("\r"); });
+    await flushInkFrame();
+
+    // No argument is a question, not a command: guessing on or off here would
+    // silently change whether a limited chat ever continues.
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "updateSession")).toEqual([]);
+    // The pane truncates to its width, so match the head of the usage line.
+    await waitForFrame(instance, "USAGE LIMIT");
+    // The pane lays the usage line out in columns and truncates to its width,
+    // so match the part that survives both.
+    expect(stripAnsi(instance.frames.at(-1) ?? "")).toContain("/chat aut");
+    expect(stripAnsi(instance.frames.at(-1) ?? "")).toContain("Run /resume-now to s");
+
+    // The usage pane took focus; Escape hands it back to the composer.
+    await act(async () => { instance.stdin.write("\u001B"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("/chat auto-resume off"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("\r"); });
+    await flushInkFrame();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "updateSession")).toEqual([
+      ["chat", "updateSession", { sessionId: "chat-1", autoContinueAtUsageLimit: false }],
+    ]);
+
+    await act(async () => { instance.stdin.write("\u001B"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("/chat auto-resume on"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("\r"); });
+    await flushInkFrame();
+
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "updateSession").at(-1)).toEqual(
+      ["chat", "updateSession", { sessionId: "chat-1", autoContinueAtUsageLimit: true }],
+    );
+
+    await unmountApp(instance);
+  });
+
+  it("shows the host's refusal for a manual resume instead of a failure of its own", async () => {
+    const actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "chat" && action === "resumeUsageLimitNow") {
+        return {
+          ok: false,
+          reason: "no_live_usage_limit",
+          message: "No usage limit is live for this chat.",
+        };
+      }
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = await renderApp(
+      <AdeCodeApp project={{ ...project, sessionHint: "chat-1" }} />,
+    );
+    await act(async () => { instance.stdin.write("/resume-now"); });
+    await flushInkFrame();
+    await act(async () => { instance.stdin.write("\r"); });
+    await flushInkFrame();
+
+    // A refusal is an answer, not an error: the host's sentence is shown as-is,
+    // and the pane it belongs beside is opened rather than left closed.
+    await waitForFrame(instance, "No usage limit is live for this chat.");
+    expect(stripAnsi(instance.frames.at(-1) ?? "")).toContain("CHAT INFO");
+    expect(actionMock.mock.calls.filter(([domain, action]) =>
+      domain === "chat" && action === "resumeUsageLimitNow")).toHaveLength(1);
+
+    await unmountApp(instance);
+  });
+
 });
 
 describe("TUI product analytics policy", () => {
@@ -796,5 +912,53 @@ describe("shouldHydrateRefreshHistory", () => {
       loadedSessionId: "chat-1",
       nextSessionId: "chat-1",
     })).toBe(false);
+  });
+});
+
+describe("applyUsageLimitResumeMeta", () => {
+  const armed: AgentChatUsageLimitResume = {
+    state: "armed",
+    provider: "claude",
+    fireAt: "2026-09-08T19:31:00.000Z",
+    resetAt: "2026-09-08T19:30:00.000Z",
+    scheduleId: "auto-resume:chat-1",
+    attempts: 1,
+    providerDetail: "5-hour limit resets at 7:31 PM ET",
+    turnId: "turn-limit",
+    updatedAt: "2026-09-08T19:28:00.000Z",
+  };
+
+  it("applies a patch to the addressed chat and leaves the others alone", () => {
+    const sessions = [chat(), chat({ sessionId: "chat-2" })];
+
+    const next = applyUsageLimitResumeMeta(sessions, "chat-1", { usageLimitResume: armed });
+
+    expect(next[0].usageLimitResume).toEqual(armed);
+    expect(next[1]).toBe(sessions[1]);
+    expect(next).not.toBe(sessions);
+  });
+
+  it("treats a patch with no usage-limit key as being about something else", () => {
+    // A rename, a mode change, a history invalidation: none of them says the
+    // limit is over, and reading them as "null" would drop a live Resume row.
+    const sessions = [chat({ usageLimitResume: armed })];
+
+    expect(applyUsageLimitResumeMeta(sessions, "chat-1", {})).toBe(sessions);
+    expect(applyUsageLimitResumeMeta(sessions, "chat-1", { usageLimitResume: undefined }))
+      .toBe(sessions);
+    expect(sessions[0].usageLimitResume).toEqual(armed);
+  });
+
+  it("clears the row on an explicit null, and does not churn when nothing moved", () => {
+    const limited = [chat({ usageLimitResume: armed })];
+
+    const cleared = applyUsageLimitResumeMeta(limited, "chat-1", { usageLimitResume: null });
+    expect(cleared[0].usageLimitResume).toBeNull();
+
+    // Same array identity when the state did not move: the chat-info memo
+    // downstream rebuilds on identity, so a repeated patch must not churn it.
+    expect(applyUsageLimitResumeMeta(cleared, "chat-1", { usageLimitResume: null })).toBe(cleared);
+    expect(applyUsageLimitResumeMeta(cleared, "chat-missing", { usageLimitResume: armed }))
+      .toBe(cleared);
   });
 });

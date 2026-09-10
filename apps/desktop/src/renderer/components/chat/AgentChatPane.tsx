@@ -139,13 +139,7 @@ import {
   AgentChatMessageList,
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
-import {
-  ChatAutoResumeContext,
-  classifyProviderFailure,
-  providerFailureEventId,
-  type ChatAutoResumeState,
-} from "./ProviderFailureRecoveryCard";
-import { isPendingAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
@@ -7682,83 +7676,14 @@ export function AgentChatPane({
     });
   }, []);
 
-  // ADE's own auto-resume row for this chat, if the provider usage limit left
-  // one armed. Published as context so the failure card can offer a Cancel next
-  // to the retry affordances without drilling props through every event row.
-  // User- and agent-created schedules are excluded by the `auto_resume_limit`
-  // tag, so cancelling here can never drop a schedule the user asked for.
-  const pendingAutoResumeSchedule = useMemo(
-    () => (selectedSession?.scheduledWork ?? []).find(isPendingAutoResumeScheduledWork) ?? null,
-    [selectedSession?.scheduledWork],
-  );
-  const usageLimitParkedUntil = selectedSession?.usageLimitParkedUntil ?? null;
-  const usageLimitParkedUntilMs = usageLimitParkedUntil ? Date.parse(usageLimitParkedUntil) : Number.NaN;
-  const sdkUsageLimitParked = Number.isFinite(usageLimitParkedUntilMs);
-  // The schedule belongs to the failure that armed it, which is always the most
-  // recent usage-limit error in the transcript. Anchoring to it keeps every
-  // older usage-limit card in the same chat from advertising a live schedule.
-  // Gated on the schedule or an SDK-native parked wait: without one there is
-  // nothing to anchor, and the walk below is a full-transcript scan that would
-  // otherwise re-run on every event append for the overwhelmingly common case
-  // of a chat with no armed resume.
-  const latestRateLimitFailureEventId = useMemo(() => {
-    if (!pendingAutoResumeSchedule && !sdkUsageLimitParked) return null;
-    for (let index = selectedEventsForDisplay.length - 1; index >= 0; index -= 1) {
-      const envelope = selectedEventsForDisplay[index];
-      const event = envelope?.event;
-      if (!envelope || event?.type !== "error") continue;
-      if (classifyProviderFailure(event)?.kind !== "rate_limit") continue;
-      return providerFailureEventId(envelope.timestamp, event);
-    }
-    return null;
-  }, [pendingAutoResumeSchedule, sdkUsageLimitParked, selectedEventsForDisplay]);
-  const autoResumeContextValue = useMemo<ChatAutoResumeState>(() => {
-    if (!selectedSessionId || (!pendingAutoResumeSchedule && !sdkUsageLimitParked)) return null;
-    const scheduleId = pendingAutoResumeSchedule?.id ?? null;
-    const sessionId = selectedSessionId;
-    return {
-      scheduleId,
-      nextRunAt: pendingAutoResumeSchedule?.nextRunAt ?? usageLimitParkedUntil ?? null,
-      anchorEventId: latestRateLimitFailureEventId,
-      cancel: async () => {
-        try {
-          if (scheduleId) {
-            const result = await window.ade.agentChat.cancelScheduledWork(
-              { sessionId, scheduleId },
-              chatRuntimePinRef.current,
-            );
-            patchSessionSummary(sessionId, {
-              scheduledWork: (selectedSession?.scheduledWork ?? []).filter((item) =>
-                item.id !== scheduleId || !(
-                  result.providerCancellationConfirmed || result.schedule.status === "cancelled"
-                )),
-            });
-          }
-          await window.ade.agentChat.updateSession({
-            sessionId,
-            autoContinueAtUsageLimit: false,
-          }, chatRuntimePinRef.current);
-          patchSessionSummary(sessionId, {
-            autoContinueAtUsageLimit: false,
-            usageLimitParkedUntil: null,
-          });
-          scheduleSessionsRefresh();
-          return null;
-        } catch (cancelError) {
-          return cancelError instanceof Error ? cancelError.message : String(cancelError);
-        }
-      },
-    };
-  }, [
-    latestRateLimitFailureEventId,
-    patchSessionSummary,
-    pendingAutoResumeSchedule,
-    scheduleSessionsRefresh,
-    sdkUsageLimitParked,
-    selectedSession?.scheduledWork,
-    selectedSessionId,
-    usageLimitParkedUntil,
-  ]);
+  // Host-computed usage-limit resume state (`AgentChatUsageLimitResume`). It is
+  // the ONE fact this feature renders from: the compact pill above the composer
+  // owns the countdown and every action, the quota card stands down while it is
+  // live, and the failed turn it is anchored to renders a quiet footer instead
+  // of a red FAILED line. The renderer derives nothing from the transcript any
+  // more — the old anchor walk existed only because the client had to guess
+  // which failure the armed schedule belonged to.
+  const usageLimitResume = selectedSession?.usageLimitResume ?? null;
 
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
@@ -7806,6 +7731,13 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        // The host republishes the whole usage-limit resume state on every
+        // transition (armed -> resuming -> paused, or cleared), so the pill
+        // updates live for every viewer of this chat instead of waiting for a
+        // session-list refetch.
+        if (meta.usageLimitResume !== undefined) {
+          summaryPatch.usageLimitResume = meta.usageLimitResume;
+        }
         if (meta.subagentTakeoverPromptShownAt !== undefined) {
           summaryPatch.subagentTakeoverPromptShownAt = meta.subagentTakeoverPromptShownAt;
         }
@@ -13178,6 +13110,24 @@ export function AgentChatPane({
   const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
     <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
+  // The whole usage-limit surface: one line, above the composer, in the same
+  // capped column the prompt box uses so the two share an edge. It is an
+  // ordinary flow child (its popover is the absolutely-positioned part), so it
+  // moves the composer by its own height and by nothing else.
+  const usageLimitPill = usageLimitResume && composerSessionId ? (
+    <div
+      className={cn(
+        "px-0.5",
+        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+      )}
+    >
+      <ChatUsageLimitResumePill
+        sessionId={composerSessionId}
+        resume={usageLimitResume}
+        runtimePin={renderedChatRuntimePin}
+      />
+    </div>
+  ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
     && selectedSession.orchestrationParentSessionId
@@ -13833,6 +13783,7 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
+      {usageLimitPill}
       {composerElement}
     </div>
   );
@@ -14273,7 +14224,6 @@ export function AgentChatPane({
                         may render here. PersonalChatsPage provides no such context. */}
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
-                    <ChatAutoResumeContext.Provider value={autoResumeContextValue}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
@@ -14281,6 +14231,8 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        usageLimitResumeActive={usageLimitResume != null}
+                        usageLimitResumeTurnId={usageLimitResume?.turnId ?? null}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.
@@ -14367,7 +14319,6 @@ export function AgentChatPane({
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                       />
-                    </ChatAutoResumeContext.Provider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}
@@ -14388,6 +14339,7 @@ export function AgentChatPane({
                           </div>
                         ) : appPanelLifecyclePill}
                         {takeoverBanner}
+                        {usageLimitPill}
                         {composerElement}
                       </div>
                     ) : null}

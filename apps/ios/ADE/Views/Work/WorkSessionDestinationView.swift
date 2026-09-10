@@ -1726,6 +1726,21 @@ struct WorkSessionDestinationView: View {
       "chat.interruptWithQueueMode",
       sessionId: session.id
     )
+    // Host-gated, not permission-gated: a brain that predates
+    // `chat.resumeUsageLimitNow` cannot run it at all, so the sheet hides the
+    // button rather than offering one that could only ever produce an error.
+    // A viewer device or a dropped connection keeps the button — the tap
+    // routes through `requireInvokableRemoteAction` and says which of the two
+    // it was.
+    let resumeUsageLimitNowAction: (@MainActor () async -> Void)?
+    if syncService.supportsChatRemoteAction(
+      "chat.resumeUsageLimitNow",
+      sessionId: session.id
+    ) {
+      resumeUsageLimitNowAction = { await resumeUsageLimitNow() }
+    } else {
+      resumeUsageLimitNowAction = nil
+    }
     let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
@@ -1790,7 +1805,8 @@ struct WorkSessionDestinationView: View {
       },
       onInterrupt: interruptSession,
       onRestoreCancelledQueue: restoreCancelledQueueAction,
-      onOptOutUsageLimitAutoContinue: optOutUsageLimitAutoContinue,
+      onSetUsageLimitAutoContinue: setUsageLimitAutoContinue,
+      onResumeUsageLimitNow: resumeUsageLimitNowAction,
       onStopSubagentTask: stopTaskAction,
       onApproveRequest: approveRequest,
       onRespondToQuestion: respondToQuestion,

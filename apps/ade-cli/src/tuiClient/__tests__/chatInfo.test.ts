@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import { chatInfoResumeRow, deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatSessionSummary,
+  AgentChatUsageLimitResume,
+} from "../../../../desktop/src/shared/types/chat";
 import type { TokenStats } from "../adeApi";
 
 function env(timestamp: string, event: AgentChatEventEnvelope["event"], sequence: number): AgentChatEventEnvelope {
@@ -509,5 +513,106 @@ describe("formatMcpCapabilityNote", () => {
       goal: null,
       streaming: false,
     }).mcpNote).toBeNull();
+  });
+});
+
+describe("chat info usage-limit resume row", () => {
+  // 12 minutes before the fire instant: above the five-minute window where the
+  // shared pill switches to a second-level countdown.
+  const NOW = Date.parse("2026-09-07T23:19:30.000Z");
+
+  function resume(overrides: Partial<AgentChatUsageLimitResume> = {}): AgentChatUsageLimitResume {
+    return {
+      state: "armed",
+      provider: "claude",
+      fireAt: "2026-09-07T23:31:30.000Z",
+      resetAt: "2026-09-07T23:30:00.000Z",
+      scheduleId: "auto-resume:session-1",
+      attempts: 1,
+      providerDetail: null,
+      turnId: "turn-1",
+      updatedAt: "2026-09-07T23:28:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("counts down an armed resume from the injected clock", () => {
+    expect(chatInfoResumeRow(resume(), NOW)).toBe("Resumes in 12 min · usage limit");
+    // Inside the five-minute window the same row ticks seconds.
+    expect(chatInfoResumeRow(resume(), Date.parse("2026-09-07T23:28:30.000Z")))
+      .toBe("Resumes in 3 min · usage limit");
+  });
+
+  it("reads Resuming… once the fire instant has passed", () => {
+    expect(chatInfoResumeRow(resume(), Date.parse("2026-09-07T23:32:00.000Z"))).toBe("Resuming…");
+    expect(chatInfoResumeRow(resume({ state: "resuming" }), NOW)).toBe("Resuming…");
+  });
+
+  it("names the paused, opted-out and no-reset states rather than counting down", () => {
+    expect(chatInfoResumeRow(resume({ state: "paused", attempts: 2 }), NOW))
+      .toContain("Paused after 2 tries");
+    expect(chatInfoResumeRow(resume({ state: "opted_out" }), NOW))
+      .toBe("Won't auto-resume · Turn on");
+    expect(chatInfoResumeRow(resume({ state: "no_reset", fireAt: null, resetAt: null }), NOW))
+      .toBe("Usage limit · no reset time · Retry");
+  });
+
+  it("is absent when no usage limit is live", () => {
+    expect(chatInfoResumeRow(null, NOW)).toBeNull();
+    expect(chatInfoResumeRow(undefined, NOW)).toBeNull();
+  });
+
+  it("carries the host resume state onto the snapshot verbatim", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ usageLimitResume: resume() }),
+      provider: "claude",
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+    expect(snapshot.usageLimitResume).toEqual(resume());
+  });
+
+  it("carries the host's refusal sentence for this chat only, and drops it when absent", () => {
+    // The refusal is per-press state the app clears on the next usage-limit
+    // patch; the snapshot's job is only to carry it to the pane that renders it
+    // under the Resume row, without inventing wording of its own.
+    const refusal = "This chat is already resuming. Wait for the current turn to start.";
+    const args = {
+      events: [],
+      activeSession: session({ usageLimitResume: resume() }),
+      provider: "claude" as const,
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    };
+
+    const withNotice = deriveChatInfoSnapshot({ ...args, usageLimitResumeNotice: refusal });
+    expect(withNotice.usageLimitResumeNotice).toBe(refusal);
+    // It sits beside the row rather than replacing it: both are shown.
+    expect(withNotice.usageLimitResume).toEqual(resume());
+    expect(deriveChatInfoSnapshot(args).usageLimitResumeNotice).toBeNull();
+  });
+
+  it("leaves the snapshot field null when the session has no resume state", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session(),
+      provider: "claude",
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+    expect(snapshot.usageLimitResume).toBeNull();
   });
 });

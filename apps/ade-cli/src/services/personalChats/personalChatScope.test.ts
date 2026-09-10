@@ -122,6 +122,10 @@ describe("PersonalChatScope", () => {
         sessionId: string;
         paused: boolean;
       }) => ({ sessionId, paused, nextWakeAt: null })),
+      resumeUsageLimitNow: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        ok: true,
+        turnId: `turn-${sessionId}`,
+      })),
       updateSession: vi.fn(async () => summary),
       ensureSessionSurface: vi.fn(),
       archiveSession: vi.fn(async () => undefined),
@@ -589,6 +593,27 @@ describe("PersonalChatScope", () => {
       scheduleId: " ",
     })).rejects.toThrow("scheduleId is required");
     expect(service.cancelScheduledWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a usage limit only for an owned personal session, and owner-only", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("resumeUsageLimitNow", { sessionId: "chat-1" })).resolves.toMatchObject({
+      action: "resumeUsageLimitNow",
+      result: { ok: true, turnId: "turn-chat-1" },
+    });
+    expect(service.resumeUsageLimitNow).toHaveBeenCalledWith({ sessionId: "chat-1" });
+
+    await expect(scope.call("resumeUsageLimitNow", { sessionId: " " }))
+      .rejects.toThrow("sessionId is required");
+    expect(service.resumeUsageLimitNow).toHaveBeenCalledTimes(1);
+
+    // Spends a provider turn, so a paired viewer must not be able to fire it.
+    expect(scope.capabilities().actions).toContain("resumeUsageLimitNow");
+    expect(isPersonalChatActionViewerAllowed("resumeUsageLimitNow")).toBe(false);
+    expect(isPersonalChatActionQueueable("resumeUsageLimitNow")).toBe(false);
+    await scope.dispose();
   });
 
   it("creates and pauses scheduled work only for an owned personal session", async () => {

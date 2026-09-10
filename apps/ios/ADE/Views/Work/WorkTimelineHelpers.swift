@@ -6,7 +6,11 @@ func buildWorkChatTimelineSnapshot(
   transcript: [WorkChatEnvelope],
   fallbackEntries: [AgentChatTranscriptEntry],
   artifacts: [ComputerUseArtifactSummary],
-  localEchoMessages: [WorkLocalEchoMessage]
+  localEchoMessages: [WorkLocalEchoMessage],
+  /// `usageLimitResume.turnId` from the session summary, when a limit is live.
+  /// Lets the turn footer read as a pause even when the transcript's own `done`
+  /// frame carried no 429.
+  usageLimitTurnId: String? = nil
 ) -> WorkChatTimelineSnapshot {
   let signature = workChatTimelineSnapshotSignature(
     transcript: transcript,
@@ -49,7 +53,8 @@ func buildWorkChatTimelineSnapshot(
     eventCards: eventCards,
     pendingInputs: pendingInputs,
     artifacts: artifacts,
-    localEchoMessages: localEchoMessages
+    localEchoMessages: localEchoMessages,
+    usageLimitTurnId: usageLimitTurnId
   )
   let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
 
@@ -727,11 +732,59 @@ private func workRemovingRegexPrefix(_ pattern: String, from value: String) -> S
   return result
 }
 
+/// Drop the legacy `subagent.completed` twin of a canonical `subagent_result`.
+///
+/// Old hosts emitted BOTH frames for one finished subagent: the canonical
+/// `subagent_result` (a `taskId`, sometimes an `agentId`) and the SDK-shaped
+/// `subagent.completed` (an `agentId` only, which the decoder also uses as the
+/// `taskId`). When the canonical frame carried no `agentId` the two keyed
+/// differently, folded into two snapshots, and drew two result cards for one
+/// agent — most visibly as a doubled wall of failures. The host now emits one
+/// frame; this keeps old transcripts honest.
+///
+/// Desktop parity, and deliberately a DROP rather than a merge. Merging read
+/// the two frames field by field and could not tell the legacy twin apart from
+/// two genuine results for one agent — a `completed` frame followed by a
+/// `stopped` one when the user interrupts, which must stay two rows. The wire
+/// type is the only honest signal, so the decoder carries it here as
+/// `isLegacySubagentCompletedFrame` and this pass drops flagged frames whose
+/// identity a canonical frame already claims. It does nothing else: a legacy
+/// frame with no canonical twin is kept verbatim, and the canonical frame is
+/// never rewritten.
+func collapseLegacyWorkSubagentResultEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  var canonicalKeys: Set<String> = []
+  var hasLegacyFrame = false
+  for envelope in transcript {
+    guard case .subagentResult(let taskId, let agentId, _, _, _, _, _, _, _, _) = envelope.event else {
+      continue
+    }
+    guard !envelope.isLegacySubagentCompletedFrame else {
+      hasLegacyFrame = true
+      continue
+    }
+    if let key = normalizedWorkSubagentAgentId(taskId) { canonicalKeys.insert(key) }
+    if let key = normalizedWorkSubagentAgentId(agentId) { canonicalKeys.insert(key) }
+  }
+  guard hasLegacyFrame, !canonicalKeys.isEmpty else { return transcript }
+
+  return transcript.filter { envelope in
+    guard envelope.isLegacySubagentCompletedFrame,
+          case .subagentResult(let taskId, let agentId, _, _, _, _, _, _, _, _) = envelope.event
+    else { return true }
+    let keys = [
+      normalizedWorkSubagentAgentId(taskId),
+      normalizedWorkSubagentAgentId(agentId),
+    ].compactMap { $0 }
+    return !keys.contains(where: canonicalKeys.contains)
+  }
+}
+
 /// Collapse `subagent_*` events into one snapshot per runtime subagent. Codex
 /// can first emit a parent-tool placeholder keyed by `parentToolUseId`, then a
 /// real agent row keyed by `agentId`; mirror desktop by adopting that placeholder
 /// into the real row instead of rendering both.
-func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSubagentSnapshot] {
+func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [WorkSubagentSnapshot] {
+  let transcript = collapseLegacyWorkSubagentResultEnvelopes(rawTranscript)
   struct Entry {
     var snapshot: WorkSubagentSnapshot
     var order: Int
@@ -904,9 +957,12 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
 /// Mirrors desktop `chatSubagents.ts` `deriveSubagentTimelineRows`: lifecycle
 /// progress enriches the folded snapshot but never creates a timeline row.
 func buildWorkSubagentTimelineRows(
-  from transcript: [WorkChatEnvelope],
+  from rawTranscript: [WorkChatEnvelope],
   snapshots: [WorkSubagentSnapshot]? = nil
 ) -> [WorkSubagentTimelineRow] {
+  // Same collapse the snapshot fold runs, so the row scan sees exactly one
+  // result frame per agent and `firstResult` lands on the real one.
+  let transcript = collapseLegacyWorkSubagentResultEnvelopes(rawTranscript)
   let foldedSnapshots = snapshots ?? buildWorkSubagentSnapshots(from: transcript)
   let resolvedKeysByParent = buildResolvedWorkSubagentKeysByParent(from: transcript)
   var positionedRows: [(index: Int, row: WorkSubagentTimelineRow)] = []
@@ -1519,7 +1575,11 @@ func buildWorkTimeline(
   eventCards: [WorkEventCardModel],
   pendingInputs: [WorkPendingInputItem] = [],
   artifacts: [ComputerUseArtifactSummary],
-  localEchoMessages: [WorkLocalEchoMessage]
+  localEchoMessages: [WorkLocalEchoMessage],
+  /// See `buildWorkChatTimelineSnapshot`. Anchors the quiet usage-limit footer
+  /// to the turn the host's resume row names when the transcript's own `done`
+  /// frame carried no 429.
+  usageLimitTurnId: String? = nil
 ) -> [WorkTimelineEntry] {
   let messages = transcript.isEmpty && !fallbackEntries.isEmpty
     ? fallbackEntries.map {
@@ -1616,8 +1676,14 @@ func buildWorkTimeline(
   // above so the originating tool/approval envelopes stay hidden from the
   // transcript.
 
+  // Computed before the usage rows so a usage-limit turn's numbers can be folded
+  // into its footer instead of rendered as their own row beside it.
+  let turnEndMarkers = workTurnEndMarkers(from: transcript, usageLimitTurnId: usageLimitTurnId)
+  let usageLimitTurnKeys = Set(turnEndMarkers.compactMap { $0.usageLimitPaused ? $0.turnId : nil })
+
   let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
-    guard case .done(_, _, let usage, _, _, _, _) = envelope.event, let usage else { return nil }
+    guard case .done(_, _, let usage, let turnId, _, _, _) = envelope.event, let usage else { return nil }
+    if let key = normalizedWorkTurnId(turnId), usageLimitTurnKeys.contains(key) { return nil }
     return (envelope.id, envelope.timestamp, usage)
   }
 
@@ -1630,7 +1696,6 @@ func buildWorkTimeline(
     )
   })
 
-  let turnEndMarkers = workTurnEndMarkers(from: transcript)
   entries.append(contentsOf: turnEndMarkers.enumerated().map { index, marker in
     WorkTimelineEntry(
       id: "turn-end-\(marker.turnId)",
@@ -1687,15 +1752,12 @@ func buildWorkTimeline(
   // comes out of it as `toolGroup · notice · notice` — folding after that would
   // join two runs the parent's own work had separated. Desktop folds at the same
   // point: while rows are being appended, before any grouping.
-  return collapseInterruptStoppedSubagentEntries(
-    collapseActivityPhaseTimelineEntries(
-      collapseConsecutiveWorkActivityEntries(
-        collapseConsecutiveWorkToolEntries(
-          collapseConsecutiveSpawnCompletionEntries(deduped)
-        )
-      )
-    )
-  )
+  var folded = collapseConsecutiveSpawnCompletionEntries(deduped)
+  folded = collapseConsecutiveWorkToolEntries(folded)
+  folded = collapseConsecutiveWorkActivityEntries(folded)
+  folded = collapseActivityPhaseTimelineEntries(folded)
+  folded = collapseSameCauseSubagentEntries(folded, causeOf: workSubagentStoppedGroupCause)
+  return folded
 }
 
 /// Fold a run of 2+ ADJACENT `spawn_completed` peer notices for the SAME child
@@ -1777,27 +1839,60 @@ private func workSpawnCompletionEntryCard(
   return (childId, card)
 }
 
-/// Fold a run of 2+ consecutive interrupt-stopped subagent result rows into one
-/// compact `.subagentStoppedGroup` entry — desktop parity with
-/// `groupStoppedSubagentResultCards`. A `.stopped` result row is always an
-/// interrupt casualty (the runtime settles every live subagent with status
-/// `stopped` on cancel), carrying no summary worth reading on its own, so a mass
-/// interrupt collapses to a single calm line instead of a wall of identical
-/// stopped cards. A lone stopped row stays a normal result card.
-func collapseInterruptStoppedSubagentEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+/// Why a settled subagent result row can be folded away, or nil when it carries
+/// a result the user has to read for itself. Mirrors desktop's
+/// `stoppedGroupCauseOf`.
+///
+/// - `.interrupted`: a `.stopped` terminal status is only ever emitted when the
+///   user interrupts a turn (the runtime settles every live subagent that way
+///   on cancel), so it is always an interrupt casualty carrying no individual
+///   summary.
+/// - `.usageLimit`: a `.failed` row whose reason is the provider's limit. One
+///   limit kills every in-flight agent within the same second with the same
+///   sentence; N identical cards say nothing the count does not.
+///
+/// Every other failure keeps its own card — a real error is exactly the thing
+/// that must not be summarized into a number.
+func workSubagentStoppedGroupCause(
+  _ entry: WorkTimelineEntry
+) -> WorkSubagentStoppedGroupModel.Reason? {
+  guard case .subagent(let row) = entry.payload, row.kind == .result else { return nil }
+  switch row.snapshot.status {
+  case .stopped:
+    return .interrupted
+  case .failed:
+    let isUsageLimit = workTextIndicatesUsageLimit(row.summary)
+      || workTextIndicatesUsageLimit(row.snapshot.latestSummary)
+    return isUsageLimit ? .usageLimit : nil
+  default:
+    return nil
+  }
+}
+
+/// Fold each run of 2+ ADJACENT subagent result rows that share one foldable
+/// cause into a single expandable `.subagentStoppedGroup` entry — desktop parity
+/// with `groupStoppedSubagentResultCards`.
+///
+/// One pass, not one per cause: a run breaks whenever the cause changes, so an
+/// interrupt casualty and a usage-limit casualty can never land in the same
+/// group even when they sit next to each other. A lone casualty stays an
+/// ordinary result card — there is no group of one. The group key derives from
+/// the FIRST row's agent so it stays stable as the run grows.
+func collapseSameCauseSubagentEntries(
+  _ entries: [WorkTimelineEntry],
+  causeOf: (WorkTimelineEntry) -> WorkSubagentStoppedGroupModel.Reason?
+) -> [WorkTimelineEntry] {
   var result: [WorkTimelineEntry] = []
   result.reserveCapacity(entries.count)
   var index = 0
   while index < entries.count {
-    guard isInterruptStoppedSubagentResultEntry(entries[index]) else {
+    guard let cause = causeOf(entries[index]) else {
       result.append(entries[index])
       index += 1
       continue
     }
     var end = index
-    while end < entries.count && isInterruptStoppedSubagentResultEntry(entries[end]) {
-      end += 1
-    }
+    while end < entries.count, causeOf(entries[end]) == cause { end += 1 }
     let run = Array(entries[index..<end])
     index = end
     guard run.count >= 2 else {
@@ -1809,7 +1904,11 @@ func collapseInterruptStoppedSubagentEntries(_ entries: [WorkTimelineEntry]) -> 
       return nil
     }
     let firstKey = rows.first.map { $0.snapshot.agentId ?? $0.snapshot.taskId } ?? run[0].id
-    let model = WorkSubagentStoppedGroupModel(id: "subagent-stopped-group-\(firstKey)", rows: rows)
+    let model = WorkSubagentStoppedGroupModel(
+      id: "\(workSubagentStoppedGroupIdPrefix(cause))-\(firstKey)",
+      rows: rows,
+      reason: cause
+    )
     result.append(WorkTimelineEntry(
       id: model.id,
       timestamp: run[run.count - 1].timestamp,
@@ -1820,11 +1919,15 @@ func collapseInterruptStoppedSubagentEntries(_ entries: [WorkTimelineEntry]) -> 
   return result
 }
 
-private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -> Bool {
-  if case .subagent(let row) = entry.payload {
-    return row.kind == .result && row.snapshot.status == .stopped
+/// Group ids are cause-scoped so a run that changes cause can never collide with
+/// the run before it on the same lead agent.
+private func workSubagentStoppedGroupIdPrefix(
+  _ reason: WorkSubagentStoppedGroupModel.Reason
+) -> String {
+  switch reason {
+  case .interrupted: return "subagent-stopped-group"
+  case .usageLimit: return "subagent-usage-limit-group"
   }
-  return false
 }
 
 /// The rows the transcript actually draws, from the rows the timeline holds.
@@ -3657,7 +3760,15 @@ func injectWorkTurnSeparators(
   return output
 }
 
-func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMarker] {
+/// `usageLimitTurnId` is the turn the host's `usageLimitResume` row is anchored
+/// to. It is a second, weaker signal than `apiErrorStatus == 429`: a rate-limit
+/// event can settle the turn without an API error frame, and the resume row is
+/// then the only thing that knows which turn stopped.
+func workTurnEndMarkers(
+  from transcript: [WorkChatEnvelope],
+  usageLimitTurnId: String? = nil
+) -> [WorkTurnEndMarker] {
+  let limitTurnKey = normalizedWorkTurnId(usageLimitTurnId)
   var startByTurn: [String: String] = [:]
   var markers: [WorkTurnEndMarker] = []
   var seenEndedTurns = Set<String>()
@@ -3682,13 +3793,15 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
       default:
         continue
       }
-    case .done(let status, _, _, let turnId, let model, let modelId, let terminalReason):
+    case .done(let status, _, let usage, let turnId, let model, let modelId, let terminalReason):
       let explicitKey = normalizedWorkTurnId(turnId)
       let key = explicitKey ?? "fallback-\(envelope.id)"
       guard !seenEndedTurns.contains(key) else { continue }
       let start = explicitKey.flatMap { startByTurn[$0] } ?? fallbackStart ?? envelope.timestamp
       seenEndedTurns.insert(key)
       let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
+      let usageLimitPaused = envelope.apiErrorStatus == 429
+        || (limitTurnKey != nil && explicitKey == limitTurnKey)
       markers.append(WorkTurnEndMarker(
         turnId: key,
         time: envelope.timestamp,
@@ -3697,7 +3810,9 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
         terminalReasonLabel: workTerminalReasonLabel(terminalReason),
         provider: metadata.provider,
         modelLabel: metadata.modelLabel,
-        modelId: metadata.modelId
+        modelId: metadata.modelId,
+        usageLimitPaused: usageLimitPaused,
+        usage: usageLimitPaused ? usage : nil
       ))
       fallbackStart = nil
     default:

@@ -523,6 +523,12 @@ export class PersonalChatScope {
         });
         break;
       }
+      case "resumeUsageLimitNow": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.resumeUsageLimitNow({ sessionId });
+        break;
+      }
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);

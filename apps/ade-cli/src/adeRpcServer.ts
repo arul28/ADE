@@ -2673,6 +2673,11 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "getScheduledWorkState",
   "cancelScheduledWork",
   "setScheduledWorkPaused",
+  // Resume now spends a real turn on the target chat, exactly like `interrupt`
+  // or `stopTask` spend a control action on it. A session-bound agent may only
+  // aim it at its OWN row; without this entry a bound agent could force any
+  // usage-limited chat on the machine to burn its retry.
+  "resumeUsageLimitNow",
   "requestSessionAttention",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a

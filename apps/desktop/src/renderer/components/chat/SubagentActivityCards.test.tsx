@@ -2,10 +2,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { BackgroundJobLine, SubagentSpawnCard } from "./SubagentActivityCards";
+import { BackgroundJobLine, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import type {
   BackgroundJobGroupRenderEvent,
   SubagentSpawnAnchorRenderEvent,
+  SubagentStoppedGroupEvent,
 } from "./chatTranscriptRows";
 
 function spawnEvent(overrides: Partial<SubagentSpawnAnchorRenderEvent> = {}): SubagentSpawnAnchorRenderEvent {
@@ -160,5 +161,39 @@ describe("BackgroundJobLine", () => {
     fireEvent.click(screen.getByRole("button", { name: /stop npm install/i }));
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(onStop).toHaveBeenCalledWith("bg-1");
+  });
+});
+
+describe("SubagentStoppedGroupCard", () => {
+  function groupEvent(cause: SubagentStoppedGroupEvent["cause"]): SubagentStoppedGroupEvent {
+    return {
+      type: "subagent_stopped_group",
+      cause,
+      count: 3,
+      items: [
+        { agentKey: "a", title: "Explore auth flow", jumpToStartRowKey: "subagent-spawn:a" },
+        { agentKey: "b", title: "Explore sync flow", jumpToStartRowKey: "subagent-spawn:b" },
+        { agentKey: "c", title: "Explore the UI", jumpToStartRowKey: "subagent-spawn:c" },
+      ],
+    };
+  }
+
+  it("names the cause in the head row so a limit never reads as an interrupt", () => {
+    const { container } = render(<SubagentStoppedGroupCard event={groupEvent("usage_limit")} />);
+    expect(container.textContent).toContain("3 agents stopped · usage limit");
+    expect(container.textContent).not.toContain("interrupted");
+  });
+
+  it("keeps the interrupt wording for an interrupt", () => {
+    const { container } = render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} />);
+    expect(container.textContent).toContain("3 agents stopped when you interrupted");
+  });
+
+  it("lists each folded agent behind the expander", () => {
+    render(<SubagentStoppedGroupCard event={groupEvent("usage_limit")} />);
+    // Expanded by default up to a handful of agents.
+    expect(screen.getByTitle("Explore sync flow")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { expanded: true }));
+    expect(screen.queryByTitle("Explore sync flow")).toBeNull();
   });
 });

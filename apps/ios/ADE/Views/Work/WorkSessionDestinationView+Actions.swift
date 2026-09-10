@@ -253,17 +253,60 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Don't continue (`enabled: false`) and Try again / Turn on (`enabled: true`)
+  /// are the same host call — `chat.updateSession { autoContinueAtUsageLimit }`.
+  /// Re-enabling clears a `paused` streak host-side and arms once more.
   @MainActor
-  func optOutUsageLimitAutoContinue() async {
+  func setUsageLimitAutoContinue(_ enabled: Bool) async {
     do {
-      if let schedule = WorkUsageLimitOptOut.pendingSchedule(composerChatSummary?.scheduledWork),
+      // Only an opt-out has a pending row to cancel; re-enabling asks the host
+      // to arm a fresh one, so cancelling here would race its own replacement.
+      if !enabled,
+         let schedule = WorkUsageLimitOptOut.pendingSchedule(composerChatSummary?.scheduledWork),
          syncService.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: sessionId) {
         _ = try? await syncService.cancelScheduledWork(sessionId: sessionId, scheduleId: schedule.id)
       }
       _ = try await syncService.updateChatSession(
         sessionId: sessionId,
-        autoContinueAtUsageLimit: false
+        autoContinueAtUsageLimit: enabled
       )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Resume now — send the continue prompt immediately instead of waiting for
+  /// the scheduled fire.
+  ///
+  /// Only the unsupported-host case is answered here, and it is defensive: the
+  /// sheet already hides the button for that pairing. Viewer devices and offline
+  /// hosts fall through to `SyncService.resumeUsageLimitNow`, whose
+  /// `requireInvokableRemoteAction` gate names the actual cause — telling a
+  /// viewer to update the host would be a lie.
+  @MainActor
+  func resumeUsageLimitNow() async {
+    guard syncService.supportsChatRemoteAction("chat.resumeUsageLimitNow", sessionId: sessionId) else {
+      errorMessage = "This host can't resume a usage-limited chat yet. Update ADE on that machine."
+      return
+    }
+    do {
+      let result = try await syncService.resumeUsageLimitNow(sessionId: sessionId)
+      // A refusal answers normally with `ok: false` — the host declined to send
+      // because there is nothing live to resume, or a resume is already in
+      // flight. Nothing was sent, so this must not read as a success: show the
+      // host's sentence verbatim (the desktop popover shows the same one) and
+      // keep the failure haptic. Still refresh, because the refusal itself
+      // means this client's view of the limit is stale.
+      if let refusal = result.refusalMessage {
+        ADEHaptics.error()
+        await refreshChatStateAfterAction(forceRemote: true)
+        errorMessage = refusal
+        return
+      }
+      ADEHaptics.success()
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {

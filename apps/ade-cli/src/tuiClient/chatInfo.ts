@@ -7,6 +7,7 @@ import type {
 import { isBackgroundShellCommand, latestPlan } from "../../../desktop/src/shared/chatSubagents";
 import { deriveBackgroundItems, mergeManagedScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
+import { usageLimitResumePill } from "../../../desktop/src/shared/usageLimitResumePresentation";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
 import type {
@@ -14,6 +15,7 @@ import type {
   ChatInfoSnapshot,
   SubagentSnapshot,
 } from "./types";
+
 import type { TokenStats } from "./adeApi";
 
 function compactNumber(value: number): string {
@@ -124,6 +126,24 @@ export function formatMcpCapabilityNote(
   }
 }
 
+/**
+ * The pane's Resume row: `Resumes in 3 min · usage limit`, `Resuming…`,
+ * `Paused after 2 tries · Try at 9:30 PM`, `Won't auto-resume · Turn on`,
+ * `Usage limit · no reset time · Retry`.
+ *
+ * Deliberately a thin wrapper over the shared `usageLimitResumePill` rather
+ * than its own copy table: the TUI row and the desktop pill must not be able to
+ * disagree about what a state is called. `nowMs` is injected so the countdown
+ * is testable.
+ */
+export function chatInfoResumeRow(
+  resume: ChatInfoSnapshot["usageLimitResume"],
+  nowMs: number,
+): string | null {
+  if (!resume) return null;
+  return usageLimitResumePill(resume, nowMs).label;
+}
+
 export function deriveChatInfoSnapshot(args: {
   events: AgentChatEventEnvelope[];
   activeSession: AgentChatSessionSummary | null;
@@ -141,6 +161,12 @@ export function deriveChatInfoSnapshot(args: {
   pr?: ChatInfoSnapshot["pr"];
   /** Closed-but-resumable Claude terminal session (drives the resume row). */
   resumableTerminal?: boolean;
+  /**
+   * Sentence the host answered when a manual `/resume-now` was refused, for the
+   * active chat only. Carried on the snapshot so it renders next to the Resume
+   * row it is about — the same place the desktop popover keeps a refusal.
+   */
+  usageLimitResumeNotice?: string | null;
 }): ChatInfoSnapshot {
   const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
   const planEvent = latestPlanEvent(args.events);
@@ -168,6 +194,8 @@ export function deriveChatInfoSnapshot(args: {
       .filter((item) => item.kind !== "background_task"),
     scheduledWorkPaused: args.activeSession?.scheduledWorkPaused === true,
     nextWakeAt: args.activeSession?.nextWakeAt ?? null,
+    usageLimitResume: args.activeSession?.usageLimitResume ?? null,
+    usageLimitResumeNotice: args.usageLimitResumeNotice ?? null,
     backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,
     // Merge subagents into one roster and drop historical command-as-subagent

@@ -66,6 +66,10 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case failed
     case review
     case merged
+    /// Waiting on a provider usage limit with a resume already scheduled. A
+    /// plain clock, not `stale`'s clock-with-a-bang: nothing is wrong, the chat
+    /// simply has an appointment.
+    case parked
 
     public var systemImage: String {
         switch self {
@@ -83,6 +87,7 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         case .failed: return "exclamationmark.triangle.fill"
         case .review: return "eye.fill"
         case .merged: return "arrow.triangle.merge"
+        case .parked: return "clock"
         }
     }
 }

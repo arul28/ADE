@@ -18,6 +18,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  AgentChatUsageLimitResume,
   CodexThreadGoal,
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
@@ -214,6 +215,19 @@ export type ChatInfoSnapshot = {
   scheduledWorkPaused?: boolean;
   /** Earliest armed, unpaused wake reported by the active chat session. */
   nextWakeAt?: string | null;
+  /**
+   * Host-computed usage-limit resume state for the active chat, verbatim from
+   * the session summary. Null when no usage limit is live. The pane renders it
+   * through the shared `usageLimitResumePill`, so the TUI, the desktop pill and
+   * iOS all read the same words.
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
+  /**
+   * Why a manual resume-now did nothing, in the host's own words. A refusal is
+   * an answer (nothing is waiting; a resume is already delivering), not an
+   * error, so it is shown beside the Resume row rather than as a failure.
+   */
+  usageLimitResumeNotice?: string | null;
   /** Background command tasks (kind background_task). */
   backgroundWork: ChatScheduledWorkSnapshot[];
   /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */

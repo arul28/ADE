@@ -353,7 +353,13 @@ apps/ios/
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look)
+│   │   │                            #   cross-project quick look). HubComponents
+│   │   │                            #   gives the projectless Chats button a
+│   │   │                            #   small count badge for personal chats
+│   │   │                            #   awaiting input and an equivalent
+│   │   │                            #   VoiceOver label; it remains hidden when
+│   │   │                            #   the host does not advertise personal
+│   │   │                            #   chats.
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -399,6 +405,11 @@ apps/ios/
 │   │   │                            #   WorkNewChatHeaderTier),
 │   │   │                            # WorkUsageActivityCarousel (host quota
 │   │   │                            #   limits + cross-client activity charts),
+│   │   │                            # WorkUsageLimitResume (pure resume model,
+│   │   │                            #   viewer-zone pill copy, state/action
+│   │   │                            #   derivation, and legacy mirror fallback),
+│   │   │                            # WorkUsageLimitResumeViews (neutral pill +
+│   │   │                            #   compact bottom sheet and actions),
 │   │   │                            # WorkImportSessionScreen +
 │   │   │                            #   WorkExternalSessionAffordances
 │   │   │                            #   (provider session browse/details,
@@ -577,6 +588,8 @@ apps/ios/
     │                                   # decode and transcript-parse paths
     ├── WorkSpawnCompletionNoticeFoldTests.swift # adjacent same-child
     │                                   # spawn_completed notices fold to ×N
+    ├── WorkUsageLimitResumeTests.swift # usage-limit pill/sheet copy, legacy
+    │                                   # mirror fallback, and subagent grouping
     ├── HubProjectPresentationTests.swift # Hub state glyphs, snooze→idle,
     │                                   # runningCount excludes snoozed
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
@@ -2069,6 +2082,9 @@ renders dot-sized and hides itself when idle, with a matching accessibility
 label. The CTO needs its own badge source because its chat is excluded from
 every session roster and so can never contribute to the Work count; see
 [CTO › Hidden from rosters, but never silent](../cto/README.md#hidden-from-rosters-but-never-silent).
+On the Hub, `HubTopBar` adds a small count badge to the projectless Chats
+button when personal chats are awaiting input; the badge is zeroed when the
+host lacks the `personalChats.*` capability.
 Detail screens that should claim the full height —
 new-chat / model-setup / advanced flows — opt out by emitting an
 `ADERootTabBarHiddenPreferenceKey` value via the `.adeRootTabBarHidden()`
@@ -3348,10 +3364,40 @@ the stats and shows update guidance.
   brains. Running native subagent rows, background rows with a `sourceTaskId`,
   and timeline spawn cards expose a square stop that calls `chat.stopTask`
   when the host advertises it; spawned ADE chats (`chat:` task ids) are not
-  stoppable this way. A parked usage-limit chat shows **Usage limit reached**,
-  the reset clock, **Continue automatically**, and **Don't continue** above the
-  composer (`WorkUsageLimitBanner`); Don't continue opts out via
-  `updateChatSession(autoContinueAtUsageLimit: false)`. iOS still uses the
+  stoppable this way. A live usage-limit chat renders
+  `WorkUsageLimitResumePill` above the composer, using
+  `AgentChatSessionSummary.usageLimitResume` as its primary source and falling
+  back to the deprecated `usageLimitParkedUntil` mirror only for an older host.
+  The neutral pill shows viewer-zone countdown or state copy; tapping it opens
+  `WorkUsageLimitResumeSheet`, a compact bottom sheet titled `<Provider> usage
+  limit`. The sheet explains when ADE sends `"continue"`, reassures **Nothing
+  is lost. Subagents restart with it.**, optionally discloses raw provider
+  detail, and offers **Resume now**, **Try again** / **Turn on**, **Fork in this
+  lane**, and **Don't continue**. A host refusal (`no_live_usage_limit`,
+  `resume_in_flight`) comes back as an ordinary answer with `ok: false` rather
+  than a thrown error, so the phone shows the host's sentence verbatim — the
+  same one the desktop popover shows — with the failure haptic, and refreshes,
+  because the refusal itself proves this client's view of the limit is stale. `SyncService` gates those actions on host
+  descriptors and routes Resume now through `chat.resumeUsageLimitNow`, an
+  owner-only remote command in the optional mobile list. `workUsageLimitShowsPrimaryButton`
+  **hides** Resume now — rather than greying it — when the paired host does not
+  advertise the action, because no state that pairing can reach would make it
+  work; every other primary re-arms through `chat.updateSession`, which every
+  supported host has, so those stay visible and merely disable while an action
+  is in flight. A viewer device is deliberately not a reason to hide: the button
+  stays and the tap reports the real cause through `requireInvokableRemoteAction`'s
+  policy message. `workUsageLimitRowStatus` mirrors desktop's
+  `usageLimitResumeRowStatus` exactly — neutral `Resumes <clock>` / `Resuming`,
+  amber `Paused · limit`, and nil for `optedOut` / `noReset` / `unknown` — and
+  `workUsageLimitRelativePhrase` prints the same wording as the desktop
+  countdown (`in 3 min`, `in 4 min 20 s`, `in 2 hr 5 min`, `now`), rounding
+  seconds up so a wait with 200 ms left never reads as already elapsed. The
+  pill's countdown uses one adaptive task ticker (per second inside five
+  minutes, per minute otherwise). A usage-limit turn uses the quiet
+  `Paused · usage limit · <elapsed>` footer and moves its usage row into
+  details. iOS groups adjacent failed subagent rows whose summaries identify a
+  usage/rate limit into one expandable `<n> agents stopped · usage limit` card.
+  The existing interrupt-stopped group remains separate. iOS still uses the
   existing context meter rather than a kind-classified `/context` card; it
   decodes `AgentChatContextUsageCategory.kind` so a row named Free with
   `kind: "used"` stays used.
@@ -3432,6 +3478,20 @@ the stats and shows update guidance.
   ended, and a single finish chip for backgrounded shell commands —
   mirroring `deriveSubagentTimelineRows` in `chatSubagents.ts` so a
   subagent never repaints per tick.
+  Before that derivation, `collapseLegacyWorkSubagentResultEnvelopes` drops
+  the legacy `subagent.completed` twin of a canonical `subagent_result` in
+  transcripts old hosts wrote as a pair. The host emits exactly one end event,
+  so this exists only to keep replayed history honest. It is deliberately a DROP,
+  not a merge: a field-by-field merge cannot tell the legacy twin apart from
+  two genuine results for one agent (a completion followed by a stopped
+  teardown, which must stay two rows), so the wire type is the only honest
+  signal — the decoder records it as `AgentChatEventEnvelope.isLegacySubagentCompletedFrame`
+  and the pass drops flagged frames whose normalized task or agent id a
+  canonical frame already claims. A legacy frame with no canonical twin is kept
+  verbatim and the canonical frame is never rewritten. This prevents one
+  finished agent — especially one that failed at a usage limit — from appearing
+  twice on the phone. `buildWorkSubagentSnapshots` and the timeline row scan
+  both run it, so the roster and the transcript fold the same list.
 - **Known divergence — a running background job has no mobile presence.**
   Desktop folds `scheduled_work_update {kind: "background_task"}` into a
   single live in-thread `background_job_line` (`chatTranscriptRows.ts`),

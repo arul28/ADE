@@ -1,4 +1,7 @@
 import {
+  AUTO_RESUME_ARMED_NOTICE_DETAIL,
+  AUTO_RESUME_PAUSED_NOTICE_DETAIL,
+  AUTO_RESUME_PAUSED_NOTICE_MESSAGE,
   AUTO_RESUME_PROMPT,
   AUTO_RESUME_REASON,
   AUTO_RESUME_SCHEDULED_WORK_SOURCE,
@@ -8,7 +11,11 @@ import {
   isPendingAutoResumeScheduledWork,
   isUsageLimitChatError,
 } from "../../../shared/chatAutoResume";
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import type {
+  AgentChatEvent,
+  AgentChatProvider,
+  AgentChatUsageLimitResume,
+} from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import type {
   ChatScheduledWorkRecord,
@@ -62,17 +69,43 @@ export type ChatAutoResumeCoordinatorDeps = {
    * Optional, so a wiring without analytics keeps auto-resume working.
    */
   captureAnalytics?: (properties: ChatAutoResumeAnalyticsProperties) => void;
+  /**
+   * Every transition of the contract's `usageLimitResume` state, in the frame
+   * it happens. The chat service stores it on the session, mirrors the
+   * deprecated park instant, and broadcasts `session_meta_updated`; this file
+   * owns WHEN the state changes and to what, and nothing else.
+   */
+  onResumeStateChanged?: (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume | null,
+  ) => void;
   logger: Logger;
 };
 
+export type ChatAutoResumeArmArgs = {
+  sessionId: string;
+  provider: AgentChatProvider;
+  /** Reset instant the provider published, or null when it publishes none. */
+  resetAtMs: number | null;
+  /** Raw provider text for the details toggle. Never parsed. */
+  providerDetail?: string | null;
+  error: AutoResumeErrorInput;
+};
+
 export type ChatAutoResumeCoordinator = {
-  maybeArmAfterUsageLimit: (args: {
-    sessionId: string;
-    provider: string;
-    /** Reset instant the provider published, or null when it publishes none. */
-    resetAtMs: number | null;
-    error: AutoResumeErrorInput;
-  }) => void;
+  maybeArmAfterUsageLimit: (args: ChatAutoResumeArmArgs) => void;
+  /**
+   * Resolves once the arm started for `sessionId` has finished writing (or
+   * declining to write) its durable row. The Claude path awaits this before it
+   * reaps the query: a reset that ran first would tear down the runtime while
+   * the upsert was still in flight, which is exactly how a real limit ended up
+   * with no resume armed.
+   */
+  whenArmed: (sessionId: string) => Promise<void>;
+  /** Live streak state, for the contract's `attempts` and `paused`. */
+  streakState: (sessionId: string) => { attempts: number; paused: boolean };
+  /** Clears the streak so an explicit opt-in or manual resume arms afresh. */
+  resetStreak: (sessionId: string) => void;
   cancelForSession: (sessionId: string, reason: string) => void;
   noteScheduleDismissed: (sessionId: string) => void;
   noteResumeTurnStarted: (sessionId: string) => void;
@@ -129,16 +162,13 @@ type AutoResumeSessionState = {
    * fired resume's analytics carries the same one the arm did — the resume
    * dispatch reaches this file with no provider in hand.
    */
-  provider: string | null;
+  provider: AgentChatProvider | null;
+  /** In-flight arm, awaited by `whenArmed`. */
+  armPromise: Promise<void> | null;
 };
 
 /** Consecutive arms allowed with no intervening user message. */
 const AUTO_RESUME_MAX_CONSECUTIVE_ARMS = 2;
-
-const PAUSED_NOTICE_DETAIL =
-  "The usage limit stopped this chat again after two automatic resumes, so ADE will not schedule another one. Send a message when you want to continue.";
-const SCHEDULED_NOTICE_DETAIL =
-  "ADE will ask this chat to continue the interrupted task once the usage limit resets. Sending a message or retrying the turn cancels it.";
 
 /**
  * Auto-resume after a provider usage limit resets.
@@ -167,10 +197,50 @@ export function createChatAutoResumeCoordinator(
       resumeTurnPending: false,
       resumeTurnHitLimit: false,
       provider: null,
+      armPromise: null,
     };
     stateBySession.set(sessionId, created);
     return created;
   };
+
+  /**
+   * One `usageLimitResume` transition. Reported synchronously so the state a
+   * client reads never lags the transcript notice that explains it.
+   */
+  const reportResumeState = (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume | null,
+  ): void => {
+    try {
+      deps.onResumeStateChanged?.(sessionId, resume);
+    } catch (error) {
+      logger.warn("agent_chat.auto_resume_state_report_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const buildResumeState = (args: {
+    state: AgentChatUsageLimitResume["state"];
+    provider: AgentChatProvider;
+    fireAtMs: number | null;
+    resetAtMs: number | null;
+    scheduleId: string | null;
+    attempts: number;
+    providerDetail?: string | null;
+    turnId?: string | undefined;
+  }): AgentChatUsageLimitResume => ({
+    state: args.state,
+    provider: args.provider,
+    fireAt: args.fireAtMs == null ? null : new Date(args.fireAtMs).toISOString(),
+    resetAt: args.resetAtMs == null ? null : new Date(args.resetAtMs).toISOString(),
+    scheduleId: args.scheduleId,
+    attempts: args.attempts,
+    providerDetail: args.providerDetail?.trim() || null,
+    turnId: args.turnId ?? null,
+    updatedAt: new Date().toISOString(),
+  });
 
   /**
    * One coarse fact per auto-resume transition. Every call site is a state
@@ -254,6 +324,11 @@ export function createChatAutoResumeCoordinator(
       state.resumeTurnPending = false;
       state.resumeTurnHitLimit = false;
     }
+    // The limit no longer governs this chat once its resume is gone. Reported
+    // unconditionally: the row being cancelled may predate this process, in
+    // which case there is no in-memory state and the stored one is all a
+    // client has.
+    reportResumeState(sessionId, null);
     // The sweep runs whether or not this process has state for the chat: a row
     // armed before the last restart is on disk with nothing in the map yet.
     void (async () => {
@@ -316,6 +391,9 @@ export function createChatAutoResumeCoordinator(
     // measurement cannot carry. Only the not-pending -> pending edge reports,
     // so a repeated note about the same live resume cannot double-count it.
     if (!state?.resumeTurnPending) captureOutcome("resumed", state?.provider ?? null);
+    // The row fired, so nothing is armed any more — same reason the report sits
+    // above the state guard.
+    reportResumeState(sessionId, null);
     if (!state) return;
     state.resumeTurnPending = true;
     state.resumeTurnHitLimit = false;
@@ -343,12 +421,7 @@ export function createChatAutoResumeCoordinator(
    * it comes due, the scheduler defers to the next turn boundary rather than
    * pushing a second prompt into a live turn.
    */
-  const maybeArmAfterUsageLimit = (args: {
-    sessionId: string;
-    provider: string;
-    resetAtMs: number | null;
-    error: AutoResumeErrorInput;
-  }): void => {
+  const maybeArmAfterUsageLimit = (args: ChatAutoResumeArmArgs): void => {
     if (!isUsageLimitChatError(args.error)) return;
     const { sessionId } = args;
     const turnId = args.error.turnId;
@@ -359,9 +432,22 @@ export function createChatAutoResumeCoordinator(
       tracked.resumeTurnHitLimit = true;
     }
     const fireAt = autoResumeFireAtMs(args.resetAtMs, Date.now());
-    // No reset instant (or one already in the past): keep the manual recovery
-    // card as the only path, exactly as before.
-    if (fireAt == null) return;
+    // No reset instant (or one already in the past): nothing to arm, so the
+    // manual recovery path is the only one. The limit is still live, and the
+    // contract has a state for exactly that.
+    if (fireAt == null) {
+      reportResumeState(sessionId, buildResumeState({
+        state: "no_reset",
+        provider: args.provider,
+        fireAtMs: null,
+        resetAtMs: args.resetAtMs,
+        scheduleId: null,
+        attempts: tracked?.consecutiveArms ?? 0,
+        providerDetail: args.providerDetail,
+        turnId,
+      }));
+      return;
+    }
     if (!isSessionSchedulable(sessionId)) return;
     if (tracked?.arming) return;
     const state = tracked ?? ensureState(sessionId);
@@ -377,6 +463,16 @@ export function createChatAutoResumeCoordinator(
         // at the limit reports the pause once per streak rather than once per
         // failure.
         captureOutcome("paused", args.provider);
+        reportResumeState(sessionId, buildResumeState({
+          state: "paused",
+          provider: args.provider,
+          fireAtMs: fireAt,
+          resetAtMs: args.resetAtMs,
+          scheduleId: null,
+          attempts: state.consecutiveArms,
+          providerDetail: args.providerDetail,
+          turnId,
+        }));
         // Detached on purpose, like the scheduled notice below. This runs from
         // inside the chat service's event commit, before the error event that
         // triggered it has minted its sequence number, so emitting inline
@@ -390,8 +486,8 @@ export function createChatAutoResumeCoordinator(
           try {
             await Promise.resolve();
             emitAutoResumeNotice(sessionId, {
-              message: "Auto-resume paused after two attempts",
-              detail: PAUSED_NOTICE_DETAIL,
+              message: AUTO_RESUME_PAUSED_NOTICE_MESSAGE,
+              detail: AUTO_RESUME_PAUSED_NOTICE_DETAIL,
               turnId,
             });
           } catch (error) {
@@ -407,7 +503,7 @@ export function createChatAutoResumeCoordinator(
     state.arming = true;
     const armedAtEpoch = state.cancelEpoch;
 
-    void (async () => {
+    const armPromise = (async () => {
       try {
         await whenSchedulerReady();
         const scheduler = getScheduler();
@@ -455,11 +551,24 @@ export function createChatAutoResumeCoordinator(
           status: schedule.status,
           consecutiveArms: state.consecutiveArms,
         });
+        // Reported before the notice de-dupe below, not after: a repeat error
+        // event for the same fire time must still refresh the state clients
+        // render from even when it adds no second transcript line.
+        reportResumeState(sessionId, buildResumeState({
+          state: "armed",
+          provider: args.provider,
+          fireAtMs: fireAt,
+          resetAtMs: args.resetAtMs,
+          scheduleId: schedule.id,
+          attempts: state.consecutiveArms,
+          providerDetail: args.providerDetail,
+          turnId,
+        }));
         if (state.noticeFireAt === fireAt) return;
         state.noticeFireAt = fireAt;
         emitAutoResumeNotice(sessionId, {
           message: autoResumeScheduledMessage(fireAt),
-          detail: SCHEDULED_NOTICE_DETAIL,
+          detail: AUTO_RESUME_ARMED_NOTICE_DETAIL,
           turnId,
         });
       } catch (error) {
@@ -471,10 +580,40 @@ export function createChatAutoResumeCoordinator(
         state.arming = false;
       }
     })();
+    // Held so `whenArmed` can wait on the upsert. Cleared by the same arm that
+    // set it, so a later caller never awaits a settled arm from a past limit.
+    state.armPromise = armPromise;
+    void armPromise.finally(() => {
+      if (state.armPromise === armPromise) state.armPromise = null;
+    });
+  };
+
+  /**
+   * Clears the streak so the next arm counts from zero. The explicit opt-in and
+   * the manual Resume now are both a human saying "try again", which is exactly
+   * the intervening event the cap waits for.
+   */
+  const resetStreak = (sessionId: string): void => {
+    const state = stateBySession.get(sessionId);
+    if (!state) return;
+    state.consecutiveArms = 0;
+    state.lastArmedFireAt = null;
+    state.noticeFireAt = null;
+    state.pauseNoticed = false;
   };
 
   return {
     maybeArmAfterUsageLimit,
+    whenArmed: (sessionId: string): Promise<void> =>
+      stateBySession.get(sessionId)?.armPromise ?? Promise.resolve(),
+    streakState: (sessionId: string): { attempts: number; paused: boolean } => {
+      const state = stateBySession.get(sessionId);
+      return {
+        attempts: state?.consecutiveArms ?? 0,
+        paused: state?.pauseNoticed === true,
+      };
+    },
+    resetStreak,
     cancelForSession,
     noteScheduleDismissed,
     noteResumeTurnStarted,

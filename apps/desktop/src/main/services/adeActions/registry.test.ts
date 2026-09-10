@@ -207,7 +207,7 @@ describe("isAllowedAdeAction", () => {
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
       "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
-      "listSubagents", "markCrossMachineHandoff", "modelCatalog",
+      "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
       "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
@@ -813,8 +813,14 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     await expect(chat.getAvailableModels?.({})).resolves.toEqual([{ id: "any" }]);
     expect(getAvailableModels).toHaveBeenCalledWith({});
 
-    await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " })).resolves.toEqual({ sessionId: "chat-1" });
-    await expect(chat.getSessionSummary?.("chat-2")).resolves.toEqual({ sessionId: "chat-2" });
+    // The summary action also reports the brain's IANA zone, so a CLI caller can
+    // render `nextWakeAt` / `usageLimitResume.fireAt` in the zone the brain
+    // actually schedules in. `chat.createScheduledWork` reports the same value.
+    const brainTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " }))
+      .resolves.toEqual({ sessionId: "chat-1", timeZone: brainTimeZone });
+    await expect(chat.getSessionSummary?.("chat-2"))
+      .resolves.toEqual({ sessionId: "chat-2", timeZone: brainTimeZone });
     expect(getSessionSummary).toHaveBeenNthCalledWith(1, "chat-1");
     expect(getSessionSummary).toHaveBeenNthCalledWith(2, "chat-2");
 

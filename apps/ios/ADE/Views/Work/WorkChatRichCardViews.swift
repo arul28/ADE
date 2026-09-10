@@ -3992,8 +3992,20 @@ struct WorkSubagentStoppedGroupCardView: View {
   /// list inert (and hides the per-row open affordance).
   let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
 
-  private var headline: String {
-    "\(model.count) \(model.count == 1 ? "agent" : "agents") stopped when you interrupted"
+  private var headline: String { model.headline }
+
+  /// A usage limit is a wait, not an interrupt — a clock, not a stop sign, and
+  /// no amber. The interrupt case keeps its original treatment.
+  private var glyphName: String {
+    model.reason == .usageLimit ? "clock" : "stop.fill"
+  }
+
+  private var glyphTint: Color {
+    model.reason == .usageLimit ? ADEColor.textMuted : ADEColor.warning
+  }
+
+  private var borderTint: Color {
+    model.reason == .usageLimit ? ADEColor.border.opacity(0.3) : ADEColor.warning.opacity(0.16)
   }
 
   var body: some View {
@@ -4004,9 +4016,9 @@ struct WorkSubagentStoppedGroupCardView: View {
         onToggle()
       } label: {
         HStack(spacing: 10) {
-          Image(systemName: "stop.fill")
+          Image(systemName: glyphName)
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(ADEColor.warning)
+            .foregroundStyle(glyphTint)
           Text(headline)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
@@ -4037,7 +4049,7 @@ struct WorkSubagentStoppedGroupCardView: View {
     .adeGlassCard(cornerRadius: 12, padding: 0)
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.warning.opacity(0.16), lineWidth: 0.8)
+        .stroke(borderTint, lineWidth: 0.8)
     )
     .contentShape(Rectangle())
   }

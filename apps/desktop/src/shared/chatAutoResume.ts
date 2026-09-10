@@ -12,6 +12,8 @@
  * an ADE-created one).
  */
 
+import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
+
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
 export const AUTO_RESUME_SCHEDULED_WORK_SOURCE = "auto_resume_limit";
 
@@ -124,36 +126,29 @@ export function isUsageLimitChatError(event: {
 }): boolean {
   const errorInfo = event.errorInfo;
   if (errorInfo && typeof errorInfo === "object" && errorInfo.category === "rate_limit") return true;
-  const identity = `${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
+  const identity = usageLimitTextIdentity(
+    `${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`,
+  );
   return identity.includes("usagelimit") || identity.includes("ratelimit");
 }
 
-/** Local-time label used in the failure notice and the recovery card. */
-export function formatAutoResumeTime(fireAtMs: number): string {
+/**
+ * Host-zone clock WITH a zone label ("7:31 PM ET").
+ *
+ * Transcript notices are written once, on the host, and then read by every
+ * client in every zone — so the notice has to name the zone it is quoting.
+ * The pill and the sheet do the opposite: they format `fireAt` in the viewer's
+ * zone, which is why they use `formatUsageLimitClock`
+ * (shared/usageLimitResumePresentation.ts) and not this.
+ */
+export function formatAutoResumeHostClock(fireAtMs: number): string {
   const date = new Date(fireAtMs);
   if (Number.isNaN(date.getTime())) return "";
   try {
     return new Intl.DateTimeFormat(undefined, {
       hour: "numeric",
       minute: "2-digit",
-      month: "short",
-      day: "numeric",
-    }).format(date);
-  } catch {
-    return date.toLocaleString();
-  }
-}
-
-/** Clock-only label for the usage-limit dialog ("3:40 PM"). */
-export function formatAutoResumeClock(fireAtMs: number): string {
-  const date = new Date(fireAtMs);
-  if (Number.isNaN(date.getTime())) return "";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
+      timeZoneName: "short",
     }).format(date);
   } catch {
     return date.toLocaleTimeString();
@@ -161,26 +156,48 @@ export function formatAutoResumeClock(fireAtMs: number): string {
 }
 
 /**
- * Wireframe copy: "Reset at 3:40 PM (47 min)". Omits the remaining window
- * when the reset instant has already passed.
+ * The one "auto-resume is armed" sentence. The host writes it into the chat as
+ * a system notice; every client renders it verbatim. Shared so the notice and
+ * the resume state can never disagree about what was scheduled or when.
  */
-export function formatUsageLimitResetLabel(resetAtMs: number, nowMs: number = Date.now()): string {
-  const clock = formatAutoResumeClock(resetAtMs);
-  if (!clock) return "";
-  const remainingMs = resetAtMs - nowMs;
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return `Reset at ${clock}`;
-  const minutes = Math.max(1, Math.round(remainingMs / 60_000));
-  const remaining = minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60)} hr`;
-  return `Reset at ${clock} (${remaining})`;
+export function autoResumeScheduledMessage(fireAtMs: number): string {
+  return `Resumes at ${formatAutoResumeHostClock(fireAtMs)}`;
+}
+
+export const AUTO_RESUME_ARMED_NOTICE_DETAIL =
+  'ADE sends "continue" when the usage limit lifts.';
+export const AUTO_RESUME_FIRED_NOTICE_MESSAGE = "Resumed after usage limit";
+export const AUTO_RESUME_PAUSED_NOTICE_MESSAGE = "Paused after 2 tries";
+export const AUTO_RESUME_PAUSED_NOTICE_DETAIL =
+  "The limit did not lift at the published reset. Turn auto-resume back on to try at the next reset.";
+
+/**
+ * `armed` becomes `resuming` the moment the row is due: the scheduler will not
+ * push a prompt into a live turn, so a due row can sit waiting for the turn
+ * boundary for as long as that turn runs. Derived at read time rather than
+ * stored, so no client has to wait for a state event to stop counting down.
+ */
+export function resolveUsageLimitResumeState<
+  T extends { state: string; fireAt: string | null },
+>(resume: T | null | undefined, nowMs: number = Date.now()): T | null {
+  if (!resume) return null;
+  if (resume.state !== "armed" || !resume.fireAt) return resume;
+  const fireAt = Date.parse(resume.fireAt);
+  if (!Number.isFinite(fireAt) || fireAt > nowMs) return resume;
+  return { ...resume, state: "resuming" };
 }
 
 /**
- * The one "auto-resume is armed" sentence. The host writes it into the chat as
- * a system notice; the renderer's recovery card shows it live next to Cancel.
- * Shared so the two can never disagree about what was scheduled or when.
+ * The deprecated `usageLimitParkedUntil` mirror. Old iOS builds read it and
+ * nothing else; new clients read `usageLimitResume`. Only the two states that
+ * actually have a pending resume publish an instant here.
  */
-export function autoResumeScheduledMessage(fireAtMs: number): string {
-  return `Auto-resume scheduled for ${formatAutoResumeTime(fireAtMs)}`;
+export function usageLimitParkedUntilMirror(
+  resume: { state: string; fireAt: string | null } | null | undefined,
+): string | null {
+  if (!resume) return null;
+  if (resume.state !== "armed" && resume.state !== "resuming") return null;
+  return resume.fireAt;
 }
 
 /** Default on; explicit `false` is the per-chat opt-out. */

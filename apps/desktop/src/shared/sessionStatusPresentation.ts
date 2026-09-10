@@ -1,3 +1,6 @@
+import { resolveUsageLimitResumeState } from "./chatAutoResume";
+import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
+import type { AgentChatUsageLimitResume } from "./types/chat";
 import type {
   CanonicalSessionPhase,
   SessionBackgroundWork,
@@ -144,8 +147,13 @@ export type SessionStatusActivityContext = {
   backgroundWork?: SessionBackgroundWork | null;
   nextWakeAt?: string | null;
   nowMs?: number;
-  /** ISO instant a usage-limit auto-resume is parked until. */
-  usageLimitParkedUntil?: string | null;
+  /**
+   * Host-computed usage-limit resume state (`AgentChatSessionSummary.usageLimitResume`).
+   * The row label is derived from it rather than from the deprecated
+   * `usageLimitParkedUntil` mirror, so opted-out and no-reset limits — which
+   * have no fire instant at all — are still visible in the list.
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
 };
 
 function countSuffix(count: number): string {
@@ -228,13 +236,27 @@ export function sessionStatusPresentation(
     };
   }
 
-  if ((phase === "ready" || phase === "idle") && activity.usageLimitParkedUntil) {
-    const parkedUntil = Date.parse(activity.usageLimitParkedUntil);
-    if (Number.isFinite(parkedUntil) && parkedUntil > (activity.nowMs ?? Date.now())) {
+  // `failed` is included deliberately. A turn that died at a usage limit sets
+  // `lastTurnFailedAt`, so `canonicalSessionState` files the row as failed —
+  // and a red "Failed" is the wrong story for a chat that is going to resume on
+  // its own, or that is holding on a limit. A live limit outranks it; a chat
+  // that failed for any other reason has no resume state and still reads red.
+  //
+  // `usageLimitResumeRowStatus` returns null for `opted_out`/`no_reset`: those
+  // states are not waiting for anything, so the row keeps its ordinary
+  // failed/idle presentation rather than being quieted into "Limit".
+  if (phase === "ready" || phase === "idle" || phase === "failed") {
+    const nowMs = activity.nowMs ?? Date.now();
+    const resume = resolveUsageLimitResumeState(activity.usageLimitResume, nowMs);
+    const rowStatus = usageLimitResumeRowStatus(resume, nowMs);
+    if (rowStatus) {
       return {
-        label: "Parked",
-        tone: "neutral",
-        glyph: "waiting",
+        label: rowStatus.label,
+        // `attention` is the shared vocabulary's name for "this needs a
+        // decision"; on this surface that is amber, the same hue `needs_you`
+        // uses. It is not red: nothing is broken.
+        tone: rowStatus.tone === "attention" ? "amber" : "neutral",
+        glyph: rowStatus.glyph,
         showsElapsed: false,
         prominent: false,
       };

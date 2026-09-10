@@ -210,6 +210,45 @@ export function subagentAgentKey(event: { agentId?: string | null; taskId?: stri
   return textField(event.agentId) ?? textField(event.taskId);
 }
 
+/**
+ * Collapses the legacy `subagent_result` + `subagent.completed` PAIR that old
+ * transcripts contain.
+ *
+ * The host used to commit both for every subagent end. It now commits only
+ * `subagent_result`, but replayed history still carries pairs, and a client
+ * that reads both counts one finished subagent twice — a duplicate timeline
+ * row, a doubled "n agents" rollup, a status that flips as the second copy
+ * lands. Collapsing is keyed on the agent identity (`agentId`, falling back to
+ * `taskId`), which is what the two halves of a pair share.
+ *
+ * Only the `subagent.completed` half is ever dropped, and only when a
+ * `subagent_result` for the same agent exists somewhere in the same list. Two
+ * genuine end events for one agent — a stopped result at teardown after an
+ * earlier completion, say — are both `subagent_result` and both survive.
+ */
+export function collapseLegacySubagentEndEvents<T>(
+  entries: T[],
+  eventOf: (entry: T) => AgentChatEvent,
+): T[] {
+  const canonicalEndAgentKeys = new Set<string>();
+  for (const entry of entries) {
+    const event = eventOf(entry);
+    if (event.type !== "subagent_result") continue;
+    const agentKey = subagentAgentKey(event);
+    if (agentKey) canonicalEndAgentKeys.add(agentKey);
+  }
+  // Nothing to collapse: hand back the same array rather than a copy. This is
+  // the overwhelmingly common case (modern transcripts have no pairs), and it
+  // runs on every transcript render.
+  if (canonicalEndAgentKeys.size === 0) return entries;
+  return entries.filter((entry) => {
+    const event = eventOf(entry);
+    if (event.type !== "subagent.completed") return true;
+    const agentKey = subagentAgentKey(event);
+    return !agentKey || !canonicalEndAgentKeys.has(agentKey);
+  });
+}
+
 export const SUBAGENT_PLACEHOLDER_SUMMARY = /^(status:\s|task updated$)/i;
 
 export function preferSubagentSummary(
@@ -360,7 +399,8 @@ function removeTimelineRow(rows: SubagentTimelineRow[], row: SubagentTimelineRow
   if (index >= 0) rows.splice(index, 1);
 }
 
-export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTimelineRow[] {
+export function deriveSubagentTimelineRows(rawEvents: AgentChatEvent[]): SubagentTimelineRow[] {
+  const events = collapseLegacySubagentEndEvents(rawEvents, (event) => event);
   const rows: SubagentTimelineRow[] = [];
   const statesByAlias = new Map<string, SubagentTimelineState>();
 
@@ -751,7 +791,8 @@ function isParentSubagentPlaceholder(snapshot: SubagentSnapshot | undefined, par
   );
 }
 
-export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): SubagentSnapshot[] {
+export function subagentSnapshotsFromEvents(rawEvents: AgentChatEventEnvelope[]): SubagentSnapshot[] {
+  const events = collapseLegacySubagentEndEvents(rawEvents, (envelope) => envelope.event);
   const snapshots = new Map<string, SubagentSnapshot>();
   const resolvedIdsByParent = buildResolvedSubagentIdsByParent(events);
 
@@ -888,7 +929,8 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
   return [...snapshots.values()];
 }
 
-export function subagentActivitySummaryFromEvents(events: AgentChatEventEnvelope[]): { totalCount: number; runningCount: number } {
+export function subagentActivitySummaryFromEvents(rawEvents: AgentChatEventEnvelope[]): { totalCount: number; runningCount: number } {
+  const events = collapseLegacySubagentEndEvents(rawEvents, (envelope) => envelope.event);
   const snapshots = new Map<string, Pick<SubagentSnapshot, "status" | "kind" | "background" | "turnId">>();
 
   for (const envelope of events) {

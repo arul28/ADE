@@ -287,6 +287,39 @@ Generic action-domain equivalents you can call: `session.snoozeSession`,
 `session.unsettleSessions`, `session.setSettleOverride`) are CTO-only and will
 refuse your calls.
 
+### Usage limits: waiting out a reset
+
+When a provider rejects a turn for a usage limit, ADE parks the chat and re-sends
+a `continue` prompt on its own once the published reset passes. Nothing is lost —
+subagents restart with the resumed turn — so the default answer is to wait.
+
+`ade chat status <session> --text` prints a `resume` line whenever a limit is
+live, next to `tool` / `queued` / `ask`:
+
+```
+  resume     resumes 2026-09-07T23:31:30Z (in 3 min) · usage limit · attempts 1/2
+  resume     resuming now · usage limit · attempts 1/2
+  resume     paused after 2 tries · turn auto-resume back on to try at <reset>
+  resume     won't auto-resume (opted out)
+  resume     usage limit · no reset time
+```
+
+`--json` carries the raw `usageLimitResume` object under `summary`. The line is
+absent when no limit is live, and the exit codes are unchanged (0 running,
+1 idle, 2 blocked).
+
+```bash
+ade chat resume-now <session> --text         # alias: ade chat resume
+```
+
+`resume-now` cancels the armed row, clears the paused streak, and sends the same
+`continue` prompt immediately as an ordinary turn: `Resume sent · turn <turnId>`.
+It exits 1 with a one-line reason when the host reports no live usage limit.
+Use it only when you know the limit has actually lifted early — calling it while
+the limit is still live burns the attempt and re-parks the chat. Action:
+`chat.resumeUsageLimitNow`. To stop auto-resuming altogether, or to turn it back
+on after a pause, use `chat.updateSession` with `autoContinueAtUsageLimit`.
+
 ### Lane branch drift
 
 A lane's worktree HEAD can drift from the branch ADE recorded (someone runs

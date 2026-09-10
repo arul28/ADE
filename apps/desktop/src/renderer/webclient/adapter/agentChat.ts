@@ -13,6 +13,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
+  AgentChatResumeUsageLimitNowResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSession,
@@ -144,7 +145,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   function callRequired<T>(
     action: string,
     args: unknown,
-    capability: "Scheduled work" | "Chat history" | "Chat",
+    capability: "Scheduled work" | "Chat history" | "Chat" | "Usage limit",
     idempotent: boolean,
   ): Promise<T> {
     return commands.call<T>(action, asRecord(args), {
@@ -405,6 +406,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("cancelScheduledWork", pin);
       return await callRequired<AgentChatCancelScheduledWorkResult>(
         "chat.cancelScheduledWork", args, "Scheduled work", false,
+      );
+    },
+    resumeUsageLimitNow: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("resumeUsageLimitNow", pin);
+      return await callRequired<AgentChatResumeUsageLimitNowResult>(
+        "chat.resumeUsageLimitNow", args, "Usage limit", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {

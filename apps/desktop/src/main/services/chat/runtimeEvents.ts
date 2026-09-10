@@ -121,22 +121,6 @@ export function agentChatEventToRuntimeEvent(event: AgentChatEvent): RuntimeEven
     };
   }
 
-  if (event.type === "subagent_result") {
-    return {
-      type: "subagent.completed",
-      agentId: event.agentId ?? event.taskId,
-      parentToolUseId: event.parentToolUseId ?? null,
-      agentType: event.agentType,
-      model: event.model,
-      reasoningEffort: event.reasoningEffort,
-      label: event.label,
-      summary: event.finalSummary ?? event.summary,
-      status: event.status,
-      usage: event.usage,
-      turnId: event.turnId,
-    };
-  }
-
   if (event.type === "subagent.started") return event;
   if (event.type === "subagent.progress") return event;
   if (event.type === "subagent.completed") return event;
@@ -253,6 +237,14 @@ export function runtimeEventToAgentChatEvent(event: RuntimeEvent): AgentChatEven
 
 export function buildCanonicalAgentChatRuntimeEvent(event: AgentChatEvent): AgentChatEvent | null {
   if (isCanonicalAgentChatRuntimeEvent(event)) return null;
+  // A subagent ends exactly once, so it gets exactly one end event on the wire
+  // and in the transcript. `subagent_result` is that event: every emit site in
+  // the chat service produces it, and the paired `subagent.completed` this used
+  // to mint alongside it made clients count, group, and render each finished
+  // subagent twice. `agentChatEventToRuntimeEvent` therefore does not translate
+  // `subagent_result` at all — nothing here can mint a second end event, rather
+  // than minting one and then filtering it back out. `subagent.completed`
+  // survives only as an inbound runtime shape and as a legacy transcript type.
   const runtimeEvent = agentChatEventToRuntimeEvent(event);
   if (!runtimeEvent) return null;
   if (!runtimeEvent.type.startsWith("subagent.")) return null;

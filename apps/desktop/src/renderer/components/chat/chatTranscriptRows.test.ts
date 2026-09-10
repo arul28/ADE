@@ -3512,7 +3512,10 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(groups).toHaveLength(1);
     const group = groups[0]!;
     if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
-    expect(group.key).toBe("subagent-stopped-group:agent-a");
+    // The cause is part of the key: an interrupt group and a usage-limit
+    // group starting at the same agent must not share a React identity.
+    expect(group.key).toBe("subagent-stopped-group:interrupt:agent-a");
+    expect(group.event.cause).toBe("interrupt");
     expect(group.event.count).toBe(3);
     expect(group.event.items).toEqual([
       { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-spawn:agent-a" },
@@ -3526,6 +3529,52 @@ describe("interrupt-stopped subagent grouping", () => {
     if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(resultCards[0]!.event.status).toBe("completed");
     expect(resultCards[0]!.event.summaryPreview).toBe("Widget built");
+  });
+
+  it("folds a run of usage-limit failures into one group named for the cause", () => {
+    // When the provider's limit lands, every live agent fails inside the same
+    // second with the same sentence. N identical cards say nothing the count
+    // does not — but the cause has to be named, or the row reads as an interrupt.
+    const grouped = groupEvents([
+      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
+    ]);
+
+    const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
+    expect(groups).toHaveLength(1);
+    const group = groups[0]!;
+    if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
+    expect(group.event.cause).toBe("usage_limit");
+    expect(group.event.count).toBe(2);
+    expect(group.event.items.map((item) => item.agentKey)).toEqual(["agent-a", "agent-b"]);
+  });
+
+  it("never folds a real failure away, and never mixes causes in one group", () => {
+    const grouped = groupEvents([
+      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-07-11T10:00:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "builder", description: "Build the widget" }),
+      env("2026-07-11T10:00:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "builder", description: "Build the other widget" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
+      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "failed", summary: "TypeError: cannot read property of undefined", finalSummary: "TypeError: cannot read property of undefined" }),
+      env("2026-07-11T10:00:06.003Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+    ]);
+
+    const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
+    expect(groups).toHaveLength(1);
+    if (groups[0]!.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
+    expect(groups[0]!.event.cause).toBe("usage_limit");
+    expect(groups[0]!.event.count).toBe(2);
+
+    // The real error and the lone interrupt each keep their own card.
+    const resultCards = grouped.filter((row) => row.event.type === "subagent_result_card");
+    expect(resultCards).toHaveLength(2);
+    expect(resultCards.map((row) => (
+      row.event.type === "subagent_result_card" ? row.event.status : null
+    ))).toEqual(["failed", "stopped"]);
   });
 
   it("keeps a single lone stopped result as a normal result card (no group of one)", () => {

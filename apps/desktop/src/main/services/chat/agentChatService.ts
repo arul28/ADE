@@ -26,6 +26,7 @@ import {
   tagSession as tagClaudeSession,
   createSdkMcpServer,
   tool as createClaudeSdkTool,
+  USAGE_LIMIT_ERROR_PREFIXES,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   createSdkMcpServer as createDroidSdkMcpServer,
@@ -347,6 +348,9 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
   AgentChatCancelScheduledWorkResult,
+  AgentChatResumeUsageLimitNowArgs,
+  AgentChatResumeUsageLimitNowResult,
+  AgentChatUsageLimitResume,
   AgentChatListScheduledWorkArgs,
   AgentChatScheduledWorkItem,
   AgentChatSetScheduledWorkPausedArgs,
@@ -586,18 +590,23 @@ import {
   buildClaudeSessionQuotaCard,
   classifyClaudeRateLimitInfo,
   claudeSessionQuotaCardId,
+  formatClaudeSessionQuotaResetLabel,
   isClaudeSessionQuotaText,
   mergeClaudeSessionQuotaSnapshot,
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
 import {
-  autoResumeFireAtMs,
+  AUTO_RESUME_FIRED_NOTICE_MESSAGE,
+  AUTO_RESUME_PROMPT,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
   isUsageLimitChatError,
+  resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
+  usageLimitParkedUntilMirror,
 } from "../../../shared/chatAutoResume";
+import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
@@ -1296,7 +1305,15 @@ type PersistedChatState = {
   fastMode?: boolean;
   /** Explicit `false` is the per-chat opt-out; absent means on. */
   autoContinueAtUsageLimit?: boolean;
+  /** Deprecated mirror of `usageLimitResume.fireAt`; see the shared contract. */
   usageLimitParkedUntil?: string | null;
+  /**
+   * Durable usage-limit resume state. Persisted because it is also the record
+   * that a structured limit was ever detected for this chat — the heal pass on
+   * hydration reads its absence to tell a real armed limit from stale park
+   * state left by the old assistant-prose scan.
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -3608,10 +3625,12 @@ type ManagedChatSession = {
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
   /**
-   * ISO instant this chat is parked waiting for a usage-limit reset. Used when
-   * Claude's SDK-native auto-continue is waiting (no ADE scheduled-work row).
+   * Deprecated mirror of `usageLimitResume.fireAt`, kept only for old iOS
+   * clients. Derived from the resume state; never set on its own.
    */
   usageLimitParkedUntil?: string | null;
+  /** Host-computed usage-limit resume state. Null when no limit is live. */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
   /**
    * In-memory only: this chat's Claude session UUID hit a hard plan/session
    * quota. ADE restart clears it. The next send reaps (already done) and
@@ -8200,6 +8219,21 @@ function normalizePersistedInteractionMode(value: unknown): AgentChatInteraction
   return normalizePersistedEnum(value, VALID_INTERACTION_MODES);
 }
 
+/**
+ * A Claude RESULT-FRAME error that reports a usage limit.
+ *
+ * Two structured sources, both from the provider: the SDK's own
+ * `USAGE_LIMIT_ERROR_PREFIXES` (which cover the credit/seat/allocation
+ * wordings the quota regex never matched) and ADE's existing session-quota
+ * regex. Assistant text is deliberately not one of them.
+ */
+function isClaudeUsageLimitResultError(value: string | null | undefined): boolean {
+  const text = value?.trim() ?? "";
+  if (!text) return false;
+  if (USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.startsWith(prefix))) return true;
+  return isClaudeSessionQuotaText(text);
+}
+
 function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -8923,6 +8957,12 @@ export function createAgentChatService(args: {
   const claudeRecurringCronTtlMs = 7 * 24 * 60 * 60 * 1_000;
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
   let scheduledWorkReady: Promise<void> = Promise.resolve();
+  /**
+   * True once the scheduler has read its durable rows back. Until then "this
+   * chat has no armed auto-resume row" is not a fact, so the usage-limit heal
+   * pass must not act on it.
+   */
+  let scheduledWorkLoaded = false;
   const durableScheduleUiStatusById = new Map<string, ChatScheduledWorkStatus>();
 
   const runScheduledWorkMutation = (operation: string, mutation: Promise<unknown>): void => {
@@ -8991,6 +9031,11 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, notice);
     },
     ...(onAutoResumeOutcome ? { captureAnalytics: onAutoResumeOutcome } : {}),
+    onResumeStateChanged: (sessionId, resume) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return;
+      setUsageLimitResume(managed, resume);
+    },
     logger,
   });
   // Listeners for "this chat is over" (deleted or archived). Services that hold
@@ -14172,6 +14217,7 @@ export function createAgentChatService(args: {
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
       ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
       ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
+      ...(managed.usageLimitResume ? { usageLimitResume: managed.usageLimitResume } : {}),
       ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
@@ -14510,6 +14556,7 @@ export function createAgentChatService(args: {
         && record.usageLimitParkedUntil.trim().length
         ? record.usageLimitParkedUntil.trim()
         : undefined;
+      const usageLimitResume = parseUsageLimitResume(record.usageLimitResume);
       const hasCodexServiceTier = Object.prototype.hasOwnProperty.call(record, "codexServiceTier");
       const codexServiceTier = hasCodexServiceTier ? normalizeCodexServiceTier(record.codexServiceTier) : undefined;
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
@@ -14736,6 +14783,7 @@ export function createAgentChatService(args: {
         ...(fastMode ? { fastMode: true } : {}),
         ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
+        ...(usageLimitResume ? { usageLimitResume } : {}),
         ...(hasCodexServiceTier ? { codexServiceTier } : {}),
         ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
@@ -15521,15 +15569,165 @@ export function createAgentChatService(args: {
       const parsed = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
       if (Number.isFinite(parsed)) return parsed;
     }
-    return null;
+    // Last resort: the reset instant recorded with the live limit. Claude's
+    // quota snapshot is in-memory only, so after a restart — or on the Turn on
+    // re-arm, which has no fresh provider frame behind it — this is the only
+    // place the published reset still exists.
+    const recorded = managed.usageLimitResume?.resetAt;
+    const parsedRecorded = typeof recorded === "string" ? Date.parse(recorded) : Number.NaN;
+    return Number.isFinite(parsedRecorded) ? parsedRecorded : null;
   };
 
-  const parkUsageLimitIfAutoContinuing = (managed: ManagedChatSession): void => {
-    if (!sessionAutoContinueAtUsageLimit(managed.session)) return;
-    const fireAt = autoResumeFireAtMs(usageLimitResetAtMs(managed), Date.now());
-    if (fireAt == null) return;
-    managed.usageLimitParkedUntil = new Date(fireAt).toISOString();
+  /**
+   * Raw provider text for the limit currently on this chat, shown only behind
+   * the sheet's details toggle. Never parsed by anything.
+   */
+  const usageLimitProviderDetail = (managed: ManagedChatSession): string | null => {
+    const snapshot = managed.claudeSessionQuotaSnapshot;
+    if (!snapshot) return managed.usageLimitResume?.providerDetail ?? null;
+    const parts: string[] = [];
+    if (snapshot.utilizationPct != null) parts.push(`${snapshot.utilizationPct}% utilized`);
+    if (snapshot.resetsAtMs != null) {
+      // Compute the label first: `resets` on its own says nothing, and the old
+      // trim() left exactly that behind when the formatter declined the instant.
+      const resetLabel = formatClaudeSessionQuotaResetLabel(snapshot.resetsAtMs)?.trim();
+      if (resetLabel) parts.push(`resets ${resetLabel}`);
+    }
+    return parts.length ? parts.join(" | ") : null;
+  };
+
+  /**
+   * Do two resume states say the same thing?
+   *
+   * `updatedAt` is deliberately excluded: it is a write stamp, not a fact about
+   * the limit. A `JSON.stringify` compare treated a re-stamped but otherwise
+   * identical row as a change and pushed a transient event plus a disk write to
+   * every viewer of the chat, on every heal pass. Comparing the fields that
+   * actually govern the UI keeps the event meaning "something changed".
+   *
+   * Key ordering is not a factor here either, which `JSON.stringify` also got
+   * wrong for rows rebuilt from a peer payload.
+   */
+  const sameUsageLimitResume = (
+    a: AgentChatUsageLimitResume | null | undefined,
+    b: AgentChatUsageLimitResume | null | undefined,
+  ): boolean => {
+    if (a === b) return true;
+    // Absent and absent are the same state, however each side spells absence:
+    // a never-limited session leaves the field `undefined`, while clearing a
+    // limit writes `null`.
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return a.state === b.state
+      && a.provider === b.provider
+      && a.fireAt === b.fireAt
+      && a.resetAt === b.resetAt
+      && a.scheduleId === b.scheduleId
+      && a.attempts === b.attempts
+      && a.turnId === b.turnId
+      && a.providerDetail === b.providerDetail;
+  };
+
+  /**
+   * THE single writer of `usageLimitResume`. Stores the state, refreshes the
+   * deprecated `usageLimitParkedUntil` mirror from it, persists, and patches
+   * every client viewing the chat. Called from the auto-resume coordinator's
+   * transitions, the opt-out/opt-in path, the manual resume, and the heal pass,
+   * so those four can never leave the summary, the mirror, and the live clients
+   * disagreeing about whether a limit is still governing this chat.
+   */
+  const setUsageLimitResume = (
+    managed: ManagedChatSession,
+    resume: AgentChatUsageLimitResume | null,
+  ): void => {
+    const previous = managed.usageLimitResume;
+    const nextMirror = usageLimitParkedUntilMirror(resume);
+    const previousMirror = managed.usageLimitParkedUntil ?? null;
+    if (sameUsageLimitResume(previous, resume) && previousMirror === nextMirror) {
+      return;
+    }
+    managed.usageLimitResume = resume;
+    if (nextMirror) managed.usageLimitParkedUntil = nextMirror;
+    else delete managed.usageLimitParkedUntil;
     persistChatState(managed);
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      usageLimitResume: resume,
+    });
+  };
+
+  /**
+   * Arms the durable resume for a chat that just hit a STRUCTURED provider
+   * usage limit. The opt-out is ADE's own, so it is honoured here rather than
+   * asked of the provider: a chat with Don't continue set records the live
+   * limit and arms nothing.
+   */
+  const armUsageLimitAutoResume = (
+    managed: ManagedChatSession,
+    turnId?: string | null,
+  ): void => {
+    const resetAtMs = usageLimitResetAtMs(managed);
+    const providerDetail = usageLimitProviderDetail(managed);
+    if (!sessionAutoContinueAtUsageLimit(managed.session)) {
+      setUsageLimitResume(managed, {
+        state: "opted_out",
+        provider: managed.session.provider,
+        fireAt: null,
+        resetAt: resetAtMs == null ? null : new Date(resetAtMs).toISOString(),
+        scheduleId: null,
+        attempts: autoResume.streakState(managed.session.id).attempts,
+        providerDetail,
+        turnId: turnId ?? null,
+        updatedAt: nowIso(),
+      });
+      return;
+    }
+    autoResume.maybeArmAfterUsageLimit({
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      resetAtMs,
+      providerDetail,
+      error: {
+        message: "Provider usage limit",
+        errorInfo: { category: "rate_limit" },
+        ...(turnId ? { turnId } : {}),
+      },
+    });
+  };
+
+  /**
+   * Clears usage-limit state a chat no longer has any structured evidence for.
+   *
+   * The assistant-prose scan this file used to run could park a chat — and mint
+   * a quota card — off an assistant reply that merely QUOTED a limit message.
+   * Those chats are still on disk with a park instant, no durable resume row,
+   * and no recorded resume state, and nothing else would ever clear them. A
+   * genuine limit always leaves at least one of: a live quota snapshot, a
+   * pending auto-resume row, or a stored `usageLimitResume`.
+   */
+  const healStaleUsageLimitState = (managed: ManagedChatSession): void => {
+    if (!scheduledWorkLoaded) return;
+    if (managed.usageLimitResume) return;
+    if (managed.claudeSessionQuotaSnapshot) return;
+    const parked = Boolean(managed.usageLimitParkedUntil);
+    // Bounded on purpose: `latestQuotaCardIsLive` scans the transcript the first
+    // time it is asked, and hydration must not pay that for every chat. A card
+    // minted without a park is only reachable once this process has already
+    // scanned, which is exactly what the second half of this guard allows.
+    if (!parked && managed.claudeQuotaCardLiveChecked !== true) return;
+    const cardLive = managed.session.provider === "claude" && latestQuotaCardIsLive(managed);
+    if (!parked && !cardLive) return;
+    const hasArmedRow = (scheduledWorkScheduler?.list(managed.session.id) ?? [])
+      .some((schedule) => isPendingAutoResumeScheduledWork(schedule));
+    if (hasArmedRow) return;
+    logger.info("agent_chat.usage_limit_state_healed", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      parked,
+      cardLive,
+    });
+    if (cardLive) dismissClaudeSessionQuota(managed);
+    setUsageLimitResume(managed, null);
   };
 
   type CommitChatEventOptions = {
@@ -15542,19 +15740,15 @@ export function createAgentChatService(args: {
     options: CommitChatEventOptions = {},
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
-    if (decoratedEvent.type === "error") {
-      const autoContinue = sessionAutoContinueAtUsageLimit(managed.session);
-      if (autoContinue && managed.session.provider !== "claude") {
-        autoResume.maybeArmAfterUsageLimit({
-          sessionId: managed.session.id,
-          provider: managed.session.provider,
-          resetAtMs: usageLimitResetAtMs(managed),
-          error: decoratedEvent,
-        });
-      }
-      if (autoContinue && isUsageLimitChatError(decoratedEvent)) {
-        parkUsageLimitIfAutoContinuing(managed);
-      }
+    if (decoratedEvent.type === "error" && isUsageLimitChatError(decoratedEvent)) {
+      // Claude is no longer excluded here. The SDK's `autoContinueAtUsageLimit`
+      // is a Claude *Settings* key, not a query Option, so passing it did
+      // nothing and the park-only branch it justified left real limits with no
+      // resume at all. Every provider now takes the same durable path.
+      // `armUsageLimitAutoResume` already branches on the opt-out and reads the
+      // same reset instant and provider detail; duplicating the else here is
+      // how the two copies drift.
+      armUsageLimitAutoResume(managed, decoratedEvent.turnId ?? null);
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
@@ -15928,32 +16122,55 @@ export function createAgentChatService(args: {
     }
 
     if (
-      managed.usageLimitParkedUntil
+      (managed.usageLimitResume || managed.usageLimitParkedUntil)
       && normalizedEvent.type === "user_message"
       && normalizedEvent.deliveryState !== "queued"
     ) {
       const autoResumeTurn = isAutoResumeScheduledWork({
         id: normalizedEvent.metadata?.scheduledWake?.scheduleId,
       });
-      managed.usageLimitParkedUntil = null;
-      persistChatState(managed);
+      setUsageLimitResume(managed, null);
       if (autoResumeTurn) {
+        // The one "it came back" line. Deferred by exactly one microtask for
+        // the same reason the coordinator's notices are: this runs before the
+        // resumed user message has minted its sequence number, so emitting
+        // inline would file the notice above the message it follows.
+        const resumedTurnId = normalizedEvent.turnId;
+        void Promise.resolve().then(() => {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "rate_limit",
+            severity: "info",
+            message: AUTO_RESUME_FIRED_NOTICE_MESSAGE,
+            ...(resumedTurnId ? { turnId: resumedTurnId } : {}),
+          });
+        });
         onUsageLimitAutoResumed?.({
           sessionId: managed.session.id,
           title: sessionService.get(managed.session.id)?.title ?? null,
         });
       }
     } else if (
-      managed.usageLimitParkedUntil
+      (managed.usageLimitResume || managed.usageLimitParkedUntil)
       && normalizedEvent.type === "status"
       && normalizedEvent.turnStatus === "started"
     ) {
-      managed.usageLimitParkedUntil = null;
-      persistChatState(managed);
-      onUsageLimitAutoResumed?.({
-        sessionId: managed.session.id,
-        title: sessionService.get(managed.session.id)?.title ?? null,
-      });
+      // Any turn start clears the limit — the chat is demonstrably running
+      // again, whatever started it. But "ADE resumed this for you" is only true
+      // when something was actually pending: `opted_out` and `no_reset` never
+      // scheduled anything, so announcing a resume for them is a notification
+      // about work nobody did.
+      const priorState = managed.usageLimitResume?.state;
+      const wasPending = priorState === "armed"
+        || priorState === "resuming"
+        || Boolean(managed.usageLimitParkedUntil);
+      setUsageLimitResume(managed, null);
+      if (wasPending) {
+        onUsageLimitAutoResumed?.({
+          sessionId: managed.session.id,
+          title: sessionService.get(managed.session.id)?.title ?? null,
+        });
+      }
     }
 
     if (
@@ -19563,6 +19780,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       ...(persisted?.usageLimitParkedUntil ? { usageLimitParkedUntil: persisted.usageLimitParkedUntil } : {}),
+      ...(persisted?.usageLimitResume ? { usageLimitResume: persisted.usageLimitResume } : {}),
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
@@ -19616,6 +19834,20 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.set(sessionId, managed);
+    // Deferred until the scheduler has read its durable rows back: before that,
+    // "no armed row" is indistinguishable from "not loaded yet", and healing on
+    // that would cancel a genuine resume every time the brain restarts.
+    void scheduledWorkReady
+      .then(() => {
+        if (managedSessions.get(sessionId) !== managed) return;
+        healStaleUsageLimitState(managed);
+      })
+      .catch((error) => {
+        logger.warn("agent_chat.usage_limit_heal_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     if (row.status === "detached") {
       try {
         recoverDetachedChatAfterRestart(
@@ -20905,6 +21137,10 @@ export function createAgentChatService(args: {
     state: ClaudeIdleTurnState,
   ): Promise<void> => {
     cancelQueuedSteers(managed, runtime, "interrupted");
+    // The durable resume is written BEFORE the query is reaped. Reaping first
+    // tore the runtime down while the upsert was still in flight, which is how
+    // a real limit could end up with nothing armed.
+    await autoResume.whenArmed(managed.session.id);
     await resetClaudeQuerySession(managed, runtime, "session_reset");
     await finishClaudeIdleTurn(managed, runtime, state, "interrupted");
   };
@@ -21576,13 +21812,6 @@ export function createAgentChatService(args: {
         }
         if (block.type === "text") {
           const text = typeof block.text === "string" ? block.text : "";
-          if (isClaudeSessionQuotaText(text)) {
-            noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(text), turnId);
-            await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
-            // The turn just settled; later blocks of this message belong to a
-            // finalized turn and must not append to it.
-            break;
-          }
           const emittedRecord = providerMessageId && !resumedFromIncompleteThinking
             ? claudeEmittedTextRecord(runtime, providerMessageId)
             : null;
@@ -23676,11 +23905,12 @@ export function createAgentChatService(args: {
               }
               if (block.type === "text") {
                 const blockText = block.text ?? "";
-                if (isClaudeSessionQuotaText(blockText)) {
-                  quotaTrippedThisTurn = true;
-                  noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(blockText), turnId);
-                  continue;
-                }
+                // Assistant prose is NEVER scanned for a usage limit. An agent
+                // that quotes "session limit ... resets 7:30pm" — reading a log,
+                // answering a question about limits — used to mint a quota card,
+                // mark its own completed turn failed, kill the process, and park
+                // the chat until the next day. Limits arrive structured: a
+                // rejected `rate_limit_event` or a result-frame usage error.
                 // Check both the real-id key AND the id-less fallback key. When
                 // content_block_delta fires before message_start (or when the
                 // SDK omits message_start entirely), streamed deltas record
@@ -24103,7 +24333,7 @@ export function createAgentChatService(args: {
             if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
               failClaudeTurnUnauthenticated();
             }
-            const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeSessionQuotaText(err));
+            const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeUsageLimitResultError(err));
             if (quotaErrors.length > 0) {
               quotaTrippedThisTurn = true;
               noteClaudeSessionQuota(
@@ -24113,7 +24343,7 @@ export function createAgentChatService(args: {
               );
             }
             for (const err of resultErrors.userFacing) {
-              if (isClaudeSessionQuotaText(err)) continue;
+              if (isClaudeUsageLimitResultError(err)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -24269,6 +24499,8 @@ export function createAgentChatService(args: {
       // same Claude UUID (current ~/.claude login). A successful later turn
       // dismisses the card. Do not clear sdkSessionId.
       if (runtimeStillCurrent && quotaTrippedThisTurn) {
+        // Same ordering rule as the idle-turn settlement: arm, then reap.
+        await autoResume.whenArmed(managed.session.id);
         await resetClaudeQuerySession(managed, runtime, "session_reset");
       } else if (runtimeStillCurrent && finalStatus === "completed") {
         dismissClaudeSessionQuota(managed);
@@ -32531,7 +32763,10 @@ export function createAgentChatService(args: {
         laneId: managed.session.laneId,
         cwd: managed.laneWorktreePath,
       }),
-      autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(managed.session),
+      // `autoContinueAtUsageLimit` is deliberately NOT passed: it is a Claude
+      // Settings key, not a query Option, so the SDK ignored it and returned a
+      // 429 result immediately. ADE's own opt-out lives on the session and is
+      // enforced by `armUsageLimitAutoResume`.
       ...(shouldDeclarePerTaskStopAffordance({
         stopTaskExposed: true,
         stopControlsReachable: CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
@@ -37210,7 +37445,10 @@ export function createAgentChatService(args: {
     );
     managed.claudeQuotaCardWasLive = true;
     managed.claudeQuotaCardLiveChecked = true;
-    parkUsageLimitIfAutoContinuing(managed);
+    // Arm BEFORE anything reaps the query. Every caller of this function is a
+    // structured limit — a rejected `rate_limit_event` or a result-frame usage
+    // error — so this is the one place Claude's durable resume is armed from.
+    armUsageLimitAutoResume(managed, turnId ?? null);
     void emitAdeCard({
       sessionId: managed.session.id,
       card: buildClaudeSessionQuotaCard({
@@ -37881,6 +38119,10 @@ export function createAgentChatService(args: {
     allowPendingInput?: boolean;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    // Second heal point (the first is hydration): a chat that was already
+    // resident when the scheduler finished loading, or one whose stale card was
+    // only discovered by a later transcript scan, clears here on its next turn.
+    healStaleUsageLimitState(managed);
     const dispatchParentId = metadata?.spawnDispatch?.parentSessionId?.trim();
     if (
       dispatchParentId
@@ -45985,10 +46227,23 @@ export function createAgentChatService(args: {
       });
     }
     const pendingAutoResume = scheduledWork.find((item) => isPendingAutoResumeScheduledWork(item));
-    const usageLimitParkedUntil = pendingAutoResume?.nextRunAt
-      ?? liveManaged?.usageLimitParkedUntil
-      ?? persisted?.usageLimitParkedUntil
+    const storedUsageLimitResume = liveManaged?.usageLimitResume
+      ?? persisted?.usageLimitResume
       ?? null;
+    // The durable row is the authority on WHEN, because a user can reschedule
+    // or the scheduler can defer it; the stored state is the authority on
+    // everything else. `armed` flips to `resuming` here rather than on a state
+    // event, so a due row stops counting down in every client at once.
+    const usageLimitResume = resolveUsageLimitResumeState(
+      storedUsageLimitResume && pendingAutoResume?.nextRunAt
+        ? {
+            ...storedUsageLimitResume,
+            fireAt: pendingAutoResume.nextRunAt,
+            scheduleId: pendingAutoResume.id,
+          }
+        : storedUsageLimitResume,
+    );
+    const usageLimitParkedUntil = usageLimitParkedUntilMirror(usageLimitResume);
     // Preserve an explicit null from the live session instead of falling back
     // to an older persisted native mode. The distinction matters to clients:
     // Cursor's mode is nullable because null means the user cleared the native
@@ -46118,6 +46373,7 @@ export function createAgentChatService(args: {
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
       ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
+      usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
       // Omitted when nothing is live, like every other optional field here: a
@@ -46572,6 +46828,60 @@ export function createAgentChatService(args: {
   const refreshScheduledWork = async (): Promise<void> => {
     await scheduledWorkReady;
     await scheduledWorkScheduler?.refreshGlobalPause();
+  };
+
+  /**
+   * Resume now: stop waiting for the published reset and send the continue
+   * prompt immediately.
+   *
+   * It is exactly the turn the durable row would have sent — same prompt — as
+   * an ordinary user turn, so the provider sees nothing unusual and a limit
+   * that has NOT lifted simply fails again and re-arms. The streak resets
+   * because a human asking for a retry is the intervening event the two-arm cap
+   * waits for, and the quota card is dismissed because it offers a stale
+   * "send again after reset" next to a send that just happened.
+   *
+   * It refuses rather than sending in the two cases where the turn it would
+   * spend is not the user's to spend: no live limit at all (a stale button, a
+   * replayed action, a chat that already recovered), and a row that is already
+   * due and delivering, where a manual send would race the scheduler into a
+   * double prompt. Both refusals send nothing and mutate nothing.
+   */
+  const resumeUsageLimitNow = async ({
+    sessionId,
+  }: AgentChatResumeUsageLimitNowArgs): Promise<AgentChatResumeUsageLimitNowResult> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    await scheduledWorkReady;
+    const managed = ensureManagedSession(normalizedSessionId);
+    const liveLimit = resolveUsageLimitResumeState(managed.usageLimitResume ?? null);
+    if (!liveLimit) {
+      return {
+        ok: false,
+        reason: "no_live_usage_limit",
+        message: "No usage limit is live for this chat.",
+      };
+    }
+    if (liveLimit.state === "resuming") {
+      return {
+        ok: false,
+        reason: "resume_in_flight",
+        message: "This chat is already resuming. Wait for the current turn to start.",
+      };
+    }
+    autoResume.cancelForSession(normalizedSessionId, "manual_resume");
+    autoResume.resetStreak(normalizedSessionId);
+    setUsageLimitResume(managed, null);
+    if (managed.session.provider === "claude") dismissClaudeSessionQuota(managed);
+    await sendMessage(
+      {
+        sessionId: normalizedSessionId,
+        text: AUTO_RESUME_PROMPT,
+        metadata: { usageLimitResume: "manual" },
+      },
+      { awaitDispatch: true },
+    );
+    return { ok: true, turnId: managed.runtime?.activeTurnId ?? null };
   };
 
   /**
@@ -49188,10 +49498,21 @@ export function createAgentChatService(args: {
     if (requestedAutoContinueAtUsageLimit !== undefined) {
       if (requestedAutoContinueAtUsageLimit === false) {
         managed.session.autoContinueAtUsageLimit = false;
-        if (managed.usageLimitParkedUntil) {
-          managed.usageLimitParkedUntil = null;
-        }
+        // Read before the cancel below, which reports the resume state as gone.
+        // Don't continue does not end the limit — it ends ADE's answer to it —
+        // so the chat keeps a live `opted_out` state with a Turn on affordance
+        // instead of silently looking like nothing ever happened.
+        const liveLimit = managed.usageLimitResume;
         autoResume.cancelForSession(sessionId, "opted_out_of_auto_continue");
+        if (liveLimit) {
+          setUsageLimitResume(managed, {
+            ...liveLimit,
+            state: "opted_out",
+            fireAt: null,
+            scheduleId: null,
+            updatedAt: nowIso(),
+          });
+        }
         const runtime = managed.runtime;
         if (
           runtime?.kind === "claude"
@@ -49206,6 +49527,15 @@ export function createAgentChatService(args: {
         }
       } else {
         delete managed.session.autoContinueAtUsageLimit;
+        // Turning it back on re-arms immediately when a limit is still live and
+        // a future reset is known — the whole point of Try again on a paused or
+        // opted-out chat. The streak resets first, so a paused chat gets one
+        // fresh attempt rather than pausing again on the same counter.
+        const liveLimit = managed.usageLimitResume;
+        if (liveLimit) {
+          autoResume.resetStreak(sessionId);
+          armUsageLimitAutoResume(managed, liveLimit.turnId);
+        }
       }
     }
     const nextClaudeFastModeSetting = managed.session.provider === "claude"
@@ -51949,6 +52279,8 @@ export function createAgentChatService(args: {
     logger.warn("agent_chat.scheduled_work_start_failed", {
       error: error instanceof Error ? error.message : String(error),
     });
+  }).finally(() => {
+    scheduledWorkLoaded = true;
   });
 
   const isTranscriptPathActive = (filePath: string): boolean => {
@@ -52017,6 +52349,7 @@ export function createAgentChatService(args: {
     listScheduledWork,
     getScheduledWorkState,
     cancelScheduledWork,
+    resumeUsageLimitNow,
     setScheduledWorkPaused,
     refreshScheduledWork,
     readTranscript,
