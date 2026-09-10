@@ -3327,8 +3327,14 @@ function standalonePositionals(args: string[]): string[] {
  * A `--` directly after a value-carrying flag is that flag's value, not the
  * terminator: `--value --`, `--text --`, `--url --` and `--reason --` are how a
  * person passes a literal `--`, and `readValue` consumes it. Only a `--` that
- * no flag is waiting on fences off the tail. This is the same value-carrier
- * rule {@link firstStandalonePositional} applies to positionals.
+ * no flag is waiting on fences off the tail — the same value-carrier rule
+ * {@link firstStandalonePositional} applies before it stops. (It stops there
+ * rather than reporting the index: a positional after the terminator is a
+ * fenced literal, and only the caller that owns the tail may read it.)
+ *
+ * Every reader of the terminator goes through here — positionals, the
+ * app-control trailing command and the help fence — so one argv cannot mean
+ * two different things depending on which reader looked at it first.
  */
 function firstTerminatorIndex(args: string[]): number {
   let previousTokenWasValueCarrier = false;
@@ -10804,7 +10810,7 @@ function buildIosSimulatorPlan(
 }
 
 function readTrailingCommand(args: string[]): string | null {
-  const index = args.indexOf("--");
+  const index = firstTerminatorIndex(args);
   if (index < 0) return null;
   const tokens = args.slice(index + 1);
   args.splice(index);
@@ -11721,21 +11727,25 @@ function buildBrowserPlan(args: string[]): CliPlan {
 }
 
 function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
+  // The tail is a queue, not a snapshot: whatever the subcommand word takes out
+  // of it must not come back as an argument further down.
+  const tail = [...literalTail];
   // One collector for every fallback — the URL, the key, the fill/type text and
   // the select-option value — because four copies of this rule is how two of
   // them end up with a different one.
   const browserPositionals = (rest: string[]): string[] => [
     ...standalonePositionals(rest),
-    ...literalTail,
+    ...tail,
   ];
   const firstBrowserPositional = (rest: string[]): string | null =>
     browserPositionals(rest)[0] ?? null;
   // `browserPositionals` drains EVERY positional in one pass, so a branch that
   // needs two of them (`browser session end s1`) shifts from one queue instead
   // of collecting twice and getting an empty second read.
-  // The subcommand goes through the same grammar as its arguments, so
-  // `browser --tab-id t1 close` dispatches on "close" and not on "t1".
-  const sub = firstStandalonePositional(args) ?? "status";
+  // The subcommand goes through the same tail-aware grammar as its arguments:
+  // `browser --tab-id t1 close` dispatches on "close" and not on "t1", and
+  // `ade browser -- open` opens instead of silently printing status.
+  const sub = firstStandalonePositional(args) ?? tail.shift() ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
   if (sub === "actions")
     return {
@@ -11797,10 +11807,11 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   if (sub === "session" || sub === "sessions") {
-    // The mode word comes from the pre-terminator argv only — a fenced literal
-    // is a value, not a subcommand — and through the same grammar as the rest,
-    // so `browser session --tab t1 end s1` reads "end" and not "t1".
-    const mode = sub === "sessions" ? "list" : firstStandalonePositional(args) ?? "list";
+    // The mode word comes from the same tail-aware grammar as the rest, so
+    // `browser session --tab t1 end s1` reads "end" and not "t1", and
+    // `browser session -- end s1` ends s1 instead of listing sessions.
+    const mode =
+      sub === "sessions" ? "list" : firstStandalonePositional(args) ?? tail.shift() ?? "list";
     if (mode === "start" || mode === "begin" || mode === "claim") {
       return {
         kind: "execute",
@@ -11852,20 +11863,20 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       // Exactly one positional: everything after it belongs to the wrapped
       // command, and the fenced tail is forwarded untouched unless the id had
       // to come out of it.
-      const tail = [...literalTail];
+      const wrappedTail = [...tail];
       const sessionId = requireValue(
-        explicitSessionId ?? firstStandalonePositional(args) ?? tail.shift() ?? null,
+        explicitSessionId ?? firstStandalonePositional(args) ?? wrappedTail.shift() ?? null,
         "sessionId",
       );
       return buildBrowserPlanWithLiteralTail(
         [mode, "--browser-session", sessionId, ...args],
-        tail,
+        wrappedTail,
       );
     }
     throw new CliUsageError(`Unknown browser session command: ${mode}`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
-    return buildBrowserHandoffPlan(args, literalTail);
+    return buildBrowserHandoffPlan(args, tail);
   }
   if (sub === "claim") {
     const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
@@ -12272,7 +12283,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const notMobile = readFlag(args, ["--no-mobile", "--no-touch"]);
     const userAgent = readValue(args, ["--user-agent", "--ua"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
-    const preset = off ? null : device ?? firstPositional(args) ?? null;
+    // `firstBrowserPositional`, not `firstPositional`: the preset goes through
+    // the same grammar as every other browser value, so `browser emulate --
+    // --iphone` names a preset instead of losing it to the fence.
+    const preset = off ? null : device ?? firstBrowserPositional(args) ?? null;
     if (!off && !preset && width == null && height == null) {
       throw new CliUsageError(
         "browser emulate requires --device <preset>, --width/--height, or --off.",
@@ -14259,10 +14273,135 @@ function buildUpdatePlan(args: string[]): CliPlan {
   };
 }
 
+/**
+ * Every flag the `ade browser` parser reads a VALUE for.
+ *
+ * One table, spread into {@link VALUE_CARRIER_FLAGS}, so the positional and
+ * terminator grammars agree with what `readValue` / `readNumberOption`
+ * actually consume. A hand-kept subset drifted once already:
+ * `browser --tab-id t1 close` dispatched on "t1" and `browser fill --selector
+ * -- --value y` lost its fenced literal. `cliBrowserGrammar.test.ts` scans the
+ * browser plan's own source for those readers and fails if a flag is missing
+ * here, so the two cannot separate again.
+ */
+const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--action",
+  "--browser-session",
+  "--browser-session-id",
+  "--button",
+  "--caption",
+  "--chat-session",
+  "--chat-session-id",
+  "--click-count",
+  "--count",
+  "--css",
+  "--data-cy",
+  "--data-test-id",
+  "--data-testid",
+  "--delta-x",
+  "--delta-y",
+  "--desc",
+  "--description",
+  "--device",
+  "--device-scale-factor",
+  "--dock",
+  "--dpr",
+  "--dx",
+  "--dy",
+  "--element",
+  "--element-handle",
+  "--element-index",
+  "--element-limit",
+  "--emulate",
+  "--entries",
+  "--factor",
+  "--filter",
+  "--find",
+  "--for",
+  "--fps",
+  "--frame-rate",
+  "--from-x",
+  "--from-y",
+  "--grep",
+  "--handle",
+  "--height",
+  "--idle-ms",
+  "--index",
+  "--keep",
+  "--keep-count",
+  "--key",
+  "--label",
+  "--lane",
+  "--lane-id",
+  "--lease-ms",
+  "--lease-ttl-ms",
+  "--level",
+  "--limit",
+  "--load-state",
+  "--match",
+  "--max-elements",
+  "--message",
+  "--mode",
+  "--name",
+  "--network-idle-ms",
+  "--option",
+  "--option-index",
+  "--option-label",
+  "--option-value",
+  "--position",
+  "--preset",
+  "--query",
+  "--reason",
+  "--ref",
+  "--scale",
+  "--selection",
+  "--selector",
+  "--session",
+  "--session-id",
+  "--settle-ms",
+  "--state",
+  "--steps",
+  "--tab",
+  "--tab-id",
+  "--test-id",
+  "--testid",
+  "--text",
+  "--text-match",
+  "--timeout",
+  "--timeout-ms",
+  "--title",
+  "--to-css",
+  "--to-data-testid",
+  "--to-element",
+  "--to-element-index",
+  "--to-handle",
+  "--to-index",
+  "--to-label",
+  "--to-name",
+  "--to-ref",
+  "--to-selector",
+  "--to-test-id",
+  "--to-testid",
+  "--to-text-match",
+  "--to-x",
+  "--to-y",
+  "--ua",
+  "--url",
+  "--user-agent",
+  "--value",
+  "--wait-after-ms",
+  "--why",
+  "--width",
+  "--x",
+  "--y",
+  "--zoom",
+];
+
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   // Only flags that actually take a following value (readValue / readIntOption
   // callers) belong here. Boolean-only flags consumed via readFlag must be
   // excluded, otherwise the next positional would be swallowed as their value.
+  ...BROWSER_VALUE_FLAGS,
   "-b",
   "-m",
   "-q",
@@ -14489,22 +14628,14 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
 ]);
 
 function hasHelpFlag(args: string[]): boolean {
-  const terminatorIndex = args.indexOf("--");
+  const terminatorIndex = firstTerminatorIndex(args);
   const searchable =
     terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
-  const valueCarrierFlags = VALUE_CARRIER_FLAGS;
-  for (let i = 0; i < searchable.length; i++) {
-    const token = searchable[i]!;
-    if (token === "--help") {
-      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
-      return true;
-    }
-    if (token === "-h") {
-      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
-      return true;
-    }
-  }
-  return false;
+  // A value-carrying flag does not shield the token after it: `readValue`
+  // refuses any value that starts with "-", so `--text --help` never feeds
+  // "--help" to `--text`. Passing a literal `--help` means fencing it past the
+  // terminator, which this loop already stops at.
+  return searchable.some((token) => token === "--help" || token === "-h");
 }
 
 function buildCliPlan(
@@ -25842,6 +25973,7 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 }
 
 export {
+  BROWSER_VALUE_FLAGS,
   buildCliPlan,
   buildAdeCodeArgs,
   parseSnoozeDurationMs,

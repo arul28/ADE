@@ -206,6 +206,16 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
     record.timer = timer;
   };
 
+  /**
+   * A hold ended: the hold stood in for activity, so the ordinary expiry window
+   * starts now rather than from whenever the last command happened to land, and
+   * the timer is re-armed off that fresh deadline instead of the hold's.
+   */
+  const rearmAfterHoldRelease = (record: PresenceRecord): void => {
+    record.lastActivityAt = Date.now();
+    armTimer(record);
+  };
+
   const upsert = (input: BuiltInBrowserAgentPresenceTouch): PresenceRecord | null => {
     const chatSessionId = trimmedOrNull(input.chatSessionId);
     if (!chatSessionId || disposed) return null;
@@ -257,13 +267,8 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       const heldThisTab = record.holds.delete(key);
       if (record.tabId !== key) {
         // The chat has moved on to another tab but its timer is still armed on
-        // the dead tab's hold deadline — up to HOLD_MAX away. Same two lines as
-        // `releaseHoldForTab`: the hold stood in for activity, so the ordinary
-        // expiry window starts now.
-        if (heldThisTab) {
-          record.lastActivityAt = Date.now();
-          armTimer(record);
-        }
+        // the dead tab's hold deadline — up to HOLD_MAX away.
+        if (heldThisTab) rearmAfterHoldRelease(record);
         continue;
       }
       clearTimer(record);
@@ -305,10 +310,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       if (!key) return;
       for (const record of records.values()) {
         if (!record.holds.delete(key)) continue;
-        // The hold stood in for activity, so the expiry window starts now
-        // rather than from whenever the last command happened to land.
-        record.lastActivityAt = Date.now();
-        armTimer(record);
+        rearmAfterHoldRelease(record);
       }
     },
 
