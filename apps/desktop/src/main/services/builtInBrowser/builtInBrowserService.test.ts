@@ -1757,6 +1757,67 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("holds agent presence while a preview subscription is watching a tab", async () => {
+    // The skill tells agents that an active preview/observe subscription keeps
+    // presence alive. It is the other thing that runs for minutes with no
+    // command behind it, so it takes the same hold a recording does.
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId as string;
+
+    try {
+      builtInBrowserAgentPresence.touch({ chatSessionId: "chat-preview", tabId });
+      service.startPreviewStream({ tabId });
+
+      // Well past the 20s expiry, and still present: something is watching.
+      vi.advanceTimersByTime(60_000);
+      expect(builtInBrowserAgentPresence.list().map((entry) => entry.chatSessionId))
+        .toEqual(["chat-preview"]);
+
+      // The last subscriber leaves and the ordinary expiry resumes.
+      service.stopPreviewStream({ tabId });
+      vi.advanceTimersByTime(60_000);
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-preview");
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads agent presence without constructing a window service", async () => {
+    // The badge is mounted by every session card and the chat header. Seeding it
+    // through `getStatus` — a CREATING resolver whose factory restores and
+    // `loadURL`s every persisted tab — background-loaded the whole browser for a
+    // user who never opened the Browser pane.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: alphaWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: betaWin } = scoped.openWindow("/Users/ade/project-beta");
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        laneId: "lane-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+
+      expect(service.getAgentPresence(alphaWin).map((entry) => entry.chatSessionId))
+        .toEqual(["chat-alpha"]);
+      // Scoped the same way the pushed event is: beta hears nothing.
+      expect(service.getAgentPresence(betaWin)).toEqual([]);
+      // Nothing was built, attached or restored to answer either read.
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+      expect(service.getStatusForProjectScope("/Users/ade/project-alpha")).toBeNull();
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+    }
+  });
+
   it("clears agent presence for every tab of a window that closes", async () => {
     // Closing the window destroys its tabs without a `closeTab` call and without
     // the `recording:false` that would release a capture's hold, so nothing else

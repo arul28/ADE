@@ -12236,6 +12236,28 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["browser", "upload", "--tab", "tab-1", "--selector", "input"]))
       .toThrow(/at least one file path/);
 
+    // Every acting subcommand carries the tab target through, and the key is
+    // read as a standalone positional so a session id can never be sent as one.
+    expect(firstStepArgs(["browser", "key", "--browser-session", "sess-1", "Enter"]))
+      .toMatchObject({ action: "dispatchKey", sessionId: "sess-1", key: "Enter" });
+    expect(firstStepArgs(["browser", "key", "--tab", "tab-1", "Enter"]))
+      .toMatchObject({ action: "dispatchKey", tabId: "tab-1", key: "Enter" });
+    expect(firstStepArgs([
+      "browser", "drag", "--browser-session", "sess-1", "--selector", ".a", "--to-selector", ".b",
+    ])).toMatchObject({ action: "drag", sessionId: "sess-1", selector: ".a", toSelector: ".b" });
+    expect(firstStepArgs([
+      "browser", "upload", "--browser-session", "sess-1", "--selector", "input", "--file", "/tmp/a.png",
+    ])).toMatchObject({ action: "uploadFile", sessionId: "sess-1", paths: ["/tmp/a.png"] });
+    expect(firstStepArgs([
+      "browser", "select-option", "--browser-session", "sess-1", "--selector", "s", "--value", "pro",
+    ])).toMatchObject({ action: "selectOption", sessionId: "sess-1", value: "pro" });
+    expect(firstStepArgs([
+      "browser", "select-option", "--tab", "tab-1", "--selector", "s", "pro",
+    ])).toMatchObject({ action: "selectOption", tabId: "tab-1", value: "pro" });
+    // A flag this branch does not read must not be joined INTO the URL.
+    expect(firstStepArgs(["browser", "open", "--browser-session", "sess-1", "https://x.test"]))
+      .toMatchObject({ action: "navigate", url: "https://x.test" });
+
     expect(firstStepArgs([
       "browser", "record", "start", "--tab", "tab-1", "--fps", "60", "--caption", "Checkout",
     ])).toMatchObject({ action: "startRecording", tabId: "tab-1", fps: 60, caption: "Checkout" });

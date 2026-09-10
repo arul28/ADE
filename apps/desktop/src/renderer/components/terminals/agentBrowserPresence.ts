@@ -48,9 +48,16 @@ function replace(presence: readonly BuiltInBrowserAgentPresence[]): void {
 /**
  * Opens the shared feed on the first reader and closes it after the last one.
  *
- * The seed is a single `getStatus` rather than a poll: it answers the one case
- * events cannot — a badge that mounted while an agent was already browsing (or
- * mid-recording, where presence is held and no event is due for minutes).
+ * The seed is a single `getAgentPresence` rather than a poll: it answers the one
+ * case events cannot — a badge that mounted while an agent was already browsing
+ * (or mid-recording, where presence is held and no event is due for minutes).
+ *
+ * Deliberately not `getStatus`. That read is a CREATING resolver in main: it
+ * builds a window service, whose factory restores and `loadURL`s every
+ * persisted tab in the shared authenticated profile, and marks the collection
+ * active. This store attaches on the first badge — which is every session card
+ * and the chat header — so seeding through it background-loaded the whole
+ * browser for a user who never opened the Browser pane.
  */
 function attach(listener: () => void): () => void {
   listeners.add(listener);
@@ -62,10 +69,10 @@ function attach(listener: () => void): () => void {
       replace(event.presence);
     }) ?? null;
     detach = () => stop?.();
-    void browser?.getStatus?.().then((status) => {
+    void browser?.getAgentPresence?.().then((presence) => {
       // Only as a seed. An answer that raced past a newer event would undo it,
       // so it is dropped unless the store is still empty.
-      if (sinceByChatSession.size === 0) replace(status?.agentPresence ?? []);
+      if (sinceByChatSession.size === 0) replace(presence ?? []);
     }).catch(() => {
       // No browser on this build, or no runtime yet: nobody is browsing.
     });

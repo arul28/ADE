@@ -151,9 +151,10 @@ when a flow is longer.
 Do not set browser presence yourself. Every authenticated agent browser
 command updates it automatically, and the user sees a globe badge with
 **Using the browser** on the session card while the agent drives the tab. It
-expires 20 seconds after the last command; an active observation subscription
-or recording keeps presence alive. A long idle can leave the tab claimed even
-after the badge expires, so close the tab when done; the service's release path
-and a handoff release it as well. No presence command is needed.
+expires 20 seconds after the last command; an active preview/observe
+subscription or a recording keeps presence alive. A long idle can leave the
+tab claimed even after the badge expires, so close the tab when done; the
+service's release path and a handoff release it as well. No presence command
+is needed.
 
 Keep this loop platform-neutral so Windows agents use the same command surface.

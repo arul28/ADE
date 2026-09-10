@@ -3968,6 +3968,8 @@ async function runTool(args: {
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
+    /** Set by the browser branch; fired only once the dispatch has returned. */
+    let noteBrowserActivityOnSuccess: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
     if (domain === "analytics" && action === "capture") {
@@ -4167,7 +4169,9 @@ async function runTool(args: {
       // records presence itself (it is the only side that sees tabs close and
       // recordings end); this tells the Work-tools mirror that every client's
       // copy just went stale, so a phone learns an agent picked up the browser
-      // without waiting for its next poll.
+      // without waiting for its next poll. Armed here, fired after the dispatch
+      // returns: a call that throws did nothing to any browser, and a phone
+      // must not be told an agent picked one up because it failed to.
       //
       // Only for a caller carrying a browser actor capability. The one caller
       // the scoping lets through without one is the remote-forwarding carve-out
@@ -4180,10 +4184,12 @@ async function runTool(args: {
         asOptionalTrimmedString(session.identity.browserActorToken),
       );
       if (bearsBrowserCapability) {
-        runtime.workToolsStateService?.noteAgentBrowserActivity({
-          laneId: resolveChatSessionLaneId(runtime, session),
-          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
-        });
+        noteBrowserActivityOnSuccess = () => {
+          runtime.workToolsStateService?.noteAgentBrowserActivity({
+            laneId: resolveChatSessionLaneId(runtime, session),
+            chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+          });
+        };
       }
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
@@ -4232,6 +4238,7 @@ async function runTool(args: {
         );
       }
     }
+    noteBrowserActivityOnSuccess?.();
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
     }

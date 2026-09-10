@@ -392,8 +392,11 @@ keyed by:
 
 - It **expires** twenty seconds after the last command, on a timer rather than a
   poll. An agent that walks away sends nothing to say so.
-- It is **held** while a tab is recording — a capture runs for minutes without a
-  command — and the hold is released by the same `recording` event that tells
+- It is **held** while a tab is recording, and while any preview/observe stream
+  is subscribed to it — both run for minutes without a command, and a
+  subscription's hold is taken when the first subscriber arrives and released
+  when the last one leaves. A recording's hold is released by the same
+  `recording` event that tells
   every other surface the capture stopped, including the ones no agent asked for
   (the wall-clock cap, a login handoff). Because that event is the only release,
   each hold also carries a ten-minute deadline and is dropped when it passes, so
@@ -408,11 +411,15 @@ Two paths carry it, because two kinds of client need it:
 
 - The **desktop renderer** gets an `agent-presence` browser event (the whole set
   each time, so a badge that mounted between two changes has nothing to
-  reconcile) plus the `agentPresence` field on a `getStatus` read as a seed for
-  a surface that mounted mid-stretch. The event is sent per window and scoped to
-  the projects that window has open, the same routing every other browser event
-  takes and the same scoping the seed applies, so one project's window never
-  lights a dot for another project's agent. `agentBrowserPresence.ts` in the renderer
+  reconcile) plus a one-shot `builtInBrowser.getAgentPresence()` read as a seed
+  for a surface that mounted mid-stretch. That read exists precisely so the seed
+  is side-effect-free: `getStatus` is a *creating* resolver whose factory
+  restores and `loadURL`s every persisted tab, and the badge is mounted by every
+  session card and the chat header, so seeding through it background-loaded the
+  browser for a user who never opened the pane. The event is sent per window and
+  scoped to the projects that window has open, the same routing every other
+  browser event takes and the same scoping the seed applies, so one project's
+  window never lights a dot for another project's agent. `agentBrowserPresence.ts` in the renderer
   is one module store with a single shared subscription for every badge.
 - The **read-only clients** get `agentBrowserPresence` on the Work-tools lane
   state, projected from the bridge's `getStatusForRuntime` and filtered to the
@@ -421,7 +428,10 @@ Two paths carry it, because two kinds of client need it:
   every `ade browser` call, so it also fires `work_tools_state_changed` on both
   edges of a browsing stretch — once when an agent picks the browser up and once
   when the desktop's window has elapsed — instead of leaving a phone to discover
-  either edge on its next poll. The daemon deliberately keeps no copy of the
+  either edge on its next poll. Both edges are recorded only once the proxied
+  call has actually returned: a command that throws touched no browser, and a
+  globe lit for twenty seconds on a failure says an agent is browsing when it
+  could not reach a tab. The daemon deliberately keeps no copy of the
   presence itself: the desktop is the only side that sees tabs close and
   recordings end, so a second copy would only be a second answer to disagree
   with.

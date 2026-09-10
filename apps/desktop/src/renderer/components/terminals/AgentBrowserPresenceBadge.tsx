@@ -35,7 +35,12 @@ export function AgentBrowserPresenceBadge({
       title={AGENT_BROWSER_PRESENCE_LABEL}
       aria-label={AGENT_BROWSER_PRESENCE_LABEL}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center text-accent/85",
+        // Full accent, not a dimmed one: at 12px a grey-ish glyph in a row of
+        // grey glyphs reads as decoration, and the whole point is that this one
+        // is live. The 2px ring is what gives it presence at that size without
+        // making it bigger than the marks around it.
+        "relative inline-flex shrink-0 items-center justify-center rounded-full text-accent",
+        "shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
         // 1.2s, and only when the person has not asked for less motion: a
         // permanent throb in a sidebar full of rows is exactly what
         // `prefers-reduced-motion` is for. Without the animation the glyph is

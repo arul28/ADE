@@ -314,18 +314,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
       );
     }
-    // The command is authenticated and about to run, so the chat IS using the
-    // browser — recorded before dispatch rather than after, because a `wait` or
-    // a slow navigation is exactly the stretch a person is trying to explain.
-    // Every method lands here, reads included: `status` and `observe` are how an
-    // agent looks at the page, and a badge that lit only for clicks would go
-    // dark while it read.
-    builtInBrowserAgentPresence.touch({
-      chatSessionId: actor.chatSessionId,
-      laneId: actor.laneId,
-      projectRoot: actor.projectRoot,
-      tabId: normalizedString(rawParams.tabId),
-    });
     const params = {
       ...rawParams,
       chatSessionId: actor.chatSessionId,
@@ -343,7 +331,21 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       );
     }
     try {
-      return await (callable as (input: unknown) => Promise<unknown>).call(service, params);
+      const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
+      // Recorded only once the command actually ran. A call that throws
+      // ("No ADE browser window is open for project…") did nothing to the
+      // browser, and lighting the globe for twenty seconds on it tells the
+      // person the agent is browsing when it could not even reach a tab.
+      // Every method that gets here counts, reads included: `status` and
+      // `observe` are how an agent looks at the page, and a badge that lit only
+      // for clicks would go dark while it read.
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: actor.chatSessionId,
+        laneId: actor.laneId,
+        projectRoot: actor.projectRoot,
+        tabId: normalizedString(rawParams.tabId),
+      });
+      return result;
     } catch (error) {
       if (error instanceof JsonRpcError) throw error;
       throw new JsonRpcError(

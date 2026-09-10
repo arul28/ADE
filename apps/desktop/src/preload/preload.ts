@@ -825,6 +825,7 @@ import type {
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
+  BuiltInBrowserAgentPresence,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -8081,6 +8082,12 @@ const adeBridge = {
       isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "getStatus", { args })
         : builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+    // Seed-only, and deliberately separate from `getStatus`: the badge is
+    // mounted by every session card and the chat header, and `getStatus` is the
+    // creating resolver that restores and re-loads every persisted tab. Not
+    // cached — it is asked once per shared subscription, not per badge.
+    getAgentPresence: async (): Promise<BuiltInBrowserAgentPresence[]> =>
+      ipcRenderer.invoke(IPC.builtInBrowserGetAgentPresence),
     requestOriginAccess: async (
       args: BuiltInBrowserRequestOriginAccessArgs = {},
       pin?: OpenProjectBinding | null,

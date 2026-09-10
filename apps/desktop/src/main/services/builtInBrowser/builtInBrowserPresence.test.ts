@@ -137,6 +137,27 @@ describe("builtInBrowserAgentPresence", () => {
     expect(presence.list()).toHaveLength(0);
   });
 
+  it("clears a whole window's tabs with one notification", () => {
+    // Closing a window with N tabs used to publish N full presence sets to every
+    // other window and phone, each one a superset of the next.
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.touch({ chatSessionId: "chat-2", tabId: "tab-2" });
+    presence.touch({ chatSessionId: "chat-3", tabId: "tab-3" });
+    let notifications = 0;
+    const stop = presence.subscribe(() => {
+      notifications += 1;
+    });
+
+    presence.clearForTabs(["tab-1", "tab-2", "tab-3"]);
+    expect(notifications).toBe(1);
+    expect(presence.list()).toHaveLength(0);
+
+    // Nothing to clear is not a change.
+    presence.clearForTabs(["tab-1"]);
+    expect(notifications).toBe(1);
+    stop();
+  });
+
   it("scopes a read to the asking project, and shares personal-collection agents", () => {
     presence.touch({ chatSessionId: "chat-a", projectRoot: "/tmp/project-a" });
     presence.touch({ chatSessionId: "chat-b", projectRoot: "/tmp/project-b" });

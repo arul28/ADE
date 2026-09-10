@@ -88,6 +88,13 @@ export type BuiltInBrowserAgentPresenceTracker = {
   clearForChatSession(chatSessionId: string): void;
   /** The tab went away — closed, released, or handed to a human. */
   clearForTab(tabId: string): void;
+  /**
+   * The same, for a whole window's tabs at once, with ONE notification.
+   *
+   * Closing a window with six tabs used to publish six full presence sets to
+   * every other window and phone, each one a superset of the next.
+   */
+  clearForTabs(tabIds: readonly string[]): void;
   /** Live entries, newest activity first, optionally scoped to one project. */
   list(filter?: { projectRoot?: string | null }): BuiltInBrowserAgentPresenceEntry[];
   /** Fires when an entry appears, changes tab, or expires — not on a heartbeat. */
@@ -209,6 +216,22 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
     return record;
   };
 
+  /** Shared by the single- and batch-tab clears; `true` when a record went. */
+  const clearTabWithoutEmit = (tabId: string): boolean => {
+    const key = trimmedOrNull(tabId);
+    if (!key) return false;
+    let removed = false;
+    for (const [chatSessionId, record] of [...records]) {
+      // A hold keyed by this tab dies with it, whichever chat owns it.
+      record.holds.delete(key);
+      if (record.tabId !== key) continue;
+      clearTimer(record);
+      records.delete(chatSessionId);
+      removed = true;
+    }
+    return removed;
+  };
+
   return {
     touch(input) {
       upsert(input);
@@ -254,16 +277,13 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
     },
 
     clearForTab(tabId) {
-      const key = trimmedOrNull(tabId);
-      if (!key) return;
+      if (clearTabWithoutEmit(tabId)) emit();
+    },
+
+    clearForTabs(tabIds) {
       let removed = false;
-      for (const [chatSessionId, record] of [...records]) {
-        // A hold keyed by this tab dies with it, whichever chat owns it.
-        record.holds.delete(key);
-        if (record.tabId !== key) continue;
-        clearTimer(record);
-        records.delete(chatSessionId);
-        removed = true;
+      for (const tabId of tabIds) {
+        if (clearTabWithoutEmit(tabId)) removed = true;
       }
       if (removed) emit();
     },

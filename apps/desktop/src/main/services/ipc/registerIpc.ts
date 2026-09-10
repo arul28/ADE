@@ -9106,6 +9106,17 @@ export function registerIpc({
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
   });
 
+  // Side-effect-free presence read. `getStatus` is a CREATING resolver — it
+  // builds a window service, whose factory restores and `loadURL`s every
+  // persisted tab — and the presence badge is mounted by every session card and
+  // the chat header, so seeding the badge through it background-loaded the
+  // browser for a user who never opened the pane. This reads the tracker and
+  // nothing else.
+  ipcMain.handle(IPC.builtInBrowserGetAgentPresence, async (event) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetAgentPresence, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getAgentPresence(win);
+  });
+
   ipcMain.handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserRequestOriginAccess, { windowMs: 10_000, max: 10 });
     return ensureBuiltInBrowser().requestOriginAccess(

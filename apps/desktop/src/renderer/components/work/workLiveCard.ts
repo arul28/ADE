@@ -422,9 +422,6 @@ export function formatWorkLiveAge(elapsedMs: number): string {
  * Browser and App Control use a small 16:10 landscape rectangle. The simulator
  * is the one portrait exception, because its source is a phone-sized stream.
  */
-export const WORK_LIVE_CARD_MAX_SIZE = 320;
-export const WORK_LIVE_CARD_MIN_WIDTH = 240;
-export const WORK_LIVE_CARD_MIN_HEIGHT = 150;
 /** The fixed browser/App Control width; the preview stream is sized against it. */
 export const WORK_LIVE_CARD_WIDTH = 288;
 /** The fixed browser/App Control height (16:10). */
@@ -483,8 +480,8 @@ export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): n
 export function workLiveCardFits(
   host: { width: number; height: number },
   bottomReserve = 0,
-  /** The box actually being placed; defaults to the largest one any tool takes. */
-  card: WorkLiveCardSize = { width: WORK_LIVE_CARD_MAX_SIZE, height: WORK_LIVE_CARD_MAX_SIZE },
+  /** The box actually being placed; defaults to the landscape card. */
+  card: WorkLiveCardSize = WORK_LIVE_CARD_LANDSCAPE_SIZE,
 ): boolean {
   const minWidth = Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2);
   const minHeight = Math.max(WORK_LIVE_CARD_MIN_HOST_HEIGHT, card.height + WORK_LIVE_CARD_INSET * 2);

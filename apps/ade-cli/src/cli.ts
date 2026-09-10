@@ -3307,6 +3307,16 @@ function firstStandalonePositional(args: string[]): string | null {
   return null;
 }
 
+/** Every remaining positional, flags and their values left behind. */
+function standalonePositionals(args: string[]): string[] {
+  const values: string[] = [];
+  while (true) {
+    const next = firstStandalonePositional(args);
+    if (next == null) return values;
+    values.push(next);
+  }
+}
+
 function takeArgsAfterTerminator(args: string[]): string[] | null {
   const index = args.indexOf("--");
   if (index < 0) return null;
@@ -11833,7 +11843,11 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
-    const url = explicitUrl ?? genericUrl ?? args.join(" ");
+    // Standalone positionals, not `args.join(" ")`: a flag this branch does not
+    // read — `--browser-session`, say — used to be joined INTO the URL, so
+    // `browser open --browser-session s1 https://x` navigated to
+    // "--browser-session s1 https://x".
+    const url = explicitUrl ?? genericUrl ?? standalonePositionals(args).join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
     const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
@@ -12079,7 +12093,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (isBrowserSubcommand(sub, "key")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
-    const key = readValue(args, ["--key"]) ?? firstPositional(args);
+    // `firstStandalonePositional`, not `firstPositional`: any value-carrying
+    // flag this branch does not itself read would otherwise have its VALUE
+    // taken as the key ("browser key --button left Enter" → key "left").
+    const key = readValue(args, ["--key"]) ?? firstStandalonePositional(args);
     if (!key) throw new CliUsageError("browser key requires a key.");
     return {
       kind: "execute",
@@ -12432,7 +12449,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
       throw new CliUsageError("browser select-option requires --selector, --text-match, --test-id, --element, or --handle.");
     }
     const actionArgs = readBrowserAgentActionArgs(args);
-    const positional = value == null && label == null && index == null ? firstPositional(args) : null;
+    const positional = value == null && label == null && index == null
+      ? firstStandalonePositional(args)
+      : null;
     if (value == null && label == null && index == null && !positional) {
       throw new CliUsageError("browser select-option requires --value, --label, or --index.");
     }
@@ -14154,6 +14173,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--action",
   "--app-bundle",
   "--at",
+  "--browser-session",
+  "--browser-session-id",
   "--arg",
   "--arg-json",
   "--arg-value",

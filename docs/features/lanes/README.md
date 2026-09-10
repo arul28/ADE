@@ -426,10 +426,14 @@ are still not listed (no `--ignored`), so the `dirty` semantics are byte-
 identical to the porcelain v1 output this replaced.
 `headBranchRef` is absent when status was not computed at all.
 The same refresh also records the staged/unstaged/untracked split and unique
-changed-entry count; `git log -1 --format=%cI` supplies `lastCommitAt`, and
-`git rev-parse HEAD^{tree}` identifies the committed tree for the cached
-`trackedFileCount` used by the Work picker. `git ls-files -z` runs only when that
-tree hash is new or its ten-minute cache entry has expired.
+changed-entry count; one `git log -1 --format=%T%x00%cI` supplies both
+`lastCommitAt` and the committed tree hash that keys the cached
+`trackedFileCount` used by the Work picker, so a routine refresh costs one
+metadata process per lane rather than two. `git ls-files -z` runs only when that
+tree hash is new or its ten-minute cache entry has expired; a listing `runGit`
+had to truncate reports no total at all and is not cached, because a truncated
+tracked-file count is a wrong number rather than a smaller one. The cache is
+swept of expired entries and capped at 200 trees on every insert.
 
 A refresh is expensive in processes, not in wall time per process: it fans out
 over every lane, inside several services that do not know about each other, and

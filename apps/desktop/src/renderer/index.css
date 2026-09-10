@@ -2345,8 +2345,12 @@ button:active, [role="button"]:active {
 }
 
 /* The card. Now that there is something behind it, the card is a piece of
-   glass rather than a flat rectangle: a translucent fill over an 8px blur, one
-   hairline, and nothing else at rest. Hover is the only place this page spends
+   glass rather than a flat rectangle: a translucent fill, one
+   hairline, and nothing else at rest. No `backdrop-filter` — six blur regions
+   over a 30fps animating canvas re-blur on every backdrop frame and spend back
+   everything the backdrop's own budget (DPR 1, 600k px, 30fps) saves. The
+   measured 82% fill is what carries the violet through and holds contrast.
+   Hover is the only place this page spends
    colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
    over 160ms. Press settles back to a 0.99 scale, so the card gives under the
    cursor rather than jumping out from under it. */
@@ -2359,8 +2363,6 @@ button:active, [role="button"]:active {
      4:1 over the brightest spot the backdrop can produce, and the blur still
      carries the violet through. */
   background: color-mix(in srgb, var(--color-card) 82%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   transition:
     transform 160ms ease-out,
     background-color 160ms ease-out,

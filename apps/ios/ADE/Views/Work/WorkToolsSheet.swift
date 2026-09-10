@@ -101,25 +101,30 @@ struct WorkToolsSheet: View {
       // the rest are outlined. Shown only when there is more than one tab —
       // with a single tab the section title already names it.
       if openTools.count > 1 {
-        HStack(spacing: 6) {
-          ForEach(openTools, id: \.self) { tool in
-            let isActive = tool == state?.activeTool
-            Text(workToolsDisplayName(tool) ?? tool)
-              .font(.caption.weight(isActive ? .semibold : .regular))
-              .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
-              .padding(.horizontal, 8)
-              .padding(.vertical, 4)
-              .background(
-                Capsule().fill(isActive ? ADEColor.textPrimary.opacity(0.12) : Color.clear)
-              )
-              .overlay(
-                Capsule().stroke(ADEColor.textMuted.opacity(isActive ? 0 : 0.35), lineWidth: 1)
-              )
-              .accessibilityLabel(
-                isActive
-                  ? "\(workToolsDisplayName(tool) ?? tool), open and showing"
-                  : "\(workToolsDisplayName(tool) ?? tool), open"
-              )
+        // Six capsules at `.caption` overflow a 320 pt phone; without this the
+        // strip truncates every name to an unreadable stub. Indicator hidden so
+        // a strip that happens to fit still looks like the desktop's.
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
+            ForEach(openTools, id: \.self) { tool in
+              let isActive = tool == state?.activeTool
+              Text(workToolsDisplayName(tool) ?? tool)
+                .font(.caption.weight(isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                  Capsule().fill(isActive ? ADEColor.textPrimary.opacity(0.12) : Color.clear)
+                )
+                .overlay(
+                  Capsule().stroke(ADEColor.textMuted.opacity(isActive ? 0 : 0.35), lineWidth: 1)
+                )
+                .accessibilityLabel(
+                  isActive
+                    ? "\(workToolsDisplayName(tool) ?? tool), open and showing"
+                    : "\(workToolsDisplayName(tool) ?? tool), open"
+                )
+            }
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

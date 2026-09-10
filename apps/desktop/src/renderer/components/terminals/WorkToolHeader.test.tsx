@@ -167,6 +167,25 @@ describe("WorkToolHeader tab strip", () => {
     expect(document.activeElement).toBe(tabs[1]);
   });
 
+  it("keeps the close ✕ out of the tab order and closes with Delete instead", () => {
+    // Six open tools would otherwise put six extra stops between the strip and
+    // the panel, which is exactly what the roving tabindex above exists to
+    // avoid. The keyboard closes from the tab itself.
+    const { props } = renderHeader();
+    const closes = Array.from(document.querySelectorAll('[data-tool-tab-close]'));
+    expect(closes.length).toBeGreaterThan(0);
+    for (const close of closes) expect(close.getAttribute("tabindex")).toBe("-1");
+
+    const tabs = screen.getAllByRole("tab");
+    tabs[1].focus();
+    fireEvent.keyDown(tabs[1], { key: "Delete" });
+    expect(props.onCloseTool).toHaveBeenCalledWith("browser");
+
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: "Backspace" });
+    expect(props.onCloseTool).toHaveBeenCalledWith("terminal");
+  });
+
   it("renders the strip with no tabs at all", () => {
     renderHeader({ activeTool: null, openTools: [] });
     expect(screen.queryAllByRole("tab")).toHaveLength(0);

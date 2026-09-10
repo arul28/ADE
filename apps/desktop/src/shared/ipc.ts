@@ -453,6 +453,7 @@ export const IPC = {
   appControlAttachToTarget: "ade.appControl.attachToTarget",
   appControlEvent: "ade.appControl.event",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
+  builtInBrowserGetAgentPresence: "ade.builtInBrowser.getAgentPresence",
   builtInBrowserRequestOriginAccess: "ade.builtInBrowser.requestOriginAccess",
   builtInBrowserGetProfileDiagnostics: "ade.builtInBrowser.getProfileDiagnostics",
   builtInBrowserListPermissions: "ade.builtInBrowser.listPermissions",

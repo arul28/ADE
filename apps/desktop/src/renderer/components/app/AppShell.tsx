@@ -120,6 +120,38 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/chats",
 ] as const;
 
+/**
+ * What the deferred second-tier lane refresh asks for, per route.
+ *
+ * Boot runs two lane reads: an immediate `includeStatus: false` one so the lane
+ * list paints without spawning git, then this one 1.2s later. Git STATUS is not
+ * a Lanes-tab luxury — the Work tab's Git and Files cards read `lane.status`
+ * and `lane.trackedFileCount`, and this is the ONLY refresh the restore path
+ * ever schedules. Gating it on the route meant a session that booted straight
+ * into Work never fetched status at all, so both cards sat on their no-data
+ * fallbacks ("Unpublished", "Browse") for a clean, committed repository until
+ * the user happened to visit the Lanes tab.
+ *
+ * Only the conflict / rebase-suggestion DECORATIONS are genuinely Lanes-route
+ * work, so those (and the decorated snapshot read that carries them) stay
+ * gated.
+ */
+export function deferredLaneRefreshOptions(isLanesRoute: boolean): {
+  includeStatus: boolean;
+  includeSnapshots: boolean;
+  includeConflictStatus: boolean;
+  includeRebaseSuggestions: boolean;
+  includeAutoRebaseStatus: boolean;
+} {
+  return {
+    includeStatus: true,
+    includeSnapshots: isLanesRoute,
+    includeConflictStatus: isLanesRoute,
+    includeRebaseSuggestions: isLanesRoute,
+    includeAutoRebaseStatus: isLanesRoute,
+  };
+}
+
 export function productAnalyticsScreenForPathname(pathname: string): string {
   if (pathname === "/project" || pathname.startsWith("/project/")) return "project";
   // Activity used to be the "/attention" route, and the screen name is derived
@@ -624,13 +656,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         laneRefreshTimer = window.setTimeout(() => {
           laneRefreshTimer = null;
           if (cancelled) return;
-          const includeDecoratedLaneSnapshots = isLanesRouteRef.current;
-          void refreshLanes({
-            includeStatus: includeDecoratedLaneSnapshots,
-            includeConflictStatus: includeDecoratedLaneSnapshots,
-            includeRebaseSuggestions: includeDecoratedLaneSnapshots,
-            includeAutoRebaseStatus: includeDecoratedLaneSnapshots,
-          });
+          void refreshLanes(deferredLaneRefreshOptions(isLanesRouteRef.current));
         }, 1_200);
         providerRefreshTimer = window.setTimeout(() => {
           providerRefreshTimer = null;

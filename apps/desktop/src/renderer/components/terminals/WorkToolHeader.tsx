@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { DotsThree, Plus, SquaresFour, X } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { motion, useReducedMotion } from "motion/react";
@@ -125,7 +125,11 @@ function useMeasuredWidth(): { ref: (node: HTMLDivElement | null) => void; width
 
   useEffect(() => () => observer.current?.disconnect(), []);
 
-  const ref = (node: HTMLDivElement | null): void => {
+  // Stable identity, or React detaches and re-attaches the ref on every render
+  // — which re-runs `getBoundingClientRect` (a synchronous reflow) and rebuilds
+  // the ResizeObserver on every `statuses` tick. Everything it closes over
+  // (`setWidth`, the two refs) is already stable.
+  const ref = useCallback((node: HTMLDivElement | null): void => {
     if (observed.current === node) return;
     observed.current = node;
     observer.current?.disconnect();
@@ -140,7 +144,7 @@ function useMeasuredWidth(): { ref: (node: HTMLDivElement | null) => void; width
       if (entry) setWidth(entry.contentRect.width);
     });
     observer.current.observe(node);
-  };
+  }, []);
 
   return { ref, width };
 }
@@ -224,11 +228,23 @@ export function WorkToolHeader({
   const onTabStripKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
     const edge = event.key === "Home" ? 0 : event.key === "End" ? -1 : null;
-    if (step === 0 && edge === null) return;
+    const closing = event.key === "Delete" || event.key === "Backspace";
+    if (step === 0 && edge === null && !closing) return;
     const tabs = Array.from(
       tabListRef.current?.querySelectorAll<HTMLButtonElement>('button[role="tab"]') ?? [],
     );
     if (tabs.length === 0) return;
+    if (closing) {
+      // The ✕ is mouse-only (it is out of the tab order), so this is the
+      // keyboard's way to close the tool you are standing on — the same one
+      // the overflow menu offers.
+      const focused = tabs.find((node) => node === document.activeElement);
+      const tool = focused?.dataset.toolTab as WorkSidebarTab | undefined;
+      if (!tool) return;
+      event.preventDefault();
+      onCloseTool(tool);
+      return;
+    }
     event.preventDefault();
     if (edge !== null) {
       (edge === 0 ? tabs[0] : tabs[tabs.length - 1])?.focus();
@@ -518,6 +534,11 @@ function WorkToolTab({
       <button
         type="button"
         onClick={onCloseTool}
+        // Mouse-only. Six open tools would otherwise put six extra stops
+        // between the strip and the panel, defeating the roving tabindex the
+        // tabs themselves keep. The keyboard closes with Delete/Backspace on
+        // the focused tab, or through the overflow menu.
+        tabIndex={-1}
         aria-label={`Close ${definition.label}`}
         data-tool-tab-close={tool}
         className={cn(

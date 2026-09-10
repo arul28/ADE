@@ -1096,6 +1096,12 @@ enum WorkProofPreviewData {
       )
     ),
     browserUnavailable: nil,
+    agentBrowserPresence: [
+      WorkToolsAgentBrowserPresence(
+        chatSessionId: WorkPreviewData.chatSummary.sessionId,
+        tabId: "tab-2"
+      )
+    ],
     appControl: nil
   )
 }

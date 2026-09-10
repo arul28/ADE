@@ -51,6 +51,7 @@ import type {
   BuiltInBrowserSessionResult,
   BuiltInBrowserSessionsResult,
   BuiltInBrowserStartSessionArgs,
+  BuiltInBrowserAgentPresence,
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
   BuiltInBrowserTabArgs,
@@ -785,12 +786,9 @@ export function createBuiltInBrowserService(args: {
       .map(({ win }) => win)
       .filter((win) => isLiveWindow(win));
     // No window has opened the browser at all (a fallback-service process, a
-    // test): there is no window whose scope could be read, so the unscoped
-    // broadcast is the only thing left to say.
-    if (windows.length === 0) {
-      emitScoped(null, null);
-      return;
-    }
+    // test): there is no window whose scope could be read, and an unscoped
+    // broadcast would contradict the scoping this block exists to enforce.
+    // Nobody is listening either, so say nothing.
     for (const win of windows) emitScoped(win, presenceScopeForWindow(win));
   });
 
@@ -869,9 +867,9 @@ export function createBuiltInBrowserService(args: {
       // other event will say so: `closeTab` is not called for any of them, and a
       // recording torn down with the window never emits its `recording:false`.
       // Read the ids before `dispose`, which is what destroys them.
-      for (const tabId of entry.service.listTabIds()) {
-        builtInBrowserAgentPresence.clearForTab(tabId);
-      }
+      // One broadcast for the whole window, not one per tab: a window with six
+      // tabs used to fire six full presence events on its way out.
+      builtInBrowserAgentPresence.clearForTabs(entry.service.listTabIds());
       entry.service.dispose();
       windowServices.delete(key);
     }
@@ -1324,6 +1322,34 @@ export function createBuiltInBrowserService(args: {
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
+    },
+    /**
+     * Who is browsing, scoped to the asking window's projects — and nothing
+     * else.
+     *
+     * The badge's seed. Deliberately NOT `getStatus`: that is a creating
+     * resolver (see {@link readOnlyServiceForProjectRoot}), and the badge is
+     * mounted by every session card and the chat header, so seeding through it
+     * restored and re-loaded every persisted tab for a user who never opened
+     * the Browser pane. This constructs nothing, attaches nothing and marks
+     * nothing active — it reads the presence tracker through the same
+     * `presenceScopeForWindow` union the pushed `agent-presence` event uses, so
+     * the seed and the stream cannot disagree.
+     */
+    getAgentPresence(sourceWindow?: BrowserWindow | null): BuiltInBrowserAgentPresence[] {
+      const roots = isLiveWindow(sourceWindow) ? presenceScopeForWindow(sourceWindow) : null;
+      return builtInBrowserAgentPresence
+        .list()
+        .filter((entry) => !roots
+          || entry.projectRoot == null
+          || roots.some((root) => projectRootsMatch(root, entry.projectRoot)))
+        .map((entry) => ({
+          chatSessionId: entry.chatSessionId,
+          laneId: entry.laneId,
+          tabId: entry.tabId,
+          since: entry.since,
+          lastActivityAt: entry.lastActivityAt,
+        }));
     },
     getStatus(
       inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
@@ -3542,12 +3568,17 @@ function createBuiltInBrowserWindowService(args: {
     // reading `.id` off a destroyed `webContents` is not safe.
     const owner = hostWebContentsId == null ? null : String(hostWebContentsId);
     let stoppedAny = false;
+    // These two paths drop subscriptions without going through
+    // `onPreviewWatchersChanged`, so they release the presence hold themselves.
     if (owner) {
-      stoppedAny = tabCapabilities.stopPreviewStreamsForOwner(owner).length > 0;
+      const ended = tabCapabilities.stopPreviewStreamsForOwner(owner);
+      for (const tabId of ended) builtInBrowserAgentPresence.releaseHoldForTab(tabId);
+      stoppedAny = ended.length > 0;
     } else {
       for (const tab of tabs) {
         if (!hasPreviewWatchers(tab.id)) continue;
         tabCapabilities.stopPreviewStreamsForTab(tab.id);
+        builtInBrowserAgentPresence.releaseHoldForTab(tab.id);
         stoppedAny = true;
       }
     }
@@ -5583,7 +5614,18 @@ function createBuiltInBrowserWindowService(args: {
     // A tab that gains or loses its last watcher has to be re-placed: parked
     // just outside the window while somebody previews it, detached once nobody
     // does. `attachViewsToCurrentWindow` is the one place that decides that.
-    onPreviewWatchersChanged: () => attachViewsToCurrentWindow(),
+    onPreviewWatchersChanged: (tabId) => {
+      // A preview/observe subscription is the other thing that runs for minutes
+      // with no command behind it — the Work tab's corner card watching a tab
+      // the agent set up and is now reading. Same hold API as a recording, and
+      // released the moment the last subscriber leaves.
+      if (tabCapabilities.hasPreviewWatchers(tabId)) {
+        builtInBrowserAgentPresence.holdForTab(tabId);
+      } else {
+        builtInBrowserAgentPresence.releaseHoldForTab(tabId);
+      }
+      attachViewsToCurrentWindow();
+    },
     isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,

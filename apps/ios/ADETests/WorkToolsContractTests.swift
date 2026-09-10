@@ -109,6 +109,43 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(state.browserUnavailable, "desktop_not_attached")
   }
 
+  func testLaneStateDecodesOpenToolsAndAgentBrowserPresenceWhenPresentOrAbsent() throws {
+    let populatedData = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": "browser",
+      "openTools": ["terminal", "browser", "git"],
+      "browser": null,
+      "browserUnavailable": "browser_pane_not_opened",
+      "agentBrowserPresence": [
+        { "chatSessionId": "chat-7", "tabId": "tab-2" }
+      ],
+      "appControl": null
+    }
+    """#.utf8)
+
+    let populated = try JSONDecoder().decode(WorkToolsLaneState.self, from: populatedData)
+    XCTAssertEqual(populated.openTools, ["terminal", "browser", "git"])
+    XCTAssertEqual(
+      populated.agentBrowserPresence,
+      [WorkToolsAgentBrowserPresence(chatSessionId: "chat-7", tabId: "tab-2")]
+    )
+
+    let legacyData = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": null,
+      "browser": null,
+      "browserUnavailable": "desktop_not_attached",
+      "appControl": null
+    }
+    """#.utf8)
+
+    let legacy = try JSONDecoder().decode(WorkToolsLaneState.self, from: legacyData)
+    XCTAssertNil(legacy.openTools)
+    XCTAssertNil(legacy.agentBrowserPresence)
+  }
+
   func testObservationPreviewDecodesWithoutTheByteLengthThePhoneIgnores() throws {
     let data = Data(#"""
     { "dataUrl": "data:image/png;base64,AAAA", "mimeType": "image/png", "byteLength": 3 }

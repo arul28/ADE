@@ -319,10 +319,16 @@ export function filesStatusLine(lane: LaneSummary | null): WorkToolStatus {
   const trackedFileCount = lane.trackedFileCount ?? lane.status.trackedFileCount;
   if (trackedFileCount == null) return statusLine("Browse", false);
 
+  // The split counts ENTRIES per side, so a file with both index and worktree
+  // changes is in `staged` AND `unstaged` — adding the three double-counts it.
+  // `Math.max` is the unique tracked-entry count the fresh payload's
+  // `changedFileCount` already carries; only a legacy/remote payload without
+  // that field gets here. An untracked DIRECTORY counts as one entry either
+  // way: `--untracked-files=normal` reports the folder, not its contents, and
+  // that is intended — "12 changed" should not become "412" for one new folder.
   const changedFileCount = lane.status.changedFileCount ?? (
     lane.status.dirty
-      ? nonNegativeCount(lane.status.staged)
-        + nonNegativeCount(lane.status.unstaged)
+      ? Math.max(nonNegativeCount(lane.status.staged), nonNegativeCount(lane.status.unstaged))
         + nonNegativeCount(lane.status.untracked)
       : 0
   );

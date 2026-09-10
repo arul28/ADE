@@ -678,8 +678,13 @@ per-card activity dot** — the only mark a card can carry is a red 6 px dot
 when that tool is actually broken (`workToolHasError`), because that is
 the one fact worth interrupting a calm page for. Now that there is
 something behind it the card is glass rather than a flat rectangle
-(`.ade-tool-card`): a translucent fill over an 8 px `backdrop-filter`
-blur and one hairline at 12 % white (a border token in light). Nothing is
+(`.ade-tool-card`): a measured 82 % translucent fill and one hairline at
+12 % white (a border token in light). The fill carries the mesh through on
+its own — there is deliberately **no `backdrop-filter`**, because six blur
+regions over a 30 fps animating canvas re-blur on every backdrop frame and
+spend back everything the backdrop's own budget saves; 82 % is the point
+where every 12 px line still clears 4:1 over the mesh's brightest
+peak. Nothing is
 highlighted on entry; arrow keys move a highlight and take focus with
 them, so Enter is the browser's own activation, and a pointer move drops
 the keyboard highlight so two cards never look hovered at once.
@@ -690,7 +695,9 @@ catalogue's short `hint` ("Run a shell here", "Drive a real browser",
 "Commit, push, rebase", "Boot a simulator", "Drive a desktop app"), else
 the availability reason. Git shows the lane's unpublished, dirty-count,
 ahead/behind, or pushed/committed-age state; Files shows the cached tracked-file
-total and unique changed-entry count. Status comes only from reads the pane
+total and unique changed-entry count — entries, so a file with both index
+and worktree changes counts once, and a new untracked directory counts as
+one entry rather than as everything inside it. Status comes only from reads the pane
 already makes — the `builtInBrowser` / `iosSimulator` / `appControl`
 status subscriptions, the terminal panel's published shell count, and the
 lane's cached git summary — so nothing here polls. Lines hold a stepped-shimmer

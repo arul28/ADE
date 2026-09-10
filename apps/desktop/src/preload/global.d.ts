@@ -735,6 +735,7 @@ import type {
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
+  BuiltInBrowserAgentPresence,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -2438,6 +2439,13 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /**
+         * Who is driving the browser right now, scoped to this window's
+         * projects. Side-effect-free: unlike `getStatus` it constructs no
+         * window service and restores no tabs, which is why the presence badge
+         * seeds from it.
+         */
+        getAgentPresence: () => Promise<BuiltInBrowserAgentPresence[]>;
         requestOriginAccess: (
           args?: BuiltInBrowserRequestOriginAccessArgs,
           pin?: OpenProjectBinding | null,

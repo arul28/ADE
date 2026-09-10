@@ -3,9 +3,6 @@ import {
   WORK_LIVE_CARD_INSET,
   WORK_LIVE_CARD_LANDSCAPE_SIZE,
   WORK_LIVE_CARD_HEIGHT,
-  WORK_LIVE_CARD_MAX_SIZE,
-  WORK_LIVE_CARD_MIN_HEIGHT,
-  WORK_LIVE_CARD_MIN_WIDTH,
   WORK_LIVE_CARD_PORTRAIT_SIZE,
   WORK_LIVE_CARD_WIDTH,
   WORK_LIVE_SCRUB_BUFFER_SIZE,
@@ -446,7 +443,10 @@ describe("workLiveCardFits", () => {
     const shortColumn = { width: 400, height: 280 };
     expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_LANDSCAPE_SIZE)).toBe(true);
     expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_PORTRAIT_SIZE)).toBe(false);
-    expect(workLiveCardFits(shortColumn)).toBe(false);
+    // The default is the landscape card — the shape four of the five tools
+    // take — not an envelope no real card ever uses.
+    expect(workLiveCardFits(shortColumn))
+      .toBe(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_LANDSCAPE_SIZE));
   });
 });
 
@@ -464,14 +464,10 @@ describe("workLiveCardSize", () => {
       width: WORK_LIVE_CARD_WIDTH,
       height: WORK_LIVE_CARD_HEIGHT,
     });
-    expect(WORK_LIVE_CARD_LANDSCAPE_SIZE.width).toBeLessThan(WORK_LIVE_CARD_MAX_SIZE);
-    expect(WORK_LIVE_CARD_LANDSCAPE_SIZE.height).toBeLessThan(WORK_LIVE_CARD_MAX_SIZE);
     expect(WORK_LIVE_CARD_PORTRAIT_SIZE).toEqual({ width: 240, height: 320 });
+    // Both shapes still clear the host minimums the placement math enforces.
     for (const size of [WORK_LIVE_CARD_LANDSCAPE_SIZE, WORK_LIVE_CARD_PORTRAIT_SIZE]) {
-      expect(size.width).toBeLessThanOrEqual(WORK_LIVE_CARD_MAX_SIZE);
-      expect(size.height).toBeLessThanOrEqual(WORK_LIVE_CARD_MAX_SIZE);
-      expect(size.width).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_WIDTH);
-      expect(size.height).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_HEIGHT);
+      expect(workLiveCardFits({ width: 1_200, height: 900 }, 0, size)).toBe(true);
     }
   });
 });
