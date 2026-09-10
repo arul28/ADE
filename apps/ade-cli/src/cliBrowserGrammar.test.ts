@@ -9,30 +9,106 @@ const SOURCE = fs.readFileSync(
   "utf8",
 );
 
-/** The body of a top-level `function <name>(…) { … }`, braces balanced. */
+/**
+ * Source spans a brace scan must not count: comments, quoted strings and
+ * template literals (including their `${…}` holes). Without this a `{` inside
+ * a string unbalanced the scan, and the old `indexOf("\n}")` fallback hid it —
+ * could-not-parse read as parsed-clean.
+ */
+function skipNonCode(source: string, index: number): number {
+  const char = source[index];
+  const next = source[index + 1];
+  if (char === "/" && next === "/") {
+    const end = source.indexOf("\n", index);
+    return end < 0 ? source.length : end;
+  }
+  if (char === "/" && next === "*") {
+    const end = source.indexOf("*/", index + 2);
+    if (end < 0) throw new Error("unterminated block comment in cli.ts");
+    return end + 2;
+  }
+  if (char === '"' || char === "'") {
+    for (let i = index + 1; i < source.length; i += 1) {
+      if (source[i] === "\\") i += 1;
+      else if (source[i] === char) return i + 1;
+      else if (source[i] === "\n") break;
+    }
+    throw new Error("unterminated string in cli.ts");
+  }
+  if (char === "`") {
+    for (let i = index + 1; i < source.length; i += 1) {
+      if (source[i] === "\\") i += 1;
+      else if (source[i] === "`") return i + 1;
+      else if (source[i] === "$" && source[i + 1] === "{") {
+        let depth = 1;
+        let cursor = i + 2;
+        while (cursor < source.length && depth > 0) {
+          const skipped = skipNonCode(source, cursor);
+          if (skipped > 0) {
+            cursor = skipped;
+            continue;
+          }
+          if (source[cursor] === "{") depth += 1;
+          else if (source[cursor] === "}") depth -= 1;
+          cursor += 1;
+        }
+        i = cursor - 1;
+      }
+    }
+    throw new Error("unterminated template literal in cli.ts");
+  }
+  return 0;
+}
+
+/**
+ * The body of a top-level `function <name>(…) { … }`, braces balanced.
+ *
+ * Two things are NOT the body brace and both used to be taken as one, each
+ * yielding an EMPTY body that every scan below then read as "calls nothing":
+ * a default parameter (`base: JsonObject = {}`) and a return-type annotation
+ * (`): { key: string; value: string } {`, which is how `parseAssignment` and
+ * seven more went unscanned). So: skip the parameter list by paren depth, then
+ * take the first `{` at depth 0 whose matching `}` sits in column 0 and is not
+ * itself followed by another `{` — a return-type object closes as `} {`, a
+ * generic `<{…}>` closes mid-line, and a top-level function body closes in
+ * column 0 and ends there. A body that cannot be bounded that way THROWS; it
+ * must never read as an empty-but-parsed body.
+ */
 function functionBody(name: string): string {
   const match = new RegExp(`\\nfunction ${name}\\b`).exec(SOURCE);
   if (!match) throw new Error(`no function ${name} in cli.ts`);
-  // Skip the parameter list before looking for the body brace: a default like
-  // `base: JsonObject = {}` opens and closes before the body does, and taking
-  // it as the start returned an EMPTY body — which is how
-  // `collectGenericObjectArgs` read argv with no scan ever seeing it.
   let cursor = SOURCE.indexOf("(", match.index);
   for (let parens = 0; cursor < SOURCE.length; cursor += 1) {
     if (SOURCE[cursor] === "(") parens += 1;
     else if (SOURCE[cursor] === ")" && (parens -= 1) === 0) break;
   }
-  const start = SOURCE.indexOf("{", cursor);
-  let depth = 0;
-  for (let i = start; i < SOURCE.length; i += 1) {
-    if (SOURCE[i] === "{") depth += 1;
-    else if (SOURCE[i] === "}" && (depth -= 1) === 0) return SOURCE.slice(start, i);
+  for (let start = cursor + 1; start < SOURCE.length; start += 1) {
+    const skipped = skipNonCode(SOURCE, start);
+    if (skipped > 0) {
+      start = skipped - 1;
+      continue;
+    }
+    if (SOURCE[start] !== "{") continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < SOURCE.length; i += 1) {
+      const inner = skipNonCode(SOURCE, i);
+      if (inner > 0) {
+        i = inner - 1;
+        continue;
+      }
+      if (SOURCE[i] === "{") depth += 1;
+      else if (SOURCE[i] === "}" && (depth -= 1) === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end < 0) throw new Error(`unbalanced ${name} in cli.ts`);
+    const after = /\S/.exec(SOURCE.slice(end + 1))?.[0];
+    if (SOURCE[end - 1] === "\n" && after !== "{") return SOURCE.slice(start, end);
+    start = end;
   }
-  // A brace inside a string or a regex literal unbalances the scan. Top-level
-  // functions close on a `}` in column 0, which is enough to bound the body.
-  const end = SOURCE.indexOf("\n}", start);
-  if (end > 0) return SOURCE.slice(start, end);
-  throw new Error(`unbalanced ${name}`);
+  throw new Error(`no body brace for ${name} in cli.ts`);
 }
 
 function flagsReadFor(pattern: RegExp, source: string): Set<string> {
@@ -56,6 +132,13 @@ const ARGV_PRIMITIVES = [
   "readNumberOption",
   "readIntOption",
   "readRepeatedValues",
+  // These two splice argv themselves instead of delegating to one of the five
+  // above, so a transitive closure over those alone classified neither as a
+  // reader — a future `readCommandTextValue(args, ["--foo"])` in the browser
+  // plan would have needed no entry in the browser table and nothing would
+  // have failed.
+  "readCommandTextValue",
+  "firstPositional",
 ];
 
 const BODY_BY_NAME = new Map<string, string>();
@@ -128,7 +211,72 @@ const PLAN_SOURCE = PLAN_FUNCTIONS.map(functionBody).join("\n");
 /** Every carrier-aware positional read the browser plan makes today. */
 const CARRIER_AWARE_CALL_SITES = 5;
 
+/** Every `hasHelpFlag` call in the top-level dispatcher. */
+const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
+
+/** Every top-level helper whose body reaches an argv primitive. */
+const ARGV_READER_COUNT = 97;
+
 describe("browser value flags", () => {
+  it("reads a real body for every top-level function in cli.ts", () => {
+    // The scans below are only as good as the bodies they read, and an
+    // unparsed body reads exactly like a body that calls nothing. These eight
+    // are the ones a return-type annotation (`): { key: string } {`) truncated
+    // to nothing; `parseDraftInput` is the one a `"{"` string literal
+    // unbalanced.
+    const previouslyEmpty = [
+      "parseAssignment",
+      "proofCallerRoot",
+      "resolveLinearWriteCommand",
+      "parseActionRunTarget",
+      "maybeRunBuiltCliFallback",
+      "runLocalCommand",
+      "withRpcAuthTokenGate",
+      "applySyncWebPairingFlags",
+      "parseDraftInput",
+      "collectGenericObjectArgs",
+    ];
+    expect(previouslyEmpty.filter((name) => !TOP_LEVEL_FUNCTIONS.has(name))).toEqual([]);
+    expect(
+      previouslyEmpty.filter((name) => bodyOf(name).split("\n").length < 3),
+    ).toEqual([]);
+    expect(
+      [...TOP_LEVEL_FUNCTIONS].filter((name) => bodyOf(name).trim().length <= 1),
+    ).toEqual([]);
+    // A drop here means bodies stopped parsing and the coverage scans below
+    // went quietly blind; a rise means a new argv reader exists.
+    expect(ARGV_READERS.size).toBe(ARGV_READER_COUNT);
+  });
+
+  it("keeps the argv-splicing primitives out of the browser plan", () => {
+    // `readCommandTextValue` and `firstPositional` splice argv directly. They
+    // are primitives now, so if the plan ever calls one the coverage scan
+    // above demands its flags be in `BROWSER_VALUE_FLAGS` — and
+    // `firstPositional`, which reads a positional with no carrier table at
+    // all, must not appear in a browser grammar that has one.
+    expect(
+      calleesIn(PLAN_SOURCE).filter((name) =>
+        ["readCommandTextValue", "firstPositional"].includes(name),
+      ),
+    ).toEqual([]);
+  });
+
+  it("passes the browser carrier table to the dispatcher's help scan", () => {
+    // `hasHelpFlag` is a sixth carrier-aware argv scanner, and it is called
+    // from `buildCliPlan` — which no scan over `PLAN_SOURCE` can see. Without
+    // this a future browser-family `hasHelpFlag(args)` reverts the fix
+    // silently, exactly the default-parameter drift the browser table hit.
+    const dispatch = functionBody("buildCliPlan");
+    expect(dispatch).toMatch(
+      /primaryHelpKey === "browser"\s*\?\s*BROWSER_VALUE_CARRIER_FLAGS/,
+    );
+    const calls = [...dispatch.matchAll(/\bhasHelpFlag\(((?:[^()]|\([^()]*\))*)\)/g)];
+    expect(calls.length).toBe(BUILD_CLI_PLAN_HELP_CALL_SITES);
+    expect(
+      calls.filter(([, callArgs]) => !callArgs!.includes("helpCarriers")).map(([call]) => call),
+    ).toEqual([]);
+  });
+
   it("pulls the argv readers the plan calls into the scanned region", () => {
     expect(PLAN_FUNCTIONS).toContain("readProofOwnerBase");
     // One level is the whole graph: nothing the pulled-in readers call reads
@@ -144,7 +292,7 @@ describe("browser value flags", () => {
     // `readValue`, so `--upload` carries a value and must be in the table or
     // `browser --upload path upload` dispatches on "path".
     const read = flagsReadFor(
-      /read(?:Value|NumberOption|IntOption|RepeatedValues)\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
+      /read(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
       PLAN_SOURCE,
     );
     expect(read.size).toBeGreaterThan(80);
@@ -162,7 +310,7 @@ describe("browser value flags", () => {
         // `firstStandalonePositional(readBrowserArgs(args))` is still scanned
         // rather than skipped — the floor below is the real count, not a
         // number a skipped call site could still clear.
-        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator)\(((?:[^()]|\([^()]*\))*)\)/g,
+        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator|hasHelpFlag)\(((?:[^()]|\([^()]*\))*)\)/g,
       ),
     ];
     expect(calls.length).toBe(CARRIER_AWARE_CALL_SITES);
