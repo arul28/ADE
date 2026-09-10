@@ -254,8 +254,18 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
     let removed = false;
     for (const [chatSessionId, record] of [...records]) {
       // A hold keyed by this tab dies with it, whichever chat owns it.
-      record.holds.delete(key);
-      if (record.tabId !== key) continue;
+      const heldThisTab = record.holds.delete(key);
+      if (record.tabId !== key) {
+        // The chat has moved on to another tab but its timer is still armed on
+        // the dead tab's hold deadline — up to HOLD_MAX away. Same two lines as
+        // `releaseHoldForTab`: the hold stood in for activity, so the ordinary
+        // expiry window starts now.
+        if (heldThisTab) {
+          record.lastActivityAt = Date.now();
+          armTimer(record);
+        }
+        continue;
+      }
       clearTimer(record);
       records.delete(chatSessionId);
       removed = true;

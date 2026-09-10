@@ -2729,6 +2729,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser clear-selection
 
   Flags:
+    --                   Everything after it is a literal value, never a flag —
+                         for a URL, key, fill/type text or option that starts
+                         with a dash: "browser open -- --weird-url",
+                         "browser key -- --", "browser fill --selector x -- --literal".
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
     --new-tab           Always open navigation in a new tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
@@ -3323,32 +3327,6 @@ function takeArgsAfterTerminator(args: string[]): string[] | null {
   const rest = args.slice(index + 1);
   args.splice(index);
   return rest.length > 0 ? rest : null;
-}
-
-/**
- * Positionals for the `ade browser` parser, including the ones a `--`
- * terminator protects.
- *
- * `standalonePositionals` stops AT the terminator and leaves it in place, which
- * is right for commands where `--` fences off another program's argv. A browser
- * value is not another program's argv: `--` is how a person passes a URL or a
- * key that would otherwise be read as a flag (`browser open -- --weird-url`,
- * `browser key -- --`), so here everything after it is a literal positional and
- * the terminator itself is consumed rather than left for a later reader to trip
- * over. One collector for all three fallbacks — the URL, the key and the
- * select-option value — because three copies of this rule is how two of them
- * end up with a different one.
- */
-function browserPositionals(args: string[]): string[] {
-  // Take the literal tail FIRST: it is spliced off, so the flag-aware scan that
-  // follows cannot mistake a fenced `--selector` for a flag it should skip.
-  const literal = takeArgsAfterTerminator(args) ?? [];
-  return [...standalonePositionals(args), ...literal];
-}
-
-/** The first of {@link browserPositionals}. */
-function firstBrowserPositional(args: string[]): string | null {
-  return browserPositionals(args)[0] ?? null;
 }
 
 function peekFirstPositional(args: string[]): string | null {
@@ -11637,7 +11615,7 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
  *    drops this step; the desktop still clears the hand-raise on hand-back, so
  *    the row does not stay raised just because nobody was blocked on it.
  */
-function buildBrowserHandoffPlan(args: string[]): CliPlan {
+function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): CliPlan {
   const explicitReason = readValue(args, ["--reason", "--text", "--message", "--why"]);
   const noWait = readFlag(args, ["--no-wait", "--nowait", "--async"]);
   const timeoutValue = readValue(args, ["--timeout", "--for"]);
@@ -11651,7 +11629,9 @@ function buildBrowserHandoffPlan(args: string[]): CliPlan {
   // Everything left over after the flags is the reason, so
   // `ade browser handoff sign in to staging` works without quoting.
   const reason = requireValue(
-    (explicitReason ?? collectGenericObjectArgs(args).reason ?? args.join(" ")) as string | null,
+    (explicitReason ??
+      collectGenericObjectArgs(args).reason ??
+      [...args, ...literalTail].join(" ")) as string | null,
     "reason",
   ).trim();
   if (!reason) {
@@ -11687,7 +11667,36 @@ function buildBrowserHandoffPlan(args: string[]): CliPlan {
   };
 }
 
+/**
+ * The `--` terminator for the `ade browser` parser.
+ *
+ * `standalonePositionals` stops AT the terminator and leaves it in place, which
+ * is right for commands where `--` fences off another program's argv. A browser
+ * value is not another program's argv: `--` is how a person passes a URL, a key
+ * or a field value that would otherwise be read as a flag
+ * (`browser open -- --weird-url`, `browser key -- --`), so everything after it
+ * is a literal positional and the terminator itself is consumed.
+ *
+ * The tail is split ONCE, here, before any `readValue` / `readFlag` /
+ * `collectGenericObjectArgs` runs. Splitting it inside the positional
+ * fallbacks was too late: those readers run first on every branch and none of
+ * them stops at `--`, so a fenced `--url` / `--key` / `--value` was eaten as a
+ * flag (or its own name demanded a value) long before the fallback was reached.
+ */
 function buildBrowserPlan(args: string[]): CliPlan {
+  return buildBrowserPlanWithLiteralTail(args, takeArgsAfterTerminator(args) ?? []);
+}
+
+function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
+  // One collector for every fallback — the URL, the key, the fill/type text and
+  // the select-option value — because four copies of this rule is how two of
+  // them end up with a different one.
+  const browserPositionals = (rest: string[]): string[] => [
+    ...standalonePositionals(rest),
+    ...literalTail,
+  ];
+  const firstBrowserPositional = (rest: string[]): string | null =>
+    browserPositionals(rest)[0] ?? null;
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
   if (sub === "actions")
@@ -11800,12 +11809,15 @@ function buildBrowserPlan(args: string[]): CliPlan {
     if (isBrowserSessionActionMode(mode)) {
       const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
       const sessionId = requireValue(explicitSessionId ?? firstPositional(args), "sessionId");
-      return buildBrowserPlan([mode, "--browser-session", sessionId, ...args]);
+      return buildBrowserPlanWithLiteralTail(
+        [mode, "--browser-session", sessionId, ...args],
+        literalTail,
+      );
     }
     throw new CliUsageError(`Unknown browser session command: ${mode}`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
-    return buildBrowserHandoffPlan(args);
+    return buildBrowserHandoffPlan(args, literalTail);
   }
   if (sub === "claim") {
     const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
@@ -12044,7 +12056,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
   }
   if (isBrowserSubcommand(sub, "type")) {
     const actionArgs = readBrowserAgentActionArgs(args);
-    const text = readValue(args, ["--text"]) ?? args.join(" ");
+    // Same positional grammar as `open` and `key`: leftover flags stay flags
+    // and a `--` fenced value is typed literally.
+    const text = readValue(args, ["--text"]) ?? browserPositionals(args).join(" ");
     if (!text.trim()) throw new CliUsageError("browser type requires text.");
     return {
       kind: "execute",
@@ -12069,7 +12083,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
       throw new CliUsageError("browser fill requires --selector, --text-match, --test-id, --element, or --handle.");
     }
     const explicitValue = readValue(args, ["--value"]);
-    const text = explicitValue ?? args.join(" ");
+    // `browserPositionals`, not `args.join(" ")`: `fill` is the same command
+    // family as `open` / `key` / `select-option`, so `fill --selector x --
+    // --literal` fills the literal string rather than "-- --literal".
+    const text = explicitValue ?? browserPositionals(args).join(" ");
     if (explicitValue == null && !text.length) throw new CliUsageError("browser fill requires text.");
     const fillPayloadKey = typeof targetArgs.text === "string" ? "value" : "text";
     return {

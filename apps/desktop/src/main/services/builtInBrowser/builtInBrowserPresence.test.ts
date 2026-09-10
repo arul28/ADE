@@ -120,6 +120,23 @@ describe("builtInBrowserAgentPresence", () => {
     armed.mockRestore();
   });
 
+  it("re-arms the ordinary expiry when a held tab closes under a chat that moved on", () => {
+    // Hold T1 (timer parked on the hold deadline, up to HOLD_MAX away), move the
+    // chat to T2, then close T1. The hold dies with the tab, so the record must
+    // fall back to the 20s window instead of staying lit for ten minutes.
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.holdForTab("tab-1");
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-2" });
+
+    presence.clearForTab("tab-1");
+    expect(presence.list()).toMatchObject([{ chatSessionId: "chat-1", tabId: "tab-2" }]);
+
+    vi.advanceTimersByTime(EXPIRY_MS - 1);
+    expect(presence.list()).toHaveLength(1);
+    vi.advanceTimersByTime(2);
+    expect(presence.list()).toHaveLength(0);
+  });
+
   it("does not resurrect a cleared chat when a hold arrives for its tab", () => {
     presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
     presence.clearForTab("tab-1");

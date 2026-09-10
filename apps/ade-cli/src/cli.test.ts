@@ -12371,6 +12371,42 @@ describe("ADE CLI", () => {
     });
   }));
 
+  it("keeps a flag-shaped value behind `--` literal on every browser branch", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // The readers run before the positional fallbacks and none of them stops at
+    // `--`, so a fenced value that happens to spell a flag used to be eaten as
+    // one ("browser open -- --new-tab" threw "requires a URL"). The tail is
+    // split once at the top of the browser parser instead.
+    const argsOf = (plan: ReturnType<typeof buildCliPlan>): Record<string, unknown> => {
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { args: Record<string, unknown> };
+      };
+      return params.arguments.args;
+    };
+
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--new-tab"]))).toMatchObject({
+      url: "--new-tab",
+    });
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--new-tab"])).newTab).toBeUndefined();
+    expect(argsOf(buildCliPlan(["browser", "key", "--", "--key"]))).toMatchObject({
+      key: "--key",
+    });
+    expect(
+      argsOf(buildCliPlan(["browser", "select-option", "--selector", "x", "--", "--value"])),
+    ).toMatchObject({ selector: "x", value: "--value" });
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--url", "https://z.test"]))).toMatchObject({
+      url: "--url https://z.test",
+    });
+    // `fill` reads the same grammar as the rest of the family.
+    expect(
+      argsOf(buildCliPlan(["browser", "fill", "--selector", "x", "--", "--literal"])),
+    ).toMatchObject({ selector: "x", text: "--literal" });
+  }));
+
   it("browser open --device applies emulation after navigating", () => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,

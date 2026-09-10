@@ -1407,7 +1407,8 @@ export function createBuiltInBrowserService(args: {
     closeTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       const closing = serviceForInput(input, sourceWindow).closeTab(input);
       // After the close resolves, not before: a close that throws (unknown tab,
-      // a lease it may not take) has ended nothing.
+      // a lease it may not take) has ended nothing. A tab id is required by the
+      // collection service below, so the input id IS the closed tab.
       return closing.then((status) => {
         const closedTabId = input.tabId?.trim();
         if (closedTabId) presenceRouter.noteTabClosed(closedTabId);
