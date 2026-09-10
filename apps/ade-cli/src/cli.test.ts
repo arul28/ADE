@@ -1021,10 +1021,14 @@ describe("ADE CLI", () => {
     });
   });
 
-  // Spawns a real owner process, writes a lock, then boots `serve` — the same
-  // class of work as the sibling below, so it carries the sibling's timeout.
-  // The 5s default only ever passed because of how the runner happened to
-  // schedule this file.
+  // Spawns a real owner process, writes a lock, then boots `serve`. The
+  // conflict is classified on the first attempt with no retry budget, so this
+  // costs about a second in isolation; 30s is headroom over that, not a
+  // schedule to fill. It inherited the 5s default and only ever passed on a
+  // favourable worker layout, so a 173rd file in the pool was enough to time
+  // it out. Deliberately NOT the sibling's 150s: that number is sized by the
+  // sibling's own 60s + 45s polling budget, which this test does not have, and
+  // copying it would let a 100s regression pass green.
   crdtHostIt("serve fails instead of exiting successfully when another channel owns mobile sync", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-serve-conflict-"));
     const projectRoot = path.join(adeHome, "project");
@@ -1087,7 +1091,7 @@ describe("ADE CLI", () => {
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  }, 150_000);
+  }, 30_000);
 
   /**
    * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.

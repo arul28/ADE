@@ -221,9 +221,19 @@ const TOP_LEVEL_FUNCTIONS = new Set(TOP_LEVEL_FUNCTION_NODES.keys());
  * no longer three ways to mistake an empty body for a parsed one. A function
  * with no body at all throws rather than reading as "calls nothing".
  */
-function bodyNode(name: string): ts.Block {
+function declarationOf(name: string): ts.FunctionDeclaration {
   const declaration = TOP_LEVEL_FUNCTION_NODES.get(name);
   if (!declaration) throw new Error(`no function ${name} in cli.ts`);
+  return declaration;
+}
+
+/**
+ * The body block alone. For assertions about TEXT and about parse health only
+ * — an AST scan wants `scanRoots`, which also reads the signature. The short
+ * name is the narrow one, so check which you mean.
+ */
+function bodyNode(name: string): ts.Block {
+  const declaration = declarationOf(name);
   if (!declaration.body) throw new Error(`function ${name} in cli.ts has no body`);
   return declaration.body;
 }
@@ -240,8 +250,7 @@ function functionBody(name: string): string {
  * classified as reading nothing, so its flags would need no table entry.
  */
 function scanRoots(name: string): ts.Node[] {
-  const declaration = TOP_LEVEL_FUNCTION_NODES.get(name)!;
-  return [bodyNode(name), ...declaration.parameters];
+  return [bodyNode(name), ...declarationOf(name).parameters];
 }
 
 const bodyOf = functionBody;
@@ -276,15 +285,24 @@ function calleesIn(roots: readonly ts.Node[]): string[] {
 }
 
 /**
- * Every top-level helper that consumes argv, found by BODY rather than by
- * name. A `read[A-Z]` name pattern was the same hand-kept subset one more
+ * Every top-level helper that consumes argv, found by BODY AND SIGNATURE
+ * rather than by name. A `read[A-Z]` name pattern was the same hand-kept subset one more
  * time: `collectGenericObjectArgs` reads `--arg-json` & co. and is called
  * straight out of the browser plan, but matched no pattern, so its flags never
  * had to be in the browser table.
  */
+/**
+ * What the graph read for each top-level function. Named rather than local to
+ * the closure below so a test can assert the graph read SIGNATURES too — the
+ * counts alone cannot show it, because cli.ts's one signature-only edge leads
+ * to a function the bodies already reach.
+ */
+const TOP_LEVEL_CALLEES = new Map<string, string[]>(
+  [...TOP_LEVEL_FUNCTIONS].map((name) => [name, calleesIn(scanRoots(name))]),
+);
+
 const ARGV_READERS = (() => {
-  const callees = new Map<string, string[]>();
-  for (const name of TOP_LEVEL_FUNCTIONS) callees.set(name, calleesIn(scanRoots(name)));
+  const callees = TOP_LEVEL_CALLEES;
   const readers = new Set<string>(ARGV_PRIMITIVES);
   for (let changed = true; changed; ) {
     changed = false;
@@ -311,9 +329,9 @@ const ARGV_READERS = (() => {
  * property arrow or accessor, a class expression bound to a const, and an
  * arrow handed to a wrapper such as `memoize(…)` are all equally unreachable.
  *
- * So the rule is one property, not a list of shapes. `ts.isFunctionLike` plus
- * a class static block covers every callable form, and the scan refuses the
- * ones whose body reaches argv. Refusing by shape instead would do both jobs
+ * So the rule is one property, not a list of shapes. `deferredBody` below
+ * names the forms that defer code to a later call, and the scan refuses the
+ * ones whose deferred code reaches argv. Refusing by shape instead would do both jobs
  * badly: it would miss the shapes nobody enumerated (a wrapper call is not an
  * arrow), and it would refuse a harmless top-level `const compare = (a, b) =>
  * …` that reads no flag at all.
@@ -329,13 +347,38 @@ const ARGV_READERS = (() => {
  * the callables; a synthetic snippet must therefore spell cli.ts's own
  * primitive or reader names to be seen.
  *
- * `touchesArgv` matches on `calleeName`, so it counts `store.readValue(…)` as
- * well as `readValue(…)`, where the graph's `calleesIn` takes bare identifiers
- * only. That is deliberate — an unindexable callable often reads argv through
- * `this` — and it is the one place this scan can raise a false red, on an
- * unrelated object whose method happens to be named `readFlag`. Rename the
- * local method, or give the callable a top-level `function` declaration.
+ * `touchesArgv` matches a callee by NAME, and unlike `resolveFlagList` it does
+ * not resolve scope. It counts `store.readValue(…)` as well as `readValue(…)`,
+ * which is deliberate — an unindexable callable often reads argv through
+ * `this`. That name matching is where a false red would come from: an
+ * unrelated method named `readFlag`, or a local binding that shadows a reader
+ * name. Rename the local, or give the callable a top-level `function`
+ * declaration.
  */
+/**
+ * The code a node defers to a later call, or `undefined` when it defers none.
+ *
+ * Three forms, because no one predicate covers them: a function-like node's
+ * body; a class static block, which `ts.isFunctionLike` excludes; and a class
+ * field initializer, which is neither yet still runs on construction.
+ *
+ * A field initialized WITH a callable (`tab = (args) => …`) reports nothing
+ * here — the walk reaches that arrow on its own, and naming the same escape
+ * twice would only make the failure harder to read.
+ *
+ * Module-scope code is deliberately absent. `const X = readValue(…)` at the top
+ * level runs at import, like cli.ts's own entry point, so refusing it would
+ * refuse the entry point too.
+ */
+function deferredBody(node: ts.Node): ts.Node | undefined {
+  if (ts.isClassStaticBlockDeclaration(node)) return node.body;
+  if (ts.isPropertyDeclaration(node))
+    return node.initializer && !ts.isFunctionLike(unwrap(node.initializer))
+      ? node.initializer
+      : undefined;
+  return ts.isFunctionLike(node) ? (node as ts.FunctionLikeDeclaration).body : undefined;
+}
+
 function unindexableArgvReaders(file: ts.SourceFile): string[] {
   const touchesArgv = (body: ts.Node): boolean =>
     collect([body], ts.isCallExpression).some((call) => {
@@ -357,12 +400,7 @@ function unindexableArgvReaders(file: ts.SourceFile): string[] {
   for (const statement of file.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name) continue;
     walk(statement, (node) => {
-      // A static initializer is callable but is not `isFunctionLike`.
-      const body = ts.isClassStaticBlockDeclaration(node)
-        ? node.body
-        : ts.isFunctionLike(node)
-          ? (node as ts.FunctionLikeDeclaration).body
-          : undefined;
+      const body = deferredBody(node);
       if (body && touchesArgv(body)) found.push(label(node));
     });
   }
@@ -391,7 +429,7 @@ const PLAN_ENTRY_POINTS = [
 
 const PLAN_FUNCTIONS = (() => {
   const names = [...PLAN_ENTRY_POINTS];
-  for (const name of readerCallsIn(PLAN_ENTRY_POINTS.map(bodyNode)))
+  for (const name of readerCallsIn(PLAN_ENTRY_POINTS.flatMap(scanRoots)))
     if (!names.includes(name)) names.push(name);
   return names;
 })();
@@ -513,7 +551,7 @@ const CARRIER_AWARE_CALL_SITES = 5;
 const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
 
 /**
- * Every top-level helper whose body reaches an argv primitive. Was 96 while the
+ * Every top-level helper whose body or signature reaches an argv primitive. Was 96 while the
  * scan matched `\nfunction name` by regex and so saw no `async function` at
  * all: `runCli`, `runServe`, `main` and three more read argv and were invisible
  * to the whole graph. A drop means the parse stopped seeing bodies it used to
@@ -556,6 +594,22 @@ describe("browser value flags", () => {
     expect(
       [...TOP_LEVEL_FUNCTIONS].filter((name) => bodyOf(name).trim().length <= 1),
     ).toEqual([]);
+    // The graph reads the SIGNATURE as well as the body. Without this pair,
+    // reverting `scanRoots` to a body-only read breaks nothing, and an argv
+    // reader called from a parameter default goes back to being classified as
+    // reading nothing. `buildActionRunStep` is cli.ts's real instance.
+    // `buildActionRunStep(args, target = parseActionRunTarget(args))` reaches
+    // that reader from its SIGNATURE only, so this pair fails the moment
+    // either the graph or PLAN_NODES goes back to reading bodies alone.
+    expect(calleesIn([bodyNode("buildActionRunStep")])).not.toContain("parseActionRunTarget");
+    expect(
+      TOP_LEVEL_CALLEES.get("buildActionRunStep"),
+      "the call graph stopped reading parameter defaults: a reader called only from a signature is classified as reading nothing, so its flags need no BROWSER_VALUE_FLAGS entry",
+    ).toContain("parseActionRunTarget");
+    expect(
+      PLAN_NODES.some((node) => ts.isParameter(node)),
+      "PLAN_NODES carries bodies only: a reader called from a plan function's parameter default sits outside every coverage scan below",
+    ).toBe(true);
     // A drop here means bodies stopped parsing and the coverage scans below
     // went quietly blind; a rise means a new argv reader exists.
     expect(
@@ -595,6 +649,8 @@ describe("browser value flags", () => {
         '  theta(args: string[]) { return readValue(args, ["--theta"]); }',
         "}",
         'class Boot { static { readValue(process.argv, ["--boot"]); } }',
+        'class Field { tab = readValue(process.argv, ["--tab"]); }',
+        'const PLAIN = { z: readValue(process.argv, ["--z"]) };',
         'export default function (args: string[]) { return readValue(args, ["--dft"]); }',
         'const NAMES = ["--zz"].map((flag) => flag.slice(2));',
         "const compare = (a: string, b: string) => a.localeCompare(b);",
@@ -604,11 +660,14 @@ describe("browser value flags", () => {
     expect(unindexableArgvReaders(synthetic)).toEqual([
       // A named top-level declaration is indexed, so `named`'s inner arrow is
       // absent here: the graph reads that function through `scanRoots`.
+      // `PLAIN` is absent on purpose: a module-scope initializer runs at
+      // import, like cli.ts's own entry point, so refusing it is not the rule.
       "<anonymous>",
       "Boot.static",
       "Decl.eta",
       "Decl.theta",
       "Decl.zeta",
+      "Field.tab",
       "Klass.eps",
       "READERS.beta",
       "READERS.delta",
@@ -642,7 +701,7 @@ describe("browser value flags", () => {
     );
     // Found by parse, so a call site nested inside another call or inside a
     // template hole counts like any other.
-    const calls = collect([bodyNode("buildCliPlan")], ts.isCallExpression).filter(
+    const calls = collect(scanRoots("buildCliPlan"), ts.isCallExpression).filter(
       (call) => calleeName(call) === "hasHelpFlag",
     );
     expect(
