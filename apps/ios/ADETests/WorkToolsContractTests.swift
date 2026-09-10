@@ -221,6 +221,90 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertNotNil(WorkToolsSheet.decodeDataUrl("data:image/png;base64,QUJD"))
   }
 
+  // MARK: - Frame slot
+
+  func testFrameSlotDegradesInsteadOfSpinningWhenTheHostCannotSendBytes() {
+    let path = "/p/.ade/cache/browser-observations/c/tab-2/obs.png"
+
+    // Nothing captured: the card says so, whatever the host supports.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: nil,
+        loadedFramePath: nil,
+        unreadableFramePath: nil,
+        supportsObservationPreview: true),
+      .empty)
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: nil,
+        loadedFramePath: nil,
+        unreadableFramePath: nil,
+        supportsObservationPreview: false),
+      .empty)
+
+    // The regression this exists for: `workTools.getLaneState` without
+    // `workTools.readObservationPreview` names a frame the phone can never
+    // fetch, and the card used to spin on it forever.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: nil,
+        unreadableFramePath: nil,
+        supportsObservationPreview: false),
+      .unavailable(workToolsFramesUnsupportedMessage))
+
+    // Supported and not yet answered: a spinner is correct here.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: nil,
+        unreadableFramePath: nil,
+        supportsObservationPreview: true),
+      .loading)
+
+    // The host answered "no bytes" for this path — a deleted, oversized or
+    // non-image frame. Retrying every 3s would spin forever.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: nil,
+        unreadableFramePath: path,
+        supportsObservationPreview: true),
+      .unavailable(workToolsFrameUnreadableMessage))
+
+    // A verdict about the PREVIOUS frame says nothing about the new one.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: nil,
+        unreadableFramePath: "/p/.ade/cache/browser-observations/c/tab-1/old.png",
+        supportsObservationPreview: true),
+      .loading)
+
+    // Held image, and it is this observation's.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: path,
+        unreadableFramePath: nil,
+        supportsObservationPreview: true),
+      .image)
+
+    // The desktop captured a newer frame: the old image must not stand in for
+    // it, so the card goes back to loading rather than showing a stale shot.
+    XCTAssertEqual(
+      workToolsFrameState(
+        observationPath: path,
+        loadedFramePath: "/p/.ade/cache/browser-observations/c/tab-1/old.png",
+        unreadableFramePath: nil,
+        supportsObservationPreview: true),
+      .loading)
+
+    // The three sentences are distinct, so a user can tell "nothing was
+    // captured" from "this Mac can't send it" from "this one failed".
+    XCTAssertNotEqual(workToolsFramesUnsupportedMessage, workToolsFrameUnreadableMessage)
+  }
+
   // MARK: - Handshake gating
 
   @MainActor

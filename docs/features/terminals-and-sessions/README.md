@@ -723,10 +723,13 @@ Renderer surfaces:
   existing App Control / iOS Simulator session are shown as an
   informational warning banner but no longer block context insertion —
   controls affect the running tool while inserted context goes to the
-  current chat, draft, or CLI target. There is no tab strip: the pane is a
-  picker page plus one tool, and a narrow pane is handled by the splitter
-  clamp (`workSidebarSplitter.ts`) refusing to shrink it below the width
-  its 36 px header needs, rather than by collapsing labels.
+  current chat, draft, or CLI target. The pane is a tab strip plus one
+  page: one tab per open tool, one of them on screen, and the picker page
+  behind the grid button and the `+`. A tool is open once — there is no
+  multi-instance. A narrow pane sheds tab labels for glyphs and then
+  overflows tabs into a `…` menu; below that the splitter clamp
+  (`workSidebarSplitter.ts`) refuses to shrink the pane past the width its
+  36 px header needs.
 
   The pane follows the **chat's** machine, not the tab's. `runtimePin`
   (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
@@ -832,6 +835,17 @@ Renderer surfaces:
   `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
   subscription set, mounted once by `TerminalsPage` and shared with both the
   pane and the floating corner card.
+- `apps/desktop/src/renderer/components/terminals/agentBrowserPresence.ts`,
+  `AgentBrowserPresenceBadge.tsx` — "this chat is driving the browser right
+  now" in the renderer. The module store holds one shared subscription to the
+  `agent-presence` browser event plus the side-effect-free
+  `builtInBrowser.getAgentPresence()` seed (the seed is a separate read
+  precisely because `getStatus` restores and loads every persisted tab, and
+  this badge mounts on every session card). The badge is a pulsing 11–12 px
+  accent globe with the one label `Using the browser`; it renders `null` when
+  the chat is not browsing, so `SessionCard` and the chat header place it
+  unconditionally. See
+  [Chat › An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
 - `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
   `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
   live-preview card for the most recently active screen tool that is *not*

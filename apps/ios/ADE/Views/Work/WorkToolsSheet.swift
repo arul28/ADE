@@ -28,6 +28,10 @@ struct WorkToolsSheet: View {
   @State private var loaded = false
   @State private var frame: UIImage?
   @State private var loadedFramePath: String?
+  /// The observation path the host has already refused to turn into bytes. See
+  /// `loadFrameIfNeeded`: only a definitive answer lands here, never a
+  /// transport failure.
+  @State private var unreadableFramePath: String?
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -130,15 +134,18 @@ struct WorkToolsSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 4)
       }
-      if let frame, loadedFramePath == latestObservation?.path {
-        Image(uiImage: frame)
-          .resizable()
-          .scaledToFit()
-          .frame(maxWidth: .infinity)
-          .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .accessibilityLabel(latestObservation?.caption ?? "Latest captured frame")
-      } else if latestObservation != nil {
+      switch frameState {
+      case .image:
+        if let frame {
+          Image(uiImage: frame)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .accessibilityLabel(latestObservation?.caption ?? "Latest captured frame")
+        }
+      case .loading:
         HStack(spacing: 10) {
           ProgressView()
           Text("Loading the last frame…")
@@ -146,7 +153,12 @@ struct WorkToolsSheet: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-      } else {
+      case .unavailable(let message):
+        Text(message)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      case .empty:
         Text("Nothing has been captured in this lane yet.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
@@ -295,6 +307,20 @@ struct WorkToolsSheet: View {
     return state.browser?.latestObservation ?? state.appControl?.latestObservation
   }
 
+  /// What the frame slot renders. Split out of the view so the one case that
+  /// cannot be reached from a preview or a screenshot — a host that advertises
+  /// `workTools.getLaneState` but not `workTools.readObservationPreview` — is
+  /// covered by a test rather than by hoping.
+  private var frameState: WorkToolsFrameState {
+    let observationPath = latestObservation?.path
+    return workToolsFrameState(
+      observationPath: observationPath,
+      loadedFramePath: frame == nil ? nil : loadedFramePath,
+      unreadableFramePath: unreadableFramePath,
+      supportsObservationPreview: syncService.supportsWorkToolsObservationPreview
+    )
+  }
+
   private func refresh() async {
     #if DEBUG
     if let previewState {
@@ -324,22 +350,47 @@ struct WorkToolsSheet: View {
     guard let path = latestObservation?.path else {
       frame = nil
       loadedFramePath = nil
+      unreadableFramePath = nil
       return
     }
     guard loadedFramePath != path else { return }
+    // A host that advertises the state read but not the preview read cannot
+    // send bytes at all. Nothing is put on the wire, and `frameState` says so
+    // instead of spinning under a frame that is never coming.
     guard syncService.supportsWorkToolsObservationPreview else { return }
+    // The host already answered "no bytes" for this exact path. That verdict is
+    // about the file, not the link, so re-asking every 3s would spin forever.
+    guard unreadableFramePath != path else { return }
     let cacheKey = "work-tools-observation::\(path)"
     if let cached = ADEImageCache.shared.cachedImage(for: cacheKey) {
       frame = cached
       loadedFramePath = path
+      unreadableFramePath = nil
       return
     }
-    guard let preview = try? await syncService.readWorkToolsObservationPreview(path: path) else { return }
+    let preview: WorkToolsObservationPreview?
+    do {
+      preview = try await syncService.readWorkToolsObservationPreview(path: path)
+    } catch {
+      // Transient: a timeout or a dropped socket. Deliberately NOT recorded as
+      // unreadable — the spinner stays and the next poll asks again.
+      return
+    }
     guard !Task.isCancelled else { return }
-    guard let data = Self.decodeDataUrl(preview.dataUrl), let image = UIImage(data: data) else { return }
+    guard
+      let preview,
+      let data = Self.decodeDataUrl(preview.dataUrl),
+      let image = UIImage(data: data)
+    else {
+      // The host answered and had nothing to give: the file is gone, over the
+      // size cap, or not an image type it serves. A retry cannot change that.
+      unreadableFramePath = path
+      return
+    }
     ADEImageCache.shared.store(data, for: cacheKey)
     frame = image
     loadedFramePath = path
+    unreadableFramePath = nil
   }
 
   /// Ceiling on a decoded observation frame. These are desktop-resolution PNG
@@ -401,6 +452,52 @@ private struct WorkToolsTabRow: View {
     if let title = tab.title, !title.isEmpty { return title }
     return "Untitled tab"
   }
+}
+
+/// What the "open tool" card should draw where the last captured frame goes.
+///
+/// A separate type because one of its cases is otherwise unreachable in the
+/// app: a brain can advertise `workTools.getLaneState` without
+/// `workTools.readObservationPreview` (the two are feature-detected apart, see
+/// `SyncService.supportsWorkToolsObservationPreview`), and in that state the
+/// lane state still names an observation the phone can never fetch. Deciding
+/// this inside the view meant "frame is nil but an observation exists" fell to
+/// the loading branch, so that host showed a spinner that could not finish.
+enum WorkToolsFrameState: Equatable {
+  case image
+  case loading
+  /// There is a frame on the Mac and no way to get it. Carries the sentence.
+  case unavailable(String)
+  case empty
+}
+
+/// The host cannot send bytes at all — it is missing the preview command.
+/// Worded like the sheet's other absences: what is true, not what to do, since
+/// the fix is to update ADE on the Mac and this sheet cannot say that usefully
+/// about a version it is only inferring.
+let workToolsFramesUnsupportedMessage = "Frames aren't available from this machine."
+
+/// The host answered about this specific frame and had nothing to give.
+let workToolsFrameUnreadableMessage = "Couldn't load the last frame."
+
+/// Pure resolution of the four inputs the card has.
+///
+/// `loadedFramePath` is the path the currently held image was decoded from —
+/// pass nil when there is no image, so a stale path can never claim a frame the
+/// view does not have. `unreadableFramePath` is only ever set from a definitive
+/// answer, never from a transport failure, so a timeout keeps the spinner and
+/// retries rather than declaring the frame gone.
+func workToolsFrameState(
+  observationPath: String?,
+  loadedFramePath: String?,
+  unreadableFramePath: String?,
+  supportsObservationPreview: Bool
+) -> WorkToolsFrameState {
+  guard let observationPath else { return .empty }
+  if loadedFramePath == observationPath { return .image }
+  guard supportsObservationPreview else { return .unavailable(workToolsFramesUnsupportedMessage) }
+  if unreadableFramePath == observationPath { return .unavailable(workToolsFrameUnreadableMessage) }
+  return .loading
 }
 
 /// Why there is no browser to show. The desktop distinguishes five cases

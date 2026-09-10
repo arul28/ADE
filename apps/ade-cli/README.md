@@ -640,9 +640,12 @@ ade --socket app-control trace --limit 20 --text                   # recent acti
 ade --socket app-control logs --text                               # read the App Control launch terminal
 ade --socket app-control terminal write --data "y\n"               # answer a prompt in that terminal
 ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
+ade --socket app-control actions --text                            # full app_control action inventory
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
 ade --socket browser authorize --tab tab-id --text                # native human grant for the current agent + origin
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
+ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
+ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
 ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
 ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
                                                                   # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
@@ -659,6 +662,7 @@ ade --socket browser record start --tab tab-id --fps 60 --caption "Checkout flow
 ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
 ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
 ade --socket browser screenshot --tab tab-id --text
+ade --socket browser actions --text                               # full built_in_browser action inventory
 ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
 ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
 ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
@@ -775,16 +779,30 @@ same module behind an IPC snapshot feed for onboarding; there is nothing for
 `ade actions run` to reach that `ade tools status|ensure|gc` does not already
 cover.
 
-`ade browser` and `ade app-control` are capability-gated: the runtime accepts
-them only from a chat or terminal ADE launched, and the desktop — not the daemon
-— resolves the capability, so a call always runs against the lane and tab
-collection the capability was minted for. A caller-supplied `--lane` on a
+`ade browser` is capability-gated: the runtime accepts a `built_in_browser`
+action only from a chat or terminal ADE launched — one that carries the
+`ADE_BROWSER_ACTOR_TOKEN` the desktop minted for it — and the desktop, not the
+daemon, resolves that token, so a call always runs against the lane and tab
+collection it was minted for. A caller-supplied `--lane` on a
 `built_in_browser` action is dropped for that reason; `--lane` still selects
-which lane a *claim* attributes a tab to. Browser profile diagnostics, saved
-site-permission administration, and login import (reading cookies out of Chrome,
-Safari or Firefox) have no CLI surface by design: they stay in the trusted ADE
-renderer where a human is present, and are refused on both the daemon and the
-desktop bridge rather than merely left unwrapped.
+which lane a *claim* attributes a tab to. `--force` is a reserved takeover
+flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
+on a machine with no ADE window: those three are forwarded to a desktop that
+has this lane pinned, which resolves its own capability there.
+
+`ade app-control` is not gated by a capability of its own — there is no
+app_control actor token, and the daemon has no app_control-specific scoping
+branch the way it has for `built_in_browser` and `work_tools`. A machine has
+one active App Control session at a time, and `--lane`/`--chat-session` (or
+`ade app-control claim`) attribute that session to the caller so the Work row,
+the trace and proof artifacts land on the right lane. `--force` here means
+"replace the existing session" and is available to agents.
+
+Browser profile diagnostics, saved site-permission administration, and login
+import (reading cookies out of Chrome, Safari or Firefox) have no CLI surface
+by design: they stay in the trusted ADE renderer where a human is present, and
+are refused on both the daemon and the desktop bridge rather than merely left
+unwrapped.
 
 `ade work-tools` is a read of that same pane, not a second way to drive it.
 `work_tools.setActiveTool` is limited to user clients because it is the desktop

@@ -274,7 +274,12 @@ The full card is one full-bleed row with three lines:
    identity for a singleton lane, spawned-chat lineage, a branch only when it
    differs from the lane's declared branch, and the lane PR for a singleton.
    A foreign singleton gets one fixed-width amber machine glyph in the right
-   status cluster; the card's hover details name the machine. When none of those
+   status cluster; the card's hover details name the machine. The same cluster
+   carries `AgentBrowserPresenceBadge` — a pulsing accent globe while this
+   chat's agent is driving the built-in browser, and nothing at all otherwise.
+   It sits beside the machine glyph because it answers the same question:
+   where is this work happening. Compact rows have no line one, so they carry
+   it next to the provider logo stack instead. When none of those
    apply, session delta or last-activity time is the floor, so the line never
    renders empty. A grouped lane owns machine identity and PR state in its
    header; child rows do not repeat them. Lane identity always uses the lane
