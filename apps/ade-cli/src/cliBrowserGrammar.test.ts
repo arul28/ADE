@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BROWSER_VALUE_FLAGS, buildCliPlan } from "./cli";
+import { BROWSER_VALUE_FLAGS, VALUE_CARRIER_FLAGS, buildCliPlan } from "./cli";
 
 const SOURCE = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "cli.ts"),
@@ -49,10 +49,61 @@ describe("browser value flags", () => {
     expect([...read].filter((flag) => !BROWSER_VALUE_FLAGS.includes(flag))).toEqual([]);
   });
 
-  it("claims no flag the browser plan reads as a boolean", () => {
-    // A boolean in the carrier set would swallow the positional after it.
-    const booleans = flagsReadFor(/readFlag\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g, PLAN_SOURCE);
-    expect(BROWSER_VALUE_FLAGS.filter((flag) => booleans.has(flag))).toEqual([]);
+  // The browser table is passed to the positional readers by the browser
+  // builder alone, but a name in it is still read CLI-wide by whatever command
+  // owns it, and the global set is still read by every other command. Both
+  // scans run over the WHOLE file: scanning only the browser plan is how
+  // `--text` — a global boolean output switch — became a browser carrier and
+  // broke `ade session show --text s1`.
+  const ALL_BOOLEAN_FLAGS = flagsReadFor(
+    /readFlag\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
+    SOURCE,
+  );
+
+  it("claims no flag that is read as a boolean anywhere in the CLI", () => {
+    // A boolean in a carrier set would swallow the positional after it.
+    // `chat generate-names --title --lane` reads two names that both tables
+    // carry a value for as booleans. That command takes no positional, so the
+    // collision is inert — but it is the ONLY one allowed, and a new name
+    // landing in either list means some command just started swallowing the
+    // token after a boolean flag.
+    // `chat generate-names --title --lane`, `--cli|--terminal`, `--create|-b`
+    // and `--automation|--include-automation` read a name that some other
+    // command carries a value for as a boolean. Each of those commands takes
+    // no positional after the flag, so the collisions are inert — but they are
+    // the ONLY ones allowed. A new name here means some command just started
+    // swallowing the token after a boolean flag.
+    expect(BROWSER_VALUE_FLAGS.filter((flag) => ALL_BOOLEAN_FLAGS.has(flag)).sort()).toEqual([
+      "--lane",
+      "--title",
+    ]);
+    expect([...VALUE_CARRIER_FLAGS].filter((flag) => ALL_BOOLEAN_FLAGS.has(flag)).sort()).toEqual([
+      "--automation",
+      "--lane",
+      "--terminal",
+      "--title",
+      "-b",
+    ]);
+  });
+
+  it("keeps the global output switches out of the browser table", () => {
+    // `parseCliArgs` strips these before the command ever sees them, so a
+    // browser command that named one as its value flag could never be trusted.
+    const globalSwitches = [...SOURCE.matchAll(/token === ("--[a-z-]+")/g)]
+      .map((match) => JSON.parse(match[1]!) as string)
+      .filter((flag) => !VALUE_CARRIER_FLAGS.has(flag));
+    expect(globalSwitches).toContain("--text");
+    expect(BROWSER_VALUE_FLAGS.filter((flag) => globalSwitches.includes(flag))).toEqual([]);
+  });
+
+  it("does not widen any other command's grammar", () => {
+    // The regression the table caused: `--text` carried a value CLI-wide.
+    expect(actionArgs(buildCliPlan(["session", "show", "--text", "s1"]))).toMatchObject({
+      sessionId: "s1",
+    });
+    expect(actionArgs(buildCliPlan(["chat", "send", "--text", "s1", "hello"]))).toMatchObject({
+      sessionId: "s1",
+    });
   });
 });
 

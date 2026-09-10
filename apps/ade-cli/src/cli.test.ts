@@ -5211,6 +5211,34 @@ describe("ADE CLI", () => {
     expect(text).toContain("assistant 2026-06-29T12:00:01.000Z");
   });
 
+  it("keeps --text a global output switch, not a value carrier", () => {
+    // Regression: the `ade browser` value-flag table was merged into the
+    // CLI-global carrier set, so `--text` swallowed the sessionId after it and
+    // `session show` silently fell back to the ambient chat session.
+    const sessionShow = buildCliPlan(["session", "show", "--text", "s1"]);
+    expect(sessionShow.kind).toBe("execute");
+    if (sessionShow.kind !== "execute") return;
+    expect(
+      (sessionShow.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })
+        ?.arguments?.args,
+    ).toMatchObject({ sessionId: "s1" });
+
+    const chatShow = buildCliPlan(["chat", "show", "--text", "s1"]);
+    expect(chatShow.kind).toBe("execute");
+    if (chatShow.kind !== "execute") return;
+    expect(chatShow.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "getSessionSummary", argsList: ["s1"] },
+    });
+
+    const chatSend = buildCliPlan(["chat", "send", "--text", "s1", "hello"]);
+    expect(chatSend.kind).toBe("execute");
+    if (chatSend.kind !== "execute") return;
+    expect(
+      (chatSend.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })
+        ?.arguments?.args,
+    ).toMatchObject({ sessionId: "s1" });
+  });
+
   it("builds chat show as a session summary and chat status as turn status", () => {
     const show = buildCliPlan(["chat", "show", "chat-1"]);
     expect(show.kind).toBe("execute");
