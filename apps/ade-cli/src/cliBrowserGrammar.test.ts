@@ -10,6 +10,33 @@ const SOURCE = fs.readFileSync(
 );
 
 /**
+ * The end of a regex literal starting at `index`, or 0 when that `/` is
+ * division. Needed because `\`'${value.replace(/'/g, …)}'\`` puts an
+ * apostrophe inside a regex inside a template hole: read as a string opener it
+ * swallowed 4000 lines of cli.ts, and every reader call in them vanished from
+ * the scan. A `/` starts a regex only where a value cannot precede it.
+ */
+function regexLiteralEnd(source: string, index: number): number {
+  const before = source.slice(0, index).replace(/\s+$/, "");
+  const prev = before.at(-1) ?? "";
+  if (prev !== "" && !"(,=:[!&|?{};+-*%^~<>".includes(prev) && !/\breturn$/.test(before)) return 0;
+  let inClass = false;
+  for (let i = index + 1; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === "\\") i += 1;
+    else if (char === "\n") return 0;
+    else if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    else if (char === "/" && !inClass) {
+      let end = i + 1;
+      while (/[a-z]/.test(source[end] ?? "")) end += 1;
+      return end;
+    }
+  }
+  return 0;
+}
+
+/**
  * Source spans a brace scan must not count: comments, quoted strings and
  * template literals (including their `${…}` holes). Without this a `{` inside
  * a string unbalanced the scan, and the old `indexOf("\n}")` fallback hid it —
@@ -27,6 +54,7 @@ function skipNonCode(source: string, index: number): number {
     if (end < 0) throw new Error("unterminated block comment in cli.ts");
     return end + 2;
   }
+  if (char === "/" && regexLiteralEnd(source, index) > 0) return regexLiteralEnd(source, index);
   if (char === '"' || char === "'") {
     for (let i = index + 1; i < source.length; i += 1) {
       if (source[i] === "\\") i += 1;
@@ -118,17 +146,63 @@ function flagsReadFor(pattern: RegExp, source: string): Set<string> {
   return flags;
 }
 
-/** Every value-reading call, with its argument text (one level of nesting). */
-const VALUE_READER_CALL =
-  /\bread(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\(((?:[^()]|\([^()]*\))*)\)/g;
+/**
+ * `source` with comments — and, when `strings` is true, the bodies of quoted
+ * strings and template literals — blanked out. Offsets are preserved, so an
+ * index into the mask indexes the same character of the original: depth
+ * counting runs over the mask and slices come from the source, and neither a
+ * paren inside a string nor one inside a comment can shift a bracket depth.
+ */
+function maskSource(source: string, options: { strings: boolean }): string {
+  const out = source.split("");
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    const isComment = char === "/" && (source[i + 1] === "/" || source[i + 1] === "*");
+    const end = skipNonCode(source, i);
+    if (end <= 0) continue;
+    // A literal is always consumed — a `//` inside one is not a comment — but
+    // only blanked when asked, since flag names live in string literals.
+    if (isComment || options.strings)
+      for (let j = i; j < end && j < source.length; j += 1) if (out[j] !== "\n") out[j] = " ";
+    i = end - 1;
+  }
+  return out.join("");
+}
+
+/** cli.ts with comments gone (string literals kept) and fully masked. */
+const CODE_SOURCE = maskSource(SOURCE, { strings: false });
+const MASKED_SOURCE = maskSource(SOURCE, { strings: true });
+
+/** The index of the bracket closing the one at `open`, or null if unbalanced. */
+function matchingBracket(masked: string, open: number): number | null {
+  let depth = 0;
+  for (let i = open; i < masked.length; i += 1) {
+    const char = masked[i]!;
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char) && (depth -= 1) === 0) return i;
+  }
+  return null;
+}
+
+/**
+ * Where a value-reading call starts. The argument text is then taken by
+ * balanced parens rather than by a regex: the old pattern allowed exactly one
+ * level of nesting, so `readValue(args, ["--zz"], normalize(String(x)))`
+ * matched NOTHING — the call vanished from the scan, its flag never had to
+ * appear in `BROWSER_VALUE_FLAGS`, and every check below stayed green. The
+ * count pin in the first test keeps that failure loud if it ever regresses.
+ */
+const VALUE_READER_OPEN =
+  /\bread(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\s*\(/g;
 
 /** Split a call's argument text on the commas that sit at bracket depth 0. */
 function topLevelArgs(text: string): string[] {
+  const masked = maskSource(text, { strings: true });
   const args: string[] = [];
   let depth = 0;
   let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i]!;
+  for (let i = 0; i < masked.length; i += 1) {
+    const char = masked[i]!;
     if ("([{".includes(char)) depth += 1;
     else if (")]}".includes(char)) depth -= 1;
     else if (char === "," && depth === 0) {
@@ -143,18 +217,29 @@ function topLevelArgs(text: string): string[] {
 /**
  * The flag names a reader's flag argument denotes, or `null` when the scan
  * cannot see them. A literal (`"--foo"` / `["--foo", "--bar"]`) resolves
- * directly; a bare identifier or a spread resolves through a `const NAME =
- * [...]` of string literals declared anywhere in cli.ts. Anything else — a
- * computed list, a parameter, a call — is unreadable, and a browser flag
- * added that way would need no entry in `BROWSER_VALUE_FLAGS` with every scan
- * below still green, so it must fail loudly instead.
+ * directly; a bare identifier or a spread resolves through a TOP-LEVEL
+ * `const NAME = [...]` of string literals in cli.ts — top-level and
+ * comment-stripped, because a scan-everything match resolved a commented-out
+ * or function-local declaration of the same name and took the first hit. Two
+ * top-level declarations of one name, and anything else — a computed list, a
+ * parameter, a call — are unreadable, and a browser flag added that way would
+ * need no entry in `BROWSER_VALUE_FLAGS` with every scan below still green, so
+ * it must fail loudly instead.
  */
 function resolveFlagList(arg: string): string[] | null {
   const text = arg.trim();
   if (/^"(--?[^"]+)"$/.test(text)) return [text.slice(1, -1)];
   if (/^[A-Za-z_$][\w$]*$/.test(text)) {
-    const decl = new RegExp(`\\bconst ${text}\\b[^=\\n]*=\\s*(\\[[^\\]]*\\])`).exec(SOURCE);
-    return decl ? resolveFlagList(decl[1]!) : null;
+    const name = text.replace(/\$/g, "\\$");
+    const decls = [
+      ...CODE_SOURCE.matchAll(new RegExp(`(?:^|\\n)(?:export )?const ${name}\\b[^=\\n]*=\\s*\\[`, "g")),
+    ];
+    if (decls.length !== 1) return null;
+    const open = decls[0]!.index + decls[0]![0].length - 1;
+    const close = matchingBracket(MASKED_SOURCE, open);
+    // Sliced from the comment-stripped source: a `// …` line between two
+    // elements is not an element.
+    return close == null ? null : resolveFlagList(CODE_SOURCE.slice(open, close + 1));
   }
   if (!text.startsWith("[") || !text.endsWith("]")) return null;
   const flags: string[] = [];
@@ -169,10 +254,20 @@ function resolveFlagList(arg: string): string[] | null {
 
 /** Every value-reader call in `source`, paired with its resolved flag names. */
 function valueReaderCalls(source: string): { call: string; flags: string[] | null }[] {
-  return [...source.matchAll(VALUE_READER_CALL)].map((match) => {
-    const args = topLevelArgs(match[1]!);
-    return { call: match[0], flags: args.length < 2 ? null : resolveFlagList(args[1]!) };
-  });
+  const masked = maskSource(source, { strings: true });
+  const calls: { call: string; flags: string[] | null }[] = [];
+  for (const match of masked.matchAll(VALUE_READER_OPEN)) {
+    const open = match.index + match[0].length - 1;
+    const close = matchingBracket(masked, open);
+    if (close == null)
+      throw new Error(`unbalanced reader call: ${source.slice(match.index, match.index + 60)}`);
+    const args = topLevelArgs(source.slice(open + 1, close));
+    calls.push({
+      call: source.slice(match.index, close + 1),
+      flags: args.length < 2 ? null : resolveFlagList(args[1]!),
+    });
+  }
+  return calls;
 }
 
 const TOP_LEVEL_FUNCTIONS = new Set(
@@ -271,8 +366,12 @@ const CARRIER_AWARE_CALL_SITES = 5;
 /** Every `hasHelpFlag` call in the top-level dispatcher. */
 const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
 
-/** Every top-level helper whose body reaches an argv primitive. */
-const ARGV_READER_COUNT = 97;
+/**
+ * Every top-level helper whose body reaches an argv primitive. Was 97 while
+ * `shellEscapeToken`'s `/'/` regex read as a string opener and ran its "body"
+ * thousands of lines past its closing brace; that pure escaper reads no argv.
+ */
+const ARGV_READER_COUNT = 96;
 
 describe("browser value flags", () => {
   it("reads a real body for every top-level function in cli.ts", () => {
@@ -350,6 +449,22 @@ describe("browser value flags", () => {
     );
   });
 
+  it("matches every reader call in cli.ts at any nesting depth", () => {
+    // The argument text is taken by balanced parens, not by a regex with a
+    // fixed nesting budget: the previous pattern allowed one level, so
+    // `readValue(args, ["--zz"], normalize(String(x)))` matched nothing and its
+    // flag silently escaped every check below. The pin is derived, not a magic
+    // number — a call the tokenizer stops seeing fails here loudly.
+    const occurrences = [...MASKED_SOURCE.matchAll(VALUE_READER_OPEN)].length;
+    expect(occurrences).toBeGreaterThan(500);
+    expect(
+      valueReaderCalls(SOURCE).length,
+      "the reader-call tokenizer dropped calls that `readValue(`-style occurrences still find in cli.ts: a call it cannot see needs no BROWSER_VALUE_FLAGS entry and every scan below stays green",
+    ).toBe(occurrences);
+    const deep = valueReaderCalls('readValue(args, ["--zz"], normalize(String(x)))');
+    expect(deep.map(({ flags }) => flags)).toEqual([["--zz"]]);
+  });
+
   it("reads every value-flag argument the browser plan passes", () => {
     // A flag list the scan cannot read is a flag list that needs no table
     // entry: `const names = ["--zzz"]; readValue(args, names)` in the plan
@@ -357,10 +472,14 @@ describe("browser value flags", () => {
     // `resolveFlagList` follows a same-file `const NAME = [...]` of string
     // literals; anything it still cannot see must not exist in this region.
     // "Nothing unreadable" is only meaningful if the scan can read and refuse:
-    // a same-file const resolves, an unknown name and a spread of one do not.
-    expect(valueReaderCalls('readValue(args, idFlags)')[0]!.flags).toContain("--issue-id");
-    expect(valueReaderCalls('readValue(args, zzNames)')[0]!.flags).toBeNull();
-    expect(valueReaderCalls('readValue(args, [...zzMore])')[0]!.flags).toBeNull();
+    // a top-level const resolves; an unknown name, a spread of one, and a
+    // function-local const of the same name in another scope do not.
+    expect(valueReaderCalls("readValue(args, BROWSER_VALUE_FLAGS)")[0]!.flags).toContain(
+      "--tab-id",
+    );
+    expect(valueReaderCalls("readValue(args, idFlags)")[0]!.flags).toBeNull();
+    expect(valueReaderCalls("readValue(args, zzNames)")[0]!.flags).toBeNull();
+    expect(valueReaderCalls("readValue(args, [...zzMore])")[0]!.flags).toBeNull();
     expect(
       valueReaderCalls(PLAN_SOURCE)
         .filter(({ flags }) => flags == null)
