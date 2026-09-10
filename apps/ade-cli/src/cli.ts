@@ -11693,10 +11693,15 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
   const target = readBrowserTabTargetArgs(args);
   // Everything left over after the flags is the reason, so
   // `ade browser handoff sign in to staging` works without quoting.
+  // Flag-shaped leftovers are dropped rather than joined: `--text` survives
+  // argv when a word follows it, and joining it raw made the reason read
+  // "--text sign in" in the phone alert body and the progress notice.
   const reason = requireValue(
     (explicitReason ??
       collectGenericObjectArgs(args).reason ??
-      [...args, ...literalTail].join(" ")) as string | null,
+      [...args.filter((token) => !token.startsWith("-")), ...literalTail].join(
+        " ",
+      )) as string | null,
     "reason",
   ).trim();
   if (!reason) {
@@ -14355,6 +14360,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--emulate",
   "--entries",
   "--factor",
+  "--file",
   "--filter",
   "--find",
   "--for",
@@ -14388,6 +14394,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--option-index",
   "--option-label",
   "--option-value",
+  "--path",
   "--position",
   "--preset",
   "--query",
@@ -14425,6 +14432,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--to-x",
   "--to-y",
   "--ua",
+  "--upload",
   "--url",
   "--user-agent",
   "--value",

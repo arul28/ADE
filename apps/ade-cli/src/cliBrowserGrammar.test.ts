@@ -41,12 +41,33 @@ const PLAN_SOURCE = [
 
 describe("browser value flags", () => {
   it("covers every flag the browser plan reads a value for", () => {
+    // `readRepeatedValues` is in the scan too: it consumes exactly like
+    // `readValue`, so `--upload` carries a value and must be in the table or
+    // `browser --upload path upload` dispatches on "path".
     const read = flagsReadFor(
-      /read(?:Value|NumberOption|IntOption)\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
+      /read(?:Value|NumberOption|IntOption|RepeatedValues)\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
       PLAN_SOURCE,
     );
     expect(read.size).toBeGreaterThan(80);
     expect([...read].filter((flag) => !BROWSER_VALUE_FLAGS.includes(flag))).toEqual([]);
+  });
+
+  it("passes the browser table to every carrier-aware reader in the plan", () => {
+    // `firstStandalonePositional` & co. default to the CLI-global carrier set,
+    // so a browser-plan call that forgets `BROWSER_VALUE_CARRIER_FLAGS`
+    // silently narrows the grammar back and `browser --tab-id t1 close`
+    // dispatches on "t1" again — with no other test failing.
+    const calls = [
+      ...PLAN_SOURCE.matchAll(
+        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator)\(([^()]*)\)/g,
+      ),
+    ];
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    expect(
+      calls
+        .filter(([, , callArgs]) => !callArgs!.includes("BROWSER_VALUE_CARRIER_FLAGS"))
+        .map(([call]) => call),
+    ).toEqual([]);
   });
 
   // The browser table is passed to the positional readers by the browser
@@ -62,11 +83,6 @@ describe("browser value flags", () => {
 
   it("claims no flag that is read as a boolean anywhere in the CLI", () => {
     // A boolean in a carrier set would swallow the positional after it.
-    // `chat generate-names --title --lane` reads two names that both tables
-    // carry a value for as booleans. That command takes no positional, so the
-    // collision is inert — but it is the ONLY one allowed, and a new name
-    // landing in either list means some command just started swallowing the
-    // token after a boolean flag.
     // `chat generate-names --title --lane`, `--cli|--terminal`, `--create|-b`
     // and `--automation|--include-automation` read a name that some other
     // command carries a value for as a boolean. Each of those commands takes
@@ -165,6 +181,9 @@ const SHAPES = (sub: string): string[][] => [
   ["--tab-id", "t1", sub],
   [sub, "--tab", "--"],
   [sub, "--", "a", "b"],
+  // A repeatable value flag before the word: `browser --upload path upload`
+  // must dispatch on "upload", not on "path".
+  ["--upload", "path", sub],
 ];
 
 /** The `args` the plan's first step would send to the daemon. */
@@ -220,5 +239,21 @@ describe("browser positional grammar", () => {
       .toMatchObject({ selector: "--", text: "y" });
     expect(actionArgs(buildCliPlan(["browser", "emulate", "--", "--iphone"])))
       .toMatchObject({ preset: "--iphone" });
+  });
+
+  it("keeps a leftover flag name out of the free-text handoff reason", () => {
+    // `--text` survives `parseCliArgs` when a word follows it, so the reason
+    // fallback must not join it — it is quoted back at the human in the phone
+    // alert body and the progress notice.
+    expect(actionArgs(buildCliPlan(["browser", "handoff", "--text", "sign in"])))
+      .toMatchObject({ reason: "sign in" });
+  });
+
+  it("lets --help win over a value flag that would otherwise eat it", () => {
+    // `readValue` accepts a flag-shaped value, so the help scan — not the
+    // reader — is what stops `--help` from becoming a URL. `--flag=--help` and
+    // a `--help` past the terminator are the two ways to pass the literal.
+    expect(buildCliPlan(["browser", "open", "--url", "--help"]).kind).toBe("help");
+    expect(buildCliPlan(["lanes", "list", "--text", "--help"]).kind).toBe("help");
   });
 });
