@@ -215,11 +215,9 @@ for (const statement of FILE.statements)
 const TOP_LEVEL_FUNCTIONS = new Set(TOP_LEVEL_FUNCTION_NODES.keys());
 
 /**
- * The body block of a top-level `function <name>`. The parser draws the
- * boundary, so a default parameter (`base: JsonObject = {}`), a return-type
- * annotation (`): { key: string } {`) and a `"{"` inside a string literal are
- * no longer three ways to mistake an empty body for a parsed one. A function
- * with no body at all throws rather than reading as "calls nothing".
+ * The top-level `function <name>` declaration, body or not. Throws when cli.ts
+ * has no such function, so a helper that gets renamed fails loudly here rather
+ * than reading as absent everywhere downstream.
  */
 function declarationOf(name: string): ts.FunctionDeclaration {
   const declaration = TOP_LEVEL_FUNCTION_NODES.get(name);
@@ -228,9 +226,17 @@ function declarationOf(name: string): ts.FunctionDeclaration {
 }
 
 /**
- * The body block alone. For assertions about TEXT and about parse health only
- * — an AST scan wants `scanRoots`, which also reads the signature. The short
- * name is the narrow one, so check which you mean.
+ * The body block alone, and the place the old parser's failures were fixed: a
+ * default parameter (`base: JsonObject = {}`), a return-type annotation
+ * (`): { key: string } {`) and a `"{"` inside a string literal were three ways
+ * to mistake an empty body for a parsed one, and a function with no body at
+ * all now throws rather than reading as "calls nothing".
+ *
+ * For assertions about TEXT and about parse health. An AST scan wants
+ * `scanRoots`, which also reads the signature — the short name here is the
+ * narrow one, so check which you mean. The single exception is the negative
+ * control that gives the `TOP_LEVEL_CALLEES` pin its meaning: it has to read
+ * the body alone to show that `scanRoots` reads more.
  */
 function bodyNode(name: string): ts.Block {
   const declaration = declarationOf(name);
@@ -285,13 +291,6 @@ function calleesIn(roots: readonly ts.Node[]): string[] {
 }
 
 /**
- * Every top-level helper that consumes argv, found by BODY AND SIGNATURE
- * rather than by name. A `read[A-Z]` name pattern was the same hand-kept subset one more
- * time: `collectGenericObjectArgs` reads `--arg-json` & co. and is called
- * straight out of the browser plan, but matched no pattern, so its flags never
- * had to be in the browser table.
- */
-/**
  * What the graph read for each top-level function. Named rather than local to
  * the closure below so a test can assert the graph read SIGNATURES too — the
  * counts alone cannot show it, because cli.ts's one signature-only edge leads
@@ -301,14 +300,20 @@ const TOP_LEVEL_CALLEES = new Map<string, string[]>(
   [...TOP_LEVEL_FUNCTIONS].map((name) => [name, calleesIn(scanRoots(name))]),
 );
 
+/**
+ * Every top-level helper that consumes argv, found by BODY AND SIGNATURE
+ * rather than by name. A `read[A-Z]` name pattern was the same hand-kept subset one more
+ * time: `collectGenericObjectArgs` reads `--arg-json` & co. and is called
+ * straight out of the browser plan, but matched no pattern, so its flags never
+ * had to be in the browser table.
+ */
 const ARGV_READERS = (() => {
-  const callees = TOP_LEVEL_CALLEES;
   const readers = new Set<string>(ARGV_PRIMITIVES);
   for (let changed = true; changed; ) {
     changed = false;
     for (const name of TOP_LEVEL_FUNCTIONS) {
       if (readers.has(name)) continue;
-      if (!callees.get(name)!.some((callee) => readers.has(callee))) continue;
+      if (!TOP_LEVEL_CALLEES.get(name)!.some((callee) => readers.has(callee))) continue;
       readers.add(name);
       changed = true;
     }
@@ -316,6 +321,42 @@ const ARGV_READERS = (() => {
   for (const primitive of ARGV_PRIMITIVES) readers.delete(primitive);
   return readers;
 })();
+
+/**
+ * The code a node defers to a later call, as a list of roots to scan. Empty
+ * when the node defers none.
+ *
+ * Four forms, because no one predicate covers them:
+ *
+ * - a function-like node's body, AND its parameter list. A default is deferred
+ *   too — it runs on call, not on definition — and leaving it out would give
+ *   an unindexable callable the very hole `scanRoots` closes for an indexed
+ *   one: `const readFoo = (args, v = readValue(args, ["--foo"])) => v`.
+ * - a class static block, which `ts.isFunctionLike` excludes.
+ * - a class field initializer, which is neither. An instance field runs on
+ *   construction and a `static` field at import; both are deferred past the
+ *   declaration, so both are refused.
+ *
+ * A field initialized WITH a callable (`tab = (args) => …`) returns nothing
+ * here — the walk reaches that arrow on its own, and naming one escape twice
+ * only makes the failure harder to read. A field that merely CONTAINS one can
+ * still report twice, so the caller de-duplicates.
+ *
+ * A bare module-scope statement is deliberately absent. `const X =
+ * readValue(…)` at the top level is not deferred at all: it runs where it is
+ * written, like cli.ts's own entry point, so refusing it would refuse the
+ * entry point too.
+ */
+function deferredBody(node: ts.Node): ts.Node[] {
+  if (ts.isClassStaticBlockDeclaration(node)) return [node.body];
+  if (ts.isPropertyDeclaration(node))
+    return node.initializer && !ts.isFunctionLike(unwrap(node.initializer))
+      ? [node.initializer]
+      : [];
+  if (!ts.isFunctionLike(node)) return [];
+  const callable = node as ts.FunctionLikeDeclaration;
+  return [...(callable.body ? [callable.body] : []), ...callable.parameters];
+}
 
 /**
  * Every callable in cli.ts that the call graph cannot index AND that reaches
@@ -329,7 +370,7 @@ const ARGV_READERS = (() => {
  * property arrow or accessor, a class expression bound to a const, and an
  * arrow handed to a wrapper such as `memoize(…)` are all equally unreachable.
  *
- * So the rule is one property, not a list of shapes. `deferredBody` below
+ * So the rule is one property, not a list of shapes. `deferredBody` above
  * names the forms that defer code to a later call, and the scan refuses the
  * ones whose deferred code reaches argv. Refusing by shape instead would do both jobs
  * badly: it would miss the shapes nobody enumerated (a wrapper call is not an
@@ -355,30 +396,6 @@ const ARGV_READERS = (() => {
  * name. Rename the local, or give the callable a top-level `function`
  * declaration.
  */
-/**
- * The code a node defers to a later call, or `undefined` when it defers none.
- *
- * Three forms, because no one predicate covers them: a function-like node's
- * body; a class static block, which `ts.isFunctionLike` excludes; and a class
- * field initializer, which is neither yet still runs on construction.
- *
- * A field initialized WITH a callable (`tab = (args) => …`) reports nothing
- * here — the walk reaches that arrow on its own, and naming the same escape
- * twice would only make the failure harder to read.
- *
- * Module-scope code is deliberately absent. `const X = readValue(…)` at the top
- * level runs at import, like cli.ts's own entry point, so refusing it would
- * refuse the entry point too.
- */
-function deferredBody(node: ts.Node): ts.Node | undefined {
-  if (ts.isClassStaticBlockDeclaration(node)) return node.body;
-  if (ts.isPropertyDeclaration(node))
-    return node.initializer && !ts.isFunctionLike(unwrap(node.initializer))
-      ? node.initializer
-      : undefined;
-  return ts.isFunctionLike(node) ? (node as ts.FunctionLikeDeclaration).body : undefined;
-}
-
 function unindexableArgvReaders(file: ts.SourceFile): string[] {
   const touchesArgv = (body: ts.Node): boolean =>
     collect([body], ts.isCallExpression).some((call) => {
@@ -400,11 +417,12 @@ function unindexableArgvReaders(file: ts.SourceFile): string[] {
   for (const statement of file.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name) continue;
     walk(statement, (node) => {
-      const body = deferredBody(node);
-      if (body && touchesArgv(body)) found.push(label(node));
+      const deferred = deferredBody(node);
+      if (deferred.length > 0 && deferred.some(touchesArgv)) found.push(label(node));
     });
   }
-  return found.sort();
+  // A field that contains a callable is reached twice; name the escape once.
+  return [...new Set(found)].sort();
 }
 
 /** Argv-reading helpers the given subtrees call, minus the primitives. */
@@ -594,13 +612,26 @@ describe("browser value flags", () => {
     expect(
       [...TOP_LEVEL_FUNCTIONS].filter((name) => bodyOf(name).trim().length <= 1),
     ).toEqual([]);
-    // The graph reads the SIGNATURE as well as the body. Without this pair,
-    // reverting `scanRoots` to a body-only read breaks nothing, and an argv
-    // reader called from a parameter default goes back to being classified as
-    // reading nothing. `buildActionRunStep` is cli.ts's real instance.
+    // A drop here means bodies stopped parsing and the coverage scans below
+    // went quietly blind; a rise means a new argv reader exists.
+    expect(
+      ARGV_READERS.size,
+      "bodies stopped parsing (drop) or a new argv reader exists (rise): the flag-coverage scans below only see what these bodies contain",
+    ).toBe(ARGV_READER_COUNT);
+  });
+
+  it("reads a function's signature as well as its body", () => {
     // `buildActionRunStep(args, target = parseActionRunTarget(args))` reaches
-    // that reader from its SIGNATURE only, so this pair fails the moment
-    // either the graph or PLAN_NODES goes back to reading bodies alone.
+    // that reader from its SIGNATURE only — cli.ts's one such edge. The
+    // counts cannot show this: the edge leads to a function the bodies
+    // already reach, so `ARGV_READERS.size` is 102 either way. Without these
+    // three, reverting `scanRoots` to a body-only read breaks nothing and an
+    // argv reader called from a parameter default goes back to being
+    // classified as reading nothing.
+    //
+    // The first line is the negative control, and is the one place in this
+    // file that reads a body alone on purpose: it is what makes the second
+    // line mean something.
     expect(calleesIn([bodyNode("buildActionRunStep")])).not.toContain("parseActionRunTarget");
     expect(
       TOP_LEVEL_CALLEES.get("buildActionRunStep"),
@@ -610,12 +641,6 @@ describe("browser value flags", () => {
       PLAN_NODES.some((node) => ts.isParameter(node)),
       "PLAN_NODES carries bodies only: a reader called from a plan function's parameter default sits outside every coverage scan below",
     ).toBe(true);
-    // A drop here means bodies stopped parsing and the coverage scans below
-    // went quietly blind; a rise means a new argv reader exists.
-    expect(
-      ARGV_READERS.size,
-      "bodies stopped parsing (drop) or a new argv reader exists (rise): the flag-coverage scans below only see what these bodies contain",
-    ).toBe(ARGV_READER_COUNT);
   });
 
   it("refuses a callable that reaches argv but the call graph cannot index", () => {
@@ -650,6 +675,8 @@ describe("browser value flags", () => {
         "}",
         'class Boot { static { readValue(process.argv, ["--boot"]); } }',
         'class Field { tab = readValue(process.argv, ["--tab"]); }',
+        'const readParam = (args: string[], v = readValue(args, ["--param"])) => v;',
+        'class Pair { rs = [(a: string[]) => readValue(a, ["--pair"])]; }',
         'const PLAIN = { z: readValue(process.argv, ["--z"]) };',
         'export default function (args: string[]) { return readValue(args, ["--dft"]); }',
         'const NAMES = ["--zz"].map((flag) => flag.slice(2));',
@@ -669,10 +696,14 @@ describe("browser value flags", () => {
       "Decl.zeta",
       "Field.tab",
       "Klass.eps",
+      // `Pair.rs` once, not twice: the field CONTAINS a callable, so both the
+      // field and the arrow inside it reach the same escape.
+      "Pair.rs",
       "READERS.beta",
       "READERS.delta",
       "READERS.gamma",
       "readAlpha",
+      "readParam",
       "wrapped",
     ]);
   });
