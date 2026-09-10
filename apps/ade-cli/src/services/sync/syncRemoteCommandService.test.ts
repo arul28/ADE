@@ -1250,6 +1250,30 @@ describe("createSyncRemoteCommandService", () => {
     expect(cancelScheduledWork).toHaveBeenCalledTimes(1);
   });
 
+  it("registers chat.resumeUsageLimitNow as an owner-only session-bound command", async () => {
+    const resumeUsageLimitNow = vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+      ok: true,
+      turnId: `turn-for-${sessionId}`,
+    }));
+    const { service } = createService({ agentChatService: { resumeUsageLimitNow } });
+
+    // Viewer-forbidden on purpose: cancelling a row costs nothing, but resuming
+    // now spends a provider turn against the owner's quota.
+    expect(service.getDescriptor("chat.resumeUsageLimitNow")).toEqual({
+      action: "chat.resumeUsageLimitNow",
+      scope: "project",
+      policy: { viewerAllowed: false, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.resumeUsageLimitNow", {
+      sessionId: "chat-1",
+    }))).resolves.toMatchObject({ ok: true, turnId: "turn-for-chat-1" });
+    expect(resumeUsageLimitNow).toHaveBeenCalledWith({ sessionId: "chat-1" });
+
+    await expect(service.execute(makePayload("chat.resumeUsageLimitNow", {})))
+      .rejects.toThrow("chat.resumeUsageLimitNow requires sessionId.");
+    expect(resumeUsageLimitNow).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps scheduled-work creation owner-only while allowing mobile pause control", async () => {
     const createScheduledWork = vi.fn(async (args: Record<string, unknown>) => ({ item: args }));
     const listScheduledWork = vi.fn(async (args: Record<string, unknown>) => [{ id: "cron-1", ...args }]);

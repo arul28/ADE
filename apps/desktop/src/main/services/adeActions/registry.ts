@@ -54,6 +54,7 @@ import type {
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
 import type {
+  AdeChatSessionSummaryActionResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -66,6 +67,7 @@ import type {
   PromptStashDeleteArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
+import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
 import {
@@ -662,6 +664,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setClaudeOutputStyle",
     "setParallelLaunchState",
     "cancelScheduledWork",
+    "resumeUsageLimitNow",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -1120,7 +1123,7 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
     },
     getSessionSummary: {
-      description: "Read one chat session summary.",
+      description: "Read one chat session summary, plus the IANA timeZone of the ADE brain that produced its timestamps.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
     },
@@ -1148,6 +1151,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Cancel one ADE-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
       input: "object { sessionId: string, scheduleId: string }",
       example: "ade actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
+    },
+    resumeUsageLimitNow: {
+      description: "Send the usage-limit continue prompt now instead of waiting for the published reset. Cancels the armed auto-resume row and clears the paused streak.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.resumeUsageLimitNow --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
     readTranscript: {
       description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
@@ -1238,6 +1246,27 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
     },
   },
 };
+
+
+/**
+ * Caller-supplied chat metadata, minus the keys only the host may set.
+ *
+ * `scheduledWake` and `usageLimitResume: "manual"` each exempt their message
+ * from the auto-resume cancel sweep. That exemption is the host telling itself
+ * "I already dealt with the row"; an action caller saying it is just a message
+ * that leaves the chat's resume armed through real activity, to fire
+ * unattended later. The host's own paths build their metadata internally and
+ * never come through here.
+ */
+function withoutHostOnlyChatMetadata(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata = record.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return record;
+  const { metadata: _hostOnlyStripped, ...rest } = record;
+  const stripped = stripHostOnlyChatMetadata(metadata as Record<string, unknown>);
+  return stripped ? { ...rest, metadata: stripped } : rest;
+}
 
 export function getAdeActionInputContract(
   domain: AdeActionDomain,
@@ -1767,7 +1796,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = requireNonEmptyString(record.text, "text");
-      await agentChatService.sendMessage({ ...record, sessionId, text } as never);
+      await agentChatService.sendMessage({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
       return {
         ok: true,
         accepted: true,
@@ -1782,7 +1815,27 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (typeof agentChatService.messageSession !== "function") {
         throw new Error("Chat messageSession is not available in this runtime.");
       }
-      return agentChatService.messageSession({ ...record, sessionId, text } as never);
+      return agentChatService.messageSession({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
+    },
+    steer: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.steer");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const text = requireNonEmptyString(record.text, "text");
+      if (typeof agentChatService.steer !== "function") {
+        throw new Error("Chat steer is not available in this runtime.");
+      }
+      // Steer reaches the same dispatch commit point a send does — the
+      // accepted branch of the steer queue runs the auto-resume sweep — so the
+      // host-only markers have to be stripped here for the same reason.
+      return agentChatService.steer({
+        ...withoutHostOnlyChatMetadata(record),
+        sessionId,
+        text,
+      } as never);
     },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
@@ -1905,8 +1958,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       agentChatService.getAvailableModels(readObjectActionArg(args, "chat.getAvailableModels") as never);
   }
   if (typeof base.getSessionSummary === "function") {
-    service.getSessionSummary = (args?: unknown) =>
-      agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
+    service.getSessionSummary = async (
+      args?: unknown,
+    ): Promise<AdeChatSessionSummaryActionResult | null> => {
+      const summary = await agentChatService.getSessionSummary(
+        readStringActionArg(args, "sessionId"),
+      );
+      if (!summary) return null;
+      // The host zone is added here rather than on `AgentChatSessionSummary`
+      // itself so the per-row list payload does not carry the same constant N
+      // times; `chat.createScheduledWork` reports the same value the same way.
+      // See `AdeChatSessionSummaryActionResult` for the full reasoning.
+      return { ...summary, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    };
   }
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
@@ -1940,6 +2004,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       return agentChatService.cancelScheduledWork({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
         scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
+  }
+  if (typeof base.resumeUsageLimitNow === "function") {
+    service.resumeUsageLimitNow = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
+      return agentChatService.resumeUsageLimitNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
     };
   }

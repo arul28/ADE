@@ -5970,6 +5970,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.setSpawnKind",
         "chat.dismissSubagentTakeoverPrompt",
         "chat.regenerateSessionMetadata",
+        "chat.resumeUsageLimitNow",
         "prs.listGithubStacks",
         "prs.syncGithubStacks",
         "prs.createGithubStack",
@@ -5999,6 +6000,9 @@ describe("CTO-gated Linear sync commands", () => {
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
+        // Resuming spends a provider turn, so it is a host mutation a
+        // read-only viewer never gets to make.
+        "chat.resumeUsageLimitNow",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {

@@ -160,6 +160,12 @@ older phones never call it. A newer controller may feature-detect it from the
 advertised action list before offering a metadata refresh; omitting it must not
 break the connection or put the host in `limited` mode.
 
+`chat.resumeUsageLimitNow` is optional on the same logic. The phone hides its
+usage-limit **Resume now** button unless the host advertises the action, so an
+older brain simply offers the states that re-arm through `chat.updateSession`,
+and an older phone that never calls it must not be flipped to `limited`
+against a newer host.
+
 ## Registry
 
 Commands are registered by calling `register(action, policy, handler,
@@ -338,6 +344,7 @@ strategy.
 - `recoverTurn`, legacy `recoverCodexTurn`, `resolveUnprocessedMessage`
 - `restart`, `updateSession`, `regenerateSessionMetadata`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
+- `resumeUsageLimitNow`
 
 `chat.recoverTurn` is the provider-neutral stall-recovery action. It takes
 `{ sessionId, turnId, action }`, where `action` is `wait`, `nudge`,
@@ -380,6 +387,13 @@ reason? }` and creates an ADE-owned durable schedule for any provider-backed
 chat. `recurring` defaults to true; false creates a one-shot at the next
 five-field cron match. `chat.setScheduledWorkPaused` takes `{ sessionId,
 paused }`, and `chat.cancelScheduledWork` takes `{ sessionId, scheduleId }`.
+`chat.resumeUsageLimitNow` takes `{ sessionId }` and is **owner-only**
+(`viewerAllowed: false`) and non-queueable: unlike cancelling a row, it spends
+a provider turn against the owner's quota, and a replayed offline command must
+never mint a second one. It answers `{ ok: true, turnId }` or, when the host
+declines to send, `{ ok: false, reason: "no_live_usage_limit" |
+"resume_in_flight", message }` — a refusal is an ordinary answer, not an error,
+and nothing is sent or mutated in either case.
 Create is owner-only (`viewerAllowed: false`), so paired controller devices can
 discover the capability but cannot invoke it. Pause, resume, and cancel are
 viewer-allowed recovery controls. All three are deliberately

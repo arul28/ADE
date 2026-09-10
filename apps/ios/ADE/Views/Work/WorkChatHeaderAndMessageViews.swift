@@ -1317,6 +1317,7 @@ struct WorkTurnEndMarkerView: View {
   var onCompact: (() -> Void)? = nil
 
   @State private var contextUsagePresented = false
+  @State private var usageLimitDetailsExpanded = false
 
   private var status: String {
     marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1334,7 +1335,17 @@ struct WorkTurnEndMarkerView: View {
     ADEColor.chatSurfaceAccent(modelId: marker.modelId, provider: marker.provider)
   }
 
+  /// A turn that ended at a usage limit is a pause, not a failure: one muted
+  /// line, no FAILED, no red. The turn's usage numbers move behind the details
+  /// toggle below rather than sitting in their own row beside it.
+  private var usageLimitLine: String {
+    "Paused · usage limit · \(marker.workedDurationLabel)"
+  }
+
   private var markerAccessibilityLabel: String {
+    if marker.usageLimitPaused {
+      return "Turn paused at the usage limit after \(marker.workedDurationLabel)."
+    }
     let activityLabel = toolCount > 0
       ? "\(toolCount) \(toolCount == 1 ? "action" : "actions"). Opens activity details."
       : nil
@@ -1354,6 +1365,61 @@ struct WorkTurnEndMarkerView: View {
   }
 
   var body: some View {
+    if marker.usageLimitPaused {
+      usageLimitBody
+    } else {
+      standardBody
+    }
+  }
+
+  private var usageLimitBody: some View {
+    VStack(spacing: 6) {
+      HStack(spacing: 10) {
+        hairline
+        Button {
+          usageLimitDetailsExpanded.toggle()
+        } label: {
+          HStack(spacing: 5) {
+            Image(systemName: "clock")
+              .font(.system(size: 9, weight: .semibold))
+            Text(usageLimitLine)
+              .font(.caption2)
+            if usageLimitDetails {
+              Image(systemName: usageLimitDetailsExpanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .opacity(0.55)
+            }
+          }
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .minimumScaleFactor(0.82)
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!usageLimitDetails)
+        .layoutPriority(1)
+        hairline
+      }
+
+      if usageLimitDetailsExpanded, let usage = marker.usage {
+        WorkTurnUsageSummaryBanner(
+          summary: usage,
+          provider: marker.provider,
+          modelLabel: modelLabel ?? marker.modelLabel
+        )
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 8)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(markerAccessibilityLabel)
+    .accessibilityHint(usageLimitDetails ? "Shows this turn's token usage." : "")
+  }
+
+  private var usageLimitDetails: Bool { marker.usage != nil }
+
+  private var standardBody: some View {
     HStack(spacing: 10) {
       hairline
       if let onOpenActivity, toolCount > 0 {

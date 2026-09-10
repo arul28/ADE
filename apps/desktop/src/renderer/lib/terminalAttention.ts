@@ -1,4 +1,4 @@
-import type { SessionSettleOverride, TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import type { AgentChatUsageLimitResume, SessionSettleOverride, TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import {
   backgroundWorkFromSummary,
   canonicalSessionState,
@@ -146,6 +146,13 @@ type SessionCanonicalUiInput = {
   attentionRequestedAt?: string | null;
   lastTurnFailedAt?: string | null;
   nextWakeAt?: string | null;
+  /**
+   * Host-computed usage-limit resume state, when the summary carries one. The
+   * row forwards it verbatim to `sessionStatusPresentation`, which owns what it
+   * means — a chat waiting out a published reset must not paint the red dot
+   * that means "it broke".
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
   chatActivityMode?: TerminalSessionSummary["chatActivityMode"];
   activeBackgroundTaskCount?: number;
   backgroundWork?: SessionBackgroundWork | null;
@@ -172,6 +179,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
     nextWakeAt: session.nextWakeAt,
+    usageLimitResume: session.usageLimitResume,
     chatActivityMode: session.chatActivityMode,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount,
     backgroundWork: backgroundWorkFromSummary(session),
@@ -263,6 +271,7 @@ export function sessionStatusDisplay(
     backgroundWork: backgroundWorkFromSummary(session),
     nextWakeAt: session.nextWakeAt,
     nowMs: session.nowMs,
+    usageLimitResume: session.usageLimitResume ?? null,
   });
 }
 
@@ -384,6 +393,13 @@ export function sessionStatusDot(
     chatActivityMode: session.chatActivityMode,
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
+    // Same forward as the full slot: without it a chat parked on a published
+    // usage-limit reset paints the red dot that means "it broke". `nowMs`
+    // travels with it — the resume state is resolved against a clock, so a dot
+    // that fell back to `Date.now()` could call a limit live that the text slot
+    // beside it has already read as expired.
+    nowMs: session.nowMs,
+    usageLimitResume: session.usageLimitResume ?? null,
   });
   if (presentation) {
     return {

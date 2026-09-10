@@ -13917,6 +13917,33 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `chat.resumeUsageLimitNow` — cancel the durable arm, reset the streak, and
+  /// send the same continue prompt the scheduled resume would have sent, as an
+  /// ordinary user turn. See `.specs/CONTRACT.md`.
+  ///
+  /// Gated through the shared `requireInvokableRemoteAction` so a viewer device
+  /// and a dropped connection each report their own cause instead of one
+  /// catch-all "update the host" message. The affordance itself is hidden when
+  /// the host does not advertise the action at all.
+  ///
+  /// Returns the host's result rather than discarding it. The two refusals
+  /// (`no_live_usage_limit`, `resume_in_flight`) come back as an ordinary
+  /// answer with `ok: false`, not as a thrown error, so a caller that ignores
+  /// the return value reports success for a prompt that was never sent.
+  @discardableResult
+  func resumeUsageLimitNow(sessionId: String) async throws -> AgentChatResumeUsageLimitNowResult {
+    let action = chatActionName("chat.resumeUsageLimitNow", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatResumeUsageLimitNowResult.self
+    )
+  }
+
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(

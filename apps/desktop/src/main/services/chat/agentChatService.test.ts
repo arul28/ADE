@@ -296,6 +296,13 @@ vi.mock("node:readline", () => ({
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  // Mirrors the real export. Structured usage-limit detection reads it, so the
+  // mock has to provide it; these are the prefixes the tests below exercise.
+  USAGE_LIMIT_ERROR_PREFIXES: [
+    "You've hit your",
+    "You've reached your",
+    "You're out of usage credits",
+  ] as const,
   createSdkMcpServer: vi.fn((config: any) => ({
     type: "sdk",
     name: config?.name,
@@ -3765,7 +3772,9 @@ describe("createAgentChatService", () => {
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
       expect(opts?.perTaskStopAffordance).toBe(true);
-      expect(opts?.autoContinueAtUsageLimit).toBe(true);
+      // Never passed: it is a Claude Settings key, not a query Option. Sending
+      // it made the SDK reject the turn with a 429 instead of honouring it.
+      expect(opts?.autoContinueAtUsageLimit).toBeUndefined();
       // No settings file names a style here, so ADE must not name one either:
       // its settings land at flag tier, above every file the SDK reads, so an
       // "outputStyle" key would override the user's global selection.
@@ -10968,6 +10977,1404 @@ describe("createAgentChatService", () => {
       const optedOut = await service.getSessionSummary(session.id);
       expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
       expect(optedOut?.usageLimitParkedUntil ?? null).toBeNull();
+    });
+
+    /**
+     * Claude's structured usage limit, end to end.
+     *
+     * Both halves of this were broken in production on 2026-09-07: a real limit
+     * armed nothing (the service parked instead of arming, and reaped the query
+     * before anything could be written), and an assistant reply that merely
+     * QUOTED a limit message tripped the whole quota path on a completed turn.
+     */
+    describe("claude usage-limit durable resume", () => {
+      const claudeQuotaRejectionStream = (sessionId: string, resetsAtSeconds: number) => {
+        let streamCall = 0;
+        return vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          yield {
+            type: "rate_limit_event",
+            session_id: sessionId,
+            rate_limit_info: { status: "rejected", utilization: 1, resetsAt: resetsAtSeconds },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+      };
+
+      it("claude usage limit arms the durable auto-resume row before the query reset", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetAtMs = Date.now() + 3_600_000;
+        const resetsAt = Math.floor(resetAtMs / 1000);
+        // The durable row as it stood the first time the query was reaped. The
+        // reset used to run first and tear the runtime down mid-upsert, which
+        // is exactly how a real limit ended up resuming nothing.
+        let stateAtFirstClose: ReturnType<typeof scheduledWork.readState> | undefined;
+        const close = vi.fn(() => {
+          if (stateAtFirstClose === undefined) stateAtFirstClose = scheduledWork.readState();
+        });
+        const send = vi.fn().mockResolvedValue(undefined);
+        const stream = claudeQuotaRejectionStream("sdk-session-arm", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-arm",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-arm",
+        } as any);
+
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+        const [schedule] = await service.listScheduledWork({ sessionId: session.id });
+        expect(schedule).toMatchObject({
+          id: `auto-resume:${session.id}`,
+          source: "auto_resume_limit",
+          status: "scheduled",
+        });
+        expect(Date.parse(schedule.nextRunAt ?? "")).toBe(
+          Math.floor(resetAtMs / 1000) * 1000 + 90_000,
+        );
+        expect(close.mock.calls.length).toBeGreaterThan(0);
+        expect(stateAtFirstClose?.schedules).toEqual([
+          expect.objectContaining({ id: `auto-resume:${session.id}` }),
+        ]);
+
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({
+          state: "armed",
+          provider: "claude",
+          scheduleId: `auto-resume:${session.id}`,
+          attempts: 1,
+        });
+        // The deprecated mirror follows the resume state; new clients ignore it.
+        expect(summary?.usageLimitParkedUntil).toBe(summary?.usageLimitResume?.fireAt);
+      });
+
+      it("assistant prose quoting a session limit does not trip the quota path", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const close = vi.fn();
+        const send = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              content: [{
+                type: "text",
+                // Verbatim from the transcript that reproduced the bug: the
+                // agent was REPORTING a limit, not hitting one.
+                text: "The log says: You've hit your session limit \u00b7 resets 7:30pm (America/New_York)",
+              }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-prose",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-prose",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "what does the log say?",
+          timeoutMs: 15_000,
+        });
+
+        const done = events.filter((event) => event.event.type === "done").at(-1);
+        expect(done?.event).toMatchObject({ type: "done", status: "completed" });
+        expect(events.filter((event) =>
+          event.event.type === "ade_card"
+          && (event.event as any).variant === "claude_session_quota")).toEqual([]);
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        // The turn completed, so nothing may have reaped the query underneath it.
+        expect(close).not.toHaveBeenCalled();
+      });
+
+      it("stale park with no structured limit heals on hydration", async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        // Dispose first: a live service keeps writing its own persisted state,
+        // and the stale row below has to be what the next hydration reads.
+        await service.dispose({ sessionId: session.id });
+        // Exactly what the old prose scan left behind: a park instant, no
+        // durable row, and no record that a structured limit ever happened.
+        writePersistedChatState(session.id, {
+          ...readPersistedChatState(session.id),
+          usageLimitParkedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+
+        const { service: restarted } = createService();
+        // The cheapest call that hydrates the chat; it changes nothing itself.
+        await restarted.updateSession({ sessionId: session.id });
+        await vi.waitFor(() => {
+          expect(readPersistedChatState(session.id).usageLimitParkedUntil ?? null).toBeNull();
+        });
+        const summary = await restarted.getSessionSummary(session.id);
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+      });
+
+      it("resumeUsageLimitNow cancels the row and sends the continue prompt", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-now", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-now",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-now",
+        } as any);
+
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        const result = await service.resumeUsageLimitNow({ sessionId: session.id });
+        expect(result.ok).toBe(true);
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+        const resumeMessage = events.findLast((event) =>
+          event.event.type === "user_message"
+          && (event.event as any).metadata?.usageLimitResume === "manual");
+        expect((resumeMessage?.event as any)?.text).toContain(
+          "Continue the interrupted task from where it stopped",
+        );
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+      });
+
+      it("resumeUsageLimitNow awaits row cancellation before sending", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-order", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-order",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-order",
+        } as any);
+
+        // The durable row exactly as it stood when the manual prompt was
+        // emitted. A row still pending at that instant is a row the scheduler
+        // can also deliver, which is the double-prompt this ordering forbids.
+        const rowsAtDispatch: ChatScheduledWorkRecord[][] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => {
+            if (rowsAtDispatch.length > 0) return;
+            if (event.event.type !== "user_message") return;
+            if ((event.event as any).metadata?.usageLimitResume !== "manual") return;
+            rowsAtDispatch.push(scheduledWork.readState()?.schedules ?? []);
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        const result = await service.resumeUsageLimitNow({ sessionId: session.id });
+        expect(result.ok).toBe(true);
+
+        // No waitFor: the cancellation is awaited, so the row is already gone
+        // the moment the call resolves rather than shortly afterwards.
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        expect(rowsAtDispatch).toHaveLength(1);
+        expect((rowsAtDispatch[0] ?? []).filter((row) =>
+          row.id === `auto-resume:${session.id}`
+          && (row.status === "scheduled" || row.status === "paused"))).toEqual([]);
+      });
+
+      it("resumeUsageLimitNow restores the armed state when the send fails", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-fail", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-fail",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-fail",
+        } as any);
+
+        // The send is refused only once the chat is armed: the limit turn below
+        // has to run normally first.
+        let sendsAllowed = true;
+        const { service } = createService({
+          db: scheduledWork.db,
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => (sendsAllowed ? { allowed: true } : {
+              allowed: false,
+              state: "exhausted",
+              code: "disk_full",
+              message: "Your computer is almost out of storage.",
+            })),
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+        const armed = (await service.getSessionSummary(session.id))?.usageLimitResume;
+        expect(armed).toMatchObject({ state: "armed" });
+
+        // Nothing dispatches, so the trade the manual resume made (row
+        // cancelled, visible state cleared) bought nothing and must be given
+        // back rather than leaving the chat with neither the manual turn nor
+        // its automatic recovery.
+        sendsAllowed = false;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+
+        const restored = await service.getSessionSummary(session.id);
+        expect(restored?.usageLimitResume).toMatchObject({
+          state: "armed",
+          provider: "claude",
+          fireAt: armed?.fireAt,
+          scheduleId: `auto-resume:${session.id}`,
+        });
+        // The deprecated mirror is restored with it, through the same writer.
+        expect(restored?.usageLimitParkedUntil).toBe(armed?.fireAt);
+        const rows = await service.listScheduledWork({ sessionId: session.id });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: `auto-resume:${session.id}`,
+          status: "scheduled",
+          nextRunAt: armed?.fireAt,
+        });
+      });
+
+      it("resumeUsageLimitNow does not restore after a concurrent scheduled-work pause", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-pause-race", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-pause-race",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-pause-race",
+        } as any);
+
+        let refuseSends = false;
+        let pause: Promise<unknown> | null = null;
+        let serviceRef: ReturnType<typeof createService>["service"] | null = null;
+        let sessionIdForPauseRace = "";
+        const { service } = createService({
+          db: scheduledWork.db,
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => {
+              if (!refuseSends) return { allowed: true };
+              // The user pauses after Resume now has cancelled its row but
+              // before the refused send's restore can run. The pause method
+              // records that decision synchronously before awaiting the
+              // scheduler, so the restore must see a newer epoch.
+              pause ??= serviceRef!.setScheduledWorkPaused({
+                sessionId: sessionIdForPauseRace,
+                paused: true,
+              });
+              return {
+                allowed: false,
+                state: "exhausted",
+                code: "disk_full",
+                message: "Your computer is almost out of storage.",
+              };
+            }),
+          },
+        });
+        serviceRef = service;
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        sessionIdForPauseRace = session.id;
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        refuseSends = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        expect(pause).not.toBeNull();
+        await pause;
+
+        // The pause won the race. A failed manual resume must not put the
+        // cancelled row or the cleared state back behind that decision.
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume ?? null).toBeNull();
+      });
+
+      it("resumeUsageLimitNow does not re-arm after a mid-flight Don't continue", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-resume-optout", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-optout",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-resume-optout",
+        } as any);
+
+        // Don't continue lands WHILE the manual send is in flight: the gate that
+        // refuses the send is also what turns auto-continue off, so the restore
+        // that follows is looking at a chat the user has since opted out of.
+        let refuseSends = false;
+        let optOut: Promise<unknown> | null = null;
+        let sessionId = "";
+        let serviceRef: ReturnType<typeof createService>["service"] | null = null;
+        const { service } = createService({
+          db: scheduledWork.db,
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => {
+              if (!refuseSends) return { allowed: true };
+              optOut ??= serviceRef!.updateSession({
+                sessionId,
+                autoContinueAtUsageLimit: false,
+              });
+              return {
+                allowed: false,
+                state: "exhausted",
+                code: "disk_full",
+                message: "Your computer is almost out of storage.",
+              };
+            }),
+          },
+        });
+        serviceRef = service;
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        sessionId = session.id;
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        refuseSends = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        expect(optOut).not.toBeNull();
+        await optOut;
+
+        // The opt-out is newer than the state the restore was undoing, so it
+        // stands: no armed state, no mirror, and no resurrected row.
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.autoContinueAtUsageLimit).toBe(false);
+        expect(summary?.usageLimitResume).toMatchObject({ state: "opted_out", fireAt: null });
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+      });
+
+      /**
+       * A stream that rejects EVERY query with the same limit, unlike
+       * `claudeQuotaRejectionStream`, whose first call is the session warm-up.
+       * A turn dispatched after an earlier limit builds a brand new query, so
+       * its first stream call IS the turn and has to carry the rejection.
+       */
+      const alwaysQuotaRejectionStream = (sessionId: string, resetsAtSeconds: number) =>
+        vi.fn(() => (async function* () {
+          yield {
+            type: "rate_limit_event",
+            session_id: sessionId,
+            rate_limit_info: { status: "rejected", utilization: 1, resetsAt: resetsAtSeconds },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+
+      /**
+       * Points the Claude SDK mocks at a query that dies at `resetsAtSeconds`.
+       * `warmedUp: false` uses the warm-up-aware stream, which is right only for
+       * the FIRST limit of a chat; every later turn builds a fresh query whose
+       * first stream call is the turn itself.
+       */
+      const installClaudeLimitStream = (
+        label: string,
+        resetsAtSeconds: number,
+        warmedUp = true,
+      ) => {
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = warmedUp
+          ? alwaysQuotaRejectionStream(label, resetsAtSeconds)
+          : claudeQuotaRejectionStream(label, resetsAtSeconds);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: label,
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: label,
+        } as any);
+      };
+
+      /**
+       * A repeat limit that arrives on a scheduler-dispatched turn, without the
+       * user-message sweep an ordinary send would run. It is the only way a
+       * second arm can count against the two-arm cap, so the tests that care
+       * about the cap have to dispatch this way rather than through a normal
+       * send.
+       */
+      const scheduledWakeMetadata = (sessionId: string) => ({
+        scheduledWake: {
+          scheduleId: `auto-resume:${sessionId}`,
+          kind: "wakeup" as const,
+          firedAt: new Date().toISOString(),
+          reason: "Auto-resume after usage limit reset",
+        },
+      });
+
+      it("resumeUsageLimitNow keeps the two-arm cap when the send fails", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        let resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const armedNotices = () => events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof (event.event as any).message === "string"
+          && /^Resumes at /.test((event.event as any).message));
+
+        installClaudeLimitStream("sdk-session-cap-1", resetsAt, false);
+        let refuseSends = false;
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => (refuseSends ? {
+              allowed: false,
+              state: "exhausted",
+              code: "disk_full",
+              message: "Your computer is almost out of storage.",
+            } : { allowed: true })),
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(1));
+
+        // The manual resume never dispatches, so it is not the intervening
+        // event the cap waits for: the one arm already spent has to survive it.
+        refuseSends = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        refuseSends = false;
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        // Second arm, on a scheduler-dispatched turn (no user sweep to reset
+        // the streak). This is the last one the cap allows.
+        resetsAt = Math.floor((Date.now() + 7_200_000) / 1000);
+        installClaudeLimitStream("sdk-session-cap-2", resetsAt);
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "continue",
+          metadata: scheduledWakeMetadata(session.id),
+        });
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(2));
+
+        // Third limit, same path: the cap is spent, so this one pauses instead
+        // of arming a third window and burning another turn.
+        resetsAt = Math.floor((Date.now() + 10_800_000) / 1000);
+        installClaudeLimitStream("sdk-session-cap-3", resetsAt);
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "continue",
+          metadata: scheduledWakeMetadata(session.id),
+        });
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "system_notice"
+            && (event.event as any).message === "Paused after 2 tries")).toBe(true);
+        });
+        expect(armedNotices()).toHaveLength(2);
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({ state: "paused", attempts: 2 });
+      });
+
+      it("a paused auto-resume row survives a repeat limit with no countdown", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        let resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+
+        installClaudeLimitStream("sdk-session-paused-1", resetsAt, false);
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+        const [armed] = await service.listScheduledWork({ sessionId: session.id });
+        const armedFireAt = armed?.nextRunAt;
+        expect(armedFireAt).toEqual(expect.any(String));
+
+        // The user pauses this chat's scheduled work. A later limit must not
+        // quietly un-pause the row by upserting over it.
+        await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+        resetsAt = Math.floor((Date.now() + 7_200_000) / 1000);
+        installClaudeLimitStream("sdk-session-paused-2", resetsAt);
+        const doneBefore = events.filter((event) => event.event.type === "done").length;
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "continue",
+          metadata: scheduledWakeMetadata(session.id),
+        });
+        // The turn's own completion is the barrier: the quota-reject teardown
+        // waits for the arm decision before it reaps the query, so a `done`
+        // here means the arm path has already run (and, with a paused row,
+        // decided to do nothing).
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.event.type === "done").length)
+            .toBeGreaterThan(doneBefore);
+        });
+
+        const rows = await service.listScheduledWork({ sessionId: session.id });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ id: `auto-resume:${session.id}`, status: "paused" });
+        // Same instant as before: the second limit neither rescheduled the row
+        // nor re-armed its timer.
+        expect(rows[0]?.nextRunAt).toBe(armedFireAt);
+        // And no countdown: a paused row reports `no_reset`, so the pill offers
+        // Retry instead of ticking down to an instant nothing happens at.
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({
+          state: "no_reset",
+          fireAt: null,
+          scheduleId: null,
+        });
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+      });
+
+      it("Turn on after a failed manual resume clears the restored cap", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        let resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const armedNotices = () => events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof (event.event as any).message === "string"
+          && /^Resumes at /.test((event.event as any).message));
+        const pausedNotices = () => events.filter((event) =>
+          event.event.type === "system_notice"
+          && (event.event as any).message === "Paused after 2 tries");
+        const doneCount = () => events.filter((event) => event.event.type === "done").length;
+
+        installClaudeLimitStream("sdk-session-turnon-1", resetsAt, false);
+        let refuseSends = false;
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => (refuseSends ? {
+              allowed: false,
+              state: "exhausted",
+              code: "disk_full",
+              message: "Your computer is almost out of storage.",
+            } : { allowed: true })),
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        const wakeLimit = async (label: string) => {
+          resetsAt += 3_600;
+          installClaudeLimitStream(label, resetsAt);
+          const before = doneCount();
+          await service.sendMessage({
+            sessionId: session.id,
+            text: "continue",
+            metadata: scheduledWakeMetadata(session.id),
+          });
+          await vi.waitFor(() => expect(doneCount()).toBeGreaterThan(before));
+        };
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(1));
+        // Spend the whole cap, so the chat is paused and the failed resume
+        // below has a capped streak to hand back.
+        await wakeLimit("sdk-session-turnon-2");
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(2));
+        await wakeLimit("sdk-session-turnon-3");
+        await vi.waitFor(() => expect(pausedNotices()).toHaveLength(1));
+
+        refuseSends = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        refuseSends = false;
+
+        // Try again is the human override: it clears the streak the failed
+        // resume just restored (and bumps the cancel epoch so no later undo can
+        // put it back), so the next limit arms instead of pausing again.
+        await service.updateSession({
+          sessionId: session.id,
+          autoContinueAtUsageLimit: true,
+        });
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(3));
+        await wakeLimit("sdk-session-turnon-4");
+        await vi.waitFor(() => expect(armedNotices()).toHaveLength(4));
+        expect(pausedNotices()).toHaveLength(1);
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+          .toMatchObject({ state: "armed", attempts: 2 });
+      });
+
+      it("a user message during a failed manual resume keeps the streak reset", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        installClaudeLimitStream("sdk-session-takeover-1", resetsAt, false);
+        let refusedOnce = false;
+        let takeover: Promise<unknown> | null = null;
+        let sessionId = "";
+        let serviceRef: ReturnType<typeof createService>["service"] | null = null;
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+          diskPressureMonitor: {
+            canPerform: vi.fn(() => {
+              // Only the manual resume is refused; the user's own takeover
+              // message that lands during it must go through.
+              if (!refusedOnce) return { allowed: true };
+              refusedOnce = false;
+              takeover ??= serviceRef!.sendMessage({
+                sessionId,
+                text: "I'm back, taking this over.",
+              });
+              return {
+                allowed: false,
+                state: "exhausted",
+                code: "disk_full",
+                message: "Your computer is almost out of storage.",
+              };
+            }),
+          },
+        });
+        serviceRef = service;
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        sessionId = session.id;
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        refusedOnce = true;
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow(/could not start the resume turn/);
+        expect(takeover).not.toBeNull();
+        await takeover;
+
+        // The user took the chat over: their message cancelled the resume, and
+        // the undo must not put it back behind them.
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+      });
+
+      it("pausing the auto-resume row reports no_reset and still allows Resume now", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        installClaudeLimitStream("sdk-session-pause-state-1", resetsAt, false);
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+            .toMatchObject({ state: "armed" });
+        });
+        const armedState = (await service.getSessionSummary(session.id))?.usageLimitResume;
+
+        await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+
+        // A paused row is not going to fire, so the chat stops counting down to
+        // it: no fire time, no schedule id, and the provider detail kept so the
+        // pill still explains which limit this is.
+        const paused = await service.getSessionSummary(session.id);
+        expect(paused?.usageLimitResume).toMatchObject({
+          state: "no_reset",
+          fireAt: null,
+          scheduleId: null,
+          provider: "claude",
+          turnId: armedState?.turnId ?? null,
+        });
+        expect(paused?.usageLimitParkedUntil ?? null).toBeNull();
+
+        // And Resume now still works: a paused resume is exactly the case where
+        // sending by hand is the chat's only way forward.
+        installClaudeLimitStream("sdk-session-pause-state-2", resetsAt);
+        const resumed = await service.resumeUsageLimitNow({ sessionId: session.id });
+        expect(resumed.ok).toBe(true);
+      });
+
+      it("un-pausing the auto-resume row reports armed again", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        installClaudeLimitStream("sdk-session-unpause-1", resetsAt, false);
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+            .toMatchObject({ state: "armed" });
+        });
+        const armedFireAt = (await service.getSessionSummary(session.id))?.usageLimitResume?.fireAt;
+
+        await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+          .toMatchObject({ state: "no_reset", fireAt: null });
+
+        await service.setScheduledWorkPaused({ sessionId: session.id, paused: false });
+        const resumedState = await service.getSessionSummary(session.id);
+        expect(resumedState?.usageLimitResume).toMatchObject({
+          state: "armed",
+          fireAt: armedFireAt,
+          scheduleId: `auto-resume:${session.id}`,
+        });
+        expect(resumedState?.usageLimitParkedUntil).toBe(armedFireAt);
+      });
+
+      it("a durable row with no stored state still reports the countdown", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        const fireAt = Date.now() + 30 * 60_000;
+        const createdAt = Date.now() - 60_000;
+        // The row outlives the state: an arm reported while the chat was not
+        // resident in memory writes the row and drops the state, and the
+        // countdown a client renders has to survive that.
+        scheduledWork.db.setJson(SCHEDULED_WORK_STATE_KEY, {
+          version: 1,
+          schedules: [{
+            id: `auto-resume:${session.id}`,
+            sessionId: session.id,
+            kind: "wakeup",
+            prompt: "Continue the interrupted task from where it stopped.",
+            reason: "Auto-resume after usage limit reset",
+            fireAt,
+            createdAt,
+            status: "scheduled",
+            pausedFlag: false,
+            lateFlag: false,
+            durable: true,
+            source: "auto_resume_limit",
+          }],
+          pausedSessionIds: [],
+        });
+
+        const { service: restarted } = createService({ db: scheduledWork.db });
+        await restarted.updateSession({ sessionId: session.id });
+        const summary = await restarted.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({
+          state: "armed",
+          provider: "claude",
+          fireAt: new Date(fireAt).toISOString(),
+          scheduleId: `auto-resume:${session.id}`,
+          // Stamped from the row, so an unchanged resume does not look like a
+          // change on every summary read.
+          updatedAt: new Date(createdAt).toISOString(),
+        });
+        expect(summary?.usageLimitParkedUntil).toBe(new Date(fireAt).toISOString());
+        restarted.forceDisposeAll();
+        service.forceDisposeAll();
+      });
+
+      it("a paused durable row with no stored state synthesizes nothing", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        scheduledWork.db.setJson(SCHEDULED_WORK_STATE_KEY, {
+          version: 1,
+          schedules: [{
+            id: `auto-resume:${session.id}`,
+            sessionId: session.id,
+            kind: "wakeup",
+            prompt: "Continue the interrupted task from where it stopped.",
+            reason: "Auto-resume after usage limit reset",
+            fireAt: Date.now() + 30 * 60_000,
+            createdAt: Date.now() - 60_000,
+            status: "paused",
+            pausedFlag: true,
+            lateFlag: false,
+            durable: true,
+            source: "auto_resume_limit",
+          }],
+          pausedSessionIds: [],
+        });
+
+        const { service: restarted } = createService({ db: scheduledWork.db });
+        await restarted.updateSession({ sessionId: session.id });
+        const summary = await restarted.getSessionSummary(session.id);
+        // A paused row is not a countdown, and there is no stored state to
+        // project it onto, so the chat reports no resume at all.
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        restarted.forceDisposeAll();
+        service.forceDisposeAll();
+      });
+
+      it("a wedged auto-resume arm releases the turn at the deadline", async () => {
+        // The scheduler never finishes loading, so the arm never settles. The
+        // wait that orders the reap after the arm has to give up: losing an arm
+        // is recoverable, a chat stuck busy behind a pending promise is not.
+        const backing = createScheduledWorkDb();
+        const neverBoots = {
+          ...backing.db,
+          getJson: vi.fn((key: string) => (key === SCHEDULED_WORK_STATE_KEY
+            ? new Promise(() => undefined)
+            : backing.db.getJson(key))),
+        };
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        installClaudeLimitStream("sdk-session-wedged-arm", resetsAt, false);
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, logger } = createService({
+          db: neverBoots,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        vi.useFakeTimers();
+        try {
+          const turn = service.runSessionTurn({
+            sessionId: session.id,
+            text: "hit the limit",
+            timeoutMs: 60_000,
+          });
+          const settled = turn.then(() => "settled" as const, () => "settled" as const);
+          // Everything up to the bounded wait is promise work; the deadline is
+          // the only timer between the limit and the finished turn.
+          await vi.advanceTimersByTimeAsync(10_000);
+          await expect(Promise.race([
+            settled,
+            Promise.resolve().then(() => "pending" as const),
+          ])).resolves.toBe("settled");
+          expect(logger.warn).toHaveBeenCalledWith(
+            "agent_chat.auto_resume_arm_wait_timeout",
+            expect.objectContaining({ sessionId: session.id, waitMs: 5_000 }),
+          );
+          // The deadline timer is cleared rather than left to fire into a
+          // disposed service.
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("a limit on a chat whose scheduled work is already paused arms nothing", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        installClaudeLimitStream("sdk-session-prepaused", resetsAt, false);
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        // Paused BEFORE the limit: the scheduler accepts the row and parks it,
+        // so the arm has to notice that what it just wrote will never fire.
+        await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+            .toMatchObject({ state: "no_reset" });
+        });
+        const summary = await service.getSessionSummary(session.id);
+        // No countdown, no promise in the transcript, and no attempt spent
+        // against the two-arm cap.
+        expect(summary?.usageLimitResume).toMatchObject({
+          state: "no_reset",
+          fireAt: null,
+          scheduleId: null,
+          attempts: 0,
+          provider: "claude",
+        });
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        expect(events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof (event.event as any).message === "string"
+          && /^Resumes at /.test((event.event as any).message))).toEqual([]);
+      });
+
+      it("a paused row reports no_reset for a chat that is not resident", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        // Stop the first service writing before seeding, without ending the
+        // session: the scheduler cancels rows belonging to a session that is
+        // no longer active, and this chat is meant to be merely non-resident.
+        service.forceDisposeAll();
+        const fireAt = Date.now() + 30 * 60_000;
+        // A row parked by a project-wide pause (or parked before the last
+        // restart) plus the armed state stored before it: the transition-time
+        // projection never ran for this chat, so the read has to do it.
+        writePersistedChatState(session.id, {
+          ...readPersistedChatState(session.id),
+          usageLimitResume: {
+            state: "armed",
+            provider: "claude",
+            fireAt: new Date(fireAt).toISOString(),
+            resetAt: new Date(fireAt - 90_000).toISOString(),
+            scheduleId: `auto-resume:${session.id}`,
+            attempts: 1,
+            providerDetail: "100% utilized",
+            turnId: "turn-limit",
+            updatedAt: new Date(Date.now() - 60_000).toISOString(),
+          },
+        });
+        scheduledWork.db.setJson(SCHEDULED_WORK_STATE_KEY, {
+          version: 1,
+          schedules: [{
+            id: `auto-resume:${session.id}`,
+            sessionId: session.id,
+            kind: "wakeup",
+            prompt: "Continue the interrupted task from where it stopped.",
+            reason: "Auto-resume after usage limit reset",
+            fireAt,
+            createdAt: Date.now() - 60_000,
+            status: "paused",
+            pausedFlag: true,
+            lateFlag: false,
+            durable: true,
+            source: "auto_resume_limit",
+          }],
+          pausedSessionIds: [],
+        });
+
+        const { service: restarted } = createService({ db: scheduledWork.db });
+        const summary = await restarted.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({
+          state: "no_reset",
+          fireAt: null,
+          scheduleId: null,
+          providerDetail: "100% utilized",
+          turnId: "turn-limit",
+        });
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+        restarted.forceDisposeAll();
+      });
+
+      it("resumeUsageLimitNow refuses when no usage limit is live", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        // Resume now spends a real turn. A stale button, a replayed action, or a
+        // chat that already recovered must not be able to spend one.
+        const refused = await service.resumeUsageLimitNow({ sessionId: session.id });
+        expect(refused).toEqual({
+          ok: false,
+          reason: "no_live_usage_limit",
+          message: "No usage limit is live for this chat.",
+        });
+        expect(events.some((event) =>
+          event.event.type === "user_message"
+          && (event.event as any).metadata?.usageLimitResume === "manual")).toBe(false);
+        expect(scheduledWork.readState()?.schedules ?? []).toEqual([]);
+      });
+
+      it("resumeUsageLimitNow refuses while the armed row is already delivering", async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        // Dispose first: a live service keeps writing its own persisted state,
+        // and the seeded row below has to be what the next hydration reads.
+        await service.dispose({ sessionId: session.id });
+        // A row whose fire time has passed resolves to `resuming`: the scheduler
+        // is delivering it at the next turn boundary, so a manual send here
+        // would race it into a double prompt.
+        writePersistedChatState(session.id, {
+          ...readPersistedChatState(session.id),
+          usageLimitResume: {
+            state: "armed",
+            provider: "claude",
+            fireAt: new Date(Date.now() - 60_000).toISOString(),
+            resetAt: new Date(Date.now() - 150_000).toISOString(),
+            scheduleId: `auto-resume:${session.id}`,
+            attempts: 1,
+            providerDetail: null,
+            turnId: "turn-limit",
+            updatedAt: new Date(Date.now() - 150_000).toISOString(),
+          },
+        });
+
+        const { service: restarted } = createService();
+        const refused = await restarted.resumeUsageLimitNow({ sessionId: session.id });
+        expect(refused).toEqual({
+          ok: false,
+          reason: "resume_in_flight",
+          message: "This chat is already resuming. Wait for the current turn to start.",
+        });
+      });
+
+      it("re-enabling auto-continue re-arms", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = claudeQuotaRejectionStream("sdk-session-rearm", resetsAt);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-rearm",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-rearm",
+        } as any);
+
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        await service.updateSession({
+          sessionId: session.id,
+          autoContinueAtUsageLimit: false,
+        });
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+        // Don't continue does not end the limit — it ends ADE's answer to it.
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+          .toMatchObject({ state: "opted_out", fireAt: null });
+
+        await service.updateSession({
+          sessionId: session.id,
+          autoContinueAtUsageLimit: true,
+        });
+        // Arming is asynchronous (it waits on the scheduler), so the state — not
+        // the row — is what proves the re-arm landed: the row appears one step
+        // earlier, at the upsert.
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume)
+            .toMatchObject({
+              state: "armed",
+              scheduleId: `auto-resume:${session.id}`,
+              attempts: 1,
+            });
+        });
+        expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        expect((await service.getSessionSummary(session.id))?.autoContinueAtUsageLimit).toBe(true);
+      });
+
+      it("an ordinary send on a never-limited chat broadcasts no usage-limit meta event", async () => {
+        // Every user message cancels any pending auto-resume, and the cancel
+        // reports "no limit governs this chat" whether or not one ever did. The
+        // first compare was a `JSON.stringify` one, so `undefined` (never
+        // limited) and `null` (cleared) read as a change: every send on every
+        // chat pushed a transient `session_meta_updated` to every viewer and
+        // rewrote chat state to disk for a state that had not moved.
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "done" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-quiet",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-quiet",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "first",
+          timeoutMs: 15_000,
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "second",
+          timeoutMs: 15_000,
+        });
+
+        // Precondition: both turns really ran, so the cancel path really fired.
+        expect(events.filter((event) =>
+          event.event.type === "done" && event.event.status === "completed").length)
+          .toBeGreaterThanOrEqual(2);
+        const usageLimitMeta = events.filter((event) =>
+          event.event.type === "session_meta_updated"
+          && Object.prototype.hasOwnProperty.call(event.event, "usageLimitResume"));
+        expect(usageLimitMeta).toEqual([]);
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+      });
+
+      it("assistant prose reaching the idle reader does not trip the quota path", async () => {
+        // The other half of the 2026-09-07 bug: the same text scan ran in the
+        // idle reader, where a quoted limit both minted the card and settled the
+        // open idle turn as interrupted. Structured limits still settle it (see
+        // the idle-reader quota-rejection test above); prose must not.
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let warmupComplete = false;
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-idle-prose", slash_commands: [] };
+            warmupComplete = true;
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          // Same frame shape as the idle-reader quota test: the kick-off turn
+          // ends at its result, an unrecognized frame stops the foreground
+          // pump, and everything after it is read by the idle reader.
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          yield { type: "mystery_unrecognized_frame" };
+          yield {
+            type: "assistant",
+            session_id: "sdk-idle-prose",
+            message: {
+              id: "msg-idle-prose",
+              content: [{
+                type: "text",
+                text: "The log says: You've hit your session limit · resets 7:30pm (America/New_York)",
+              }],
+            },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-idle-prose",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "kick off background work",
+          timeoutMs: 15_000,
+        });
+
+        // Precondition: the quoted sentence really did reach the idle reader.
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "text"
+            && String((event.event as any).text ?? "").includes("hit your session limit"))).toBe(true);
+        }, 3000);
+
+        expect(events.filter((event) =>
+          event.event.type === "ade_card"
+          && (event.event as any).variant === "claude_session_quota")).toEqual([]);
+        expect(events.filter((event) =>
+          event.event.type === "done" && event.event.status === "interrupted")).toEqual([]);
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume ?? null).toBeNull();
+        expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
+      });
     });
 
     it("Don't continue interrupts a busy Claude query without closing the session", async () => {
@@ -20600,6 +22007,127 @@ describe("createAgentChatService", () => {
         expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
       });
 
+      it("resumeUsageLimitNow restores everything when the send fails after the commit point", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-late-fail",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+        const armed = (await service.getSessionSummary(session.id))?.usageLimitResume;
+        expect(armed).toMatchObject({ state: "armed" });
+
+        // The turn fails INSIDE the dispatch commit point — past the place the
+        // ordinary user-message sweep runs, before the provider acknowledges
+        // anything. That sweep must skip this send: it is the resume's own
+        // prompt, whose cancellation this path already issued and awaited, and
+        // a second cancel there would move the epoch the undo below depends on.
+        mockState.codexResponseOverrides.set("turn/start", () => ({
+          error: { code: -32000, message: "codex app-server is gone" },
+        }));
+        await expect(service.resumeUsageLimitNow({ sessionId: session.id }))
+          .rejects.toThrow();
+        mockState.codexResponseOverrides.delete("turn/start");
+
+        // Everything the manual resume borrowed comes back.
+        const restored = await service.getSessionSummary(session.id);
+        expect(restored?.usageLimitResume).toMatchObject({
+          state: "armed",
+          fireAt: armed?.fireAt,
+          scheduleId: `auto-resume:${session.id}`,
+          attempts: 1,
+        });
+        expect(restored?.usageLimitParkedUntil).toBe(armed?.fireAt);
+        const rows = await service.listScheduledWork({ sessionId: session.id });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: `auto-resume:${session.id}`,
+          status: "scheduled",
+          nextRunAt: armed?.fireAt,
+        });
+        // Including the streak: the arm already spent still counts against the
+        // two-arm cap, so the resume the scheduler fires next is the last one.
+        expect(events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.message === "string"
+          && /^Resumes at /.test(event.event.message))).toHaveLength(1);
+      });
+
+      it("Run next on the manual-resume turn cancels the pending row", async () => {
+        installRealTranscriptParser();
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        // A staged copy of the continue prompt Resume now sends, left
+        // unprocessed when its turn was aborted. Its metadata is the host's own
+        // dispatch marker, and a replay of it is NOT that host path.
+        await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+        const staged = await service.steer({
+          sessionId: session.id,
+          text: "The provider usage limit has reset. Continue the interrupted task.",
+          metadata: { usageLimitResume: "manual" },
+        });
+        mockState.emitCodexPayload({ method: "turn/aborted", params: { turnId: "turn-1" } });
+        await vi.waitFor(() => {
+          expect(events.some((entry) =>
+            entry.event.type === "user_message"
+            && entry.event.steerId === staged.steerId
+            && entry.event.deliveryState === "unprocessed")).toBe(true);
+        });
+
+        // Arm a resume, so the replay below has a row to cancel.
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-run-next",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        await service.resolveUnprocessedMessage({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          action: "run_next",
+        });
+
+        // The replay is ordinary user activity: it must sweep the resume away
+        // rather than inherit the exemption and leave a row that fires an
+        // unattended prompt later.
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+        const replayed = events.findLast((entry) =>
+          entry.event.type === "user_message"
+          && (entry.event as any).metadata?.replayedFromUnprocessedSteer);
+        expect((replayed?.event as any)?.metadata?.usageLimitResume).toBeUndefined();
+      });
+
       it("cancels a durable auto-resume during scheduler boot", async () => {
         const scheduledWork = createBootGatedScheduledWorkDb();
         const { service } = createService({ db: scheduledWork.db });
@@ -20680,7 +22208,7 @@ describe("createAgentChatService", () => {
           (event): event is AgentChatEventEnvelope =>
             event.event.type === "system_notice"
             && typeof event.event.message === "string"
-            && event.event.message.startsWith("Auto-resume paused"),
+            && event.event.message === "Paused after 2 tries",
         );
         expect(paused.event).toMatchObject({ noticeKind: "rate_limit", severity: "info" });
         // The notice explains the failure, so it has to be committed after it.
@@ -20699,7 +22227,7 @@ describe("createAgentChatService", () => {
         expect(events.filter((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && event.event.message.startsWith("Auto-resume scheduled for")))
+          && /^Resumes at /.test(event.event.message)))
           .toHaveLength(2);
         const [afterCap] = await service.listScheduledWork({ sessionId: session.id });
         expect(afterCap?.status).toBe("fired");
@@ -20775,7 +22303,7 @@ describe("createAgentChatService", () => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && event.event.message.startsWith("Auto-resume paused"))).toBe(false);
+          && event.event.message === "Paused after 2 tries")).toBe(false);
       });
 
       it("explicit cancel wins over an in-flight arm", async () => {
@@ -20922,7 +22450,7 @@ describe("createAgentChatService", () => {
           (event): event is AgentChatEventEnvelope =>
             event.event.type === "system_notice"
             && typeof event.event.message === "string"
-            && event.event.message.startsWith("Auto-resume scheduled for"),
+            && /^Resumes at /.test(event.event.message),
         );
         expect(notice.event).toMatchObject({ noticeKind: "rate_limit", severity: "info" });
       });
@@ -20950,7 +22478,7 @@ describe("createAgentChatService", () => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && event.event.message.startsWith("Auto-resume scheduled for"))).toBe(false);
+          && /^Resumes at /.test(event.event.message))).toBe(false);
       });
 
       it("replaces the pending auto-resume instead of stacking on a repeat usage limit", async () => {

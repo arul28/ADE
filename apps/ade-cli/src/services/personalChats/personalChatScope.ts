@@ -18,11 +18,37 @@ import {
   trimTrailingSeparators,
 } from "../../../../desktop/src/shared/pathContainment";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
+import { stripHostAuthoredMessageProvenance } from "../../../../desktop/src/main/services/chat/spawnMissionOwnership";
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+
+/**
+ * An embedder's message args, with every marker only ADE may author removed.
+ *
+ * `personalChats.call` is an untrusted edge — it does not pass through the ADE
+ * RPC's `withTrustedAgentProvenance` — and both dispatch paths it exposes reach
+ * a dispatch commit point. A caller-asserted `usageLimitResume: "manual"` or
+ * `scheduledWake` would exempt its message from the auto-resume cancel sweep
+ * and leave a chat's resume armed through real activity, to fire an unattended
+ * prompt later; `spawnDispatch` / `orchestrationOrigin` would let a caller
+ * manufacture mission ownership. The rest of the caller's metadata is passed
+ * through untouched.
+ */
+function withUntrustedChatMetadata(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata = args.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return args;
+  const sanitized: Record<string, unknown> = { ...(metadata as Record<string, unknown>) };
+  stripHostAuthoredMessageProvenance(sanitized);
+  const stripped = stripHostOnlyChatMetadata(sanitized);
+  const { metadata: _untrusted, ...rest } = args;
+  return stripped ? { ...rest, metadata: stripped } : rest;
+}
 
 type PersonalChatScopeOptions = {
   createRuntime?: typeof import("../../bootstrap").createAdeRuntime;
@@ -434,11 +460,11 @@ export class PersonalChatScope {
       }
       case "send":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.sendMessage(args as never);
+        result = await service.sendMessage(withUntrustedChatMetadata(args) as never);
         break;
       case "steer":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.steer(args as never);
+        result = await service.steer(withUntrustedChatMetadata(args) as never);
         break;
       case "cancelSteer":
         await this.requirePersonalSession(service, readSessionId(args));
@@ -521,6 +547,12 @@ export class PersonalChatScope {
           sessionId,
           paused: requiredBoolean(args.paused, "paused"),
         });
+        break;
+      }
+      case "resumeUsageLimitNow": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.resumeUsageLimitNow({ sessionId });
         break;
       }
       case "updateSession": {

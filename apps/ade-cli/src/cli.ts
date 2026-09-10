@@ -75,8 +75,13 @@ import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import {
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
+  type AdeChatSessionSummaryActionResult,
   type AgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
+import {
+  parseUsageLimitResume,
+  usageLimitResumeAttemptsLabel,
+} from "../../desktop/src/shared/usageLimitResumePresentation";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import {
   isAgentChatStopMode,
@@ -84,6 +89,7 @@ import {
 } from "../../desktop/src/shared/chatStopModes";
 import {
   chatTurnStatusExitCode,
+  chatTurnStatusRow,
   formatChatTurnStatus,
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
@@ -339,6 +345,7 @@ type FormatterId =
   | "chat-list"
   | "chat-read"
   | "chat-status"
+  | "chat-resume-now"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -2119,6 +2126,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat show <session>                       Session summary (title, provider, model)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
                                                     Exit 0 running, 1 idle, 2 blocked. Use --text.
+                                                    Adds a 'resume' line while a usage limit is live.
+    $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
+                                                    Exit 1 when the host reports no live usage limit.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -7699,15 +7709,43 @@ function buildChatPlan(args: string[]): CliPlan {
         actionArgsListStep("result", "chat", "getTurnStatus", [
           requireValue(sessionId, "sessionId"),
         ]),
+        {
+          ...actionArgsListStep("summary", "chat", "getSessionSummary", [
+            requireValue(sessionId, "sessionId"),
+          ]),
+          // Status exit codes come from getTurnStatus. A summary refresh is
+          // enrichment, so an older brain can still report the turn phase.
+          optional: true,
+        },
       ],
       exitCodeFromResult: (result) => {
-        const record = firstRecord(result, ["result", "status"])
-          ?? (isRecord(result) ? result : {});
+        // `summarizeExecution` keeps the turn status flat, so the phase is read
+        // straight off the top level.
+        const record = isRecord(result) ? result : {};
         const phase = asString(record.phase) as ChatTurnStatusPhase | undefined;
         if (phase === "running" || phase === "idle" || phase === "blocked") {
           return chatTurnStatusExitCode(phase);
         }
         return 1;
+      },
+    };
+  // Send the usage-limit continue prompt now instead of waiting for the
+  // published reset. `ok: false` means the host found no live limit to resume,
+  // which is a failed request from the caller's point of view — hence exit 1.
+  if (sub === "resume-now" || sub === "resume")
+    return {
+      kind: "execute",
+      label: "chat resume-now",
+      formatter: "chat-resume-now",
+      steps: [
+        actionStep("result", "chat", "resumeUsageLimitNow", {
+          sessionId: requireValue(sessionId, "sessionId"),
+        }),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result"])
+          ?? (isRecord(result) ? result : {});
+        return record.ok === true ? 0 : 1;
       },
     };
   if (sub === "read" || sub === "messages" || sub === "transcript") {
@@ -19653,23 +19691,54 @@ function isSyncWebPairingCliOutput(value: unknown): value is SyncWebPairingCliOu
   );
 }
 
+/**
+ * ONE relative-time scale, in both wordings: the long form (`3 minutes ago`,
+ * `in 2 days`) and the abbreviation used by lines that already carry an ISO
+ * instant (`in 3 min`). Two parallel tables drifted apart before — and the
+ * abbreviated one was rendered with pluralisation switched off wholesale, which
+ * is why a two-day wait printed `in 2 day`. Only the long wording pluralises;
+ * `min`/`hr`/`sec` are abbreviations and never take an `s`.
+ */
+const RELATIVE_TIME_UNITS: ReadonlyArray<readonly [number, string, string]> = [
+  [86_400, "day", "day"],
+  [3_600, "hour", "hr"],
+  [60, "minute", "min"],
+  [1, "second", "sec"],
+];
+
+/**
+ * Single relative-duration renderer. `deltaMs` is target-minus-now, so a
+ * negative delta is in the past. Callers pass their own clock: nothing here
+ * reads `Date.now()`, which is what makes the resume line testable.
+ */
+function formatRelativeDelta(args: {
+  deltaMs: number;
+  compact: boolean;
+  nowLabel: string;
+}): string {
+  const { deltaMs, compact, nowLabel } = args;
+  const seconds = Math.max(0, Math.round(Math.abs(deltaMs) / 1_000));
+  if (seconds < 5) return nowLabel;
+  const unit = RELATIVE_TIME_UNITS.find(([size]) => seconds >= size)
+    ?? RELATIVE_TIME_UNITS[RELATIVE_TIME_UNITS.length - 1];
+  const [unitSeconds, longLabel, shortLabel] = unit;
+  const amount = Math.max(1, Math.floor(seconds / unitSeconds));
+  const label = compact ? shortLabel : longLabel;
+  // Only the long wording takes an `s`: `min`/`hr`/`sec` are abbreviations, and
+  // `day` — which has no shorter form — is the long word in both columns, so it
+  // pluralises even in the compact line (`in 2 days`, not the old `in 2 day`).
+  const phrase = `${amount} ${label}${label === longLabel && amount !== 1 ? "s" : ""}`;
+  return deltaMs < 0 ? `${phrase} ago` : `in ${phrase}`;
+}
+
 function relativeTime(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
-  const deltaMs = Date.now() - timestamp;
-  const future = deltaMs < 0;
-  const seconds = Math.max(0, Math.round(Math.abs(deltaMs) / 1_000));
-  if (seconds < 5) return "just now";
-  const units: Array<[number, string]> = [
-    [86_400, "day"],
-    [3_600, "hour"],
-    [60, "minute"],
-    [1, "second"],
-  ];
-  const [unitSeconds, label] = units.find(([size]) => seconds >= size) ?? units.at(-1)!;
-  const amount = Math.max(1, Math.floor(seconds / unitSeconds));
-  const phrase = `${amount} ${label}${amount === 1 ? "" : "s"}`;
-  return future ? `in ${phrase}` : `${phrase} ago`;
+  return formatRelativeDelta({
+    deltaMs: timestamp - Date.now(),
+    compact: false,
+    nowLabel: "just now",
+  });
 }
 
 function formatSyncStatus(value: unknown): string {
@@ -20675,13 +20744,133 @@ function formatExternalSessions(value: unknown): string {
   );
 }
 
-function formatChatStatus(value: unknown): string {
-  const record = firstRecord(value, ["result", "status"])
-    ?? (isRecord(value) ? value : null);
+/**
+ * Compact relative delta for the `chat status` resume line: `in 3 min`,
+ * `2 hr ago`. Takes `nowMs` so the line is testable without a wall clock.
+ */
+export function formatChatResumeRelativeDelta(
+  value: string,
+  nowMs = Date.now(),
+): string | null {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return formatRelativeDelta({
+    deltaMs: timestamp - nowMs,
+    compact: true,
+    nowLabel: "now",
+  });
+}
+
+/**
+ * The resume instant rendered in the BRAIN's zone, which is where the reset was
+ * published. Mirrors the `scheduled-work-create` formatter: an ISO instant plus
+ * a zone-labelled local reading, so a CLI run from another zone can tell what
+ * the host is waiting for.
+ */
+function formatBrainLocalResumeTime(
+  iso: string,
+  timeZone: string,
+): string | null {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return null;
+  try {
+    return `${new Date(timestamp).toLocaleString(undefined, { timeZone })} (${timeZone})`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One `resume` line per contract state, in `chat status`'s key/value column.
+ * The states without an instant (`opted_out`, `no_reset`) still print: a chat
+ * that will NOT resume itself is the case an agent most needs to see.
+ */
+export function formatChatUsageLimitResume(
+  value: unknown,
+  nowMs: number,
+  timeZone: string | null = null,
+): string | null {
+  // The action result is untyped JSON off the wire, so it goes through the one
+  // shared parser every client uses: an unrecognised payload reads as "no
+  // resume state" rather than printing a row nobody can act on.
+  const resume = parseUsageLimitResume(value);
+  if (!resume) return null;
+  // Everything below reads the parsed row as-is: the parser already clamped
+  // `attempts` to a non-negative integer and rejected any `fireAt`/`resetAt`
+  // that is not a parseable ISO instant, so re-validating here would only be a
+  // second, quietly diverging opinion about the same bytes.
+  const attemptsText = ` · attempts ${resume.attempts}/2`;
+  const target = resume.fireAt ?? resume.resetAt;
+  const relative = target ? formatChatResumeRelativeDelta(target, nowMs) : null;
+  const targetText = target ? `${target}${relative ? ` (${relative})` : ""}` : null;
+  const brainLocal = target && timeZone
+    ? formatBrainLocalResumeTime(target, timeZone)
+    : null;
+  const brainLocalText = brainLocal ? ` · brain local ${brainLocal}` : "";
+
+  const row = (text: string) => chatTurnStatusRow("resume", text);
+  switch (resume.state) {
+    case "armed":
+      return row(targetText
+        ? `resumes ${targetText} · usage limit${attemptsText}${brainLocalText}`
+        // `armed` without an instant should have been published as `no_reset`.
+        // Say what is true rather than printing an empty time.
+        : `resumes when the limit lifts · usage limit${attemptsText}`);
+    case "resuming":
+      return row(`resuming now · usage limit${attemptsText}`);
+    case "paused": {
+      const retryAt = targetText ? `to try at ${targetText}` : "to try at the next reset";
+      return row(`paused after ${usageLimitResumeAttemptsLabel(resume.attempts)}`
+        + ` · turn auto-resume back on ${retryAt}${brainLocalText}`);
+    }
+    case "opted_out":
+      return row("won't auto-resume (opted out)");
+    case "no_reset":
+      return row("usage limit · no reset time");
+    default: {
+      const _exhaustive: never = resume.state;
+      return _exhaustive;
+    }
+  }
+}
+
+export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
+  // `chat status` answers with the turn-status record FLAT at the top level —
+  // `--json` consumers read `.phase` there — and the optional summary step's
+  // enrichment (`usageLimitResume`, `timeZone`) rides as sibling keys. A brain
+  // too old to answer `chat.getSessionSummary` simply has neither.
+  const record = isRecord(value) ? value : null;
   if (!record || typeof record.sessionId !== "string" || typeof record.phase !== "string") {
     return "ADE chat status\n(no session)";
   }
-  return formatChatTurnStatus(record as ChatTurnStatusSnapshot);
+  const resumeRow = formatChatUsageLimitResume(
+    record.usageLimitResume,
+    nowMs,
+    asString(record.timeZone),
+  );
+  // The resume row belongs in the key/value header block: `formatChatTurnStatus`
+  // separates that block from the subagent tree with a blank line, and a row
+  // hanging off the end of the tree reads as a subagent.
+  return formatChatTurnStatus(record as ChatTurnStatusSnapshot, {
+    ...(resumeRow ? { extraRows: [resumeRow] } : {}),
+  });
+}
+
+export function formatChatResumeNow(value: unknown): string {
+  const record = firstRecord(value, ["result"])
+    ?? (isRecord(value) ? value : null);
+  if (record?.ok === true) {
+    return `Resume sent · turn ${asString(record.turnId) ?? "pending"}`;
+  }
+  const error = isRecord(record?.error) ? asString(record.error.message) : null;
+  // `message` first: the host writes it to be shown as-is, while `reason` is the
+  // machine-readable refusal code (`no_live_usage_limit`, `resume_in_flight`).
+  // Reading `reason` first printed that code at the user.
+  const reason = asString(record?.message)
+    ?? asString(record?.reason)
+    ?? error
+    ?? "No live usage limit to resume.";
+  return reason.replace(/\s+/g, " ").trim();
 }
 
 function formatChatList(value: unknown): string {
@@ -22116,6 +22305,8 @@ function formatTextOutput(
       return formatChatList(value);
     case "chat-status":
       return formatChatStatus(value);
+    case "chat-resume-now":
+      return formatChatResumeNow(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -22266,6 +22457,7 @@ function inferFormatter(
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
   if (label === "chat status") return "chat-status";
+  if (label === "chat resume-now") return "chat-resume-now";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "ios simulator status") return "ios-sim-status";
@@ -22447,6 +22639,26 @@ function summarizeExecution(args: {
       session: unwrapActionEnvelope(values.session),
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
+    };
+  }
+
+  if (plan.label === "chat status") {
+    // The turn-status record stays FLAT at the top level: `--json` consumers
+    // (and this plan's own exit code) read `.phase` there, and nesting it under
+    // `result` silently broke every one of them. The optional summary step is
+    // enrichment, so it contributes two sibling keys and nothing else.
+    const turnStatus = unwrapActionEnvelope(values.result);
+    if (!isRecord(turnStatus)) return { result: turnStatus };
+    const summary = values.summary !== undefined
+      ? unwrapActionEnvelope(values.summary) as Partial<AdeChatSessionSummaryActionResult> | null
+      : null;
+    const enrichment = isRecord(summary) ? summary : null;
+    return {
+      ...turnStatus,
+      ...(enrichment?.usageLimitResume !== undefined
+        ? { usageLimitResume: enrichment.usageLimitResume }
+        : {}),
+      ...(enrichment?.timeZone !== undefined ? { timeZone: enrichment.timeZone } : {}),
     };
   }
 

@@ -207,7 +207,7 @@ describe("isAllowedAdeAction", () => {
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
       "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
-      "listSubagents", "markCrossMachineHandoff", "modelCatalog",
+      "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
       "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
@@ -784,6 +784,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }));
     const sendMessage = vi.fn(async () => undefined);
     const messageSession = vi.fn(async (args: unknown) => ({ ok: true, args }));
+    const steer = vi.fn(async (args: unknown) => ({ ok: true, args }));
     const runtime = {
       agentChatService: {
         createSession,
@@ -795,6 +796,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
         getChatEventHistoryPage,
         sendMessage,
         messageSession,
+        steer,
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
 
@@ -808,13 +810,20 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       getChatEventHistoryPage?: (args?: unknown, options?: unknown) => Promise<unknown>;
       sendMessage?: (args?: unknown) => Promise<unknown>;
       messageSession?: (args?: unknown) => Promise<unknown>;
+      steer?: (args?: unknown) => Promise<unknown>;
     };
 
     await expect(chat.getAvailableModels?.({})).resolves.toEqual([{ id: "any" }]);
     expect(getAvailableModels).toHaveBeenCalledWith({});
 
-    await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " })).resolves.toEqual({ sessionId: "chat-1" });
-    await expect(chat.getSessionSummary?.("chat-2")).resolves.toEqual({ sessionId: "chat-2" });
+    // The summary action also reports the brain's IANA zone, so a CLI caller can
+    // render `nextWakeAt` / `usageLimitResume.fireAt` in the zone the brain
+    // actually schedules in. `chat.createScheduledWork` reports the same value.
+    const brainTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " }))
+      .resolves.toEqual({ sessionId: "chat-1", timeZone: brainTimeZone });
+    await expect(chat.getSessionSummary?.("chat-2"))
+      .resolves.toEqual({ sessionId: "chat-2", timeZone: brainTimeZone });
     expect(getSessionSummary).toHaveBeenNthCalledWith(1, "chat-1");
     expect(getSessionSummary).toHaveBeenNthCalledWith(2, "chat-2");
 
@@ -911,6 +920,64 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     await expect(chat.sendMessage?.({ sessionId: "chat-1", text: "   " })).rejects.toThrow(/text/);
     expect(sendMessage).toHaveBeenCalledTimes(1);
 
+    // Host-only markers never survive a caller. `usageLimitResume: "manual"`
+    // and `scheduledWake` each exempt a message from the auto-resume cancel
+    // sweep, so honouring them here would let an action leave a chat's resume
+    // armed through real activity — to fire an unattended prompt later. The
+    // rest of the caller's metadata is passed through untouched.
+    await expect(chat.sendMessage?.({
+      sessionId: "chat-1",
+      text: "next",
+      metadata: {
+        usageLimitResume: "manual",
+        scheduledWake: { scheduleId: "auto-resume:chat-1", kind: "wakeup" },
+        agentRelay: { from: "peer" },
+      },
+    })).resolves.toMatchObject({ ok: true });
+    expect(sendMessage).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      text: "next",
+      metadata: { agentRelay: { from: "peer" } },
+    });
+
+    // Metadata that was ONLY host-only markers is dropped entirely rather than
+    // sent as an empty object.
+    await expect(chat.sendMessage?.({
+      sessionId: "chat-1",
+      text: "next",
+      metadata: { usageLimitResume: "manual" },
+    })).resolves.toMatchObject({ ok: true });
+    expect(sendMessage).toHaveBeenLastCalledWith({ sessionId: "chat-1", text: "next" });
+
+    // And on steer: the accepted branch of the steer queue is a dispatch
+    // commit point too, so the same markers have to be stripped there.
+    await expect(chat.steer?.({
+      sessionId: " chat-1 ",
+      text: "redirect",
+      metadata: { usageLimitResume: "manual", agentRelay: { from: "peer" } },
+    })).resolves.toMatchObject({ ok: true });
+    // Exact, not partial: `toMatchObject` on the nested metadata would pass
+    // with the stripped key still present.
+    expect(steer).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "redirect",
+      metadata: { agentRelay: { from: "peer" } },
+    });
+    await expect(chat.steer?.({ sessionId: "chat-1", text: "  " })).rejects.toThrow(/text/);
+    expect(steer).toHaveBeenCalledTimes(1);
+
+    // Same stripper on the peer-delivery action.
+    await expect(chat.messageSession?.({
+      sessionId: "chat-1",
+      text: "status",
+      metadata: { usageLimitResume: "manual", agentRelay: { from: "peer" } },
+    })).resolves.toMatchObject({ ok: true });
+    expect(messageSession).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "status",
+      metadata: { agentRelay: { from: "peer" } },
+    });
+
     await expect(chat.messageSession?.({
       sessionId: " chat-1 ",
       text: "status",
@@ -929,7 +996,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       kind: "queue",
     });
     await expect(chat.messageSession?.({ sessionId: "chat-1", text: "" })).rejects.toThrow(/text/);
-    expect(messageSession).toHaveBeenCalledTimes(1);
+    // Two accepted calls: the metadata-stripping one above and the plain one.
+    expect(messageSession).toHaveBeenCalledTimes(2);
   });
 
   it("routes running PR AI action input through human steer semantics and keeps idle input on send", async () => {

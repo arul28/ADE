@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentChatUsageLimitResume } from "../../../shared/types/chat";
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import type { ChatScheduledWorkRecord } from "./chatScheduledWorkScheduler";
@@ -31,15 +32,34 @@ function createHarness() {
       return row ?? null;
     },
   };
+  const resumeStates: Array<AgentChatUsageLimitResume | null> = [];
+  // The service stores whatever it is told and hands it back on read; the
+  // coordinator projects row transitions onto that stored state, so the harness
+  // has to model both halves rather than only the writes.
+  let storedResume: AgentChatUsageLimitResume | null = null;
+  let releaseScheduler: (() => void) | null = null;
   const coordinator = createChatAutoResumeCoordinator({
     getScheduler: () => scheduler as never,
-    whenSchedulerReady: () => Promise.resolve(),
+    whenSchedulerReady: () => (releaseScheduler
+      ? new Promise<void>((resolve) => {
+          const previous = releaseScheduler;
+          releaseScheduler = () => {
+            previous?.();
+            resolve();
+          };
+        })
+      : Promise.resolve()),
     isSessionSchedulable: () => true,
     emitNotice: (sessionId, notice) => {
       notices.push({ sessionId, message: notice.message });
     },
     captureAnalytics: (properties) => {
       captures.push(properties);
+    },
+    readResumeState: () => storedResume,
+    onResumeStateChanged: (_sessionId, resume) => {
+      storedResume = resume;
+      resumeStates.push(resume);
     },
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } as never,
   });
@@ -61,7 +81,51 @@ function createHarness() {
   const failAtUsageLimit = (sessionId: string, minutes: number): Promise<void> =>
     failAtResetInstant(sessionId, Date.now() + minutes * 60_000);
 
-  return { coordinator, rows, notices, captures, failAtUsageLimit, failAtResetInstant };
+  /** Holds every `whenSchedulerReady` open until `release()` is called. */
+  const gateScheduler = (): (() => void) => {
+    releaseScheduler = () => {};
+    return () => {
+      const release = releaseScheduler;
+      releaseScheduler = null;
+      release?.();
+    };
+  };
+
+  return {
+    coordinator,
+    scheduler,
+    rows,
+    notices,
+    captures,
+    resumeStates,
+    gateScheduler,
+    failAtUsageLimit,
+    failAtResetInstant,
+    setStoredResume: (resume: AgentChatUsageLimitResume | null) => {
+      storedResume = resume;
+    },
+    readStoredResume: () => storedResume,
+  };
+}
+
+/** A stored `armed` state, as an arm would have written it. */
+function armedResume(
+  sessionId: string,
+  fireAtMs: number,
+  overrides: Partial<AgentChatUsageLimitResume> = {},
+): AgentChatUsageLimitResume {
+  return {
+    state: "armed",
+    provider: "codex",
+    fireAt: new Date(fireAtMs).toISOString(),
+    resetAt: new Date(fireAtMs - 90_000).toISOString(),
+    scheduleId: `auto-resume:${sessionId}`,
+    attempts: 1,
+    providerDetail: "100% utilized",
+    turnId: "turn-limit",
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
 }
 
 describe("createChatAutoResumeCoordinator", () => {
@@ -72,7 +136,7 @@ describe("createChatAutoResumeCoordinator", () => {
     await failAtUsageLimit("chat-1", 30);
     await failAtUsageLimit("chat-1", 90);
     await failAtUsageLimit("chat-1", 150);
-    expect(notices.filter((notice) => notice.message.startsWith("Auto-resume paused")))
+    expect(notices.filter((notice) => notice.message === "Paused after 2 tries"))
       .toHaveLength(1);
 
     // The chat is archived or deleted. Nothing about the old streak may survive
@@ -83,7 +147,7 @@ describe("createChatAutoResumeCoordinator", () => {
     notices.length = 0;
     await failAtUsageLimit("chat-1", 210);
     expect(notices.map((notice) => notice.message))
-      .toEqual([expect.stringContaining("Auto-resume scheduled for")]);
+      .toEqual([expect.stringMatching(/^Resumes at /)]);
   });
 });
 
@@ -175,5 +239,370 @@ describe("auto-resume analytics", () => {
       expect(serialized).not.toContain("usage limit");
       expect(serialized).not.toMatch(/\d{5,}/);
     }
+  });
+});
+
+/**
+ * The chat service reaps the Claude query the moment a limit lands. If that
+ * happens while the upsert is still in flight, the durable row never gets
+ * written and a real limit resumes nothing — the exact production failure.
+ * `whenArmed` is the seam that orders the two.
+ */
+describe("auto-resume arm ordering and state exposure", () => {
+  it("whenArmed does not resolve until the durable row is written", async () => {
+    const { coordinator, rows, gateScheduler } = createHarness();
+    const releaseScheduler = gateScheduler();
+
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "claude",
+      resetAtMs: Date.now() + 30 * 60_000,
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+
+    let armed = false;
+    const waiter = coordinator.whenArmed("chat-1").then(() => { armed = true; });
+    // Drain every microtask the arm could be parked on. It is still blocked on
+    // the scheduler, so nothing may be written and nothing may have resolved.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(armed).toBe(false);
+    expect(rows.size).toBe(0);
+
+    releaseScheduler();
+    await waiter;
+    expect(armed).toBe(true);
+    expect([...rows.values()].map((row) => row.id)).toEqual(["auto-resume:chat-1"]);
+  });
+
+  it("whenArmed resolves immediately for a chat with no arm in flight", async () => {
+    const { coordinator } = createHarness();
+    await expect(coordinator.whenArmed("chat-never-limited")).resolves.toBeUndefined();
+  });
+
+  it("reports armed, paused, and cancelled resume states with the streak", async () => {
+    const { coordinator, resumeStates, failAtUsageLimit } = createHarness();
+
+    await failAtUsageLimit("chat-1", 30);
+    expect(resumeStates.at(-1)).toMatchObject({
+      state: "armed",
+      provider: "codex",
+      scheduleId: "auto-resume:chat-1",
+      attempts: 1,
+    });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 1, paused: false });
+
+    await failAtUsageLimit("chat-1", 90);
+    await failAtUsageLimit("chat-1", 150);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "paused", attempts: 2 });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 2, paused: true });
+
+    coordinator.cancelForSession("chat-1", "user_message");
+    expect(resumeStates.at(-1)).toBeNull();
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 0, paused: false });
+  });
+
+  it("reports no_reset when the limit is live but the provider published no reset", async () => {
+    const { coordinator, resumeStates, rows } = createHarness();
+
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "claude",
+      resetAtMs: null,
+      providerDetail: "100% utilized",
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resumeStates.at(-1)).toMatchObject({
+      state: "no_reset",
+      fireAt: null,
+      providerDetail: "100% utilized",
+    });
+    expect(rows.size).toBe(0);
+  });
+
+  it("resetStreak lets a capped chat arm once more", async () => {
+    const { coordinator, resumeStates, failAtUsageLimit } = createHarness();
+
+    await failAtUsageLimit("chat-1", 30);
+    await failAtUsageLimit("chat-1", 90);
+    await failAtUsageLimit("chat-1", 150);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "paused" });
+
+    coordinator.resetStreak("chat-1");
+    await failAtUsageLimit("chat-1", 210);
+    expect(resumeStates.at(-1)).toMatchObject({ state: "armed", attempts: 1 });
+  });
+
+  it("rearm puts the row back under the epoch it was handed", async () => {
+    const { coordinator, rows, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    const armed = rows.get("auto-resume:chat-1");
+    expect(armed?.status).toBe("scheduled");
+
+    // What the manual resume does before it dispatches: cancel, then capture
+    // the epoch it is going to be judged against.
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("armed");
+    expect(rows.get("auto-resume:chat-1")).toMatchObject({
+      status: "scheduled",
+      fireAt,
+      source: "auto_resume_limit",
+      durable: true,
+    });
+  });
+
+  it("rearm reports superseded when something newer cancelled in between", async () => {
+    const { coordinator, rows, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // The user took the chat over while the send was in flight.
+    await coordinator.cancelForSession("chat-1", "user_message");
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("superseded");
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
+  });
+
+  it("rearm reports superseded when an explicit pause has no row transition", async () => {
+    const { coordinator, rows, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // Manual Resume now has already cancelled the row, so pausing the session
+    // emits no row transition. It is still a newer user decision and must
+    // invalidate the restore through the coordinator epoch.
+    coordinator.noteSessionPaused("chat-1");
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("superseded");
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
+  });
+
+  it("rearm reports paused when the scheduler parks the restored row", async () => {
+    const { coordinator, rows, scheduler, failAtUsageLimit } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    await failAtUsageLimit("chat-1", 30);
+    const armed = rows.get("auto-resume:chat-1");
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // A session or project pause is applied by scheduler.upsert itself. The
+    // row remains durable, but it cannot fire until the pause is lifted.
+    const upsert = scheduler.upsert;
+    scheduler.upsert = async (input) => {
+      const row = await upsert(input);
+      const paused = { ...row, status: "paused" as const, pausedFlag: true };
+      rows.set(paused.id, paused);
+      return paused;
+    };
+
+    await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+      .resolves.toBe("paused");
+    expect(rows.get("auto-resume:chat-1")).toMatchObject({
+      status: "paused",
+      pausedFlag: true,
+      fireAt,
+    });
+    expect(armed).toBeTruthy();
+  });
+
+  it("rearm reports failed when the row cannot be written", async () => {
+    const harness = createHarness();
+    const { coordinator, scheduler } = harness;
+    const fireAt = Date.now() + 30 * 60_000;
+    await harness.failAtUsageLimit("chat-1", 30);
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    const upsert = scheduler.upsert;
+    scheduler.upsert = async () => {
+      throw new Error("scheduler is unavailable");
+    };
+    try {
+      await expect(coordinator.rearm("chat-1", armedResume("chat-1", fireAt), epochAtDispatch))
+        .resolves.toBe("failed");
+    } finally {
+      scheduler.upsert = upsert;
+    }
+    // A state with no fire time was never a row to begin with.
+    await expect(coordinator.rearm(
+      "chat-1",
+      armedResume("chat-1", fireAt, { state: "no_reset", fireAt: null }),
+      epochAtDispatch,
+    )).resolves.toBe("failed");
+  });
+
+  it("restoreStreak only applies under the epoch it was captured at", async () => {
+    const { coordinator, failAtUsageLimit } = createHarness();
+    // Three failures with no intervening dispatch caps the chat.
+    await failAtUsageLimit("chat-1", 30);
+    await failAtUsageLimit("chat-1", 90);
+    await failAtUsageLimit("chat-1", 150);
+    const capped = coordinator.streakState("chat-1");
+    expect(capped).toEqual({ attempts: 2, paused: true });
+
+    await coordinator.cancelForSession("chat-1", "manual_resume");
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 0, paused: false });
+    const epochAtDispatch = coordinator.cancelEpochFor("chat-1");
+
+    // A stale epoch means someone newer already decided what this streak
+    // means — Turn on, a user message, an opt-out.
+    coordinator.restoreStreak("chat-1", { ...capped, epochAtDispatch: epochAtDispatch - 1 });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 0, paused: false });
+
+    coordinator.restoreStreak("chat-1", { ...capped, epochAtDispatch });
+    expect(coordinator.streakState("chat-1")).toEqual({ attempts: 2, paused: true });
+  });
+
+  it("noteRowStatusChanged projects the row's pause onto the stored state", async () => {
+    const { coordinator, resumeStates, setStoredResume, readStoredResume } = createHarness();
+    const fireAt = Date.now() + 30 * 60_000;
+    setStoredResume(armedResume("chat-1", fireAt));
+
+    coordinator.noteRowStatusChanged("chat-1", {
+      id: "auto-resume:chat-1",
+      status: "paused",
+      pausedFlag: true,
+      fireAt,
+    });
+    // No countdown for a row that will not fire, and everything else about the
+    // limit carried through untouched.
+    expect(readStoredResume()).toMatchObject({
+      state: "no_reset",
+      fireAt: null,
+      scheduleId: null,
+      providerDetail: "100% utilized",
+      turnId: "turn-limit",
+      attempts: 1,
+    });
+
+    coordinator.noteRowStatusChanged("chat-1", {
+      id: "auto-resume:chat-1",
+      status: "scheduled",
+      pausedFlag: false,
+      fireAt,
+    });
+    expect(readStoredResume()).toMatchObject({
+      state: "armed",
+      fireAt: new Date(fireAt).toISOString(),
+      scheduleId: "auto-resume:chat-1",
+    });
+
+    // Someone else's schedule. A cron or a wakeup the user asked for says
+    // nothing about the usage limit, so it must not rewrite this state.
+    const reportsBefore = resumeStates.length;
+    coordinator.noteRowStatusChanged("chat-1", {
+      id: "wakeup:chat-1",
+      status: "paused",
+      pausedFlag: true,
+      fireAt,
+    });
+    expect(resumeStates).toHaveLength(reportsBefore);
+    expect(readStoredResume()).toMatchObject({ state: "armed" });
+  });
+
+  it("noteRowStatusChanged reports nothing when the chat has no resume state", () => {
+    const { coordinator, resumeStates } = createHarness();
+    coordinator.noteRowStatusChanged("chat-1", {
+      id: "auto-resume:chat-1",
+      status: "paused",
+      pausedFlag: true,
+      fireAt: Date.now() + 60_000,
+    });
+    expect(resumeStates).toEqual([]);
+  });
+
+  it("does not republish no_reset over a cancellation while a paused row is loading", async () => {
+    const harness = createHarness();
+    const { coordinator, rows, resumeStates, setStoredResume, gateScheduler } = harness;
+    const fireAt = Date.now() + 30 * 60_000;
+    setStoredResume(armedResume("chat-1", fireAt));
+    rows.set("auto-resume:chat-1", {
+      id: "auto-resume:chat-1",
+      sessionId: "chat-1",
+      kind: "wakeup",
+      prompt: "continue",
+      reason: "auto_resume_limit",
+      fireAt,
+      status: "paused",
+      pausedFlag: true,
+      lateFlag: false,
+      durable: true,
+      source: "auto_resume_limit",
+      createdAt: Date.now(),
+    } as ChatScheduledWorkRecord);
+
+    const release = gateScheduler();
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "codex",
+      resetAtMs: fireAt - 90_000,
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+    const cancellation = coordinator.cancelForSession("chat-1", "opted_out_of_auto_continue");
+
+    release();
+    await cancellation;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resumeStates.at(-1)).toBeNull();
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
+  });
+
+  it("does not project a paused upsert after a newer cancellation", async () => {
+    const harness = createHarness();
+    const { coordinator, scheduler, rows, resumeStates, setStoredResume } = harness;
+    const fireAt = Date.now() + 30 * 60_000;
+    setStoredResume(armedResume("chat-1", fireAt));
+    let resolveUpsert: (row: ChatScheduledWorkRecord) => void = () => {
+      throw new Error("scheduler upsert did not start");
+    };
+    scheduler.upsert = (input) => new Promise((resolve) => {
+      resolveUpsert = (row) => {
+        rows.set(row.id, row);
+        resolve(row);
+      };
+    });
+
+    coordinator.maybeArmAfterUsageLimit({
+      sessionId: "chat-1",
+      provider: "codex",
+      resetAtMs: fireAt - 90_000,
+      error: { message: "usage limit", errorInfo: { category: "rate_limit" } },
+    });
+    await Promise.resolve();
+    const cancellation = coordinator.cancelForSession("chat-1", "opted_out_of_auto_continue");
+    resolveUpsert({
+      id: "auto-resume:chat-1",
+      sessionId: "chat-1",
+      kind: "wakeup",
+      prompt: "continue",
+      reason: "auto_resume_limit",
+      fireAt,
+      status: "paused",
+      pausedFlag: true,
+      lateFlag: false,
+      durable: true,
+      source: "auto_resume_limit",
+      createdAt: Date.now(),
+    } as ChatScheduledWorkRecord);
+
+    await cancellation;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resumeStates.at(-1)).toBeNull();
+    expect(rows.get("auto-resume:chat-1")?.status).toBe("cancelled");
   });
 });

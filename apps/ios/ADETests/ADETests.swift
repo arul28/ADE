@@ -7609,6 +7609,150 @@ final class ADETests: XCTestCase {
     }
   }
 
+  /// A viewer device keeps the `Resume now` button (the host advertises the
+  /// action) and must be told the truth when it taps: viewer, not "update ADE".
+  @MainActor
+  func testResumeUsageLimitNowTellsViewerDevicesTheRealCause() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "chat.send",
+              "policy": ["viewerAllowed": true, "queueable": true],
+            ],
+            [
+              "action": "chat.resumeUsageLimitNow",
+              "policy": ["viewerAllowed": false, "queueable": false],
+            ],
+          ],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    // Advertised, so the affordance stays visible — only the tap fails, and it
+    // fails with the viewer wording.
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.resumeUsageLimitNow", sessionId: "chat-1"))
+    XCTAssertFalse(service.canInvokeChatRemoteAction("chat.resumeUsageLimitNow", sessionId: "chat-1"))
+    do {
+      try await service.resumeUsageLimitNow(sessionId: "chat-1")
+      XCTFail("A viewer device must not be able to resume a usage-limited chat")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
+      XCTAssertFalse(nsError.localizedDescription.contains("Update ADE"))
+    }
+  }
+
+  /// Owner device, advertised action, but nothing live to send over: the message
+  /// names the connection, not the host version.
+  @MainActor
+  func testResumeUsageLimitNowRequiresALiveConnection() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "chat.send",
+              "policy": ["viewerAllowed": true, "queueable": true],
+            ],
+            [
+              "action": "chat.resumeUsageLimitNow",
+              "policy": ["viewerAllowed": true, "queueable": false],
+            ],
+          ],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.resumeUsageLimitNow", sessionId: "chat-1"))
+    do {
+      try await service.resumeUsageLimitNow(sessionId: "chat-1")
+      XCTFail("Resuming without a live connection must be rejected before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(
+        nsError.localizedDescription,
+        "This action requires a live connection to the machine."
+      )
+    }
+  }
+
+  /// An older brain never advertises the action, which is what hides the button.
+  @MainActor
+  func testResumeUsageLimitNowStaysGatedWhenHostOmitsAction() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": ["viewerAllowed": true, "queueable": true],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    // The older brain omits the action, and that must NOT cost the pairing its
+    // full mode: `chat.resumeUsageLimitNow` is an optional mobile action, so a
+    // new phone against an old host still connects fully and merely hides the
+    // button.
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.resumeUsageLimitNow", sessionId: "chat-1"))
+    do {
+      _ = try await service.resumeUsageLimitNow(sessionId: "chat-1")
+      XCTFail("An unadvertised resume action must be rejected before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+    }
+  }
+
   @MainActor
   func testMobileGithubDetailStaysGatedWhenCompatibleHostOmitsAction() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -13829,9 +13973,6 @@ final class ADETests: XCTestCase {
         now: now
       )
     )
-    let label = workUsageLimitResetLabel(parked, now: now)
-    XCTAssertTrue(label.hasPrefix("Reset at "))
-    XCTAssertTrue(label.contains("47 min"))
   }
 
   func testAgentChatScheduledWorkItemDecodesAutoResumeSource() throws {
@@ -28077,11 +28218,11 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
   }
 
   func testFoldsRunOfStoppedResultsIntoOneGroup() {
-    let folded = collapseInterruptStoppedSubagentEntries([
+    let folded = collapseSameCauseSubagentEntries([
       stopped("a", "Alpha", rank: 0),
       stopped("b", "Bravo", rank: 1),
       stopped("c", "Charlie", rank: 2),
-    ])
+    ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 1)
     guard case .subagentStoppedGroup(let model) = folded[0].payload else {
       return XCTFail("expected a stopped group")
@@ -28093,23 +28234,23 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
   }
 
   func testLoneStoppedResultStaysIndividual() {
-    let folded = collapseInterruptStoppedSubagentEntries([
+    let folded = collapseSameCauseSubagentEntries([
       resultEntry("a", "Alpha", status: .succeeded, rank: 0),
       stopped("b", "Bravo", rank: 1),
       resultEntry("c", "Charlie", status: .succeeded, rank: 2),
-    ])
+    ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 3)
     XCTAssertFalse(folded.contains(where: isGroup))
   }
 
   func testNonStoppedRowBreaksRunIntoSeparateGroups() {
-    let folded = collapseInterruptStoppedSubagentEntries([
+    let folded = collapseSameCauseSubagentEntries([
       stopped("a", "Alpha", rank: 0),
       stopped("b", "Bravo", rank: 1),
       resultEntry("x", "Interloper", status: .succeeded, rank: 2),
       stopped("c", "Charlie", rank: 3),
       stopped("d", "Delta", rank: 4),
-    ])
+    ], causeOf: workSubagentStoppedGroupCause)
     // group(a,b) · succeeded(x) · group(c,d)
     XCTAssertEqual(folded.count, 3)
     XCTAssertFalse(isGroup(folded[1]))

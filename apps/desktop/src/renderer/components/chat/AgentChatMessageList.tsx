@@ -136,7 +136,12 @@ import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
-import { classifyProviderFailure, providerFailureEventId, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSessionQuota";
+import {
+  isUsageLimitTurn,
+  usageLimitTurnFooterLabel,
+} from "../../../shared/usageLimitResumePresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   collectUserMessageMinimapSourceEntries,
@@ -2409,6 +2414,8 @@ function renderEvent(
     turnActive?: boolean;
     sessionTurnActive?: boolean;
     sessionEnded?: boolean;
+    /** A usage limit is live for this chat — the composer pill owns the state. */
+    usageLimitResumeActive?: boolean;
     onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
@@ -3768,7 +3775,6 @@ function renderEvent(
           {recovery ? (
             <ProviderFailureRecoveryCard
               recovery={recovery}
-              eventId={providerFailureEventId(envelope.timestamp, event)}
               disabled={Boolean(options?.sessionTurnActive)}
               onRetry={options?.onRetryProviderFailure
                 ? () => options.onRetryProviderFailure!(event.turnId ?? null)
@@ -3848,6 +3854,15 @@ function renderEvent(
 
   /* ── ade_card (generic ADE-emitted card; unknown variants degrade in-place) ── */
   if (event.type === "ade_card") {
+    // While a usage limit is live the compact pill above the composer owns the
+    // whole story — when it resumes, forking, opting out. The quota card says
+    // the same thing a scroll away and offers a subset of the actions, so it
+    // stands down for as long as the pill is up. Once the limit clears
+    // (`usageLimitResume` goes null) the card renders exactly as before, which
+    // is what keeps old transcripts readable.
+    if (event.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT && options?.usageLimitResumeActive) {
+      return null;
+    }
     // Without a dispatcher the card filters out every non-`open` action, so the
     // schema's action row could never be used. `retry`/`refresh` re-enter the
     // card's own surface (which refetches on mount); anything else is broadcast
@@ -4162,10 +4177,17 @@ function DoneTurnDivider({
   onReviewInFiles,
   turnFileEntries,
   hasCheckpointDiffSummary,
+  usageLimitResumeTurnId,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
   timestamp: string;
   durationMs: number | null;
+  /**
+   * Turn the chat's live usage limit is anchored to, when the host reports one.
+   * A turn that matches gets the quiet paused footer even if the SDK did not
+   * attach a 429 to the result frame.
+   */
+  usageLimitResumeTurnId?: string | null;
   toolEntries: ChatWorkLogEntry[];
   /** Opens the Files tab for this lane. Not a revert — see handleReviewChanges. */
   onReviewInFiles?: () => void;
@@ -4197,8 +4219,30 @@ function DoneTurnDivider({
     ? `ran ${formatTurnDuration(durationMs)}`
     : null;
   const tokenLine = formatDoneTurnTokenLine(event.usage);
+  // A turn that ended at a usage limit did not fail in any sense the user can
+  // act on: nothing is wrong with the work, the provider simply stopped
+  // answering, and the pill above the composer already says when it resumes.
+  // So the loud `FAILED · api error · USAGE …` line collapses to one quiet
+  // sentence and the token accounting moves behind the details toggle, where
+  // it stays available without competing with the one fact that matters.
+  const usageLimitPaused = !completed && isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitLabel = usageLimitPaused
+    ? usageLimitTurnFooterLabel(durationMs !== null ? formatTurnDuration(durationMs) : null)
+    : null;
   const hasToolActivity = toolEntries.length > 0;
-  const content = (
+  // The usage row lives inside the disclosure for a paused turn, so the
+  // disclosure has to exist even when the turn logged no tool activity.
+  const hasDetails = hasToolActivity || Boolean(usageLimitPaused && tokenLine);
+  const content = usageLimitPaused ? (
+    <span className="inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
+      <span>{usageLimitLabel}</span>
+      {hasDetails ? (
+        activityOpen
+          ? <CaretDown size={9} weight="bold" className="opacity-55" />
+          : <CaretRight size={9} weight="bold" className="opacity-55" />
+      ) : null}
+    </span>
+  ) : (
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-2 px-1 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)]",
@@ -4245,11 +4289,11 @@ function DoneTurnDivider({
     <div className="my-4 min-w-0">
       <div className="flex items-center gap-3">
         <span className="h-px flex-1 bg-white/[0.06]" />
-        {hasToolActivity ? (
+        {hasDetails ? (
           <button
             type="button"
             aria-expanded={activityOpen}
-            aria-label={`${activityOpen ? "Hide" : "Show"} activity from this turn`}
+            aria-label={`${activityOpen ? "Hide" : "Show"} ${usageLimitPaused ? "details" : "activity"} from this turn`}
             onClick={() => setActivityOpen((open) => !open)}
             className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
           >
@@ -4271,7 +4315,7 @@ function DoneTurnDivider({
         <span className="h-px flex-1 bg-white/[0.06]" />
       </div>
       <AnimatePresence initial={false}>
-        {hasToolActivity && activityOpen ? (
+        {hasDetails && activityOpen ? (
           <motion.div
             initial={{ opacity: 0, height: 0, y: -4 }}
             animate={{ opacity: 1, height: "auto", y: 0 }}
@@ -4281,6 +4325,14 @@ function DoneTurnDivider({
                only `mx-auto`-centred block in the thread. */
             className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-white/[0.08] pl-4"
           >
+            {usageLimitPaused && tokenLine ? (
+              <div
+                data-testid="done-turn-usage-detail"
+                className="mb-2 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40"
+              >
+                {tokenLine}
+              </div>
+            ) : null}
             <ChatToolActivityDetails
               entries={toolEntries}
               onNavigateSuggestion={onNavigateSuggestion}
@@ -4622,6 +4674,10 @@ type EventRowProps = {
   turnActive?: boolean;
   sessionTurnActive?: boolean;
   sessionEnded?: boolean;
+  /** A usage limit is live for this chat (see `AgentChatUsageLimitResume`). */
+  usageLimitResumeActive?: boolean;
+  /** Turn that limit is anchored to, when the host reports one. */
+  usageLimitResumeTurnId?: string | null;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
@@ -4681,6 +4737,8 @@ const EventRow = React.memo(function EventRow({
   turnActive,
   sessionTurnActive,
   sessionEnded,
+  usageLimitResumeActive,
+  usageLimitResumeTurnId,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   onReviewChanges,
@@ -4764,6 +4822,7 @@ const EventRow = React.memo(function EventRow({
             turnActive,
             sessionTurnActive,
             sessionEnded,
+            usageLimitResumeActive,
             onOpenWorkspacePath,
             respondingApprovalIds,
             pendingApprovalIds,
@@ -4802,6 +4861,7 @@ const EventRow = React.memo(function EventRow({
           onReviewInFiles={onReviewChanges}
           turnFileEntries={turnFileEntries}
           hasCheckpointDiffSummary={hasCheckpointDiffSummary}
+          usageLimitResumeTurnId={usageLimitResumeTurnId}
         />
       ) : null}
       {inlineProof?.length ? (
@@ -5277,6 +5337,8 @@ function AgentChatMessageListMain({
   surfaceProfile = "standard",
   assistantLabel,
   sessionTurnActive = false,
+  usageLimitResumeActive = false,
+  usageLimitResumeTurnId = null,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
@@ -5328,6 +5390,15 @@ function AgentChatMessageListMain({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   sessionTurnActive?: boolean;
+  /**
+   * The host's live usage-limit resume state for this chat, or null. Only two
+   * facts are read here — that a limit is live (the quota card stands down for
+   * the composer pill) and which turn it is anchored to (that turn's footer
+   * goes quiet) — so they are passed as primitives: the transcript rows are
+   * memoized, and a fresh object per render would defeat that.
+   */
+  usageLimitResumeActive?: boolean;
+  usageLimitResumeTurnId?: string | null;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -6810,6 +6881,8 @@ function AgentChatMessageListMain({
           turnActive={rowTurnActive}
           sessionTurnActive={sessionTurnActive}
           sessionEnded={sessionEnded}
+          usageLimitResumeActive={usageLimitResumeActive}
+          usageLimitResumeTurnId={usageLimitResumeTurnId}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
@@ -6868,6 +6941,8 @@ function AgentChatMessageListMain({
         turnActive={rowTurnActive}
         sessionTurnActive={sessionTurnActive}
         sessionEnded={sessionEnded}
+        usageLimitResumeActive={usageLimitResumeActive}
+        usageLimitResumeTurnId={usageLimitResumeTurnId}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
@@ -6896,7 +6971,7 @@ function AgentChatMessageListMain({
         pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

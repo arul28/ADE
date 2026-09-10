@@ -291,6 +291,33 @@ describe("terminalAttention", () => {
       expect(dot.label).toBe("Failed");
     });
 
+    it("resolves the usage-limit dot against the session's own clock", () => {
+      // The fire instant is far in the real future, so a dot that fell back to
+      // `Date.now()` would still be counting down to it. The injected `nowMs`
+      // is past it: the limit is due, and the dot must say so on the same clock
+      // the text slot beside it uses.
+      const fireAt = "2099-01-01T00:00:00.000Z";
+      const session = {
+        status: "completed" as const,
+        lastOutputPreview: "Last response preview",
+        toolType: "claude-chat" as const,
+        nowMs: Date.parse(fireAt) + 60_000,
+        usageLimitResume: {
+          state: "armed" as const,
+          provider: "claude" as const,
+          fireAt,
+          resetAt: fireAt,
+          scheduleId: "auto-resume:chat-1",
+          attempts: 1,
+          providerDetail: null,
+          turnId: "turn-1",
+          updatedAt: "2026-08-17T11:59:00.000Z",
+        },
+      };
+      expect(sessionStatusDot(session).label).toBe("Resuming");
+      expect(sessionStatusDisplay(session)?.label).toBe("Resuming");
+    });
+
     it("returns an emerald Done dot for a non-running agent chat session", () => {
       const dot = sessionStatusDot({
         status: "completed",

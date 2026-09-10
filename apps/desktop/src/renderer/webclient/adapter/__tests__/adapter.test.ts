@@ -1787,6 +1787,35 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes resume-usage-limit-now through the web chat adapter", async () => {
+    fake.descriptors = descriptors(["chat.resumeUsageLimitNow"]);
+    fake.commandResults.set("chat.resumeUsageLimitNow", { ok: true, turnId: "turn-9" });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }))
+      .resolves.toEqual({ ok: true, turnId: "turn-9" });
+    expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
+      { action: "chat.resumeUsageLimitNow", args: { sessionId: "chat-1" } },
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("fails resume-usage-limit-now when the host does not expose the action", async () => {
+    fake.descriptors = descriptors([]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    // It must reject rather than resolve a fake success: a pill that says a
+    // resume is coming when nothing was sent is the failure that matters.
+    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }))
+      .rejects.toThrow(/'chat.resumeUsageLimitNow' is unavailable/);
+
+    adapter.dispose();
+  });
+
   it("routes prompt stashes through the web chat adapter", async () => {
     fake.descriptors = descriptors([
       "chat.listPromptStashes",

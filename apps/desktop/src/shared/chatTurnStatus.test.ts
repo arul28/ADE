@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chatTurnStatusExitCode,
+  chatTurnStatusRow,
   deriveChatTurnStatus,
   formatChatTurnStatus,
   formatCompactDuration,
@@ -87,6 +88,32 @@ describe("chat turn status", () => {
     expect(text).toContain("stranded — no deadline set (dialogExpiry: never)");
     expect(text).toContain("ask        Bash(rm -rf build/)");
     expect(chatTurnStatusExitCode(status.phase)).toBe(2);
+  });
+
+  it("renders extra rows inside the key/value block, above the subagent tree", () => {
+    const status = deriveChatTurnStatus({
+      sessionId: "extra-1",
+      sessionStatus: "active",
+      currentTurnStartedAt: "2026-05-01T00:00:00.000Z",
+      nowMs: Date.parse("2026-05-01T00:00:30.000Z"),
+      queuedMessageCount: 1,
+      subagents: [{
+        taskId: "task-1",
+        agentId: "agent-1",
+        description: "Explore",
+        status: "running",
+        durationMs: 1_000,
+      }],
+    });
+    const row = chatTurnStatusRow("resume", "resumes when the limit lifts");
+    // Same column as the built-in rows, and never after the tree — a row printed
+    // below the subagents reads as a subagent.
+    expect(row).toBe("  resume     resumes when the limit lifts");
+    const lines = formatChatTurnStatus(status, { extraRows: [row] }).split("\n");
+    expect(lines.indexOf(row)).toBeGreaterThan(lines.findIndex((line) => line.includes("queued")));
+    expect(lines.indexOf("")).toBeGreaterThan(lines.indexOf(row));
+    // No option, no extra rows, and the output is unchanged.
+    expect(formatChatTurnStatus(status)).not.toContain("resume");
   });
 
   it("formats idle when no turn is live", () => {

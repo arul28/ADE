@@ -521,14 +521,14 @@ export function BackgroundJobLine({
 }
 
 /**
- * The fan-in cell: ONE card standing in for a run of subagents that were all
- * stopped by a single user interrupt, instead of a wall of identical "stopped —
- * interrupted" result cards.
+ * The fan-in cell: ONE card standing in for a run of subagents that all ended
+ * for the same reason, instead of a wall of identical result cards.
  *
- * Head row is the count; each agent is a detail row inside the same card, which
- * is what keeps a mass interrupt (a dozen — or fifty — agents) legible at a
- * glance. Collapsible, expanded by default up to a handful of agents. Never a
- * red error block.
+ * Head row is the count and the shared cause; each agent is a detail row inside
+ * the same card, which is what keeps a mass stop (a dozen — or fifty — agents)
+ * legible at a glance. Collapsible, expanded by default up to a handful of
+ * agents. Never a red error block — neither an interrupt nor a usage limit is
+ * something that broke.
  */
 export function SubagentStoppedGroupCard({
   event,
@@ -539,7 +539,10 @@ export function SubagentStoppedGroupCard({
 }) {
   const count = event.count;
   const [expanded, setExpanded] = useState(count <= 6);
-  const headline = `${count} ${count === 1 ? "agent" : "agents"} stopped when you interrupted`;
+  const agents = `${count} ${count === 1 ? "agent" : "agents"}`;
+  const headline = event.cause === "usage_limit"
+    ? `${agents} stopped · usage limit`
+    : `${agents} stopped when you interrupted`;
 
   return (
     <ChatCard skin="rail" tone="warn">

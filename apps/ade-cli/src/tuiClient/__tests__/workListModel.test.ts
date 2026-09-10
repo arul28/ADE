@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AttentionItem } from "../../../../desktop/src/shared/types/attention";
 import { ATTENTION_CONTRACT_VERSION } from "../../../../desktop/src/shared/types/attention";
+import type { AgentChatUsageLimitResume } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
@@ -431,6 +432,75 @@ describe("workListModel status", () => {
     const [row] = sessionRows(model);
     expect(row!.status?.label).toBe("Background work \u00d72");
     expect(row!.elapsedLabel).toBe("2h");
+  });
+});
+
+describe("usage-limit resume projection", () => {
+  // The label itself is owned by the shared `sessionStatusPresentation`. What is
+  // tested here is the TUI's own job: that `toWorkSessionSummary` forwards the
+  // host's resume state at all, because dropping it files a chat that is going
+  // to resume itself as a red "Failed" row.
+  function resume(overrides: Partial<AgentChatUsageLimitResume> = {}): AgentChatUsageLimitResume {
+    return {
+      state: "armed",
+      provider: "claude",
+      fireAt: new Date(NOW + 3 * 60_000).toISOString(),
+      resetAt: new Date(NOW + 2 * 60_000).toISOString(),
+      scheduleId: "auto-resume:chat-limited",
+      attempts: 1,
+      providerDetail: null,
+      turnId: "turn-1",
+      updatedAt: new Date(NOW - 60_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  it("forwards the host resume state onto the shared session summary", () => {
+    const summary = toWorkSessionSummary(session({
+      sessionId: "chat-limited",
+      laneId: "lane-1",
+      usageLimitResume: resume(),
+    }));
+    expect(summary.usageLimitResume).toEqual(resume());
+  });
+
+  it("labels a limited row from the shared presentation instead of Failed", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "chat-limited",
+          laneId: "lane-1",
+          title: "Limited",
+          lastTurnFailedAt: new Date(NOW - 60_000).toISOString(),
+          usageLimitResume: resume(),
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.status?.label.startsWith("Resumes")).toBe(true);
+    expect(row!.tone).toBe("neutral");
+  });
+
+  it("leaves an ordinary failed row red when no usage limit is live", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "chat-failed",
+          laneId: "lane-1",
+          title: "Broken",
+          lastTurnFailedAt: new Date(NOW - 60_000).toISOString(),
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.status?.label).toBe("Failed");
+    expect(row!.tone).toBe("red");
   });
 });
 

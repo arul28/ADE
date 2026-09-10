@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatSessionSummary,
+  AgentChatUsageLimitResume,
+} from "../../../../desktop/src/shared/types/chat";
 import type { TokenStats } from "../adeApi";
 
 function env(timestamp: string, event: AgentChatEventEnvelope["event"], sequence: number): AgentChatEventEnvelope {
@@ -509,5 +513,80 @@ describe("formatMcpCapabilityNote", () => {
       goal: null,
       streaming: false,
     }).mcpNote).toBeNull();
+  });
+});
+
+// The row's copy and refresh cadence belong to the shared pill and are pinned
+// in apps/desktop/src/shared/usageLimitResumePresentation.test.ts. What is
+// chatInfo's own job — and all that is tested here — is carrying the host state
+// and the refusal sentence onto the snapshot the pane renders.
+describe("chat info usage-limit resume state", () => {
+  function resume(overrides: Partial<AgentChatUsageLimitResume> = {}): AgentChatUsageLimitResume {
+    return {
+      state: "armed",
+      provider: "claude",
+      fireAt: "2026-09-07T23:31:30.000Z",
+      resetAt: "2026-09-07T23:30:00.000Z",
+      scheduleId: "auto-resume:session-1",
+      attempts: 1,
+      providerDetail: null,
+      turnId: "turn-1",
+      updatedAt: "2026-09-07T23:28:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("carries the host resume state onto the snapshot verbatim", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ usageLimitResume: resume() }),
+      provider: "claude",
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+    expect(snapshot.usageLimitResume).toEqual(resume());
+  });
+
+  it("carries the host's refusal sentence for this chat only, and drops it when absent", () => {
+    // The refusal is per-press state the app clears on the next usage-limit
+    // patch; the snapshot's job is only to carry it to the pane that renders it
+    // under the Resume row, without inventing wording of its own.
+    const refusal = "This chat is already resuming. Wait for the current turn to start.";
+    const args = {
+      events: [],
+      activeSession: session({ usageLimitResume: resume() }),
+      provider: "claude" as const,
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    };
+
+    const withNotice = deriveChatInfoSnapshot({ ...args, usageLimitResumeNotice: refusal });
+    expect(withNotice.usageLimitResumeNotice).toBe(refusal);
+    // It sits beside the row rather than replacing it: both are shown.
+    expect(withNotice.usageLimitResume).toEqual(resume());
+    expect(deriveChatInfoSnapshot(args).usageLimitResumeNotice).toBeNull();
+  });
+
+  it("leaves the snapshot field null when the session has no resume state", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session(),
+      provider: "claude",
+      modelLabel: "Opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+    expect(snapshot.usageLimitResume).toBeNull();
   });
 });

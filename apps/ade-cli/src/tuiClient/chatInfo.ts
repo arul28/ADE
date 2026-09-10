@@ -14,6 +14,7 @@ import type {
   ChatInfoSnapshot,
   SubagentSnapshot,
 } from "./types";
+
 import type { TokenStats } from "./adeApi";
 
 function compactNumber(value: number): string {
@@ -141,6 +142,12 @@ export function deriveChatInfoSnapshot(args: {
   pr?: ChatInfoSnapshot["pr"];
   /** Closed-but-resumable Claude terminal session (drives the resume row). */
   resumableTerminal?: boolean;
+  /**
+   * Sentence the host answered when a manual `/resume-now` was refused, for the
+   * active chat only. Carried on the snapshot so it renders next to the Resume
+   * row it is about — the same place the desktop popover keeps a refusal.
+   */
+  usageLimitResumeNotice?: string | null;
 }): ChatInfoSnapshot {
   const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
   const planEvent = latestPlanEvent(args.events);
@@ -168,6 +175,8 @@ export function deriveChatInfoSnapshot(args: {
       .filter((item) => item.kind !== "background_task"),
     scheduledWorkPaused: args.activeSession?.scheduledWorkPaused === true,
     nextWakeAt: args.activeSession?.nextWakeAt ?? null,
+    usageLimitResume: args.activeSession?.usageLimitResume ?? null,
+    usageLimitResumeNotice: args.usageLimitResumeNotice ?? null,
     backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,
     // Merge subagents into one roster and drop historical command-as-subagent

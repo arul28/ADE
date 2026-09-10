@@ -32,6 +32,7 @@
 		AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000005 /* ActivityWidgetPresentation.swift */; };
 		D3000000000000000000002A /* ActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000001A /* ActivityRow.swift */; };
 		AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000001 /* ActivityRowPresentationTests.swift */; };
+		AC7600000000000000000008 /* WorkUsageLimitResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000008 /* WorkUsageLimitResumeTests.swift */; };
 		AC7600000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */; };
 		AC7600000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */; };
 		AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */; };
@@ -127,6 +128,8 @@
 		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
 		E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */; };
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
+		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
+		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
 		E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000035 /* WorkTimelineHelpers.swift */; };
 		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
@@ -359,6 +362,7 @@
 		AA1000000000000000000005 /* ActivityWidgetPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentation.swift; path = ADE/Shared/ActivityWidgetPresentation.swift; sourceTree = "<group>"; };
 		D3000000000000000000001A /* ActivityRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRow.swift; path = ADE/Views/Activity/ActivityRow.swift; sourceTree = "<group>"; };
 		AC7500000000000000000001 /* ActivityRowPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentationTests.swift; path = ADETests/ActivityRowPresentationTests.swift; sourceTree = "<group>"; };
+		AC7500000000000000000008 /* WorkUsageLimitResumeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeTests.swift; path = ADETests/WorkUsageLimitResumeTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSpawnCompletionNoticeFoldTests.swift; path = ADETests/WorkSpawnCompletionNoticeFoldTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ApprovalRequestKindPrecedenceTests.swift; path = ADETests/ApprovalRequestKindPrecedenceTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPendingInputRescueTests.swift; path = ADETests/WorkPendingInputRescueTests.swift; sourceTree = "<group>"; };
@@ -431,6 +435,8 @@
 		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
 		D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNavigationAndTranscriptHelpers.swift; path = ADE/Views/Work/WorkNavigationAndTranscriptHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
+		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
+		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000035 /* WorkTimelineHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTimelineHelpers.swift; path = ADE/Views/Work/WorkTimelineHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
@@ -936,6 +942,8 @@
 				D10000000000000000000032 /* WorkTranscriptParser.swift */,
 				D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */,
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
+				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
+				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
 				D10000000000000000000035 /* WorkTimelineHelpers.swift */,
 				D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */,
 				D10000000000000000000037 /* WorkEventMapping.swift */,
@@ -1170,6 +1178,7 @@
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
 				D30000000000000000000005 /* ActivityDrawerModelTests.swift */,
 				AC7500000000000000000001 /* ActivityRowPresentationTests.swift */,
+				AC7500000000000000000008 /* WorkUsageLimitResumeTests.swift */,
 				AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */,
 				AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */,
 				AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */,
@@ -1665,6 +1674,8 @@
 				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
 				E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */,
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
+				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
+				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
 				E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */,
 				E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */,
 				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
@@ -1707,6 +1718,7 @@
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,
 				D30000000000000000000015 /* ActivityDrawerModelTests.swift in Sources */,
 				AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */,
+				AC7600000000000000000008 /* WorkUsageLimitResumeTests.swift in Sources */,
 				AC7600000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift in Sources */,
 				AC7600000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift in Sources */,
 				AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */,

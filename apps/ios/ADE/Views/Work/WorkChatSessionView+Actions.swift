@@ -61,14 +61,16 @@ private actor WorkTimelineSnapshotBuildCoordinator {
     transcript: [WorkChatEnvelope],
     fallbackEntries: [AgentChatTranscriptEntry],
     artifacts: [ComputerUseArtifactSummary],
-    localEchoMessages: [WorkLocalEchoMessage]
+    localEchoMessages: [WorkLocalEchoMessage],
+    usageLimitTurnId: String?
   ) -> WorkChatTimelineSnapshot? {
     guard latestRequestIdsByScope[scope] == requestId, !Task.isCancelled else { return nil }
     let snapshot = buildWorkChatTimelineSnapshot(
       transcript: transcript,
       fallbackEntries: fallbackEntries,
       artifacts: artifacts,
-      localEchoMessages: localEchoMessages
+      localEchoMessages: localEchoMessages,
+      usageLimitTurnId: usageLimitTurnId
     )
     guard latestRequestIdsByScope[scope] == requestId, !Task.isCancelled else { return nil }
     return snapshot
@@ -1144,6 +1146,7 @@ extension WorkChatSessionView {
         let allowsIncrementalTranscriptUpdate = self.allowsIncrementalTranscriptUpdate
         let transcriptIncrementalDeltaSnapshot = transcriptIncrementalDelta
         let buildScope = timelineBuildScopeKey
+        let usageLimitTurnIdSnapshot = chatSummaryContext.usageLimitResume?.turnId
 
         if applyIncrementalTimelineSnapshotIfPossible(
           transcript: transcriptSnapshot,
@@ -1169,7 +1172,8 @@ extension WorkChatSessionView {
           transcript: transcriptSnapshot,
           fallbackEntries: fallbackSnapshot,
           artifacts: artifactSnapshot,
-          localEchoMessages: echoSnapshot
+          localEchoMessages: echoSnapshot,
+          usageLimitTurnId: usageLimitTurnIdSnapshot
         ) else { continue }
 
         guard !Task.isCancelled else { break }
@@ -1306,7 +1310,8 @@ extension WorkChatSessionView {
       transcript: transcript,
       fallbackEntries: fallbackEntries,
       artifacts: artifacts,
-      localEchoMessages: localEchoMessages
+      localEchoMessages: localEchoMessages,
+      usageLimitTurnId: chatSummaryContext.usageLimitResume?.turnId
     )
     transcriptIncrementalDelta = []
     guard nextSnapshot != timelineSnapshot || (timelineSnapshot.timeline.isEmpty && !nextSnapshot.timeline.isEmpty) else { return }

@@ -431,6 +431,113 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     }
   }
 
+  /// A chat parked on a usage limit hands its status slot to the overlay: no
+  /// red "Failed" capsule, and the row's dot borrows the overlay's tone.
+  ///
+  /// Ownership is the slot function's own answer, not something re-read off the
+  /// rendered glyph — that inference tied the badge to a chrome detail the
+  /// overlay is free to restyle, and the day it did the row would silently get
+  /// its "Failed" capsule back.
+  func testUsageLimitOverlayOwnsTheStatusSlotAndDropsTheFailedBadge() {
+    let session = makeSession(
+      status: "ended",
+      runtimeState: "exited",
+      toolType: "codex-chat",
+      exitCode: 1
+    )
+    var summary = makeChatSummary(status: "failed", awaitingInput: false)
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .armed,
+      provider: "claude",
+      fireAt: iso(now.addingTimeInterval(180))
+    )
+
+    let row = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertNil(row.badge)
+    XCTAssertEqual(row.tone, .neutral)
+    XCTAssertEqual(row.status?.glyph, .parked)
+    XCTAssertEqual(row.status?.label, "Resumes \(workUsageLimitClockLabel(now.addingTimeInterval(180)))")
+
+    // Paused is the amber case: the overlay still owns the slot, and the dot
+    // follows the overlay rather than the failed turn beneath it.
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .paused,
+      provider: "claude",
+      attempts: 2
+    )
+    let paused = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertNil(paused.badge)
+    XCTAssertEqual(paused.tone, .amber)
+    XCTAssertEqual(paused.status?.label, "Paused · limit")
+
+    // States with nothing scheduled hand the slot back: the row is a plain
+    // failure again, capsule and all.
+    summary.usageLimitResume = AgentChatUsageLimitResume(state: .optedOut, provider: "claude")
+    let optedOut = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertEqual(optedOut.badge?.kind, .failed)
+    XCTAssertEqual(optedOut.tone, .red)
+  }
+
+  /// A raised hand outranks an appointment. Desktop returns
+  /// `PHASE_PRESENTATION.needs_you` before `sessionStatusPresentation` ever
+  /// reaches its usage-limit branch (gated on ready/idle/failed), and a chat can
+  /// genuinely be both parked on a limit and holding a question — quieting it to
+  /// "Resumes 7:31 PM" would also cost the row its actionable badge.
+  func testNeedsYouOutranksTheUsageLimitOverlay() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    var summary = makeChatSummary(status: "active", awaitingInput: true)
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .armed,
+      provider: "claude",
+      fireAt: iso(now.addingTimeInterval(180))
+    )
+
+    let row = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertEqual(row.phase, .needsYou)
+    XCTAssertEqual(row.status?.label, "Needs you")
+    XCTAssertEqual(row.status?.kind, .needsYou)
+    XCTAssertEqual(row.status?.prominent, true)
+    XCTAssertEqual(row.badge?.kind, .needsYou, "the actionable badge survives the limit")
+    XCTAssertEqual(row.tone, .amber)
+
+    // Paused is the amber overlay, and it loses to the raised hand just the same.
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .paused,
+      provider: "claude",
+      attempts: 2
+    )
+    XCTAssertEqual(
+      workSessionRowPresentation(session: session, summary: summary, now: now).status?.label,
+      "Needs you"
+    )
+  }
+
+  /// A live turn outranks the appointment too. Desktop gates its usage-limit
+  /// branch on `ready`/`idle`/`failed`, so a row that is visibly working never
+  /// claims it is waiting on a reset — the limit is only the whole story once
+  /// the turn is over.
+  func testRunningOutranksTheUsageLimitOverlay() {
+    let session = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "codex",
+      startedAt: iso(now)
+    )
+    var summary = makeChatSummary(status: "active", awaitingInput: false)
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .armed,
+      provider: "claude",
+      fireAt: iso(now.addingTimeInterval(180))
+    )
+
+    let row = workSessionRowPresentation(session: session, summary: summary, now: now)
+    XCTAssertEqual(row.phase, .running)
+    XCTAssertEqual(row.badge?.kind, .working, "the working capsule survives the limit")
+    XCTAssertEqual(row.status?.kind, .working)
+    XCTAssertNotEqual(row.status?.glyph, .parked)
+    XCTAssertEqual(row.status?.showsElapsed, true, "a live turn still counts")
+  }
+
   /// The ready/idle drift correction, at the badge level. Before this, both
   /// resolved to a nil badge and a neutral dot, which left a finished session
   /// indistinguishable from a dead one.

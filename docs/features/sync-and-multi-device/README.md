@@ -354,7 +354,10 @@ feature-detects them before showing settle and snooze controls, while an older
 mobile build that never calls them must not push a newer host into `limited`.
 `chat.regenerateSessionMetadata` is also optional: newer controllers may
 feature-detect the one-call chat metadata refresh, while older phones never
-invoke it and therefore remain compatible.
+invoke it and therefore remain compatible. `chat.resumeUsageLimitNow` — the
+owner-only usage-limit **Resume now** — is optional for the same reason: the
+phone hides the button when the host does not advertise it, and an older phone
+that never calls it must not push a newer host into `limited`.
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not
@@ -1897,7 +1900,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `PersonalChatScope` directly instead of looking up the current project.
   Only `personalChats.send` is queueable. A queued create is prohibited because
   it cannot return a stable optimistic session id and replay could duplicate a
-  conversation.
+  conversation. `isPersonalChatActionViewerAllowed` denies exactly two actions
+  to paired viewers — `createScheduledWork` and `resumeUsageLimitNow`. The
+  second is not merely cancelling something: it spends a provider turn against
+  the owner's quota, so it stays owner-only just like the sync remote command
+  of the same name.
   `lanes.create` calls that omit `baseBranch` / `startPoint` /
   `parentLaneId` (hub-composer auto-create, the mobile create sheet's
   default) resolve a **remote-first default base** on the host before

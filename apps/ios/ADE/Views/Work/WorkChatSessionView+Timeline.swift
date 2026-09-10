@@ -159,7 +159,11 @@ extension WorkChatSessionView {
     case .eventCard(let card):
       timelineEventCard(card, entryId: entry.id)
     case .adeCard(let card):
-      if card.isHiddenAfterDismiss {
+      // The resume pill owns the usage-limit story once the host computes one.
+      // Leaving the quota card up beside it would state the same fact twice, in
+      // two different tones, with two different sets of buttons.
+      if card.isHiddenAfterDismiss
+        || (card.variant == "claude_session_quota" && chatSummaryContext.usageLimitResume != nil) {
         EmptyView()
       } else {
         WorkAdeCardView(

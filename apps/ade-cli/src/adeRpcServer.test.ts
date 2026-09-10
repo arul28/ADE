@@ -548,6 +548,10 @@ function createRuntime() {
         sessionId: string;
         paused: boolean;
       }) => ({ sessionId, paused, nextWakeAt: null })),
+      resumeUsageLimitNow: vi.fn(async (_args: { sessionId: string }) => ({
+        ok: true as const,
+        turnId: "turn-resume-1",
+      })),
       getChatTranscript: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         sessionId,
         entries: [{ role: "assistant", text: "hello", timestamp: "2026-03-17T19:00:00.000Z" }],
@@ -4469,6 +4473,38 @@ describe("adeRpcServer", () => {
       scheduleId: "wake-1",
     });
 
+    // Resume now spends a real turn on the target chat, so it is scoped exactly
+    // like cancelScheduledWork: a bound agent may only resume its OWN row.
+    const deniedResumeNow = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "resumeUsageLimitNow",
+      args: { sessionId: "chat-2" },
+    });
+    expect(deniedResumeNow.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.resumeUsageLimitNow).not.toHaveBeenCalled();
+
+    const ownResumeNow = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "resumeUsageLimitNow",
+      args: { sessionId: "chat-1" },
+    });
+    expect(ownResumeNow?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.resumeUsageLimitNow).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+    });
+
+    // Omitting the session id inside a bound agent resolves to the caller's own
+    // chat rather than failing, matching every other scoped chat action.
+    const implicitResumeNow = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "resumeUsageLimitNow",
+      args: {},
+    });
+    expect(implicitResumeNow?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.resumeUsageLimitNow).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+    });
+
     const peerMessage = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "messageSession",
@@ -4522,6 +4558,29 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.steer).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "self steer",
+      metadata: { agentRelay: { fromSessionId: "chat-1" } },
+    });
+
+    // The host-only dispatch markers are stripped by the same provenance pass.
+    // Either one would exempt the message from the auto-resume cancel sweep,
+    // leaving the chat's resume armed through real activity to fire an
+    // unattended prompt later.
+    const forgedResumeSteer = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "steer",
+      args: {
+        sessionId: "chat-1",
+        text: "forged resume",
+        metadata: {
+          usageLimitResume: "manual",
+          scheduledWake: { scheduleId: "auto-resume:chat-1", kind: "wakeup", firedAt: "x" },
+        },
+      },
+    });
+    expect(forgedResumeSteer?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.steer).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      text: "forged resume",
       metadata: { agentRelay: { fromSessionId: "chat-1" } },
     });
 

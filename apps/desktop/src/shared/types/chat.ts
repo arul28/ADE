@@ -740,6 +740,14 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
   unprocessedMessageResolution?: AgentChatUnprocessedMessageResolutionMetadata;
+  /**
+   * Marks the continue prompt the host sends for Resume now. That path cancels
+   * the durable row itself, and AWAITS the cancellation, before dispatching —
+   * so the dispatch commit points must not run their own auto-resume sweep for
+   * it. A second cancel there moves the epoch the resume captured and turns a
+   * failed send into an unrecoverable one.
+   */
+  usageLimitResume?: "manual";
 };
 
 export type AgentChatScheduledWorkKind =
@@ -1583,6 +1591,13 @@ export type AgentChatEvent =
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
       acpPermissionMode?: AgentChatAcpPermissionMode;
       acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
+      /**
+       * Usage-limit resume state, patched live on every transition (arm, fire,
+       * cancel, pause, opt-out/in, heal). Explicit `null` means the limit is
+       * over; the key being absent means this patch is about something else.
+       * See `AgentChatUsageLimitResume`.
+       */
+      usageLimitResume?: AgentChatUsageLimitResume | null;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
       // Accept turnId for uniformity with other variants — ignored by handlers.
@@ -2006,6 +2021,42 @@ export type AgentChatSession = {
   lastActivityAt: string;
 } & HostSessionConfigFields & OrchestrationSessionFields;
 
+/**
+ * Usage-limit resume state, computed on the host from the durable
+ * `auto-resume:<sessionId>` scheduled-work row plus the opt-out flag.
+ *
+ * - `armed`: a durable row exists and fires at `fireAt`.
+ * - `resuming`: the row is due; delivery waits for the next turn boundary.
+ * - `paused`: two arms hit the limit again; ADE waits for a human.
+ * - `opted_out`: the user chose Don't continue while a limit is live.
+ * - `no_reset`: a limit is live but the provider published no reset instant.
+ */
+export type AgentChatUsageLimitResumeState =
+  | "armed"
+  | "resuming"
+  | "paused"
+  | "opted_out"
+  | "no_reset";
+
+export type AgentChatUsageLimitResume = {
+  state: AgentChatUsageLimitResumeState;
+  provider: AgentChatProvider;
+  /** ISO instant the resume prompt is sent (reset + buffer). Null when unknown. */
+  fireAt: string | null;
+  /** ISO instant the provider published as the reset. Null when unknown. */
+  resetAt: string | null;
+  /** Durable scheduled-work id, `auto-resume:<sessionId>`, when a row exists. */
+  scheduleId: string | null;
+  /** Consecutive arms in the current streak, 0 to 2. */
+  attempts: number;
+  /** Raw provider text in the host time zone. Shown only behind a details toggle. */
+  providerDetail: string | null;
+  /** Turn that hit the limit. Anchors the state to the failure in the transcript. */
+  turnId: string | null;
+  /** ISO instant this state was computed. Clients use it for the countdown. */
+  updatedAt: string;
+};
+
 export type AgentChatSessionSummary = {
   sessionId: string;
   laneId: string;
@@ -2055,6 +2106,12 @@ export type AgentChatSessionSummary = {
    * instead of Waiting / Done.
    */
   usageLimitParkedUntil?: string | null;
+  /**
+   * Host-computed usage-limit resume state. This is the ONLY source every
+   * client renders the resume pill from. Absent or null when no usage limit
+   * is live for this chat. See `AgentChatUsageLimitResume`.
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
@@ -2137,6 +2194,20 @@ export type AgentChatSessionSummary = {
    */
   linearIssueLinks?: SessionLinearIssueLink[];
 } & HostSessionConfigFields & OrchestrationSessionFields;
+
+/**
+ * What `chat.getSessionSummary` returns over the ADE action surface.
+ *
+ * Every instant on the summary is a UTC ISO string, and a CLI caller reading
+ * `usageLimitResume.fireAt` or `nextWakeAt` has no way to know which zone the
+ * brain actually schedules in. The action adds the host zone; it is NOT on
+ * `AgentChatSessionSummary` itself, so the per-row list payload does not repeat
+ * the same constant N times.
+ *
+ * Declared here rather than inferred at each call site so the action registry
+ * and the CLI that formats the result cannot drift on the field's name or type.
+ */
+export type AdeChatSessionSummaryActionResult = AgentChatSessionSummary & { timeZone: string };
 
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
@@ -3502,6 +3573,39 @@ export type AgentChatCancelScheduledWorkArgs = {
   sessionId: string;
   scheduleId: string;
 };
+
+export type AgentChatResumeUsageLimitNowArgs = {
+  sessionId: string;
+};
+
+/**
+ * Why a manual Resume now was refused. Both refusals mean "the prompt was NOT
+ * sent" — Resume now spends a real turn, so it must never fire on a chat that
+ * has nothing to resume or that is already resuming.
+ */
+export type AgentChatResumeUsageLimitNowRefusal =
+  /** No usage limit is live for this chat, so there is nothing to resume. */
+  | "no_live_usage_limit"
+  /** The durable row is already due and delivering; a manual send would race it. */
+  | "resume_in_flight";
+
+export type AgentChatResumeUsageLimitNowResult =
+  | {
+      ok: true;
+      /**
+       * The turn the continue prompt started, once the provider has minted one.
+       * Null when it has not yet: every provider assigns the turn id itself,
+       * some only after the backend answers, so the host has none to report at
+       * the moment the send is acknowledged.
+       */
+      turnId: string | null;
+    }
+  | {
+      ok: false;
+      reason: AgentChatResumeUsageLimitNowRefusal;
+      /** Ready-to-render sentence; clients show it as-is. */
+      message: string;
+    };
 
 export type AgentChatCancelScheduledWorkResult = {
   schedule: AgentChatScheduledWorkItem;

@@ -831,6 +831,135 @@ enum AgentChatSpawnKind: Equatable, Codable {
   }
 }
 
+/// Host-computed usage-limit resume state. Mirrors desktop
+/// `AgentChatUsageLimitResumeState` in `apps/desktop/src/shared/types/chat.ts`.
+///
+/// `unknown` is the forward-compatibility landing pad: a host that adds a sixth
+/// state must not make this whole session summary undecodable, and it must not
+/// be rendered with copy written for a different state either — every label
+/// helper returns nil for `unknown`, so the pill simply does not appear.
+enum AgentChatUsageLimitResumeState: String, Codable, Equatable {
+  case armed
+  case resuming
+  case paused
+  case optedOut = "opted_out"
+  case noReset = "no_reset"
+  case unknown
+}
+
+/// The ONE source every client renders the usage-limit resume pill, sheet, and
+/// session-list badge from (`.specs/CONTRACT.md`). Absent or null means no live
+/// usage limit. Decoding is total: an unrecognized `state` degrades to
+/// `.unknown` and a missing `attempts` to 0 rather than failing the summary.
+struct AgentChatUsageLimitResume: Codable, Equatable {
+  var state: AgentChatUsageLimitResumeState
+  var provider: String
+  /// ISO instant the resume prompt is sent (reset + buffer). Null when unknown.
+  var fireAt: String?
+  /// ISO instant the provider published as the reset. Null when unknown.
+  var resetAt: String?
+  var scheduleId: String?
+  /// Consecutive arms in the current streak, 0 to 2.
+  var attempts: Int
+  /// Raw provider text in the host time zone. Shown only behind a details toggle.
+  var providerDetail: String?
+  /// Turn that hit the limit. Anchors the state to the failure in the transcript.
+  var turnId: String?
+  var updatedAt: String
+
+  init(
+    state: AgentChatUsageLimitResumeState,
+    provider: String,
+    fireAt: String? = nil,
+    resetAt: String? = nil,
+    scheduleId: String? = nil,
+    attempts: Int = 0,
+    providerDetail: String? = nil,
+    turnId: String? = nil,
+    updatedAt: String = ""
+  ) {
+    self.state = state
+    self.provider = provider
+    self.fireAt = fireAt
+    self.resetAt = resetAt
+    self.scheduleId = scheduleId
+    self.attempts = attempts
+    self.providerDetail = providerDetail
+    self.turnId = turnId
+    self.updatedAt = updatedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let rawState = try container.decodeIfPresent(String.self, forKey: .state) ?? ""
+    self.state = AgentChatUsageLimitResumeState(rawValue: rawState) ?? .unknown
+    self.provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? ""
+    self.fireAt = try container.decodeIfPresent(String.self, forKey: .fireAt)
+    self.resetAt = try container.decodeIfPresent(String.self, forKey: .resetAt)
+    self.scheduleId = try container.decodeIfPresent(String.self, forKey: .scheduleId)
+    self.attempts = try container.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
+    self.providerDetail = try container.decodeIfPresent(String.self, forKey: .providerDetail)
+    self.turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+    self.updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+  }
+}
+
+/// Result of `chat.resumeUsageLimitNow` / `personalChats.resumeUsageLimitNow`.
+/// Mirrors the desktop `AgentChatResumeUsageLimitNowResult` union in
+/// `apps/desktop/src/shared/types/chat.ts`.
+///
+/// A refusal is NOT a transport error: the host answers the command normally
+/// with `ok: false` and a ready-to-render sentence, because nothing was sent.
+/// Discarding it is how a tap on `Resume now` looks like it worked while the
+/// chat stays parked — so the sentence is decoded here and shown as-is, exactly
+/// like the desktop popover does.
+///
+/// Decoding is total: an older or unexpected payload never throws, because a
+/// decode failure would replace a real outcome with a parser message. It is also
+/// fail-closed. A payload with no `ok` key is read as a refusal, not a success —
+/// an empty object is no evidence the host sent the continue prompt, and reading
+/// it as success would clear the resume error and quietly retire the pill while
+/// the chat is still parked. Every conforming host sends `ok` explicitly.
+struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
+  var ok: Bool
+  /// `no_live_usage_limit` or `resume_in_flight`. Nil on success.
+  var reason: String?
+  /// Ready-to-render sentence for a refusal; shown verbatim. Nil on success.
+  var message: String?
+  /// Turn the continue prompt started, when the provider had already minted one.
+  var turnId: String?
+
+  init(ok: Bool, reason: String? = nil, message: String? = nil, turnId: String? = nil) {
+    self.ok = ok
+    self.reason = reason
+    self.message = message
+    self.turnId = turnId
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case ok, reason, message, turnId
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    // A malformed response is still a refusal. The host's command result is
+    // optional across older runtimes, and a parser error must not turn a
+    // failed resume into an apparent transport failure (or success).
+    ok = (try? c.decodeIfPresent(Bool.self, forKey: .ok)) ?? false
+    reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? nil
+    message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
+    turnId = (try? c.decodeIfPresent(String.self, forKey: .turnId)) ?? nil
+  }
+
+  /// The sentence to show the user, or nil when the prompt actually went out.
+  /// Falls back to host-neutral copy if a refusal ever arrives without one.
+  var refusalMessage: String? {
+    guard !ok else { return nil }
+    let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "This chat can\u{2019}t be resumed right now." : trimmed
+  }
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -900,7 +1029,24 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// Claude SDK auto-continue after a claude.ai usage-limit reset. Older hosts omit it.
   var autoContinueAtUsageLimit: Bool? = nil
   /// ISO instant this chat is parked waiting for a usage-limit reset. Older hosts omit it.
+  ///
+  /// DEPRECATED mirror kept only so this build still shows something useful when
+  /// paired with a host that predates `usageLimitResume`. Never read it when
+  /// `usageLimitResume` is present — see `.specs/CONTRACT.md`.
   var usageLimitParkedUntil: String? = nil
+  /// Host-computed usage-limit resume state — the only source the resume pill,
+  /// sheet, and session-list badge render from. Older hosts omit it.
+  var usageLimitResume: AgentChatUsageLimitResume? = nil
+  /// True once a host that speaks `usageLimitResume` has explicitly cleared the
+  /// row (`usageLimitResume: null` on a `session_meta_updated` event).
+  ///
+  /// The clear arrives as an event, not a refetch, so the deprecated
+  /// `usageLimitParkedUntil` mirror on this summary is still holding the old —
+  /// and now false — park instant. Without this marker the resume model falls
+  /// straight back onto that stale mirror and the pill reappears the moment the
+  /// limit lifts. Nil means "no structured clear seen", which is exactly the
+  /// state an older host leaves the summary in, so its fallback still works.
+  var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
   var threadId: String?
@@ -969,6 +1115,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.nextWakeAt == rhs.nextWakeAt
       && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
       && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
+      && lhs.usageLimitResume == rhs.usageLimitResume
+      && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
@@ -1015,6 +1163,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var spawnKind: AgentChatSpawnKind?
   var subagentTakeoverPromptShownAt: String?
   var subagentTakeoverPromptShownAtWasCleared: Bool = false
+  /// Live usage-limit resume state. The host re-emits `session_meta_updated`
+  /// whenever this changes so every open client's pill follows the state machine
+  /// without a refetch (`.specs/CONTRACT.md`).
+  var usageLimitResume: AgentChatUsageLimitResume?
+  /// True when the event carried `usageLimitResume: null` — the limit cleared.
+  /// Same null-vs-absent gate as `cursorModeIdWasCleared`.
+  var usageLimitResumeWasCleared: Bool = false
 
   private enum CodingKeys: String, CodingKey {
     case permissionMode
@@ -1031,6 +1186,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case cursorConfigValues
     case spawnKind
     case subagentTakeoverPromptShownAt
+    case usageLimitResume
   }
 
   init(from decoder: Decoder) throws {
@@ -1079,6 +1235,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       subagentTakeoverPromptShownAt = nil
       subagentTakeoverPromptShownAtWasCleared = false
     }
+    if c.contains(.usageLimitResume) {
+      usageLimitResume = try c.decodeIfPresent(AgentChatUsageLimitResume.self, forKey: .usageLimitResume)
+      usageLimitResumeWasCleared = usageLimitResume == nil
+    } else {
+      usageLimitResume = nil
+      usageLimitResumeWasCleared = false
+    }
   }
 
   /// True when the event carries at least one mode field. A bare
@@ -1100,6 +1263,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || spawnKind != nil
       || subagentTakeoverPromptShownAt != nil
       || subagentTakeoverPromptShownAtWasCleared
+      || usageLimitResume != nil
+      || usageLimitResumeWasCleared
   }
 }
 
@@ -1139,6 +1304,22 @@ extension AgentChatSessionSummary {
     } else if update.subagentTakeoverPromptShownAtWasCleared {
       subagentTakeoverPromptShownAt = nil
     }
+    // The resume row is a lifecycle, not a preference: an explicit null means
+    // the limit lifted and the pill must disappear, so the clear is applied
+    // rather than skipped.
+    if let v = update.usageLimitResume {
+      usageLimitResume = v
+      // A live row is proof enough that the host speaks the structured field,
+      // and it outranks the mirror on its own — drop the marker so a later
+      // legitimate old-host fallback is never suppressed by stale state.
+      usageLimitResumeWasCleared = false
+    } else if update.usageLimitResumeWasCleared {
+      usageLimitResume = nil
+      // Record the clear: `usageLimitParkedUntil` on this summary is a stale
+      // mirror the event did not touch, and the render model must not fall back
+      // onto it now that the host has said the limit lifted.
+      usageLimitResumeWasCleared = true
+    }
   }
 
   /// Overlay the mode fields from another summary (used to fold a cache-side
@@ -1173,6 +1354,18 @@ extension AgentChatSessionSummary {
     cursorConfigValues = other.cursorConfigValues
     if let v = other.spawnKind { spawnKind = v }
     if let v = other.subagentTakeoverPromptShownAt { subagentTakeoverPromptShownAt = v }
+    // Mirrored unconditionally, nil included: the cache is authoritative for the
+    // resume lifecycle, and a lifted limit must clear the live view's pill.
+    usageLimitResume = other.usageLimitResume
+    if other.usageLimitResume != nil {
+      usageLimitResumeWasCleared = false
+    } else if let cleared = other.usageLimitResumeWasCleared {
+      // The clear marker travels with the cleared row. Without it the merged
+      // live summary looks like an old-host summary again and the deprecated
+      // `usageLimitParkedUntil` mirror resurrects the pill the cache just
+      // retired. A cache with no marker leaves the live value alone.
+      usageLimitResumeWasCleared = cleared
+    }
   }
 }
 
@@ -2303,6 +2496,27 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var subagentParentAgentId: String?
   var subagentSpawnDepth: Int?
   var subagentResourceLinks: [AgentChatResourceLink]?
+  /// HTTP status the host attached to a terminal SDK API error on a `done`
+  /// frame (429 = provider usage limit).
+  ///
+  /// Retained raw for the same reason as the subagent fields above:
+  /// `AgentChatEvent.done` already carries seven associated values, and the
+  /// turn footer only needs "this turn ended at a usage limit". Without this
+  /// the sync path drops the field entirely and every synced turn looks
+  /// unlimited, so a past usage-limit turn loses its quiet footer once the
+  /// resume row clears.
+  var apiErrorStatus: Int?
+  /// True when the wire type was the legacy `subagent.completed` twin rather
+  /// than the canonical `subagent_result`.
+  ///
+  /// `AgentChatEvent` normalizes both wire types to `.subagentResult`, which is
+  /// right for rendering and wrong for de-duplication: old hosts emitted BOTH
+  /// frames for one finished subagent, and only the wire type tells the twins
+  /// apart from two genuine results for one agent (a `completed` frame followed
+  /// by a `stopped` one). Carried here so
+  /// `collapseLegacyWorkSubagentResultEnvelopes` can drop the twin without
+  /// guessing from the fields.
+  var isLegacySubagentCompletedFrame: Bool = false
 
   init(
     sessionId: String,
@@ -2315,7 +2529,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentSpawnKind: AgentChatSpawnKind? = nil,
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
-    subagentResourceLinks: [AgentChatResourceLink]? = nil
+    subagentResourceLinks: [AgentChatResourceLink]? = nil,
+    apiErrorStatus: Int? = nil,
+    isLegacySubagentCompletedFrame: Bool = false
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2328,6 +2544,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.apiErrorStatus = apiErrorStatus
+    self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2336,6 +2554,35 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     case event
     case sequence
     case provenance
+  }
+
+  /// Raw `event` fields read straight off the wire, before `AgentChatEvent`
+  /// normalizes them away: the `type` string (which normalization collapses,
+  /// merging the legacy and canonical subagent frames into one case) and
+  /// `apiErrorStatus` (which the `done` case does not decode at all).
+  private struct EventRawFields: Decodable {
+    var type: String?
+    var apiErrorStatus: Int?
+
+    private enum CodingKeys: String, CodingKey {
+      case type
+      case apiErrorStatus
+      case apiErrorStatusSnake = "api_error_status"
+    }
+
+    /// Each field is decoded on its own tolerant path, never a shared throwing
+    /// one. Both are best-effort peeks at an off-contract wire, so one bad
+    /// value must not cost us the other: a host sending a non-numeric
+    /// `apiErrorStatus` would otherwise fail the whole struct and silently
+    /// take `type` down with it, un-deduplicating every legacy subagent twin
+    /// in that transcript — a decode fault surfacing as duplicated rows.
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      type = (try? container.decodeIfPresent(String.self, forKey: .type)) ?? nil
+      apiErrorStatus = (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatus))
+        ?? (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatusSnake))
+        ?? nil
+    }
   }
 
   private struct SubagentMetadata: Decodable {
@@ -2386,6 +2633,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentParentAgentId = metadata?.parentAgentId
     subagentSpawnDepth = metadata?.spawnDepth
     subagentResourceLinks = metadata?.resourceLinks
+    let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
+    apiErrorStatus = rawEvent?.apiErrorStatus
+    isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
   }
 }
 
@@ -3210,6 +3460,10 @@ extension AgentChatEvent {
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
+    // The legacy SDK-shaped twin of `subagent_result`. Normalizing it to the
+    // same case is right for rendering, but erases the one fact the pair
+    // collapse needs — so `AgentChatEventEnvelope` records the wire type in
+    // `isLegacySubagentCompletedFrame` before this normalization happens.
     case "subagent.completed":
       let agentId = try container.decode(String.self, forKey: .agentId)
       self = .subagentResult(

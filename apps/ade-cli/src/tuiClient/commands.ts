@@ -94,6 +94,13 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/chat unarchive", description: "Unarchive a chat by id or title", placement: "right", argumentHint: "<chat-id|title>", category: "Chats" },
   { name: "/chat archived", description: "List archived chats", placement: "right", argumentHint: "[filter]", category: "Chats" },
   { name: "/chat delete", description: "Delete the active chat after confirmation", placement: "right", category: "Chats" },
+  // Usage-limit resume controls. `/resume-now` is the short form people reach
+  // for at a limit and the name `ade chat resume-now` already uses; the
+  // `/chat …` twin keeps the group complete, exactly as `/rename` and
+  // `/chat rename` pair.
+  { name: "/resume-now", description: "Send the usage-limit continue prompt now instead of waiting for the reset", placement: "right", category: "Chats" },
+  { name: "/chat resume-now", description: "Send the usage-limit continue prompt now instead of waiting for the reset", placement: "right", category: "Chats" },
+  { name: "/chat auto-resume", description: "Turn this chat's usage-limit auto-resume on or off", placement: "right", argumentHint: "[on|off]", category: "Chats" },
   { name: "/chat ask", description: "Escalate a blocking question from the active session", placement: "right", argumentHint: "<question>", category: "Chats" },
   { name: "/chat note", description: "Update the active session status line", placement: "right", argumentHint: "[note]", category: "Chats" },
   { name: "/chat settle", description: "Mark the active session settled", placement: "right", argumentHint: "[outcome]", category: "Chats" },

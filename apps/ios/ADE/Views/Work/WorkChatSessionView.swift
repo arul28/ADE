@@ -517,8 +517,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// `pending_input_resolved` receipt — see `WorkPendingInputQueue.resolved(_:)`.
   let pendingInputItemId: String?
   let activeBackgroundTaskCount: Int?
-  let showsUsageLimitOptOut: Bool
-  let usageLimitResetLabel: String
+  /// Live usage-limit resume state, already normalized (and back-filled from the
+  /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
+  /// one and only reason the resume pill renders.
+  let usageLimitResume: WorkUsageLimitResumeModel?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -543,8 +545,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.parentTitle = nil
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
-      self.showsUsageLimitOptOut = false
-      self.usageLimitResetLabel = ""
+      self.usageLimitResume = nil
       return
     }
 
@@ -569,15 +570,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.parentTitle = parentTitle
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
-    self.showsUsageLimitOptOut = WorkUsageLimitOptOut.shouldShow(
-      autoContinueAtUsageLimit: summary.autoContinueAtUsageLimit,
-      usageLimitParkedUntil: summary.usageLimitParkedUntil,
-      scheduledWork: summary.scheduledWork
-    )
-    self.usageLimitResetLabel = WorkUsageLimitOptOut.resetLabel(
-      usageLimitParkedUntil: summary.usageLimitParkedUntil,
-      scheduledWork: summary.scheduledWork
-    )
+    self.usageLimitResume = workUsageLimitResumeModel(for: summary)
   }
 
   var currentModelId: String {
@@ -728,7 +721,11 @@ struct WorkChatSessionView: View {
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onRestoreCancelledQueue: (@MainActor (String) async -> Void)?
-  var onOptOutUsageLimitAutoContinue: (@MainActor () async -> Void)? = nil
+  /// `chat.updateSession { autoContinueAtUsageLimit: }` — false for Don't
+  /// continue, true for Try again / Turn on.
+  var onSetUsageLimitAutoContinue: (@MainActor (Bool) async -> Void)? = nil
+  /// `chat.resumeUsageLimitNow` — sends the continue prompt immediately.
+  var onResumeUsageLimitNow: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
@@ -1065,6 +1062,8 @@ struct WorkChatSessionView: View {
 
   var liveClaudeQuotaCardId: String? {
     guard isLive else { return nil }
+    // Suppressed card, suppressed haptic: the pill is not an arrival to buzz for.
+    guard chatSummaryContext.usageLimitResume == nil else { return nil }
     for entry in timelineSnapshot.timeline {
       if case .adeCard(let card) = entry.payload,
          card.variant == "claude_session_quota",
@@ -1734,16 +1733,18 @@ struct WorkChatSessionView: View {
         )
       }
 
-      if chatSummaryContext.showsUsageLimitOptOut,
-         let onOptOutUsageLimitAutoContinue {
-        WorkUsageLimitBanner(
-          resetLabel: chatSummaryContext.usageLimitResetLabel,
-          optingOut: actionInFlight,
+      if let usageLimitResume = chatSummaryContext.usageLimitResume {
+        WorkUsageLimitResumePill(
+          model: usageLimitResume,
           enabled: !hostUnreachable && !actionInFlight,
-          onOptOut: {
-            await runSessionAction {
-              await onOptOutUsageLimitAutoContinue()
-            }
+          onResumeNow: onResumeUsageLimitNow.map { resume in
+            { await runSessionAction { await resume() } }
+          },
+          onFork: onForkChatInLane.map { fork in
+            { await runSessionAction { await fork() } }
+          },
+          onSetAutoContinue: onSetUsageLimitAutoContinue.map { set in
+            { enabled in await runSessionAction { await set(enabled) } }
           }
         )
       }
@@ -2194,6 +2195,13 @@ struct WorkChatSessionView: View {
         }
         .onChange(of: chatSummaryTimelineKey) { _, _ in
           refreshTimelinePresentation()
+        }
+        // The resume row is the second signal for "this turn stopped at a limit"
+        // (the first, `apiErrorStatus: 429`, already lives in the transcript).
+        // It arrives on a `session_meta_updated` event, not a transcript delta,
+        // so the fold has to be asked for explicitly or the footer stays stale.
+        .onChange(of: chatSummaryContext.usageLimitResume?.turnId) { _, _ in
+          scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: chatSummaryContext.effectiveFastMode) { _, newValue in
           if let pendingCodexFastMode, pendingCodexFastMode == newValue {
@@ -3835,64 +3843,6 @@ private struct WorkSubagentLineageBreadcrumb: View {
     .buttonStyle(.plain)
     .accessibilityLabel("Open parent chat, \(sourceLabel)")
     .accessibilityHint("Returns to the chat that spawned this subagent.")
-  }
-}
-
-private struct WorkUsageLimitBanner: View {
-  let resetLabel: String
-  let optingOut: Bool
-  let enabled: Bool
-  let onOptOut: @MainActor () async -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Usage limit reached")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      if !resetLabel.isEmpty {
-        Text(resetLabel)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      Text("Continue automatically")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-      HStack {
-        Spacer(minLength: 4)
-        Button {
-          Task { await onOptOut() }
-        } label: {
-          Group {
-            if optingOut {
-              ProgressView()
-                .controlSize(.small)
-            } else {
-              Text("Don't continue")
-                .font(.caption.weight(.semibold))
-            }
-          }
-          .frame(minWidth: 44, minHeight: 44)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(ADEColor.accent)
-        .disabled(!enabled)
-        .accessibilityLabel(
-          optingOut
-            ? "Opting out of automatic continue"
-            : (enabled ? "Don't continue" : "Don't continue unavailable")
-        )
-        .accessibilityHint("Stops this chat from resuming when the usage limit resets")
-      }
-    }
-    .padding(.leading, 12)
-    .padding(.trailing, 4)
-    .padding(.vertical, 8)
-    .background(ADEColor.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
-    }
   }
 }
 

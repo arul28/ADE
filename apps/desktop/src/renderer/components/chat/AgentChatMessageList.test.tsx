@@ -158,12 +158,16 @@ function renderMessageList(
     proofArtifacts?: ComputerUseArtifactView[];
     allowLocalProofArtifactProtocol?: boolean;
     onOpenProofDrawer?: () => void;
+    usageLimitResumeActive?: boolean;
+    usageLimitResumeTurnId?: string | null;
   },
 ) {
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
       <AgentChatMessageList
         events={events}
+        usageLimitResumeActive={options?.usageLimitResumeActive}
+        usageLimitResumeTurnId={options?.usageLimitResumeTurnId}
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionEnded={options?.sessionEnded}
@@ -5530,5 +5534,93 @@ describe("AgentChatMessageList — paced assistant text", () => {
       localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
       resetTextRevealHorizonCacheForTests();
     }
+  });
+});
+
+describe("usage-limit turn footer", () => {
+  const usageEnvelopes = (
+    done: Record<string, unknown>,
+  ): AgentChatEventEnvelope[] => ([
+    {
+      sessionId: "session-1",
+      timestamp: "2026-09-08T19:00:00.000Z",
+      event: { type: "user_message", text: "Keep shipping the fix.", turnId: "turn-limit" },
+    },
+    {
+      sessionId: "session-1",
+      timestamp: "2026-09-08T19:04:00.000Z",
+      event: {
+        type: "done",
+        turnId: "turn-limit",
+        status: "failed",
+        usage: { inputTokens: 12_000, outputTokens: 3_400 },
+        ...done,
+      },
+    } as AgentChatEventEnvelope,
+  ]);
+
+  it("replaces the red FAILED line with one quiet paused line on a terminal 429", () => {
+    renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }));
+
+    expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
+    expect(screen.queryByText("failed")).toBeNull();
+  });
+
+  it("moves the usage row behind the details toggle for that turn", () => {
+    renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }));
+
+    // The token accounting is still reachable — it just stops competing with
+    // the one fact that matters (when this chat comes back).
+    expect(screen.queryByTestId("done-turn-usage-detail")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show details from this turn" }));
+    expect(screen.getByTestId("done-turn-usage-detail").textContent).toContain("12.0k");
+  });
+
+  it("goes quiet for the turn the host's live resume state is anchored to", () => {
+    renderMessageList(usageEnvelopes({}), {
+      usageLimitResumeActive: true,
+      usageLimitResumeTurnId: "turn-limit",
+    });
+
+    expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
+  });
+
+  it("leaves every other failure loud", () => {
+    renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 529 }), {
+      usageLimitResumeActive: true,
+      usageLimitResumeTurnId: "turn-other",
+    });
+
+    expect(screen.queryByText(/^Paused · usage limit/)).toBeNull();
+    expect(screen.getByText("failed")).toBeTruthy();
+  });
+
+  it("stands the quota card down while the composer pill owns the limit", () => {
+    const quotaCard: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-09-08T19:04:01.000Z",
+      event: {
+        type: "ade_card",
+        cardId: "quota-1",
+        variant: "claude_session_quota",
+        // `live`, not `terminal`: a terminal quota card is the dismissed-after-
+        // rebind row every client already hides (`adeCardIsHiddenAfterDismiss`).
+        state: "live",
+        title: "Claude session limit · resets 7:00 PM",
+        subtitle: "Send again after reset, or fork this thread.",
+        fallbackText: "Claude session limit",
+        actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+      },
+    } as AgentChatEventEnvelope;
+
+    const events = [...usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }), quotaCard];
+    const withPill = renderMessageList(events, { usageLimitResumeActive: true });
+    expect(withPill.container.textContent).not.toContain("Claude session limit");
+    cleanup();
+
+    // Once the limit clears the card renders exactly as before, so an old
+    // transcript still reads.
+    const withoutPill = renderMessageList(events, { usageLimitResumeActive: false });
+    expect(withoutPill.container.textContent).toContain("Claude session limit");
   });
 });

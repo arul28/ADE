@@ -632,6 +632,46 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("wakeup · fired · late");
   });
 
+  it("opens the block for a usage-limit resume row alone, without a zero count", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            scheduledWork: [],
+            usageLimitResume: {
+              state: "armed",
+              provider: "claude",
+              fireAt: new Date(Date.now() + 12 * 60_000).toISOString(),
+              resetAt: new Date(Date.now() + 12 * 60_000).toISOString(),
+              scheduleId: "auto-resume:chat-1",
+              attempts: 1,
+              providerDetail: null,
+              turnId: "turn-limit",
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    // The pill label is already a whole sentence ("Resumes in 3 min · usage
+    // limit"), so the row carries the glyph and the label and nothing else — a
+    // static "resume" tag in front of it would read as "resume Won't
+    // auto-resume" for the opted-out state.
+    expect(frame).toContain("⏳ Resumes in");
+    expect(frame).not.toContain("resume Resumes in");
+    // The hint sits at the END of the head line, after the rule, so the pin has
+    // to be on that line: no scheduled work means no count, not "0" counting
+    // something the user never asked about.
+    const head = frame.split("\n").find((line) => line.includes("SCHEDULE"));
+    expect(head).toBeDefined();
+    expect(head).not.toMatch(/\d/);
+  });
+
   it("renders a BACKGROUND block with smart labels, distinct from SCHEDULE", () => {
     const result = render(
       <RightPane

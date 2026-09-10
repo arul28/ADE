@@ -51,6 +51,7 @@ import {
   isAdeDeeplinkArg,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
+import { buildDeeplink } from "../shared/deeplinks";
 import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
@@ -3917,12 +3918,34 @@ app.whenReady().then(async () => {
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
         if (!Notification.isSupported()) return;
+        // An OS notification for something the user is already looking at is
+        // noise. There is no per-window "which chat is open" signal in main, so
+        // the check is the coarse one that is actually available: any focused
+        // ADE window means the user is here, and the chat's own transcript
+        // notice already says the resume happened.
+        if (BrowserWindow.getFocusedWindow()) return;
         try {
           const notification = new Notification({
             title: "Chat resumed",
             body: title?.trim()
               ? `"${title.trim()}" continued after its usage limit reset.`
               : "A chat continued after its usage limit reset.",
+          });
+          // Clicking it opens the chat, through the same protocol dispatcher
+          // an `ade://` click from outside the app goes through.
+          notification.on("click", () => {
+            handleDeeplinkUrl(
+              buildDeeplink({ kind: "session", sessionId }, { form: "ade" }),
+              "notification:usage_limit_resume",
+              (request) => {
+                if (dispatchAppNavigationForProjectRoot) {
+                  dispatchAppNavigationForProjectRoot(projectRoot, request);
+                  return;
+                }
+                dispatchOrQueueAppNavigationRequest(request);
+              },
+              (event, fields) => logger.warn(event, fields),
+            );
           });
           notification.show();
         } catch (error) {

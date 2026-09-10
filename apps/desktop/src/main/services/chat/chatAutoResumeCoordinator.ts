@@ -1,4 +1,7 @@
 import {
+  AUTO_RESUME_ARMED_NOTICE_DETAIL,
+  AUTO_RESUME_PAUSED_NOTICE_DETAIL,
+  AUTO_RESUME_PAUSED_NOTICE_MESSAGE,
   AUTO_RESUME_PROMPT,
   AUTO_RESUME_REASON,
   AUTO_RESUME_SCHEDULED_WORK_SOURCE,
@@ -8,7 +11,11 @@ import {
   isPendingAutoResumeScheduledWork,
   isUsageLimitChatError,
 } from "../../../shared/chatAutoResume";
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import type {
+  AgentChatEvent,
+  AgentChatProvider,
+  AgentChatUsageLimitResume,
+} from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import type {
   ChatScheduledWorkRecord,
@@ -62,18 +69,125 @@ export type ChatAutoResumeCoordinatorDeps = {
    * Optional, so a wiring without analytics keeps auto-resume working.
    */
   captureAnalytics?: (properties: ChatAutoResumeAnalyticsProperties) => void;
+  /**
+   * The chat's current resume state, as the service stores it. The coordinator
+   * writes this state but does not keep a copy, and a row that changes status
+   * has to be projected onto whatever the chat is showing right now.
+   */
+  readResumeState?: (sessionId: string) => AgentChatUsageLimitResume | null;
+  /**
+   * Every transition of the contract's `usageLimitResume` state, in the frame
+   * it happens. The chat service stores it on the session, mirrors the
+   * deprecated park instant, and broadcasts `session_meta_updated`; this file
+   * owns WHEN the state changes and to what, and nothing else.
+   */
+  onResumeStateChanged?: (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume | null,
+  ) => void;
   logger: Logger;
 };
 
+export type ChatAutoResumeArmArgs = {
+  sessionId: string;
+  provider: AgentChatProvider;
+  /** Reset instant the provider published, or null when it publishes none. */
+  resetAtMs: number | null;
+  /** Raw provider text for the details toggle. Never parsed. */
+  providerDetail?: string | null;
+  error: AutoResumeErrorInput;
+};
+
+/**
+ * What a re-arm actually did.
+ *
+ * `superseded` is not a failure: something newer than the state being restored
+ * (a user message, an opt-out) already governs the chat, so the caller must
+ * publish nothing. `paused` means the row was restored durably but cannot fire
+ * until scheduled work is unpaused, so the caller publishes `no_reset` rather
+ * than an armed countdown. `failed` is a write failure, and the caller has to
+ * stop claiming a resume is armed when no row exists to fire it.
+ */
+export type ChatAutoResumeRearmOutcome = "armed" | "paused" | "superseded" | "failed";
+
 export type ChatAutoResumeCoordinator = {
-  maybeArmAfterUsageLimit: (args: {
-    sessionId: string;
-    provider: string;
-    /** Reset instant the provider published, or null when it publishes none. */
-    resetAtMs: number | null;
-    error: AutoResumeErrorInput;
-  }) => void;
-  cancelForSession: (sessionId: string, reason: string) => void;
+  maybeArmAfterUsageLimit: (args: ChatAutoResumeArmArgs) => void;
+  /**
+   * Resolves once the arm started for `sessionId` has finished writing (or
+   * declining to write) its durable row. The Claude path awaits this before it
+   * reaps the query: a reset that ran first would tear down the runtime while
+   * the upsert was still in flight, which is exactly how a real limit ended up
+   * with no resume armed.
+   */
+  whenArmed: (sessionId: string) => Promise<void>;
+  /** Live streak state, for the contract's `attempts` and `paused`. */
+  streakState: (sessionId: string) => { attempts: number; paused: boolean };
+  /**
+   * Re-creates the durable row for a resume that was cancelled and then not
+   * spent — today only the manual Resume now whose dispatch failed. It restores
+   * an arm that already happened, so it counts no attempt, emits no notice and
+   * reports no analytics; it does apply the same schedulability guard the arm
+   * path does, and undoes itself if a cancel lands while the upsert is in
+   * flight. The caller owns the opt-out check, because only it knows the
+   * session's `autoContinueAtUsageLimit`.
+   */
+  rearm: (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume,
+    epochAtDispatch: number,
+  ) => Promise<ChatAutoResumeRearmOutcome>;
+  /**
+   * The chat's current cancel epoch, minting the record if this process has
+   * none. A caller that is about to do something cancellable captures it first
+   * and hands it back, so anything the user did in between outranks the undo.
+   */
+  cancelEpochFor: (sessionId: string) => number;
+  /**
+   * Puts a streak back the way it was before a cancel that turned out not to
+   * count. `cancelForSession` zeroes the counter on the way past — correct for a
+   * real user message, wrong for a manual resume whose turn never dispatched,
+   * which would otherwise hand a capped chat two fresh arms and silently
+   * un-pause it.
+   */
+  restoreStreak: (
+    sessionId: string,
+    streak: {
+      attempts: number;
+      paused: boolean;
+      lastArmedFireAtMs?: number | null;
+      epochAtDispatch: number;
+    },
+  ) => void;
+  /**
+   * Clears the streak so an explicit opt-in arms afresh. Turn on / Try again is
+   * a human saying "try again", which is exactly the intervening event the cap
+   * waits for — and it bumps the cancel epoch, so it outranks any undo still in
+   * flight from an older resume attempt.
+   */
+  resetStreak: (sessionId: string) => void;
+  /**
+   * Drops the pending resume. The in-memory half lands synchronously; the
+   * returned promise settles once the durable row is actually cancelled, which
+   * only the manual Resume-now path needs to wait for (it dispatches the same
+   * prompt itself).
+   */
+  cancelForSession: (sessionId: string, reason: string) => Promise<void>;
+  /**
+   * The durable row's status changed underneath the state — the user paused
+   * this chat's scheduled work, a project-wide pause swept it, or either was
+   * lifted. Ownership of that mapping lives here so the pause path and the arm
+   * path cannot disagree about what a paused resume means.
+   */
+  noteRowStatusChanged: (
+    sessionId: string,
+    row: { id: string; status: string; pausedFlag?: boolean; fireAt?: number | undefined },
+  ) => void;
+  /**
+   * Records an explicit session pause even when there is no row to emit a
+   * transition for. A manual Resume now cancels its row before dispatch; a
+   * pause that lands in that gap still has to outrank a failed-send restore.
+   */
+  noteSessionPaused: (sessionId: string) => void;
   noteScheduleDismissed: (sessionId: string) => void;
   noteResumeTurnStarted: (sessionId: string) => void;
   noteTurnFinished: (sessionId: string) => void;
@@ -129,16 +243,13 @@ type AutoResumeSessionState = {
    * fired resume's analytics carries the same one the arm did — the resume
    * dispatch reaches this file with no provider in hand.
    */
-  provider: string | null;
+  provider: AgentChatProvider | null;
+  /** In-flight arm, awaited by `whenArmed`. */
+  armPromise: Promise<void> | null;
 };
 
 /** Consecutive arms allowed with no intervening user message. */
 const AUTO_RESUME_MAX_CONSECUTIVE_ARMS = 2;
-
-const PAUSED_NOTICE_DETAIL =
-  "The usage limit stopped this chat again after two automatic resumes, so ADE will not schedule another one. Send a message when you want to continue.";
-const SCHEDULED_NOTICE_DETAIL =
-  "ADE will ask this chat to continue the interrupted task once the usage limit resets. Sending a message or retrying the turn cancels it.";
 
 /**
  * Auto-resume after a provider usage limit resets.
@@ -151,7 +262,14 @@ const SCHEDULED_NOTICE_DETAIL =
 export function createChatAutoResumeCoordinator(
   deps: ChatAutoResumeCoordinatorDeps,
 ): ChatAutoResumeCoordinator {
-  const { getScheduler, whenSchedulerReady, isSessionSchedulable, emitNotice, logger } = deps;
+  const {
+    getScheduler,
+    whenSchedulerReady,
+    isSessionSchedulable,
+    emitNotice,
+    readResumeState,
+    logger,
+  } = deps;
   const stateBySession = new Map<string, AutoResumeSessionState>();
 
   const ensureState = (sessionId: string): AutoResumeSessionState => {
@@ -167,10 +285,50 @@ export function createChatAutoResumeCoordinator(
       resumeTurnPending: false,
       resumeTurnHitLimit: false,
       provider: null,
+      armPromise: null,
     };
     stateBySession.set(sessionId, created);
     return created;
   };
+
+  /**
+   * One `usageLimitResume` transition. Reported synchronously so the state a
+   * client reads never lags the transcript notice that explains it.
+   */
+  const reportResumeState = (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume | null,
+  ): void => {
+    try {
+      deps.onResumeStateChanged?.(sessionId, resume);
+    } catch (error) {
+      logger.warn("agent_chat.auto_resume_state_report_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const buildResumeState = (args: {
+    state: AgentChatUsageLimitResume["state"];
+    provider: AgentChatProvider;
+    fireAtMs: number | null;
+    resetAtMs: number | null;
+    scheduleId: string | null;
+    attempts: number;
+    providerDetail?: string | null;
+    turnId?: string | undefined;
+  }): AgentChatUsageLimitResume => ({
+    state: args.state,
+    provider: args.provider,
+    fireAt: args.fireAtMs == null ? null : new Date(args.fireAtMs).toISOString(),
+    resetAt: args.resetAtMs == null ? null : new Date(args.resetAtMs).toISOString(),
+    scheduleId: args.scheduleId,
+    attempts: args.attempts,
+    providerDetail: args.providerDetail?.trim() || null,
+    turnId: args.turnId ?? null,
+    updatedAt: new Date().toISOString(),
+  });
 
   /**
    * One coarse fact per auto-resume transition. Every call site is a state
@@ -190,6 +348,28 @@ export function createChatAutoResumeCoordinator(
 
   const findPendingRow = (sessionId: string): ChatScheduledWorkRecord | null =>
     getScheduler()?.list(sessionId).find(isPendingAutoResumeScheduledWork) ?? null;
+
+  /**
+   * The durable row, in one place. Both writers — the arm and the restore —
+   * upsert exactly this shape under the deterministic id, so a row that comes
+   * back after a failed manual resume cannot drift from the row that armed.
+   */
+  const autoResumeRowUpsert = (
+    sessionId: string,
+    fireAt: number,
+  ): Parameters<ChatScheduledWorkScheduler["upsert"]>[0] => ({
+    id: autoResumeScheduleId(sessionId),
+    sessionId,
+    kind: "wakeup" as const,
+    prompt: AUTO_RESUME_PROMPT,
+    reason: AUTO_RESUME_REASON,
+    fireAt,
+    status: "scheduled" as const,
+    pausedFlag: false,
+    lateFlag: false,
+    durable: true,
+    source: AUTO_RESUME_SCHEDULED_WORK_SOURCE,
+  });
 
   const cancelPendingRow = async (sessionId: string, reason: string): Promise<void> => {
     const scheduler = getScheduler();
@@ -237,12 +417,18 @@ export function createChatAutoResumeCoordinator(
    * not a reason to drop a cron or wakeup the user (or the agent) asked for, so
    * the sweep is scoped by the `auto_resume_limit` tag.
    *
-   * Synchronous at the call site by design — it runs inside the dispatch choke
-   * points — but the sweep itself has to wait for the scheduler, and the row may
-   * not exist yet at all. Bumping the epoch first is what makes both cases safe:
-   * an arm that lands afterwards cancels the row it just created.
+   * The in-memory half is synchronous by design — it runs inside the dispatch
+   * choke points — but the sweep itself has to wait for the scheduler, and the
+   * row may not exist yet at all. Bumping the epoch first is what makes both
+   * cases safe: an arm that lands afterwards cancels the row it just created.
+   *
+   * The sweep is RETURNED rather than only fired off so a caller that is about
+   * to dispatch the same prompt itself (manual Resume now) can wait for the
+   * durable row to actually be gone before sending. Dispatch call sites ignore
+   * the promise deliberately: they must not block a user message on a scheduler
+   * write, and the epoch bump already makes a late-landing arm undo itself.
    */
-  const cancelForSession = (sessionId: string, reason: string): void => {
+  const cancelForSession = (sessionId: string, reason: string): Promise<void> => {
     const state = stateBySession.get(sessionId);
     if (state) {
       state.cancelEpoch += 1;
@@ -254,9 +440,14 @@ export function createChatAutoResumeCoordinator(
       state.resumeTurnPending = false;
       state.resumeTurnHitLimit = false;
     }
+    // The limit no longer governs this chat once its resume is gone. Reported
+    // unconditionally: the row being cancelled may predate this process, in
+    // which case there is no in-memory state and the stored one is all a
+    // client has.
+    reportResumeState(sessionId, null);
     // The sweep runs whether or not this process has state for the chat: a row
     // armed before the last restart is on disk with nothing in the map yet.
-    void (async () => {
+    return (async () => {
       try {
         await whenSchedulerReady();
         await cancelPendingRow(sessionId, reason);
@@ -268,6 +459,63 @@ export function createChatAutoResumeCoordinator(
         });
       }
     })();
+  };
+
+  /**
+   * Projects the durable row's status onto the state clients render.
+   *
+   * A paused resume is a resume that is NOT going to fire, so publishing
+   * `armed` for it would count down to an instant nothing happens at — and,
+   * once that instant passed, read as `resuming` and lock out the manual Resume
+   * now that is the chat's only way forward. `no_reset` is the honest state for
+   * it: a live limit with no schedule behind it, which is exactly what the pill
+   * renders as "no reset time" with a working Retry. Un-pausing puts the row's
+   * own fire time back.
+   *
+   * Only these two transitions are projected. Everything else about the state —
+   * which limit, which turn, how many attempts — belongs to the arm that wrote
+   * it and is carried through untouched.
+   */
+  const noteRowStatusChanged = (
+    sessionId: string,
+    row: { id: string; status: string; pausedFlag?: boolean; fireAt?: number | undefined },
+  ): void => {
+    if (row.id !== autoResumeScheduleId(sessionId)) return;
+    const current = readResumeState?.(sessionId) ?? null;
+    if (!current) return;
+    const paused = row.status === "paused" || row.pausedFlag === true;
+    if (paused) {
+      if (current.state !== "armed" && current.state !== "resuming") return;
+      reportResumeState(sessionId, {
+        ...current,
+        state: "no_reset",
+        fireAt: null,
+        scheduleId: null,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (row.status !== "scheduled" || current.state !== "no_reset") return;
+    if (row.fireAt == null || !Number.isFinite(row.fireAt)) return;
+    reportResumeState(sessionId, {
+      ...current,
+      state: "armed",
+      fireAt: new Date(row.fireAt).toISOString(),
+      scheduleId: row.id,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  /**
+   * A session pause is a user decision, even when the auto-resume row was
+   * already cancelled by another operation and therefore emits no transition.
+   * Advance the same epoch used by arm/recovery so an older failed manual
+   * resume cannot resurrect an unpaused row behind that decision.
+   */
+  const noteSessionPaused = (sessionId: string): void => {
+    const state = stateBySession.get(sessionId);
+    if (!state) return;
+    state.cancelEpoch += 1;
   };
 
   /**
@@ -316,6 +564,9 @@ export function createChatAutoResumeCoordinator(
     // measurement cannot carry. Only the not-pending -> pending edge reports,
     // so a repeated note about the same live resume cannot double-count it.
     if (!state?.resumeTurnPending) captureOutcome("resumed", state?.provider ?? null);
+    // The row fired, so nothing is armed any more — same reason the report sits
+    // above the state guard.
+    reportResumeState(sessionId, null);
     if (!state) return;
     state.resumeTurnPending = true;
     state.resumeTurnHitLimit = false;
@@ -343,12 +594,7 @@ export function createChatAutoResumeCoordinator(
    * it comes due, the scheduler defers to the next turn boundary rather than
    * pushing a second prompt into a live turn.
    */
-  const maybeArmAfterUsageLimit = (args: {
-    sessionId: string;
-    provider: string;
-    resetAtMs: number | null;
-    error: AutoResumeErrorInput;
-  }): void => {
+  const maybeArmAfterUsageLimit = (args: ChatAutoResumeArmArgs): void => {
     if (!isUsageLimitChatError(args.error)) return;
     const { sessionId } = args;
     const turnId = args.error.turnId;
@@ -359,9 +605,22 @@ export function createChatAutoResumeCoordinator(
       tracked.resumeTurnHitLimit = true;
     }
     const fireAt = autoResumeFireAtMs(args.resetAtMs, Date.now());
-    // No reset instant (or one already in the past): keep the manual recovery
-    // card as the only path, exactly as before.
-    if (fireAt == null) return;
+    // No reset instant (or one already in the past): nothing to arm, so the
+    // manual recovery path is the only one. The limit is still live, and the
+    // contract has a state for exactly that.
+    if (fireAt == null) {
+      reportResumeState(sessionId, buildResumeState({
+        state: "no_reset",
+        provider: args.provider,
+        fireAtMs: null,
+        resetAtMs: args.resetAtMs,
+        scheduleId: null,
+        attempts: tracked?.consecutiveArms ?? 0,
+        providerDetail: args.providerDetail,
+        turnId,
+      }));
+      return;
+    }
     if (!isSessionSchedulable(sessionId)) return;
     if (tracked?.arming) return;
     const state = tracked ?? ensureState(sessionId);
@@ -377,6 +636,16 @@ export function createChatAutoResumeCoordinator(
         // at the limit reports the pause once per streak rather than once per
         // failure.
         captureOutcome("paused", args.provider);
+        reportResumeState(sessionId, buildResumeState({
+          state: "paused",
+          provider: args.provider,
+          fireAtMs: fireAt,
+          resetAtMs: args.resetAtMs,
+          scheduleId: null,
+          attempts: state.consecutiveArms,
+          providerDetail: args.providerDetail,
+          turnId,
+        }));
         // Detached on purpose, like the scheduled notice below. This runs from
         // inside the chat service's event commit, before the error event that
         // triggered it has minted its sequence number, so emitting inline
@@ -390,8 +659,8 @@ export function createChatAutoResumeCoordinator(
           try {
             await Promise.resolve();
             emitAutoResumeNotice(sessionId, {
-              message: "Auto-resume paused after two attempts",
-              detail: PAUSED_NOTICE_DETAIL,
+              message: AUTO_RESUME_PAUSED_NOTICE_MESSAGE,
+              detail: AUTO_RESUME_PAUSED_NOTICE_DETAIL,
               turnId,
             });
           } catch (error) {
@@ -406,29 +675,96 @@ export function createChatAutoResumeCoordinator(
     }
     state.arming = true;
     const armedAtEpoch = state.cancelEpoch;
+    /**
+     * What a chat reports when its row cannot fire: the limit is still live,
+     * but there is no schedule behind it, which is exactly `no_reset` — a
+     * countdown-free state whose Retry still works. Written from the NEW
+     * limit's details, because the failure that got here may have arrived on a
+     * dispatch that already reported the previous state as gone.
+     */
+    const reportPausedRowState = (): void => {
+      reportResumeState(sessionId, buildResumeState({
+        state: "no_reset",
+        provider: args.provider,
+        fireAtMs: null,
+        resetAtMs: args.resetAtMs,
+        scheduleId: null,
+        attempts: state.consecutiveArms,
+        providerDetail: args.providerDetail,
+        turnId,
+      }));
+    };
 
-    void (async () => {
+    const armPromise = (async () => {
       try {
         await whenSchedulerReady();
         const scheduler = getScheduler();
         if (!scheduler) return;
-        const schedule = await scheduler.upsert({
-          id: autoResumeScheduleId(sessionId),
-          sessionId,
-          kind: "wakeup",
-          prompt: AUTO_RESUME_PROMPT,
-          reason: AUTO_RESUME_REASON,
-          fireAt,
-          status: "scheduled",
-          pausedFlag: false,
-          lateFlag: false,
-          durable: true,
-          source: AUTO_RESUME_SCHEDULED_WORK_SOURCE,
-        });
+        // The state report further down still runs for a reused row: a second
+        // event can carry a turn id or provider detail the first one lacked.
+        const armedRow = findPendingRow(sessionId);
+        // A paused row is a decision, not a stale row: the user (or a global
+        // pause) stopped this chat's scheduled work, and an upsert would
+        // un-pause it behind their back. Leave the row and the state exactly as
+        // they are — no countdown is the honest answer for a resume that is not
+        // going to fire.
+        if (armedRow && (armedRow.status === "paused" || armedRow.pausedFlag)) {
+          // A pause/opt-out/user dispatch can win while the scheduler was
+          // loading. Do not republish `no_reset` over that newer state, and
+          // make sure its cancellation removes the paused row too.
+          if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== armedAtEpoch) {
+            await cancelPendingRow(sessionId, "cancelled_while_arming");
+            return;
+          }
+          logger.info("agent_chat.auto_resume_row_paused", {
+            sessionId,
+            scheduleId: armedRow.id,
+            fireAt: new Date(fireAt).toISOString(),
+          });
+          reportPausedRowState();
+          return;
+        }
+        // One failure can commit more than one error event for the same limit.
+        // Re-upserting the row it already wrote would replace, persist, emit a
+        // transition and re-arm the timer for a schedule that did not change.
+        // Only a live `scheduled` row qualifies — a `fired` one is mid-delivery
+        // and must not be adopted as if it were still waiting.
+        const reusableRow = armedRow
+          && armedRow.status === "scheduled"
+          && !armedRow.pausedFlag
+          && armedRow.fireAt === fireAt
+          ? armedRow
+          : null;
+        const schedule = reusableRow
+          ?? await scheduler.upsert(autoResumeRowUpsert(sessionId, fireAt));
+        // The upsert can resolve with a paused row while a newer cancellation
+        // is in flight. The paused projection must not outrank that newer
+        // transition, and the row must be swept before this arm returns.
+        if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== armedAtEpoch) {
+          await cancelPendingRow(sessionId, "cancelled_while_arming");
+          return;
+        }
         if (schedule.status === "cancelled" || schedule.status === "done") return;
+        // The row was written PAUSED. Scheduled work for this chat (or for the
+        // whole project) is paused, so the scheduler took the row and parked
+        // it: it will not fire, and counting an attempt, announcing "Resumes
+        // at ..." and publishing a countdown for it would all be lies. Reported
+        // the same way a pause that arrives later is.
+        if (schedule.status === "paused" || schedule.pausedFlag) {
+          logger.info("agent_chat.auto_resume_row_paused", {
+            sessionId,
+            scheduleId: schedule.id,
+            fireAt: new Date(fireAt).toISOString(),
+          });
+          reportPausedRowState();
+          return;
+        }
         // A cancel landed while the upsert was in flight (a user message, or a
         // sweep that ran while the scheduler was still loading its durable
         // state). The row it was looking for only exists now, so undo it here.
+        // The epoch was checked immediately after upsert, before any status
+        // projection. This later check closes a synchronous hook that mutates
+        // state while inspecting the returned schedule in custom schedulers.
         if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== armedAtEpoch) {
           await cancelPendingRow(sessionId, "cancelled_while_arming");
           return;
@@ -455,11 +791,24 @@ export function createChatAutoResumeCoordinator(
           status: schedule.status,
           consecutiveArms: state.consecutiveArms,
         });
+        // Reported before the notice de-dupe below, not after: a repeat error
+        // event for the same fire time must still refresh the state clients
+        // render from even when it adds no second transcript line.
+        reportResumeState(sessionId, buildResumeState({
+          state: "armed",
+          provider: args.provider,
+          fireAtMs: fireAt,
+          resetAtMs: args.resetAtMs,
+          scheduleId: schedule.id,
+          attempts: state.consecutiveArms,
+          providerDetail: args.providerDetail,
+          turnId,
+        }));
         if (state.noticeFireAt === fireAt) return;
         state.noticeFireAt = fireAt;
         emitAutoResumeNotice(sessionId, {
           message: autoResumeScheduledMessage(fireAt),
-          detail: SCHEDULED_NOTICE_DETAIL,
+          detail: AUTO_RESUME_ARMED_NOTICE_DETAIL,
           turnId,
         });
       } catch (error) {
@@ -471,10 +820,158 @@ export function createChatAutoResumeCoordinator(
         state.arming = false;
       }
     })();
+    // Held so `whenArmed` can wait on the upsert. Cleared by the same arm that
+    // set it, so a later caller never awaits a settled arm from a past limit.
+    state.armPromise = armPromise;
+    void armPromise.finally(() => {
+      if (state.armPromise === armPromise) state.armPromise = null;
+    });
+  };
+
+  /**
+   * Puts back a row the manual Resume now cancelled and then failed to spend.
+   *
+   * Deliberately NOT `maybeArmAfterUsageLimit`: this is the same arm, restored,
+   * so counting it again would spend one of the two attempts the cap allows and
+   * announce a second "Resumes at ..." for a schedule the chat never lost. What
+   * it does share is the guard and the shape — a chat that stopped being
+   * schedulable while the send was in flight gets nothing, and the row is the
+   * arm path's own payload.
+   *
+   * `epochAtDispatch` is the caller's proof that nothing happened in between.
+   * It is captured before the dispatch and compared here on both sides of the
+   * upsert, so a user message or an opt-out that landed while the send was in
+   * flight reports `superseded` and leaves the newer state alone. The record is
+   * minted rather than looked up: after a restart there is no in-memory state,
+   * and an epoch check against a record that does not exist is no check at all.
+   */
+  const rearm = async (
+    sessionId: string,
+    resume: AgentChatUsageLimitResume,
+    epochAtDispatch: number,
+  ): Promise<ChatAutoResumeRearmOutcome> => {
+    if (resume.state !== "armed" || !resume.fireAt) return "failed";
+    const fireAt = Date.parse(resume.fireAt);
+    if (!Number.isFinite(fireAt)) return "failed";
+    if (!isSessionSchedulable(sessionId)) return "failed";
+    const state = ensureState(sessionId);
+    if (state.cancelEpoch !== epochAtDispatch) return "superseded";
+    try {
+      await whenSchedulerReady();
+      const scheduler = getScheduler();
+      if (!scheduler) return "failed";
+      if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== epochAtDispatch) {
+        return "superseded";
+      }
+      const schedule = await scheduler.upsert(autoResumeRowUpsert(sessionId, fireAt));
+      if (schedule.status === "cancelled" || schedule.status === "done") return "failed";
+      // A cancel that landed while the upsert was in flight was looking for a
+      // row that only exists now, so undo it here — same rule the arm path
+      // follows, and the reason the epoch is re-read rather than trusted.
+      if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== epochAtDispatch) {
+        await cancelPendingRow(sessionId, "cancelled_while_rearming");
+        return "superseded";
+      }
+      // The scheduler can accept the restore while this session or the whole
+      // project is paused. The row is durable, but it will not fire, so the
+      // caller must publish the countdown-free state instead of claiming that
+      // an armed resume is waiting.
+      if (schedule.status === "paused" || schedule.pausedFlag) {
+        if (!findPendingRow(sessionId)) return "superseded";
+        logger.info("agent_chat.auto_resume_rearm_paused", {
+          sessionId,
+          scheduleId: schedule.id,
+          fireAt: new Date(fireAt).toISOString(),
+        });
+        return "paused";
+      }
+      // The row was written and is already gone again: the only thing that
+      // removes a pending row is a cancel, so this is a newer writer (a user
+      // message taking the chat over) rather than a re-arm that failed. Saying
+      // `failed` here would let the caller publish `no_reset` over a chat the
+      // user just took back.
+      if (!findPendingRow(sessionId)) return "superseded";
+      logger.info("agent_chat.auto_resume_rearmed", {
+        sessionId,
+        scheduleId: schedule.id,
+        fireAt: new Date(fireAt).toISOString(),
+        status: schedule.status,
+      });
+      return "armed";
+    } catch (error) {
+      logger.warn("agent_chat.auto_resume_rearm_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "failed";
+    }
+  };
+
+  /**
+   * Undoes the streak half of a cancel that turned out not to count. Only the
+   * fields `cancelForSession` zeroes are written back, and only for a chat this
+   * process already tracks — a restored counter for a chat with no record would
+   * be a counter for a limit nobody saw.
+   */
+  const restoreStreak = (
+    sessionId: string,
+    streak: {
+      attempts: number;
+      paused: boolean;
+      lastArmedFireAtMs?: number | null;
+      epochAtDispatch: number;
+    },
+  ): void => {
+    const state = stateBySession.get(sessionId);
+    if (!state) return;
+    // Same epoch rule the re-arm follows: a user message, an opt-out or an
+    // explicit Turn on that landed while the send was in flight already decided
+    // what this chat's streak means, and an undo from an older attempt must not
+    // reach back over it.
+    if (state.cancelEpoch !== streak.epochAtDispatch) return;
+    state.consecutiveArms = streak.attempts;
+    state.pauseNoticed = streak.paused;
+    if (streak.lastArmedFireAtMs !== undefined) {
+      state.lastArmedFireAt = streak.lastArmedFireAtMs;
+    }
+  };
+
+  /**
+   * Clears the streak so the next arm counts from zero. Turn on / Try again is
+   * a human saying "try again", which is the intervening event the cap waits
+   * for. (Resume now does NOT come through here: the cancel it awaits already
+   * zeroes the counter, and only a turn that actually starts keeps it zeroed.)
+   *
+   * The epoch bump is what makes it outrank a pending undo: a manual resume
+   * that fails afterwards must not restore the streak this reset just cleared.
+   */
+  const resetStreak = (sessionId: string): void => {
+    const state = stateBySession.get(sessionId);
+    if (!state) return;
+    state.cancelEpoch += 1;
+    state.consecutiveArms = 0;
+    state.lastArmedFireAt = null;
+    state.noticeFireAt = null;
+    state.pauseNoticed = false;
   };
 
   return {
     maybeArmAfterUsageLimit,
+    rearm,
+    cancelEpochFor: (sessionId: string): number => ensureState(sessionId).cancelEpoch,
+    restoreStreak,
+    noteRowStatusChanged,
+    noteSessionPaused,
+    whenArmed: (sessionId: string): Promise<void> =>
+      stateBySession.get(sessionId)?.armPromise ?? Promise.resolve(),
+    streakState: (sessionId: string): { attempts: number; paused: boolean } => {
+      const state = stateBySession.get(sessionId);
+      return {
+        attempts: state?.consecutiveArms ?? 0,
+        paused: state?.pauseNoticed === true,
+      };
+    },
+    resetStreak,
     cancelForSession,
     noteScheduleDismissed,
     noteResumeTurnStarted,

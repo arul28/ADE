@@ -102,7 +102,29 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
   };
 }
 
-export function formatChatTurnStatus(status: ChatTurnStatusSnapshot): string {
+const CHAT_TURN_STATUS_KEY_WIDTH = 11;
+
+/**
+ * One key/value row of the status header, `  key        value`. Exported so a
+ * caller supplying `extraRows` renders in the same column as `tool`/`queued`/
+ * `ask` without copying the width — a second copy of the constant is exactly
+ * how the CLI's resume line drifted out of alignment.
+ */
+export function chatTurnStatusRow(key: string, text: string): string {
+  return `  ${key.padEnd(CHAT_TURN_STATUS_KEY_WIDTH)}${text}`;
+}
+
+export function formatChatTurnStatus(
+  status: ChatTurnStatusSnapshot,
+  options?: {
+    /**
+     * Extra header rows (build them with `chatTurnStatusRow`), rendered inside
+     * the key/value block rather than appended to the output. Anything printed
+     * after the subagent tree reads as a subagent.
+     */
+    extraRows?: readonly string[];
+  },
+): string {
   const marker = status.phase === "running" ? "●" : status.phase === "blocked" ? "●" : "○";
   const phaseLabel = status.phase.toUpperCase();
   const headlineBits: string[] = [];
@@ -122,18 +144,23 @@ export function formatChatTurnStatus(status: ChatTurnStatusSnapshot): string {
 
   if (status.currentTool) {
     const detail = status.currentTool.detail?.trim();
-    lines.push(`  tool       ${status.currentTool.name}${detail ? ` · ${detail}` : ""}`);
+    lines.push(chatTurnStatusRow("tool", `${status.currentTool.name}${detail ? ` · ${detail}` : ""}`));
   }
   if (status.queuedMessageCount > 0) {
-    lines.push(`  queued     ${status.queuedMessageCount} message${status.queuedMessageCount === 1 ? "" : "s"} waiting`);
+    lines.push(chatTurnStatusRow(
+      "queued",
+      `${status.queuedMessageCount} message${status.queuedMessageCount === 1 ? "" : "s"} waiting`,
+    ));
   }
   if (status.ask?.stranded) {
     lines.push("  ⚠ stranded — no deadline set (dialogExpiry: never)");
   }
   if (status.ask) {
     const askDetail = status.ask.description?.trim() || status.ask.title;
-    lines.push(`  ask        ${askDetail}`);
+    lines.push(chatTurnStatusRow("ask", askDetail));
   }
+
+  for (const row of options?.extraRows ?? []) lines.push(row);
 
   if (status.subagents.length) {
     lines.push("");

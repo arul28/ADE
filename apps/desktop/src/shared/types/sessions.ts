@@ -12,6 +12,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
+  AgentChatUsageLimitResume,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
@@ -312,10 +313,17 @@ export type TerminalSessionSummary = {
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
   /**
-   * ISO instant this chat is parked waiting for a usage-limit reset. Distinct
-   * from `nextWakeAt` so the session list can read Parked instead of Waiting.
+   * Deprecated mirror of `usageLimitResume.fireAt`, published only for the
+   * `armed` and `resuming` states. Old iOS builds read it; new clients read
+   * `usageLimitResume`.
    */
   usageLimitParkedUntil?: string | null;
+  /**
+   * Host-computed usage-limit resume state — the one thing every client renders
+   * the resume pill and the session-list label from. Null when no usage limit
+   * is live for this chat.
+   */
+  usageLimitResume?: AgentChatUsageLimitResume | null;
   /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
   chatActivityMode?: "planning" | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
