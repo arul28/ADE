@@ -368,8 +368,8 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
 
 /**
  * Every top-level helper whose body reaches an argv primitive. Was 97 while
- * `shellEscapeToken`'s `/'/` regex read as a string opener and ran its "body"
- * thousands of lines past its closing brace; that pure escaper reads no argv.
+ * `shellEscapeToken`'s `/'/` regex read as a string opener and its "body"
+ * ran 58 lines past its closing brace into argv-reading neighbours; that pure escaper reads no argv.
  */
 const ARGV_READER_COUNT = 96;
 
