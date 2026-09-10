@@ -750,7 +750,10 @@ describe("AdeCodeApp polling", () => {
   });
 
   it("writes the per-chat auto-resume switch, and explains the bare command instead of guessing", async () => {
-    const actionMock = vi.fn(async () => []);
+    // Typed like the neighbouring action mocks: the assertions below read
+    // `domain`/`action` off each recorded call, which an argument-less mock
+    // records as an empty tuple.
+    const actionMock = vi.fn(async (_domain: string, _action: string, _args?: Record<string, unknown>) => []);
     connection.action = actionMock as unknown as AdeCodeConnection["action"];
 
     const instance = await renderApp(<AdeCodeApp project={{ ...project, sessionHint: "chat-1" }} />);
@@ -960,5 +963,29 @@ describe("applyUsageLimitResumeMeta", () => {
     expect(applyUsageLimitResumeMeta(cleared, "chat-1", { usageLimitResume: null })).toBe(cleared);
     expect(applyUsageLimitResumeMeta(cleared, "chat-missing", { usageLimitResume: armed }))
       .toBe(cleared);
+  });
+
+  it("returns the same array reference for an identical repeated patch", () => {
+    // Every patch arrives freshly decoded off the wire, so the guard has to
+    // compare by value: the host re-sends the armed row on unrelated meta
+    // writes, and rebuilding the array each time rebuilds the chat-info memo.
+    const limited = applyUsageLimitResumeMeta([chat()], "chat-1", { usageLimitResume: armed });
+    expect(limited[0].usageLimitResume).toEqual(armed);
+
+    const repeated = applyUsageLimitResumeMeta(limited, "chat-1", { usageLimitResume: { ...armed } });
+    expect(repeated).toBe(limited);
+
+    // `updatedAt` alone is a host bookkeeping stamp, not something the row
+    // renders, so it must not count as movement either.
+    expect(applyUsageLimitResumeMeta(limited, "chat-1", {
+      usageLimitResume: { ...armed, updatedAt: "2026-09-08T19:29:00.000Z" },
+    })).toBe(limited);
+
+    // A field the row DOES read still moves the array.
+    const advanced = applyUsageLimitResumeMeta(limited, "chat-1", {
+      usageLimitResume: { ...armed, state: "resuming" },
+    });
+    expect(advanced).not.toBe(limited);
+    expect(advanced[0].usageLimitResume?.state).toBe("resuming");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatInfoResumeRow, deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
+import { deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
 import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
@@ -516,11 +516,11 @@ describe("formatMcpCapabilityNote", () => {
   });
 });
 
-describe("chat info usage-limit resume row", () => {
-  // 12 minutes before the fire instant: above the five-minute window where the
-  // shared pill switches to a second-level countdown.
-  const NOW = Date.parse("2026-09-07T23:19:30.000Z");
-
+// The row's copy and refresh cadence belong to the shared pill and are pinned
+// in apps/desktop/src/shared/usageLimitResumePresentation.test.ts. What is
+// chatInfo's own job — and all that is tested here — is carrying the host state
+// and the refusal sentence onto the snapshot the pane renders.
+describe("chat info usage-limit resume state", () => {
   function resume(overrides: Partial<AgentChatUsageLimitResume> = {}): AgentChatUsageLimitResume {
     return {
       state: "armed",
@@ -535,32 +535,6 @@ describe("chat info usage-limit resume row", () => {
       ...overrides,
     };
   }
-
-  it("counts down an armed resume from the injected clock", () => {
-    expect(chatInfoResumeRow(resume(), NOW)).toBe("Resumes in 12 min · usage limit");
-    // Inside the five-minute window the same row ticks seconds.
-    expect(chatInfoResumeRow(resume(), Date.parse("2026-09-07T23:28:30.000Z")))
-      .toBe("Resumes in 3 min · usage limit");
-  });
-
-  it("reads Resuming… once the fire instant has passed", () => {
-    expect(chatInfoResumeRow(resume(), Date.parse("2026-09-07T23:32:00.000Z"))).toBe("Resuming…");
-    expect(chatInfoResumeRow(resume({ state: "resuming" }), NOW)).toBe("Resuming…");
-  });
-
-  it("names the paused, opted-out and no-reset states rather than counting down", () => {
-    expect(chatInfoResumeRow(resume({ state: "paused", attempts: 2 }), NOW))
-      .toContain("Paused after 2 tries");
-    expect(chatInfoResumeRow(resume({ state: "opted_out" }), NOW))
-      .toBe("Won't auto-resume · Turn on");
-    expect(chatInfoResumeRow(resume({ state: "no_reset", fireAt: null, resetAt: null }), NOW))
-      .toBe("Usage limit · no reset time · Retry");
-  });
-
-  it("is absent when no usage limit is live", () => {
-    expect(chatInfoResumeRow(null, NOW)).toBeNull();
-    expect(chatInfoResumeRow(undefined, NOW)).toBeNull();
-  });
 
   it("carries the host resume state onto the snapshot verbatim", () => {
     const snapshot = deriveChatInfoSnapshot({

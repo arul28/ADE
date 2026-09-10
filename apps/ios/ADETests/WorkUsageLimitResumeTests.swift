@@ -641,6 +641,124 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertNotNil(markers[0].usage, "usage rides the marker so it can move behind the details toggle")
   }
 
+  /// The 429 has to survive the real sync path, not just a hand-built envelope.
+  ///
+  /// `AgentChatEvent.done` does not decode `apiErrorStatus`, so the field only
+  /// reaches the footer because `AgentChatEventEnvelope` peeks at the raw event
+  /// and `makeWorkChatTranscript` forwards it. The tests above build a
+  /// `WorkChatEnvelope` directly and would keep passing with that whole chain
+  /// deleted — which is exactly how every synced usage-limit turn came to look
+  /// unlimited, losing its quiet footer as soon as the resume row cleared.
+  private func syncedTranscript(apiErrorStatusJSON: String) throws -> [WorkChatEnvelope] {
+    let startJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:00:00.000Z",
+      "sequence": 1,
+      "event": { "type": "status", "turnStatus": "started", "turnId": "turn-1" }
+    }
+    """
+    let doneJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:01:30.000Z",
+      "sequence": 2,
+      "event": {
+        "type": "done",
+        "turnId": "turn-1",
+        "status": "failed",
+        "terminalReason": "api_error"\(apiErrorStatusJSON)
+      }
+    }
+    """
+    let decoder = JSONDecoder()
+    let envelopes = try [startJSON, doneJSON].map {
+      try decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8))
+    }
+    return makeWorkChatTranscript(from: envelopes)
+  }
+
+  func testSyncedDoneFrameCarriesItsApiErrorStatusToTheQuietFooter() throws {
+    let transcript = try syncedTranscript(apiErrorStatusJSON: ",\n        \"apiErrorStatus\": 429")
+    let done = try XCTUnwrap(transcript.last)
+    XCTAssertEqual(done.apiErrorStatus, 429, "the decode has to carry the status off the wire")
+
+    let markers = workTurnEndMarkers(from: transcript)
+    XCTAssertEqual(markers.count, 1)
+    XCTAssertTrue(
+      markers[0].usageLimitPaused,
+      "a synced 429 turn reads as paused with no resume row to anchor it"
+    )
+    // The footer's own line is `Paused · usage limit · <worked duration>`.
+    XCTAssertEqual(markers[0].workedDurationLabel, "1m 30s")
+  }
+
+  func testSyncedDoneFrameWithoutA429IsNotPaused() throws {
+    let transcript = try syncedTranscript(apiErrorStatusJSON: "")
+    XCTAssertNil(transcript.last?.apiErrorStatus)
+    XCTAssertFalse(
+      workTurnEndMarkers(from: transcript)[0].usageLimitPaused,
+      "an ordinary API error is a failure, not a pause"
+    )
+
+    let other = try syncedTranscript(apiErrorStatusJSON: ",\n        \"apiErrorStatus\": 529")
+    XCTAssertEqual(other.last?.apiErrorStatus, 529)
+    XCTAssertFalse(
+      workTurnEndMarkers(from: other)[0].usageLimitPaused,
+      "only 429 is a usage limit; 529 is an overload"
+    )
+  }
+
+  /// An off-contract `apiErrorStatus` costs only itself.
+  ///
+  /// Both raw fields are peeked off the same `event` object, so decoding them
+  /// under one throwing path would let a non-numeric status fail the peek
+  /// wholesale and take the wire `type` with it — and `type` is the only thing
+  /// that tells a legacy `subagent.completed` twin apart from a genuine second
+  /// result, so a bad status in one frame would surface as duplicated subagent
+  /// rows somewhere else entirely.
+  func testAnOffContractApiErrorStatusDoesNotCostTheWireType() throws {
+    let doneJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:01:30.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "done",
+        "turnId": "turn-1",
+        "status": "failed",
+        "apiErrorStatus": "429"
+      }
+    }
+    """
+    let done = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(doneJSON.utf8))
+    XCTAssertNil(done.apiErrorStatus, "a string is not the numeric status the host contract promises")
+    guard case .done = done.event else {
+      return XCTFail("the envelope still has to decode — one bad field is not a lost event")
+    }
+    XCTAssertFalse(done.isLegacySubagentCompletedFrame)
+
+    // The same garbage on the frame where `type` actually carries weight.
+    let legacyJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-07-08T00:02:00.000Z",
+      "sequence": 2,
+      "event": {
+        "type": "subagent.completed",
+        "agentId": "agent-1",
+        "apiErrorStatus": "not-a-number"
+      }
+    }
+    """
+    let legacy = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(legacyJSON.utf8))
+    XCTAssertNil(legacy.apiErrorStatus)
+    XCTAssertTrue(
+      legacy.isLegacySubagentCompletedFrame,
+      "the wire type survives its neighbour's bad value, so the twin still collapses"
+    )
+  }
+
   func testTurnEndMarkerReadsAsPausedFromTheResumeRowTurnId() {
     let transcript = [doneEnvelope(turnId: "turn-7", apiErrorStatus: nil, sequence: 1)]
     XCTAssertFalse(workTurnEndMarkers(from: transcript)[0].usageLimitPaused)

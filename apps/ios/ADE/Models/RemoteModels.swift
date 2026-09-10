@@ -2463,6 +2463,16 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var subagentParentAgentId: String?
   var subagentSpawnDepth: Int?
   var subagentResourceLinks: [AgentChatResourceLink]?
+  /// HTTP status the host attached to a terminal SDK API error on a `done`
+  /// frame (429 = provider usage limit).
+  ///
+  /// Retained raw for the same reason as the subagent fields above:
+  /// `AgentChatEvent.done` already carries seven associated values, and the
+  /// turn footer only needs "this turn ended at a usage limit". Without this
+  /// the sync path drops the field entirely and every synced turn looks
+  /// unlimited, so a past usage-limit turn loses its quiet footer once the
+  /// resume row clears.
+  var apiErrorStatus: Int?
   /// True when the wire type was the legacy `subagent.completed` twin rather
   /// than the canonical `subagent_result`.
   ///
@@ -2487,6 +2497,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink]? = nil,
+    apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false
   ) {
     self.sessionId = sessionId
@@ -2500,6 +2511,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
   }
 
@@ -2511,10 +2523,33 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     case provenance
   }
 
-  /// The raw `event.type` string, read before `AgentChatEvent` normalizes the
-  /// legacy and canonical subagent frames into the same case.
-  private struct EventWireType: Decodable {
+  /// Raw `event` fields read straight off the wire, before `AgentChatEvent`
+  /// normalizes them away: the `type` string (which normalization collapses,
+  /// merging the legacy and canonical subagent frames into one case) and
+  /// `apiErrorStatus` (which the `done` case does not decode at all).
+  private struct EventRawFields: Decodable {
     var type: String?
+    var apiErrorStatus: Int?
+
+    private enum CodingKeys: String, CodingKey {
+      case type
+      case apiErrorStatus
+      case apiErrorStatusSnake = "api_error_status"
+    }
+
+    /// Each field is decoded on its own tolerant path, never a shared throwing
+    /// one. Both are best-effort peeks at an off-contract wire, so one bad
+    /// value must not cost us the other: a host sending a non-numeric
+    /// `apiErrorStatus` would otherwise fail the whole struct and silently
+    /// take `type` down with it, un-deduplicating every legacy subagent twin
+    /// in that transcript — a decode fault surfacing as duplicated rows.
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      type = (try? container.decodeIfPresent(String.self, forKey: .type)) ?? nil
+      apiErrorStatus = (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatus))
+        ?? (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatusSnake))
+        ?? nil
+    }
   }
 
   private struct SubagentMetadata: Decodable {
@@ -2565,8 +2600,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentParentAgentId = metadata?.parentAgentId
     subagentSpawnDepth = metadata?.spawnDepth
     subagentResourceLinks = metadata?.resourceLinks
-    let wireType = try? container.decode(EventWireType.self, forKey: .event)
-    isLegacySubagentCompletedFrame = wireType?.type == "subagent.completed"
+    let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
+    apiErrorStatus = rawEvent?.apiErrorStatus
+    isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
   }
 }
 

@@ -870,6 +870,7 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       subagentParentAgentId: entry.subagentParentAgentId,
       subagentSpawnDepth: entry.subagentSpawnDepth,
       subagentResourceLinks: entry.subagentResourceLinks ?? [],
+      apiErrorStatus: entry.apiErrorStatus,
       isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame
     )
   }

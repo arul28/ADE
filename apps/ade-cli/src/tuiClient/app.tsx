@@ -3190,11 +3190,35 @@ export function applyUsageLimitResumeMeta(
   let changed = false;
   const next = sessions.map((session) => {
     if (session.sessionId !== sessionId) return session;
-    if ((session.usageLimitResume ?? null) === nextResume) return session;
+    if (sameUsageLimitResume(session.usageLimitResume ?? null, nextResume)) return session;
     changed = true;
     return { ...session, usageLimitResume: nextResume };
   });
   return changed ? next : sessions;
+}
+
+/**
+ * Value equality over the fields the Resume row and Work-list label are drawn
+ * from. Reference equality would be useless here: every patch arrives freshly
+ * decoded off the wire, so an identical repeated `session_meta_updated` would
+ * otherwise rebuild the session array — and the chat-info memo with it — on
+ * each redundant event. `updatedAt` is excluded on purpose: the host stamps it
+ * on every write, including ones that changed nothing the user can see.
+ */
+function sameUsageLimitResume(
+  a: AgentChatUsageLimitResume | null,
+  b: AgentChatUsageLimitResume | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.state === b.state
+    && (a.fireAt ?? null) === (b.fireAt ?? null)
+    && (a.resetAt ?? null) === (b.resetAt ?? null)
+    && (a.scheduleId ?? null) === (b.scheduleId ?? null)
+    && a.attempts === b.attempts
+    && (a.turnId ?? null) === (b.turnId ?? null)
+    && (a.providerDetail ?? null) === (b.providerDetail ?? null)
+    && a.provider === b.provider;
 }
 
 export function resolveDrawerPaneWidth(columns: number, drawerOpen: boolean): number {
@@ -9028,7 +9052,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         envelope.event.type === "session_meta_updated"
         && envelope.event.usageLimitResume !== undefined
       ) {
-        setSessions((current) => applyUsageLimitResumeMeta(current, envelope.sessionId, envelope.event));
+        // Capture the narrowed event: the setter callback below runs later, and
+        // a property access re-read there is the raw union again.
+        const meta = envelope.event;
+        setSessions((current) => applyUsageLimitResumeMeta(current, envelope.sessionId, meta));
         // Whatever the host last refused is about the state that just changed,
         // so the sentence stops being true here.
         setUsageLimitResumeNotice((prev) => (prev?.sessionId === envelope.sessionId ? null : prev));

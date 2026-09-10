@@ -281,17 +281,14 @@ extension WorkSessionDestinationView {
   /// Resume now — send the continue prompt immediately instead of waiting for
   /// the scheduled fire.
   ///
-  /// Only the unsupported-host case is answered here, and it is defensive: the
-  /// sheet already hides the button for that pairing. Viewer devices and offline
-  /// hosts fall through to `SyncService.resumeUsageLimitNow`, whose
+  /// Host support is not re-checked here. The sheet's only caller already nils
+  /// the button out when the host predates `chat.resumeUsageLimitNow`, so an
+  /// unsupported host has nothing to tap. Viewer devices and offline hosts fall
+  /// through to `SyncService.resumeUsageLimitNow`, whose
   /// `requireInvokableRemoteAction` gate names the actual cause — telling a
   /// viewer to update the host would be a lie.
   @MainActor
   func resumeUsageLimitNow() async {
-    guard syncService.supportsChatRemoteAction("chat.resumeUsageLimitNow", sessionId: sessionId) else {
-      errorMessage = "This host can't resume a usage-limited chat yet. Update ADE on that machine."
-      return
-    }
     do {
       let result = try await syncService.resumeUsageLimitNow(sessionId: sessionId)
       // A refusal answers normally with `ok: false` — the host declined to send
