@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { BROWSER_VALUE_FLAGS, VALUE_CARRIER_FLAGS, buildCliPlan } from "./cli";
 
@@ -10,269 +11,228 @@ const SOURCE = fs.readFileSync(
 );
 
 /**
- * The end of a regex literal starting at `index`, or 0 when that `/` is
- * division. Needed because `\`'${value.replace(/'/g, …)}'\`` puts an
- * apostrophe inside a regex inside a template hole: read as a string opener it
- * swallowed 4000 lines of cli.ts, and every reader call in them vanished from
- * the scan. A `/` starts a regex only where a value cannot precede it.
+ * The scans below used to run on a hand-rolled lexer: a previous-character
+ * whitelist decided regex-vs-division, a brace counter found function bodies,
+ * and a mask blanked whole template literals — holes included, so a reader
+ * inside `${…}` vanished from every check. cli.ts is TypeScript, and the
+ * compiler that already builds it is a devDependency, so the grammar is read
+ * from a real parse instead: one `ts.createSourceFile`, then AST walks. Regex
+ * survives only where the assertion is genuinely about text.
  */
-function regexLiteralEnd(source: string, index: number): number {
-  const before = source.slice(0, index).replace(/\s+$/, "");
-  const prev = before.at(-1) ?? "";
-  if (prev !== "" && !"(,=:[!&|?{};+-*%^~<>".includes(prev) && !/\breturn$/.test(before)) return 0;
-  let inClass = false;
-  for (let i = index + 1; i < source.length; i += 1) {
-    const char = source[i];
-    if (char === "\\") i += 1;
-    else if (char === "\n") return 0;
-    else if (char === "[") inClass = true;
-    else if (char === "]") inClass = false;
-    else if (char === "/" && !inClass) {
-      let end = i + 1;
-      while (/[a-z]/.test(source[end] ?? "")) end += 1;
-      return end;
-    }
+function parseSource(name: string, text: string): ts.SourceFile {
+  return ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
+
+const FILE = parseSource("cli.ts", SOURCE);
+
+function walk(node: ts.Node, visit: (child: ts.Node) => void): void {
+  visit(node);
+  node.forEachChild((child) => walk(child, visit));
+}
+
+function collect<T extends ts.Node>(
+  roots: readonly ts.Node[],
+  match: (node: ts.Node) => node is T,
+): T[] {
+  const found: T[] = [];
+  for (const root of roots) walk(root, (node) => { if (match(node)) found.push(node); });
+  return found;
+}
+
+/* ── binding resolution ──────────────────────────────────────────────────── */
+
+function bindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
   }
-  return 0;
+  for (const element of name.elements)
+    if (ts.isBindingElement(element)) bindingNames(element.name, out);
+}
+
+/** True for the nodes that introduce a lexical scope. */
+function isScope(node: ts.Node): boolean {
+  return (
+    ts.isSourceFile(node) ||
+    ts.isBlock(node) ||
+    ts.isModuleBlock(node) ||
+    ts.isCaseBlock(node) ||
+    ts.isCatchClause(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isFunctionLike(node)
+  );
+}
+
+const DECLARED_NAMES = new WeakMap<ts.Node, Set<string>>();
+
+/** The names a scope node binds directly — parameters, locals, imports. */
+function declaredNames(scope: ts.Node): Set<string> {
+  const cached = DECLARED_NAMES.get(scope);
+  if (cached) return cached;
+  const names = new Set<string>();
+  const addList = (list: ts.VariableDeclarationList): void => {
+    for (const declaration of list.declarations) bindingNames(declaration.name, names);
+  };
+  const addStatements = (statements: ts.NodeArray<ts.Statement>): void => {
+    for (const statement of statements) {
+      if (ts.isVariableStatement(statement)) addList(statement.declarationList);
+      else if (ts.isFunctionDeclaration(statement) && statement.name) names.add(statement.name.text);
+      else if (ts.isClassDeclaration(statement) && statement.name) names.add(statement.name.text);
+      else if (ts.isEnumDeclaration(statement)) names.add(statement.name.text);
+      else if (ts.isImportDeclaration(statement) && statement.importClause) {
+        const clause = statement.importClause;
+        if (clause.name) names.add(clause.name.text);
+        const bindings = clause.namedBindings;
+        if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+        else if (bindings && ts.isNamedImports(bindings))
+          for (const element of bindings.elements) names.add(element.name.text);
+      }
+    }
+  };
+  if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope))
+    addStatements(scope.statements);
+  else if (ts.isCaseBlock(scope))
+    for (const clause of scope.clauses) addStatements(clause.statements);
+  else if (ts.isCatchClause(scope)) {
+    if (scope.variableDeclaration) bindingNames(scope.variableDeclaration.name, names);
+  } else if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) {
+    const initializer = scope.initializer;
+    if (initializer && ts.isVariableDeclarationList(initializer)) addList(initializer);
+  }
+  if (ts.isFunctionLike(scope)) {
+    for (const parameter of scope.parameters) bindingNames(parameter.name, names);
+    const own = (scope as ts.FunctionDeclaration).name;
+    if (own && ts.isIdentifier(own)) names.add(own.text);
+  }
+  DECLARED_NAMES.set(scope, names);
+  return names;
+}
+
+/** Every top-level declaration in cli.ts, by the name it binds. */
+const TOP_LEVEL_BINDINGS = (() => {
+  const bindings = new Map<string, ts.Node[]>();
+  const add = (name: string, node: ts.Node): void => {
+    const list = bindings.get(name);
+    if (list) list.push(node);
+    else bindings.set(name, [node]);
+  };
+  for (const statement of FILE.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const names = new Set<string>();
+        bindingNames(declaration.name, names);
+        for (const name of names) add(name, declaration);
+      }
+    } else if (ts.isFunctionDeclaration(statement) && statement.name)
+      add(statement.name.text, statement);
+    else if (ts.isClassDeclaration(statement) && statement.name) add(statement.name.text, statement);
+  }
+  return bindings;
+})();
+
+/**
+ * The scope node that binds `name` for a use at `node`, or `undefined` when
+ * nothing in the chain binds it. Innermost wins: a parameter or a local list
+ * shadows the top-level constant of the same name, and the shadowed use must
+ * not be attributed to that constant.
+ */
+function bindingScopeOf(node: ts.Node, name: string): ts.Node | undefined {
+  for (let scope: ts.Node | undefined = node.parent; scope; scope = scope.parent)
+    if (isScope(scope) && declaredNames(scope).has(name)) return scope;
+  return undefined;
+}
+
+function unwrap(node: ts.Expression): ts.Expression {
+  if (ts.isParenthesizedExpression(node)) return unwrap(node.expression);
+  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) return unwrap(node.expression);
+  if (ts.isSatisfiesExpression(node)) return unwrap(node.expression);
+  return node;
 }
 
 /**
- * Source spans a brace scan must not count: comments, quoted strings and
- * template literals (including their `${…}` holes). Without this a `{` inside
- * a string unbalanced the scan, and the old `indexOf("\n}")` fallback hid it —
- * could-not-parse read as parsed-clean.
+ * The flag names an expression denotes, or `null` when the scan cannot prove
+ * them. A string literal (`"--foo"`) and an array of them resolve directly; an
+ * identifier resolves ONLY when its innermost binding is cli.ts's own
+ * top-level `const NAME = [ … ]` of flag literals and spreads of such. A
+ * parameter, a function-local list, a name declared twice at top level, a
+ * computed list and a call all fail closed — a browser flag introduced that
+ * way would otherwise need no `BROWSER_VALUE_FLAGS` entry with every scan
+ * below still green.
  */
-function skipNonCode(source: string, index: number): number {
-  const char = source[index];
-  const next = source[index + 1];
-  if (char === "/" && next === "/") {
-    const end = source.indexOf("\n", index);
-    return end < 0 ? source.length : end;
-  }
-  if (char === "/" && next === "*") {
-    const end = source.indexOf("*/", index + 2);
-    if (end < 0) throw new Error("unterminated block comment in cli.ts");
-    return end + 2;
-  }
-  if (char === "/" && regexLiteralEnd(source, index) > 0) return regexLiteralEnd(source, index);
-  if (char === '"' || char === "'") {
-    for (let i = index + 1; i < source.length; i += 1) {
-      if (source[i] === "\\") i += 1;
-      else if (source[i] === char) return i + 1;
-      else if (source[i] === "\n") break;
+function resolveFlagList(expression: ts.Expression, seen = new Set<string>()): string[] | null {
+  const node = unwrap(expression);
+  if (ts.isStringLiteralLike(node)) return /^--?\S+$/.test(node.text) ? [node.text] : null;
+  if (ts.isSpreadElement(node)) return resolveFlagList(node.expression, seen);
+  if (ts.isArrayLiteralExpression(node)) {
+    const flags: string[] = [];
+    for (const element of node.elements) {
+      if (ts.isOmittedExpression(element)) continue;
+      const resolved = resolveFlagList(element, seen);
+      if (!resolved) return null;
+      flags.push(...resolved);
     }
-    throw new Error("unterminated string in cli.ts");
+    return flags;
   }
-  if (char === "`") {
-    for (let i = index + 1; i < source.length; i += 1) {
-      if (source[i] === "\\") i += 1;
-      else if (source[i] === "`") return i + 1;
-      else if (source[i] === "$" && source[i + 1] === "{") {
-        let depth = 1;
-        let cursor = i + 2;
-        while (cursor < source.length && depth > 0) {
-          const skipped = skipNonCode(source, cursor);
-          if (skipped > 0) {
-            cursor = skipped;
-            continue;
-          }
-          if (source[cursor] === "{") depth += 1;
-          else if (source[cursor] === "}") depth -= 1;
-          cursor += 1;
-        }
-        i = cursor - 1;
-      }
-    }
-    throw new Error("unterminated template literal in cli.ts");
-  }
-  return 0;
+  if (!ts.isIdentifier(node)) return null;
+  const name = node.text;
+  if (seen.has(name)) return null;
+  const scope = bindingScopeOf(node, name);
+  // Bound anywhere other than cli.ts's own top level: shadowed, so unreadable.
+  if (scope && scope !== FILE) return null;
+  const declarations = TOP_LEVEL_BINDINGS.get(name);
+  if (!declarations || declarations.length !== 1) return null;
+  const declaration = declarations[0]!;
+  if (!ts.isVariableDeclaration(declaration)) return null;
+  const list = declaration.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) return null;
+  if (!declaration.initializer) return null;
+  const initializer = unwrap(declaration.initializer);
+  if (!ts.isArrayLiteralExpression(initializer)) return null;
+  return resolveFlagList(initializer, new Set([...seen, name]));
 }
 
-/**
- * The body of a top-level `function <name>(…) { … }`, braces balanced.
- *
- * Two things are NOT the body brace and both used to be taken as one, each
- * yielding an EMPTY body that every scan below then read as "calls nothing":
- * a default parameter (`base: JsonObject = {}`) and a return-type annotation
- * (`): { key: string; value: string } {`, which is how `parseAssignment` and
- * seven more went unscanned). So: skip the parameter list by paren depth, then
- * take the first `{` at depth 0 whose matching `}` sits in column 0 and is not
- * itself followed by another `{` — a return-type object closes as `} {`, a
- * generic `<{…}>` closes mid-line, and a top-level function body closes in
- * column 0 and ends there. A body that cannot be bounded that way THROWS; it
- * must never read as an empty-but-parsed body.
- */
-function functionBody(name: string): string {
-  const match = new RegExp(`\\nfunction ${name}\\b`).exec(SOURCE);
-  if (!match) throw new Error(`no function ${name} in cli.ts`);
-  let cursor = SOURCE.indexOf("(", match.index);
-  for (let parens = 0; cursor < SOURCE.length; cursor += 1) {
-    if (SOURCE[cursor] === "(") parens += 1;
-    else if (SOURCE[cursor] === ")" && (parens -= 1) === 0) break;
-  }
-  for (let start = cursor + 1; start < SOURCE.length; start += 1) {
-    const skipped = skipNonCode(SOURCE, start);
-    if (skipped > 0) {
-      start = skipped - 1;
-      continue;
-    }
-    if (SOURCE[start] !== "{") continue;
-    let depth = 0;
-    let end = -1;
-    for (let i = start; i < SOURCE.length; i += 1) {
-      const inner = skipNonCode(SOURCE, i);
-      if (inner > 0) {
-        i = inner - 1;
-        continue;
-      }
-      if (SOURCE[i] === "{") depth += 1;
-      else if (SOURCE[i] === "}" && (depth -= 1) === 0) {
-        end = i;
-        break;
-      }
-    }
-    if (end < 0) throw new Error(`unbalanced ${name} in cli.ts`);
-    const after = /\S/.exec(SOURCE.slice(end + 1))?.[0];
-    if (SOURCE[end - 1] === "\n" && after !== "{") return SOURCE.slice(start, end);
-    start = end;
-  }
-  throw new Error(`no body brace for ${name} in cli.ts`);
-}
+/* ── the call graph ──────────────────────────────────────────────────────── */
 
-function flagsReadFor(pattern: RegExp, source: string): Set<string> {
-  const flags = new Set<string>();
-  for (const call of source.matchAll(pattern))
-    for (const flag of call[1]!.matchAll(/"(--?[^"]+)"/g)) flags.add(flag[1]!);
-  return flags;
-}
-
-/**
- * `source` with comments — and, when `strings` is true, the bodies of quoted
- * strings and template literals — blanked out. Offsets are preserved, so an
- * index into the mask indexes the same character of the original: depth
- * counting runs over the mask and slices come from the source, and neither a
- * paren inside a string nor one inside a comment can shift a bracket depth.
- */
-function maskSource(source: string, options: { strings: boolean }): string {
-  const out = source.split("");
-  for (let i = 0; i < source.length; i += 1) {
-    const char = source[i];
-    const isComment = char === "/" && (source[i + 1] === "/" || source[i + 1] === "*");
-    const end = skipNonCode(source, i);
-    if (end <= 0) continue;
-    // A literal is always consumed — a `//` inside one is not a comment — but
-    // only blanked when asked, since flag names live in string literals.
-    if (isComment || options.strings)
-      for (let j = i; j < end && j < source.length; j += 1) if (out[j] !== "\n") out[j] = " ";
-    i = end - 1;
-  }
-  return out.join("");
-}
-
-/** cli.ts with comments gone (string literals kept) and fully masked. */
-const CODE_SOURCE = maskSource(SOURCE, { strings: false });
-const MASKED_SOURCE = maskSource(SOURCE, { strings: true });
-
-/** The index of the bracket closing the one at `open`, or null if unbalanced. */
-function matchingBracket(masked: string, open: number): number | null {
-  let depth = 0;
-  for (let i = open; i < masked.length; i += 1) {
-    const char = masked[i]!;
-    if ("([{".includes(char)) depth += 1;
-    else if (")]}".includes(char) && (depth -= 1) === 0) return i;
-  }
+/** The name a call expression invokes, for bare and member calls alike. */
+function calleeName(node: ts.CallExpression): string | null {
+  if (ts.isIdentifier(node.expression)) return node.expression.text;
+  if (ts.isPropertyAccessExpression(node.expression)) return node.expression.name.text;
   return null;
 }
 
-/**
- * Where a value-reading call starts. The argument text is then taken by
- * balanced parens rather than by a regex: the old pattern allowed exactly one
- * level of nesting, so `readValue(args, ["--zz"], normalize(String(x)))`
- * matched NOTHING — the call vanished from the scan, its flag never had to
- * appear in `BROWSER_VALUE_FLAGS`, and every check below stayed green. The
- * count pin in the first test keeps that failure loud if it ever regresses.
- */
-const VALUE_READER_OPEN =
-  /\bread(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\s*\(/g;
-
-/** Split a call's argument text on the commas that sit at bracket depth 0. */
-function topLevelArgs(text: string): string[] {
-  const masked = maskSource(text, { strings: true });
-  const args: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < masked.length; i += 1) {
-    const char = masked[i]!;
-    if ("([{".includes(char)) depth += 1;
-    else if (")]}".includes(char)) depth -= 1;
-    else if (char === "," && depth === 0) {
-      args.push(text.slice(start, i));
-      start = i + 1;
-    }
-  }
-  args.push(text.slice(start));
-  return args.map((arg) => arg.trim());
+/** Bare-identifier calls only: `obj.parseAssignment()` is not our function. */
+function directCalleeName(node: ts.CallExpression): string | null {
+  return ts.isIdentifier(node.expression) ? node.expression.text : null;
 }
+
+const TOP_LEVEL_FUNCTION_NODES = new Map<string, ts.FunctionDeclaration>();
+for (const statement of FILE.statements)
+  if (ts.isFunctionDeclaration(statement) && statement.name)
+    TOP_LEVEL_FUNCTION_NODES.set(statement.name.text, statement);
+
+const TOP_LEVEL_FUNCTIONS = new Set(TOP_LEVEL_FUNCTION_NODES.keys());
 
 /**
- * The flag names a reader's flag argument denotes, or `null` when the scan
- * cannot see them. A literal (`"--foo"` / `["--foo", "--bar"]`) resolves
- * directly; a bare identifier or a spread resolves through a TOP-LEVEL
- * `const NAME = [...]` of string literals in cli.ts — top-level and
- * comment-stripped, because a scan-everything match resolved a commented-out
- * or function-local declaration of the same name and took the first hit. Two
- * top-level declarations of one name, and anything else — a computed list, a
- * parameter, a call — are unreadable, and a browser flag added that way would
- * need no entry in `BROWSER_VALUE_FLAGS` with every scan below still green, so
- * it must fail loudly instead.
+ * The body block of a top-level `function <name>`. The parser draws the
+ * boundary, so a default parameter (`base: JsonObject = {}`), a return-type
+ * annotation (`): { key: string } {`) and a `"{"` inside a string literal are
+ * no longer three ways to mistake an empty body for a parsed one. A function
+ * with no body at all throws rather than reading as "calls nothing".
  */
-function resolveFlagList(arg: string): string[] | null {
-  const text = arg.trim();
-  if (/^"(--?[^"]+)"$/.test(text)) return [text.slice(1, -1)];
-  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
-    const name = text.replace(/\$/g, "\\$");
-    const decls = [
-      ...CODE_SOURCE.matchAll(new RegExp(`(?:^|\\n)(?:export )?const ${name}\\b[^=\\n]*=\\s*\\[`, "g")),
-    ];
-    if (decls.length !== 1) return null;
-    const open = decls[0]!.index + decls[0]![0].length - 1;
-    const close = matchingBracket(MASKED_SOURCE, open);
-    // Sliced from the comment-stripped source: a `// …` line between two
-    // elements is not an element.
-    return close == null ? null : resolveFlagList(CODE_SOURCE.slice(open, close + 1));
-  }
-  if (!text.startsWith("[") || !text.endsWith("]")) return null;
-  const flags: string[] = [];
-  for (const element of topLevelArgs(text.slice(1, -1))) {
-    if (element === "") continue;
-    const resolved = resolveFlagList(element.startsWith("...") ? element.slice(3) : element);
-    if (!resolved) return null;
-    flags.push(...resolved);
-  }
-  return flags;
+function bodyNode(name: string): ts.Block {
+  const declaration = TOP_LEVEL_FUNCTION_NODES.get(name);
+  if (!declaration) throw new Error(`no function ${name} in cli.ts`);
+  if (!declaration.body) throw new Error(`function ${name} in cli.ts has no body`);
+  return declaration.body;
 }
 
-/** Every value-reader call in `source`, paired with its resolved flag names. */
-function valueReaderCalls(source: string): { call: string; flags: string[] | null }[] {
-  const masked = maskSource(source, { strings: true });
-  const calls: { call: string; flags: string[] | null }[] = [];
-  for (const match of masked.matchAll(VALUE_READER_OPEN)) {
-    const open = match.index + match[0].length - 1;
-    const close = matchingBracket(masked, open);
-    if (close == null)
-      throw new Error(`unbalanced reader call: ${source.slice(match.index, match.index + 60)}`);
-    const args = topLevelArgs(source.slice(open + 1, close));
-    calls.push({
-      call: source.slice(match.index, close + 1),
-      flags: args.length < 2 ? null : resolveFlagList(args[1]!),
-    });
-  }
-  return calls;
+function functionBody(name: string): string {
+  return bodyNode(name).getText(FILE);
 }
 
-const TOP_LEVEL_FUNCTIONS = new Set(
-  [...SOURCE.matchAll(/\nfunction (\w+)\b/g)].map((m) => m[1]!),
-);
+const bodyOf = functionBody;
 
 /**
  * The primitives that actually consume argv. They are where the scan reads its
@@ -293,20 +253,14 @@ const ARGV_PRIMITIVES = [
   "firstPositional",
 ];
 
-const BODY_BY_NAME = new Map<string, string>();
-function bodyOf(name: string): string {
-  const cached = BODY_BY_NAME.get(name);
-  if (cached != null) return cached;
-  const body = functionBody(name);
-  BODY_BY_NAME.set(name, body);
-  return body;
-}
-
-/** Every top-level function a body calls. */
-function calleesIn(source: string): string[] {
-  return [...new Set([...source.matchAll(/\b(\w+)\s*\(/g)].map((m) => m[1]!))].filter((name) =>
-    TOP_LEVEL_FUNCTIONS.has(name),
-  );
+/** Every top-level function the given subtrees call. */
+function calleesIn(roots: readonly ts.Node[]): string[] {
+  const names = new Set<string>();
+  for (const call of collect(roots, ts.isCallExpression)) {
+    const name = directCalleeName(call);
+    if (name != null && TOP_LEVEL_FUNCTIONS.has(name)) names.add(name);
+  }
+  return [...names];
 }
 
 /**
@@ -317,12 +271,14 @@ function calleesIn(source: string): string[] {
  * had to be in the browser table.
  */
 const ARGV_READERS = (() => {
+  const callees = new Map<string, string[]>();
+  for (const name of TOP_LEVEL_FUNCTIONS) callees.set(name, calleesIn([bodyNode(name)]));
   const readers = new Set<string>(ARGV_PRIMITIVES);
   for (let changed = true; changed; ) {
     changed = false;
     for (const name of TOP_LEVEL_FUNCTIONS) {
       if (readers.has(name)) continue;
-      if (!calleesIn(bodyOf(name)).some((callee) => readers.has(callee))) continue;
+      if (!callees.get(name)!.some((callee) => readers.has(callee))) continue;
       readers.add(name);
       changed = true;
     }
@@ -331,9 +287,9 @@ const ARGV_READERS = (() => {
   return readers;
 })();
 
-/** Argv-reading helpers a body calls, minus the primitives themselves. */
-function readerCallsIn(source: string): string[] {
-  return calleesIn(source)
+/** Argv-reading helpers the given subtrees call, minus the primitives. */
+function readerCallsIn(roots: readonly ts.Node[]): string[] {
+  return calleesIn(roots)
     .filter((name) => ARGV_READERS.has(name))
     .sort();
 }
@@ -348,17 +304,125 @@ const PLAN_ENTRY_POINTS = [
   "buildBrowserPlanWithLiteralTail",
   "buildBrowserHandoffPlan",
   "readToolClaimArgs",
-  ...[...SOURCE.matchAll(/\nfunction (readBrowser\w+)\b/g)].map((m) => m[1]!),
+  ...[...TOP_LEVEL_FUNCTIONS].filter((name) => /^readBrowser\w+$/.test(name)),
 ];
 
 const PLAN_FUNCTIONS = (() => {
   const names = [...PLAN_ENTRY_POINTS];
-  for (const name of readerCallsIn(PLAN_ENTRY_POINTS.map(functionBody).join("\n")))
+  for (const name of readerCallsIn(PLAN_ENTRY_POINTS.map(bodyNode)))
     if (!names.includes(name)) names.push(name);
   return names;
 })();
 
-const PLAN_SOURCE = PLAN_FUNCTIONS.map(functionBody).join("\n");
+const PLAN_NODES = PLAN_FUNCTIONS.map(bodyNode);
+
+/* ── the value-reader scan ───────────────────────────────────────────────── */
+
+/**
+ * The readers that consume a flag's value. Their second argument names the
+ * flags, so every one of them in the browser plan must name flags the scan can
+ * read and the browser table declares.
+ */
+const VALUE_READER_NAMES = [
+  "readValue",
+  "readNumberOption",
+  "readIntOption",
+  "readRepeatedValues",
+  "readCommandTextValue",
+];
+
+/** Matches a reader call's opening text in RAW source — the AST sentinel's foil. */
+const VALUE_READER_OPEN =
+  /\bread(?:Value|NumberOption|IntOption|RepeatedValues|CommandTextValue)\s*\(/g;
+
+function isValueReaderCall(node: ts.Node): node is ts.CallExpression {
+  return ts.isCallExpression(node) && VALUE_READER_NAMES.includes(calleeName(node) ?? "");
+}
+
+type ReaderCall = { call: string; flags: string[] | null };
+
+function readerCallsFrom(roots: readonly ts.Node[], file: ts.SourceFile): ReaderCall[] {
+  return collect(roots, isValueReaderCall).map((call) => ({
+    call: call.getText(file),
+    flags: call.arguments.length < 2 ? null : resolveFlagList(call.arguments[1]!),
+  }));
+}
+
+/** Every value-reader call in the browser plan, paired with its flag names. */
+function planValueReaderCalls(): ReaderCall[] {
+  return readerCallsFrom(PLAN_NODES, FILE);
+}
+
+/**
+ * Every value-reader call in a snippet. Parsed, not pattern-matched: a call
+ * nested at any depth is found, and a call inside a `${…}` hole is found too —
+ * the old masker blanked whole template literals, holes included, so a reader
+ * written there was invisible to every check below.
+ */
+function valueReaderCalls(source: string): ReaderCall[] {
+  const file = parseSource("snippet.ts", source);
+  return readerCallsFrom([file], file);
+}
+
+/* ── AST-vs-raw sentinel ─────────────────────────────────────────────────── */
+
+/** Literal spans the parser reports — quasis included, holes deliberately not. */
+const LITERAL_RANGES = collect([FILE], (node): node is ts.Node =>
+  ts.isStringLiteralLike(node) ||
+  ts.isRegularExpressionLiteral(node) ||
+  node.kind === ts.SyntaxKind.TemplateHead ||
+  node.kind === ts.SyntaxKind.TemplateMiddle ||
+  node.kind === ts.SyntaxKind.TemplateTail,
+).map((node) => [node.getStart(FILE), node.getEnd()] as const);
+
+/** True when `position` sits in a literal body or in comment/whitespace trivia. */
+function insideLiteralOrComment(position: number): boolean {
+  if (LITERAL_RANGES.some(([start, end]) => position >= start && position < end)) return true;
+  let node: ts.Node = FILE;
+  for (;;) {
+    const child = node.forEachChild((candidate) =>
+      candidate.pos <= position && position < candidate.end ? candidate : undefined,
+    );
+    if (!child) break;
+    node = child;
+  }
+  return position < node.getStart(FILE);
+}
+
+/** Where the parser says each reader call's callee begins. */
+const AST_READER_STARTS = new Set(
+  collect([FILE], isValueReaderCall).map((call) =>
+    ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.getStart(FILE)
+      : call.expression.getStart(FILE),
+  ),
+);
+
+/**
+ * Where the parser says a reader is DECLARED. `function readValue(` reads like
+ * a call to any regex, so the sentinel must account for those five names too
+ * rather than let them stand in for a genuinely missed call.
+ */
+const AST_READER_DECLARATIONS = new Set(
+  collect([FILE], ts.isIdentifier)
+    .filter((identifier) => {
+      if (!VALUE_READER_NAMES.includes(identifier.text)) return false;
+      const parent = identifier.parent as { name?: ts.Node } | undefined;
+      return (
+        parent != null &&
+        parent.name === identifier &&
+        (ts.isFunctionDeclaration(identifier.parent) ||
+          ts.isMethodDeclaration(identifier.parent) ||
+          ts.isMethodSignature(identifier.parent) ||
+          ts.isPropertyAssignment(identifier.parent) ||
+          ts.isPropertySignature(identifier.parent) ||
+          ts.isVariableDeclaration(identifier.parent))
+      );
+    })
+    .map((identifier) => identifier.getStart(FILE)),
+);
+
+const RAW_READER_STARTS = [...SOURCE.matchAll(VALUE_READER_OPEN)].map((match) => match.index);
 
 /** Every carrier-aware positional read the browser plan makes today. */
 const CARRIER_AWARE_CALL_SITES = 5;
@@ -367,11 +431,22 @@ const CARRIER_AWARE_CALL_SITES = 5;
 const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
 
 /**
- * Every top-level helper whose body reaches an argv primitive. Was 97 while
- * `shellEscapeToken`'s `/'/` regex read as a string opener and its "body"
- * ran 58 lines past its closing brace into argv-reading neighbours; that pure escaper reads no argv.
+ * Every top-level helper whose body reaches an argv primitive. Was 96 while the
+ * scan matched `\nfunction name` by regex and so saw no `async function` at
+ * all: `runCli`, `runServe`, `main` and three more read argv and were invisible
+ * to the whole graph. A drop means the parse stopped seeing bodies it used to
+ * see; a rise means a new argv reader exists.
  */
-const ARGV_READER_COUNT = 96;
+const ARGV_READER_COUNT = 102;
+
+/** The carrier-aware positional readers the browser table must reach. */
+const CARRIER_AWARE_READERS = [
+  "firstStandalonePositional",
+  "standalonePositionals",
+  "firstTerminatorIndex",
+  "takeArgsAfterTerminator",
+  "hasHelpFlag",
+];
 
 describe("browser value flags", () => {
   it("reads a real body for every top-level function in cli.ts", () => {
@@ -414,7 +489,7 @@ describe("browser value flags", () => {
     // `firstPositional`, which reads a positional with no carrier table at
     // all, must not appear in a browser grammar that has one.
     expect(
-      calleesIn(PLAN_SOURCE).filter((name) =>
+      calleesIn(PLAN_NODES).filter((name) =>
         ["readCommandTextValue", "firstPositional"].includes(name),
       ),
     ).toEqual([]);
@@ -422,20 +497,26 @@ describe("browser value flags", () => {
 
   it("passes the browser carrier table to the dispatcher's help scan", () => {
     // `hasHelpFlag` is a sixth carrier-aware argv scanner, and it is called
-    // from `buildCliPlan` — which no scan over `PLAN_SOURCE` can see. Without
+    // from `buildCliPlan` — which no scan over the plan region can see. Without
     // this a future browser-family `hasHelpFlag(args)` reverts the fix
     // silently, exactly the default-parameter drift the browser table hit.
     const dispatch = functionBody("buildCliPlan");
     expect(dispatch).toMatch(
       /primaryHelpKey === "browser"\s*\?\s*BROWSER_VALUE_CARRIER_FLAGS/,
     );
-    const calls = [...dispatch.matchAll(/\bhasHelpFlag\(((?:[^()]|\([^()]*\))*)\)/g)];
+    // Found by parse, so a call site nested inside another call or inside a
+    // template hole counts like any other.
+    const calls = collect([bodyNode("buildCliPlan")], ts.isCallExpression).filter(
+      (call) => calleeName(call) === "hasHelpFlag",
+    );
     expect(
       calls.length,
       "buildCliPlan gained or lost a hasHelpFlag call site: a new one must pass helpCarriers or `browser --tab-id t1 --help` narrows back to the global carrier set",
     ).toBe(BUILD_CLI_PLAN_HELP_CALL_SITES);
     expect(
-      calls.filter(([, callArgs]) => !callArgs!.includes("helpCarriers")).map(([call]) => call),
+      calls
+        .filter((call) => !call.arguments.some((arg) => arg.getText(FILE).includes("helpCarriers")))
+        .map((call) => call.getText(FILE)),
     ).toEqual([]);
   });
 
@@ -444,25 +525,40 @@ describe("browser value flags", () => {
     // One level is the whole graph: nothing the pulled-in readers call reads
     // argv in turn. If that stops being true this fails instead of quietly
     // scanning less than the plan consumes.
-    expect(readerCallsIn(PLAN_SOURCE).filter((name) => !PLAN_FUNCTIONS.includes(name))).toEqual(
-      [],
-    );
+    expect(readerCallsIn(PLAN_NODES).filter((name) => !PLAN_FUNCTIONS.includes(name))).toEqual([]);
   });
 
-  it("matches every reader call in cli.ts at any nesting depth", () => {
-    // The argument text is taken by balanced parens, not by a regex with a
-    // fixed nesting budget: the previous pattern allowed one level, so
-    // `readValue(args, ["--zz"], normalize(String(x)))` matched nothing and its
-    // flag silently escaped every check below. The pin is derived, not a magic
-    // number — a call the tokenizer stops seeing fails here loudly.
-    const occurrences = [...MASKED_SOURCE.matchAll(VALUE_READER_OPEN)].length;
-    expect(occurrences).toBeGreaterThan(500);
+  it("sees every reader call the raw source spells out", () => {
+    // An independent sentinel, not a self-referential pin: one side is the
+    // parse, the other is a dumb `readValue(`-style regex over the UNTOUCHED
+    // source. The two may differ only where the parser itself says the text is
+    // a string body, a template quasi, a regex literal or a comment. A parse
+    // that stops seeing a region cannot make both sides drop together, because
+    // the regex side never learns about regions at all.
+    expect(RAW_READER_STARTS.length).toBeGreaterThan(500);
     expect(
-      valueReaderCalls(SOURCE).length,
-      "the reader-call tokenizer dropped calls that `readValue(`-style occurrences still find in cli.ts: a call it cannot see needs no BROWSER_VALUE_FLAGS entry and every scan below stays green",
-    ).toBe(occurrences);
+      RAW_READER_STARTS.filter(
+        (start) =>
+          !AST_READER_STARTS.has(start) &&
+          !AST_READER_DECLARATIONS.has(start) &&
+          !insideLiteralOrComment(start),
+      ).map((start) => SOURCE.slice(start, start + 60)),
+      "the parse stopped seeing reader calls the raw source still spells out in code: a call it cannot see needs no BROWSER_VALUE_FLAGS entry and every scan below stays green",
+    ).toEqual([]);
+    expect(AST_READER_DECLARATIONS.size).toBe(VALUE_READER_NAMES.length);
+    const raw = new Set(RAW_READER_STARTS);
+    expect(
+      [...AST_READER_STARTS].filter((start) => !raw.has(start)),
+      "the parse reports a reader call the raw scan cannot find: the two sides have drifted",
+    ).toEqual([]);
     const deep = valueReaderCalls('readValue(args, ["--zz"], normalize(String(x)))');
     expect(deep.map(({ flags }) => flags)).toEqual([["--zz"]]);
+    // A reader inside a template hole is executable code, and the old masker
+    // blanked it along with the quasis around it.
+    const hole = valueReaderCalls('const label = `${readValue(args, ["--zz"])}`;');
+    expect(hole.map(({ flags }) => flags)).toEqual([["--zz"]]);
+    // A reader inside a comment is not a call.
+    expect(valueReaderCalls('// readValue(args, ["--zz"])\n')).toEqual([]);
   });
 
   it("reads every value-flag argument the browser plan passes", () => {
@@ -480,8 +576,25 @@ describe("browser value flags", () => {
     expect(valueReaderCalls("readValue(args, idFlags)")[0]!.flags).toBeNull();
     expect(valueReaderCalls("readValue(args, zzNames)")[0]!.flags).toBeNull();
     expect(valueReaderCalls("readValue(args, [...zzMore])")[0]!.flags).toBeNull();
+    // Resolution is scope-aware: a parameter or a local of the same name is a
+    // DIFFERENT list, and attributing the call to the top-level constant would
+    // suppress a missing-entry failure.
     expect(
-      valueReaderCalls(PLAN_SOURCE)
+      valueReaderCalls(
+        "function f(args, BROWSER_VALUE_FLAGS) { return readValue(args, BROWSER_VALUE_FLAGS); }",
+      )[0]!.flags,
+    ).toBeNull();
+    // A function-local list is not the top-level constant either, however
+    // readable it looks: only cli.ts's own top-level `const NAME = [ … ]`
+    // resolves, so a plan that builds its flag names locally fails loudly here
+    // instead of needing no table entry.
+    expect(
+      valueReaderCalls(
+        'function f(args) { const names = ["--zz"]; return readValue(args, names); }',
+      )[0]!.flags,
+    ).toBeNull();
+    expect(
+      planValueReaderCalls()
         .filter(({ flags }) => flags == null)
         .map(({ call }) => call),
     ).toEqual([]);
@@ -491,7 +604,7 @@ describe("browser value flags", () => {
     // `readRepeatedValues` is in the scan too: it consumes exactly like
     // `readValue`, so `--upload` carries a value and must be in the table or
     // `browser --upload path upload` dispatches on "path".
-    const read = new Set(valueReaderCalls(PLAN_SOURCE).flatMap(({ flags }) => flags ?? []));
+    const read = new Set(planValueReaderCalls().flatMap(({ flags }) => flags ?? []));
     expect(read.size).toBeGreaterThan(80);
     expect([...read].filter((flag) => !BROWSER_VALUE_FLAGS.includes(flag))).toEqual([]);
   });
@@ -501,23 +614,23 @@ describe("browser value flags", () => {
     // so a browser-plan call that forgets `BROWSER_VALUE_CARRIER_FLAGS`
     // silently narrows the grammar back and `browser --tab-id t1 close`
     // dispatches on "t1" again — with no other test failing.
-    const calls = [
-      ...PLAN_SOURCE.matchAll(
-        // One level of nesting is matched, so a future
-        // `firstStandalonePositional(readBrowserArgs(args))` is still scanned
-        // rather than skipped — the floor below is the real count, not a
-        // number a skipped call site could still clear.
-        /\b(firstStandalonePositional|standalonePositionals|firstTerminatorIndex|takeArgsAfterTerminator|hasHelpFlag)\(((?:[^()]|\([^()]*\))*)\)/g,
-      ),
-    ];
+    // Found by parse, so a call nested inside another call — a future
+    // `firstStandalonePositional(readBrowserArgs(args))` — is scanned rather
+    // than skipped, and the count below is the real one.
+    const calls = collect([...PLAN_NODES], ts.isCallExpression).filter((call) =>
+      CARRIER_AWARE_READERS.includes(calleeName(call) ?? ""),
+    );
     expect(
       calls.length,
       "the browser plan gained or lost a carrier-aware positional read: a dropped call site makes the table check below vacuous, a new one must pass BROWSER_VALUE_CARRIER_FLAGS",
     ).toBe(CARRIER_AWARE_CALL_SITES);
     expect(
       calls
-        .filter(([, , callArgs]) => !callArgs!.includes("BROWSER_VALUE_CARRIER_FLAGS"))
-        .map(([call]) => call),
+        .filter(
+          (call) =>
+            !call.arguments.some((arg) => arg.getText(FILE).includes("BROWSER_VALUE_CARRIER_FLAGS")),
+        )
+        .map((call) => call.getText(FILE)),
     ).toEqual([]);
   });
 
@@ -527,9 +640,14 @@ describe("browser value flags", () => {
   // scans run over the WHOLE file: scanning only the browser plan is how
   // `--text` — a global boolean output switch — became a browser carrier and
   // broke `ade session show --text s1`.
-  const ALL_BOOLEAN_FLAGS = flagsReadFor(
-    /readFlag\(\s*\w+\s*,\s*(\[[^\]]*\]|"[^"]*")/g,
-    SOURCE,
+  const ALL_BOOLEAN_FLAGS = new Set(
+    collect([FILE], ts.isCallExpression)
+      .filter((call) => calleeName(call) === "readFlag" && call.arguments.length >= 2)
+      .flatMap((call) =>
+        collect([call.arguments[1]!], ts.isStringLiteralLike)
+          .map((literal) => literal.text)
+          .filter((text) => /^--?\S+$/.test(text)),
+      ),
   );
 
   it("claims no flag that is read as a boolean anywhere in the CLI", () => {
@@ -556,9 +674,16 @@ describe("browser value flags", () => {
   it("keeps the global output switches out of the browser table", () => {
     // `parseCliArgs` strips these before the command ever sees them, so a
     // browser command that named one as its value flag could never be trusted.
-    const globalSwitches = [...SOURCE.matchAll(/token === ("--[a-z-]+")/g)]
-      .map((match) => JSON.parse(match[1]!) as string)
-      .filter((flag) => !VALUE_CARRIER_FLAGS.has(flag));
+    const globalSwitches = collect([FILE], ts.isBinaryExpression)
+      .filter(
+        (node) =>
+          node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+          ts.isIdentifier(node.left) &&
+          node.left.text === "token" &&
+          ts.isStringLiteralLike(node.right),
+      )
+      .map((node) => (node.right as ts.StringLiteralLike).text)
+      .filter((flag) => /^--[a-z-]+$/.test(flag) && !VALUE_CARRIER_FLAGS.has(flag));
     expect(globalSwitches).toContain("--text");
     expect(BROWSER_VALUE_FLAGS.filter((flag) => globalSwitches.includes(flag))).toEqual([]);
   });
