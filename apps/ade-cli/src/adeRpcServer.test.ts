@@ -4898,7 +4898,7 @@ describe("adeRpcServer", () => {
     const navigate = vi.fn(async () => ({ status: "forwarded_to_desktop" }));
     const captureScreenshot = vi.fn(async (args: unknown) => args);
     fixture.runtime.builtInBrowserService = { navigate, captureScreenshot };
-    const noteAgentBrowserActivity = vi.fn(() => ({ started: true }));
+    const noteAgentBrowserActivity = vi.fn(() => ({ started: true, sequence: 1 }));
     const clearAgentBrowserActivity = vi.fn();
     fixture.runtime.workToolsStateService = { noteAgentBrowserActivity, clearAgentBrowserActivity };
 
@@ -4968,8 +4968,8 @@ describe("adeRpcServer", () => {
     // `started: false` on the second call — the window this daemon opened for
     // the first one is still inside its event window.
     const noteAgentBrowserActivity = vi.fn()
-      .mockReturnValueOnce({ started: true })
-      .mockReturnValue({ started: false });
+      .mockReturnValueOnce({ started: true, sequence: 7 })
+      .mockReturnValue({ started: false, sequence: 8 });
     const clearAgentBrowserActivity = vi.fn();
     fixture.runtime.workToolsStateService = { noteAgentBrowserActivity, clearAgentBrowserActivity };
 
@@ -4994,7 +4994,13 @@ describe("adeRpcServer", () => {
     });
     expect(failed.isError).toBe(true);
     // The leading edge went out, so the retraction has to as well.
-    expect(clearAgentBrowserActivity).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
+    // Carrying the sequence of the edge it opened, so a command that re-armed
+    // the window while this one was in flight is not retracted with it.
+    expect(clearAgentBrowserActivity).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      sequence: 7,
+    });
 
     // A failure that did NOT open the window retracts nothing: the rest of a
     // busy agent's stream still justifies the presence it is showing.

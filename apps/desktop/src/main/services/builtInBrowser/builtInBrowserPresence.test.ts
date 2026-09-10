@@ -198,12 +198,52 @@ describe("builtInBrowserAgentPresence", () => {
 
     // A concurrent command from the same chat moved the entry on: this undo is
     // no longer the one being retracted, and a live agent keeps its globe.
-    presence.clearForChatSession("chat-1", { ifLastActivityAt: opened.lastActivityAt });
+    presence.clearForChatSession("chat-1", { ifSequence: opened.sequence });
     expect(presence.list()).toHaveLength(1);
 
-    const stamp = presence.list()[0]?.lastActivityAt;
-    expect(stamp).toBeTruthy();
-    presence.clearForChatSession("chat-1", { ifLastActivityAt: Date.parse(stamp as string) });
+    const latest = presence.touch({ chatSessionId: "chat-1" });
+    presence.clearForChatSession("chat-1", { ifSequence: latest.sequence });
+    expect(presence.list()).toHaveLength(0);
+  });
+
+  it("tells two touches in the same millisecond apart", () => {
+    // Parallel `ade browser` calls from one chat share an actor token and land
+    // on the same clock reading. A millisecond guard saw them as one touch, so
+    // the first to fail retracted the second — a live agent going dark.
+    const first = presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    const second = presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.sequence).not.toBe(first.sequence);
+    expect(presence.list()[0]?.lastActivityAt).toBe(presence.list()[0]?.since);
+
+    presence.clearForChatSession("chat-1", { ifSequence: first.sequence });
+    expect(presence.list()).toHaveLength(1);
+  });
+
+  it("refuses the undo while the record is holding a tab", () => {
+    // A recording armed between the leading touch and the failure is a live
+    // capture. Deleting the record would take its hold with it, and the
+    // eventual `recording:false` release would find nothing to let go of.
+    const opened = presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.holdForTab("tab-1");
+
+    presence.clearForChatSession("chat-1", { ifSequence: opened.sequence });
+    expect(presence.list()).toHaveLength(1);
+
+    // The capture still owns expiry, and its own release still ends it.
+    vi.advanceTimersByTime(EXPIRY_MS * 3);
+    expect(presence.list()).toHaveLength(1);
+    presence.releaseHoldForTab("tab-1");
+    vi.advanceTimersByTime(EXPIRY_MS + 1);
+    expect(presence.list()).toHaveLength(0);
+  });
+
+  it("still clears unconditionally while a hold is live", () => {
+    // A revoked capability and a login handoff are facts, not retractions.
+    presence.touch({ chatSessionId: "chat-1", tabId: "tab-1" });
+    presence.holdForTab("tab-1");
+    presence.clearForChatSession("chat-1");
     expect(presence.list()).toHaveLength(0);
   });
 

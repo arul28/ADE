@@ -808,18 +808,24 @@ export function createBuiltInBrowserService(args: {
   };
 
   const disposeWindowServices = (win: BrowserWindow): void => {
+    // Closing the window ends the agent's turn at every tab it held, and no
+    // other event will say so: `closeTab` is not called for any of them, and a
+    // recording torn down with the window never emits its `recording:false`.
+    // Read the ids before `dispose`, which is what destroys them.
+    //
+    // Collected across every collection the window hosts and cleared ONCE. A
+    // window holds one service per collection (its project and, once the user
+    // opens it, the personal one), so clearing per service put the six-events
+    // problem back a level up: two collections, two broadcasts, the first of
+    // them describing a half-torn-down window.
+    const closingTabIds = new Set<string>();
     for (const [key, entry] of windowServices) {
       if (entry.win.id !== win.id) continue;
-      // Closing the window ends the agent's turn at every tab it held, and no
-      // other event will say so: `closeTab` is not called for any of them, and a
-      // recording torn down with the window never emits its `recording:false`.
-      // Read the ids before `dispose`, which is what destroys them.
-      // One broadcast for the whole window, not one per tab: a window with six
-      // tabs used to fire six full presence events on its way out.
-      presenceRouter.noteWindowTabsClosed(entry.service.listTabIds());
+      for (const tabId of entry.service.listTabIds()) closingTabIds.add(tabId);
       entry.service.dispose();
       windowServices.delete(key);
     }
+    if (closingTabIds.size > 0) presenceRouter.noteWindowTabsClosed([...closingTabIds]);
     activeServiceKeyByWindow.delete(win.id);
     if (activeWindowId === win.id) activeWindowId = null;
   };

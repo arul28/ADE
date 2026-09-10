@@ -77,11 +77,18 @@ export type BuiltInBrowserAgentPresenceTracker = {
   /**
    * Records one agent-authenticated browser command.
    *
-   * Reports whether this call is what created the entry, and the activity
-   * stamp it wrote — the two things a caller needs to take its own touch back
+   * Reports whether this call is what created the entry, and the sequence
+   * number it wrote — the two things a caller needs to take its own touch back
    * if the command it was announcing then failed. See `clearForChatSession`.
+   *
+   * The stamp is a counter rather than a clock because the clock is not fine
+   * enough to tell two touches apart: parallel `ade browser` calls from one
+   * chat share an actor token and routinely land in the same millisecond, and
+   * a `lastActivityAt` guard would then let a failing call retract a live
+   * agent. The counter is tracker-wide and never reused, so a sequence cannot
+   * accidentally match a record that was cleared and re-created meanwhile.
    */
-  touch(input: BuiltInBrowserAgentPresenceTouch): { created: boolean; lastActivityAt: number };
+  touch(input: BuiltInBrowserAgentPresenceTouch): { created: boolean; sequence: number };
   /**
    * Suspends expiry for whichever chat is on this tab — a recording, which runs
    * for minutes without a command. Keyed by the tab so two concurrent captures
@@ -94,12 +101,17 @@ export type BuiltInBrowserAgentPresenceTracker = {
    * The chat ended, its capability was revoked — or a command that had already
    * announced itself never ran.
    *
-   * `ifLastActivityAt` makes the clear conditional on the entry not having
-   * moved since: an undo is only ever correct for the exact touch it is
-   * retracting, and a concurrent command from the same chat that landed in
-   * between is a live agent whose globe must stay lit.
+   * `ifSequence` makes the clear conditional on the entry not having moved
+   * since: an undo is only ever correct for the exact touch it is retracting,
+   * and a concurrent command from the same chat that landed in between is a
+   * live agent whose globe must stay lit. A conditional clear also refuses
+   * while the record holds a tab — a recording started between the leading
+   * touch and the failure is a live capture, and deleting the record would
+   * take its hold with it and leave the eventual `recording:false` release
+   * with nothing to find. An unconditional clear (the chat ended, a handoff
+   * moved the tab to a human) is a fact, not a retraction, and always applies.
    */
-  clearForChatSession(chatSessionId: string, options?: { ifLastActivityAt?: number }): void;
+  clearForChatSession(chatSessionId: string, options?: { ifSequence?: number }): void;
   /** The tab went away — closed, released, or handed to a human. */
   clearForTab(tabId: string): void;
   /**
@@ -123,6 +135,8 @@ type PresenceRecord = {
   tabId: string | null;
   since: number;
   lastActivityAt: number;
+  /** Tracker-wide, never reused — see `touch`. */
+  sequence: number;
   /** Tab id → the moment the hold stops counting, whatever it is waiting for. */
   holds: Map<string, number>;
   timer: ReturnType<typeof setTimeout> | null;
@@ -136,6 +150,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
   const holdMaxMs = Math.max(1, args?.holdMaxMs ?? BUILT_IN_BROWSER_PRESENCE_HOLD_MAX_MS);
   const records = new Map<string, PresenceRecord>();
   const listeners = new Set<() => void>();
+  let nextSequence = 1;
   let disposed = false;
 
   const emit = (): void => {
@@ -207,6 +222,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
         || (laneId != null && laneId !== existing.laneId)
         || (projectRoot != null && projectRoot !== existing.projectRoot);
       existing.lastActivityAt = now;
+      existing.sequence = nextSequence++;
       if (tabId != null) existing.tabId = tabId;
       if (laneId != null) existing.laneId = laneId;
       if (projectRoot != null) existing.projectRoot = projectRoot;
@@ -221,6 +237,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       tabId,
       since: now,
       lastActivityAt: now,
+      sequence: nextSequence++,
       holds: new Map<string, number>(),
       timer: null,
     };
@@ -252,7 +269,7 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       const record = upsert(input);
       return {
         created: Boolean(record) && !existing,
-        lastActivityAt: record?.lastActivityAt ?? 0,
+        sequence: record?.sequence ?? 0,
       };
     },
 
@@ -290,7 +307,12 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
       if (!key) return;
       const record = records.get(key) ?? null;
       if (!record) return;
-      if (options?.ifLastActivityAt != null && record.lastActivityAt !== options.ifLastActivityAt) return;
+      if (options?.ifSequence != null) {
+        if (record.sequence !== options.ifSequence) return;
+        // A hold is a capture that outlived the command which armed it; the
+        // failing command is not entitled to take the recording's presence.
+        if (record.holds.size > 0) return;
+      }
       clearTimer(record);
       records.delete(key);
       emit();

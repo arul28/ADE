@@ -12332,6 +12332,45 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
   }));
 
+  it("reads browser positionals fenced behind a `--` terminator", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // `--` is how a person passes a value that would otherwise read as a flag.
+    // The generic positional scan stops AT the terminator and leaves it in the
+    // argv, so the URL and the key simply went missing and the command failed
+    // with "requires a URL" while the URL was right there.
+    const open = buildCliPlan(["browser", "open", "--", "https://x.example.test"]);
+    expect(open.kind).toBe("execute");
+    if (open.kind !== "execute") return;
+    expect(open.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://x.example.test" },
+      },
+    });
+
+    const key = buildCliPlan(["browser", "key", "--", "Enter"]);
+    expect(key.kind).toBe("execute");
+    if (key.kind !== "execute") return;
+    expect(key.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "dispatchKey", args: { key: "Enter" } },
+    });
+
+    // Flags before the fence are still read as flags.
+    const fenced = buildCliPlan(["browser", "open", "--new-tab", "--", "https://y.example.test"]);
+    expect(fenced.kind).toBe("execute");
+    if (fenced.kind !== "execute") return;
+    expect(fenced.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://y.example.test", newTab: true },
+      },
+    });
+  }));
+
   it("browser open --device applies emulation after navigating", () => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,

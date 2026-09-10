@@ -43,6 +43,27 @@ import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runti
  * out-of-date desktop doesn't accidentally expose private internals.
  */
 
+/**
+ * The bridge methods whose own handlers end the agent's turn at a tab, and so
+ * must NOT be followed by the trailing presence touch every other method gets.
+ *
+ * Derived from the presence router's clear paths rather than from intuition —
+ * these are exactly the dispatchable methods that reach one of them:
+ *
+ * - `closeTab` → the coordinator resolves the closing tab id and calls
+ *   `presenceRouter.noteTabClosed` inside the awaited promise.
+ * - `startHandoff` → emits `handoff-started`, which the router turns into
+ *   `clearForTab` plus `clearForChatSession` for the previous owner.
+ *
+ * The other two clear paths are deliberately absent: `noteWindowTabsClosed`
+ * runs on window teardown, which no bridge method can request, and
+ * `revokeActorCapability` clears presence itself and returns long before this
+ * dispatch. `endSession` reads as turn-ending but is not — it closes a
+ * recorded action session, touches no tab and clears no presence, so an agent
+ * that ends a session and keeps browsing must keep its globe.
+ */
+const TURN_ENDING_BRIDGE_METHODS = new Set<string>(["closeTab", "startHandoff"]);
+
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
   authToken: string;
@@ -351,17 +372,26 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     const opened = builtInBrowserAgentPresence.touch(presenceTouch);
     try {
       const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
-      builtInBrowserAgentPresence.touch(presenceTouch);
+      // …except after the two calls that END the agent's turn at the tab. Both
+      // clear presence from inside the dispatch, and a trailing touch would
+      // re-create the record they just removed — with the dead or handed-off
+      // tab id — leaving the badge saying "browsing" for a full expiry window
+      // after the agent closed its last tab, or pulsing beside the very banner
+      // asking a human to sign in.
+      if (!TURN_ENDING_BRIDGE_METHODS.has(name)) {
+        builtInBrowserAgentPresence.touch(presenceTouch);
+      }
       return result;
     } catch (error) {
       // The call did nothing to the browser ("No ADE browser window is open for
       // project…"), so the announcement is taken back — but only when this call
       // is what made it. A failure inside a stream of commands leaves presence
-      // the earlier ones earned, and the `ifLastActivityAt` guard drops the undo
-      // if a concurrent command from the same chat moved the entry meanwhile.
+      // the earlier ones earned, and the `ifSequence` guard drops the undo if a
+      // concurrent command from the same chat moved the entry meanwhile (or if
+      // a recording took a hold on it while this call was in flight).
       if (opened.created) {
         builtInBrowserAgentPresence.clearForChatSession(actor.chatSessionId, {
-          ifLastActivityAt: opened.lastActivityAt,
+          ifSequence: opened.sequence,
         });
       }
       if (error instanceof JsonRpcError) throw error;

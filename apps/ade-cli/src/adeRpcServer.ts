@@ -4196,11 +4196,18 @@ async function runTool(args: {
           laneId: resolveChatSessionLaneId(runtime, session),
           chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
         };
-        const started = runtime.workToolsStateService
-          ?.noteAgentBrowserActivity(presenceArgs).started ?? false;
-        if (started) {
+        const opened = runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs)
+          ?? null;
+        if (opened?.started) {
+          // Guarded by the sequence that opening edge returned: a concurrent
+          // command from the same chat that re-armed the window in between is a
+          // live agent, and wiping it here would drop presence on the phone
+          // while the desktop's own guarded tracker stayed lit.
           undoBrowserActivityOnFailure = () => {
-            runtime.workToolsStateService?.clearAgentBrowserActivity(presenceArgs);
+            runtime.workToolsStateService?.clearAgentBrowserActivity({
+              ...presenceArgs,
+              sequence: opened.sequence,
+            });
           };
         }
         noteBrowserActivityOnSuccess = () => {

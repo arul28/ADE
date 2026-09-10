@@ -135,7 +135,7 @@ export type WorkToolsStateService = {
    */
   noteAgentBrowserActivity(
     args: { laneId: string | null; chatSessionId: string | null },
-  ): { started: boolean };
+  ): { started: boolean; sequence: number };
   /**
    * That command never ran, and this call is what said it had.
    *
@@ -145,9 +145,16 @@ export type WorkToolsStateService = {
    * picked up the browser. Undoing is only correct for the caller that opened
    * the window — a failure in the middle of a busy agent's stream must not
    * retract presence the rest of that stream still justifies — so this is
-   * called only when {@link noteAgentBrowserActivity} reported `started`.
+   * called only when {@link noteAgentBrowserActivity} reported `started`, and
+   * carries the `sequence` that call returned. If any later command re-armed
+   * the window in the meantime the sequence no longer matches and the undo is
+   * dropped: retracting then would drop presence on the phone while the
+   * desktop's own guarded tracker stayed lit, and the two would disagree until
+   * the next command healed it.
    */
-  clearAgentBrowserActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  clearAgentBrowserActivity(
+    args: { laneId: string | null; chatSessionId: string | null; sequence?: number },
+  ): void;
   getLaneState(args: WorkToolsGetLaneStateArgs): Promise<WorkToolsLaneState>;
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
@@ -385,7 +392,12 @@ export function createWorkToolsStateService(
   // One timer per browsing chat, holding nothing but "expect this to be gone by
   // then". See `noteAgentBrowserActivity`: presence itself belongs to the
   // desktop, and a second copy here would be a second answer to disagree with.
-  const presenceWindowTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const presenceWindowTimers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; sequence: number }
+  >();
+  // Process-wide and never reused, so an undo racing a re-arm cannot match.
+  let nextPresenceSequence = 1;
   let disposed = false;
 
   const browserObservationRoot = path.join(projectRoot, BROWSER_OBSERVATION_CACHE_DIR);
@@ -469,13 +481,13 @@ export function createWorkToolsStateService(
       const chatSessionId = trimmedOrNull(input?.chatSessionId);
       // A lane-less caller (a personal chat) has no lane state to invalidate,
       // and a call with no chat cannot be an agent's.
-      if (!laneId || !chatSessionId || disposed) return { started: false };
+      if (!laneId || !chatSessionId || disposed) return { started: false, sequence: 0 };
       const key = `${laneId}\u0000${chatSessionId}`;
       const existing = presenceWindowTimers.get(key) ?? null;
       // Only the edges are news. A busy agent lands here many times a second,
       // and every one of those would otherwise wake every phone pinned to the
       // lane to re-read a state that has not changed since the last command.
-      if (existing) clearTimeout(existing);
+      if (existing) clearTimeout(existing.timer);
       else emitStateChanged(laneId);
       const timer = setTimeout(() => {
         presenceWindowTimers.delete(key);
@@ -483,8 +495,9 @@ export function createWorkToolsStateService(
         emitStateChanged(laneId);
       }, WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS);
       timer.unref?.();
-      presenceWindowTimers.set(key, timer);
-      return { started: !existing };
+      const sequence = nextPresenceSequence++;
+      presenceWindowTimers.set(key, { timer, sequence });
+      return { started: !existing, sequence };
     },
 
     clearAgentBrowserActivity(input) {
@@ -494,7 +507,10 @@ export function createWorkToolsStateService(
       const key = `${laneId}\u0000${chatSessionId}`;
       const existing = presenceWindowTimers.get(key) ?? null;
       if (!existing) return;
-      clearTimeout(existing);
+      // A later command re-armed the window: that agent is browsing now, and
+      // this failed call has no standing to retract it.
+      if (input?.sequence != null && existing.sequence !== input.sequence) return;
+      clearTimeout(existing.timer);
       presenceWindowTimers.delete(key);
       // The opening edge already went out, so the retraction has to as well:
       // clients re-read the desktop's presence, which the bridge has by now
@@ -599,7 +615,7 @@ export function createWorkToolsStateService(
       disposed = true;
       for (const timer of pendingEventTimers.values()) clearTimeout(timer);
       pendingEventTimers.clear();
-      for (const timer of presenceWindowTimers.values()) clearTimeout(timer);
+      for (const entry of presenceWindowTimers.values()) clearTimeout(entry.timer);
       presenceWindowTimers.clear();
       activeToolByLane.clear();
     },

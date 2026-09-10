@@ -3325,6 +3325,32 @@ function takeArgsAfterTerminator(args: string[]): string[] | null {
   return rest.length > 0 ? rest : null;
 }
 
+/**
+ * Positionals for the `ade browser` parser, including the ones a `--`
+ * terminator protects.
+ *
+ * `standalonePositionals` stops AT the terminator and leaves it in place, which
+ * is right for commands where `--` fences off another program's argv. A browser
+ * value is not another program's argv: `--` is how a person passes a URL or a
+ * key that would otherwise be read as a flag (`browser open -- --weird-url`,
+ * `browser key -- --`), so here everything after it is a literal positional and
+ * the terminator itself is consumed rather than left for a later reader to trip
+ * over. One collector for all three fallbacks — the URL, the key and the
+ * select-option value — because three copies of this rule is how two of them
+ * end up with a different one.
+ */
+function browserPositionals(args: string[]): string[] {
+  // Take the literal tail FIRST: it is spliced off, so the flag-aware scan that
+  // follows cannot mistake a fenced `--selector` for a flag it should skip.
+  const literal = takeArgsAfterTerminator(args) ?? [];
+  return [...standalonePositionals(args), ...literal];
+}
+
+/** The first of {@link browserPositionals}. */
+function firstBrowserPositional(args: string[]): string | null {
+  return browserPositionals(args)[0] ?? null;
+}
+
 function peekFirstPositional(args: string[]): string | null {
   return args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
 }
@@ -11847,7 +11873,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     // read — `--browser-session`, say — used to be joined INTO the URL, so
     // `browser open --browser-session s1 https://x` navigated to
     // "--browser-session s1 https://x".
-    const url = explicitUrl ?? genericUrl ?? standalonePositionals(args).join(" ");
+    const url = explicitUrl ?? genericUrl ?? browserPositionals(args).join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
     const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
@@ -12093,10 +12119,11 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (isBrowserSubcommand(sub, "key")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
-    // `firstStandalonePositional`, not `firstPositional`: any value-carrying
-    // flag this branch does not itself read would otherwise have its VALUE
-    // taken as the key ("browser key --button left Enter" → key "left").
-    const key = readValue(args, ["--key"]) ?? firstStandalonePositional(args);
+    // `firstBrowserPositional`, not `firstPositional`: any value-carrying flag
+    // this branch does not itself read would otherwise have its VALUE taken as
+    // the key ("browser key --button left Enter" → key "left"), and a key
+    // fenced behind `--` would not be found at all.
+    const key = readValue(args, ["--key"]) ?? firstBrowserPositional(args);
     if (!key) throw new CliUsageError("browser key requires a key.");
     return {
       kind: "execute",
@@ -12450,7 +12477,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     }
     const actionArgs = readBrowserAgentActionArgs(args);
     const positional = value == null && label == null && index == null
-      ? firstStandalonePositional(args)
+      ? firstBrowserPositional(args)
       : null;
     if (value == null && label == null && index == null && !positional) {
       throw new CliUsageError("browser select-option requires --value, --label, or --index.");

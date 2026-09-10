@@ -1884,6 +1884,63 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("clears a two-collection window's tabs in one event", async () => {
+    // A window holds one service per collection — its project and, once the
+    // user opens it, the personal one. Clearing per service put the six-events
+    // problem back a level up: two broadcasts on the way out, the first of them
+    // describing a window that was already half torn down.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
+    });
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    // A second window that stays open, so the broadcast has somewhere to land
+    // and the count is the number of clears rather than a race with teardown.
+    const { win: betaWin, browserWin: betaBrowserWin } = scoped.openWindow("/Users/ade/project-beta");
+    service.attachToWindow(betaBrowserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, betaBrowserWin);
+    service.attachToWindow(browserWin);
+    const projectStatus = await service.createTab(
+      { url: "https://alpha.example.test", activate: true },
+      browserWin,
+    );
+    const personalStatus = await service.createTab(
+      { tabCollection: "personal", url: "https://personal.example.test", activate: true },
+      browserWin,
+    );
+    const projectTabId = projectStatus.activeTabId as string;
+    const personalTabId = personalStatus.activeTabId as string;
+    expect(projectTabId).toBeTruthy();
+    expect(personalTabId).toBeTruthy();
+    expect(personalTabId).not.toBe(projectTabId);
+
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: projectTabId,
+      });
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-personal",
+        tabId: personalTabId,
+      });
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(2);
+
+      seen.length = 0;
+      win.emit("closed");
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+      // One clear, so one presence broadcast to the window still listening.
+      const presenceEvents = seen.filter(
+        (entry) => entry.payload.type === "agent-presence" && entry.windowId === betaWin.id,
+      );
+      expect(presenceEvents).toHaveLength(1);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+      builtInBrowserAgentPresence.clearForChatSession("chat-personal");
+    }
+  });
+
   it("routes project-scoped bridge calls to the matching project window", async () => {
     const scoped = projectScopedService(collector.onEvent);
     const service = scoped.service;

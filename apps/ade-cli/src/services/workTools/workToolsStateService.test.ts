@@ -221,6 +221,43 @@ describe("workToolsStateService", () => {
     service.dispose();
   });
 
+  it("retracts only the edge the failing call opened", () => {
+    vi.useFakeTimers();
+    const onStateChanged = vi.fn();
+    const service = createWorkToolsStateService({ projectRoot, onStateChanged, debounceMs: 10 });
+
+    const opened = service.noteAgentBrowserActivity({ laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(opened).toMatchObject({ started: true });
+    vi.advanceTimersByTime(10);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    // A second call from the same chat re-arms the shared timer while the first
+    // is still in flight. When the first then fails, its undo must not close a
+    // window the second one is still standing in: the phone would drop presence
+    // while the desktop's own guarded tracker stayed lit.
+    const second = service.noteAgentBrowserActivity({ laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(second.started).toBe(false);
+    expect(second.sequence).not.toBe(opened.sequence);
+
+    service.clearAgentBrowserActivity({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      sequence: opened.sequence,
+    });
+    vi.advanceTimersByTime(20);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    // The live call's own retraction still lands.
+    service.clearAgentBrowserActivity({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      sequence: second.sequence,
+    });
+    vi.advanceTimersByTime(20);
+    expect(onStateChanged).toHaveBeenCalledTimes(2);
+    service.dispose();
+  });
+
   it("ignores browser activity with no lane or no chat to attribute it to", () => {
     vi.useFakeTimers();
     const onStateChanged = vi.fn();

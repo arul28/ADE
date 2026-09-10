@@ -438,7 +438,14 @@ Two paths carry it, because two kinds of client need it:
   command that throws touched no browser, so the failure path retracts what it
   announced — but only when that call is what opened the window, so one failure
   inside a busy agent's stream cannot dark the globe the rest of that stream
-  still justifies. The daemon deliberately keeps no copy of the
+  still justifies. The retraction is matched by sequence rather than by clock,
+  because parallel calls from one chat share an actor token and land in the same
+  millisecond, and it stands down entirely while a recording holds the record.
+  The trailing edge is skipped for the two calls that end the agent's turn at a
+  tab — `closeTab` and `startHandoff` — which clear presence from inside their
+  own dispatch; touching after them would relight the globe with a dead or
+  handed-off tab, beside the very banner asking a human to sign in. The daemon
+  deliberately keeps no copy of the
   presence itself: the desktop is the only side that sees tabs close and
   recordings end, so a second copy would only be a second answer to disagree
   with.

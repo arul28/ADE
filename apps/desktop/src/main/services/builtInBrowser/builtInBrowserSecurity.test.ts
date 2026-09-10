@@ -1034,10 +1034,18 @@ describe("built-in browser desktop bridge", () => {
       // calls, since the expiry window would not even start until one returned.
       const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
       const slow: { release: (() => void) | null } = { release: null };
+      // The dispatch boundary itself is the signal: by the time the service
+      // method runs, the pre-dispatch presence touch has already happened. A
+      // poll-and-sleep here raced a real clock for the same fact.
+      let announceDispatch: (() => void) | null = null;
+      const dispatched = new Promise<void>((resolve) => {
+        announceDispatch = resolve;
+      });
       const navigate = vi.fn(async (input: { url?: string }) => {
         if (input?.url?.includes("unreachable")) {
           throw new Error("No ADE browser window is open for project: /issued/project");
         }
+        announceDispatch?.();
         await new Promise<void>((resolve) => {
           slow.release = resolve;
         });
@@ -1090,10 +1098,7 @@ describe("built-in browser desktop bridge", () => {
           [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: slowToken,
         };
         const pending = client.navigate(slowNavigate);
-        const deadline = Date.now() + 2_000;
-        while (!present("chat-slow") && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 5));
-        }
+        await dispatched;
         expect(present("chat-slow")).toBe(true);
         slow.release?.();
         await pending;
@@ -1113,6 +1118,95 @@ describe("built-in browser desktop bridge", () => {
         slow.release?.();
         builtInBrowserAgentPresence.clearForChatSession("chat-slow");
         builtInBrowserAgentPresence.clearForChatSession("chat-failed");
+        client.dispose();
+        server.dispose();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not relight the globe after the calls that end the agent's turn",
+    async () => {
+      // `closeTab` and `startHandoff` clear presence from inside the dispatch —
+      // the first through the router's `noteTabClosed`, the second through the
+      // `handoff-started` event. The trailing touch every other method gets
+      // would re-create the record they just removed, so the badge said
+      // "browsing" for a full expiry after the agent closed its last tab, and
+      // pulsed beside the very banner asking a human to sign in.
+      const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+      const service = {
+        // Stand-ins for the router paths, which are exercised on their own in
+        // builtInBrowserPresence.test.ts.
+        closeTab: async (input: { tabId?: string }) => {
+          if (input?.tabId) builtInBrowserAgentPresence.clearForTab(input.tabId);
+          return { ok: true };
+        },
+        startHandoff: (input: { tabId?: string; chatSessionId?: string }) => {
+          if (input?.tabId) builtInBrowserAgentPresence.clearForTab(input.tabId);
+          if (input?.chatSessionId) {
+            builtInBrowserAgentPresence.clearForChatSession(input.chatSessionId);
+          }
+          return { ok: true };
+        },
+        navigate: async (input: unknown) => input,
+      } as unknown as BuiltInBrowserService;
+      const server = startBuiltInBrowserDesktopBridgeServer({
+        socketPath,
+        service,
+        logger: createLogger(),
+      });
+      const client = createBuiltInBrowserDesktopBridgeClient({
+        socketPath,
+        getAuthToken: () => server.authToken,
+        projectRoot: "/issued/project",
+        logger: createLogger(),
+      });
+      const present = (chatSessionId: string): boolean =>
+        builtInBrowserAgentPresence.list().some((entry) => entry.chatSessionId === chatSessionId);
+      const tokenFor = (chatSessionId: string): string =>
+        issueBuiltInBrowserActorCapability({
+          chatSessionId,
+          laneId: null,
+          projectRoot: "/issued/project",
+          tabCollection: null,
+        });
+      try {
+        await waitForPath(socketPath);
+
+        const closeToken = tokenFor("chat-close");
+        // A command first, so the chat really is present before the close.
+        await client.navigate({
+          url: "https://example.test/before-close",
+          chatSessionId: "chat-close",
+          tabId: "tab-close",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: closeToken,
+        } as never);
+        expect(present("chat-close")).toBe(true);
+        await client.closeTab({
+          tabId: "tab-close",
+          chatSessionId: "chat-close",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: closeToken,
+        } as never);
+        expect(present("chat-close")).toBe(false);
+
+        const handoffToken = tokenFor("chat-handoff");
+        await client.navigate({
+          url: "https://example.test/before-handoff",
+          chatSessionId: "chat-handoff",
+          tabId: "tab-handoff",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: handoffToken,
+        } as never);
+        expect(present("chat-handoff")).toBe(true);
+        await client.startHandoff({
+          tabId: "tab-handoff",
+          chatSessionId: "chat-handoff",
+          reason: "Sign in to continue",
+          [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: handoffToken,
+        } as never);
+        expect(present("chat-handoff")).toBe(false);
+      } finally {
+        builtInBrowserAgentPresence.clearForChatSession("chat-close");
+        builtInBrowserAgentPresence.clearForChatSession("chat-handoff");
         client.dispose();
         server.dispose();
       }
