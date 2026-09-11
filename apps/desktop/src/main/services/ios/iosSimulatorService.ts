@@ -70,6 +70,7 @@ import type {
   IosSimulatorSetPermissionArgs,
   IosSimulatorStartEventLogArgs,
   IosSimulatorStatus,
+  IosSimulatorStatusStream,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
@@ -2257,6 +2258,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
+  /** The host encoder's own counters, when that backend is the running one. */
+  const liveStreamMetrics = () => (
+    streamStatus.backend === "idb-h264" && videoServer ? videoServer.metrics() : null
+  );
+
   const ensureVideoServer = (): IosVideoStreamServer => {
     if (!videoServer) {
       videoServer = createIosVideoStreamServer({
@@ -2986,6 +2992,29 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     ];
   };
 
+  /**
+   * The live view, as a status read reports it.
+   *
+   * Built from named fields rather than a spread of `streamStatus`: that object
+   * carries the stream's address and token, and `getStatus` is on the action
+   * allowlist, so a spread here would put a live token in every agent's poll.
+   *
+   * Read on the cached path too. It is in-memory and free, and a status whose
+   * whole job is answering "what is going on right now" must not report a
+   * stream that started a second ago as stopped.
+   */
+  const currentStatusStream = (): IosSimulatorStatusStream => {
+    const metrics = liveStreamMetrics();
+    return {
+      running: streamStatus.running,
+      backend: streamStatus.backend,
+      deviceUdid: streamStatus.deviceUdid,
+      fps: metrics?.fps ?? streamStatus.fps,
+      bitrateKbps: metrics?.bitrateKbps ?? streamStatus.bitrateKbps ?? null,
+      lastError: metrics?.lastError ?? streamStatus.lastError,
+    };
+  };
+
   const computeStatus = async (): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
     const tools = buildToolStatuses();
@@ -3009,6 +3038,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       activeDevice,
       activeSession,
       deviceSession,
+      // The same redaction rule as `getStreamStatus`: the shape, never the
+      // address or the token.
+      stream: currentStatusStream(),
     };
   };
 
@@ -3019,6 +3051,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       return {
         ...cachedStatus.value,
         activeSession,
+        // Both of these are in-memory reads, so the throttle exists to spare
+        // the `simctl` device list, not these. Serving them from the cache
+        // would report a session or a stream that changed since it was built.
+        deviceSession: hub().getDeviceSession(),
+        stream: currentStatusStream(),
       };
     }
     const inflight = computeStatus()

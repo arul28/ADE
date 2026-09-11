@@ -600,10 +600,36 @@ function installIosSimulatorApi(options: {
   };
 }
 
+/** Radix opens menus on pointerdown, and jsdom has none of the pointer plumbing. */
+function installRadixDomShims(): void {
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.hasPointerCapture = vi.fn(() => false);
+  proto.setPointerCapture = vi.fn();
+  proto.releasePointerCapture = vi.fn();
+}
+
+/** Radix's popper measures its content, and jsdom ships no ResizeObserver. */
+class MockMenuResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+/**
+ * Open a device-tool value menu by its trigger's accessible name.
+ *
+ * Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
+ * `button === 0` guard on pointerdown never passes there.
+ */
+async function openToolMenu(label: string): Promise<void> {
+  fireEvent.keyDown(await screen.findByLabelText(label), { key: "Enter" });
+}
+
 describe("ChatIosSimulatorPanel", () => {
   beforeEach(() => {
     vi.useRealTimers();
     chatScopeOverride = null;
+    installRadixDomShims();
   });
 
   afterEach(() => {
@@ -2524,14 +2550,15 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.click(await screen.findByTestId("ios-pane-tools"));
     await screen.findByTestId("ios-tools-column");
 
-    const appearance = await screen.findByLabelText("Appearance") as HTMLSelectElement;
-    await waitFor(() => expect(appearance.value).toBe("dark"));
+    const appearance = await screen.findByLabelText("Appearance");
+    await waitFor(() => expect(appearance.textContent).toContain("Dark"));
     expect(screen.getByRole("switch", { name: "Reduce motion" }).getAttribute("aria-checked")).toBe("true");
     expect(api.getDeviceSettings).toHaveBeenCalledTimes(1);
     expect(api.getDeviceSettings).toHaveBeenCalledWith({ deviceUdid: device.udid }, null);
   });
 
   it("writes the chosen appearance to the active device", async () => {
+    vi.stubGlobal("ResizeObserver", MockMenuResizeObserver);
     const { api } = installIosSimulatorApi();
 
     render(
@@ -2543,10 +2570,11 @@ describe("ChatIosSimulatorPanel", () => {
     );
 
     fireEvent.click(await screen.findByTestId("ios-pane-tools"));
-    const appearance = await screen.findByLabelText("Appearance") as HTMLSelectElement;
-    await waitFor(() => expect(appearance.value).toBe("dark"));
+    const appearance = await screen.findByLabelText("Appearance");
+    await waitFor(() => expect(appearance.textContent).toContain("Dark"));
 
-    fireEvent.change(appearance, { target: { value: "light" } });
+    await openToolMenu("Appearance");
+    fireEvent.click(await screen.findByText("Light"));
 
     await waitFor(() => expect(api.setAppearance).toHaveBeenCalledWith({
       deviceUdid: device.udid,
@@ -2573,9 +2601,9 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.click(await screen.findByTestId("ios-pane-tools"));
     await screen.findByTestId("ios-tools-column");
 
-    expect((await screen.findByLabelText("Appearance") as HTMLSelectElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Text size") as HTMLSelectElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Location") as HTMLSelectElement).disabled).toBe(true);
+    expect((await screen.findByLabelText("Appearance") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Text size") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Location") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("switch", { name: "Reduce motion" }) as HTMLButtonElement).disabled).toBe(true);
   });
 

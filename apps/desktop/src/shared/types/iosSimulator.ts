@@ -76,6 +76,26 @@ export type IosSimulatorStatus = {
    * device sessions; older hosts omit it and every caller treats that as null.
    */
   deviceSession?: IosSimulatorDeviceSession | null;
+  /**
+   * What the live view is doing, so one status read answers "what is going on".
+   *
+   * An agent asking that question had to call `getStatus` and `getStreamStatus`
+   * and join them. This is the coarse half of the second call, carried here so
+   * the poll an agent already makes is enough. It never carries the stream
+   * address or its token: that is `startStream`'s to hand out.
+   */
+  stream?: IosSimulatorStatusStream | null;
+};
+
+/** The redacted live-view summary carried on `IosSimulatorStatus`. */
+export type IosSimulatorStatusStream = {
+  running: boolean;
+  backend: IosSimulatorStreamBackend | null;
+  deviceUdid: string | null;
+  /** Measured by host-encoded backends only; null for window capture. */
+  fps: number | null;
+  bitrateKbps: number | null;
+  lastError: string | null;
 };
 
 export type IosSimulatorLaunchMode = "snapshot" | "live";

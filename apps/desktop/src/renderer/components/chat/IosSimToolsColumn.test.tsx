@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IosSimToolsColumn, type IosSimToolsColumnProps } from "./IosSimToolsColumn";
 import type {
   IosSimulatorDeviceSettings,
@@ -96,9 +96,44 @@ function renderColumn(overrides: Partial<IosSimToolsColumnProps> = {}) {
   return { ...view, props };
 }
 
+/** Radix opens menus on pointerdown, and jsdom has none of the pointer plumbing. */
+function installRadixDomShims(): void {
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.hasPointerCapture = vi.fn(() => false);
+  proto.setPointerCapture = vi.fn();
+  proto.releasePointerCapture = vi.fn();
+  proto.scrollIntoView = vi.fn();
+}
+
+/** Radix's popper measures its content, and jsdom ships no ResizeObserver. */
+class MockResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+/**
+ * Open a value menu by its trigger's accessible name.
+ *
+ * Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
+ * `button === 0` guard on pointerdown never passes there.
+ */
+async function openMenu(label: string): Promise<void> {
+  fireEvent.keyDown(await screen.findByLabelText(label), { key: "Enter" });
+}
+
 describe("IosSimToolsColumn", () => {
+  beforeEach(() => {
+    installRadixDomShims();
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+  });
+
   afterEach(() => {
     cleanup();
+    // Radix marks the body inert while a modal menu is up and does not always
+    // take it off again once the tree it belonged to unmounts.
+    document.body.removeAttribute("inert");
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
 
@@ -148,9 +183,9 @@ describe("IosSimToolsColumn", () => {
   it("needs an app session for grant and revoke but not for reset", () => {
     renderColumn({ bundleId: null });
 
-    expect((screen.getByRole("button", { name: "grant" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "revoke" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "reset" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Grant" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Reset" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps Send disabled until the push has a title or a body", () => {
@@ -166,10 +201,11 @@ describe("IosSimToolsColumn", () => {
     expect(props.onSendPush).toHaveBeenCalledWith("", "Ready to review");
   });
 
-  it("sends the preset's own coordinates when a location is picked", () => {
+  it("sends the preset's own coordinates when a location is picked", async () => {
     const { props } = renderColumn();
 
-    fireEvent.change(screen.getByLabelText("Location"), { target: { value: "London" } });
+    await openMenu("Location");
+    fireEvent.click(await screen.findByText("London"));
 
     expect(props.onSetLocation).toHaveBeenCalledWith(51.5072, -0.1276);
   });

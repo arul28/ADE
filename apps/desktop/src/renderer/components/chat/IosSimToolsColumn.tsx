@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowClockwise,
   Bell,
   CaretDown,
   CaretRight,
+  Check,
   Copy,
   Crosshair,
   Link as LinkIcon,
@@ -26,6 +28,11 @@ import {
   IOS_SIMULATOR_PRIVACY_SERVICES,
 } from "../../../shared/types/iosSimulator";
 import { WORK_TOOL_SECTION_LABEL_TEXT } from "../terminals/workToolChrome";
+import {
+  MENU_CONTENT_CLASS,
+  MENU_ITEM_CLASS,
+  MENU_LABEL_CLASS,
+} from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
 
 /**
@@ -56,59 +63,128 @@ const LOCATION_PRESETS: { label: string; latitude: number; longitude: number }[]
   { label: "Sydney", latitude: -33.8688, longitude: 151.2093 },
 ];
 
+/**
+ * The three privacy actions, written the way every other button in the column
+ * is. `simctl` spells them lower case; a control does not have to.
+ */
+const PERMISSION_ACTION_LABELS: Record<IosSimulatorPrivacyAction, string> = {
+  grant: "Grant",
+  revoke: "Revoke",
+  reset: "Reset",
+};
+
 const SECTION_LABEL = cn("px-0.5 pb-1 pt-0.5", WORK_TOOL_SECTION_LABEL_TEXT);
 const ROW = "flex items-center gap-1.5 px-0.5 py-[3px]";
 const ROW_LABEL = "min-w-0 flex-1 truncate font-sans text-[11px] text-fg/72";
-const SELECT = cn(
-  "h-6 min-w-0 rounded border border-white/[0.08] bg-white/[0.04] px-1 font-sans text-[10px] text-fg/85",
-  "focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40 disabled:cursor-not-allowed disabled:opacity-45",
+
+/**
+ * Every clickable thing in the column wears the pane's own control skin.
+ *
+ * `.ade-shell-control` already owns the fill, border, radius, hover and
+ * `data-[state=open]` paint that the browser pane next door spends, so the
+ * column states only its size. Hand-written border and background utilities
+ * were how this column drifted into a third look in the first place.
+ */
+const CONTROL = "ade-shell-control disabled:cursor-not-allowed disabled:opacity-45";
+const BUTTON = cn(
+  CONTROL,
+  "inline-flex h-6 shrink-0 items-center gap-1 px-2 font-sans text-[10px] font-medium",
 );
 
 /**
- * A select that renders dark.
+ * A menu trigger reads as the value it carries, not as a form field.
  *
- * A native select paints its own popup from the document's colour scheme, and
- * the renderer does not declare one, so an unstyled select arrives light on a
- * dark panel. Stating it here keeps every option list in the column readable.
+ * Same height and type as the buttons beside it, so a row of a value and an
+ * action does not look like two different kinds of control.
  */
-function ToolSelect({
+const MENU_TRIGGER = cn(
+  CONTROL,
+  "inline-flex h-6 min-w-0 items-center gap-1 px-1.5 font-sans text-[10px] font-medium",
+);
+
+/** The browser pane's field: a sunken well rather than a raised control. */
+const INPUT = cn(
+  "h-6 min-w-0 flex-1 rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5",
+  "font-sans text-[10.5px] text-fg/85 placeholder:text-muted-fg/45 outline-none",
+  "focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
+  "disabled:cursor-not-allowed disabled:opacity-45",
+);
+
+type ToolMenuOption = { value: string; label: string };
+
+/**
+ * One value picker for the whole column.
+ *
+ * A native `<select>` paints its popup from the document's colour scheme and
+ * lands as a third visual language beside the browser pane's Radix menus, so
+ * the list is the house menu instead: same surface, same item metrics, same
+ * accent check mark on whatever is on.
+ */
+function ToolMenu({
   ariaLabel,
   value,
+  placeholder,
+  options,
   disabled,
   onChange,
   className,
-  children,
 }: {
   ariaLabel: string;
   value: string;
+  /** Shown on the trigger when the current value is not one of the options. */
+  placeholder: string;
+  options: ToolMenuOption[];
   disabled: boolean;
   onChange: (value: string) => void;
   className?: string;
-  children: React.ReactNode;
 }) {
+  const current = options.find((option) => option.value === value);
   return (
-    <select
-      aria-label={ariaLabel}
-      className={cn(SELECT, className)}
-      style={{ colorScheme: "dark" }}
-      value={value}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {children}
-    </select>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          disabled={disabled}
+          className={cn(MENU_TRIGGER, className)}
+        >
+          <span className="min-w-0 flex-1 truncate text-left">{current?.label ?? placeholder}</span>
+          <CaretDown size={9} weight="bold" aria-hidden="true" className="shrink-0 text-muted-fg/60" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className={MENU_CONTENT_CLASS}
+        >
+          <DropdownMenu.Label className={MENU_LABEL_CLASS}>{ariaLabel}</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
+            {options.map((option) => (
+              <DropdownMenu.RadioItem
+                key={option.value}
+                value={option.value}
+                className={MENU_ITEM_CLASS}
+              >
+                <Check
+                  size={11}
+                  weight="bold"
+                  aria-hidden="true"
+                  className={cn(
+                    "shrink-0 text-[var(--color-accent)]",
+                    option.value === value ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
-const BUTTON = cn(
-  "inline-flex h-6 shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-white/[0.04] px-1.5",
-  "font-sans text-[10px] font-medium text-fg/80 transition-colors hover:bg-white/[0.08]",
-  "disabled:cursor-not-allowed disabled:opacity-45",
-);
-const INPUT = cn(
-  "h-6 min-w-0 flex-1 rounded border border-white/[0.08] bg-white/[0.04] px-1.5 font-sans text-[10px] text-fg/85",
-  "placeholder:text-muted-fg/45 focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40",
-  "disabled:cursor-not-allowed disabled:opacity-45",
-);
 
 function Toggle({
   checked,
@@ -131,7 +207,13 @@ function Toggle({
       onClick={() => onChange(!checked)}
       className={cn(
         "relative h-[14px] w-[24px] shrink-0 rounded-full border transition-colors",
-        checked ? "border-emerald-300/40 bg-emerald-500/40" : "border-white/[0.1] bg-white/[0.06]",
+        // Accent, not a hard-coded green: on means on everywhere in the pane.
+        checked
+          ? cn(
+            "border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)]",
+            "bg-[color-mix(in_srgb,var(--color-accent)_40%,transparent)]",
+          )
+          : "border-white/[0.1] bg-white/[0.06]",
         "disabled:cursor-not-allowed disabled:opacity-45",
       )}
     >
@@ -238,6 +320,20 @@ export function IosSimToolsColumn({
   const appearance = settings?.appearance ?? "unknown";
   const accessibility = settings?.accessibility ?? null;
 
+  const contentSize = settings?.contentSize ?? "";
+  // A device can answer with a size this build has no name for. Listing it
+  // keeps the trigger honest rather than showing a value with no row behind it.
+  const contentSizeOptions: ToolMenuOption[] = [
+    ...(contentSize && !IOS_SIMULATOR_CONTENT_SIZES.includes(contentSize as IosSimulatorContentSize)
+      ? [{ value: contentSize, label: contentSize }]
+      : []),
+    ...IOS_SIMULATOR_CONTENT_SIZES.map((size) => ({ value: size, label: size })),
+  ];
+
+  const locationLabel = settings?.location
+    ? `${settings.location.latitude.toFixed(3)}, ${settings.location.longitude.toFixed(3)}`
+    : "Not set";
+
   return (
     <div
       className={cn(
@@ -249,7 +345,7 @@ export function IosSimToolsColumn({
       <Section
         label="App"
         right={(
-          <button type="button" className={cn(BUTTON, "mr-0.5 border-0 bg-transparent px-1")} onClick={onRefresh} disabled={busy} title="Re-read device settings">
+          <button type="button" data-variant="ghost" className={cn(BUTTON, "mr-0.5 px-1")} onClick={onRefresh} disabled={busy} title="Re-read device settings">
             <ArrowClockwise size={11} />
           </button>
         )}
@@ -303,35 +399,31 @@ export function IosSimToolsColumn({
       <Section label="Appearance">
         <div className={ROW}>
           <div className={ROW_LABEL}>Mode</div>
-          <ToolSelect
+          <ToolMenu
             ariaLabel="Appearance"
             className="w-[112px] shrink-0"
             value={appearance === "light" || appearance === "dark" ? appearance : ""}
+            placeholder="Unknown"
+            options={[
+              { value: "light", label: "Light" },
+              { value: "dark", label: "Dark" },
+            ]}
             disabled={locked}
             onChange={(next) => onSetAppearance(next as IosSimulatorAppearance)}
-          >
-            {appearance === "light" || appearance === "dark" ? null : <option value="">Unknown</option>}
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </ToolSelect>
+          />
         </div>
         <div className={ROW}>
           <TextAa size={11} className="shrink-0 text-muted-fg/55" />
           <div className={ROW_LABEL}>Text size</div>
-          <ToolSelect
+          <ToolMenu
             ariaLabel="Text size"
             className="w-[112px] shrink-0"
-            value={settings?.contentSize ?? ""}
+            value={contentSize}
+            placeholder="Unknown"
+            options={contentSizeOptions}
             disabled={locked}
             onChange={(next) => onSetContentSize(next as IosSimulatorContentSize)}
-          >
-            {settings && !IOS_SIMULATOR_CONTENT_SIZES.includes(settings.contentSize as IosSimulatorContentSize) ? (
-              <option value={settings.contentSize}>{settings.contentSize}</option>
-            ) : null}
-            {IOS_SIMULATOR_CONTENT_SIZES.map((size) => (
-              <option key={size} value={size}>{size}</option>
-            ))}
-          </ToolSelect>
+          />
         </div>
       </Section>
 
@@ -359,25 +451,22 @@ export function IosSimToolsColumn({
       <Section label="Location">
         <div className={ROW}>
           <Crosshair size={11} className="shrink-0 text-muted-fg/55" />
-          <ToolSelect
+          {/*
+            The trigger carries the fix the device reports, which is never one
+            of the presets, so nothing in the list is ever the checked row.
+          */}
+          <ToolMenu
             ariaLabel="Location"
             className="flex-1"
             value=""
+            placeholder={locationLabel}
+            options={LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
             disabled={locked}
             onChange={(next) => {
               const preset = LOCATION_PRESETS.find((item) => item.label === next);
               if (preset) onSetLocation(preset.latitude, preset.longitude);
             }}
-          >
-            <option value="">
-              {settings?.location
-                ? `${settings.location.latitude.toFixed(3)}, ${settings.location.longitude.toFixed(3)}`
-                : "Not set"}
-            </option>
-            {LOCATION_PRESETS.map((preset) => (
-              <option key={preset.label} value={preset.label}>{preset.label}</option>
-            ))}
-          </ToolSelect>
+          />
           <button type="button" className={BUTTON} onClick={onClearLocation} disabled={locked}>
             Clear
           </button>
@@ -387,29 +476,27 @@ export function IosSimToolsColumn({
       <Section label="Permissions">
         <div className={ROW}>
           <ShieldCheck size={11} className="shrink-0 text-muted-fg/55" />
-          <ToolSelect
+          <ToolMenu
             ariaLabel="Permission service"
             className="flex-1"
             value={permissionService}
+            placeholder="Pick a service"
+            options={IOS_SIMULATOR_PRIVACY_SERVICES.map((service) => ({ value: service, label: service }))}
             disabled={locked}
             onChange={(next) => setPermissionService(next as IosSimulatorPrivacyService)}
-          >
-            {IOS_SIMULATOR_PRIVACY_SERVICES.map((service) => (
-              <option key={service} value={service}>{service}</option>
-            ))}
-          </ToolSelect>
+          />
         </div>
         <div className={cn(ROW, "gap-1")}>
           {(["grant", "revoke", "reset"] as IosSimulatorPrivacyAction[]).map((action) => (
             <button
               key={action}
               type="button"
-              className={cn(BUTTON, "flex-1 justify-center")}
+              className={cn(BUTTON, "flex-1 justify-center px-1")}
               disabled={locked || (!bundleId && action !== "reset")}
               title={!bundleId && action !== "reset" ? "Grant and revoke need an app session." : undefined}
               onClick={() => onSetPermission(action, permissionService)}
             >
-              {action}
+              {PERMISSION_ACTION_LABELS[action]}
             </button>
           ))}
         </div>

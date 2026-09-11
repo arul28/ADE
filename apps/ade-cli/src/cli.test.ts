@@ -11632,6 +11632,37 @@ describe("ADE CLI", () => {
     expect(windowCapture.args).not.toHaveProperty("scaleFactor");
   });
 
+  it("ios-sim status --text shows the device session and the live view", () => {
+    // The skill tells an agent to poll this exact command to learn "what is
+    // going on". A formatter that printed only the app session made an agent
+    // read a running stream as a stopped one.
+    const plan = buildCliPlan(["ios-sim", "status"]);
+    const text = formatOutput({
+      supported: true,
+      platform: "darwin",
+      activeDevice: { name: "iPhone 17 Pro", state: "Booted" },
+      activeSession: { bundleId: "com.ade.ios", appName: "ADE", buildRoot: "/lane", laneId: "lane-1" },
+      deviceSession: { deviceName: "iPhone 17 Pro", chatSessionId: "chat-7" },
+      stream: { running: true, backend: "idb-h264", fps: 16, bitrateKbps: 661, lastError: null },
+      tools: [],
+    }, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    }, inferFormatter(plan));
+
+    expect(text).toContain("open device");
+    expect(text).toContain("chat-7");
+    expect(text).toContain("idb-h264");
+    expect(text).toContain("16 fps");
+    expect(text).toContain("661 kbit/s");
+    expect(text).toContain("ADE");
+    // The address and its token are never part of a status read.
+    expect(text).not.toContain("token=");
+    expect(text).not.toContain("127.0.0.1");
+  });
+
   it("ios-sim uninstall names the calling chat exactly once", () => {
     // `readValue` splices the flag out of `args`, so reading it twice in one
     // expression shipped a null id and the service's own guard then refused the

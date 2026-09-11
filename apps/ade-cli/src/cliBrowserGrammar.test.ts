@@ -574,8 +574,11 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * all: `runCli`, `runServe`, `main` and three more read argv and were invisible
  * to the whole graph. A drop means the parse stopped seeing bodies it used to
  * see; a rise means a new argv reader exists.
+ *
+ * 103 since `readIosSimulatorElementQuery`: six `ios-sim` subcommands build the
+ * same element query, and one reader is why they cannot drift apart.
  */
-const ARGV_READER_COUNT = 102;
+const ARGV_READER_COUNT = 103;
 
 /** The carrier-aware positional readers the browser table must reach. */
 const CARRIER_AWARE_READERS = [

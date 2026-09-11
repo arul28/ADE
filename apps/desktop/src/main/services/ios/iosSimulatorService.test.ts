@@ -725,6 +725,49 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
+  it("reports the live view on getStatus, fresh and without the address", async () => {
+    // One poll has to answer "what is going on". The throttle exists to spare
+    // the `simctl` device list, so a cached status must still report a stream
+    // that started after it was built — and must never carry the token.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      const before = await service.getStatus();
+      expect(before.stream?.running).toBe(false);
+
+      const started = await service.startStream({ deviceUdid: "device-1", backend: "idb-h264" });
+      // Immediately after, well inside the throttle window: the cached status
+      // must not still say the stream is stopped.
+      const after = await service.getStatus();
+      expect(after.stream?.running).toBe(true);
+      expect(after.stream?.backend).toBe("idb-h264");
+      expect(after.stream?.deviceUdid).toBe("device-1");
+
+      const serialized = JSON.stringify(after.stream);
+      expect(serialized).not.toContain(started.transport?.token ?? "never");
+      expect(serialized).not.toContain("token=");
+      expect(after.stream).not.toHaveProperty("transport");
+      expect(after.stream).not.toHaveProperty("streamUrl");
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("hands the stream address out on start and redacts it from every status read", async () => {
     // `getStreamStatus` is on the action allowlist with no ownership guard, so
     // `ade actions run ios_simulator.getStreamStatus --json` prints whatever it

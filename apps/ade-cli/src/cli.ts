@@ -1425,13 +1425,13 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   relaunches.
 
     $ ade --socket ios-sim accessibility reduce-motion on --text
-    $ ade --socket ios-sim a11y --option bold-text --disabled --text
+    $ ade --socket ios-sim a11y --option bold-text --off --text
 
   Flags:
     --option <name>        Option to set; a positional value works too. Values:
                            increase-contrast, reduce-motion, reduce-transparency,
                            bold-text, invert-colors, grayscale, voice-over.
-    --enabled, --disabled  State to set; positional on/off works too.
+    --on, --off            State to set; positional on/off works too.
     --device, --udid <id>  Simulator device.
 `,
   location: `${ADE_BANNER}
@@ -11200,10 +11200,14 @@ function buildIosSimulatorPlan(
   }
   if (sub === "accessibility" || sub === "a11y") {
     const device = readValue(args, ["--device", "--udid"]);
-    const enabledFlag = readFlag(args, ["--enabled", "--on"]);
-    const disabledFlag = readFlag(args, ["--disabled", "--off"]);
+    // `--on` / `--off` only. `--enabled` carries a VALUE for another command, and
+    // a name that is a boolean in one place and a carrier in another swallows
+    // the token after it — which this command has, because its option and its
+    // state are positional.
+    const enabledFlag = readFlag(args, ["--on"]);
+    const disabledFlag = readFlag(args, ["--off"]);
     if (enabledFlag && disabledFlag) {
-      throw new CliUsageError("Use --enabled or --disabled, not both.");
+      throw new CliUsageError("Use --on or --off, not both.");
     }
     const option = requireValue(
       readValue(args, ["--option"]) ?? firstPositional(args),
@@ -11228,7 +11232,7 @@ function buildIosSimulatorPlan(
             : null;
     if (enabled == null) {
       throw new CliUsageError(
-        `ios-sim ${sub} needs a state. Pass on, off, --enabled, or --disabled.`,
+        `ios-sim ${sub} needs a state. Pass on, off, --on, or --off.`,
       );
     }
     return iosAction("iOS simulator accessibility option", "setAccessibilityOption", {
@@ -23732,6 +23736,15 @@ function formatIosSimStatus(value: unknown): string {
   const activeSession = isRecord(status.activeSession)
     ? status.activeSession
     : {};
+  // The device half and the live view, because `status` is the one command an
+  // agent is told to poll. Leaving them to `--json` only meant a reader saw no
+  // stream block and concluded the live view was off while it was running.
+  const deviceSession = isRecord(status.deviceSession) ? status.deviceSession : {};
+  const stream = isRecord(status.stream) ? status.stream : {};
+  const streamRate = [
+    stream.fps == null ? null : `${String(stream.fps)} fps`,
+    stream.bitrateKbps == null ? null : `${String(stream.bitrateKbps)} kbit/s`,
+  ].filter((part): part is string => part != null).join(", ");
   return [
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
@@ -23743,10 +23756,17 @@ function formatIosSimStatus(value: unknown): string {
           : null,
       ],
       ["active app", activeSession.bundleId],
+      ["app name", activeSession.appName],
+      ["build root", activeSession.buildRoot],
       ["lane", activeSession.laneId],
       ["mode", activeSession.mode],
       ["chat session", activeSession.chatSessionId],
       ["claimed", activeSession.claimedAt],
+      ["open device", deviceSession.deviceName ?? deviceSession.deviceUdid],
+      ["device chat session", deviceSession.chatSessionId],
+      ["live view", stream.running === true ? stream.backend ?? "running" : null],
+      ["live rate", streamRate || null],
+      ["live error", stream.lastError],
     ]),
     "",
     renderTable(

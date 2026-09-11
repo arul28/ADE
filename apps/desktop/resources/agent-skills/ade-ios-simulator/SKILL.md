@@ -24,6 +24,49 @@ ade --socket ios-sim proof-bundle --caption "Settings row renders" --text
 - `proof-bundle` writes the screenshot plus the machine, device, build root, on-screen elements, and recent log rows. Use it for reviewer-facing evidence. `proof` still files a lone screenshot in the proof drawer.
 - Release when done: `ade --socket ios-sim shutdown --text` for an app session, `close-device` for a device session.
 
+## Read the current state
+
+One command answers "what is going on with the simulator drawer".
+
+```bash
+ade --socket ios-sim status --text
+```
+
+It reports, in one payload:
+
+- `supported` and `tools` — whether this machine can run a simulator at all, and which of `xcrun`, `xcodebuild`, `idb` and `idb_companion` are present.
+- `activeDevice` — the device every other command defaults to.
+- `activeSession` — the app session: bundle id, app name, build root, lane, and the chat that owns it. Null means no app is running.
+- `deviceSession` — a booted simulator with no app, and the chat that owns it. Null means nobody opened one.
+- `stream` — the live view: `running`, `backend`, `fps`, `bitrateKbps`, and `lastError`. It never carries the stream address or its token.
+
+Read the ownership fields before you act. When `chatSessionId` names another chat, that chat owns the session: `claim` takes it deliberately, and every other command drives whatever is running.
+
+Add `ade --socket ios-sim log --text` when you need what the app and ADE have been doing, and `ade --socket ios-sim snapshot --text` when you need what is on screen.
+
+## Show the user the drawer
+
+Agent commands do not open the drawer. The user gets a "Simulator running" pill with an Open action instead, so an agent working in the background never steals the screen.
+
+Open it deliberately when the user asked to watch:
+
+```bash
+ade --socket ios-sim launch --target <id> --open-drawer --text
+```
+
+## Launch a named app
+
+`apps` lists every launchable target with its id, name, bundle id, and whether it is buildable or only installed.
+
+```bash
+ade --socket ios-sim apps --text
+ade --socket ios-sim launch --target <id> --text          # by target id
+ade --socket ios-sim launch --bundle-id com.acme.app --text  # an installed app
+ade --socket ios-sim launch --scheme MyApp --no-build --text # skip the build
+```
+
+Prefer `--target`. A bundle id alone finds only an app that is already installed, so it starts whatever binary is on the device rather than your lane's code.
+
 ## Drive the app
 
 Name elements, not pixels. A coordinate tap is a guess that the layout did not move, and the guess fails silently: the tap lands on whatever moved into that rectangle.
