@@ -11347,6 +11347,405 @@ describe("ADE CLI", () => {
     }
   });
 
+  // The device hub added 26 service methods. These cover the typed flags that
+  // the generic `--arg` fallback cannot check: booleans that must invert, a
+  // routing flag that picks a different action, parsed JSON, numbers that must
+  // stay numbers, and the one element query six subcommands share.
+  const iosSimActionArgs = (command: string[]): Record<string, unknown> => {
+    const plan = buildCliPlan(command);
+    if (plan.kind !== "execute") throw new Error("expected an execute plan");
+    const params = plan.steps[0]?.params as
+      | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+      | undefined;
+    return {
+      domain: params?.arguments?.domain,
+      action: params?.arguments?.action,
+      args: params?.arguments?.args ?? {},
+    };
+  };
+
+  it("ios-sim open-device --no-window sends openWindow false", () => {
+    const withWindow = iosSimActionArgs(["ios-sim", "open-device"]);
+    expect(withWindow.domain).toBe("ios_simulator");
+    expect(withWindow.action).toBe("openDevice");
+    // Absent means "let the service decide", so the key must not appear at all.
+    expect(withWindow.args).not.toHaveProperty("openWindow");
+
+    const headless = iosSimActionArgs([
+      "ios-sim",
+      "open-device",
+      "--device",
+      "AAA-BBB",
+      "--no-window",
+    ]);
+    expect(headless.args).toMatchObject({
+      deviceUdid: "AAA-BBB",
+      openWindow: false,
+    });
+
+    for (const alias of ["open-sim", "boot"]) {
+      expect(iosSimActionArgs(["ios-sim", alias]).action).toBe("openDevice");
+    }
+  });
+
+  it("ios-sim appearance reads a positional or a flag", () => {
+    const positional = iosSimActionArgs(["ios-sim", "appearance", "dark"]);
+    expect(positional.action).toBe("setAppearance");
+    expect(positional.args).toMatchObject({ appearance: "dark" });
+
+    const flagged = iosSimActionArgs([
+      "ios-sim",
+      "appearance",
+      "--appearance",
+      "light",
+      "--device",
+      "AAA",
+    ]);
+    expect(flagged.args).toMatchObject({ appearance: "light", deviceUdid: "AAA" });
+
+    expect(() => buildCliPlan(["ios-sim", "appearance", "sepia"])).toThrow(
+      /Valid values: light, dark/,
+    );
+  });
+
+  it("ios-sim location routes --clear to clearLocation and keeps numbers numeric", () => {
+    const cleared = iosSimActionArgs(["ios-sim", "location", "--clear"]);
+    expect(cleared.action).toBe("clearLocation");
+    expect(cleared.args).not.toHaveProperty("latitude");
+
+    // A longitude is usually negative, which the shared numeric-positional
+    // reader for --x/--y rejects. These positionals must still parse.
+    const set = iosSimActionArgs(["ios-sim", "location", "37.77", "-122.41"]);
+    expect(set.action).toBe("setLocation");
+    expect(set.args).toEqual(
+      expect.objectContaining({ latitude: 37.77, longitude: -122.41 }),
+    );
+    expect(typeof (set.args as Record<string, unknown>).latitude).toBe("number");
+    expect(typeof (set.args as Record<string, unknown>).longitude).toBe("number");
+
+    expect(() =>
+      buildCliPlan(["ios-sim", "location", "--latitude", "north"]),
+    ).toThrow(/--latitude must be a number/);
+    expect(() => buildCliPlan(["ios-sim", "location", "37.77"])).toThrow(
+      /--longitude is required and must be a number/,
+    );
+  });
+
+  it("ios-sim permission reads the action and service positionally", () => {
+    const granted = iosSimActionArgs([
+      "ios-sim",
+      "permission",
+      "grant",
+      "photos",
+      "--bundle-id",
+      "com.example.app",
+    ]);
+    expect(granted.action).toBe("setPermission");
+    expect(granted.args).toMatchObject({
+      action: "grant",
+      service: "photos",
+      bundleId: "com.example.app",
+    });
+
+    // `reset` takes a whole service back to its default and needs no app.
+    const reset = iosSimActionArgs(["ios-sim", "privacy", "reset", "location"]);
+    expect(reset.args).toMatchObject({ action: "reset", service: "location" });
+    expect(reset.args).not.toHaveProperty("bundleId");
+
+    expect(() =>
+      buildCliPlan(["ios-sim", "permission", "allow", "photos"]),
+    ).toThrow(/Valid values: grant, revoke, reset/);
+    expect(() =>
+      buildCliPlan(["ios-sim", "permission", "grant", "telepathy"]),
+    ).toThrow(/unknown service 'telepathy'/);
+  });
+
+  it("ios-sim push parses --payload and reports a broken one as a usage error", () => {
+    const parsed = iosSimActionArgs([
+      "ios-sim",
+      "push",
+      "--bundle-id",
+      "com.example.app",
+      "--payload",
+      '{"aps":{}}',
+    ]);
+    expect(parsed.action).toBe("sendPushNotification");
+    expect(parsed.args).toMatchObject({
+      bundleId: "com.example.app",
+      payload: { aps: {} },
+    });
+
+    let thrown: unknown;
+    try {
+      buildCliPlan([
+        "ios-sim",
+        "push",
+        "--bundle-id",
+        "com.example.app",
+        "--payload",
+        "{not json",
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.constructor.name).toBe("CliUsageError");
+    expect((thrown as Error).message).toContain("--payload");
+  });
+
+  it("ios-sim status-bar routes --clear to clearStatusBar", () => {
+    const cleared = iosSimActionArgs(["ios-sim", "status-bar", "--clear"]);
+    expect(cleared.action).toBe("clearStatusBar");
+    expect(cleared.args).not.toHaveProperty("time");
+
+    const overridden = iosSimActionArgs([
+      "ios-sim",
+      "status-bar",
+      "--time",
+      "9:41",
+      "--wifi-bars",
+      "3",
+      "--battery-level",
+      "100",
+    ]);
+    expect(overridden.action).toBe("setStatusBar");
+    expect(overridden.args).toMatchObject({
+      time: "9:41",
+      wifiBars: 3,
+      batteryLevel: 100,
+    });
+
+    expect(() =>
+      buildCliPlan(["ios-sim", "status-bar", "--wifi-bars", "lots"]),
+    ).toThrow(/--wifi-bars must be a number/);
+  });
+
+  it("ios-sim element subcommands build one identical query object", () => {
+    // Six subcommands read the same flags through readIosSimulatorElementQuery.
+    // A per-branch copy is how the spellings drift, so prove they agree.
+    const query = ["--label", "Continue", "--role", "Button", "--index", "1"];
+    const tap = iosSimActionArgs(["ios-sim", "tap-element", ...query]);
+    const assertVisible = iosSimActionArgs(["ios-sim", "assert-visible", ...query]);
+    expect(tap.action).toBe("tapElement");
+    expect(assertVisible.action).toBe("assertVisible");
+    expect((tap.args as Record<string, unknown>).query).toEqual({
+      label: "Continue",
+      role: "Button",
+      index: 1,
+    });
+    expect((assertVisible.args as Record<string, unknown>).query).toEqual(
+      (tap.args as Record<string, unknown>).query,
+    );
+
+    const found = iosSimActionArgs([
+      "ios-sim",
+      "find",
+      "--identifier",
+      "signup-submit",
+    ]);
+    expect(found.action).toBe("findElement");
+    expect((found.args as Record<string, unknown>).query).toEqual({
+      identifier: "signup-submit",
+    });
+
+    const filled = iosSimActionArgs([
+      "ios-sim",
+      "fill",
+      "--label",
+      "Email",
+      "--value",
+      "ada@example.com",
+      "--no-focus",
+    ]);
+    expect(filled.action).toBe("fillElement");
+    expect(filled.args).toMatchObject({
+      text: "ada@example.com",
+      focusFirst: false,
+    });
+
+    // A query with no selector names nothing, so it is a usage error.
+    expect(() => buildCliPlan(["ios-sim", "tap-element"])).toThrow(
+      /An element query is required/,
+    );
+  });
+
+  it("ios-sim wait-for-element forwards --gone and a numeric --timeout-ms", () => {
+    const waited = iosSimActionArgs([
+      "ios-sim",
+      "wait-for-element",
+      "--label",
+      "Spinner",
+      "--gone",
+      "--timeout-ms",
+      "1000",
+    ]);
+    expect(waited.action).toBe("waitForElement");
+    expect(waited.args).toMatchObject({ state: "gone", timeoutMs: 1000 });
+
+    const visible = iosSimActionArgs([
+      "ios-sim",
+      "wait-for",
+      "--label",
+      "Welcome",
+    ]);
+    expect(visible.action).toBe("waitForElement");
+    expect(visible.args).not.toHaveProperty("state");
+
+    expect(() =>
+      buildCliPlan([
+        "ios-sim",
+        "wait-for-element",
+        "--label",
+        "Welcome",
+        "--timeout-ms",
+        "soon",
+      ]),
+    ).toThrow(/--timeout-ms must be a number/);
+  });
+
+  it("ios-sim stream-start accepts the idb-h264 backend and its encoder flags", () => {
+    const plan = iosSimActionArgs([
+      "ios-sim",
+      "stream-start",
+      "--backend",
+      "idb-h264",
+      "--scale-factor",
+      "0.5",
+    ]);
+    expect(plan.action).toBe("startStream");
+    expect(plan.args).toMatchObject({ backend: "idb-h264", scaleFactor: 0.5 });
+
+    const tuned = iosSimActionArgs([
+      "ios-sim",
+      "stream-start",
+      "--backend",
+      "idb-h264",
+      "--compression-quality",
+      "0.7",
+    ]);
+    expect(tuned.args).toMatchObject({ compressionQuality: 0.7 });
+
+    // Window capture stays the default and carries neither encoder flag.
+    const windowCapture = iosSimActionArgs(["ios-sim", "stream-start"]);
+    expect(windowCapture.args).toMatchObject({
+      backend: "simulator-window-capture",
+    });
+    expect(windowCapture.args).not.toHaveProperty("scaleFactor");
+  });
+
+  it("ios-sim uninstall names the calling chat exactly once", () => {
+    // `readValue` splices the flag out of `args`, so reading it twice in one
+    // expression shipped a null id and the service's own guard then refused the
+    // chat that owns the session.
+    const explicit = iosSimActionArgs([
+      "ios-sim",
+      "uninstall",
+      "--bundle-id",
+      "com.example.app",
+      "--chat-session",
+      "chat-7",
+    ]);
+    expect(explicit.action).toBe("uninstallApp");
+    expect(explicit.args).toMatchObject({ bundleId: "com.example.app", chatSessionId: "chat-7" });
+    expect(explicit.args).not.toHaveProperty("force");
+
+    const forced = iosSimActionArgs([
+      "ios-sim",
+      "uninstall",
+      "--bundle-id",
+      "com.example.app",
+      "--force",
+    ]);
+    expect(forced.args).toMatchObject({ force: true });
+
+    const previous = process.env.ADE_CHAT_SESSION_ID;
+    process.env.ADE_CHAT_SESSION_ID = "chat-env";
+    try {
+      const inherited = iosSimActionArgs(["ios-sim", "uninstall", "--bundle-id", "com.example.app"]);
+      expect(inherited.args).toMatchObject({ chatSessionId: "chat-env" });
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previous;
+    }
+  });
+
+  it("ios-sim relaunch restarts the installed app without building", () => {
+    const plan = iosSimActionArgs(["ios-sim", "relaunch", "--bundle-id", "com.example.app"]);
+    expect(plan.action).toBe("relaunchApp");
+    expect(plan.args).toMatchObject({ bundleId: "com.example.app" });
+  });
+
+  it("ios-sim device tool subcommands map to their device hub actions", () => {
+    const cases: Array<[string[], string]> = [
+      [["close-device"], "closeDevice"],
+      [["settings"], "getDeviceSettings"],
+      [["content-size", "large"], "setContentSize"],
+      [["accessibility", "reduce-motion", "on"], "setAccessibilityOption"],
+      [["open-url", "myapp://settings"], "openUrl"],
+      [["terminate", "--bundle-id", "com.example.app"], "terminateApp"],
+      [["uninstall", "--bundle-id", "com.example.app"], "uninstallApp"],
+      [["app-state", "--bundle-id", "com.example.app"], "getAppState"],
+      [["log-start"], "startEventLog"],
+      [["log-stop"], "stopEventLog"],
+      [["log"], "getEventLog"],
+      [["proof-bundle"], "captureProofBundle"],
+    ];
+    for (const [command, action] of cases) {
+      const plan = iosSimActionArgs(["ios-sim", ...command]);
+      expect(plan.domain).toBe("ios_simulator");
+      expect(plan.action).toBe(action);
+    }
+
+    const accessibility = iosSimActionArgs([
+      "ios-sim",
+      "a11y",
+      "reduce-motion",
+      "off",
+    ]);
+    expect(accessibility.args).toMatchObject({
+      option: "reduce-motion",
+      enabled: false,
+    });
+
+    const eventLog = iosSimActionArgs([
+      "ios-sim",
+      "logs",
+      "--since",
+      "412",
+      "--limit",
+      "50",
+    ]);
+    expect(eventLog.args).toMatchObject({ sinceId: 412, limit: 50 });
+    expect(() =>
+      buildCliPlan(["ios-sim", "log", "--limit", "many"]),
+    ).toThrow(/--limit must be a number/);
+
+    const bundle = iosSimActionArgs([
+      "ios-sim",
+      "proof-bundle",
+      "--out",
+      "proof-dir",
+      "--caption",
+      "Signup succeeds",
+      "--no-elements",
+      "--log-rows",
+      "200",
+    ]);
+    expect(bundle.args).toMatchObject({
+      outDir: "proof-dir",
+      caption: "Signup succeeds",
+      includeElements: false,
+      logRowLimit: 200,
+    });
+
+    const closed = iosSimActionArgs([
+      "ios-sim",
+      "close-sim",
+      "--shutdown",
+      "--force",
+    ]);
+    expect(closed.args).toMatchObject({ shutdownDevice: true, force: true });
+  });
+
   it("ios-sim inspect requires both coordinates and forwards them", () => {
     expect(() => buildCliPlan(["ios-sim", "inspect"])).toThrow(/--x|--y/);
     const plan = buildCliPlan([

@@ -1,22 +1,64 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import type {
   IosSimulatorDevice,
+  IosSimulatorDeviceSettings,
+  IosSimulatorEventLogArgs,
+  IosSimulatorEventLogPage,
   IosSimulatorEventPayload,
   IosSimulatorLaunchTarget,
+  IosSimulatorLogRow,
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosScreenElement,
+  IosSimulatorSetAccessibilityArgs,
+  IosSimulatorSetAppearanceArgs,
+  IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
 } from "../../../shared/types";
+import type { ChatRuntimeScope } from "./ChatRuntimeScope";
+
+/**
+ * The chat's machine, as the panel sees it.
+ *
+ * `useChatRuntimeScopeForPin` reads the cross-machine lane store, which no test
+ * here populates, so the remote live view would be unreachable without this
+ * seam. Every other export of the module stays real.
+ */
+const LOCAL_SCOPE: ChatRuntimeScope = {
+  pin: null,
+  binding: null,
+  laneId: null,
+  lane: null,
+  laneWorktreePath: null,
+  rootPath: null,
+  isRemote: false,
+  machineName: "This computer",
+  online: true,
+};
+
+let chatScopeOverride: Partial<ChatRuntimeScope> | null = null;
+
+vi.mock("./ChatRuntimeScope", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("./ChatRuntimeScope");
+  return {
+    ...actual,
+    useChatRuntimeScopeForPin: (pin: ChatRuntimeScope["pin"], laneId: string | null): ChatRuntimeScope => ({
+      ...LOCAL_SCOPE,
+      pin,
+      laneId,
+      ...chatScopeOverride,
+    }),
+  };
+});
 
 const device: IosSimulatorDevice = {
   udid: "device-1",
@@ -182,6 +224,71 @@ const simulatorWindowSource: IosSimulatorWindowSource = {
   thumbnailDataUrl: null,
 };
 
+/**
+ * The host-encoded stream's two addresses.
+ *
+ * The encoder answers on loopback on the machine that owns the simulator. A
+ * desktop bound to a remote Mac reads it through a port forward, so the port it
+ * opens is not the port the host reported — which is the whole reason
+ * `resolveStreamUrl` exists. The two differ here so an assertion can tell them
+ * apart.
+ */
+const H264_HOST_URL = "http://127.0.0.1:45301/stream?token=stream-token";
+const H264_FORWARDED_URL = "http://127.0.0.1:59102/stream?token=stream-token";
+
+const defaultDeviceSettings: IosSimulatorDeviceSettings = {
+  deviceUdid: device.udid,
+  appearance: "dark",
+  contentSize: "large",
+  accessibility: {
+    "increase-contrast": false,
+    "reduce-motion": true,
+    "reduce-transparency": false,
+    "bold-text": false,
+    "invert-colors": false,
+    grayscale: false,
+    // The device answered nothing for this one, which the column shows as "n/a"
+    // rather than guessing "off".
+    "voice-over": null,
+  },
+  location: null,
+  statusBarOverridden: false,
+  readAt: "2026-04-29T00:00:00.000Z",
+};
+
+const defaultLogRows: IosSimulatorLogRow[] = [
+  {
+    id: 1,
+    at: "2026-04-29T00:00:01.000Z",
+    source: "ade",
+    level: "action",
+    process: null,
+    subsystem: null,
+    category: null,
+    message: "Set the appearance to dark.",
+    command: "ade ios-sim ui appearance dark",
+  },
+  {
+    id: 2,
+    at: "2026-04-29T00:00:02.000Z",
+    source: "device",
+    level: "error",
+    process: "Example",
+    subsystem: "com.example.app",
+    category: "default",
+    message: "Could not load the profile.",
+  },
+];
+
+const defaultEventLogPage: IosSimulatorEventLogPage = {
+  deviceUdid: device.udid,
+  running: true,
+  rows: defaultLogRows,
+  cursor: 2,
+  dropped: 0,
+  lastError: null,
+};
+
 function installIosSimulatorApi(options: {
   status?: IosSimulatorStatus;
   streamStatus?: IosSimulatorStreamStatus;
@@ -195,6 +302,9 @@ function installIosSimulatorApi(options: {
   screenElements?: IosScreenElement[];
   hitElement?: IosScreenElement | null;
   revealResult?: { ok: boolean; message: string | null };
+  deviceSettings?: IosSimulatorDeviceSettings;
+  eventLog?: IosSimulatorEventLogPage;
+  resolveStreamUrl?: { url: string | null; forwarded: boolean; error: string | null };
 } = {}) {
   let eventListener: ((event: IosSimulatorEventPayload) => void) | null = null;
   const getUserMedia = vi.fn(options.getUserMedia ?? (() => Promise.resolve({
@@ -237,15 +347,36 @@ function installIosSimulatorApi(options: {
     capability: options.previewCapability ?? previewCapability,
     error: null,
   };
+  const effectiveDeviceSettings = options.deviceSettings ?? defaultDeviceSettings;
+  const effectiveEventLog = options.eventLog ?? defaultEventLogPage;
   const api = {
     getStatus: vi.fn().mockResolvedValue(options.status ?? activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
     listLaunchTargets: vi.fn().mockResolvedValue(options.launchTargets ?? [launchTarget]),
-    startStream: vi.fn((args: { backend?: string | null; fps?: number | null } = {}) => Promise.resolve(streamStatus({
-      backend: "simulator-window-capture",
-      targetFps: args.fps ?? 60,
-      streamUrl: null,
-    }))),
+    // The host answers with the backend it actually started, and only the
+    // host-encoded one carries a transport — window capture has a window id,
+    // not an address.
+    startStream: vi.fn((args: IosSimulatorStartStreamArgs = {}) => Promise.resolve(
+      args.backend === "idb-h264"
+        ? streamStatus({
+          backend: "idb-h264",
+          targetFps: args.fps ?? 30,
+          streamUrl: H264_HOST_URL,
+          transport: {
+            url: H264_HOST_URL,
+            port: 45301,
+            token: "stream-token",
+            codec: "avc1.640032",
+            width: 393,
+            height: 852,
+          },
+        })
+        : streamStatus({
+          backend: "simulator-window-capture",
+          targetFps: args.fps ?? 60,
+          streamUrl: null,
+        }),
+    )),
     stopStream: vi.fn().mockResolvedValue(streamStatus({ running: false, backend: null, streamUrl: null })),
     getStreamStatus: vi.fn().mockResolvedValue(options.streamStatus ?? streamStatus({
       deviceUdid: null,
@@ -342,15 +473,120 @@ function installIosSimulatorApi(options: {
       },
       source: "ade-inspector",
     }),
+    // Device hub. The panel reads every one of these off `window.ade`, so a
+    // method missing here is a TypeError inside a render, not a failed
+    // assertion — which is why they all exist even where no test calls them.
+    openDevice: vi.fn().mockResolvedValue({
+      deviceUdid: device.udid,
+      deviceName: device.name,
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      openedAt: "2026-04-29T00:00:00.000Z",
+      bootedByAde: false,
+    }),
+    closeDevice: vi.fn().mockResolvedValue({
+      released: true,
+      shutdown: false,
+      previousDeviceSession: null,
+    }),
+    getDeviceSettings: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    // The panel re-reads the device from the write's own result instead of
+    // assuming it landed, so these answer with the value they were asked for.
+    setAppearance: vi.fn((args: IosSimulatorSetAppearanceArgs) => Promise.resolve({
+      ...effectiveDeviceSettings,
+      appearance: args.appearance,
+    })),
+    setContentSize: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    setAccessibilityOption: vi.fn((args: IosSimulatorSetAccessibilityArgs) => Promise.resolve({
+      ...effectiveDeviceSettings,
+      accessibility: { ...effectiveDeviceSettings.accessibility, [args.option]: args.enabled },
+    })),
+    setLocation: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    clearLocation: vi.fn().mockResolvedValue({ ...effectiveDeviceSettings, location: null }),
+    setPermission: vi.fn().mockResolvedValue({ ok: true }),
+    sendPushNotification: vi.fn().mockResolvedValue({ ok: true }),
+    openUrl: vi.fn().mockResolvedValue({ ok: true }),
+    terminateApp: vi.fn().mockResolvedValue({ ok: true }),
+    uninstallApp: vi.fn().mockResolvedValue({ ok: true }),
+    setStatusBar: vi.fn().mockResolvedValue({ ok: true }),
+    clearStatusBar: vi.fn().mockResolvedValue({ ok: true }),
+    getAppState: vi.fn().mockResolvedValue({
+      bundleId: activeStatus.activeSession?.bundleId ?? "com.example.app",
+      running: true,
+      pid: 4242,
+      checkedAt: "2026-04-29T00:00:00.000Z",
+    }),
+    startEventLog: vi.fn().mockResolvedValue(effectiveEventLog),
+    stopEventLog: vi.fn().mockResolvedValue({ ...effectiveEventLog, running: false, rows: [] }),
+    // Rows arrive by cursor. Answering with the same page on every poll would
+    // append duplicates the real host never sends.
+    getEventLog: vi.fn((args: IosSimulatorEventLogArgs = {}) => Promise.resolve(
+      (args.sinceId ?? 0) >= effectiveEventLog.cursor
+        ? { ...effectiveEventLog, rows: [] }
+        : effectiveEventLog,
+    )),
+    findElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "tap",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    tapElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "tap",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    fillElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "fill",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    waitForElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "wait",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: 120,
+    }),
+    assertVisible: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "assert",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    captureProofBundle: vi.fn().mockResolvedValue({
+      dir: ".ade/artifacts/ios-proof",
+      screenshotPath: ".ade/artifacts/ios-proof/screen.png",
+      metadataPath: ".ade/artifacts/ios-proof/metadata.json",
+      elementsPath: null,
+      logPath: null,
+      caption: null,
+      capturedAt: "2026-04-29T00:00:00.000Z",
+    }),
+    resolveStreamUrl: vi.fn().mockResolvedValue(
+      options.resolveStreamUrl ?? { url: H264_FORWARDED_URL, forwarded: true, error: null },
+    ),
+  };
+  const app = {
+    writeClipboardText: vi.fn(),
+    openExternal: vi.fn(),
   };
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
       iosSimulator: api,
-      app: {
-        writeClipboardText: vi.fn(),
-        openExternal: vi.fn(),
-      },
+      app,
       agentChat: {
         saveTempAttachment: vi.fn().mockResolvedValue({ path: ".ade/artifacts/ios-simulator-screen.png" }),
       },
@@ -358,6 +594,7 @@ function installIosSimulatorApi(options: {
   });
   return {
     api,
+    app,
     getUserMedia,
     emit: (event: IosSimulatorEventPayload) => eventListener?.(event),
   };
@@ -366,10 +603,12 @@ function installIosSimulatorApi(options: {
 describe("ChatIosSimulatorPanel", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    chatScopeOverride = null;
   });
 
   afterEach(() => {
     cleanup();
+    chatScopeOverride = null;
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -903,7 +1142,9 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
     fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
 
-    expect(await screen.findByText(/In use by/)).toBeTruthy();
+    // Ownership now reads as a ribbon over the live view; the card only
+    // renders where there is no live view to float over.
+    expect(await screen.findByTestId("ios-watch-ribbon")).toBeTruthy();
     expect(api.typeText).not.toHaveBeenCalled();
     expect(api.tap).not.toHaveBeenCalled();
     expect(api.drag).not.toHaveBeenCalled();
@@ -938,7 +1179,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    expect(await screen.findByText(/In use by/)).toBeTruthy();
+    // Ownership now reads as a ribbon over the live view; the card only
+    // renders where there is no live view to float over.
+    expect(await screen.findByTestId("ios-watch-ribbon")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
     const imageRect = {
@@ -2220,4 +2463,330 @@ describe("ChatIosSimulatorPanel", () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
   });
+  /* ------------------------------------------------------------------ *
+   * Device hub: the tools column
+   * ------------------------------------------------------------------ */
+
+  // Preview Lab renders a SwiftUI preview, not the device, so device state has
+  // nothing there to act on.
+  it("offers the device tools on the simulator surface and not in Preview Lab", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("ios-pane-tools")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+
+    await waitFor(() => expect(screen.queryByTestId("ios-pane-tools")).toBeNull());
+  });
+
+  it("opens and closes the device tools column from the chrome", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsButton = await screen.findByTestId("ios-pane-tools");
+    expect(screen.queryByTestId("ios-tools-column")).toBeNull();
+
+    fireEvent.click(toolsButton);
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
+
+    fireEvent.click(toolsButton);
+    await waitFor(() => expect(screen.queryByTestId("ios-tools-column")).toBeNull());
+  });
+
+  // Reading the device costs nine `simctl` calls, so the read is bound to the
+  // column opening rather than to the status poll.
+  it("reads the device settings when the column opens and shows what came back", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    await screen.findByTestId("ios-tools-column");
+
+    const appearance = await screen.findByLabelText("Appearance") as HTMLSelectElement;
+    await waitFor(() => expect(appearance.value).toBe("dark"));
+    expect(screen.getByRole("switch", { name: "Reduce motion" }).getAttribute("aria-checked")).toBe("true");
+    expect(api.getDeviceSettings).toHaveBeenCalledTimes(1);
+    expect(api.getDeviceSettings).toHaveBeenCalledWith({ deviceUdid: device.udid }, null);
+  });
+
+  it("writes the chosen appearance to the active device", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const appearance = await screen.findByLabelText("Appearance") as HTMLSelectElement;
+    await waitFor(() => expect(appearance.value).toBe("dark"));
+
+    fireEvent.change(appearance, { target: { value: "light" } });
+
+    await waitFor(() => expect(api.setAppearance).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      appearance: "light",
+    }, null));
+  });
+
+  it("locks every device tool while another chat owns the session", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    await screen.findByTestId("ios-tools-column");
+
+    expect((await screen.findByLabelText("Appearance") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Text size") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Location") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("switch", { name: "Reduce motion" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // An `ade` row carries the command that reproduces what ADE did, which is the
+  // whole reason the log interleaves ADE's own actions with the device's.
+  it("starts the event log and copies an ade row's command", async () => {
+    const { api, app } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(api.startEventLog).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      bundleId: "com.example.app",
+    }, null));
+    expect(await screen.findByText("Event log (2)")).toBeTruthy();
+
+    // Starting the log is a request to read it, so the rows unfold themselves.
+    const log = await screen.findByTestId("ios-event-log");
+    expect(log.textContent).toContain("Could not load the profile.");
+
+    fireEvent.click(screen.getByTitle("Copy: ade ios-sim ui appearance dark"));
+
+    expect(app.writeClipboardText).toHaveBeenCalledWith("ade ios-sim ui appearance dark");
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the watch ribbon
+   * ------------------------------------------------------------------ */
+
+  // The card sits between the chrome and the video and pushes the video down to
+  // repeat a sentence the ribbon already says where the eye is.
+  it("names the owner on a ribbon over the live view instead of a card above it", async () => {
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+    api.shutdown.mockResolvedValue({ ok: true });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const ribbon = await screen.findByTestId("ios-watch-ribbon");
+    expect(ribbon.textContent).toContain("owned by");
+    expect(screen.queryByText(/In use by/)).toBeNull();
+
+    // Take over is the card's own path: force the session down, then relaunch
+    // here.
+    fireEvent.click(within(ribbon).getByRole("button", { name: "Take over" }));
+
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      force: true,
+    }, null));
+  });
+
+  it("keeps the watch ribbon off Preview Lab", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByTestId("ios-watch-ribbon");
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+
+    await waitFor(() => expect(screen.queryByTestId("ios-watch-ribbon")).toBeNull());
+    // A preview is not the session, so the ribbon has nothing to float over and
+    // the card says who owns the simulator instead.
+    expect(await screen.findByText(/In use by/)).toBeTruthy();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the remote live view
+   * ------------------------------------------------------------------ */
+
+  // Window capture reads a Simulator window on THIS computer. A chat pinned to
+  // another Mac has none, so it had a live view it could never show.
+  it("encodes the live view on the host when the chat runs on another machine", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      backend: "idb-h264",
+      fps: 30,
+    }, null));
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Simulator window on this computer/)).toBeNull();
+  });
+
+  // The encoder answers on loopback on the simulator's own machine. The desktop
+  // reads it through a port forward, so the port it opens is not the port the
+  // host reported.
+  it("plays the address resolveStreamUrl returned, not the host's own", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi();
+    // The canvas only reaches for the stream when the platform decoder exists,
+    // and jsdom has none. The smallest possible pair stands in; the assertion is
+    // the address it opens, never a decoded frame.
+    vi.stubGlobal("VideoDecoder", class {});
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.resolveStreamUrl).toHaveBeenCalledWith(H264_HOST_URL, null));
+    expect(await screen.findByTestId("ios-h264-canvas")).toBeTruthy();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(H264_FORWARDED_URL);
+  });
+
+  it("names the remote machine on the live chip", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const chip = await screen.findByTestId("ios-live-chip");
+    await waitFor(() => expect(chip.textContent).toContain("MacBook Pro (97)"));
+  });
+
+  // Local stays on window capture: it hands the compositor's own frames to a
+  // video element, which no encode beats.
+  it("keeps window capture and the video element for a local chat", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+
+    expect(api.startStream).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      backend: "simulator-window-capture",
+      fps: 60,
+    }, null);
+    expect(api.resolveStreamUrl).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+  });
+
+  it("says why a remote live view has no address instead of showing a blank frame", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/The runtime refused the port forward\./)).toBeTruthy();
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+  });
+
 });

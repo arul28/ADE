@@ -71,6 +71,11 @@ export type IosSimulatorStatus = {
   tools: IosSimulatorToolStatus[];
   activeDevice: IosSimulatorDevice | null;
   activeSession: IosSimulatorSession | null;
+  /**
+   * The booted-but-appless half of the hub. Present on hosts that support
+   * device sessions; older hosts omit it and every caller treats that as null.
+   */
+  deviceSession?: IosSimulatorDeviceSession | null;
 };
 
 export type IosSimulatorLaunchMode = "snapshot" | "live";
@@ -248,9 +253,24 @@ export type IosSimulatorStreamStatus = {
   latencyP95Ms?: number | null;
   helperPid?: number | null;
   inputBackend?: "idb" | null;
+  /** Set by host-encoded backends only. Null for window capture. */
+  transport?: IosSimulatorStreamTransport | null;
+  /** Measured by host-encoded backends only. */
+  bitrateKbps?: number | null;
 };
 
-export type IosSimulatorStreamBackend = "simulator-window-capture";
+/**
+ * `simulator-window-capture` is the renderer capturing the real Simulator.app
+ * window on this Mac. It is the cheapest path that exists — Chromium hands the
+ * compositor's own frames to a `<video>` element with no encode and no copy —
+ * and it stays the default whenever the simulator is local.
+ *
+ * `idb-h264` encodes on the machine that owns the simulator and serves access
+ * units over loopback HTTP. It costs an encode and a decode, but it is the only
+ * path that works when that machine is not this one, and it needs no Screen
+ * Recording grant and no visible Simulator window.
+ */
+export type IosSimulatorStreamBackend = "simulator-window-capture" | "idb-h264";
 
 export type IosSimulatorWindowSource = {
   id: string;
@@ -438,6 +458,10 @@ export type IosSimulatorStartStreamArgs = {
   deviceUdid?: string | null;
   fps?: number | null;
   backend?: "auto" | IosSimulatorStreamBackend | null;
+  /** `idb-h264` only. 0.1 to 1. Lower sends fewer pixels over the wire. */
+  scaleFactor?: number | null;
+  /** `idb-h264` only. 0.1 to 1. Lower spends fewer bits per pixel. */
+  compressionQuality?: number | null;
 };
 
 export type IosSimulatorFrame = {
@@ -638,4 +662,393 @@ export type IosSimulatorEventPayload =
   | { type: "stream-status"; status: IosSimulatorStreamStatus }
   | { type: "stream-stopped"; status: IosSimulatorStreamStatus }
   | { type: "stream-frame"; frame: IosSimulatorFrame }
-  | { type: "stream-error"; status: IosSimulatorStreamStatus };
+  | { type: "stream-error"; status: IosSimulatorStreamStatus }
+  | { type: "device-session-started"; deviceSession: IosSimulatorDeviceSession }
+  | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
+  | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings };
+
+/* ------------------------------------------------------------------------- *
+ * Device hub: device sessions, host-encoded video, device tools, semantic
+ * actions, and the event log.
+ *
+ * The window-capture backend only works when the Simulator runs on the same
+ * Mac as the ADE window, because the renderer captures the Simulator.app
+ * window itself. A chat pinned to a remote Mac therefore had a live view it
+ * could never show. The `idb-h264` backend moves the encode to the machine
+ * that owns the simulator and hands the desktop a loopback URL instead of a
+ * window id, so a Windows or Linux desktop bound to a remote Mac watches the
+ * same session the agent drives.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A booted simulator with no app of its own.
+ *
+ * `activeSession` above is an *app* session: it names a bundle id, a build
+ * root, and a lane. Opening a device is the other half — it boots a simulator
+ * and makes it streamable so a human can look at whatever already runs there,
+ * with no build and no install. Keeping the two apart is what lets a chat
+ * attach to a simulator it did not launch.
+ */
+export type IosSimulatorDeviceSession = {
+  deviceUdid: string;
+  deviceName: string | null;
+  chatSessionId: string | null;
+  laneId: string | null;
+  openedAt: string;
+  /**
+   * True when ADE booted this device. A device that was already booted stays
+   * booted when ADE closes its session: ADE must not shut down a simulator the
+   * user started for something else.
+   */
+  bootedByAde: boolean;
+};
+
+export type IosSimulatorOpenDeviceArgs = {
+  deviceUdid?: string | null;
+  chatSessionId?: string | null;
+  laneId?: string | null;
+  /** Open Simulator.app as well. False keeps the device headless. */
+  openWindow?: boolean | null;
+  /** Take a device session another chat owns. */
+  force?: boolean | null;
+};
+
+export type IosSimulatorCloseDeviceArgs = {
+  deviceUdid?: string | null;
+  chatSessionId?: string | null;
+  force?: boolean | null;
+  ignoreOwnership?: boolean | null;
+  /** Shut the simulator down even when ADE did not boot it. */
+  shutdownDevice?: boolean | null;
+};
+
+export type IosSimulatorCloseDeviceResult = {
+  released: boolean;
+  shutdown: boolean;
+  previousDeviceSession: IosSimulatorDeviceSession | null;
+};
+
+/**
+ * The framing the video server writes and the renderer reads.
+ *
+ * A chunked HTTP body has no message boundaries, so every record carries a
+ * fixed 12-byte header. The constants live here, in the one module both
+ * processes already import, because two independent copies of a binary
+ * contract desynchronise at runtime instead of failing to compile.
+ */
+export const IOS_VIDEO_RECORD_MAGIC = 0xade1f00d;
+export const IOS_VIDEO_RECORD_HEADER_BYTES = 12;
+export const IOS_VIDEO_RECORD_TYPE_CONFIG = 1;
+export const IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT = 2;
+export const IOS_VIDEO_RECORD_FLAG_KEYFRAME = 1;
+export const IOS_VIDEO_STREAM_PATH = "/ios-simulator-video";
+
+/**
+ * Where a host-encoded stream can be read.
+ *
+ * The URL always names loopback on the machine that runs the simulator. When
+ * that machine is remote the desktop opens an SSH port forward and rewrites
+ * the host and port, exactly as it already does for a lane preview server.
+ * The token is required on every request so nothing else on that machine can
+ * read the screen.
+ */
+export type IosSimulatorStreamTransport = {
+  /**
+   * Null on a status read.
+   *
+   * The URL carries the token in its query string, and the token is the only
+   * thing standing between a local process and the simulator's screen. Only
+   * `startStream` — the call that creates the stream — hands it out; a
+   * `getStreamStatus` that any agent can run reports the shape without the
+   * secret, so a live token never reaches a durable transcript.
+   */
+  url: string | null;
+  port: number;
+  /** Null on a status read, for the same reason as `url`. */
+  token: string | null;
+  /** WebCodecs codec string built from the stream's own SPS, e.g. `avc1.640032`. */
+  codec: string | null;
+  width: number | null;
+  height: number | null;
+};
+
+export type IosSimulatorAppearance = "light" | "dark";
+
+export const IOS_SIMULATOR_CONTENT_SIZES = [
+  "extra-small",
+  "small",
+  "medium",
+  "large",
+  "extra-large",
+  "extra-extra-large",
+  "extra-extra-extra-large",
+  "accessibility-medium",
+  "accessibility-large",
+  "accessibility-extra-large",
+  "accessibility-extra-extra-large",
+  "accessibility-extra-extra-extra-large",
+] as const;
+
+export type IosSimulatorContentSize = (typeof IOS_SIMULATOR_CONTENT_SIZES)[number];
+
+/**
+ * `increase-contrast` is the only one `simctl ui` knows. The rest live in the
+ * device's own `com.apple.Accessibility` preferences, which is why they are
+ * written with `simctl spawn defaults write` and then announced with
+ * `notifyutil`: a preference written without the notification is read by
+ * nothing until the next app launch.
+ */
+export const IOS_SIMULATOR_ACCESSIBILITY_OPTIONS = [
+  "increase-contrast",
+  "reduce-motion",
+  "reduce-transparency",
+  "bold-text",
+  "invert-colors",
+  "grayscale",
+  "voice-over",
+] as const;
+
+export type IosSimulatorAccessibilityOption =
+  (typeof IOS_SIMULATOR_ACCESSIBILITY_OPTIONS)[number];
+
+export const IOS_SIMULATOR_PRIVACY_SERVICES = [
+  "all",
+  "calendar",
+  "contacts-limited",
+  "contacts",
+  "location",
+  "location-always",
+  "photos-add",
+  "photos",
+  "media-library",
+  "microphone",
+  "motion",
+  "reminders",
+  "siri",
+] as const;
+
+export type IosSimulatorPrivacyService = (typeof IOS_SIMULATOR_PRIVACY_SERVICES)[number];
+
+export type IosSimulatorPrivacyAction = "grant" | "revoke" | "reset";
+
+export type IosSimulatorLocation = {
+  latitude: number;
+  longitude: number;
+};
+
+/**
+ * What the device reports right now, plus what ADE last asked for where the
+ * device cannot be read back.
+ *
+ * `simctl location` is write-only, so `location` is ADE's own record of the
+ * last value it set on this device and is null after a restart. It is marked
+ * as such rather than guessed.
+ */
+export type IosSimulatorDeviceSettings = {
+  deviceUdid: string;
+  appearance: IosSimulatorAppearance | "unsupported" | "unknown";
+  contentSize: IosSimulatorContentSize | "unknown";
+  accessibility: Record<IosSimulatorAccessibilityOption, boolean | null>;
+  /** Null when ADE has not set a location on this device in this process. */
+  location: IosSimulatorLocation | null;
+  statusBarOverridden: boolean;
+  readAt: string;
+};
+
+export type IosSimulatorDeviceArgs = {
+  deviceUdid?: string | null;
+};
+
+export type IosSimulatorSetAppearanceArgs = IosSimulatorDeviceArgs & {
+  appearance: IosSimulatorAppearance;
+};
+
+export type IosSimulatorSetContentSizeArgs = IosSimulatorDeviceArgs & {
+  contentSize: IosSimulatorContentSize;
+};
+
+export type IosSimulatorSetAccessibilityArgs = IosSimulatorDeviceArgs & {
+  option: IosSimulatorAccessibilityOption;
+  enabled: boolean;
+};
+
+export type IosSimulatorSetLocationArgs = IosSimulatorDeviceArgs & IosSimulatorLocation;
+
+export type IosSimulatorSetPermissionArgs = IosSimulatorDeviceArgs & {
+  /** Required for `grant` and `revoke`. A `reset` applies without one. */
+  bundleId?: string | null;
+  service: IosSimulatorPrivacyService;
+  action: IosSimulatorPrivacyAction;
+};
+
+export type IosSimulatorPushArgs = IosSimulatorDeviceArgs & {
+  bundleId: string;
+  /** An APNs payload. `aps.alert` is filled in from `title`/`body` when absent. */
+  payload?: Record<string, unknown> | null;
+  title?: string | null;
+  body?: string | null;
+};
+
+export type IosSimulatorOpenUrlArgs = IosSimulatorDeviceArgs & {
+  url: string;
+};
+
+export type IosSimulatorAppLifecycleArgs = IosSimulatorDeviceArgs & {
+  bundleId: string;
+};
+
+/**
+ * `uninstallApp` is the one guarded device tool, so its arguments carry the
+ * caller's identity and the deliberate override the guard accepts.
+ */
+export type IosSimulatorUninstallAppArgs = IosSimulatorAppLifecycleArgs & {
+  chatSessionId?: string | null;
+  force?: boolean | null;
+};
+
+export type IosSimulatorStatusBarArgs = IosSimulatorDeviceArgs & {
+  time?: string | null;
+  dataNetwork?: string | null;
+  wifiBars?: number | null;
+  cellularBars?: number | null;
+  batteryLevel?: number | null;
+  batteryState?: "charging" | "charged" | "discharging" | null;
+};
+
+export type IosSimulatorAppState = {
+  bundleId: string;
+  running: boolean;
+  pid: number | null;
+  checkedAt: string;
+};
+
+/**
+ * One row of the device hub's event log.
+ *
+ * `device` rows come from `log stream` on the simulator. `ade` rows are what
+ * ADE itself did, interleaved in the same order, so a human reading the log
+ * can see that the dark-mode switch happened between two app log lines. An
+ * `ade` row carries the `ade ios-sim` command that reproduces it.
+ */
+export type IosSimulatorLogRow = {
+  id: number;
+  at: string;
+  source: "device" | "ade";
+  level: "default" | "info" | "debug" | "error" | "fault" | "action";
+  process: string | null;
+  subsystem: string | null;
+  category: string | null;
+  message: string;
+  command?: string | null;
+};
+
+export type IosSimulatorEventLogArgs = IosSimulatorDeviceArgs & {
+  /** Only rows after this id. */
+  sinceId?: number | null;
+  limit?: number | null;
+};
+
+export type IosSimulatorEventLogPage = {
+  deviceUdid: string | null;
+  running: boolean;
+  rows: IosSimulatorLogRow[];
+  /** Pass this back as `sinceId` on the next read. */
+  cursor: number;
+  /** Rows dropped from the head of the ring since the last read. */
+  dropped: number;
+  lastError: string | null;
+};
+
+export type IosSimulatorStartEventLogArgs = IosSimulatorDeviceArgs & {
+  /** Only keep rows whose process matches this app. */
+  bundleId?: string | null;
+  /** Bare `log stream` predicate. Takes precedence over `bundleId`. */
+  predicate?: string | null;
+};
+
+/**
+ * How to name an element without naming a pixel.
+ *
+ * A coordinate tap is a guess that the layout did not move. A query is a
+ * claim about the app: "the button labelled Continue". The first match wins
+ * unless `index` says otherwise, and an action reports how many elements
+ * matched so an ambiguous query is visible instead of silent.
+ */
+export type IosSimulatorElementQuery = {
+  ref?: string | null;
+  identifier?: string | null;
+  label?: string | null;
+  /** Substring, case-insensitive, matched against label and value. */
+  text?: string | null;
+  role?: string | null;
+  index?: number | null;
+};
+
+export type IosSimulatorElementMatch = {
+  ref: string;
+  element: IosScreenElement;
+  matchCount: number;
+};
+
+export type IosSimulatorElementActionKind = "tap" | "fill" | "wait" | "assert";
+
+export type IosSimulatorElementActionResult = {
+  ok: boolean;
+  action: IosSimulatorElementActionKind;
+  match: IosSimulatorElementMatch | null;
+  matchCount: number;
+  message: string | null;
+  waitedMs: number | null;
+};
+
+export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
+  projectRoot?: string | null;
+  laneId?: string | null;
+  query: IosSimulatorElementQuery;
+};
+
+export type IosSimulatorTapElementArgs = IosSimulatorFindElementArgs;
+
+export type IosSimulatorFillElementArgs = IosSimulatorFindElementArgs & {
+  text: string;
+  /** Tap the element first so the keyboard targets it. Defaults to true. */
+  focusFirst?: boolean | null;
+};
+
+export type IosSimulatorWaitForElementArgs = IosSimulatorFindElementArgs & {
+  /** Defaults to 5000. Capped at 60000. */
+  timeoutMs?: number | null;
+  /** Defaults to `visible`. */
+  state?: "visible" | "gone" | null;
+};
+
+export type IosSimulatorAssertVisibleArgs = IosSimulatorFindElementArgs;
+
+/**
+ * Everything a reviewer needs to believe a screenshot.
+ *
+ * A bare PNG says what the screen looked like. It does not say which machine,
+ * which simulator, which build root, or what the agent had just done — which
+ * is exactly what a reviewer asks. The bundle writes all of it next to the
+ * image.
+ */
+export type IosSimulatorProofBundleArgs = {
+  deviceUdid?: string | null;
+  projectRoot?: string | null;
+  laneId?: string | null;
+  /** Directory to write into. Relative paths resolve against the build root. */
+  outDir?: string | null;
+  caption?: string | null;
+  includeElements?: boolean | null;
+  logRowLimit?: number | null;
+};
+
+export type IosSimulatorProofBundle = {
+  dir: string;
+  screenshotPath: string;
+  metadataPath: string;
+  elementsPath: string | null;
+  logPath: string | null;
+  caption: string | null;
+  capturedAt: string;
+};

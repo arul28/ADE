@@ -114,11 +114,14 @@ import {
 import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
 import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
 import {
+  IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
+  IOS_SIMULATOR_CONTENT_SIZES,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+  IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
@@ -1235,14 +1238,30 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   start-stream, stream, window-start,
   start-window, mirror-start, live-start, start-live.
 
+  Two backends exist.
+    simulator-window-capture  The renderer captures the real Simulator.app
+                              window on this Mac. It is the cheapest path and
+                              stays the default when the simulator is local. It
+                              needs the Screen Recording grant and a visible
+                              window.
+    idb-h264                  The machine that owns the simulator encodes with
+                              "idb video-stream" and serves H.264 over a
+                              token-guarded loopback endpoint. It needs idb and
+                              idb_companion. It needs no Screen Recording grant
+                              and no visible window. It is the only backend that
+                              works when the simulator runs on another machine.
+
     $ ade --socket ios-sim window-start --fps 60 --text
     $ ade --socket ios-sim live-start --fps 60 --text
+    $ ade --socket ios-sim stream-start --backend idb-h264 --scale-factor 0.5 --text
 
   Flags:
-    --device, --udid <id>  Simulator device.
-    --fps <n>              Target fps.
-    --backend <name>       auto or simulator-window-capture; default
-                           simulator-window-capture.
+    --device, --udid <id>       Simulator device.
+    --fps <n>                   Target fps.
+    --backend <name>            auto, simulator-window-capture, or idb-h264;
+                                default simulator-window-capture.
+    --scale-factor <n>          idb-h264 only. 0.1 to 1. Lower sends fewer pixels.
+    --compression-quality <n>   idb-h264 only. 0.1 to 1. Lower spends fewer bits.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
@@ -1313,6 +1332,384 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                            human-readable output mode.
     --device, --udid <id>  Simulator device.
 `,
+  "open-device": `${ADE_BANNER}
+  iOS Simulator: open-device
+
+  Boots a simulator and opens a device session on it. Aliases: open-sim, boot.
+
+  A device session is not an app session. It builds nothing and installs
+  nothing. Use it to look at a simulator, or to drive an app that is already
+  installed. Use "launch" when you want ADE to build and install your code.
+
+  ADE shuts the device down again only when ADE booted it.
+
+    $ ade --socket ios-sim open-device --text
+    $ ade --socket ios-sim open-device --device <udid> --no-window --text
+
+  Flags:
+    --device, --udid <id>  Simulator device; defaults to a booted device.
+    --lane, --lane-id <id> Lane to bind the device session to.
+    --chat-session <id>    Owner chat session for the single-owner lock.
+    --no-window            Keep the device headless; skip Simulator.app.
+    --force, -f            Take a device session another chat owns.
+`,
+  "close-device": `${ADE_BANNER}
+  iOS Simulator: close-device
+
+  Releases this chat's device session. Alias: close-sim.
+
+  The simulator keeps running unless ADE booted it. Pass --shutdown to shut
+  down a device ADE did not boot.
+
+    $ ade --socket ios-sim close-device --text
+    $ ade --socket ios-sim close-device --shutdown --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --force, -f            Release a session another chat owns.
+    --ignore-ownership     Same bypass without the hard reset.
+    --shutdown             Shut the device down even when ADE did not boot it.
+`,
+  settings: `${ADE_BANNER}
+  iOS Simulator: settings
+
+  Reads the device's appearance, content size, accessibility options, last set
+  location, and status bar override state. Alias: device-settings.
+
+  simctl cannot read a location or a status bar back. Those two fields report
+  what ADE last set in this process, and reset when the runtime restarts.
+
+    $ ade --socket ios-sim settings --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+`,
+  appearance: `${ADE_BANNER}
+  iOS Simulator: appearance
+
+  Switches the device between light and dark mode. Runs "simctl ui appearance".
+
+    $ ade --socket ios-sim appearance dark --text
+    $ ade --socket ios-sim appearance --appearance light --text
+
+  Flags:
+    --appearance light|dark  Appearance to set; a positional value works too.
+    --device, --udid <id>    Simulator device.
+`,
+  "content-size": `${ADE_BANNER}
+  iOS Simulator: content-size
+
+  Sets the Dynamic Type size. Runs "simctl ui content_size". Alias: text-size.
+
+    $ ade --socket ios-sim content-size accessibility-extra-large --text
+
+  Flags:
+    --content-size, --size <name>  Size to set; a positional value works too.
+                                   Values: extra-small, small, medium, large,
+                                   extra-large, extra-extra-large,
+                                   extra-extra-extra-large, accessibility-medium,
+                                   accessibility-large, accessibility-extra-large,
+                                   accessibility-extra-extra-large,
+                                   accessibility-extra-extra-extra-large.
+    --device, --udid <id>          Simulator device.
+`,
+  accessibility: `${ADE_BANNER}
+  iOS Simulator: accessibility
+
+  Turns one accessibility option on or off. Alias: a11y.
+
+  Only increase-contrast is a "simctl ui" option. ADE writes the rest to
+  com.apple.Accessibility and then posts a notifyutil notification, because a
+  preference written without the notification is read by nothing until the app
+  relaunches.
+
+    $ ade --socket ios-sim accessibility reduce-motion on --text
+    $ ade --socket ios-sim a11y --option bold-text --disabled --text
+
+  Flags:
+    --option <name>        Option to set; a positional value works too. Values:
+                           increase-contrast, reduce-motion, reduce-transparency,
+                           bold-text, invert-colors, grayscale, voice-over.
+    --enabled, --disabled  State to set; positional on/off works too.
+    --device, --udid <id>  Simulator device.
+`,
+  location: `${ADE_BANNER}
+  iOS Simulator: location
+
+  Sets or clears the simulated GPS location. Runs "simctl location".
+
+    $ ade --socket ios-sim location 37.7749 -122.4194 --text
+    $ ade --socket ios-sim location --latitude 37.7749 --longitude -122.4194 --text
+    $ ade --socket ios-sim location --clear --text
+
+  Flags:
+    --latitude, --lat <n>  Latitude, -90 to 90; a positional value works too.
+    --longitude, --lon <n> Longitude, -180 to 180; a positional value works too.
+    --clear                Clear the override instead of setting one.
+    --device, --udid <id>  Simulator device.
+`,
+  permission: `${ADE_BANNER}
+  iOS Simulator: permission
+
+  Grants, revokes, or resets one privacy permission. Runs "simctl privacy".
+  Alias: privacy.
+
+  A reset takes the whole service back to its default and needs no bundle id.
+  A grant or a revoke acts on one app and needs one.
+
+    $ ade --socket ios-sim permission grant photos --bundle-id com.example.app --text
+    $ ade --socket ios-sim privacy reset location --text
+
+  Flags:
+    --action <name>        grant, revoke, or reset; a positional works too.
+    --service <name>       Privacy service; a positional works too. Values: all,
+                           calendar, contacts-limited, contacts, location,
+                           location-always, photos-add, photos, media-library,
+                           microphone, motion, reminders, siri.
+    --bundle-id <id>       App to act on; required for grant and revoke.
+    --device, --udid <id>  Simulator device.
+`,
+  push: `${ADE_BANNER}
+  iOS Simulator: push
+
+  Sends an APNs notification to an installed app. Runs "simctl push".
+
+  Pass --title and --body for a simple alert. Pass --payload for a full APNs
+  body. ADE fills aps.alert in from --title and --body when the payload omits
+  it. The payload file is deleted after the send.
+
+    $ ade --socket ios-sim push --bundle-id com.example.app --title Hi --body "You have mail" --text
+    $ ade --socket ios-sim push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
+
+  Flags:
+    --bundle-id <id>       Required target app.
+    --title <text>         Alert title.
+    --body <text>          Alert body.
+    --payload <json>       APNs payload as a JSON object string.
+    --device, --udid <id>  Simulator device.
+`,
+  "open-url": `${ADE_BANNER}
+  iOS Simulator: open-url
+
+  Opens a URL or a deeplink on the device. Runs "simctl openurl".
+
+    $ ade --socket ios-sim open-url myapp://settings --text
+
+  Flags:
+    --url <url>            URL to open; a positional value works too.
+    --device, --udid <id>  Simulator device.
+`,
+  terminate: `${ADE_BANNER}
+  iOS Simulator: terminate
+
+  Stops a running app on the device. Runs "simctl terminate". Alias: kill-app.
+
+    $ ade --socket ios-sim terminate --bundle-id com.example.app --text
+
+  Flags:
+    --bundle-id <id>       Required app to stop.
+    --device, --udid <id>  Simulator device.
+`,
+  relaunch: `${ADE_BANNER}
+  iOS Simulator: relaunch
+
+  Restarts the app that is already installed. Runs "simctl terminate" and then
+  "simctl launch". It does not build. Use "launch" to see a code change; use
+  this to see the app from its first screen again.
+
+    $ ade --socket ios-sim relaunch --bundle-id com.example.app --text
+
+  Flags:
+    --bundle-id <id>       Required app to restart.
+    --device, --udid <id>  Simulator device.
+`,
+  uninstall: `${ADE_BANNER}
+  iOS Simulator: uninstall
+
+  Removes an app and its container from the device. Runs "simctl uninstall".
+  Use it to prove a first-run flow.
+
+  This is the one guarded device tool. It refuses a caller that is not the chat
+  holding the device session. Name your chat with --chat-session, or take it
+  anyway with --force.
+
+    $ ade --socket ios-sim uninstall --bundle-id com.example.app --text
+
+  Flags:
+    --bundle-id <id>       Required app to remove.
+    --chat-session <id>    The chat asking. Defaults to $ADE_CHAT_SESSION_ID.
+    --force                Uninstall even when another chat holds the device.
+    --device, --udid <id>  Simulator device.
+`,
+  "status-bar": `${ADE_BANNER}
+  iOS Simulator: status-bar
+
+  Overrides or clears the status bar. Runs "simctl status_bar". Set 9:41 and
+  full bars before a screenshot so the shot stays stable.
+
+    $ ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
+    $ ade --socket ios-sim status-bar --clear --text
+
+  Flags:
+    --time <text>          Displayed time, such as 9:41.
+    --data-network <name>  Network label, such as wifi or 5g.
+    --wifi-bars <n>        Wi-Fi bars, 0 to 3.
+    --cellular-bars <n>    Cellular bars, 0 to 4.
+    --battery-level <n>    Battery percentage, 0 to 100.
+    --battery-state <name> charging, charged, or discharging.
+    --clear                Remove the override instead of setting one.
+    --device, --udid <id>  Simulator device.
+`,
+  "app-state": `${ADE_BANNER}
+  iOS Simulator: app-state
+
+  Reports whether an app runs right now, and its pid. Reads "launchctl list"
+  on the device. A shut down device answers "not running" rather than failing.
+
+    $ ade --socket ios-sim app-state --bundle-id com.example.app --text
+
+  Flags:
+    --bundle-id <id>       Required app to check.
+    --device, --udid <id>  Simulator device.
+`,
+  "log-start": `${ADE_BANNER}
+  iOS Simulator: log-start
+
+  Starts the device event log. Alias: logs-start.
+
+  ADE streams "log stream" from the device and interleaves its own actions in
+  the same order, so the log shows what ADE did between two app log lines.
+
+    $ ade --socket ios-sim log-start --bundle-id com.example.app --text
+    $ ade --socket ios-sim log-start --predicate 'subsystem == "com.example"' --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --bundle-id <id>       Keep only rows from this app.
+    --predicate <text>     Bare log-stream predicate; wins over --bundle-id.
+`,
+  "log-stop": `${ADE_BANNER}
+  iOS Simulator: log-stop
+
+  Stops the device event log and returns the final page. Alias: logs-stop.
+
+    $ ade --socket ios-sim log-stop --text
+`,
+  log: `${ADE_BANNER}
+  iOS Simulator: log
+
+  Reads buffered event log rows. Alias: logs.
+
+  Each page returns a cursor. Pass it back as --since to read only new rows.
+  The page also reports how many rows the ring dropped since the last read.
+
+    $ ade --socket ios-sim log --limit 100 --text
+    $ ade --socket ios-sim log --since 412 --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --since, --since-id <n> Return only rows after this id.
+    --limit <n>            Maximum rows to return.
+`,
+  "find-element": `${ADE_BANNER}
+  iOS Simulator: find-element
+
+  Finds one on-screen element by query and reports how many matched. Alias:
+  find. Run "snapshot" first to read the available refs, labels, and roles.
+
+  A query is a claim about the app, such as "the button labelled Continue".
+  A coordinate tap is a guess that the layout did not move.
+
+    $ ade --socket ios-sim find-element --label Continue --text
+    $ ade --socket ios-sim find --role Button --index 1 --text
+
+  Flags:
+    --ref <id>             Element ref from the last snapshot.
+    --identifier <id>      Accessibility identifier.
+    --label <text>         Exact accessibility label.
+    --text <text>          Case-insensitive substring of the label or value.
+                           --text-match spells the same thing unambiguously.
+    --role <name>          Element role, such as Button or TextField.
+    --index <n>            Which match to take when several match.
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose worktree backs source matching.
+    --project <path>       Project root for source matching.
+`,
+  "tap-element": `${ADE_BANNER}
+  iOS Simulator: tap-element
+
+  Taps the element the query names. Prefer this over a coordinate tap: it
+  fails loudly when the element is gone, where a coordinate tap hits whatever
+  moved into that spot.
+
+    $ ade --socket ios-sim tap-element --label Continue --text
+    $ ade --socket ios-sim tap-element --identifier signup-submit --text
+
+  Flags:
+    Same element query as "find-element": --ref, --identifier, --label, --text,
+    --role, --index, --device, --lane, --project.
+`,
+  "fill-element": `${ADE_BANNER}
+  iOS Simulator: fill-element
+
+  Taps a text field and types into it. Alias: fill.
+
+    $ ade --socket ios-sim fill-element --identifier email-field --value ada@example.com --text
+    $ ade --socket ios-sim fill --label Email "ada@example.com" --text
+
+  Flags:
+    --value <text>         Text to type; a positional value works too.
+    --no-focus             Type without tapping the field first.
+    Same element query as "find-element": --ref, --identifier, --label, --text,
+    --role, --index, --device, --lane, --project.
+`,
+  "wait-for-element": `${ADE_BANNER}
+  iOS Simulator: wait-for-element
+
+  Waits until an element appears, or disappears with --gone. Alias: wait-for.
+  Use it after a tap instead of a fixed sleep.
+
+    $ ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text
+    $ ade --socket ios-sim wait-for --label Spinner --gone --text
+
+  Flags:
+    --timeout-ms <n>       Wait budget; defaults to 5000 and caps at 60000.
+    --gone                 Wait for the element to disappear.
+    Same element query as "find-element": --ref, --identifier, --label, --text,
+    --role, --index, --device, --lane, --project.
+`,
+  "assert-visible": `${ADE_BANNER}
+  iOS Simulator: assert-visible
+
+  Checks that an element is on screen right now. Alias: assert. Use it as the
+  last step of a flow so the result states what was proven.
+
+    $ ade --socket ios-sim assert-visible --label "Order confirmed" --text
+
+  Flags:
+    Same element query as "find-element": --ref, --identifier, --label, --text,
+    --role, --index, --device, --lane, --project.
+`,
+  "proof-bundle": `${ADE_BANNER}
+  iOS Simulator: proof-bundle
+
+  Captures a screenshot plus the metadata a reviewer asks for. The bundle names
+  the machine, the device, the build root, the elements on screen, and the
+  recent event log rows. A bare PNG answers none of that.
+
+    $ ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text
+    $ ade --socket ios-sim proof-bundle --out .ade/tmp/proof --log-rows 200 --text
+
+  Flags:
+    --out <path>           Directory to write into; relative to the build root.
+    --caption <text>       One line describing what the shot proves.
+    --no-elements          Skip the element dump.
+    --log-rows <n>         Event log rows to include.
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose worktree to resolve.
+    --project <path>       Project root for source matching.
+`,
 };
 
 const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
@@ -1364,6 +1761,21 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "stop-preview": "stream-stop",
   swipe: "drag",
   text: "type",
+  "open-sim": "open-device",
+  boot: "open-device",
+  "close-sim": "close-device",
+  "device-settings": "settings",
+  "text-size": "content-size",
+  a11y: "accessibility",
+  privacy: "permission",
+  "kill-app": "terminate",
+  "logs-start": "log-start",
+  "logs-stop": "log-stop",
+  logs: "log",
+  find: "find-element",
+  fill: "fill-element",
+  "wait-for": "wait-for-element",
+  assert: "assert-visible",
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
@@ -2522,11 +2934,56 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
+  Device sessions:
+    $ ade --socket ios-sim open-device --text      Boot a simulator with no app
+    $ ade --socket ios-sim open-device --no-window Keep the device headless
+    $ ade --socket ios-sim settings --text         Read appearance, text size, a11y
+    $ ade --socket ios-sim close-device --text     Release the device session
+
+  An app session names a bundle id, a build root, and a lane. A device session
+  is a booted simulator with no app. ADE never shuts down a device it did not
+  boot unless you pass "close-device --shutdown".
+
   Live view:
     $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
     $ ade ios-sim window-start --fps 60            Same live view, explicit alias
+    $ ade ios-sim stream-start --backend idb-h264  Encode on the simulator's own machine
     $ ade ios-sim stream-status --text             Show live view and input state
     $ ade ios-sim stream-stop                      Stop the live view
+
+  Use simulator-window-capture for a local simulator. Use idb-h264 when the
+  simulator runs on another machine, or when Screen Recording is not granted.
+
+  Device tools:
+    $ ade ios-sim appearance dark --text           Switch to dark mode
+    $ ade ios-sim content-size accessibility-large Set Dynamic Type size
+    $ ade ios-sim accessibility reduce-motion on   Set one accessibility option
+    $ ade ios-sim location 37.7749 -122.4194       Set the simulated location
+    $ ade ios-sim location --clear                 Clear the simulated location
+    $ ade ios-sim permission grant photos --bundle-id <id>
+    $ ade ios-sim push --bundle-id <id> --title Hi --body "You have mail"
+    $ ade ios-sim open-url myapp://settings        Open a deeplink
+    $ ade ios-sim relaunch --bundle-id <id>        Restart without rebuilding
+    $ ade ios-sim terminate --bundle-id <id>       Stop a running app
+    $ ade ios-sim uninstall --bundle-id <id>       Remove an app and its container
+    $ ade ios-sim status-bar --time 9:41 --wifi-bars 3
+    $ ade ios-sim status-bar --clear               Drop the status bar override
+    $ ade ios-sim app-state --bundle-id <id>       Report running state and pid
+
+  Event log:
+    $ ade ios-sim log-start --bundle-id <id>       Start the device event log
+    $ ade ios-sim log --since <cursor> --text      Read new rows
+    $ ade ios-sim log-stop --text                  Stop the log
+
+  Semantic actions:
+    $ ade ios-sim snapshot --text                  Read the refs on screen first
+    $ ade ios-sim find-element --label Continue    Find one element by query
+    $ ade ios-sim tap-element --label Continue     Tap the element, not a pixel
+    $ ade ios-sim fill-element --identifier email --value ada@example.com
+    $ ade ios-sim wait-for-element --label Welcome --timeout-ms 8000
+    $ ade ios-sim wait-for-element --label Spinner --gone
+    $ ade ios-sim assert-visible --label "Order confirmed"
+    $ ade ios-sim proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
     $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
@@ -2534,6 +2991,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim drag 120 700 120 250             Drag in the simulator
     $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
     $ ade ios-sim type "hello" --text              Type into the launched app
+
+  A coordinate tap is a guess that the layout did not move. Prefer
+  tap-element and fill-element; fall back to tap when no query matches.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -10185,6 +10645,45 @@ function readIosSimulatorOutPath(args: string[]): JsonObject {
   return outPath ? { outPath } : {};
 }
 
+/**
+ * The element query shared by find-element, tap-element, fill-element,
+ * wait-for-element and assert-visible.
+ *
+ * Five subcommands read the same six flags. One reader keeps them identical; a
+ * copy in each branch is how the spellings drift apart.
+ *
+ * `--text` is the awkward one. A bare `--text` is ADE's output mode, so the
+ * substring form is read with `readCommandTextValue`, which claims the next
+ * token only when it is a real value. `--text-match` says the same thing with
+ * no ambiguity.
+ */
+function readIosSimulatorElementQuery(args: string[]): JsonObject {
+  const ref = readValue(args, ["--ref", "--element-ref"]);
+  const identifier = readValue(args, [
+    "--identifier",
+    "--accessibility-id",
+  ]);
+  const label = readValue(args, ["--label"]);
+  const text =
+    readValue(args, ["--text-match", "--contains"]) ??
+    readCommandTextValue(args, ["--text"]);
+  const role = readValue(args, ["--role"]);
+  const index = readNumberOption(args, ["--index", "--nth"]);
+  const query: JsonObject = {};
+  maybePut(query, "ref", ref);
+  maybePut(query, "identifier", identifier);
+  maybePut(query, "label", label);
+  maybePut(query, "text", text);
+  maybePut(query, "role", role);
+  if (Object.keys(query).length === 0) {
+    throw new CliUsageError(
+      "An element query is required. Pass --ref, --identifier, --label, --text, or --role.",
+    );
+  }
+  if (index != null) query.index = index;
+  return query;
+}
+
 function buildIosSimulatorPlan(
   args: string[],
   globalProjectRoot: string | null = null,
@@ -10209,6 +10708,27 @@ function buildIosSimulatorPlan(
       throw new CliUsageError(`${flag} is required and must be a number.`);
     return value;
   };
+  /**
+   * Build the plain execute plan that almost every ios-sim subcommand returns.
+   *
+   * The envelope never varies: one `ios_simulator` action step keyed `result`,
+   * wrapped in an execute plan with a label. Only the argument parsing above
+   * each return differs, so repeating the envelope buried the parsing that
+   * actually matters. Keep an explicit return for a subcommand that needs more
+   * than the plain shape, such as a formatter, a timeout floor, or a second
+   * step.
+   */
+  const iosAction = (
+    label: string,
+    method: string,
+    payload: JsonObject = {},
+  ): CliPlan => ({
+    kind: "execute" as const,
+    label,
+    steps: [
+      actionStep("result", "ios_simulator", method, collectGenericObjectArgs(args, payload)),
+    ],
+  });
   if (sub === "actions")
     return {
       kind: "execute",
@@ -10216,31 +10736,9 @@ function buildIosSimulatorPlan(
       steps: [listActionsStep("actions", "ios_simulator")],
     };
   if (sub === "status")
-    return {
-      kind: "execute",
-      label: "iOS simulator status",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "getStatus",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator status", "getStatus");
   if (sub === "devices" || sub === "list" || sub === "ls")
-    return {
-      kind: "execute",
-      label: "iOS simulator devices",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "listDevices",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator devices", "listDevices");
   if (sub === "claim") {
     const claimArgs = readRequiredToolClaimArgs(args, "iOS simulator");
     // `claim` rewrites the owning chat, so it is an ownership call and carries
@@ -10254,22 +10752,11 @@ function buildIosSimulatorPlan(
       "--ignore-owner",
     ]);
     const force = readFlag(args, ["--force", "-f"]);
-    return {
-      kind: "execute",
-      label: "iOS simulator claim",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "claim",
-          collectGenericObjectArgs(args, {
-            ...claimArgs,
-            ...(force ? { force: true } : {}),
-            ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator claim", "claim", {
+      ...claimArgs,
+      ...(force ? { force: true } : {}),
+      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+    });
   }
   if (
     sub === "apps" ||
@@ -10277,21 +10764,10 @@ function buildIosSimulatorPlan(
     sub === "launchable" ||
     sub === "launchables"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator launchable apps",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "listLaunchTargets",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator launchable apps", "listLaunchTargets", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+    });
   }
   if (sub === "launch" || sub === "open") {
     // Agent launches must not steal the user's screen, so the CLI parks
@@ -10347,22 +10823,11 @@ function buildIosSimulatorPlan(
     };
   }
   if (sub === "screenshot" || sub === "capture") {
-    return {
-      kind: "execute",
-      label: "iOS simulator screenshot",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "screenshot",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
-            ...readIosSimulatorOutPath(args),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator screenshot", "screenshot", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+      ...readIosSimulatorOutPath(args),
+    });
   }
   if (sub === "proof" || sub === "promote") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
@@ -10420,135 +10885,69 @@ function buildIosSimulatorPlan(
     };
   }
   if (sub === "inspector") {
-    return {
-      kind: "execute",
-      label: "iOS simulator inspector snapshot",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "getInspectorSnapshot",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator inspector snapshot", "getInspectorSnapshot", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+    });
   }
   if (sub === "preview-status" || sub === "preview-doctor") {
-    return {
-      kind: "execute",
-      label: "iOS simulator preview status",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "getPreviewCapability",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFile: readValue(args, ["--source", "--file"]),
-            sourceLine: readNumberOption(args, ["--line"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator preview status", "getPreviewCapability", {
+      ...rootArgs(),
+      sourceFile: readValue(args, ["--source", "--file"]),
+      sourceLine: readNumberOption(args, ["--line"]),
+    });
   }
   if (sub === "previews" || sub === "preview-list" || sub === "list-previews") {
-    return {
-      kind: "execute",
-      label: "iOS simulator previews",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "listPreviewTargets",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFile: readValue(args, ["--source", "--file"]),
-            sourceLine: readNumberOption(args, ["--line"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator previews", "listPreviewTargets", {
+      ...rootArgs(),
+      sourceFile: readValue(args, ["--source", "--file"]),
+      sourceLine: readNumberOption(args, ["--line"]),
+    });
   }
   if (
     sub === "preview-match" ||
     sub === "match-preview" ||
     sub === "resolve-preview"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator preview match",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "resolvePreviewMatch",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFile: readValue(args, ["--source", "--file"]),
-            sourceLine: readNumberOption(args, ["--line"]),
-            elementLabel: readValue(args, ["--label"]),
-            componentId: readValue(args, ["--component-id", "--component"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator preview match", "resolvePreviewMatch", {
+      ...rootArgs(),
+      sourceFile: readValue(args, ["--source", "--file"]),
+      sourceLine: readNumberOption(args, ["--line"]),
+      elementLabel: readValue(args, ["--label"]),
+      componentId: readValue(args, ["--component-id", "--component"]),
+    });
   }
   if (
     sub === "preview-ensure" ||
     sub === "ensure-preview" ||
     sub === "preview-workspace"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator preview workspace",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "ensurePreviewWorkspace",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFile: readValue(args, ["--source", "--file"]),
-            sourceLine: readNumberOption(args, ["--line"]),
-            openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
-            timeoutMs: readNumberOption(args, ["--timeout-ms"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator preview workspace", "ensurePreviewWorkspace", {
+      ...rootArgs(),
+      sourceFile: readValue(args, ["--source", "--file"]),
+      sourceLine: readNumberOption(args, ["--line"]),
+      openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
+      timeoutMs: readNumberOption(args, ["--timeout-ms"]),
+    });
   }
   if (
     sub === "preview-render" ||
     sub === "render-preview" ||
     sub === "preview"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator preview render",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "renderPreview",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFilePath: requireValue(
-              readValue(args, ["--source", "--file"]),
-              "sourceFilePath",
-            ),
-            previewDefinitionIndexInFile: readNumberOption(
-              args,
-              ["--index"],
-              0,
-            ),
-            tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
-            timeoutSec: readNumberOption(args, ["--timeout"], 120),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator preview render", "renderPreview", {
+      ...rootArgs(),
+      sourceFilePath: requireValue(
+        readValue(args, ["--source", "--file"]),
+        "sourceFilePath",
+      ),
+      previewDefinitionIndexInFile: readNumberOption(
+        args,
+        ["--index"],
+        0,
+      ),
+      tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+      timeoutSec: readNumberOption(args, ["--timeout"], 120),
+    });
   }
   if (
     sub === "preview-current" ||
@@ -10557,86 +10956,42 @@ function buildIosSimulatorPlan(
     sub === "open-current-preview" ||
     sub === "render-current-preview"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator current preview render",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "renderCurrentPreview",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-            sourceFile: readValue(args, ["--source", "--file"]),
-            sourceLine: readNumberOption(args, ["--line"]),
-            elementLabel: readValue(args, ["--label"]),
-            componentId: readValue(args, ["--component-id", "--component"]),
-            tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
-            timeoutSec: readNumberOption(args, ["--timeout"], 120),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator current preview render", "renderCurrentPreview", {
+      ...rootArgs(),
+      sourceFile: readValue(args, ["--source", "--file"]),
+      sourceLine: readNumberOption(args, ["--line"]),
+      elementLabel: readValue(args, ["--label"]),
+      componentId: readValue(args, ["--component-id", "--component"]),
+      tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+      timeoutSec: readNumberOption(args, ["--timeout"], 120),
+    });
   }
   if (
     sub === "preview-open" ||
     sub === "open-preview-workspace" ||
     sub === "open-xcode"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator preview open",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "openPreviewWorkspace",
-          collectGenericObjectArgs(args, {
-            ...rootArgs(),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator preview open", "openPreviewWorkspace", {
+      ...rootArgs(),
+    });
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
-    return {
-      kind: "execute",
-      label: "iOS simulator screen snapshot",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "getScreenSnapshot",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator screen snapshot", "getScreenSnapshot", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+    });
   }
   if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
-    return {
-      kind: "execute",
-      label: "iOS simulator inspect point",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "inspectPoint",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
-            includeScreenshot: readFlag(args, [
-              "--screenshot",
-              "--include-screenshot",
-            ]),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator inspect point", "inspectPoint", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      includeScreenshot: readFlag(args, [
+        "--screenshot",
+        "--include-screenshot",
+      ]),
+    });
   }
   if (
     sub === "stream-start" ||
@@ -10652,30 +11007,34 @@ function buildIosSimulatorPlan(
     sub === "start-mirror"
   ) {
     const backendFlag = readValue(args, ["--backend"]);
-    if (backendFlag && backendFlag !== "auto" && backendFlag !== "simulator-window-capture") {
+    if (
+      backendFlag &&
+      backendFlag !== "auto" &&
+      backendFlag !== "simulator-window-capture" &&
+      backendFlag !== "idb-h264"
+    ) {
       // A typo in a flag is a usage error, not a crash: CliUsageError exits 2
       // with the message alone, where a bare Error prints a stack trace.
       throw new CliUsageError(
-        `ios-sim ${sub}: unknown --backend '${backendFlag}'. Valid values: auto, simulator-window-capture.`,
+        `ios-sim ${sub}: unknown --backend '${backendFlag}'. Valid values: auto, simulator-window-capture, idb-h264.`,
       );
     }
     const requestedBackend = backendFlag ?? "simulator-window-capture";
-    return {
-      kind: "execute",
-      label: "iOS simulator live view start",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "startStream",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            fps: readNumberOption(args, ["--fps"], 60),
-            backend: requestedBackend,
-          }),
-        ),
-      ],
-    };
+    // Both tune the `idb-h264` encoder only. They are read for every backend so
+    // a non-numeric value reports "must be a number" instead of reaching the
+    // service as a string.
+    const scaleFactor = readNumberOption(args, ["--scale-factor", "--scale"]);
+    const compressionQuality = readNumberOption(args, [
+      "--compression-quality",
+      "--quality",
+    ]);
+    return iosAction("iOS simulator live view start", "startStream", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      fps: readNumberOption(args, ["--fps"], 60),
+      backend: requestedBackend,
+      ...(scaleFactor == null ? {} : { scaleFactor }),
+      ...(compressionQuality == null ? {} : { compressionQuality }),
+    });
   }
   if (
     sub === "stream-stop" ||
@@ -10685,115 +11044,49 @@ function buildIosSimulatorPlan(
     sub === "preview-stop" ||
     sub === "stop-preview"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator live view stop",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "stopStream",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator live view stop", "stopStream");
   }
   if (sub === "stream-status") {
-    return {
-      kind: "execute",
-      label: "iOS simulator live view status",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "getStreamStatus",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator live view status", "getStreamStatus");
   }
   if (sub === "tap") {
-    return {
-      kind: "execute",
-      label: "iOS simulator tap",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "tap",
-          // No build root here: tap/drag/type act on whatever is already on the
-          // device, so the service takes no root and sending one only invents a
-          // contract the CLI cannot keep.
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
-          }),
-        ),
-      ],
-    };
+    // No build root here: tap/drag/type act on whatever is already on the
+    // device, so the service takes no root and sending one only invents a
+    // contract the CLI cannot keep.
+    return iosAction("iOS simulator tap", "tap", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    });
   }
   if (sub === "drag" || sub === "swipe") {
-    return {
-      kind: "execute",
-      label: `iOS simulator ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          sub,
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            startX: readCoordinate("--start-x", 0),
-            startY: readCoordinate("--start-y", 1),
-            endX: readCoordinate("--end-x", 2),
-            endY: readCoordinate("--end-y", 3),
-            durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
-          }),
-        ),
-      ],
-    };
+    return iosAction(`iOS simulator ${sub}`, sub, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      startX: readCoordinate("--start-x", 0),
+      startY: readCoordinate("--start-y", 1),
+      endX: readCoordinate("--end-x", 2),
+      endY: readCoordinate("--end-y", 3),
+      durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
+    });
   }
   if (sub === "select") {
-    return {
-      kind: "execute",
-      label: "iOS simulator select",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "selectPoint",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator select", "selectPoint", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    });
   }
   if (sub === "type" || sub === "text") {
-    return {
-      kind: "execute",
-      label: "iOS simulator type",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "typeText",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            text: requireValue(
-              readValue(args, ["--value", "--message", "--input-text"]) ??
-                readCommandTextValue(args, ["--text"]) ??
-                args.filter((arg) => arg !== "--text").join(" "),
-              "text",
-            ),
-          }),
-        ),
-      ],
-    };
+    return iosAction("iOS simulator type", "typeText", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      text: requireValue(
+        readValue(args, ["--value", "--message", "--input-text"]) ??
+          readCommandTextValue(args, ["--text"]) ??
+          args.filter((arg) => arg !== "--text").join(" "),
+        "text",
+      ),
+    });
   }
   if (
     sub === "shutdown" ||
@@ -10802,45 +11095,376 @@ function buildIosSimulatorPlan(
     sub === "end" ||
     sub === "end-session"
   ) {
-    return {
-      kind: "execute",
-      label: "iOS simulator shutdown",
-      steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "shutdown",
-          // The caller's chat session is what makes the single-owner guard
-          // enforceable: without it every shutdown looks anonymous and the
-          // service can only choose between evicting everyone or no one.
-          // `launch` sends it the same way.
-          collectGenericObjectArgs(args, {
-            chatSessionId: claimArgs.chatSessionId,
-            // Same spread as `claim`: a missing flag must omit the key.
-            ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-            // Parsed for the same reason `claim` parses it: the help and the
-            // docs name this flag, and a spelling we accept but drop is how a
-            // caller ends up reaching for `--force` instead.
-            ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-              ? { ignoreOwnership: true }
-              : {}),
-          }),
-        ),
-      ],
-    };
+    // The caller's chat session is what makes the single-owner guard
+    // enforceable: without it every shutdown looks anonymous and the
+    // service can only choose between evicting everyone or no one.
+    // `launch` sends it the same way.
+    return iosAction("iOS simulator shutdown", "shutdown", {
+      chatSessionId: claimArgs.chatSessionId,
+      // Same spread as `claim`: a missing flag must omit the key.
+      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+      // Parsed for the same reason `claim` parses it: the help and the
+      // docs name this flag, and a spelling we accept but drop is how a
+      // caller ends up reaching for `--force` instead.
+      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+        ? { ignoreOwnership: true }
+        : {}),
+    });
   }
-  return {
-    kind: "execute",
-    label: `ios-sim ${sub}`,
-    steps: [
-      actionStep(
-        "result",
-        "ios_simulator",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
+  // ---------------------------------------------------------------------
+  // Device hub: device sessions, device tools, semantic actions, event log.
+  // ---------------------------------------------------------------------
+  /**
+   * Device, root, and element query for the six semantic-action subcommands.
+   * Reading the flags here once keeps `tap-element` and `assert-visible` from
+   * accepting different spellings of the same query.
+   */
+  const elementTargetArgs = (): JsonObject => {
+    const device = readValue(args, ["--device", "--udid"]);
+    const project = readValue(args, ["--project"]);
+    return {
+      deviceUdid: device,
+      ...(project ? { projectRoot: path.resolve(project) } : rootArgs()),
+      query: readIosSimulatorElementQuery(args),
+    };
   };
+  if (sub === "open-device" || sub === "open-sim" || sub === "boot") {
+    const device = readValue(args, ["--device", "--udid"]);
+    // A device session is not an app session: it boots a simulator and makes
+    // it streamable, with no build and no install.
+    const noWindow = readFlag(args, ["--no-window", "--headless"]);
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("iOS simulator open device", "openDevice", {
+      deviceUdid: device,
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId
+        ? { chatSessionId: claimArgs.chatSessionId }
+        : {}),
+      ...(noWindow ? { openWindow: false } : {}),
+      ...(force ? { force: true } : {}),
+    });
+  }
+  if (sub === "close-device" || sub === "close-sim") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const force = readFlag(args, ["--force", "-f"]);
+    const ignoreOwnership = readFlag(args, [
+      "--ignore-ownership",
+      "--ignore-owner",
+    ]);
+    // ADE never shuts down a device it did not boot unless the caller says so.
+    const shutdownDevice = readFlag(args, ["--shutdown", "--shutdown-device"]);
+    return iosAction("iOS simulator close device", "closeDevice", {
+      deviceUdid: device,
+      chatSessionId: claimArgs.chatSessionId,
+      ...(force ? { force: true } : {}),
+      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+      ...(shutdownDevice ? { shutdownDevice: true } : {}),
+    });
+  }
+  if (sub === "settings" || sub === "device-settings") {
+    return iosAction("iOS simulator device settings", "getDeviceSettings", {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+    });
+  }
+  if (sub === "appearance") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const appearance = requireValue(
+      readValue(args, ["--appearance"]) ?? firstPositional(args),
+      "appearance",
+    );
+    if (appearance !== "light" && appearance !== "dark") {
+      throw new CliUsageError(
+        `ios-sim appearance: unknown appearance '${appearance}'. Valid values: light, dark.`,
+      );
+    }
+    return iosAction("iOS simulator appearance", "setAppearance", {
+      deviceUdid: device,
+      appearance,
+    });
+  }
+  if (sub === "content-size" || sub === "text-size") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const contentSize = requireValue(
+      readValue(args, ["--content-size", "--size"]) ?? firstPositional(args),
+      "content size",
+    );
+    if (!(IOS_SIMULATOR_CONTENT_SIZES as readonly string[]).includes(contentSize)) {
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown content size '${contentSize}'. Valid values: ${IOS_SIMULATOR_CONTENT_SIZES.join(", ")}.`,
+      );
+    }
+    return iosAction("iOS simulator content size", "setContentSize", {
+      deviceUdid: device,
+      contentSize,
+    });
+  }
+  if (sub === "accessibility" || sub === "a11y") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const enabledFlag = readFlag(args, ["--enabled", "--on"]);
+    const disabledFlag = readFlag(args, ["--disabled", "--off"]);
+    if (enabledFlag && disabledFlag) {
+      throw new CliUsageError("Use --enabled or --disabled, not both.");
+    }
+    const option = requireValue(
+      readValue(args, ["--option"]) ?? firstPositional(args),
+      "accessibility option",
+    );
+    if (
+      !(IOS_SIMULATOR_ACCESSIBILITY_OPTIONS as readonly string[]).includes(option)
+    ) {
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown option '${option}'. Valid values: ${IOS_SIMULATOR_ACCESSIBILITY_OPTIONS.join(", ")}.`,
+      );
+    }
+    const state = enabledFlag || disabledFlag ? null : firstPositional(args);
+    const enabled = enabledFlag
+      ? true
+      : disabledFlag
+        ? false
+        : state === "on" || state === "true" || state === "enabled"
+          ? true
+          : state === "off" || state === "false" || state === "disabled"
+            ? false
+            : null;
+    if (enabled == null) {
+      throw new CliUsageError(
+        `ios-sim ${sub} needs a state. Pass on, off, --enabled, or --disabled.`,
+      );
+    }
+    return iosAction("iOS simulator accessibility option", "setAccessibilityOption", {
+      deviceUdid: device,
+      option,
+      enabled,
+    });
+  }
+  if (sub === "location") {
+    const device = readValue(args, ["--device", "--udid"]);
+    if (readFlag(args, ["--clear", "--reset"])) {
+      return iosAction("iOS simulator clear location", "clearLocation", { deviceUdid: device });
+    }
+    const latitudeFlag = readNumberOption(args, ["--latitude", "--lat"]);
+    const longitudeFlag = readNumberOption(args, ["--longitude", "--lon", "--lng"]);
+    // A longitude is often negative, so the shared numeric-positional filter
+    // above (which rejects a leading dash) cannot be reused here.
+    const signed = args.filter((value) => /^-?\d+(\.\d+)?$/.test(value));
+    const latitude = latitudeFlag ?? Number(signed[0]);
+    const longitude = longitudeFlag ?? Number(signed[1]);
+    if (!Number.isFinite(latitude)) {
+      throw new CliUsageError("--latitude is required and must be a number.");
+    }
+    if (!Number.isFinite(longitude)) {
+      throw new CliUsageError("--longitude is required and must be a number.");
+    }
+    return iosAction("iOS simulator location", "setLocation", {
+      deviceUdid: device,
+      latitude,
+      longitude,
+    });
+  }
+  if (sub === "permission" || sub === "privacy") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
+    const action = requireValue(
+      readValue(args, ["--action"]) ?? firstPositional(args),
+      "permission action",
+    );
+    if (action !== "grant" && action !== "revoke" && action !== "reset") {
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown action '${action}'. Valid values: grant, revoke, reset.`,
+      );
+    }
+    const service = requireValue(
+      readValue(args, ["--service"]) ?? firstPositional(args),
+      "privacy service",
+    );
+    if (!(IOS_SIMULATOR_PRIVACY_SERVICES as readonly string[]).includes(service)) {
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown service '${service}'. Valid values: ${IOS_SIMULATOR_PRIVACY_SERVICES.join(", ")}.`,
+      );
+    }
+    return iosAction("iOS simulator permission", "setPermission", {
+      deviceUdid: device,
+      action,
+      service,
+      // `reset` takes a whole service back to its default and needs no
+      // bundle id; `grant` and `revoke` act on one app.
+      ...(bundleId ? { bundleId } : {}),
+    });
+  }
+  if (sub === "push") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    const title = readValue(args, ["--title"]);
+    const body = readValue(args, ["--body", "--message"]);
+    const payloadJson = readValue(args, ["--payload", "--payload-json"]);
+    // A malformed payload must name the flag and exit 2, not print a stack.
+    const payload =
+      payloadJson == null ? null : parseObjectJson(payloadJson, "--payload");
+    return iosAction("iOS simulator push", "sendPushNotification", {
+      deviceUdid: device,
+      bundleId,
+      ...(payload ? { payload } : {}),
+      ...(title ? { title } : {}),
+      ...(body ? { body } : {}),
+    });
+  }
+  if (sub === "open-url") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const url = requireValue(
+      readValue(args, ["--url"]) ?? firstPositional(args),
+      "url",
+    );
+    return iosAction("iOS simulator open url", "openUrl", { deviceUdid: device, url });
+  }
+  if (sub === "relaunch" || sub === "restart-app") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    return iosAction("iOS simulator relaunch app", "relaunchApp", {
+      deviceUdid: device,
+      bundleId,
+    });
+  }
+  if (sub === "terminate" || sub === "kill-app") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    return iosAction("iOS simulator terminate app", "terminateApp", {
+      deviceUdid: device,
+      bundleId,
+    });
+  }
+  if (sub === "uninstall") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    // `uninstallApp` is the one guarded device tool, so the CLI has to say who
+    // is asking. It reads `claimArgs`, not the flag: `readToolClaimArgs` above
+    // already consumed `--chat-session` for every subcommand but `claim`, and
+    // `readValue` splices, so a second read here finds nothing and ships a null
+    // id that the guard then refuses — refusing the very chat that owns the
+    // session. `claimArgs` also carries the `$ADE_CHAT_SESSION_ID` fallback.
+    const chatSessionId = asString(claimArgs.chatSessionId);
+    const force = readFlag(args, ["--force"]);
+    return iosAction("iOS simulator uninstall app", "uninstallApp", {
+      deviceUdid: device,
+      bundleId,
+      ...(chatSessionId ? { chatSessionId } : {}),
+      ...(force ? { force: true } : {}),
+    });
+  }
+  if (sub === "status-bar") {
+    const device = readValue(args, ["--device", "--udid"]);
+    if (readFlag(args, ["--clear", "--reset"])) {
+      return iosAction("iOS simulator clear status bar", "clearStatusBar", { deviceUdid: device });
+    }
+    const time = readValue(args, ["--time"]);
+    const dataNetwork = readValue(args, ["--data-network", "--network"]);
+    const wifiBars = readNumberOption(args, ["--wifi-bars"]);
+    const cellularBars = readNumberOption(args, ["--cellular-bars"]);
+    const batteryLevel = readNumberOption(args, ["--battery-level"]);
+    const batteryState = readValue(args, ["--battery-state"]);
+    return iosAction("iOS simulator status bar", "setStatusBar", {
+      deviceUdid: device,
+      ...(time ? { time } : {}),
+      ...(dataNetwork ? { dataNetwork } : {}),
+      ...(wifiBars == null ? {} : { wifiBars }),
+      ...(cellularBars == null ? {} : { cellularBars }),
+      ...(batteryLevel == null ? {} : { batteryLevel }),
+      ...(batteryState ? { batteryState } : {}),
+    });
+  }
+  if (sub === "app-state") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    return iosAction("iOS simulator app state", "getAppState", { deviceUdid: device, bundleId });
+  }
+  if (sub === "log-start" || sub === "logs-start") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
+    const predicate = readValue(args, ["--predicate"]);
+    return iosAction("iOS simulator event log start", "startEventLog", {
+      deviceUdid: device,
+      ...(bundleId ? { bundleId } : {}),
+      ...(predicate ? { predicate } : {}),
+    });
+  }
+  if (sub === "log-stop" || sub === "logs-stop") {
+    return iosAction("iOS simulator event log stop", "stopEventLog");
+  }
+  if (sub === "log" || sub === "logs") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const sinceId = readNumberOption(args, ["--since", "--since-id"]);
+    const limit = readNumberOption(args, ["--limit"]);
+    return iosAction("iOS simulator event log", "getEventLog", {
+      deviceUdid: device,
+      ...(sinceId == null ? {} : { sinceId }),
+      ...(limit == null ? {} : { limit }),
+    });
+  }
+  if (sub === "find-element" || sub === "find") {
+    return iosAction("iOS simulator find element", "findElement", elementTargetArgs());
+  }
+  if (sub === "tap-element") {
+    return iosAction("iOS simulator tap element", "tapElement", elementTargetArgs());
+  }
+  if (sub === "fill-element" || sub === "fill") {
+    const noFocus = readFlag(args, ["--no-focus"]);
+    // Read the query first: it claims `--text <value>`, so the fill value has
+    // to be read after it or the two flags fight over the same token.
+    const target = elementTargetArgs();
+    const text = requireValue(
+      readValue(args, ["--value", "--input-text"]) ?? firstPositional(args),
+      "text",
+    );
+    return iosAction("iOS simulator fill element", "fillElement", {
+      ...target,
+      text,
+      ...(noFocus ? { focusFirst: false } : {}),
+    });
+  }
+  if (sub === "wait-for-element" || sub === "wait-for") {
+    const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
+    const gone = readFlag(args, ["--gone", "--hidden"]);
+    const target = elementTargetArgs();
+    return iosAction("iOS simulator wait for element", "waitForElement", {
+      ...target,
+      ...(timeoutMs == null ? {} : { timeoutMs }),
+      ...(gone ? { state: "gone" } : {}),
+    });
+  }
+  if (sub === "assert-visible" || sub === "assert") {
+    return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
+  }
+  if (sub === "proof-bundle") {
+    const device = readValue(args, ["--device", "--udid"]);
+    const project = readValue(args, ["--project"]);
+    const outDir = readValue(args, ["--out", "--out-dir", "--output"]);
+    const caption = readValue(args, ["--caption", "--description"]);
+    const noElements = readFlag(args, ["--no-elements"]);
+    const logRowLimit = readNumberOption(args, ["--log-rows", "--log-row-limit"]);
+    return iosAction("iOS simulator proof bundle", "captureProofBundle", {
+      deviceUdid: device,
+      ...(project ? { projectRoot: path.resolve(project) } : rootArgs()),
+      ...(outDir ? { outDir } : {}),
+      ...(caption ? { caption } : {}),
+      ...(noElements ? { includeElements: false } : {}),
+      ...(logRowLimit == null ? {} : { logRowLimit }),
+    });
+  }
+  return iosAction(`ios-sim ${sub}`, sub);
 }
 
 function readTrailingCommand(args: string[]): string | null {

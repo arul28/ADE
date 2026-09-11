@@ -645,6 +645,31 @@ ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line
 ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
 ade --socket ios-sim preview-current --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+ade --socket ios-sim actions --text                               # full ios_simulator action inventory
+# Device hub: a booted simulator with no app of its own. `status` also reports the device session.
+ade --socket ios-sim open-device --text                           # boot a device; --no-window keeps it headless
+ade --socket ios-sim close-device --text                          # release it; --shutdown powers the device down
+ade --socket ios-sim settings --text                              # read appearance, Dynamic Type, accessibility
+ade --socket ios-sim appearance dark --text                       # also: content-size, accessibility <option> on|off
+ade --socket ios-sim location 37.7749 -122.4194 --text            # --clear drops the simulated location
+ade --socket ios-sim permission grant photos --bundle-id com.example.app --text
+ade --socket ios-sim push --bundle-id com.example.app --title Hi --body "You have mail" --text
+ade --socket ios-sim open-url myapp://settings --text              # also: relaunch, terminate, uninstall, app-state
+ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear drops the override
+# Live view: the host encodes H.264 next to the simulator, so a remote client still sees it.
+ade --socket ios-sim live-start --fps 60 --text                    # aliases: window-start, stream-start
+ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
+# Device event log: the app's own log rows interleaved with what ADE did.
+ade --socket ios-sim log-start --bundle-id com.example.app --text
+ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture
+# Semantic actions: name an element instead of guessing a pixel. Read refs from `snapshot` first.
+ade --socket ios-sim snapshot --text
+ade --socket ios-sim find-element --label Continue --text
+ade --socket ios-sim tap-element --identifier signup-submit --text
+ade --socket ios-sim fill-element --identifier email-field --value ada@example.com --text
+ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text   # --gone waits for it to leave
+ade --socket ios-sim assert-visible --label "Order confirmed" --text
+ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

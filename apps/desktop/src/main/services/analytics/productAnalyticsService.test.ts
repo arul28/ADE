@@ -1601,6 +1601,45 @@ describe("product analytics producers", () => {
     })).not.toHaveProperty("outcome");
   });
 
+  it("keeps both iOS live-view backends and nothing that identifies the machine", () => {
+    // `tool_ios` says the pane was opened. Only the backend id says whether the
+    // simulator is on this Mac, and that is the question the host-encoded
+    // backend exists to answer.
+    for (const outcome of ["backend_window", "backend_host_encoded"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "ios_live_view",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "work", action: "ios_live_view", outcome, source: "renderer_route" });
+    }
+
+    // A third backend has to be registered here deliberately.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "ios_live_view",
+      outcome: "backend_mjpeg",
+    })).not.toHaveProperty("outcome");
+
+    // The stream's address carries its own access token and the machine it runs
+    // on. Neither is on `ade_feature_used`'s key list, so neither can ride along
+    // even when a caller sets it.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "ios_live_view",
+      outcome: "backend_host_encoded",
+      source: "renderer_route",
+      stream_url: "http://127.0.0.1:61552/ios-simulator-video?token=deadbeef",
+      machine_name: "mac-mini",
+      device_udid: "793AEBB6-AC91-4B87-8323-992BC0B455F7",
+    })).toEqual({
+      feature: "work",
+      action: "ios_live_view",
+      outcome: "backend_host_encoded",
+      source: "renderer_route",
+    });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

@@ -8975,6 +8975,67 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => ensureIosSimulator().selectPoint(arg));
 
+  // Device hub channels. None of these touch the Simulator.app window, so none
+  // of them arm or release the window-parking follow.
+  ipcMain.handle(IPC.iosSimulatorOpenDevice, async (_event, arg = {}) => ensureIosSimulator().openDevice(arg));
+
+  ipcMain.handle(IPC.iosSimulatorCloseDevice, async (_event, arg = {}) => ensureIosSimulator().closeDevice(arg));
+
+  ipcMain.handle(IPC.iosSimulatorGetDeviceSettings, async (_event, arg = {}) =>
+    ensureIosSimulator().getDeviceSettings(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetAppearance, async (_event, arg) => ensureIosSimulator().setAppearance(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetContentSize, async (_event, arg) => ensureIosSimulator().setContentSize(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetAccessibilityOption, async (_event, arg) =>
+    ensureIosSimulator().setAccessibilityOption(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetLocation, async (_event, arg) => ensureIosSimulator().setLocation(arg));
+
+  ipcMain.handle(IPC.iosSimulatorClearLocation, async (_event, arg = {}) =>
+    ensureIosSimulator().clearLocation(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetPermission, async (_event, arg) => ensureIosSimulator().setPermission(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSendPushNotification, async (_event, arg) =>
+    ensureIosSimulator().sendPushNotification(arg));
+
+  ipcMain.handle(IPC.iosSimulatorOpenUrl, async (_event, arg) => ensureIosSimulator().openUrl(arg));
+
+  ipcMain.handle(IPC.iosSimulatorRelaunchApp, async (_event, arg) => ensureIosSimulator().relaunchApp(arg));
+
+  ipcMain.handle(IPC.iosSimulatorTerminateApp, async (_event, arg) => ensureIosSimulator().terminateApp(arg));
+
+  ipcMain.handle(IPC.iosSimulatorUninstallApp, async (_event, arg) => ensureIosSimulator().uninstallApp(arg));
+
+  ipcMain.handle(IPC.iosSimulatorSetStatusBar, async (_event, arg) => ensureIosSimulator().setStatusBar(arg));
+
+  ipcMain.handle(IPC.iosSimulatorClearStatusBar, async (_event, arg = {}) =>
+    ensureIosSimulator().clearStatusBar(arg));
+
+  ipcMain.handle(IPC.iosSimulatorGetAppState, async (_event, arg) => ensureIosSimulator().getAppState(arg));
+
+  ipcMain.handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
+    ensureIosSimulator().startEventLog(arg));
+
+  ipcMain.handle(IPC.iosSimulatorStopEventLog, async () => ensureIosSimulator().stopEventLog());
+
+  ipcMain.handle(IPC.iosSimulatorGetEventLog, async (_event, arg = {}) => ensureIosSimulator().getEventLog(arg));
+
+  ipcMain.handle(IPC.iosSimulatorFindElement, async (_event, arg) => ensureIosSimulator().findElement(arg));
+
+  ipcMain.handle(IPC.iosSimulatorTapElement, async (_event, arg) => ensureIosSimulator().tapElement(arg));
+
+  ipcMain.handle(IPC.iosSimulatorFillElement, async (_event, arg) => ensureIosSimulator().fillElement(arg));
+
+  ipcMain.handle(IPC.iosSimulatorWaitForElement, async (_event, arg) => ensureIosSimulator().waitForElement(arg));
+
+  ipcMain.handle(IPC.iosSimulatorAssertVisible, async (_event, arg) => ensureIosSimulator().assertVisible(arg));
+
+  ipcMain.handle(IPC.iosSimulatorCaptureProofBundle, async (_event, arg = {}) =>
+    ensureIosSimulator().captureProofBundle(arg));
+
   ipcMain.handle(IPC.appControlGetStatus, async (event) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
     return ensureAppControl().getStatus();

@@ -750,6 +750,34 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorAppLifecycleArgs,
+  IosSimulatorAppState,
+  IosSimulatorAssertVisibleArgs,
+  IosSimulatorCloseDeviceArgs,
+  IosSimulatorCloseDeviceResult,
+  IosSimulatorDeviceArgs,
+  IosSimulatorDeviceSession,
+  IosSimulatorDeviceSettings,
+  IosSimulatorElementActionResult,
+  IosSimulatorEventLogArgs,
+  IosSimulatorEventLogPage,
+  IosSimulatorFillElementArgs,
+  IosSimulatorFindElementArgs,
+  IosSimulatorOpenDeviceArgs,
+  IosSimulatorOpenUrlArgs,
+  IosSimulatorProofBundle,
+  IosSimulatorProofBundleArgs,
+  IosSimulatorPushArgs,
+  IosSimulatorSetAccessibilityArgs,
+  IosSimulatorSetAppearanceArgs,
+  IosSimulatorSetContentSizeArgs,
+  IosSimulatorSetLocationArgs,
+  IosSimulatorSetPermissionArgs,
+  IosSimulatorStartEventLogArgs,
+  IosSimulatorStatusBarArgs,
+  IosSimulatorTapElementArgs,
+  IosSimulatorUninstallAppArgs,
+  IosSimulatorWaitForElementArgs,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
   IosSimulatorWindowState,
@@ -1957,6 +1985,36 @@ function callIosSimulatorActionOr<T>(
   local: () => Promise<T>,
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, local);
+}
+
+/**
+ * Run one iOS simulator mutation and drop the cached status reads around it.
+ *
+ * The cache is cleared on both sides of the call for two different reasons.
+ * Before, so a read racing the mutation cannot repopulate the cache from the
+ * pre-mutation device and leave that stale value behind it. After, so the next
+ * read sees what the mutation actually did.
+ *
+ * An action with no arguments passes `undefined`, which sends no `args` key and
+ * calls the channel with no payload, exactly as its handlers expect.
+ */
+async function callIosSimulatorMutation<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  args: Record<string, unknown> | undefined,
+  channel: string,
+): Promise<T> {
+  clearIosSimulatorStatusCaches();
+  try {
+    return await callIosSimulatorActionOr<T>(
+      pin,
+      action,
+      args === undefined ? {} : { args },
+      () => (args === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, args)),
+    );
+  } finally {
+    clearIosSimulatorStatusCaches();
+  }
 }
 
 function callAppControlActionOr<T>(
@@ -7562,22 +7620,14 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
       ),
-    launch: async (
+    launch: (
       args: IosSimulatorLaunchArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<IosSimulatorLaunchResult> => {
-      clearIosSimulatorStatusCaches();
-      try {
-        return await callIosSimulatorActionOr(
-          pin,
-          "launch",
-          { args },
-          () => ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
-        );
-      } finally {
-        clearIosSimulatorStatusCaches();
-      }
-    },
+    ): Promise<IosSimulatorLaunchResult> =>
+      callIosSimulatorMutation(pin, "launch", args, IPC.iosSimulatorLaunch),
+    // Keeps the cache clearing inline instead of using
+    // `callIosSimulatorMutation`: the runtime action takes positional
+    // arguments, not the single `args` object every other mutation sends.
     attachToChatSession: async (
       args: {
         chatSessionId: string | null;
@@ -7604,22 +7654,11 @@ const adeBridge = {
         clearIosSimulatorStatusCaches();
       }
     },
-    shutdown: async (
+    shutdown: (
       args: IosSimulatorShutdownArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<IosSimulatorShutdownResult> => {
-      clearIosSimulatorStatusCaches();
-      try {
-        return await callIosSimulatorActionOr(
-          pin,
-          "shutdown",
-          { args },
-          () => ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
-        );
-      } finally {
-        clearIosSimulatorStatusCaches();
-      }
-    },
+    ): Promise<IosSimulatorShutdownResult> =>
+      callIosSimulatorMutation(pin, "shutdown", args, IPC.iosSimulatorShutdown),
     screenshot: async (
       args: IosSimulatorScreenshotArgs = {},
       pin?: OpenProjectBinding | null,
@@ -7727,37 +7766,15 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
       ),
-    startStream: async (
+    startStream: (
       args: IosSimulatorStartStreamArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<IosSimulatorStreamStatus> => {
-      clearIosSimulatorStatusCaches();
-      try {
-        return await callIosSimulatorActionOr(
-          pin,
-          "startStream",
-          { args },
-          () => ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
-        );
-      } finally {
-        clearIosSimulatorStatusCaches();
-      }
-    },
-    stopStream: async (
+    ): Promise<IosSimulatorStreamStatus> =>
+      callIosSimulatorMutation(pin, "startStream", args, IPC.iosSimulatorStartStream),
+    stopStream: (
       pin?: OpenProjectBinding | null,
-    ): Promise<IosSimulatorStreamStatus> => {
-      clearIosSimulatorStatusCaches();
-      try {
-        return await callIosSimulatorActionOr(
-          pin,
-          "stopStream",
-          {},
-          () => ipcRenderer.invoke(IPC.iosSimulatorStopStream),
-        );
-      } finally {
-        clearIosSimulatorStatusCaches();
-      }
-    },
+    ): Promise<IosSimulatorStreamStatus> =>
+      callIosSimulatorMutation(pin, "stopStream", undefined, IPC.iosSimulatorStopStream),
     getStreamStatus: async (
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
@@ -7867,6 +7884,210 @@ const adeBridge = {
       callIosSimulatorActionOr(pin, "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
       ),
+    /* ------------------------------------------------------------------- *
+     * Device hub
+     * ------------------------------------------------------------------- */
+    openDevice: (
+      args: IosSimulatorOpenDeviceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSession> =>
+      callIosSimulatorMutation(pin, "openDevice", args, IPC.iosSimulatorOpenDevice),
+    closeDevice: (
+      args: IosSimulatorCloseDeviceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorCloseDeviceResult> =>
+      callIosSimulatorMutation(pin, "closeDevice", args, IPC.iosSimulatorCloseDevice),
+    getDeviceSettings: async (
+      args: IosSimulatorDeviceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorActionOr(
+        pin,
+        "getDeviceSettings",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetDeviceSettings, args),
+      ),
+    setAppearance: (
+      args: IosSimulatorSetAppearanceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorMutation(pin, "setAppearance", args, IPC.iosSimulatorSetAppearance),
+    setContentSize: (
+      args: IosSimulatorSetContentSizeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorMutation(pin, "setContentSize", args, IPC.iosSimulatorSetContentSize),
+    setAccessibilityOption: (
+      args: IosSimulatorSetAccessibilityArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorMutation(pin, "setAccessibilityOption", args, IPC.iosSimulatorSetAccessibilityOption),
+    setLocation: (
+      args: IosSimulatorSetLocationArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorMutation(pin, "setLocation", args, IPC.iosSimulatorSetLocation),
+    clearLocation: (
+      args: IosSimulatorDeviceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDeviceSettings> =>
+      callIosSimulatorMutation(pin, "clearLocation", args, IPC.iosSimulatorClearLocation),
+    setPermission: (
+      args: IosSimulatorSetPermissionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "setPermission", args, IPC.iosSimulatorSetPermission),
+    sendPushNotification: (
+      args: IosSimulatorPushArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "sendPushNotification", args, IPC.iosSimulatorSendPushNotification),
+    openUrl: (
+      args: IosSimulatorOpenUrlArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "openUrl", args, IPC.iosSimulatorOpenUrl),
+    relaunchApp: (
+      args: IosSimulatorAppLifecycleArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorAppState> =>
+      callIosSimulatorMutation(pin, "relaunchApp", args, IPC.iosSimulatorRelaunchApp),
+    terminateApp: (
+      args: IosSimulatorAppLifecycleArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "terminateApp", args, IPC.iosSimulatorTerminateApp),
+    uninstallApp: (
+      args: IosSimulatorUninstallAppArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "uninstallApp", args, IPC.iosSimulatorUninstallApp),
+    setStatusBar: (
+      args: IosSimulatorStatusBarArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "setStatusBar", args, IPC.iosSimulatorSetStatusBar),
+    clearStatusBar: (
+      args: IosSimulatorDeviceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorMutation(pin, "clearStatusBar", args, IPC.iosSimulatorClearStatusBar),
+    getAppState: async (
+      args: IosSimulatorAppLifecycleArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorAppState> =>
+      callIosSimulatorActionOr(
+        pin,
+        "getAppState",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetAppState, args),
+      ),
+    startEventLog: (
+      args: IosSimulatorStartEventLogArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorEventLogPage> =>
+      callIosSimulatorMutation(pin, "startEventLog", args, IPC.iosSimulatorStartEventLog),
+    stopEventLog: (
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorEventLogPage> =>
+      callIosSimulatorMutation(pin, "stopEventLog", undefined, IPC.iosSimulatorStopEventLog),
+    getEventLog: async (
+      args: IosSimulatorEventLogArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorEventLogPage> =>
+      callIosSimulatorActionOr(
+        pin,
+        "getEventLog",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetEventLog, args),
+      ),
+    findElement: async (
+      args: IosSimulatorFindElementArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorElementActionResult> =>
+      callIosSimulatorActionOr(
+        pin,
+        "findElement",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorFindElement, args),
+      ),
+    tapElement: (
+      args: IosSimulatorTapElementArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorElementActionResult> =>
+      callIosSimulatorMutation(pin, "tapElement", args, IPC.iosSimulatorTapElement),
+    fillElement: (
+      args: IosSimulatorFillElementArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorElementActionResult> =>
+      callIosSimulatorMutation(pin, "fillElement", args, IPC.iosSimulatorFillElement),
+    waitForElement: (
+      args: IosSimulatorWaitForElementArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorElementActionResult> =>
+      callIosSimulatorMutation(pin, "waitForElement", args, IPC.iosSimulatorWaitForElement),
+    assertVisible: async (
+      args: IosSimulatorAssertVisibleArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorElementActionResult> =>
+      callIosSimulatorActionOr(
+        pin,
+        "assertVisible",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorAssertVisible, args),
+      ),
+    captureProofBundle: (
+      args: IosSimulatorProofBundleArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorProofBundle> =>
+      callIosSimulatorMutation(pin, "captureProofBundle", args, IPC.iosSimulatorCaptureProofBundle),
+    /**
+     * Turn a host-encoded stream URL into one this desktop can actually open.
+     *
+     * The URL names loopback on the machine that runs the simulator, so a
+     * project bound to a remote Mac hands this window an address that resolves
+     * to the wrong box — or to nothing. A remote binding therefore gets a TCP
+     * forward and a rewritten host and port, exactly as a lane preview server
+     * does. `rewriteUrlHostPort` parses the URL and serializes it again, so the
+     * stream token in the query survives; the stream refuses a request without
+     * it.
+     *
+     * Failures come back as a message instead of a rejection because the caller
+     * renders them in a blocker card.
+     */
+    resolveStreamUrl: async (
+      streamUrl: string | null,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
+      const text = (streamUrl ?? "").trim();
+      if (!text) return { url: null, forwarded: false, error: null };
+      try {
+        const binding = pin ?? (await getProjectRuntimeBinding());
+        if (binding?.kind !== "remote") {
+          return { url: text, forwarded: false, error: null };
+        }
+        // A non-loopback URL already names a host both machines can reach, so
+        // forwarding it would point the player at the wrong server.
+        const parsed = parseLoopbackUrl(text);
+        if (!parsed) return { url: text, forwarded: false, error: null };
+        const forward = await ensureRemoteLoopbackForward(
+          binding,
+          parsed.port,
+          `${binding.displayName}:ios-simulator:${parsed.port}`,
+        );
+        return {
+          url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+          forwarded: true,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          url: null,
+          forwarded: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
     onEvent: subscribeIosSimulatorEvents,
   },
   appControl: {

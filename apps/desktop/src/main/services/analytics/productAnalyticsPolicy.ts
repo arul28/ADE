@@ -162,6 +162,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // says the surface was reached — it cannot tell a Browser install from a Git
   // one. Never a lane, project, tab, URL, or session.
   "tool_opened",
+  // Which live view an installation actually watches an iOS simulator through.
+  // `tool_ios` says the pane was opened; it cannot tell an install that drives
+  // a simulator on this Mac from one driving a Mac across the room, which is
+  // the whole question this backend exists to answer. Never a device, lane,
+  // machine name, address, codec, resolution, or duration.
+  "ios_live_view",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -301,6 +307,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
     "tool_browser",
+    // The two iOS live-view backends, prefixed for the same reason the tool ids
+    // are. `backend_window` captures the Simulator window on this Mac;
+    // `backend_host_encoded` encodes on the machine that owns the simulator and
+    // is the only one that works when that machine is not this one. A third
+    // spelling is dropped, not widened.
+    "backend_window", "backend_host_encoded",
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

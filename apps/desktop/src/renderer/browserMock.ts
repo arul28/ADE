@@ -70,6 +70,12 @@ import {
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
+import type {
+  IosSimulatorDeviceSettings,
+  IosSimulatorElementActionKind,
+  IosSimulatorElementActionResult,
+  IosSimulatorEventLogPage,
+} from "../shared/types/iosSimulator";
 import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
@@ -220,6 +226,50 @@ const MOCK_PROJECT =
 
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+// ── iOS simulator preview stubs ───────────────────────────────
+// The browser preview has no simulator, so every device call answers with the
+// same inert value. One definition per shape keeps the methods that share it
+// from drifting apart, and the real types catch a shape that no longer
+// compiles against the preload contract.
+const BROWSER_MOCK_IOS_DEVICE_SETTINGS: IosSimulatorDeviceSettings = {
+  deviceUdid: "browser-mock-device",
+  appearance: "unknown",
+  contentSize: "large",
+  accessibility: {
+    "increase-contrast": null,
+    "reduce-motion": null,
+    "reduce-transparency": null,
+    "bold-text": null,
+    "invert-colors": null,
+    grayscale: null,
+    "voice-over": null,
+  },
+  location: null,
+  statusBarOverridden: false,
+  readAt: now,
+};
+
+const BROWSER_MOCK_IOS_LOG_PAGE: IosSimulatorEventLogPage = {
+  deviceUdid: null,
+  running: false,
+  rows: [],
+  cursor: 0,
+  dropped: 0,
+  lastError: null,
+};
+
+// Element actions differ only in which action is being reported back.
+const browserMockIosElementResult = (
+  action: IosSimulatorElementActionKind,
+): IosSimulatorElementActionResult => ({
+  ok: false,
+  action,
+  match: null,
+  matchCount: 0,
+  message: "Browser preview has no iOS simulator.",
+  waitedMs: null,
+});
 
 const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";
 
@@ -5349,6 +5399,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         tools: [],
         activeDevice: null,
         activeSession: null,
+        deviceSession: null,
       }),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
@@ -5398,7 +5449,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       } as any),
       renderPreview: resolvedArg({} as any),
       openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
-      startStream: resolvedArg({ streaming: false, streamUrl: null } as any),
+      startStream: resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
       getSimulatorWindowState: resolvedArg({ visible: false } as any),
@@ -5419,6 +5470,62 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       drag: resolved({ ok: true as const }),
       swipe: resolved({ ok: true as const }),
       selectPoint: resolvedArg({} as any),
+      openDevice: resolvedArg({
+        deviceUdid: "browser-mock-device",
+        deviceName: "Browser preview",
+        chatSessionId: null,
+        laneId: null,
+        openedAt: now,
+        bootedByAde: false,
+      }),
+      closeDevice: resolvedArg({
+        released: false,
+        shutdown: false,
+        previousDeviceSession: null,
+      }),
+      getDeviceSettings: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      setAppearance: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      setContentSize: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      setAccessibilityOption: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      setLocation: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      clearLocation: resolvedArg(BROWSER_MOCK_IOS_DEVICE_SETTINGS),
+      setPermission: resolvedArg({ ok: true as const }),
+      sendPushNotification: resolvedArg({ ok: true as const }),
+      openUrl: resolvedArg({ ok: true as const }),
+      relaunchApp: resolvedArg({
+        bundleId: "com.example.app",
+        running: false,
+        pid: null,
+        checkedAt: now,
+      }),
+      terminateApp: resolvedArg({ ok: true as const }),
+      uninstallApp: resolvedArg({ ok: true as const }),
+      setStatusBar: resolvedArg({ ok: true as const }),
+      clearStatusBar: resolvedArg({ ok: true as const }),
+      getAppState: resolvedArg({
+        bundleId: "com.ade.browser-mock",
+        running: false,
+        pid: null,
+        checkedAt: now,
+      }),
+      startEventLog: resolvedArg(BROWSER_MOCK_IOS_LOG_PAGE),
+      stopEventLog: resolved(BROWSER_MOCK_IOS_LOG_PAGE),
+      getEventLog: resolvedArg(BROWSER_MOCK_IOS_LOG_PAGE),
+      findElement: resolvedArg(browserMockIosElementResult("assert")),
+      tapElement: resolvedArg(browserMockIosElementResult("tap")),
+      fillElement: resolvedArg(browserMockIosElementResult("fill")),
+      waitForElement: resolvedArg(browserMockIosElementResult("wait")),
+      assertVisible: resolvedArg(browserMockIosElementResult("assert")),
+      captureProofBundle: resolvedArg({
+        dir: "/tmp",
+        screenshotPath: "/tmp/ios-proof.png",
+        metadataPath: "/tmp/ios-proof.json",
+        elementsPath: null,
+        logPath: null,
+        caption: null,
+        capturedAt: now,
+      }),
+      resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
       onEvent: () => () => {},
     },
     builtInBrowser: {

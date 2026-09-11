@@ -401,6 +401,20 @@ function resolveCandidatePath(
  * Resolve `candidate` against the real filesystem layout and ensure it stays
  * inside `root`, even when symlinks are involved.
  */
+/** The message `resolvePathWithinRoot` uses for a containment failure. */
+const PATH_ESCAPES_ROOT_MESSAGE = "Path escapes root";
+
+/**
+ * Whether a `resolvePathWithinRoot` failure was the containment rule.
+ *
+ * The resolver also surfaces a dangling symlink, a permission error and a link
+ * loop, so a caller that maps every failure to "outside the root" tells the
+ * user to fix a path that was never the problem.
+ */
+export function isPathEscapeError(error: unknown): boolean {
+  return error instanceof Error && error.message === PATH_ESCAPES_ROOT_MESSAGE;
+}
+
 export function resolvePathWithinRoot(
   root: string,
   candidate: string,
