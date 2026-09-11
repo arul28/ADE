@@ -270,6 +270,28 @@ func isSyncRequestTimeoutError(_ error: Error) -> Bool {
   return nsError.domain == "ADE" && nsError.code == 23
 }
 
+/// Whether a failed project-host repair lost its transport instead of being
+/// answered. The repair restarts the machine, so the socket carrying the
+/// command usually dies before `command_result` comes back — that is the repair
+/// working, and the reconnect, not this error, reports the outcome.
+///
+/// Two typed tells, no message matching: the request timed out (a timeout does
+/// not always tear the socket down), or the connection that sent it was retired
+/// underneath it — `teardownSocket` bumps the generation before it fails every
+/// pending request, so a changed generation is proof the socket went away. An
+/// answered rejection still ends the repair.
+func syncProjectHostRecoveryLostTransport(
+  error: Error,
+  sentAtConnectionGeneration: UInt64,
+  currentConnectionGeneration: UInt64
+) -> Bool {
+  guard !isRemoteCommandApplicationError(error), !isSyncHostUnavailableError(error) else {
+    return false
+  }
+  return isSyncRequestTimeoutError(error)
+    || currentConnectionGeneration != sentAtConnectionGeneration
+}
+
 enum SyncAttemptedLiveFailurePolicy: Equatable {
   case enqueueSafely
   case preserveForManualRetry
@@ -4633,6 +4655,7 @@ final class SyncService: ObservableObject {
   func recoverProjectHost() async {
     guard canSendLiveRequests() else { return }
     projectHostPhase = .recovering
+    let sentGeneration = connectionGeneration
     do {
       let raw = try await sendCommand(
         action: projectHostRecoverAction,
@@ -4659,7 +4682,27 @@ final class SyncService: ObservableObject {
         return
       }
     } catch {
+      // Losing the socket is a step of this repair, not its verdict: the phone
+      // asked the machine to restart. Hold the progress screen, keep polling,
+      // and let the reconnect say what actually happened. The hosted web store
+      // does the same; without this the restart reported itself as a failure.
+      if syncProjectHostRecoveryLostTransport(
+        error: error,
+        sentAtConnectionGeneration: sentGeneration,
+        currentConnectionGeneration: connectionGeneration
+      ) {
+        startProjectHostSilentRetryIfNeeded()
+        return
+      }
       applyIncomingProjectHostFailure(error)
+      // "Still starting" during a repair is the restart answering, not a
+      // verdict. `applyIncomingProjectHostFailure` already held `.recovering`
+      // and armed the poll for it; ending the repair here would show the
+      // takeover card while the machine is legitimately coming back. The
+      // hosted web store draws the same line.
+      if (error as NSError).userInfo["ADEErrorReason"] as? String == "starting" {
+        return
+      }
     }
     if projectHostPhase == .recovering {
       projectHostPhase = .takeover
@@ -4682,6 +4725,15 @@ final class SyncService: ObservableObject {
     projectHostRetryTask = nil
   }
 
+  /// Releases the handle, but only while it still belongs to this task: a stale
+  /// task finishing late must not clear a newer task's handle. Every exit runs
+  /// this, or the `projectHostRetryTask != nil` guard below would refuse every
+  /// later poll and the phone would check exactly once.
+  private func finishProjectHostSilentRetry(generation: UInt64) {
+    guard projectHostRetryGeneration == generation else { return }
+    projectHostRetryTask = nil
+  }
+
   private func startProjectHostSilentRetryIfNeeded() {
     // Also armed while `.recovering`: a restart drops the socket, and the poll
     // is what discovers whether the machine came back healthy or still blocked.
@@ -4691,21 +4743,30 @@ final class SyncService: ObservableObject {
     let generation = projectHostRetryGeneration
     projectHostRetryTask = Task { @MainActor [weak self] in
       guard let self else { return }
-      for delay in projectHostSilentRetrySeconds {
-        let ns = UInt64(delay * 1_000_000_000)
-        do {
-          try await Task.sleep(nanoseconds: ns)
-        } catch {
+      defer { self.finishProjectHostSilentRetry(generation: generation) }
+      var completedAttempts = 0
+      while true {
+        switch projectHostSilentRetryStep(
+          phase: self.projectHostPhase,
+          completedAttempts: completedAttempts
+        ) {
+        case .stop:
           return
+        case .exhausted:
+          self.applyIncomingProjectHostSnapshot(self.projectHostSnapshot, retriesExhausted: true)
+          return
+        case .check(let afterSeconds):
+          do {
+            try await Task.sleep(nanoseconds: UInt64(afterSeconds * 1_000_000_000))
+          } catch {
+            return
+          }
+          guard self.projectHostRetryGeneration == generation, !Task.isCancelled else { return }
+          await self.retryProjectHostDuringSilentWait()
+          guard self.projectHostRetryGeneration == generation else { return }
+          completedAttempts += 1
         }
-        guard self.projectHostRetryGeneration == generation, !Task.isCancelled else { return }
-        await self.retryProjectHostDuringSilentWait()
-        guard self.projectHostRetryGeneration == generation else { return }
-        if self.projectHostPhase != .retrying { return }
       }
-      guard self.projectHostRetryGeneration == generation else { return }
-      self.applyIncomingProjectHostSnapshot(self.projectHostSnapshot, retriesExhausted: true)
-      self.projectHostRetryTask = nil
     }
   }
 

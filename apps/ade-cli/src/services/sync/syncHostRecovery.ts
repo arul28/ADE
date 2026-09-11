@@ -290,13 +290,39 @@ function sameOwner(
 export function recoverSyncHostConnection(
   args: { operationId?: string; maxRepairMs?: number } & SyncHostRecoveryDeps = {},
 ): Promise<SyncHostRecoveryResult> {
-  if (inFlight) return inFlight;
+  if (!inFlight) {
+    const run = runSyncHostRecovery(args);
+    inFlight = run;
+    // The latch tracks the REAL work, never the deadline race below.
+    // `Promise.race` only chooses which promise supplies the answer; it does
+    // not cancel `runSyncHostRecovery`. Releasing the latch when the deadline
+    // wins would let the next caller open a SECOND stop/restart sequence while
+    // the first is still inside `terminatePid`/`startSyncHost`/`restartBrain`.
+    // A rejection releases it too, and is swallowed here only so this
+    // bookkeeping handler never becomes the unhandled one — every caller still
+    // receives the rejection through `raceWithDeadline`.
+    void run.then(
+      () => {
+        if (inFlight === run) inFlight = null;
+      },
+      () => {
+        if (inFlight === run) inFlight = null;
+      },
+    );
+  }
   // `startSyncHost`, `restartBrain` and `prove` are injected closures with no
-  // deadline of their own. If one never settles, an unbounded join would leave
-  // `inFlight` set forever and every later tap — from every device — would hang
-  // on the same pending promise until the brain restarted. Bound the whole
-  // repair instead, and answer honestly when it overruns.
-  const deadlineMs = Math.max(1_000, args.maxRepairMs ?? DEFAULT_MAX_REPAIR_MS);
+  // deadline of their own. If one never settles, an unbounded join would hang
+  // every later tap from every device. Each caller gets its own bound and an
+  // honest answer when the repair overruns, while the repair itself keeps
+  // running under the latch until it actually settles.
+  return raceWithDeadline(inFlight, Math.max(1_000, args.maxRepairMs ?? DEFAULT_MAX_REPAIR_MS), args);
+}
+
+function raceWithDeadline(
+  work: Promise<SyncHostRecoveryResult>,
+  deadlineMs: number,
+  args: SyncHostRecoveryDeps,
+): Promise<SyncHostRecoveryResult> {
   // A real timer, never the injectable `sleep`: that one is the step-poll hook
   // and tests stub it to resolve immediately, which would make every repair
   // report a timeout. Unref'd so a pending deadline cannot hold the brain open.
@@ -314,12 +340,9 @@ export function recoverSyncHostConnection(
     }, deadlineMs);
     deadlineTimer.unref?.();
   });
-  const run = Promise.race([runSyncHostRecovery(args), deadline]).finally(() => {
+  return Promise.race([work, deadline]).finally(() => {
     if (deadlineTimer) clearTimeout(deadlineTimer);
-    if (inFlight === run) inFlight = null;
   });
-  inFlight = run;
-  return run;
 }
 
 async function runSyncHostRecovery(
@@ -491,7 +514,11 @@ async function runSyncHostRecovery(
     setStep("start", "skipped");
   }
 
-  if (!holds() && detect()) {
+  // Deliberately NOT gated on a still-detectable conflict. The blocker was
+  // just stopped, so `detect()` is normally null by now; requiring it here
+  // skipped the restart exactly when `startSyncHost` had failed or returned
+  // without the lease — leaving the machine with neither runtime.
+  if (!holds()) {
     setStep("restart", "active");
     if (deps.restartBrain) {
       try {

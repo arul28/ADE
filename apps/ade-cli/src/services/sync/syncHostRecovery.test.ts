@@ -93,12 +93,46 @@ describe("syncHostRecovery", () => {
     };
     const first = recoverSyncHostConnection(deps);
     const second = recoverSyncHostConnection(deps);
-    expect(second).toBe(first);
     release();
-    await first;
+    const [firstResult, secondResult] = await Promise.all([first, second]);
     // Two callers, one stop. A second tap or a reconnect mid-repair must not
-    // terminate a second process.
+    // terminate a second process, and both callers see the same outcome.
     expect(stops).toBe(1);
+    expect(secondResult.operationId).toBe(firstResult.operationId);
+  });
+
+  // `Promise.race` chooses which promise answers the caller; it does not cancel
+  // the repair. Releasing the latch when the deadline won let the next tap open
+  // a SECOND stop/restart while the first was still inside `terminatePid`.
+  it("does not open a second stop after a repair times out mid-stop", async () => {
+    let stops = 0;
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const deps = {
+      detectConflict: () => conflict(),
+      holdsLease: () => false,
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      terminatePid: async () => {
+        stops += 1;
+        await gate;
+      },
+      sleep: async () => {},
+      now: () => Date.now(),
+      waitMs: 0,
+      selfPid: 1,
+      maxRepairMs: 1_000,
+    };
+    const timedOut = await recoverSyncHostConnection(deps);
+    expect(timedOut.message).toContain("took too long");
+    // The stop from the first repair is still pending here.
+    const second = await recoverSyncHostConnection(deps);
+    expect(second.message).toContain("took too long");
+    expect(stops).toBe(1);
+    release();
+    await gate;
   });
 
   // `startSyncHost`, `restartBrain` and `prove` are injected closures with no
@@ -299,6 +333,31 @@ describe("syncHostRecovery", () => {
     });
     expect(terminated).toEqual([]);
     expect(result.steps.find((entry) => entry.id === "stop")?.status).toBe("skipped");
+  });
+
+  // After the blocker is stopped `detect()` is normally null, so gating the
+  // restart on a still-detectable conflict skipped it exactly when the start
+  // had failed — removing the blocking runtime without restoring a host.
+  it("restarts the brain when the start fails and no conflict remains", async () => {
+    let restarts = 0;
+    const result = await recoverSyncHostConnection({
+      detectConflict: () => null,
+      holdsLease: () => false,
+      startSyncHost: async () => {
+        throw new Error("could not take the lease");
+      },
+      restartBrain: () => {
+        restarts += 1;
+      },
+      sleep: async () => {},
+      now: () => 0,
+      waitMs: 0,
+      selfPid: 1,
+    });
+    expect(restarts).toBe(1);
+    expect(result.status).toBe("restarting");
+    expect(result.steps.find((entry) => entry.id === "start")?.status).toBe("failed");
+    expect(result.steps.find((entry) => entry.id === "restart")?.status).toBe("done");
   });
 
   it("never targets this brain's pid", async () => {

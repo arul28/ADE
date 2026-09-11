@@ -107,6 +107,22 @@ function normalizeAccountOwnerUserId(value: unknown): string | null {
 }
 
 /**
+ * The recovery grant is only written when a record is created or rewritten, so
+ * a device that paired before the grant existed would never receive it — which
+ * is every already-paired device. An account-owned phone/browser record already
+ * carries the exact evidence the create path decides on (`accountOwnerUserId`
+ * is set only by account trust, and PIN/local trust clear it), so derive the
+ * grant from the stored record itself — never from anything the connecting
+ * client claims — and persist it once on the next successful hello.
+ */
+function withBackfilledSyncHostRecoveryGrant(record: SyncPairingRecord): SyncPairingRecord {
+  if (record.syncHostRecoveryGranted === true) return record;
+  if (record.peerDeviceType !== "phone" && record.peerDeviceType !== "browser") return record;
+  if (!normalizeAccountOwnerUserId(record.accountOwnerUserId)) return record;
+  return { ...record, syncHostRecoveryGranted: true };
+}
+
+/**
  * A pairing record's DPoP key must be a base64 uncompressed X9.63 P-256 point
  * (65 bytes, 0x04 prefix). Persisting anything else would fail-closed-lock the
  * device out of every future hello, so malformed input is treated as absent.
@@ -468,22 +484,30 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return false;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) {
-        records[normalized] = { ...entry, lastUsedAt: nowIso() };
+        records[normalized] = withBackfilledSyncHostRecoveryGrant({
+          ...entry,
+          lastUsedAt: nowIso(),
+        });
         writeRecords(records);
         return true;
       }
       const pending = entry.pendingRotation;
       if (pending && safeHashEquals(pending.record.secretHash, presented)) {
         if (options.deferPendingCommit) {
-          records[normalized] = {
+          // Backfills the committed record only. The staged replacement keeps
+          // whatever the re-pair decided, so rotation staging is untouched.
+          records[normalized] = withBackfilledSyncHostRecoveryGrant({
             ...entry,
             pendingRotation: {
               ...pending,
               record: { ...pending.record, lastUsedAt: nowIso() },
             },
-          };
+          });
         } else {
-          records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+          records[normalized] = withBackfilledSyncHostRecoveryGrant({
+            ...pending.record,
+            lastUsedAt: nowIso(),
+          });
         }
         writeRecords(records);
         return true;
@@ -619,7 +643,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         // then has nothing to reject, and a later account hello re-adopts it.
         if (record?.localTrustOrigin === true) {
           if (records[deviceId]) {
-            records[deviceId] = { ...records[deviceId], accountOwnerUserId: null };
+            // The host-recovery grant is account-derived, so it cannot outlive
+            // the ownership it came from: a demoted record is local trust
+            // again, and local trust never conveys process control. Withdrawing
+            // it here costs at most one re-grant on the next account hello,
+            // which `withBackfilledSyncHostRecoveryGrant` performs; leaving it
+            // would let a phone the switched-away account paired keep stopping
+            // and restarting runtimes on this machine.
+            records[deviceId] = {
+              ...records[deviceId],
+              accountOwnerUserId: null,
+              syncHostRecoveryGranted: false,
+            };
             demoted = true;
           }
           continue;

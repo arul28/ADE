@@ -276,4 +276,91 @@ final class ProjectHostRecoveryTests: XCTestCase {
     XCTAssertTrue(presented.body.contains("can't use Cursor's sandbox"))
     XCTAssertEqual(presented.technicalDetail, "sandboxing is not supported")
   }
+
+  // The repair restarts the machine, so the command's own socket usually dies
+  // before `command_result` comes back. Reading that as failure made the phone
+  // report the restart it asked for as the end of the repair.
+  func testRestartInducedSocketDropIsNotAFailedRepair() {
+    let dropped = NSError(
+      domain: "ADE",
+      code: 26,
+      userInfo: [NSLocalizedDescriptionKey: "Connection closed."]
+    )
+    XCTAssertTrue(
+      syncProjectHostRecoveryLostTransport(
+        error: dropped,
+        sentAtConnectionGeneration: 7,
+        currentConnectionGeneration: 8
+      )
+    )
+    // A timeout does not always tear the socket down, so the generation alone
+    // would miss it.
+    XCTAssertTrue(
+      syncProjectHostRecoveryLostTransport(
+        error: SyncRequestTimeout.error(),
+        sentAtConnectionGeneration: 7,
+        currentConnectionGeneration: 7
+      )
+    )
+    // Same socket, no timeout: nothing was lost.
+    XCTAssertFalse(
+      syncProjectHostRecoveryLostTransport(
+        error: dropped,
+        sentAtConnectionGeneration: 7,
+        currentConnectionGeneration: 7
+      )
+    )
+  }
+
+  func testAnsweredRejectionStillEndsTheRepair() {
+    let rejected = NSError(
+      domain: "ADE",
+      code: 17,
+      userInfo: [
+        "ADEErrorCode": "not_allowed",
+        NSLocalizedDescriptionKey: "This device can't manage runtimes on that machine.",
+      ]
+    )
+    XCTAssertTrue(isRemoteCommandApplicationError(rejected))
+    // Even a reconnect in the same moment must not turn an answer into a hold.
+    XCTAssertFalse(
+      syncProjectHostRecoveryLostTransport(
+        error: rejected,
+        sentAtConnectionGeneration: 7,
+        currentConnectionGeneration: 9
+      )
+    )
+    let unavailable = NSError(
+      domain: "ADE",
+      code: 17,
+      userInfo: [
+        "ADEErrorCode": "host_unavailable",
+        "ADEErrorReason": "conflict",
+        NSLocalizedDescriptionKey: "A development runtime is using the connection your phone needs.",
+      ]
+    )
+    XCTAssertFalse(
+      syncProjectHostRecoveryLostTransport(
+        error: unavailable,
+        sentAtConnectionGeneration: 7,
+        currentConnectionGeneration: 9
+      )
+    )
+  }
+
+  // The ramp is a budget for a slow host. A repair in progress has none: the
+  // phone asked for the restart and must keep checking until the machine is
+  // ready or the user acts.
+  func testSilentRetryKeepsCheckingWhileARepairIsRunning() {
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .retrying, completedAttempts: 0), .check(afterSeconds: 2))
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .retrying, completedAttempts: 2), .check(afterSeconds: 8))
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .retrying, completedAttempts: 3), .exhausted)
+
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .recovering, completedAttempts: 0), .check(afterSeconds: 2))
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .recovering, completedAttempts: 3), .check(afterSeconds: 8))
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .recovering, completedAttempts: 40), .check(afterSeconds: 8))
+
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .takeover, completedAttempts: 0), .stop)
+    XCTAssertEqual(projectHostSilentRetryStep(phase: .ready, completedAttempts: 0), .stop)
+  }
 }

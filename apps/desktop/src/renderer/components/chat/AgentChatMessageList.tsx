@@ -3780,6 +3780,20 @@ function renderEvent(
             />
           ) : null}
           {renderAgentCliAuthCard()}
+          {/* Names the failure class ("Provider capacity", "Usage limit") or the
+              raw provider/model identity. The instruction card above says what
+              to do; this says which thing went wrong, and dropping it would
+              lose the only place a Codex usage limit is distinguishable from a
+              generic stop. */}
+          {event.errorInfo && !agentCliInfo ? (
+            <div
+              className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"
+              title={typeof event.errorInfo === "string" ? event.errorInfo : undefined}
+            >
+              {recovery?.label
+                ?? (typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`)}
+            </div>
+          ) : null}
         </div>
       </div>
     );

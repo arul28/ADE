@@ -55,6 +55,34 @@ struct SyncHostRecoveryResult: Equatable {
 
 let projectHostSilentRetrySeconds: [TimeInterval] = [2, 4, 8]
 
+/// What the silent re-check loop does next.
+enum ProjectHostSilentRetryStep: Equatable {
+  case check(afterSeconds: TimeInterval)
+  case exhausted
+  case stop
+}
+
+/// The ramp is the budget for a machine that is merely slow to start: spend it,
+/// then hand the user the takeover card. A repair in progress has no budget —
+/// the phone asked for the restart, so it keeps checking at the last interval
+/// until the machine is ready or the user acts.
+func projectHostSilentRetryStep(
+  phase: ProjectHostUiPhase,
+  completedAttempts: Int
+) -> ProjectHostSilentRetryStep {
+  let attempts = max(0, completedAttempts)
+  switch phase {
+  case .recovering:
+    let index = min(attempts, projectHostSilentRetrySeconds.count - 1)
+    return .check(afterSeconds: projectHostSilentRetrySeconds[index])
+  case .retrying:
+    guard attempts < projectHostSilentRetrySeconds.count else { return .exhausted }
+    return .check(afterSeconds: projectHostSilentRetrySeconds[attempts])
+  case .ready, .takeover:
+    return .stop
+  }
+}
+
 func parseSyncHostReadinessSnapshot(_ raw: Any?) -> SyncHostReadinessSnapshot? {
   guard let record = raw as? [String: Any] else { return nil }
   let stateRaw = (record["state"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

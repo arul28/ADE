@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -139,6 +140,49 @@ describe("sync SSH pairing trust", () => {
 
     expect(store.getPairingRecord(peer.deviceId)?.runtimeHostGranted).toBe(expected);
     expect(store.getPairingRecord(peer.deviceId)?.syncHostRecoveryGranted).toBe(false);
+  });
+
+  // The grant was written only when a record was created or rewritten, so every
+  // phone that paired before it existed reconnected with its stored secret and
+  // got redacted diagnostics with no way to fix the connection.
+  it("backfills the recovery grant for an already-paired account-attested phone", () => {
+    const { filePath, store } = createStore();
+    const secret = "legacy-pairing-secret";
+    const base = {
+      secretHash: createHash("sha256").update(secret).digest("hex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastUsedAt: null,
+      peerName: "Arul's iPhone",
+      peerPlatform: "iOS",
+    };
+    fs.writeFileSync(filePath, JSON.stringify({
+      "legacy-account-phone": {
+        ...base,
+        peerDeviceType: "phone",
+        accountOwnerUserId: "user_legacy",
+      },
+      "legacy-pin-phone": { ...base, peerDeviceType: "phone", accountOwnerUserId: null },
+      "legacy-account-desktop": {
+        ...base,
+        peerDeviceType: "desktop",
+        accountOwnerUserId: "user_legacy",
+      },
+    }));
+
+    expect(store.getPairingRecord("legacy-account-phone")?.syncHostRecoveryGranted)
+      .toBeUndefined();
+    expect(store.authenticate("legacy-account-phone", secret)).toBe(true);
+    expect(store.authenticate("legacy-pin-phone", secret)).toBe(true);
+    expect(store.authenticate("legacy-account-desktop", secret)).toBe(true);
+
+    expect(store.getPairingRecord("legacy-account-phone")?.syncHostRecoveryGranted).toBe(true);
+    expect(store.getPairingRecordForSecret("legacy-account-phone", secret)
+      ?.syncHostRecoveryGranted).toBe(true);
+    // A PIN-only pairing and a desktop record keep exactly the authority they
+    // had: the backfill repeats the create path's condition, it does not widen it.
+    expect(store.getPairingRecord("legacy-pin-phone")?.syncHostRecoveryGranted).toBeUndefined();
+    expect(store.getPairingRecord("legacy-account-desktop")?.syncHostRecoveryGranted)
+      .toBeUndefined();
   });
 });
 
@@ -593,6 +637,10 @@ describe("account adoption of a legacy manual pairing", () => {
     expect(store.revokeAccountOwnedExcept(null)).toEqual([]);
     expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
     expect(store.getPairingRecord(peer.deviceId)?.localTrustOrigin).toBe(true);
+    // The host-recovery grant is account-derived, so the demotion withdraws it
+    // too. Otherwise a phone the switched-away account paired would keep the
+    // authority to stop and restart runtimes on this machine.
+    expect(store.getPairingRecord(peer.deviceId)?.syncHostRecoveryGranted).toBe(false);
     expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
 
     // And it must be durable, not just correct in memory.
