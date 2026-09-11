@@ -124,6 +124,9 @@ private struct WorkUsageQuotaProviderCard: View {
             Image(systemName: "arrow.up.right.square")
               .font(ADEUsageType.microFont(.semibold))
               .foregroundStyle(ADEColor.textSecondary)
+              // An 11pt glyph is not a target. The hit area reaches 44pt while
+              // the provider header keeps its 14pt rhythm.
+              .adeTapTarget(visual: 16)
           }
           .buttonStyle(.plain)
           .accessibilityLabel("Open \(providerLabel(provider)) limits in the browser")
@@ -199,20 +202,69 @@ private struct WorkUsageQuotaWindowRow: View {
                 adeUsageAccountAccent(segment.account?.id ?? segment.id).opacity(0.14),
                 in: RoundedRectangle(cornerRadius: 5, style: .continuous)
               )
+              // Drawn chip stays compact; the target reaches 44pt.
+              .frame(minWidth: 44, minHeight: 44)
+              .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
               "\(card.label), \(segment.account?.email ?? "this machine"), "
               + "\(Int(segment.percentLeft.rounded())) percent left"
             )
+            .accessibilityHint("Show account details")
           }
           Spacer(minLength: 0)
         }
       }
     }
-    .contentShape(Rectangle())
-    .onTapGesture {
-      if card.segments.count == 1, let segment = card.segments.first { onSelect(segment) }
+    // A single-account card IS the control: the chip row is absent, so the row
+    // itself opens the sheet. Multi-account cards stay a plain container whose
+    // chips are the controls.
+    .modifier(WorkUsageQuotaRowInteraction(
+      isSingleSegment: card.segments.count == 1,
+      label: singleSegmentAccessibilityLabel,
+      action: selectSingleSegment
+    ))
+  }
+
+  private func selectSingleSegment() {
+    guard card.segments.count == 1, let segment = card.segments.first else { return }
+    onSelect(segment)
+  }
+
+  private var singleSegmentAccessibilityLabel: String {
+    var parts = ["\(card.label) limit", "\(Int(card.percentLeft.rounded())) percent left"]
+    if let forecast = card.forecast {
+      parts.append(
+        "plus \(Int(forecast.percent.rounded())) percent in "
+        + adeUsageDurationLabel(milliseconds: forecast.resetsInMs)
+      )
+    }
+    return parts.joined(separator: ", ")
+  }
+}
+
+/// The tap gesture alone left VoiceOver with four unrelated strings and no way
+/// to reach the sheet, and a 20pt row is under the 44pt minimum. Both are only
+/// true for the single-account shape, so the modifier is a no-op otherwise.
+private struct WorkUsageQuotaRowInteraction: ViewModifier {
+  let isSingleSegment: Bool
+  let label: String
+  let action: () -> Void
+
+  func body(content: Content) -> some View {
+    if isSingleSegment {
+      content
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(label)
+        .accessibilityHint("Show account details")
+        .accessibilityAction(perform: action)
+    } else {
+      content
     }
   }
 }

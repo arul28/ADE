@@ -3163,7 +3163,11 @@ private struct WorkChatComposerDraftInput: View {
             .frame(width: 28, height: 28)
             .background(ADEColor.surfaceBackground.opacity(0.38), in: Circle())
             .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
-            .contentShape(Circle())
+            // 28pt reads right next to a one-line field but is under the 44pt
+            // minimum; the hit area grows, the drawn circle does not — the same
+            // split the composer's overflow control uses.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Collapse composer")

@@ -90,9 +90,9 @@ describe("chunked attachment staging", () => {
 
     const registry = createChunkedAttachmentStagingRegistry({ ttlMs: 60_000 });
     registry.begin({ projectRoot, filename: "next.pdf" });
-    // Fire-and-forget so it cannot fail a user's upload; drain the microtasks
-    // and the readdir/stat/unlink round trip before asserting.
-    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    // Fire-and-forget so it cannot fail a user's upload; wait on the sweep's own
+    // completion signal rather than a wall-clock sleep.
+    await registry.whenSweepSettled();
 
     expect(fs.existsSync(orphan)).toBe(false);
     // A `.part` inside the TTL may still belong to a live session on another

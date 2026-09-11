@@ -210,4 +210,89 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
       "\"notes.txt\" is empty. Attach a file with content."
     )
   }
+
+  // MARK: - Preview temp files
+
+  /// The other end of the same staging story: a PDF or video preview is
+  /// materialized to `tmp` and must live exactly as long as a sheet is on
+  /// screen.
+  ///
+  /// SwiftUI is free to repeat `onAppear`/`onDisappear` for one sheet, so the
+  /// bookkeeping is a `Set` of sheet tokens rather than a counter. A counter
+  /// drifts on the repeat and either drops the file under a live
+  /// `QLPreviewController`/`AVPlayer` or leaks the whole directory forever;
+  /// this pins the set's idempotence in both directions.
+  @MainActor
+  func testPreviewFilesSurviveRepeatedSheetCallbacksAndDropWithTheLastSheet() throws {
+    WorkChatAttachmentPreviewFiles.sweepAtLaunch()
+    let first = UUID()
+    let second = UUID()
+    defer { WorkChatAttachmentPreviewFiles.sweepAtLaunch() }
+
+    WorkChatAttachmentPreviewFiles.beginPresenting(token: first)
+    WorkChatAttachmentPreviewFiles.beginPresenting(token: first)
+    WorkChatAttachmentPreviewFiles.beginPresenting(token: second)
+
+    let url = WorkChatAttachmentPreviewFiles.url(forName: "probe.pdf")
+    try Data("%PDF-1.7".utf8).write(to: url, options: .atomic)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "setup precondition")
+
+    WorkChatAttachmentPreviewFiles.endPresenting(token: first)
+    WorkChatAttachmentPreviewFiles.endPresenting(token: first)
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.path),
+      "a second sheet is still presented; its file must not be reclaimed"
+    )
+
+    WorkChatAttachmentPreviewFiles.endPresenting(token: second)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: url.path),
+      "the last sheet tore down, so the previewed copies are reclaimed"
+    )
+  }
+
+  /// The preview temp name is derived from the host's basename plus a stable
+  /// token, so it must be a single legal path component AND identical on the
+  /// next launch — that determinism is what makes re-opening a 40 MB video free
+  /// instead of a second download.
+  func testPreviewTempNameIsASinglePathComponentAndStableAcrossLaunches() {
+    let hostPath = "/Users/someone/proj/.ade/attachments/8b2a5a0e.pdf"
+    let name = WorkChatAttachmentPreviewFiles.safeName(
+      for: "../../evil/report.pdf",
+      discriminator: workStableFileToken(hostPath)
+    )
+
+    XCTAssertFalse(name.contains("/"))
+    XCTAssertFalse(name.contains(".."))
+    XCTAssertTrue(name.hasSuffix(".pdf"))
+    XCTAssertEqual(
+      name,
+      WorkChatAttachmentPreviewFiles.safeName(
+        for: "../../evil/report.pdf",
+        discriminator: workStableFileToken(hostPath)
+      )
+    )
+    // A different host path never collides onto the same cached copy.
+    XCTAssertNotEqual(
+      name,
+      WorkChatAttachmentPreviewFiles.safeName(
+        for: "../../evil/report.pdf",
+        discriminator: workStableFileToken(hostPath + "x")
+      )
+    )
+  }
+
+  /// Launch is the only moment that can reclaim what a killed process left in
+  /// `tmp` — including a `.part` from an interrupted download, which no live
+  /// token names.
+  @MainActor
+  func testLaunchSweepDropsWhatAPreviousProcessLeftBehind() throws {
+    let leftover = WorkChatAttachmentPreviewFiles.url(forName: "orphan.mp4.abc.part")
+    try Data("partial".utf8).write(to: leftover, options: .atomic)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: leftover.path), "setup precondition")
+
+    WorkChatAttachmentPreviewFiles.sweepAtLaunch()
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path))
+  }
 }

@@ -707,6 +707,17 @@ Renderer — settings:
   `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
   `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
   `PiProvidersPanel.tsx`.
+- `apps/desktop/src/renderer/components/settings/providers/cliTools.ts` — the
+  provider card's status and credential phrasing. The detail page's left rail
+  prints `describeProviderCredentialLine`, which leads with the account when the
+  provider records one locally ("Authenticated as dev@example.com · ChatGPT
+  Pro", from `AiProviderConnectionStatus.accountEmail` / `accountPlan`) and
+  falls back to `describeCredentialSource` — the file or environment variable
+  the credential was detected in — when it does not. The two stay separate
+  functions so a diagnostics view can still ask for the *file*.
+  `shortCredentialSource` is the two-or-three-word tile form. The account fields
+  come from `providerAccountIdentity.ts`, the same reader the usage poller uses,
+  so Providers and the Limits cards cannot disagree about who is signed in.
 - `apps/desktop/src/shared/providerRemediation.ts` — the single source of the
   install command, login command, display name, and docs URL for every
   CLI-backed provider, with the Windows spelling where the vendor ships a
@@ -857,8 +868,11 @@ Renderer — settings:
   machine-brain snapshot even across fast project or machine switches.
   `UsageLimitsBand` is one component with two hosts — the popover body and the
   **Live limits** band on Settings > Usage — so a window reads identically in
-  both. It drills down into 5-hour, weekly, monthly, and other reset windows
-  with explicit source, updated time, stale state, and inline provider errors.
+  both. It renders one `UsageLimitCard` per window (5-hour first, then weekly,
+  then monthly, then anything else the provider reports), with explicit source,
+  updated time, stale state, and inline provider errors. The provider heading's
+  external-link target comes from `status.accountUrl` falling back to the shared
+  `usageProviderAccountUrl`, never from a second URL map in the component.
   Claude background polling never prompts Keychain and explicit local refresh
   can fall back from OAuth to a bounded CLI probe. When a non-interactive
   caller cannot authoritatively read Claude credentials, the service preserves
@@ -936,6 +950,32 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/usage/usageWindowFormat.ts` — window
   labels, reset countdowns, percentages, and pace/trend phrasing, shared so the
   header chip and the Live limits band describe one window with the same words.
+  `formatCountdown` is the bare "6d 7h" form for a segment chip whose glyph
+  already says "resets"; `formatResetClock` is the absolute time beside it.
+- `apps/desktop/src/renderer/components/usage/usageLimitModel.ts` and
+  `UsageLimitCard.tsx` — the headroom reading of a live window. The model is
+  pure and clock-injected: `poolAccounts` merges the same login reported by two
+  machines into one `UsageAccountView` with a `machines` list (freshest first)
+  and derives its initials chip; `buildLimitCards` groups a provider's windows
+  into one card per window label with one segment per account, computes pooled
+  headroom, and computes what each account's reset restores to that pool. A
+  window with no `accountId` (a host predating account attribution) falls back
+  to the provider's single account. The card renders the pooled number, the next
+  restore that actually returns something, and a segment strip; hover, focus, or
+  click on a segment opens that account's detail panel (plan, machines,
+  headroom, absolute reset, pace, and the provider limits link), edge-anchored
+  so it cannot overhang the 420px popover. Full behaviour in
+  [usage-tracking.md](usage-tracking.md).
+- `apps/desktop/src/main/services/usage/providerAccountIdentity.ts` — which
+  account the live numbers belong to. Reads Codex's `auth.json` `id_token`
+  payload (`email`, `chatgpt_plan_type`) and Claude's `.claude.json`
+  `oauthAccount.emailAddress` (`subscriptionType` / `rateLimitTier`) from
+  `os.homedir()` or the provider's own env override — never the Keychain, so
+  Windows and Linux behave identically — caches for 5 minutes, and returns
+  `undefined` rather than guessing. No token reaches a snapshot, a log, or
+  disk. Both the usage poller and `providerConnectionStatus.ts` call it, so
+  Settings > Providers and the Limits cards cannot name two different accounts
+  for one provider.
 - `apps/desktop/src/renderer/components/usage/UsagePaceBar.tsx` and
   `UsageSegmented.tsx` — the quota pace bar and the segmented control used by
   both usage surfaces.
@@ -1098,7 +1138,9 @@ Renderer — settings:
   brand color palette for usage bars and legends. `providerColor(provider,
   theme)` returns a per-provider brand color (Claude's rust family, distinct
   hues for the other providers) with a deterministic hashed fallback for
-  unknown providers.
+  unknown providers. `accountAccentColor(accountId, theme)` gives an account
+  chip a stable accent from that same fallback palette — accounts have no brand
+  of their own, and a palette used by one surface only is a palette that drifts.
 Diagnostics are rendered inside `StorageSection.tsx`
 (`storage/StorageDiagnostics.tsx`) under Diagnostics. The
 standalone `ProxyAndPreviewSection.tsx` and
@@ -1461,7 +1503,7 @@ changing rather than which service backs it:
 | Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageLimitCard.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
 

@@ -640,21 +640,27 @@ struct WorkChatInputAttachmentTray: View {
     if attachments.isEmpty {
       EmptyView()
     } else if compact {
+      // One control, not one per chip: every chip did the same thing (expand),
+      // and a 24pt chip is far under the 44pt minimum. The row carries the hit
+      // area and the spoken summary; the chips are decoration inside it. The
+      // tap stays a gesture rather than a Button so the row still scrolls.
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
           ForEach(attachments) { attachment in
-            Button {
-              onExpand?()
-            } label: {
-              WorkChatCompactAttachmentChip(attachment: attachment)
-            }
-            .buttonStyle(.plain)
+            WorkChatCompactAttachmentChip(attachment: attachment)
           }
         }
         .padding(.horizontal, 2)
+        .frame(minHeight: 44)
       }
-      .accessibilityElement(children: .contain)
-      .accessibilityLabel("\(attachments.count) staged attachments. Tap to expand the composer.")
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+      .onTapGesture { onExpand?() }
+      .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isButton)
+      .accessibilityLabel(attachmentCountLabel)
+      .accessibilityHint("Expands the composer")
+      .accessibilityAction { onExpand?() }
     } else {
       expandedTray
     }
@@ -797,7 +803,9 @@ private struct WorkChatInputAttachmentThumb: View {
       }
       .buttonStyle(.plain)
       .padding(4)
-      .accessibilityLabel("Remove image")
+      // The tray now stages videos and documents too, so the label follows the
+      // chip's kind rather than always saying "image".
+      .accessibilityLabel("Remove \(attachment.kind.rawValue)")
     }
   }
 

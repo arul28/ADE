@@ -437,15 +437,21 @@ private struct AppUpdateBanner: View {
       Text("ADE \(version) is available")
         .font(.system(.footnote, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
+        // Two lines rather than one: at accessibility text sizes a single
+        // scaled line drops the version number the banner exists to state.
+        .lineLimit(2)
         .minimumScaleFactor(0.8)
 
       Spacer(minLength: 0)
 
+      // Both actions carry a 44pt hit area. "Later" draws nothing but text, so
+      // without an explicit frame its target was the glyph box alone.
       Button("Later", action: onLater)
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textSecondary)
         .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
 
       Button("Update", action: onUpdate)
         .font(.caption.weight(.semibold))
@@ -454,6 +460,8 @@ private struct AppUpdateBanner: View {
         .padding(.vertical, 6)
         .background(ADEColor.purpleAccent, in: Capsule())
         .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .disabled(!canUpdate)
         .opacity(canUpdate ? 1 : 0.45)
     }

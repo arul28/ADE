@@ -137,9 +137,9 @@ private struct SettingsAppUpdateRow: View {
         Label("Check for updates", systemImage: "arrow.clockwise")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.purpleAccent)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 8)
+          .frame(maxWidth: .infinity, minHeight: 44)
           .background(ADEColor.purpleAccent.opacity(0.10), in: Capsule())
+          .contentShape(Capsule())
       }
       .buttonStyle(.plain)
       .disabled(advisor.isChecking)

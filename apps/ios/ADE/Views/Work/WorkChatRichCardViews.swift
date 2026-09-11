@@ -3328,6 +3328,10 @@ private struct WorkSquareStopButton: View {
           RoundedRectangle(cornerRadius: 6, style: .continuous)
             .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
         }
+        // Stopping a subagent is destructive and must not need a precise 28pt
+        // hit. The hit area reaches 44pt; the row keeps its 28pt rhythm, and
+        // every neighbour here is a label or a spacer.
+        .adeTapTarget(visual: 28)
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)

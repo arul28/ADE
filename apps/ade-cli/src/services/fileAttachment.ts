@@ -136,6 +136,12 @@ export type ChunkedAttachmentStagingRegistry = {
   finish(args: { uploadId: unknown }): Promise<AttachmentUploadFinishResult>;
   abort(args: { uploadId: unknown }): Promise<{ aborted: boolean }>;
   pendingCount(): number;
+  /**
+   * Resolves once the fire-and-forget `.part` sweep the last `begin` kicked off
+   * has settled. `begin` stays synchronous for callers; this is the completion
+   * signal a test can wait on instead of a wall-clock sleep.
+   */
+  whenSweepSettled(): Promise<void>;
 };
 
 function requireString(value: unknown, message: string): string {
@@ -171,6 +177,7 @@ export function createChunkedAttachmentStagingRegistry(options?: {
   const ttlMs = Math.max(1_000, options?.ttlMs ?? ATTACHMENT_UPLOAD_SESSION_TTL_MS);
   const maxBytes = Math.max(1, options?.maxBytes ?? MAX_CHAT_ATTACHMENT_BYTES);
   const pending = new Map<string, PendingUpload>();
+  let lastSweep: Promise<void> = Promise.resolve();
 
   /**
    * Sweep `.part` files the in-memory map can no longer account for.
@@ -237,7 +244,7 @@ export function createChunkedAttachmentStagingRegistry(options?: {
       }
       prune();
       const attachmentsDir = path.resolve(projectAttachmentsDir(root));
-      void sweepStaleParts(attachmentsDir);
+      lastSweep = sweepStaleParts(attachmentsDir).catch(() => {});
       // Same UUID-basename rule as every other staging path: the client's name
       // contributes a validated extension and nothing else.
       const destPath = stagedAttachmentDestPath(
@@ -325,6 +332,10 @@ export function createChunkedAttachmentStagingRegistry(options?: {
       pending.delete(id);
       await unlinkStagedAttachmentQuietly(entry.partPath);
       return { aborted: true };
+    },
+
+    whenSweepSettled(): Promise<void> {
+      return lastSweep;
     },
 
     pendingCount(): number {

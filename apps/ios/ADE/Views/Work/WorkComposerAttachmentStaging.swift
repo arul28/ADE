@@ -40,6 +40,50 @@ func workChatFileAttachmentEmptyMessage(_ name: String) -> String {
   "\"\(name)\" is empty. Attach a file with content."
 }
 
+/// Whether a composer may offer the file/video routes at all.
+///
+/// The chunked route is five host actions (`chat.beginTempFileAttachment` and
+/// friends) that only a brain built after this change advertises, and personal
+/// chats refuse anything that is not an image regardless of host version. Both
+/// facts are knowable before the picker opens, so the composer decides there —
+/// letting the user pick a 40 MB video and only then failing the upload is the
+/// outcome this exists to prevent.
+enum WorkChatFileAttachmentAvailability: Equatable {
+  /// The host advertises the chunked route and the chat accepts files.
+  case available
+  /// The connected computer predates the chunked route. Images still work.
+  case unsupportedHost
+  /// Personal chats are an images-only surface; no host version changes that.
+  case imagesOnly
+
+  var isAvailable: Bool { self == .available }
+
+  /// Menu-level explanation, or nil when there is nothing to explain.
+  ///
+  /// `imagesOnly` returns nil on purpose: the file routes are hidden there, and
+  /// a hint about an absent control is noise.
+  var menuHint: String? {
+    switch self {
+    case .available, .imagesOnly: return nil
+    case .unsupportedHost: return "Update ADE on your computer to attach files and videos."
+    }
+  }
+}
+
+/// Personal scope wins over host version: the images-only rule is the chat's,
+/// so a fully up-to-date brain does not turn it off.
+func workChatFileAttachmentAvailability(
+  hostSupportsChunkedUpload: Bool,
+  isPersonalChat: Bool
+) -> WorkChatFileAttachmentAvailability {
+  if isPersonalChat { return .imagesOnly }
+  return hostSupportsChunkedUpload ? .available : .unsupportedHost
+}
+
+/// The one action whose presence decides `hostSupportsChunkedUpload`. Begin is
+/// the gate: a host advertising it advertises the whole ladder.
+let workChatFileAttachmentHostAction = "chat.beginTempFileAttachment"
+
 /// Best-effort kind for a UTI or a filename, used by both pickers.
 func workChatInputAttachmentKind(forFilename filename: String, contentType: UTType?) -> WorkChatInputAttachmentKind {
   if let contentType {

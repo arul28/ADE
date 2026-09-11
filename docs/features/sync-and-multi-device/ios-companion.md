@@ -292,6 +292,10 @@ apps/ios/
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
+│   │   ├── AppUpdateAdvisor.swift   # public App Store version check (<=1×/6h,
+│   │   │                            # incl. on foreground), low-priority root
+│   │   │                            # banner with Update / per-version Later;
+│   │   │                            # silent on missing listing or network error
 │   │   └── SyncService.swift        # WebSocket client, command routing,
 │   │                                # PIN + sealed account adoption,
 │   │                                # scoped projection
@@ -436,8 +440,13 @@ apps/ios/
 │   │   │                            #   lane picker under a tiered
 │   │   │                            #   progressive-disclosure header,
 │   │   │                            #   WorkNewChatHeaderTier),
-│   │   │                            # WorkUsageActivityCarousel (host quota
-│   │   │                            #   limits + cross-client activity charts),
+│   │   │                            # WorkUsageActivityCarousel (Limits/Activity
+│   │   │                            #   tab switch over host quota limits +
+│   │   │                            #   cross-client activity charts),
+│   │   │                            # WorkUsageLimitsModule (the Limits tab:
+│   │   │                            #   per-provider headroom cards, one
+│   │   │                            #   segment per account, account detail
+│   │   │                            #   sheet),
 │   │   │                            # WorkUsageLimitResume (pure resume model,
 │   │   │                            #   viewer-zone pill copy, state/action
 │   │   │                            #   derivation, and legacy mirror fallback),
@@ -479,6 +488,13 @@ apps/ios/
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
 │   │   │                            # WorkChatAttachmentTray,
+│   │   │                            # WorkComposerAttachmentStaging (kind
+│   │   │                            #   detection, image vs chunked file/video
+│   │   │                            #   routes, availability gating, pickers,
+│   │   │                            #   upload-on-stage) and
+│   │   │                            #   WorkChatAttachmentPreviewSheets
+│   │   │                            #   (chunked read-back into QuickLook and
+│   │   │                            #   video playback),
 │   │   │                            # WorkPromptStash (composer overflow +
 │   │   │                            #   per-project stash host),
 │   │   │                            # WorkContextUsageViews (turn-end meter),
@@ -786,39 +802,36 @@ place; the pre-keyboard offset is restored and clamped so a shorter window
 cannot overscroll into blank. The same following re-pin runs when a finishing
 turn collapses cards and the tape shrinks under the viewport.
 
-**A message's truncation budget only ever grows.** The newest assistant message
-renders tail-anchored under a generous budget so a finishing turn is readable in
-place. When a newer message arrives it becomes head-anchored — and the budget it
-already rendered under becomes its floor, so "Show more" can never appear on a
-message the reader has already read in full. Both show-more paths (the split
-controls row and the message bubble) write one shared budget map on the
-transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
-message downward and holds the tapped row in place; it never re-pins the
-transcript to its bottom.
+**Assistant messages render whole.** There is no line or character budget, no
+head/tail anchor to pick, no budget floor to preserve, and no "Show more" step —
+the whole answer is in the transcript, so scrolling is the only thing a reader
+has to do to read it. Plan review cards are the same: `WorkPlanReviewCard` used
+to cut the plan at 400 characters behind a "View full plan" toggle and then hold
+it in a 220pt scroll box, which showed part of a plan the reader is being asked
+to approve.
 
-**Expanding is a two-rung ladder, not an infinite one.** The first "Show more"
-expands in place as above. Anything still bounded after that step offers "Open
-full output" instead of another step (`workTruncatedOutputAffordance`), which
-presents `WorkOutputViewerScreen` — a monospaced, line-numbered, lazily laid out
-reader with a wrap toggle, occurrence-counting search, Copy all and the share
-sheet. The boxed renderers (`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`,
-`WorkInlineDiffPreview`) clip at a fixed height with no inner scroller, so for
-them the second rung is not a preference: another in-place step would add text
-the box cuts away. `workOutputBoxOverflows` decides whether a box is clipping
-without scanning a long result to find out, and a clipping box opens the viewer
-from its header *or* by tapping the clipped region. The viewer is presented once
-per surface through `\.workOutputViewer` rather than by a `fullScreenCover` on
-every transcript row.
+**"Open full response" is a surface, not a repair.** The assistant message
+context menu (`workAssistantMessageContextMenu`) offers Copy message and Open
+full response; the latter presents `WorkOutputViewerScreen` — a monospaced,
+line-numbered, lazily laid out reader with a wrap toggle, occurrence-counting
+search, Copy all and the share sheet. Because nothing is cut in the transcript,
+this is the searchable, independently scrollable view of a very long answer
+rather than a way to see what was hidden. The boxed renderers
+(`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`, `WorkInlineDiffPreview`)
+still clip at a fixed height with no inner scroller, and for those the viewer is
+the only way to reach the rest: `workOutputBoxOverflows` decides whether a box is
+clipping without scanning a long result to find out, and a clipping box opens the
+viewer from its header *or* by tapping the clipped region. The viewer is
+presented once per surface through `\.workOutputViewer` rather than by a
+`fullScreenCover` on every transcript row.
 
-**Copy is always the full content, never what is on screen.** The transcript
-renders bounded slices, so a Copy control that echoed its own view silently
-handed over a preview. Fenced code blocks resolve against the message they were
-sliced from by ordinal — counted from the front for a head-anchored preview and
-from the back for a tail-anchored one, which is also the case that carries a
-synthetic opening fence and so is the one most likely to hold a fragment
-(`WorkCodeBlockSource`). Resolution runs at tap time, never per render pass. The
+**Copy is always the full content, never what is on screen.** Assistant
+messages are no longer sliced, so a code block's copy is simply its own text and
+the per-block ordinal resolution that existed to rebuild a slice is gone with it.
+The rule still binds the surfaces that *do* show less than they hold: the
 tool-result box displays its 500-character truncation while `copyText` carries
-the whole result.
+the whole result, and Copy message on an assistant row copies the whole message
+rather than the rows currently laid out.
 
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
@@ -837,10 +850,9 @@ are position-stable (`markdown-block-<index>`), not content-derived, so a
 delta does not hand the `LazyVStack` a new identity for a row that is still the
 same row; content changes travel in a separate `digest` field that change
 detection reads. And no derived text is recomputed per refresh: each message
-carries a digest stamped by the (off-main) snapshot fold, previews are cached
-per line budget, and the presentation signature hashes those digests plus each
-preview's shape instead of re-hashing the visible transcript's full text
-several times a second.
+carries a digest stamped by the (off-main) snapshot fold, and the presentation
+signature hashes those digests plus each row's shape instead of re-hashing the
+visible transcript's full text several times a second.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -2328,8 +2340,31 @@ pinned sibling above the composer, so keyboard presentation gives an expanding
 multi-line prompt the available space instead of lifting the activity panel
 with it.
 
-Mobile image attachments use the same host-side temp attachment contract as
-desktop. Hub, Work new-session, and in-session composers open attach, dictate,
+Mobile attachments use the same host-side temp attachment contracts as desktop,
+and which contract a file takes follows from what it is
+(`WorkComposerAttachmentStaging.swift`). Images keep the historical base64
+`chat.saveTempAttachment` route, where the host sniffs the bytes and re-derives
+the name from them. Videos and documents take the chunked route
+(`chat.beginTempFileAttachment` and friends), which accepts any type at the
+50 MB product ceiling — `workChatFileAttachmentMaxBytes` mirrors
+`MAX_CHAT_ATTACHMENT_BYTES`; change both together. The composer decides whether
+to offer those routes *before* opening a picker, from two facts it already
+knows: whether the host advertises `chat.beginTempFileAttachment` (begin is the
+gate — a host advertising it advertises the whole ladder), and whether this is a
+personal chat, which is images-only regardless of host version. Personal scope
+wins over host version. An out-of-date host gets an explicit "Update ADE on your
+computer to attach files and videos" hint; the images-only case shows none,
+because a hint about a control that is not there is noise. Oversize and empty
+files are rejected locally — the host rejects a 0-byte `finish` anyway, and
+saying so before the upload costs no round trip.
+
+Staged non-image attachments preview in place
+(`WorkChatAttachmentPreviewSheets.swift`): the bytes come back through
+`chat.getAttachmentChunk` and render in QuickLook, with video played from the
+reassembled file. Attachment chips are kind-aware
+(`WorkChatInputAttachmentKind` → `photo` / `film` / `doc` glyphs), and the
+composer's collapse control switches the tray to 24 pt chips without unstaging
+anything. Hub, Work new-session, and in-session composers open attach, dictate,
 and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
 menu) rather than a plus control or idle mic. Their `UITextView` inputs also
 advertise Paste for image-only clipboards and stage pasted images through the
@@ -3102,9 +3137,20 @@ The usage commands are viewer-allowed project actions:
   without doing provider or ledger work. `usage.refreshQuota` runs a bounded
   quota-only refresh with interactive host authentication disabled. Work shows
   a compact provider-icon summary using the host's percent-used values directly.
-  The Live limits rows in Settings mirror the desktop band with provider icons,
-  usage-threshold colors, reset countdowns, source/freshness/error state,
-  explicit refresh, and external links to the Claude and Codex usage pages.
+  Live limits mirror the desktop band as headroom cards — one group per
+  provider, one card per window, one segment per account — with provider icons,
+  pressure colors, reset countdowns, source/freshness/error state, explicit
+  refresh, and the provider limits link. The snapshot carries `accounts[]` and a
+  per-window `accountId`; the link comes from `MobileUsageProviderStatus.accountUrl`
+  stamped by the host, so the URL lives in exactly one place and an older host
+  simply hides it. The arithmetic is `adeUsagePoolAccounts` /
+  `adeUsageLimitCards` in `ADEUsageDesign.swift`, matching desktop's
+  `usageLimitModel.ts`. Rows are readings, not controls: tapping one opens
+  `ADEUsageAccountDetailSheet` (plan, reporting machines, headroom, absolute
+  reset, what the reset restores, pace, link out) rather than focusing a bar.
+  `WorkUsageLimitsModule.swift` is the Limits tab of the Work usage module,
+  split out of `WorkUsageActivityCarousel.swift` so the carousel keeps only the
+  tab switch; it renders the same cards as the Settings page.
 - `usage.getAdeStats` returns the same stale-while-revalidate activity snapshot
   the desktop Usage page uses, including daily points and `desktop` / `mobile` /
   `tui` / `web` client attribution. It backs both the Work new-chat activity
@@ -3370,6 +3416,29 @@ the stats and shows update guidance.
   which caps retained events at `chatEventHistoryMaxEvents = 1_000`
   (up from the previous 500-event cap) so very long chats don't evict
   their own recent turns on reconnect.
+- **The idle prune is structure-aware, not a tail cut.** When a chat goes
+  quiet, `workPrunedIdleChatEventHistory` compacts that session's cached live
+  events through `SyncService.pruneChatEventHistory`, keeping the last
+  `workChatIdleLiveEventTailLimit` (48) **heavy content** envelopes. Heavy means
+  assistant text, tool calls and results, diffs, command output — everything the
+  canonical transcript can restore on reopen. A plain tail cut also ate the tiny
+  lifecycle envelopes that produce rows the canonical *text* transcript can never
+  regenerate, so the thread looked complete while every subagent card from an
+  earlier turn was gone. Those kinds (`workChatEventIsStructuralEnvelope`:
+  subagent started/progress/result, scheduled-work updates, transcript
+  retractions, user-message resolutions, context compactions, Claude goal
+  set/clear, conversation resets) are exempt from the tail cut and get their own
+  budget, `workChatIdleStructuralEventCap` (400) — they are a few dozen bytes
+  each, but a long-running chat can emit subagent progress indefinitely.
+  `todoUpdate` is deliberately *not* structural: each one supersedes the last
+  wholesale, so keeping the history would spend the budget on rows nobody can
+  scroll back to. Dropping a `transcriptRetraction` is the sharp edge the rule
+  exists for — it is not a row, it *suppresses* rows, so losing it silently
+  un-retracts a retracted message on reopen. The prune runs only on the live
+  event path while the chat is idle, never at the end of a transcript refresh,
+  and it latches: once it has actually dropped heavy content, what is on screen
+  is a tail, and the latch is retired only when the event-page cursor becomes
+  authoritative.
 - **The capped live-event ring advances from the previous tail.**
   `WorkLiveTranscriptCache` treats the previously rendered tail envelope as
   the continuity anchor and maps only the newer suffix when the 1,000-event
@@ -3859,7 +3928,8 @@ the stats and shows update guidance.
   guarantees Send stays reachable.
 - **Mobile keeps unsent text; it is a store, not view state.**
   `WorkDraftPersistence.swift` holds `WorkComposerDraftStore` (composer text
-  per chat plus fixed Hub / New Chat keys) and `WorkQuestionDraftStore`
+  **and staged attachment refs** per chat, plus fixed Hub / New Chat keys) and
+  `WorkQuestionDraftStore`
   (in-progress question selections, freeform, and page per request id), both
   versioned JSON dictionaries in App Group `UserDefaults`, LRU-capped, saved
   on a 400 ms debounce and flushed on disappear because a cancelled `.task`
@@ -3875,6 +3945,13 @@ the stats and shows update guidance.
   attributed auth failure, and the stores are keyed by session id rather than
   by host, so wiping them would destroy unsent text for every other paired
   machine plus the machine-independent Hub and New Chat drafts.
+  `WorkComposerDraftStore.Entry` is a v2 shape mirroring desktop's
+  `ComposerDraftStorageSnapshot`: it persists attachment **refs**, never bytes.
+  Attachments upload the moment they are staged (`WorkComposerAttachmentStaging.swift`),
+  so the send button stays live while bytes move and the send simply awaits the
+  in-flight task. When the host is unreachable there is no ref to persist, so
+  the bytes go to a purgeable `Caches/ade-composer-drafts/<key>` directory
+  bounded at 5 files and 10 MB, purged on send, on clear, and on LRU eviction.
 - **The fallback transcript is built lazily, and the guard order that makes
   that work is load-bearing.** `WorkSessionDestinationView` keeps a
   cached-entry fallback alongside the live event transcript, but materializing

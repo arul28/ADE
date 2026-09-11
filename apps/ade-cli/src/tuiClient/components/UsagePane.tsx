@@ -29,6 +29,28 @@ export function usageWindowAccountLabel(
   return providerAccounts.find((candidate) => candidate.id === window.accountId)?.email;
 }
 
+/**
+ * "email · plan" when both fit, else the email alone.
+ *
+ * Desktop has room to stack the account and its subscription; a 38-column pane
+ * does not, so the plan is an *extra* that only appears when it costs nothing —
+ * dropping it whole beats truncating an email down to "dev@examp…" to make room
+ * for "Claude Max". Plan with no email still shows, since a lone plan is the
+ * only identity the host could resolve in that case.
+ */
+export function usageAccountSummary(
+  email: string | null | undefined,
+  plan: string | null | undefined,
+  width: number,
+): string | undefined {
+  const trimmedEmail = email?.trim() || "";
+  const trimmedPlan = plan?.trim() || "";
+  if (!trimmedEmail) return trimmedPlan || undefined;
+  if (!trimmedPlan) return trimmedEmail;
+  const combined = `${trimmedEmail} · ${trimmedPlan}`;
+  return combined.length <= width ? combined : trimmedEmail;
+}
+
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
   if (value.length <= max) return value;
@@ -60,18 +82,25 @@ function formatUpdatedAt(updatedAt: string | null | undefined, nowMs: number): s
   return `${Math.floor(ageMs / 86_400_000)}d ago`;
 }
 
-function ProviderStatusRow({ status, nowMs }: { status: ProviderStatus; nowMs: number }) {
+function ProviderStatusRow({ status, width, nowMs }: { status: ProviderStatus; width: number; nowMs: number }) {
   const source = status.source?.toUpperCase() ?? "WAITING";
   const isHealthy = status.state === "ok";
   const stateLabel = status.state === "unauthed" ? "SIGN IN" : status.state.toUpperCase();
+  const account = usageAccountSummary(status.accountEmail, status.accountPlan, width);
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" justifyContent="space-between">
         <Text color={theme.color.t2} bold>{status.label}</Text>
         <Text color={theme.color.t4} dimColor>{`${source} · ${formatUpdatedAt(status.updatedAt, nowMs)}`}</Text>
       </Box>
-      {status.accountEmail ? (
-        <Text color={theme.color.t4} dimColor>{status.accountEmail}</Text>
+      {account ? (
+        <Text color={theme.color.t4} dimColor>{endTruncate(account, width)}</Text>
+      ) : null}
+      {/* Desktop opens this in a browser; a terminal cannot be relied on to make
+          it clickable, so print it in full (wrapped, never truncated) — a
+          half-a-URL is not something anyone can copy. */}
+      {status.accountUrl ? (
+        <Text color={theme.color.t4} dimColor wrap="wrap">{status.accountUrl}</Text>
       ) : null}
       {!isHealthy ? (
         <Text color={theme.color.warning} wrap="wrap">
@@ -182,7 +211,7 @@ export function UsagePane({ content, width }: { content: UsageContent; width: nu
       ) : null}
       {providerStatuses.map((status, index) => (
         <Box key={status.id} marginTop={index === 0 ? 0 : 1} flexDirection="column">
-          <ProviderStatusRow status={status} nowMs={nowMs} />
+          <ProviderStatusRow status={status} width={inner} nowMs={nowMs} />
         </Box>
       ))}
 

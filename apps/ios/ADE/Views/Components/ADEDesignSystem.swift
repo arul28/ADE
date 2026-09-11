@@ -1652,6 +1652,20 @@ private struct ADENavigationZoomTransitionModifier: ViewModifier {
 }
 
 extension View {
+  /// Raises a small control's touch region to the 44pt HIG minimum while the
+  /// space it occupies stays `visual` — the enlarged shape overflows its own
+  /// layout frame rather than pushing the row open.
+  ///
+  /// Use it only where the neighbours are non-interactive (a label, a spacer):
+  /// two of these side by side would overlap and the nearer one would win.
+  /// Where a row can afford the height, a plain `.frame(width: 44, height: 44)`
+  /// is the simpler choice.
+  func adeTapTarget(visual: CGFloat, minimum: CGFloat = 44) -> some View {
+    frame(width: minimum, height: minimum)
+      .contentShape(Rectangle())
+      .frame(width: visual, height: visual)
+  }
+
   func adeGlassCard(cornerRadius: CGFloat = 16, padding: CGFloat = 16) -> some View {
     modifier(ADEGlassCardModifier(cornerRadius: cornerRadius, padding: padding))
   }

@@ -43,11 +43,25 @@ struct WorkComposerOverflowButton: View {
     workComposerHasStashableContent(text: draft, attachments: attachments)
   }
 
+  /// Resolved from the connected host's advertised actions plus the chat's own
+  /// scope, so the two file routes are gated here rather than at upload time.
+  private var fileAttachmentAvailability: WorkChatFileAttachmentAvailability {
+    workChatFileAttachmentAvailability(
+      hostSupportsChunkedUpload: syncService.supportsViewerRemoteAction(
+        workChatFileAttachmentHostAction
+      ),
+      isPersonalChat: scope.chatSessionId.map {
+        syncService.isPersonalChatScope(sessionId: $0)
+      } ?? false
+    )
+  }
+
   var body: some View {
     WorkChatComposerOverflowMenu(
       presentedPicker: $presentedPicker,
       canCompose: canCompose,
       attachmentsAvailable: attachmentsAvailable,
+      fileAttachmentAvailability: fileAttachmentAvailability,
       attachmentCount: attachments.count,
       dictationAvailable: SpeechDictationService.isAvailable,
       onDictate: onDictate,
@@ -92,6 +106,7 @@ struct WorkChatComposerOverflowMenu: View {
   @Binding var presentedPicker: WorkComposerPicker?
   let canCompose: Bool
   let attachmentsAvailable: Bool
+  var fileAttachmentAvailability: WorkChatFileAttachmentAvailability = .available
   let attachmentCount: Int
   let dictationAvailable: Bool
   let onDictate: () -> Void
@@ -114,19 +129,30 @@ struct WorkChatComposerOverflowMenu: View {
       }
       .disabled(attachDisabled)
 
-      Button {
-        presentedPicker = .videos
-      } label: {
-        Label("Attach video…", systemImage: "film")
-      }
-      .disabled(attachDisabled)
+      // Hidden outright on an images-only chat; present but disabled under a
+      // plain-language header when the computer is simply out of date, so the
+      // user learns the fix instead of watching a picked file fail to send.
+      if fileAttachmentAvailability != .imagesOnly {
+        Section {
+          Button {
+            presentedPicker = .videos
+          } label: {
+            Label("Attach video…", systemImage: "film")
+          }
+          .disabled(attachDisabled || !fileAttachmentAvailability.isAvailable)
 
-      Button {
-        presentedPicker = .files
-      } label: {
-        Label("Attach file…", systemImage: "doc")
+          Button {
+            presentedPicker = .files
+          } label: {
+            Label("Attach file…", systemImage: "doc")
+          }
+          .disabled(attachDisabled || !fileAttachmentAvailability.isAvailable)
+        } header: {
+          if let hint = fileAttachmentAvailability.menuHint {
+            Text(hint)
+          }
+        }
       }
-      .disabled(attachDisabled)
 
       if dictationAvailable {
         Button(action: onDictate) {

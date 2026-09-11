@@ -11026,6 +11026,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             updatedAt: status.updatedAt ?? status.lastSuccessAt,
             message: status.message,
             accountEmail: status.accountEmail,
+            accountPlan: status.accountPlan,
+            accountUrl: status.accountUrl,
           }];
         });
         const quotaWindows = snapshot.windows.map((window, index) => {

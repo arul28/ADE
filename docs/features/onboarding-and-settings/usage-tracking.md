@@ -431,7 +431,7 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   the page and the new-chat activity module read as one surface.
 - Every quota card names the account it describes, its plan, and links out to
   the provider's own limits page. The poller resolves the signed-in email locally
-  (`providerAccountEmail.ts`: Codex `~/.codex/auth.json` `id_token` payload,
+  (`providerAccountIdentity.ts`: Codex `~/.codex/auth.json` `id_token` payload,
   Claude `.claude.json` `oauthAccount.emailAddress`; both via `os.homedir()`,
   no Keychain) and stamps it onto `UsageProviderStatus.accountEmail`, alongside
   `accountPlan` (Codex `chatgpt_plan_type`, Claude `subscriptionType`/
@@ -453,7 +453,15 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   what the reset restores to the pool, pace, and the link out. The arithmetic
   is `usageLimitModel.ts` on desktop and the `adeUsageLimitCards` family in
   `ADEUsageDesign.swift` on iOS; both are pure and clock-injected, and both are
-  asserted against the same numbers.
+  asserted against the same numbers. The card itself is `UsageLimitCard.tsx`,
+  rendered by `UsageLimitsBand` in both of its hosts (the header popup and the
+  Live limits band) in place of the old per-window `UsagePaceBar` stack; cards
+  stack unconditionally because the band lives in a 420px popover. Account chips
+  borrow `accountAccentColor` from the same theme-aware fallback palette an
+  unknown provider uses, so there is no palette that exists only here. On iOS
+  the same cards are the Limits tab of the Work usage module
+  (`WorkUsageLimitsModule.swift`, split out of `WorkUsageActivityCarousel.swift`)
+  as well as the Settings Usage page.
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first. **Today the quota
   poller only reads the local machine**, and a machine resolves exactly one
@@ -461,7 +469,14 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   a snapshot normally carries one account per provider with one machine. The
   account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
   (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so
-  a quota fan-out can fill it without moving any client.
+  a quota fan-out can fill it without moving any client. Where an account is
+  named once for a whole group, the naming is suppressed as soon as it could
+  contradict the rows beneath it: the band's provider heading prints
+  `status.accountEmail` only while that provider has at most one pooled account
+  (the cards carry an initials chip per account otherwise), and the `ade code`
+  usage pane tags a quota row with an email only when its provider has more than
+  one (`usageWindowAccountLabel` in `tuiClient/components/UsagePane.tsx`; the
+  provider status line there always prints the account).
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
 - Codex reports no banked/credit resets in the rate-limit payload ADE parses

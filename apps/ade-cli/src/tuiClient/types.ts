@@ -389,6 +389,14 @@ export type RightPaneContent =
         message?: string | null;
         /** Signed-in account for this provider, when the host could resolve one. */
         accountEmail?: string | null;
+        /** Subscription the account is on, e.g. "Claude Max". Host-resolved only. */
+        accountPlan?: string | null;
+        /**
+         * Provider-hosted limits page, stamped by the host. The TUI cannot
+         * render a hyperlink every terminal will honour, so the pane prints the
+         * URL as wrapped text for copy/paste where desktop shows a link.
+         */
+        accountUrl?: string | null;
       }>;
       quotaWindows?: Array<{
         id: string;

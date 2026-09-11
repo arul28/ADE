@@ -193,6 +193,7 @@
 		D30000000000000000000015 /* ActivityDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* ActivityDrawerModelTests.swift */; };
 		AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7100000000000000000001 /* ActivityContractDecodingTests.swift */; };
 		AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */; };
+		AC72000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */; };
 		AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000001 /* ActivityAckQueueTests.swift */; };
 		AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000002 /* ActivityPollingTests.swift */; };
 		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
@@ -520,6 +521,7 @@
 		D30000000000000000000005 /* ActivityDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityDrawerModelTests.swift; path = ADETests/ActivityDrawerModelTests.swift; sourceTree = "<group>"; };
 		AC7100000000000000000001 /* ActivityContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityContractDecodingTests.swift; path = ADETests/ActivityContractDecodingTests.swift; sourceTree = "<group>"; };
 		AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UsageQuotaAccountDecodingTests.swift; path = ADETests/UsageQuotaAccountDecodingTests.swift; sourceTree = "<group>"; };
+		AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerFileAttachmentGateTests.swift; path = ADETests/WorkComposerFileAttachmentGateTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000001 /* ActivityAckQueueTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityAckQueueTests.swift; path = ADETests/ActivityAckQueueTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000002 /* ActivityPollingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityPollingTests.swift; path = ADETests/ActivityPollingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
@@ -1225,6 +1227,7 @@
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */,
+				AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
 				AC7300000000000000000002 /* ActivityPollingTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
@@ -1779,6 +1782,7 @@
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */,
+				AC72000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
 				AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
