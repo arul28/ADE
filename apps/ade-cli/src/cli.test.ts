@@ -11636,7 +11636,7 @@ describe("ADE CLI", () => {
     // The skill tells an agent to poll this exact command to learn "what is
     // going on". A formatter that printed only the app session made an agent
     // read a running stream as a stopped one.
-    const plan = buildCliPlan(["ios-sim", "status"]);
+    const plan = expectExecutePlan(buildCliPlan(["ios-sim", "status"]));
     const text = formatOutput({
       supported: true,
       platform: "darwin",
