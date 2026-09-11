@@ -52,6 +52,8 @@ struct LinearLaunchViewIdentity: Hashable {
   let laneOnly: Bool
 }
 
+let linearLaunchKickoffAccessibilityIdentifier = "linear-launch-kickoff"
+
 // MARK: - Orchestration
 
 /// Injected side-effects so `runLinearLaunch` is unit-testable without a live

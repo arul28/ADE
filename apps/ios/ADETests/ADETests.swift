@@ -27464,6 +27464,20 @@ private struct LinearLaunchViewTestHost: View {
   }
 }
 
+@MainActor
+private func viewWithAccessibilityIdentifier(_ identifier: String, in rootView: UIView) -> UIView? {
+  if rootView.accessibilityIdentifier == identifier {
+    return rootView
+  }
+
+  for subview in rootView.subviews {
+    if let identifiedView = viewWithAccessibilityIdentifier(identifier, in: subview) {
+      return identifiedView
+    }
+  }
+  return nil
+}
+
 private func firstTextView(in view: UIView) -> UITextView? {
   if let textView = view as? UITextView {
     return textView
@@ -27474,6 +27488,18 @@ private func firstTextView(in view: UIView) -> UITextView? {
     }
   }
   return nil
+}
+
+@MainActor
+private func kickoffText(in rootView: UIView) -> String? {
+  guard let editorView = viewWithAccessibilityIdentifier(
+    linearLaunchKickoffAccessibilityIdentifier,
+    in: rootView
+  ) else { return nil }
+  if let textView = editorView as? UITextView {
+    return textView.text
+  }
+  return firstTextView(in: editorView)?.text
 }
 
 private final class LinearPaneSyncSpy: LinearPaneSyncing {
@@ -27576,14 +27602,16 @@ final class LinearPaneTests: XCTestCase {
     drainMainQueueForTesting()
     host.view.setNeedsLayout()
     host.view.layoutIfNeeded()
-    XCTAssertEqual(firstTextView(in: host.view)?.text, linearDefaultKickoff(for: firstIssue))
+    drainMainQueueForTesting()
+    XCTAssertEqual(kickoffText(in: host.view), linearDefaultKickoff(for: firstIssue))
 
     state.issue = secondIssue
     drainMainQueueForTesting()
     drainMainQueueForTesting()
     host.view.setNeedsLayout()
     host.view.layoutIfNeeded()
-    XCTAssertEqual(firstTextView(in: host.view)?.text, linearDefaultKickoff(for: secondIssue))
+    drainMainQueueForTesting()
+    XCTAssertEqual(kickoffText(in: host.view), linearDefaultKickoff(for: secondIssue))
   }
 
   func testLinearIssueBranchNameSlugifiesAndSanitizes() {
