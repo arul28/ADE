@@ -619,3 +619,184 @@ func adeUsageSeriesAreaPath(values: [Double], yMax: Double, in rect: CGRect) -> 
   path.closeSubpath()
   return path
 }
+
+// MARK: - Limit cards
+
+/// The phone's half of `usageLimitModel.ts`.
+///
+/// A limit card is one window of one provider read as headroom: how much is
+/// left, when more arrives, and which account is spending it. The arithmetic is
+/// duplicated rather than shared because the two clients have no common
+/// language — so it is kept small, pure, and clock-injected, and the desktop
+/// tests and `ADETests` assert the same numbers.
+struct ADEUsageAccountView: Identifiable, Equatable {
+  var id: String
+  var provider: String
+  var email: String?
+  var plan: String?
+  var machines: [MobileUsageAccountMachine]
+  var accountUrl: String?
+  var initials: String
+}
+
+/// `first.last@host` → FL, `dev@host` → DE, machine label → its first two.
+func adeUsageAccountInitials(email: String?, fallback: String = "") -> String {
+  let local = (email ?? "").split(separator: "@").first.map(String.init) ?? ""
+  let parts = local.split(whereSeparator: { "._+-".contains($0) }).filter { !$0.isEmpty }
+  if parts.count >= 2, let a = parts[0].first, let b = parts[1].first {
+    return "\(a)\(b)".uppercased()
+  }
+  let source = parts.first.map(String.init) ?? fallback.trimmingCharacters(in: .whitespaces)
+  if source.isEmpty { return "··" }
+  return String(source.prefix(2)).uppercased()
+}
+
+/// Merge the snapshot's accounts by identity: one login seen from two machines
+/// is one account with two `machines` entries, freshest first.
+func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccountView] {
+  var order: [String] = []
+  var pooled: [String: ADEUsageAccountView] = [:]
+  for account in accounts ?? [] {
+    let key = account.email.map { "\(account.provider):\($0.lowercased())" } ?? account.id
+    if var existing = pooled[key] {
+      for machine in account.machines where !existing.machines.contains(where: { $0.label == machine.label }) {
+        existing.machines.append(machine)
+      }
+      if existing.plan == nil { existing.plan = account.plan }
+      pooled[key] = existing
+      continue
+    }
+    order.append(key)
+    pooled[key] = ADEUsageAccountView(
+      id: account.id,
+      provider: account.provider,
+      email: account.email,
+      plan: account.plan,
+      machines: account.machines,
+      accountUrl: account.accountUrl,
+      initials: adeUsageAccountInitials(email: account.email, fallback: account.machines.first?.label ?? "")
+    )
+  }
+  let freshness: (MobileUsageAccountMachine) -> Double = { machine in
+    guard let checkedAt = machine.checkedAt,
+          let date = ISO8601DateFormatter().date(from: checkedAt) else { return 0 }
+    return date.timeIntervalSince1970
+  }
+  return order.compactMap { key in
+    guard var account = pooled[key] else { return nil }
+    account.machines.sort { freshness($0) > freshness($1) }
+    return account
+  }
+}
+
+struct ADEUsageLimitSegment: Identifiable, Equatable {
+  var id: String
+  var account: ADEUsageAccountView?
+  var window: MobileUsageQuotaWindow
+  var percentLeft: Double
+  var restoresPercentOfPool: Double
+  var resetsInMs: Double
+}
+
+struct ADEUsageLimitCard: Identifiable, Equatable {
+  var id: String
+  var provider: String
+  var label: String
+  var segments: [ADEUsageLimitSegment]
+  /// Pooled headroom across the accounts — the number the card shows.
+  var percentLeft: Double
+  /// Pooled consumption, for the pressure colour.
+  var percentUsed: Double
+  /// The next reset that actually returns something, as (+percent, in ms).
+  var forecast: (percent: Double, resetsInMs: Double)?
+
+  static func == (lhs: ADEUsageLimitCard, rhs: ADEUsageLimitCard) -> Bool {
+    lhs.id == rhs.id
+      && lhs.segments == rhs.segments
+      && lhs.percentLeft == rhs.percentLeft
+      && lhs.forecast?.percent == rhs.forecast?.percent
+      && lhs.forecast?.resetsInMs == rhs.forecast?.resetsInMs
+  }
+}
+
+/// One card per window label, ordered short window first.
+func adeUsageLimitCards(
+  provider: String,
+  windows: [MobileUsageQuotaWindow],
+  accounts: [ADEUsageAccountView]
+) -> [ADEUsageLimitCard] {
+  let providerAccounts = accounts.filter { $0.provider == provider }
+  var order: [String] = []
+  var grouped: [String: [ADEUsageLimitSegment]] = [:]
+  for window in windows where window.provider == provider {
+    let label = adeUsageWindowLabel(window)
+    let account = providerAccounts.first { $0.id == window.accountId }
+      ?? (providerAccounts.count == 1 ? providerAccounts[0] : nil)
+    if grouped[label] == nil {
+      grouped[label] = []
+      order.append(label)
+    }
+    grouped[label]?.append(
+      ADEUsageLimitSegment(
+        id: "\(provider):\(label):\(account?.id ?? String(grouped[label]?.count ?? 0))",
+        account: account,
+        window: window,
+        percentLeft: window.percentLeft,
+        restoresPercentOfPool: 0,
+        resetsInMs: max(0, window.resetsInMs)
+      )
+    )
+  }
+
+  let rank: (String) -> Int = { label in
+    if label.hasSuffix("-hour") || label.hasSuffix("-min") { return 0 }
+    if label == "Weekly" { return 1 }
+    if label == "Monthly" { return 2 }
+    return 3
+  }
+
+  return order.compactMap { label -> ADEUsageLimitCard? in
+    guard var segments = grouped[label], !segments.isEmpty else { return nil }
+    let count = Double(segments.count)
+    for index in segments.indices {
+      segments[index].restoresPercentOfPool = (100 - segments[index].percentLeft) / count
+    }
+    let left = segments.reduce(0) { $0 + $1.percentLeft } / count
+    // A window already at full headroom restores nothing, so "+0% in 5m" is
+    // noise: skip to the first reset that moves the pooled number.
+    let restoring = segments.filter { $0.restoresPercentOfPool >= 0.5 }
+    var forecast: (percent: Double, resetsInMs: Double)?
+    if let soonest = restoring.map(\.resetsInMs).min() {
+      let together = restoring.filter { abs($0.resetsInMs - soonest) < 60_000 }
+      forecast = (together.reduce(0) { $0 + $1.restoresPercentOfPool }, soonest)
+    }
+    return ADEUsageLimitCard(
+      id: "\(provider):\(label)",
+      provider: provider,
+      label: label,
+      segments: segments,
+      percentLeft: left,
+      percentUsed: 100 - left,
+      forecast: forecast
+    )
+  }
+  .sorted { rank($0.label) < rank($1.label) }
+}
+
+/// A stable accent for an account chip, drawn from the existing provider
+/// fallback palette rather than a second colour system.
+func adeUsageAccountAccent(_ accountId: String) -> Color {
+  let palette: [Color] = [
+    ADEColor.providerBrand(for: "codex"),
+    ADEColor.providerBrand(for: "claude"),
+    ADEColor.providerBrand(for: "gemini"),
+    ADEColor.providerBrand(for: "opencode"),
+    ADEColor.providerBrand(for: "droid"),
+    ADEColor.providerBrand(for: "cursor"),
+  ]
+  var hash: UInt32 = 0
+  for byte in accountId.lowercased().unicodeScalars {
+    hash = hash &* 31 &+ byte.value
+  }
+  return palette[Int(hash % UInt32(palette.count))]
+}

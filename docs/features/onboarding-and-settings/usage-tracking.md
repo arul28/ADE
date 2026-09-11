@@ -429,3 +429,43 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   host does not advertise it. Type, colour, and the chart's top-N/Other rule
   come from `ADEUsageDesign.swift`, the iOS counterpart of `usageDesign.ts`, so
   the page and the new-chat activity module read as one surface.
+- Every quota card names the account it describes, its plan, and links out to
+  the provider's own limits page. The poller resolves the signed-in email locally
+  (`providerAccountEmail.ts`: Codex `~/.codex/auth.json` `id_token` payload,
+  Claude `.claude.json` `oauthAccount.emailAddress`; both via `os.homedir()`,
+  no Keychain) and stamps it onto `UsageProviderStatus.accountEmail`, alongside
+  `accountPlan` (Codex `chatgpt_plan_type`, Claude `subscriptionType`/
+  `rateLimitTier`) and `accountUrl` from the single shared source
+  `usageProviderAccountUrl`. The same reader fills
+  `AiProviderConnectionStatus.accountEmail`/`accountPlan`, so Settings >
+  Providers says "Authenticated as <email> · <plan>" from the same source the
+  Limits cards use. No token is read into the snapshot, logged, or persisted. Both fields are
+  optional: an unknown account shows no line, and a host that predates them
+  shows no external link.
+- Live limits reads as headroom, not consumption. One group per provider, one
+  card per window (`5-hour`, `Weekly`, and any model-specific window the
+  provider reports separately), and one segment per account inside the card.
+  The card shows pooled headroom ("49% left") and the next reset that actually
+  returns something ("+50% in 6d 0h"); each segment shows that account's
+  initials chip, its own headroom, and its reset countdown. Hovering or
+  clicking a segment on desktop — tapping it on iOS — opens the account's
+  details: plan, the machines reporting it, headroom, absolute reset time,
+  what the reset restores to the pool, pace, and the link out. The arithmetic
+  is `usageLimitModel.ts` on desktop and the `adeUsageLimitCards` family in
+  `ADEUsageDesign.swift` on iOS; both are pure and clock-injected, and both are
+  asserted against the same numbers.
+- Accounts pool by email: the same login reported by two machines is one
+  account with two `Via` entries, freshest reading first. **Today the quota
+  poller only reads the local machine**, and a machine resolves exactly one
+  account per provider (one `CODEX_HOME` / `CLAUDE_CONFIG_DIR` per process), so
+  a snapshot normally carries one account per provider with one machine. The
+  account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
+  (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so
+  a quota fan-out can fill it without moving any client.
+- The iOS quota rows are readings, not controls: the old tap-to-focus gesture
+  on a pace bar is gone. Tapping a row opens the account detail sheet.
+- Codex reports no banked/credit resets in the rate-limit payload ADE parses
+  (`parseCodexRateLimitSnapshot` sees primary/secondary windows and a
+  spend-control flag only), so there is no "N banked" line and no redemption
+  action. Claude's `extra_usage` is paid overage in dollars, which the extra
+  usage card already shows.

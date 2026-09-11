@@ -132,6 +132,39 @@ enum SyncChatMessageDelivery: Equatable {
   case dropped(reason: String?)
 }
 
+/// Host reply to `chat.beginTempFileAttachment`.
+struct ChunkedAttachmentUploadSession: Decodable, Equatable {
+  var uploadId: String
+  var chunkBytes: Int
+  var maxBytes: Int
+}
+
+struct ChunkedAttachmentUploadProgress: Decodable, Equatable {
+  var receivedBytes: Int
+}
+
+struct ChunkedAttachmentAbortResult: Decodable, Equatable {
+  var aborted: Bool
+}
+
+/// Host reply to `chat.finishTempFileAttachment`: the staged path the agent
+/// will be handed, plus what the host decided the bytes are.
+struct SavedChatFileAttachment: Decodable, Equatable {
+  var path: String
+  var mimeType: String
+  var byteLength: Int
+}
+
+/// One bounded slice of a staged attachment (`chat.getAttachmentChunk`).
+struct ChatAttachmentChunk: Decodable, Equatable {
+  var base64: String
+  var offset: Int
+  var byteLength: Int
+  var totalBytes: Int
+  var mimeType: String
+  var eof: Bool
+}
+
 struct SavedChatTempAttachment: Decodable, Equatable {
   var path: String
   var mimeType: String
@@ -12031,15 +12064,23 @@ final class SyncService: ObservableObject {
     supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
   }
 
+  /// Prune a session's cached live-event window with a caller-supplied policy.
+  ///
+  /// The policy decides *which* events survive, not just how many: a plain tail
+  /// cut used to take the tiny `subagent_*` lifecycle envelopes with it, and
+  /// the reopen rebuild only back-fills text, so the thread came back looking
+  /// complete with every subagent card missing. Returns the retained events.
   @discardableResult
-  func pruneChatEventHistory(sessionId: String, keepingTail limit: Int) -> [AgentChatEventEnvelope] {
+  func pruneChatEventHistory(
+    sessionId: String,
+    using prune: ([AgentChatEventEnvelope]) -> [AgentChatEventEnvelope]
+  ) -> [AgentChatEventEnvelope] {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty,
           let events = chatEventEnvelopesBySession[trimmedSessionId]
     else { return [] }
-    let clampedLimit = max(0, limit)
-    guard events.count > clampedLimit else { return events }
-    let next = Array(events.suffix(clampedLimit))
+    let next = prune(events)
+    guard next.count < events.count else { return events }
     chatEventEnvelopesBySession[trimmedSessionId] = next
     return next
   }
@@ -14040,6 +14081,121 @@ final class SyncService: ObservableObject {
       id: id,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// Stages a file-shaped attachment (document, video — anything
+  /// `chat.saveTempAttachment` would reject as "not an image") by streaming it
+  /// to the host in bounded base64 chunks over the command channel.
+  ///
+  /// Deliberately not the host's streamed HTTP upload route: that one needs a
+  /// direct TCP leg to the sync listener, which a phone on the cloud relay does
+  /// not have. See `apps/ade-cli/src/services/fileAttachment.ts`.
+  ///
+  /// `onProgress` receives bytes-sent so a composer chip can show real motion on
+  /// a 40 MB video.
+  func saveChatFileAttachment(
+    data: Data,
+    filename: String,
+    chatSessionId: String?,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil,
+    onProgress: (@MainActor @Sendable (Int, Int) -> Void)? = nil
+  ) async throws -> SavedChatFileAttachment {
+    if let chatSessionId, isPersonalChatScope(sessionId: chatSessionId) {
+      throw NSError(
+        domain: "ADE",
+        code: 29,
+        userInfo: [NSLocalizedDescriptionKey: "Personal chats accept images only."]
+      )
+    }
+    try requireInvokableRemoteAction("chat.beginTempFileAttachment")
+    var projectId = targetProjectId
+    var rootPath = targetProjectRootPath
+    if let chatSessionId, !chatSessionId.isEmpty, projectId == nil, rootPath == nil {
+      let scope = chatCommandScope(for: chatSessionId)
+      projectId = scope.projectId
+      rootPath = scope.rootPath
+    }
+    let trimmedName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+    let begun = try await sendDecodableCommand(
+      action: "chat.beginTempFileAttachment",
+      args: [
+        "filename": trimmedName.isEmpty ? "attachment" : trimmedName,
+        "totalBytes": data.count
+      ],
+      targetProjectId: projectId,
+      targetProjectRootPath: rootPath,
+      as: ChunkedAttachmentUploadSession.self
+    )
+    let chunkBytes = max(16 * 1024, min(begun.chunkBytes, 1024 * 1024))
+    var offset = 0
+    do {
+      while offset < data.count {
+        let end = min(offset + chunkBytes, data.count)
+        let slice = data.subdata(in: offset..<end)
+        _ = try await sendDecodableCommand(
+          action: "chat.appendTempFileAttachmentChunk",
+          args: ["uploadId": begun.uploadId, "base64": slice.base64EncodedString()],
+          targetProjectId: projectId,
+          targetProjectRootPath: rootPath,
+          as: ChunkedAttachmentUploadProgress.self
+        )
+        offset = end
+        if let onProgress {
+          let sent = offset
+          let total = data.count
+          await MainActor.run { onProgress(sent, total) }
+        }
+      }
+      return try await sendDecodableCommand(
+        action: "chat.finishTempFileAttachment",
+        args: ["uploadId": begun.uploadId],
+        targetProjectId: projectId,
+        targetProjectRootPath: rootPath,
+        as: SavedChatFileAttachment.self
+      )
+    } catch {
+      // Leave no half file behind on the host. Best effort: the session also
+      // expires on its own TTL.
+      _ = try? await sendDecodableCommand(
+        action: "chat.abortTempFileAttachment",
+        args: ["uploadId": begun.uploadId],
+        targetProjectId: projectId,
+        targetProjectRootPath: rootPath,
+        as: ChunkedAttachmentAbortResult.self
+      )
+      throw error
+    }
+  }
+
+  /// One bounded slice of a staged attachment. The read mirror of
+  /// `saveChatFileAttachment` — `chat.getImageDataUrl` cannot serve PDFs or
+  /// videos because it sniffs for an image MIME.
+  func chatAttachmentChunk(
+    path: String,
+    offset: Int,
+    length: Int?,
+    chatSessionId: String?,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> ChatAttachmentChunk {
+    try requireInvokableRemoteAction("chat.getAttachmentChunk")
+    var projectId = targetProjectId
+    var rootPath = targetProjectRootPath
+    if let chatSessionId, !chatSessionId.isEmpty, projectId == nil, rootPath == nil {
+      let scope = chatCommandScope(for: chatSessionId)
+      projectId = scope.projectId
+      rootPath = scope.rootPath
+    }
+    var args: [String: Any] = ["path": path, "offset": offset]
+    if let length { args["length"] = length }
+    return try await sendDecodableCommand(
+      action: "chat.getAttachmentChunk",
+      args: args,
+      targetProjectId: projectId,
+      targetProjectRootPath: rootPath,
+      as: ChatAttachmentChunk.self
     )
   }
 

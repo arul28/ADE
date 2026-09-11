@@ -154,6 +154,13 @@ The Settings machine card mirrors this state through
 update recommended" warning while staying connected, so users can still browse
 available state and recover the host.
 
+The phone also checks the public App Store listing for its bundle at most once
+per six hours, including on foreground. A newer numeric dotted version appears
+as a low-priority root banner with Update and per-version Later actions; missing
+listings and network failures stay silent. Settings diagnostics shows the
+current version, the latest available version when known, and a manual check
+action.
+
 ## Project layout
 
 > The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,

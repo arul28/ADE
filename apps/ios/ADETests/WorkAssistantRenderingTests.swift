@@ -114,40 +114,6 @@ final class WorkAssistantRenderingTests: XCTestCase {
     assertMarkdownOnly(rendered)
   }
 
-  func testAssistantTailStartingInsideFencedTreeStillRendersAsMarkdown() {
-    let markdown = (
-      ["The complete tree is below:", "", "```", "root"]
-        + (1...170).map { "├── generated-item-\($0)" }
-        + ["```", "", "Only the generated subtree changed."]
-    ).joined(separator: "\n")
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageTailFullCharacterBudget,
-      anchor: .tail
-    )
-
-    XCTAssertTrue(preview.isTruncated)
-    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(preview.text))
-    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-    XCTAssertTrue(preview.text.hasPrefix("```\n"))
-
-    var message = makeAssistantMessage(id: "assistant-fenced-tail", markdown: markdown)
-    message.assistantPreview = preview
-    let rendered = workTimelineRenderEntries(
-      from: [makeMessageEntry(message)],
-      streamingAssistantMessageId: nil,
-      splitAssistantMessageId: message.id,
-      assistantLineBudgets: [message.id: workAssistantMessageTailFullLineBudget]
-    )
-    let blockKinds = rendered.compactMap { entry -> WorkMarkdownBlockKind? in
-      guard case .assistantMarkdownBlock(let model) = entry.payload else { return nil }
-      return model.block.kind
-    }
-    XCTAssertTrue(blockKinds.contains { if case .code(_, let code) = $0 { return code.contains("generated-item-") }; return false })
-    XCTAssertTrue(blockKinds.contains { if case .paragraph(let text) = $0 { return text.contains("Only the generated subtree changed.") }; return false })
-    XCTAssertFalse(rendered.contains { if case .assistantMonospaced = $0.payload { return true }; return false })
-  }
 
   func testFiftyFourLineProseAndFencedTreeRendersFullyWithoutShowMore() {
     let markdownLines = (
@@ -178,333 +144,55 @@ final class WorkAssistantRenderingTests: XCTestCase {
     assertMarkdownOnly(rendered)
   }
 
-  // MARK: - "Show more" reaches the end of any message
+  // MARK: - Nothing is ever truncated
 
-  func testShowMoreStepsRevealEveryLineOfALongNormalWidthAnswer() {
-    let markdown = (1...1000).map { "Line \($0): the agent explained another step of the run." }
-      .joined(separator: "\n")
-    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-
-    let walk = walkShowMore(markdown, anchor: .head)
-    XCTAssertFalse(walk.preview.isTruncated, "Show more stalled after \(walk.taps) taps")
-    XCTAssertEqual(walk.preview.text, markdown)
-    XCTAssertEqual(walk.preview.visibleLineCount, 1000)
-    XCTAssertGreaterThan(walk.taps, 0)
-  }
-
-  func testShowMoreStepsRevealEveryLineOfALongWideAnswer() {
-    let markdown = (1...400).map { "│ pane \($0)  │  column b  │" }.joined(separator: "\n")
-    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(markdown))
-    // The wide layout starts on its own slower ladder…
-    XCTAssertEqual(
-      effectiveLineBudget(workAssistantMessageInitialLineBudget, for: markdown),
-      workAssistantMessageWideInitialLineBudget
-    )
-
-    let walk = walkShowMore(markdown, anchor: .head)
-    // …and that ladder still has no top: repeated taps land on the whole thing.
-    XCTAssertFalse(walk.preview.isTruncated, "Wide Show more stalled after \(walk.taps) taps")
-    XCTAssertEqual(walk.preview.text, markdown)
-    XCTAssertEqual(walk.preview.visibleLineCount, 400)
-  }
-
-  func testShowMoreStepsRevealEveryLineOfATailAnchoredAnswer() {
-    let markdown = (1...900).map { "Line \($0): tail anchored transcript output." }
+  /// The owner's rule, at the seam every render path goes through: whatever
+  /// line or character budget is asked for, the preview hands back the whole
+  /// message and reports itself untruncated, so no caller can draw a
+  /// "Show more" row.
+  func testAssistantPreviewRendersTheWholeMessageAtAnyBudget() {
+    let markdown = (1...1_200).map { "Line \($0): the agent explained another step." }
       .joined(separator: "\n")
 
-    let walk = walkShowMore(markdown, anchor: .tail)
-    XCTAssertFalse(walk.preview.isTruncated, "Tail Show more stalled after \(walk.taps) taps")
-    XCTAssertEqual(walk.preview.text, markdown)
-    XCTAssertEqual(walk.preview.visibleLineCount, 900)
+    for anchor in [WorkAssistantMessagePreviewAnchor.head, .tail] {
+      for lineBudget in [1, workAssistantMessageInitialLineBudget, workAssistantMessageTailFullLineBudget] {
+        let preview = workAssistantMessagePreview(
+          markdown,
+          lineBudget: lineBudget,
+          characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
+          anchor: anchor
+        )
+        XCTAssertFalse(preview.isTruncated, "budget \(lineBudget) anchor \(anchor) truncated the message")
+        XCTAssertEqual(preview.text, markdown)
+        XCTAssertEqual(preview.visibleLineCount, preview.totalLineCount)
+        XCTAssertEqual(preview.visibleCharacterCount, preview.totalCharacterCount)
+      }
+    }
   }
 
-  /// The character budget is the other budget that can bind, and a message of
-  /// very long lines is where it binds hardest. It has to keep stepping too,
-  /// or the reader is stranded at a character limit instead of a line limit.
-  func testShowMoreStepsRevealEveryLineWhenTheCharacterBudgetBinds() {
-    let longLine = String(repeating: "prose that runs on and on ", count: 12)
-    let markdown = (1...200).map { "Line \($0): \(longLine)" }.joined(separator: "\n")
-    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-    XCTAssertGreaterThan(markdown.count, 50_000)
-
-    let firstPage = workAssistantMessagePreview(
+  /// A very wide monospaced answer used to walk the slower 24-line ladder.
+  /// It renders whole too.
+  func testWideMonospacedAnswerRendersWhole() {
+    let markdown = (1...400).map { _ in String(repeating: "█", count: 200) }
+      .joined(separator: "\n")
+    let preview = workAssistantMessagePreview(
       markdown,
       lineBudget: workAssistantMessageInitialLineBudget,
       characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
       anchor: .head
     )
-    // The first page is character-bound, not line-bound: fewer than 48 lines fit.
-    XCTAssertLessThan(firstPage.visibleLineCount, workAssistantMessageInitialLineBudget)
-
-    let walk = walkShowMore(markdown, anchor: .head)
-    XCTAssertFalse(walk.preview.isTruncated, "Show more stalled after \(walk.taps) taps")
-    XCTAssertEqual(walk.preview.text, markdown)
-    XCTAssertEqual(walk.preview.visibleLineCount, 200)
+    XCTAssertFalse(preview.isTruncated)
+    XCTAssertEqual(preview.text, markdown)
   }
 
-  func testShowMoreSummaryStaysAccurateAtEveryStep() {
-    let markdown = (1...600).map { "Line \($0): step accurate summary." }.joined(separator: "\n")
-
-    var previousVisible = 0
-    let walk = walkShowMore(markdown, anchor: .tail) { preview in
-      XCTAssertEqual(preview.totalLineCount, 600)
-      XCTAssertLessThanOrEqual(preview.visibleLineCount, preview.totalLineCount)
-      XCTAssertGreaterThanOrEqual(preview.visibleLineCount, previousVisible)
-      previousVisible = preview.visibleLineCount
-      if preview.isTruncated, preview.visibleLineCount < preview.totalLineCount {
-        XCTAssertEqual(
-          workAssistantMessagePreviewSummaryText(preview),
-          "Latest \(preview.visibleLineCount) of 600 lines"
-        )
-      }
-    }
-    XCTAssertFalse(walk.preview.isTruncated)
-    XCTAssertEqual(workAssistantMessagePreviewSummaryText(walk.preview), "600 lines")
-  }
-
-  /// Production stepping, not a reimplementation of it: this drives the same
-  /// `nextLineBudget` the controls row hands back to `assistantLineBudgets`.
-  func testAssistantControlsOfferShowMoreUntilTheWholeMessageIsRendered() {
-    let markdown = (1...1200).map { "Line \($0): rendered through the timeline." }
-      .joined(separator: "\n")
-    var message = makeAssistantMessage(id: "assistant-huge", markdown: markdown)
-    var budgets: [String: Int] = [:]
-    var taps = 0
-    var lastPreview: WorkAssistantMessagePreview?
-
-    while taps < 200 {
-      let lineBudget = budgets[message.id] ?? workAssistantMessageInitialLineBudget
-      let preview = workAssistantMessagePreview(
-        markdown,
-        lineBudget: lineBudget,
-        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
-        anchor: .tail
-      )
-      message.assistantPreview = preview
-      lastPreview = preview
-
-      let rendered = workTimelineRenderEntries(
-        from: [makeMessageEntry(message)],
-        streamingAssistantMessageId: nil,
-        splitAssistantMessageId: message.id,
-        assistantLineBudgets: budgets
-      )
-      let controls = rendered.compactMap { entry -> WorkAssistantMessageControlsModel? in
-        guard case .assistantControls(let model) = entry.payload else { return nil }
-        return model
-      }.first
-
-      guard let controls else { break }
-      XCTAssertTrue(preview.isTruncated)
-      XCTAssertTrue(controls.canShowMore, "Show more disappeared with \(preview.visibleLineCount) of 1200 lines visible")
-      XCTAssertEqual(controls.visibleLineCount, preview.visibleLineCount)
-      XCTAssertEqual(controls.totalLineCount, 1200)
-      XCTAssertGreaterThan(controls.nextLineBudget, lineBudget)
-      budgets[message.id] = controls.nextLineBudget
-      taps += 1
-    }
-
-    XCTAssertLessThan(taps, 200, "Show more never finished revealing the message")
-    XCTAssertEqual(lastPreview?.isTruncated, false)
-    XCTAssertEqual(lastPreview?.visibleLineCount, 1200)
-  }
-
-  func testWideLineLadderKeepsClimbingPastTheOldNinetySixLineCeiling() {
-    // 24 lines to start, then 24 more for every 48-line step of the shared
-    // requested budget — and no top: the ladder used to stop dead at 96.
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 48, usesMonospacedPreview: true),
-      workAssistantMessageWideInitialLineBudget
-    )
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 96, usesMonospacedPreview: true),
-      48
-    )
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 192, usesMonospacedPreview: true),
-      96
-    )
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 960, usesMonospacedPreview: true),
-      480
-    )
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 4_848, usesMonospacedPreview: true),
-      2_424
-    )
-    // Normal-width answers are governed by the requested budget unchanged.
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(requestedLineBudget: 4_848, usesMonospacedPreview: false),
-      4_848
-    )
-  }
-
-  func testExpandedCharacterBudgetKeepsUpWithTheAdvertisedLineBudget() {
-    // The untouched first page keeps its tight budget so hydration stays cheap.
-    XCTAssertEqual(
-      workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
-      workAssistantMessageInitialCharacterBudget
-    )
-    // Every expansion past it can carry the line count it promises.
-    for steps in 1...12 {
-      let lineBudget = workAssistantMessageInitialLineBudget + (steps * workAssistantMessageLineBudgetStep)
-      XCTAssertGreaterThanOrEqual(
-        workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
-        lineBudget * workAssistantMessageExpandedCharactersPerLine
-      )
-    }
-  }
 
   // MARK: - Budget stability
 
-  /// The regression this rule exists for: the newest assistant answer renders
-  /// tail-anchored under the generous budget, and the moment a newer message
-  /// arrives it flips to head-anchoring. That flip used to drop the budget back
-  /// to 48 lines, so a message the reader had already read in full grew a
-  /// "Show more" behind their back.
-  func testBudgetSurvivesTheFlipOutOfTailAnchoring() {
-    let asTail = workAssistantRenderBudget(
-      userLineBudget: nil,
-      floorLineBudget: nil,
-      isTail: true,
-      headAnchorOverride: false,
-      tailCanRenderFull: true
-    )
-    XCTAssertEqual(asTail.lineBudget, workAssistantMessageTailFullLineBudget)
-    XCTAssertEqual(asTail.anchor, .tail)
 
-    // A newer message arrived. Same message, no longer the tail.
-    let afterFlip = workAssistantRenderBudget(
-      userLineBudget: nil,
-      floorLineBudget: asTail.lineBudget,
-      isTail: false,
-      headAnchorOverride: false,
-      tailCanRenderFull: false
-    )
-    XCTAssertEqual(afterFlip.lineBudget, workAssistantMessageTailFullLineBudget)
-    XCTAssertEqual(afterFlip.anchor, .head)
-  }
 
-  func testBudgetNeverShrinksBelowWhatWasAlreadyRendered() {
-    let expanded = workAssistantMessageInitialLineBudget + (4 * workAssistantMessageLineBudgetStep)
-    for isTail in [true, false] {
-      let budget = workAssistantRenderBudget(
-        userLineBudget: nil,
-        floorLineBudget: expanded,
-        isTail: isTail,
-        headAnchorOverride: false,
-        tailCanRenderFull: false
-      )
-      XCTAssertEqual(budget.lineBudget, expanded)
-    }
-    // The floor is a floor, not a ceiling: a further expansion still applies.
-    XCTAssertEqual(
-      workAssistantRenderBudget(
-        userLineBudget: expanded + workAssistantMessageLineBudgetStep,
-        floorLineBudget: expanded,
-        isTail: false,
-        headAnchorOverride: true,
-        tailCanRenderFull: false
-      ).lineBudget,
-      expanded + workAssistantMessageLineBudgetStep
-    )
-  }
 
-  func testExpandingTheTailMessageAnchorsItAtItsHead() {
-    let budget = workAssistantRenderBudget(
-      userLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep,
-      floorLineBudget: workAssistantMessageTailFullLineBudget,
-      isTail: true,
-      headAnchorOverride: true,
-      tailCanRenderFull: true
-    )
-    XCTAssertEqual(budget.anchor, .head)
-    XCTAssertEqual(budget.lineBudget, workAssistantMessageTailFullLineBudget)
-  }
 
-  func testShowMoreStepsFromTheBudgetTheMessageIsRenderingUnder() {
-    XCTAssertEqual(
-      workAssistantMessageShowMoreLineBudget(current: nil),
-      workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
-    )
-    // A message held at the tail-full floor steps up from that floor, not back
-    // down to the initial budget.
-    XCTAssertEqual(
-      workAssistantMessageShowMoreLineBudget(current: workAssistantMessageTailFullLineBudget),
-      workAssistantMessageTailFullLineBudget + workAssistantMessageLineBudgetStep
-    )
-  }
 
-  func testLongSingleLineKeepsItsControlUntilTheNextRungIsActuallyComplete() {
-    let markdown = String(repeating: "x", count: 15_000)
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(
-        forLineBudget: workAssistantMessageInitialLineBudget
-      )
-    )
-
-    XCTAssertTrue(preview.isTruncated)
-    XCTAssertEqual(preview.totalLineCount, 1)
-    XCTAssertTrue(
-      workAssistantMessageWillRemainTruncated(
-        preview,
-        nextLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
-      )
-    )
-    XCTAssertFalse(workAssistantMessageWillRemainTruncated(preview, nextLineBudget: 240))
-  }
-
-  /// End to end over the real preview slicer: a message that rendered in full as
-  /// the tail is still rendered in full — with no "Show more" — after a newer
-  /// message pushes it into head-anchoring.
-  func testMessageRenderedFullyAsTailIsNeverTruncatedLater() {
-    let markdown = (1...100).map { "Line \($0): the agent explained another step." }
-      .joined(separator: "\n")
-    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-
-    func preview(_ budget: WorkAssistantRenderBudget) -> WorkAssistantMessagePreview {
-      workAssistantMessagePreview(
-        markdown,
-        lineBudget: budget.lineBudget,
-        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
-        anchor: budget.anchor
-      )
-    }
-
-    let asTail = workAssistantRenderBudget(
-      userLineBudget: nil,
-      floorLineBudget: nil,
-      isTail: true,
-      headAnchorOverride: false,
-      tailCanRenderFull: true
-    )
-    let tailPreview = preview(asTail)
-    XCTAssertFalse(tailPreview.isTruncated)
-
-    let afterFlip = workAssistantRenderBudget(
-      userLineBudget: nil,
-      floorLineBudget: asTail.lineBudget,
-      isTail: false,
-      headAnchorOverride: false,
-      tailCanRenderFull: false
-    )
-    let headPreview = preview(afterFlip)
-    XCTAssertFalse(headPreview.isTruncated, "Show more reappeared on a message the reader already read in full")
-    XCTAssertEqual(headPreview.text, markdown)
-
-    // And the same message WITHOUT the floor is exactly the regression: it
-    // truncates. This is what the floor is protecting against.
-    let withoutFloor = workAssistantRenderBudget(
-      userLineBudget: nil,
-      floorLineBudget: nil,
-      isTail: false,
-      headAnchorOverride: false,
-      tailCanRenderFull: false
-    )
-    XCTAssertTrue(preview(withoutFloor).isTruncated)
-  }
 
   // MARK: - Position-stable block ids
 
@@ -542,61 +230,7 @@ final class WorkAssistantRenderingTests: XCTestCase {
 
   // MARK: - Copy is always the full content
 
-  /// The transcript renders a bounded slice, so the code a block view holds can
-  /// be a prefix of the real block. Copy has to reach past the slice.
-  func testHeadSlicedCodeBlocksCopyTheWholeBlock() {
-    let markdown = codeBlockMarkdown(blockCount: 3, linesPerBlock: 60)
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
-      anchor: .head
-    )
-    XCTAssertTrue(preview.isTruncated)
 
-    let fullCode = codeBlockPayloads(of: markdown)
-    let rendered = renderedCodeBlocks(markdown: markdown, preview: preview, id: "assistant-head-code")
-    XCTAssertFalse(rendered.isEmpty)
-    for (ordinal, block) in rendered.enumerated() {
-      XCTAssertNotNil(block.source)
-      XCTAssertEqual(block.source?.ordinal, ordinal)
-      XCTAssertEqual(block.source?.countsFromEnd, false)
-      XCTAssertEqual(block.source?.resolvedCode(fallback: block.code), fullCode[ordinal])
-    }
-    // The slice really was partial — otherwise this proves nothing.
-    XCTAssertNotEqual(rendered.last?.code, fullCode[rendered.count - 1])
-  }
-
-  /// A tail slice can start *inside* a fence, and the preview prepends a
-  /// synthetic opening fence (`workOpeningMarkdownFenceBeforeTail`) so it parses
-  /// at all. That synthetic block is the one most likely to copy a fragment, so
-  /// it is numbered from the end and resolved against the real message.
-  func testTailSlicedCodeBlocksCopyTheWholeBlockThroughTheSyntheticFence() {
-    let markdown = codeBlockMarkdown(blockCount: 3, linesPerBlock: 80)
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageTailFullCharacterBudget,
-      anchor: .tail
-    )
-    XCTAssertTrue(preview.isTruncated)
-    XCTAssertTrue(preview.text.hasPrefix("```"), "expected a synthetic opening fence on this tail")
-
-    let fullCode = codeBlockPayloads(of: markdown)
-    let rendered = renderedCodeBlocks(markdown: markdown, preview: preview, id: "assistant-tail-code")
-    XCTAssertFalse(rendered.isEmpty)
-    for (offsetFromEnd, block) in rendered.reversed().enumerated() {
-      XCTAssertEqual(block.source?.countsFromEnd, true)
-      XCTAssertEqual(block.source?.ordinal, offsetFromEnd)
-      XCTAssertEqual(
-        block.source?.resolvedCode(fallback: block.code),
-        fullCode[fullCode.count - 1 - offsetFromEnd]
-      )
-    }
-    // The synthetic-fence block is the fragment; copying it must not yield one.
-    let first = rendered[0]
-    XCTAssertNotEqual(first.code, first.source?.resolvedCode(fallback: first.code))
-  }
 
   /// A slice that cannot be located falls back to what is on screen rather than
   /// copying some other block's contents.
@@ -629,6 +263,7 @@ final class WorkAssistantRenderingTests: XCTestCase {
     XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[0]], 1)
     XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[1]], 0)
   }
+
 
   /// The result box shows a slice; the clipboard never does.
   func testToolResultBoxSeparatesWhatIsShownFromWhatIsCopied() {
@@ -678,6 +313,10 @@ final class WorkAssistantRenderingTests: XCTestCase {
       .openFullOutput
     )
   }
+
+
+
+
 
   func testOutputBoxOverflowsCountsWrappedLinesForAWrappingBox() {
     let short = "one\ntwo\nthree"
@@ -763,41 +402,6 @@ final class WorkAssistantRenderingTests: XCTestCase {
       else { return nil }
       return RenderedCodeBlock(code: code, source: model.codeSource)
     }
-  }
-
-  private struct ShowMoreWalk {
-    let taps: Int
-    let preview: WorkAssistantMessagePreview
-  }
-
-  /// Mirrors what a tap does in production: add one line step to the requested
-  /// budget and rebuild the preview from the same budget pair the views use.
-  private func walkShowMore(
-    _ markdown: String,
-    anchor: WorkAssistantMessagePreviewAnchor,
-    maxTaps: Int = 200,
-    onStep: ((WorkAssistantMessagePreview) -> Void)? = nil
-  ) -> ShowMoreWalk {
-    func preview(at lineBudget: Int) -> WorkAssistantMessagePreview {
-      workAssistantMessagePreview(
-        markdown,
-        lineBudget: lineBudget,
-        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
-        anchor: anchor
-      )
-    }
-
-    var lineBudget = workAssistantMessageInitialLineBudget
-    var current = preview(at: lineBudget)
-    onStep?(current)
-    var taps = 0
-    while current.isTruncated, taps < maxTaps {
-      lineBudget += workAssistantMessageLineBudgetStep
-      current = preview(at: lineBudget)
-      taps += 1
-      onStep?(current)
-    }
-    return ShowMoreWalk(taps: taps, preview: current)
   }
 
   private func effectiveLineBudget(_ requested: Int, for markdown: String) -> Int {

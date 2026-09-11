@@ -20,7 +20,6 @@ import {
   mergeAdjacentActivityBundleRows,
   groupConsecutiveWorkLogRows,
   readRecord,
-  shouldCollapseUserMessageText,
   summarizeDiffStats,
   summarizeInlineText,
 } from "./chatTranscriptRows";
@@ -1010,23 +1009,6 @@ describe("summarizeInlineText", () => {
 
   it("does not truncate text shorter than maxChars", () => {
     expect(summarizeInlineText("short", 100)).toBe("short");
-  });
-});
-
-describe("shouldCollapseUserMessageText", () => {
-  it("collapses past 600 characters", () => {
-    expect(shouldCollapseUserMessageText("x".repeat(600))).toBe(false);
-    expect(shouldCollapseUserMessageText("x".repeat(601))).toBe(true);
-  });
-
-  it("collapses past 8 lines", () => {
-    expect(shouldCollapseUserMessageText(Array.from({ length: 8 }, () => "line").join("\n"))).toBe(false);
-    expect(shouldCollapseUserMessageText(Array.from({ length: 9 }, () => "line").join("\n"))).toBe(true);
-  });
-
-  it("never collapses empty or whitespace-only text", () => {
-    expect(shouldCollapseUserMessageText("")).toBe(false);
-    expect(shouldCollapseUserMessageText("   \n\n\n\n\n\n\n\n\n\n  ")).toBe(false);
   });
 });
 

@@ -95,6 +95,7 @@
 		B80000000000000000000006 /* SyncMachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000005 /* SyncMachineWake.swift */; };
 		B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* SyncTerminalInputQueue.swift */; };
 		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
+		A11800000000000000000004 /* AppUpdateAdvisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11800000000000000000003 /* AppUpdateAdvisor.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
@@ -115,6 +116,8 @@
 		E10000000000000000000055 /* WorkChatPrViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000055 /* WorkChatPrViews.swift */; };
 		E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000054 /* WorkPlanComposerViews.swift */; };
 		E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000050 /* WorkChatAttachmentTray.swift */; };
+		E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */; };
+		E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
@@ -189,6 +192,7 @@
 		D30000000000000000000013 /* ActivityDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* ActivityDrawerSheet.swift */; };
 		D30000000000000000000015 /* ActivityDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* ActivityDrawerModelTests.swift */; };
 		AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7100000000000000000001 /* ActivityContractDecodingTests.swift */; };
+		AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */; };
 		AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000001 /* ActivityAckQueueTests.swift */; };
 		AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000002 /* ActivityPollingTests.swift */; };
 		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
@@ -200,6 +204,7 @@
 		D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F20 /* WorkProofRowModelTests.swift */; };
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
+		FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */; };
 		FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */; };
 		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
@@ -297,6 +302,7 @@
 		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
+		A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11800000000000000000001 /* AppUpdateAdvisorTests.swift */; };
 		A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -429,6 +435,8 @@
 		D10000000000000000000055 /* WorkChatPrViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatPrViews.swift; path = ADE/Views/Work/WorkChatPrViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000054 /* WorkPlanComposerViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPlanComposerViews.swift; path = ADE/Views/Work/WorkPlanComposerViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000050 /* WorkChatAttachmentTray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentTray.swift; path = ADE/Views/Work/WorkChatAttachmentTray.swift; sourceTree = "<group>"; };
+		D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerAttachmentStaging.swift; path = ADE/Views/Work/WorkComposerAttachmentStaging.swift; sourceTree = "<group>"; };
+		D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentPreviewSheets.swift; path = ADE/Views/Work/WorkChatAttachmentPreviewSheets.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
@@ -509,6 +517,7 @@
 		D30000000000000000000003 /* ActivityDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityDrawerSheet.swift; path = ADE/Views/Activity/ActivityDrawerSheet.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* ActivityDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityDrawerModelTests.swift; path = ADETests/ActivityDrawerModelTests.swift; sourceTree = "<group>"; };
 		AC7100000000000000000001 /* ActivityContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityContractDecodingTests.swift; path = ADETests/ActivityContractDecodingTests.swift; sourceTree = "<group>"; };
+		AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UsageQuotaAccountDecodingTests.swift; path = ADETests/UsageQuotaAccountDecodingTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000001 /* ActivityAckQueueTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityAckQueueTests.swift; path = ADETests/ActivityAckQueueTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000002 /* ActivityPollingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityPollingTests.swift; path = ADETests/ActivityPollingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
@@ -547,6 +556,7 @@
 		B80000000000000000000005 /* SyncMachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncMachineWake.swift"; path = "ADE/Services/SyncMachineWake.swift"; sourceTree = "<group>"; };
 		B80000000000000000000003 /* SyncTerminalInputQueue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTerminalInputQueue.swift; path = ADE/Services/SyncTerminalInputQueue.swift; sourceTree = "<group>"; };
 		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
+		A11800000000000000000003 /* AppUpdateAdvisor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppUpdateAdvisor.swift; path = ADE/Services/AppUpdateAdvisor.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
 		B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteProjectAddSheet.swift; path = ADE/App/RemoteProjectAddSheet.swift; sourceTree = "<group>"; };
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
@@ -624,6 +634,7 @@
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
+		A11800000000000000000001 /* AppUpdateAdvisorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppUpdateAdvisorTests.swift; path = ADETests/AppUpdateAdvisorTests.swift; sourceTree = "<group>"; };
 		A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParserTests.swift; path = ADETests/PrGitHubDescriptionParserTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90200000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEWidgets/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -651,6 +662,7 @@
 		C5A00000000000000000000D /* SSHPairingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingView.swift; path = ADE/Views/Settings/SSHPairingView.swift; sourceTree = "<group>"; };
 		C5A00000000000000000000E /* SSHBootstrapTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapTests.swift; path = ADETests/SSHBootstrapTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkAssistantRenderingTests.swift; path = ADETests/WorkAssistantRenderingTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerDraftAttachmentTests.swift; path = ADETests/WorkComposerDraftAttachmentTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -949,6 +961,8 @@
 				D10000000000000000000055 /* WorkChatPrViews.swift */,
 				D10000000000000000000054 /* WorkPlanComposerViews.swift */,
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
+				D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */,
+				D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
@@ -1018,6 +1032,7 @@
 				B80000000000000000000005 /* SyncMachineWake.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
+				A11800000000000000000003 /* AppUpdateAdvisor.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
 				AE00000000000000000000A3 /* LiveActivityService.swift */,
 				AF00000000000000000000A1 /* DpopKeyService.swift */,
@@ -1206,6 +1221,7 @@
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
+				AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
 				AC7300000000000000000002 /* ActivityPollingTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
@@ -1217,9 +1233,11 @@
 				D30000000000000000000F20 /* WorkProofRowModelTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
+				FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */,
 				FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */,
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
+				A11800000000000000000001 /* AppUpdateAdvisorTests.swift */,
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 				D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */,
@@ -1549,6 +1567,7 @@
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
+				A11800000000000000000004 /* AppUpdateAdvisor.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
 				E20000000000000000000042 /* FilesModels.swift in Sources */,
 				E20000000000000000000043 /* FilesHelpers.swift in Sources */,
@@ -1687,6 +1706,8 @@
 				E10000000000000000000055 /* WorkChatPrViews.swift in Sources */,
 				E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */,
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
+				E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */,
+				E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
 				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,
@@ -1753,6 +1774,7 @@
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
+				AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
 				AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
@@ -1764,9 +1786,11 @@
 				D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
+				FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */,
 				FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */,
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
+				A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */,
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 				E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */,

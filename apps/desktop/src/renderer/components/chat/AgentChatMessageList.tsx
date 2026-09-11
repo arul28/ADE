@@ -112,7 +112,6 @@ import {
   groupChatTranscriptRows,
   mergeAdjacentActivityBundleRows,
   readRecord,
-  shouldCollapseUserMessageText,
   summarizeDiffStats,
   summarizeInlineText,
   type BackgroundJobGroupRenderEvent,
@@ -2198,64 +2197,6 @@ function FileChangeEventCard({
 // replay read as a flicker once the bubble settled.
 const animatedUserMessageKeys = new Set<string>();
 
-// Which long user bubbles the reader has expanded. Module-level for the same
-// reason as `animatedUserMessageKeys`: the virtualizer unmounts and remounts
-// rows as they leave/enter the window, and component state would silently
-// re-collapse a message the reader had opened.
-const expandedUserMessageBodyKeys = new Set<string>();
-
-/**
- * Fades the last ~1.75rem of a clamped bubble instead of hard-cutting it.
- * A CSS mask (not `line-clamp`) so the clamped content can still be markdown,
- * chips or code — `line-clamp` needs a single inline formatting context and
- * mangles all three.
- */
-const COLLAPSED_USER_MESSAGE_MASK = "linear-gradient(to bottom, black calc(100% - 1.75rem), transparent)";
-
-/**
- * Clamps an over-long user prompt so one giant paste cannot dominate the
- * transcript. Row keys are untouched, so the normal
- * ResizeObserver → `handleMeasure` → `reconcileMeasuredScrollTop` chain absorbs
- * the height change (expanding a row above the viewport keeps the visible
- * content still).
- */
-function CollapsibleUserMessageBody({ rowKey, children }: { rowKey: string; children: React.ReactNode }) {
-  const [expanded, setExpanded] = useState(() => expandedUserMessageBodyKeys.has(rowKey));
-  const toggle = useCallback(() => {
-    setExpanded((current) => {
-      const next = !current;
-      if (next) expandedUserMessageBodyKeys.add(rowKey);
-      else expandedUserMessageBodyKeys.delete(rowKey);
-      return next;
-    });
-  }, [rowKey]);
-
-  return (
-    <div className="min-w-0">
-      <div
-        data-testid="user-message-collapsible-body"
-        data-collapsed={expanded ? "false" : "true"}
-        className={cn("min-w-0", expanded ? null : "relative max-h-44 overflow-hidden")}
-        style={
-          expanded
-            ? undefined
-            : { WebkitMaskImage: COLLAPSED_USER_MESSAGE_MASK, maskImage: COLLAPSED_USER_MESSAGE_MASK }
-        }
-      >
-        {children}
-      </div>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={toggle}
-        className="-ml-1 mt-1 inline-flex items-center rounded px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/60 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
-      >
-        {expanded ? "Show less" : "Show full message"}
-      </button>
-    </div>
-  );
-}
-
 /** Stable-ish identity for an interrupt receipt row (no id on the event). */
 function interruptReceiptIdentity(event: Extract<AgentChatEvent, { type: "interrupt_receipt" }>): string {
   return `${event.turnId ?? ""}:${(event.stillQueuedUuids ?? []).join(",")}`;
@@ -2659,10 +2600,9 @@ function renderEvent(
                   : parsed.rest}
               </div>
             );
-            // Only the plain prompt body clamps. The hidden-prompt brief and the
-            // displayText + <details> variant already have their own disclosure.
-            if (!shouldCollapseUserMessageText(event.text)) return body;
-            return <CollapsibleUserMessageBody rowKey={envelope.key}>{body}</CollapsibleUserMessageBody>;
+            // Prompts render in full, however long. The hidden-prompt brief and
+            // the displayText + <details> variant keep their own disclosure.
+            return body;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
             <UserMessageIssueContext
@@ -3693,7 +3633,7 @@ function renderEvent(
           )}
         </div>
         {isPlanApproval && bodyText.trim().length > 0 ? (
-          <div className="mt-2 max-h-[360px] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2">
+          <div className="mt-2 rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2">
             <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         ) : null}

@@ -3228,6 +3228,16 @@ private struct WorkChatComposerDraftInput: View {
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
+  @State private var filePickerPresented = false
+  @State private var videoPickerPresented = false
+  /// Collapsed composer: the keyboard is down, the field is one line, the
+  /// suggestion strip is hidden and the tray is chips. A view mode only —
+  /// nothing is unstaged, and `@State` is deliberate so a fresh open of the
+  /// chat always shows the normal composer.
+  @State private var composerCollapsed = false
+  /// Refs restored from the persisted draft are adopted once, not on every
+  /// re-render of the same key.
+  @State private var restoredDraftKey = ""
   @State private var stopMode: AgentChatStopMode = .stopAndClear
   @State private var stopOptionsPresented = false
   @State private var stopHapticToken = 0
@@ -3306,13 +3316,69 @@ private struct WorkChatComposerDraftInput: View {
     !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
   }
 
+  /// The collapse affordance lives in the composer card, not in a
+  /// `ToolbarItemGroup(placement: .keyboard)`. Keyboard toolbars are scoped to
+  /// the view that mounts them, so one mounted here could not dismiss the main
+  /// composer's `UITextView` — and a toolbar button also disappears with the
+  /// keyboard, which is exactly when the user needs the control to get back.
+  private var collapseControlVisible: Bool {
+    draftState.isFocused || !inputAttachments.isEmpty
+  }
+
+  @ViewBuilder
+  private var composerHeaderRow: some View {
+    if collapseControlVisible {
+      HStack(spacing: 0) {
+        Spacer(minLength: 0)
+        Button {
+          draftState.isFocused = false
+          composerCollapsed = true
+        } label: {
+          Image(systemName: "keyboard.chevron.compact.down")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.surfaceBackground.opacity(0.38), in: Circle())
+            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse composer")
+        .accessibilityHint("Lowers the keyboard and shrinks the composer")
+        .accessibilityIdentifier("Work.Chat.Composer.Collapse")
+      }
+    }
+  }
+
+  private var attachmentTray: some View {
+    WorkChatInputAttachmentTray(
+      attachments: $inputAttachments,
+      compact: composerCollapsed,
+      onExpand: {
+        composerCollapsed = false
+        if canCompose { draftState.isFocused = true }
+      },
+      chatSessionId: sessionId.isEmpty ? nil : sessionId
+    )
+  }
+
+  /// Text lines the field may grow to. Collapsed clamps to one, which is the
+  /// same `compact` clamp the small composer already uses.
+  private var composerMaxLines: Int {
+    composerCollapsed ? 1 : 6
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      if compact {
-        WorkComposerSuggestionStrip(controller: suggestionController)
-          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+      composerHeaderRow
 
-        WorkChatInputAttachmentTray(attachments: $inputAttachments)
+      if compact {
+        if !composerCollapsed {
+          WorkComposerSuggestionStrip(controller: suggestionController)
+            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        }
+
+        attachmentTray
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
@@ -3338,10 +3404,12 @@ private struct WorkChatComposerDraftInput: View {
           }
         }
       } else {
-        WorkComposerSuggestionStrip(controller: suggestionController)
-          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        if !composerCollapsed {
+          WorkComposerSuggestionStrip(controller: suggestionController)
+            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        }
 
-        WorkChatInputAttachmentTray(attachments: $inputAttachments)
+        attachmentTray
 
         WorkChatComposerTextField(
           draftState: draftState,
@@ -3351,7 +3419,8 @@ private struct WorkChatComposerDraftInput: View {
           acceptsPastedImages: canCompose && attachmentsAvailable,
           onPasteImages: { images in
             workChatInputPasteImages(images, into: $inputAttachments)
-          }
+          },
+          maxLines: composerMaxLines
         )
 
         if showInterrupt && hasSendableDraftOrAttachment {
@@ -3431,11 +3500,122 @@ private struct WorkChatComposerDraftInput: View {
         if canCompose { draftState.isFocused = true }
       }
     )
+    .workChatFileAttachmentPickers(
+      filePickerPresented: $filePickerPresented,
+      videoPickerPresented: $videoPickerPresented,
+      attachments: $inputAttachments,
+      onDismiss: {
+        if canCompose { draftState.isFocused = true }
+      }
+    )
+    // Typing is the escape from the collapsed state, so it is never a mode the
+    // user has to work out how to leave.
+    .onChange(of: draftState.isFocused) { _, focused in
+      if focused { composerCollapsed = false }
+    }
+    // Stage every ready attachment on the host the moment it lands, then persist
+    // the refs. Uploading on attach is what makes the draft persistable (refs,
+    // not bytes) and what lets the send button stay live while bytes are still
+    // moving.
+    .task(id: attachmentSignature) {
+      beginAttachmentUploads()
+      for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
+        _ = await WorkComposerAttachmentUploads.shared.resolve(attachment.id)
+      }
+      guard !Task.isCancelled else { return }
+      persistDraftAttachments(for: draftPersistenceKey)
+    }
+    .task(id: draftPersistenceKey) {
+      await restoreDraftAttachments()
+    }
+    // A navigation pop beats the upload wait above; write what is known now so
+    // backing out mid-upload still keeps the attachment.
+    .onDisappear { persistDraftAttachments(for: draftPersistenceKey) }
+  }
+
+  /// Changes when an attachment is added, removed, or finishes preparing —
+  /// the three moments an upload or a re-persist is owed.
+  private var attachmentSignature: String {
+    inputAttachments.map { "\($0.id.uuidString):\($0.isReady ? 1 : 0)" }.joined(separator: ",")
+  }
+
+  private var composerChatSessionId: String? {
+    sessionId.isEmpty ? nil : sessionId
+  }
+
+  @MainActor
+  private func beginAttachmentUploads() {
+    guard canUploadAttachments else { return }
+    for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
+      WorkComposerAttachmentUploads.shared.begin(
+        attachment,
+        syncService: syncService,
+        chatSessionId: composerChatSessionId,
+        projectId: nil,
+        projectRootPath: nil
+      )
+    }
+  }
+
+  /// Writes refs for everything the host already holds, and bytes (to the
+  /// purgeable cache) only for what it does not — the offline leg.
+  @MainActor
+  private func persistDraftAttachments(for key: String) {
+    guard !key.isEmpty else { return }
+    let uploads = WorkComposerAttachmentUploads.shared
+    var refs: [AgentChatFileRef] = []
+    var unsaved: [WorkChatInputAttachment] = []
+    for attachment in inputAttachments where attachment.isReady {
+      if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
+        refs.append(ref)
+      } else {
+        unsaved.append(attachment)
+      }
+    }
+    let localFiles = WorkComposerDraftAttachmentCache.write(unsaved, for: key)
+    WorkComposerDraftStore.saveAttachments(refs, owner: nil, localFiles: localFiles, for: key)
+  }
+
+  /// Restores the staged attachments for this chat. Refs first (the host still
+  /// holds those bytes); the cache only when no ref resolves, which is the
+  /// offline case.
+  @MainActor
+  private func restoreDraftAttachments() async {
+    let key = draftPersistenceKey
+    guard restoredDraftKey != key else { return }
+    let previousKey = restoredDraftKey
+    restoredDraftKey = key
+    if !previousKey.isEmpty, previousKey != key {
+      // The visible attachments belong to the chat we just left. Flush them
+      // under that key and clear, exactly as `bind` does for the text.
+      persistDraftAttachments(for: previousKey)
+      WorkComposerAttachmentUploads.shared.release(inputAttachments.map(\.id))
+      inputAttachments = []
+    }
+    guard !key.isEmpty, inputAttachments.isEmpty,
+          let entry = WorkComposerDraftStore.loadEntry(key) else { return }
+    var restored: [WorkChatInputAttachment] = []
+    if !entry.attachments.isEmpty {
+      restored = (try? await workChatInputAttachments(
+        from: entry.attachments,
+        syncService: syncService,
+        chatSessionId: composerChatSessionId,
+        projectId: entry.attachmentOwner?.projectId,
+        projectRootPath: entry.attachmentOwner?.rootPath
+      )) ?? []
+    }
+    if restored.isEmpty {
+      restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: key)
+    }
+    guard !restored.isEmpty, inputAttachments.isEmpty, draftPersistenceKey == key else { return }
+    inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))
   }
 
   private var composerOverflowMenu: some View {
     WorkComposerOverflowButton(
       attachmentPickerPresented: $attachmentPickerPresented,
+      filePickerPresented: $filePickerPresented,
+      videoPickerPresented: $videoPickerPresented,
       draft: $draftState.text,
       attachments: $inputAttachments,
       canCompose: canCompose && !settingsMutationInFlight,
@@ -4119,6 +4299,9 @@ private struct WorkChatComposerSendButton: View {
       Task { @MainActor in
         let sent = await onSend(text, outgoingAttachments)
         if sent {
+          // The refs were consumed by the send; drop the upload tracking so a
+          // later attachment can never reuse a sent message's ref.
+          WorkComposerAttachmentUploads.shared.release(restoredAttachments.map(\.id))
           onSent()
         } else {
           attachments = restoredAttachments

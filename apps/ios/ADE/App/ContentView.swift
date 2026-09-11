@@ -58,6 +58,7 @@ private enum RootTab: String, Hashable, CaseIterable, Identifiable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var accountService: AccountService
+  @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
   @State private var selectedTab: RootTab = {
     let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
@@ -121,6 +122,7 @@ struct ContentView: View {
     observedRootContent
       .sheet(isPresented: $syncService.settingsPresented) {
         ConnectionSettingsView(syncService: syncService)
+          .environmentObject(appUpdateAdvisor)
       }
       .sheet(isPresented: $syncService.attentionDrawerPresented) {
         ActivityDrawerSheet()
@@ -202,12 +204,25 @@ struct ContentView: View {
       .adeNavigationGlass()
       .adeInspectorHost()
       .overlay(alignment: .top) {
-        if let label = syncService.accountConnectSuccessLabel {
-          AccountConnectStatusToast(label: label)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+        VStack(spacing: 8) {
+          if let label = syncService.accountConnectSuccessLabel {
+            AccountConnectStatusToast(label: label)
+              .transition(.move(edge: .top).combined(with: .opacity))
+          }
+
+          if let version = appUpdateAdvisor.availableVersion,
+             !appUpdateAdvisor.isAvailableUpdateDismissed {
+            AppUpdateBanner(
+              version: version,
+              canUpdate: appUpdateAdvisor.updateURL != nil,
+              onUpdate: openAppUpdate,
+              onLater: appUpdateAdvisor.dismissAvailableUpdate
+            )
             .transition(.move(edge: .top).combined(with: .opacity))
+          }
         }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
       }
       .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
@@ -260,6 +275,11 @@ struct ContentView: View {
     ProductAnalytics.shared.captureScreen(
       syncService.shouldShowProjectHub ? .hub : selectedTab.analyticsScreen
     )
+  }
+
+  private func openAppUpdate() {
+    guard let url = appUpdateAdvisor.updateURL else { return }
+    UIApplication.shared.open(url)
   }
 
   private var rootTabs: some View {
@@ -400,6 +420,54 @@ struct AccountConnectStatusToast: View {
     .overlay(Capsule().stroke(ADEColor.success.opacity(0.3), lineWidth: 0.75))
     .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
     .accessibilityElement(children: .combine)
+  }
+}
+
+private struct AppUpdateBanner: View {
+  let version: String
+  let canUpdate: Bool
+  let onUpdate: () -> Void
+  let onLater: () -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "arrow.down.circle.fill")
+        .foregroundStyle(ADEColor.purpleAccent)
+
+      Text("ADE \(version) is available")
+        .font(.system(.footnote, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+
+      Spacer(minLength: 0)
+
+      Button("Later", action: onLater)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .buttonStyle(.plain)
+
+      Button("Update", action: onUpdate)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.purpleAccent, in: Capsule())
+        .buttonStyle(.plain)
+        .disabled(!canUpdate)
+        .opacity(canUpdate ? 1 : 0.45)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(ADEColor.cardBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect()
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
+    )
+    .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("ADE \(version) is available")
   }
 }
 

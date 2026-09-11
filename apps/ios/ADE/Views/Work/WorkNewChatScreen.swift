@@ -1526,6 +1526,8 @@ private struct WorkNewChatComposerBar: View {
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
+  @State private var filePickerPresented = false
+  @State private var videoPickerPresented = false
   @State private var composerTextHeight: CGFloat = 28
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
@@ -1599,6 +1601,8 @@ private struct WorkNewChatComposerBar: View {
           if !isDictating {
             WorkComposerOverflowButton(
               attachmentPickerPresented: $attachmentPickerPresented,
+              filePickerPresented: $filePickerPresented,
+              videoPickerPresented: $videoPickerPresented,
               draft: $draft,
               attachments: $attachments,
               canCompose: !busy,
@@ -1686,6 +1690,13 @@ private struct WorkNewChatComposerBar: View {
       onDismiss: { composerFocused = true }
     )
     .workPersistedDraft($draft, key: WorkComposerDraftStore.workNewChatKey)
+    .workPersistedDraftAttachments($attachments, key: WorkComposerDraftStore.workNewChatKey)
+    .workChatFileAttachmentPickers(
+      filePickerPresented: $filePickerPresented,
+      videoPickerPresented: $videoPickerPresented,
+      attachments: $attachments,
+      onDismiss: {}
+    )
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph

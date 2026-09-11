@@ -5,6 +5,10 @@ import {
   readClaudeCredentials,
   readCodexCredentials,
 } from "./providerCredentialSources";
+import {
+  resolveProviderAccounts,
+  type ProviderAccountIdentity,
+} from "../usage/providerAccountIdentity";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
@@ -48,9 +52,14 @@ export async function buildProviderConnections(
   const checkedAt = nowIso();
   const claudeCli = cliStatuses.find((entry) => entry.cli === "claude") ?? null;
   const codexCli = cliStatuses.find((entry) => entry.cli === "codex") ?? null;
-  const [claudeLocalCreds, codexLocalCreds] = await Promise.all([
+  const [claudeLocalCreds, codexLocalCreds, accountIdentities] = await Promise.all([
     readClaudeCredentials(),
     readCodexCredentials(),
+    // The same reader the usage poller uses, so Settings > Providers and the
+    // Limits cards can never name two different accounts for one provider.
+    resolveProviderAccounts().catch(
+      (): Partial<Record<"claude" | "codex", ProviderAccountIdentity>> => ({}),
+    ),
   ]);
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
@@ -164,6 +173,11 @@ export async function buildProviderConnections(
       },
     ];
     status.blocker = resolveBlocker(args.label, args.loginHint, args.flags, args.extraBlocker);
+    const identity = args.provider === "claude" || args.provider === "codex"
+      ? accountIdentities[args.provider]
+      : undefined;
+    if (identity?.email) status.accountEmail = identity.email;
+    if (identity?.plan) status.accountPlan = identity.plan;
     applyRuntimeHealth(status, args.health);
     return status;
   }

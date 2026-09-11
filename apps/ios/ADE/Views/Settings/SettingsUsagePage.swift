@@ -157,7 +157,6 @@ struct SettingsUsagePage: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var model = SettingsUsagePageModel()
-  @State private var focusedProvider: String?
   @State private var estimationSheetPresented = false
 
   init(syncService: SyncService) {
@@ -351,7 +350,7 @@ struct SettingsUsagePage: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      SettingsUsageDailyChart(model: model.chart, focusedProvider: focusedProvider)
+      SettingsUsageDailyChart(model: model.chart)
       if model.chart.isCombinedFallback, model.chart.hasData {
         Text("This machine reports daily totals without a provider split. Update ADE on it to see one line per provider.")
           .font(ADEUsageType.microFont())
@@ -387,20 +386,12 @@ struct SettingsUsagePage: View {
             SettingsUsagePaceProvider(
               provider: provider,
               windows: snapshot.windows.filter { $0.provider == provider },
+              accounts: pooledAccounts(snapshot),
               status: snapshot.providerStatus?[provider],
-              spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
-              focusedProvider: focusedProvider,
-              onToggleFocus: { provider in
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                  focusedProvider = focusedProvider == provider ? nil : provider
-                }
-              }
+              spendControlReached: provider == "codex" && snapshot.spendControlReached == true
             )
           }
         }
-        Text("Tap a bar to pick that provider out of the chart.")
-          .font(ADEUsageType.microFont())
-          .foregroundStyle(ADEColor.textMuted)
       } else {
         Text("Pair with an updated ADE machine to see live Claude and Codex limits.")
           .font(ADEUsageType.detailFont())
@@ -410,6 +401,14 @@ struct SettingsUsagePage: View {
     .padding(ADEUsageLayout.cardPadding)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(usageCardBackground)
+  }
+
+  /// Accounts pooled by email: the same login reported by two machines is one
+  /// account with two `Via` entries, not two rows of the same numbers. Hosts
+  /// that predate the directory send none, and the cards fall back to one
+  /// unnamed account per provider.
+  private func pooledAccounts(_ snapshot: MobileUsageQuotaSnapshot) -> [ADEUsageAccountView] {
+    adeUsagePoolAccounts(snapshot.accounts)
   }
 
   /// Claude and Codex always show (they are the two ADE drives); anything else

@@ -12,6 +12,7 @@ struct ADEApp: App {
   /// ClerkKit-backed account state (identity + directory machines). A singleton
   /// so it's reachable from sheets without threading it through the environment.
   @StateObject private var accountService = AccountService.shared
+  @StateObject private var appUpdateAdvisor = AppUpdateAdvisor()
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
   @State private var didEnterBackground = false
@@ -52,11 +53,15 @@ struct ADEApp: App {
         .environmentObject(syncService)
         .environmentObject(dictationController)
         .environmentObject(accountService)
+        .environmentObject(appUpdateAdvisor)
         .task {
           // Configure ClerkKit and restore any cached session as early as
           // possible so the account surface has determinate state. No-op when
           // no publishable key is wired into the build.
           await accountService.bootstrap()
+        }
+        .task {
+          await appUpdateAdvisor.checkForUpdates()
         }
         .task {
           guard !didBootstrapSync else { return }
@@ -92,6 +97,7 @@ struct ADEApp: App {
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }
           Task { await accountService.updateAttentionAppForeground(true) }
+          Task { await appUpdateAdvisor.checkForUpdates() }
           // Defense-in-depth: drain intent commands queued by an extension
           // process while the bridge wasn't reachable (cold launch drains via
           // register(); this covers warm foregrounds).

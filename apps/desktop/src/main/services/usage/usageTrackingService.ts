@@ -33,12 +33,18 @@ import type {
   UsageProviderSource,
   UsageProviderStatus,
   UsageProviderStatusMap,
+  UsageAccount,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
   UsageSnapshot,
 } from "../../../shared/types";
-import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import {
+  ADE_USAGE_RANGE_PRESETS,
+  isAdeUsageRangePreset,
+  isAdeUsageScope,
+  usageProviderAccountUrl,
+} from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
   decodeOpenCodeRegistryId,
@@ -47,6 +53,10 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import {
+  resolveProviderAccounts,
+  type ProviderAccountIdentity,
+} from "./providerAccountIdentity";
 import {
   cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
@@ -2134,6 +2144,63 @@ function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: str
  * `unauthed`/`error` when there is no fallback). Returns the windows to render
  * plus the per-provider status and the timestamp of the last real success.
  */
+/**
+ * Stamp account identity onto each provider status and pool it into the
+ * snapshot's account directory.
+ *
+ * Identity is carried forward from the previous snapshot when this read came up
+ * empty (a transient unreadable config should not blank a line that was on
+ * screen a second ago); the limits URL is a constant, so it is always
+ * rewritten.
+ *
+ * Accounts are keyed by email, which is what makes the same login seen from two
+ * machines one account with two `machines` entries. Today only this machine
+ * polls quota — the fan-out in `accountUsageLiveRefresh` carries history
+ * rollups, not live windows — so a directory normally has one machine per
+ * account. Nothing here assumes that.
+ */
+async function stampProviderAccounts(
+  providerStatus: UsageProviderStatusMap,
+  previous: UsageProviderStatusMap | null,
+  machineLabel: string,
+): Promise<UsageAccount[]> {
+  let identities: Partial<Record<UsageProvider, ProviderAccountIdentity>> = {};
+  try {
+    identities = await resolveProviderAccounts();
+  } catch {
+    identities = {};
+  }
+  const accounts: UsageAccount[] = [];
+  for (const key of Object.keys(providerStatus) as UsageProvider[]) {
+    const status = providerStatus[key];
+    if (!status) continue;
+    const email = identities[key]?.email ?? previous?.[key]?.accountEmail;
+    const plan = identities[key]?.plan ?? previous?.[key]?.accountPlan;
+    const url = usageProviderAccountUrl(key);
+    providerStatus[key] = {
+      ...status,
+      ...(email ? { accountEmail: email } : {}),
+      ...(plan ? { accountPlan: plan } : {}),
+      ...(url ? { accountUrl: url } : {}),
+    };
+    const checkedAt = status.updatedAt ?? status.lastSuccessAt ?? undefined;
+    accounts.push({
+      id: accountIdFor(key, email),
+      provider: key,
+      ...(email ? { email } : {}),
+      ...(plan ? { plan } : {}),
+      machines: [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }],
+      ...(url ? { accountUrl: url } : {}),
+    });
+  }
+  return accounts;
+}
+
+/** Stable per snapshot: the email when known, else "this machine's <provider>". */
+function accountIdFor(provider: UsageProvider, email: string | undefined): string {
+  return email ? `${provider}:${email.toLowerCase()}` : `${provider}:local`;
+}
+
 function buildProviderWindows(
   provider: UsageProvider,
   freshWindows: UsageWindow[],
@@ -3524,9 +3591,26 @@ export function createUsageTrackingService({
           spendControlReached = lastSnapshot.spendControlReached;
         }
         const costResult = cachedCostResult();
+        // Identity of the account these windows describe, plus the provider's
+        // own limits page. Stamped here so every client renders the same two
+        // facts from one source instead of each keeping its own copy.
+        const accounts = await stampProviderAccounts(
+          providerStatus,
+          lastSnapshot?.providerStatus ?? null,
+          readLocalMachineIdentity()?.label ?? os.hostname(),
+        );
+        // Every window carries the account it describes, so a client can group
+        // one card per window with one segment per account without re-deriving
+        // the mapping from provider names.
+        const accountIdByProvider = new Map(accounts.map((account) => [account.provider, account.id]));
+        allWindows = allWindows.map((window) => {
+          const accountId = accountIdByProvider.get(window.provider);
+          return accountId ? { ...window, accountId } : window;
+        });
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
+          ...(accounts.length ? { accounts } : {}),
           ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
           pacing,
           pacingByProvider,

@@ -620,10 +620,15 @@ func workChatOlderTranscriptPageAdvances(
 func workChatHasOlderTranscriptHistory(
   chatEventCursor: Int?,
   canonicalTranscriptCursor: Int?,
-  allowsCanonicalFallback: Bool
+  allowsCanonicalFallback: Bool,
+  liveEventWindowTruncated: Bool = false
 ) -> Bool {
   if (chatEventCursor ?? 0) > 0 { return true }
-  return allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0
+  if allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0 { return true }
+  // The local live-event window was cut while this chat sat idle. What is on
+  // screen is a tail, not the whole conversation, even though the text reads as
+  // continuous — offer the head slot rather than fake a complete thread.
+  return liveEventWindowTruncated
 }
 
 struct WorkSessionDestinationView: View {
@@ -777,6 +782,10 @@ struct WorkSessionDestinationView: View {
   // walking arbitrarily old transcript history.
   @State var olderChatEventHistoryCursor: Int?
   @State var olderTranscriptLoading = false
+  /// True once the idle prune has actually dropped heavy content events from
+  /// this session's local window. Drives the "load earlier" head slot so a
+  /// text-back-filled thread does not render as if nothing were missing.
+  @State var liveEventWindowTruncated = false
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var artifactsRenderSignature = 0
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
@@ -2384,7 +2393,11 @@ struct WorkSessionDestinationView: View {
     }
     reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()
-    pruneIdleLiveChatEventHistoryIfNeeded(transcriptStatus: transcriptStatus, eventTranscript: eventTranscript)
+    // No prune here. This runs at the end of every transcript refresh — i.e.
+    // immediately after hydration has just fetched up to 1 000 events — and cut
+    // that freshly-built window straight back down to the idle tail. The live
+    // event path (`syncTranscriptFromLiveEvents`) still prunes while idle, so
+    // the memory guard is intact without throwing away what we just asked for.
     if forceRemote {
       lastTranscriptRemoteRefreshAt = Date()
     }
@@ -2399,10 +2412,16 @@ struct WorkSessionDestinationView: View {
           liveTurnActiveHint != true,
           !workTranscriptIndicatesActiveTurn(eventTranscript)
     else { return }
-    let compactedEvents = syncService.pruneChatEventHistory(
-      sessionId: sessionId,
-      keepingTail: workChatIdleLiveEventTailLimit
-    )
+    let eventsBefore = syncService.chatEventHistory(sessionId: sessionId).count
+    let compactedEvents = syncService.pruneChatEventHistory(sessionId: sessionId) { events in
+      workPrunedIdleChatEventHistory(events, keepingHeavyTail: workChatIdleLiveEventTailLimit)
+    }
+    if compactedEvents.count < eventsBefore {
+      // Heavy content was dropped. Text comes back from the canonical
+      // transcript on reopen, so the thread would otherwise render as if it
+      // were whole — arm the "load earlier" head slot and say so instead.
+      liveEventWindowTruncated = true
+    }
     liveTranscriptCache.compact(sessionId: sessionId, events: compactedEvents)
   }
 
@@ -2510,7 +2529,8 @@ struct WorkSessionDestinationView: View {
     workChatHasOlderTranscriptHistory(
       chatEventCursor: olderChatEventHistoryCursor,
       canonicalTranscriptCursor: olderTranscriptCursor,
-      allowsCanonicalFallback: !isCrossProject
+      allowsCanonicalFallback: !isCrossProject,
+      liveEventWindowTruncated: liveEventWindowTruncated
     )
   }
 

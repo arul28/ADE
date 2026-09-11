@@ -1944,6 +1944,14 @@ type ClaudeRuntime = {
    */
   taskToolInputByToolUseId: Map<string, ClaudeTaskToolInput>;
   /**
+   * Human-chosen Agent/Task tool `name` per subagent identity (taskId and
+   * agentId both key the same entry). `subagent_type` stays the agent *type*;
+   * this is the display label and rides the wire as `label`. Kept off
+   * `activeSubagents` because terminal paths delete that entry — and the
+   * matching tool-input stash — before the result event is emitted.
+   */
+  subagentLabelById: Map<string, string>;
+  /**
    * Per-workflow-task emit state for the SDK's undocumented
    * `workflow_progress` snapshot on system:task_progress. Keyed by the
    * workflow taskId → per-agent transition tracking, so cumulative snapshots
@@ -5529,6 +5537,34 @@ function extractTaskToolInput(input: unknown): ClaudeTaskToolInput | null {
     ...(isBackground ? { isBackground } : {}),
     ...(model ? { model } : {}),
   };
+}
+
+/**
+ * Record the Agent/Task tool's `name` for a subagent identity. Both id spaces
+ * (task_id and agent_id) key the same label so terminal events — which only
+ * carry one of them — still resolve it.
+ */
+function rememberClaudeSubagentLabel(
+  runtime: ClaudeRuntime,
+  label: string | undefined,
+  ids: Array<string | null | undefined>,
+): void {
+  if (!label) return;
+  for (const id of ids) {
+    if (id) runtime.subagentLabelById.set(id, label);
+  }
+}
+
+/** Spread-ready `label` for a Claude subagent lifecycle event. */
+function claudeSubagentLabelFields(
+  runtime: ClaudeRuntime,
+  ids: Array<string | null | undefined>,
+): { label?: string } {
+  for (const id of ids) {
+    const label = id ? runtime.subagentLabelById.get(id) : undefined;
+    if (label) return { label };
+  }
+  return {};
 }
 
 function normalizePreview(text: string, maxChars = 220): string | null {
@@ -16977,7 +17013,15 @@ export function createAgentChatService(args: {
       : normalizeClaudeTaskType(taskMsg.task_type) ?? existing?.taskType;
     const messageAgentType = compactString(taskMsg.subagent_type);
     const classificationAgentType = stashed?.subagentType ?? messageAgentType ?? existing?.agentType;
-    const agentType = classificationAgentType ?? stashed?.name;
+    // `name` is the spawn's display label, never its agent type — it rides the
+    // wire as `label` (see rememberClaudeSubagentLabel) so the UI can show the
+    // human-chosen name without losing `subagent_type`.
+    const agentType = classificationAgentType;
+    rememberClaudeSubagentLabel(runtime, stashed?.name, [
+      taskId,
+      compactString(taskMsg.agent_id),
+      existing?.agentId,
+    ]);
     const command = compactString(taskMsg.command) ?? existing?.command;
     const description = compactString(taskMsg.description)
       ?? stashed?.description
@@ -19470,6 +19514,7 @@ export function createAgentChatService(args: {
         ),
       );
       runtime.taskToolInputByToolUseId.clear();
+      runtime.subagentLabelById.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
       settleClaudePendingApprovals(runtime);
@@ -21665,6 +21710,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "subagent_progress",
       taskId,
+      ...claudeSubagentLabelFields(runtime, [taskId, agentId]),
       ...(agentId ? { agentId } : {}),
       ...(parentAgentId ? { parentAgentId } : {}),
       ...(agentType ? { agentType } : {}),
@@ -23467,7 +23513,6 @@ export function createAgentChatService(args: {
           const model = compactString(taskMsg.model) ?? existing?.model ?? stashed?.model;
           const agentType = existing?.agentType
             ?? stashed?.subagentType
-            ?? stashed?.name
             ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
@@ -23496,6 +23541,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId,
+            ...claudeSubagentLabelFields(runtime, [taskId, agentId]),
             ...(agentId ? { agentId } : {}),
             ...(parentAgentId ? { parentAgentId } : {}),
             ...(agentType ? { agentType } : {}),
@@ -23673,6 +23719,7 @@ export function createAgentChatService(args: {
             emitChatEvent(managed, {
               type: "subagent_progress",
               taskId,
+              ...claudeSubagentLabelFields(runtime, [taskId, agentId]),
               ...(agentId ? { agentId } : {}),
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(agentType ? { agentType } : {}),
@@ -23719,7 +23766,6 @@ export function createAgentChatService(args: {
               ?? "",
           );
           const agentType = stashed?.subagentType
-            ?? stashed?.name
             ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length
             ? taskMsg.agent_id.trim()
@@ -23899,7 +23945,6 @@ export function createAgentChatService(args: {
           const model = existing?.model ?? stashed?.model;
           const agentType = existing?.agentType
             ?? stashed?.subagentType
-            ?? stashed?.name
             ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId ?? notificationAgentId;
           const parentAgentId = compactString(taskMsg.parent_agent_id) ?? existing?.parentAgentId ?? null;
@@ -28285,6 +28330,7 @@ export function createAgentChatService(args: {
     if (alreadyStarted) return;
     const providerSessionId = runtime.sdkSessionId?.trim();
     emitChatEvent(managed, {
+      ...claudeSubagentLabelFields(runtime, [event.taskId, event.agentId]),
       ...event,
       ...(providerSessionId ? { providerSessionId } : {}),
     });
@@ -28307,8 +28353,11 @@ export function createAgentChatService(args: {
     const merged = { ...previous, ...taskInput };
     runtime.taskToolInputByToolUseId.set(toolUseId, merged);
     const model = merged.model;
-    const agentType = merged.subagentType ?? merged.name;
-    if (!model && !agentType) return;
+    // `name` is the display label, not the agent type — keep them separate so
+    // `agentType` stays `subagent_type` and the name rides as `label`.
+    const agentType = merged.subagentType;
+    const label = merged.name;
+    if (!model && !agentType && !label) return;
 
     const correctedIds = new Set<string>();
     for (const [key, entry] of runtime.activeSubagents) {
@@ -28319,7 +28368,11 @@ export function createAgentChatService(args: {
         ...(agentType ? { agentType } : {}),
       };
       runtime.activeSubagents.set(key, nextEntry);
-      const metadataChanged = nextEntry.model !== entry.model || nextEntry.agentType !== entry.agentType;
+      const labelChanged = Boolean(label) && runtime.subagentLabelById.get(key) !== label;
+      rememberClaudeSubagentLabel(runtime, label, [key, nextEntry.taskId, nextEntry.agentId]);
+      const metadataChanged = nextEntry.model !== entry.model
+        || nextEntry.agentType !== entry.agentType
+        || labelChanged;
       const identity = nextEntry.agentId ?? nextEntry.taskId;
       if (
         !metadataChanged
@@ -28337,6 +28390,7 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "subagent_started",
         taskId: entry.taskId,
+        ...claudeSubagentLabelFields(runtime, [entry.taskId, nextEntry.agentId]),
         ...(nextEntry.agentId ? { agentId: nextEntry.agentId } : {}),
         ...(nextEntry.parentAgentId ? { parentAgentId: nextEntry.parentAgentId } : {}),
         ...(nextEntry.agentType ? { agentType: nextEntry.agentType } : {}),
@@ -28363,9 +28417,14 @@ export function createAgentChatService(args: {
     ) {
       return;
     }
-    emitChatEvent(managed, event);
+    emitChatEvent(managed, {
+      ...claudeSubagentLabelFields(runtime, [event.taskId, event.agentId]),
+      ...event,
+    });
     runtime.emittedSubagentStartIds.delete(event.taskId);
     if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
+    runtime.subagentLabelById.delete(event.taskId);
+    if (event.agentId) runtime.subagentLabelById.delete(event.agentId);
   };
 
   /**
@@ -34256,6 +34315,7 @@ export function createAgentChatService(args: {
       activeSubagents: new Map(),
       emittedSubagentStartIds: new Set(),
       taskToolInputByToolUseId: new Map(),
+      subagentLabelById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
       taskTodos: { seeded: false, byId: new Map() },

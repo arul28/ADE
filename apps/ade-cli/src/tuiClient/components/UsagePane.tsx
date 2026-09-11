@@ -50,6 +50,9 @@ function ProviderStatusRow({ status, nowMs }: { status: ProviderStatus; nowMs: n
         <Text color={theme.color.t2} bold>{status.label}</Text>
         <Text color={theme.color.t4} dimColor>{`${source} · ${formatUpdatedAt(status.updatedAt, nowMs)}`}</Text>
       </Box>
+      {status.accountEmail ? (
+        <Text color={theme.color.t4} dimColor>{status.accountEmail}</Text>
+      ) : null}
       {!isHealthy ? (
         <Text color={theme.color.warning} wrap="wrap">
           {`${stateLabel} · ${status.message ?? (status.state === "stale" ? "Showing last known quota" : "Quota unavailable")}`}
@@ -101,7 +104,9 @@ function QuotaWindowRow({
   return (
     <Box flexDirection="column" marginTop={marginTop}>
       <Box flexDirection="row" justifyContent="space-between">
-        <Text color={theme.color.t2}>{endTruncate(window.label, labelWidth)}</Text>
+        <Text color={theme.color.t2}>
+          {endTruncate(window.account ? `${window.label} · ${window.account}` : window.label, labelWidth)}
+        </Text>
         {countdown ? (
           <Text color={theme.color.t4} dimColor>{`↻ ${countdown}`}</Text>
         ) : null}

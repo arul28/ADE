@@ -29,6 +29,8 @@ struct WorkComposerOverflowButton: View {
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var promptStash = WorkPromptStashController()
   @Binding var attachmentPickerPresented: Bool
+  @Binding var filePickerPresented: Bool
+  @Binding var videoPickerPresented: Bool
   @Binding var draft: String
   @Binding var attachments: [WorkChatInputAttachment]
   let canCompose: Bool
@@ -46,6 +48,8 @@ struct WorkComposerOverflowButton: View {
   var body: some View {
     WorkChatComposerOverflowMenu(
       attachmentPickerPresented: $attachmentPickerPresented,
+      filePickerPresented: $filePickerPresented,
+      videoPickerPresented: $videoPickerPresented,
       canCompose: canCompose,
       attachmentsAvailable: attachmentsAvailable,
       attachmentCount: attachments.count,
@@ -90,6 +94,8 @@ struct WorkComposerOverflowButton: View {
 
 struct WorkChatComposerOverflowMenu: View {
   @Binding var attachmentPickerPresented: Bool
+  @Binding var filePickerPresented: Bool
+  @Binding var videoPickerPresented: Bool
   let canCompose: Bool
   let attachmentsAvailable: Bool
   let attachmentCount: Int
@@ -111,6 +117,20 @@ struct WorkChatComposerOverflowMenu: View {
         attachmentPickerPresented = true
       } label: {
         Label("Attach image", systemImage: "photo")
+      }
+      .disabled(attachDisabled)
+
+      Button {
+        videoPickerPresented = true
+      } label: {
+        Label("Attach video…", systemImage: "film")
+      }
+      .disabled(attachDisabled)
+
+      Button {
+        filePickerPresented = true
+      } label: {
+        Label("Attach file…", systemImage: "doc")
       }
       .disabled(attachDisabled)
 

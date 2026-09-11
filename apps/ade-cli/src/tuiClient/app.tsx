@@ -11024,6 +11024,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             source: status.source,
             updatedAt: status.updatedAt ?? status.lastSuccessAt,
             message: status.message,
+            accountEmail: status.accountEmail,
           }];
         });
         const quotaWindows = snapshot.windows.map((window, index) => {
@@ -11031,11 +11032,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const label = window.windowType === "five_hour"
             ? "5-hour"
             : window.windowType.replaceAll("_", " ");
+          // Which account's window this is. One account per provider is the
+          // normal case and needs no tag; more than one, and the row says which.
+          const providerAccounts = (snapshot.accounts ?? [])
+            .filter((account) => account.provider === window.provider);
+          const account = providerAccounts.length > 1
+            ? providerAccounts.find((candidate) => candidate.id === window.accountId)?.email
+            : undefined;
           return {
-            id: `${window.provider}:${window.windowType}:${index}`,
+            id: `${window.provider}:${window.windowType}:${window.accountId ?? index}`,
             label: `${provider} ${label}`,
             percent: window.percentUsed,
             resetAt: Math.floor(Date.parse(window.resetsAt) / 1000),
+            ...(account ? { account } : {}),
           };
         });
         setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock, spendControlReached: snapshot.spendControlReached === true });

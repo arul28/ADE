@@ -4,24 +4,19 @@ import SwiftUI
 ///
 /// The chart is a `Canvas`, not a stack of shape views: a 60-bucket, 5-series
 /// chart would otherwise be 300 view identities that SwiftUI diffs on every
-/// state change (including the pace-bar touch that dims the other series). The
-/// geometry itself is precomputed in `ADEUsageChartModel` and only scaled here.
+/// state change. The geometry itself is precomputed in `ADEUsageChartModel` and
+/// only scaled here.
 
 // MARK: - Daily chart
 
 struct SettingsUsageDailyChart: View {
   let model: ADEUsageChartModel
-  /// Non-nil while a pace bar is touched: that provider stays lit and the rest
-  /// fade back, so the reader can find one provider's days in a busy chart.
-  let focusedProvider: String?
 
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
   private var increasedContrast: Bool { contrast == .increased }
 
   private var fillOpacity: Double { increasedContrast ? 0.34 : 0.20 }
-  private var dimmedOpacity: Double { increasedContrast ? 0.12 : 0.06 }
   private var lineWidth: CGFloat { increasedContrast ? 2.2 : 1.6 }
 
   var body: some View {
@@ -97,21 +92,19 @@ struct SettingsUsageDailyChart: View {
         // Draw the largest series first so smaller ones land on top and stay
         // findable; each keeps its own translucent fill.
         for series in model.series {
-          let dimmed = focusedProvider != nil && focusedProvider != series.id
           let area = adeUsageSeriesAreaPath(values: series.values, yMax: model.yMax, in: rect)
           context.fill(
             area,
-            with: .color(series.color.opacity(dimmed ? dimmedOpacity : fillOpacity))
+            with: .color(series.color.opacity(fillOpacity))
           )
           let line = adeUsageSeriesPath(values: series.values, yMax: model.yMax, in: rect)
           context.stroke(
             line,
-            with: .color(series.color.opacity(dimmed ? 0.25 : 0.95)),
+            with: .color(series.color.opacity(0.95)),
             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
           )
         }
       }
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: focusedProvider)
     } else {
       SettingsUsageEmptyPlot()
     }
@@ -137,11 +130,7 @@ struct SettingsUsageDailyChart: View {
           }
           Text(series.label)
             .font(ADEUsageType.microFont(.medium))
-            .foregroundStyle(
-              focusedProvider == nil || focusedProvider == series.id
-                ? ADEColor.textSecondary
-                : ADEColor.textMuted.opacity(0.5)
-            )
+            .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
       }
@@ -178,36 +167,30 @@ struct SettingsUsageEmptyPlot: View {
 
 // MARK: - Live Limits
 
-/// One provider's quota windows read as pace rather than level.
+/// One provider's limits: who is signed in, where to see the limits on the
+/// provider's own site, and one card per quota window.
+///
+/// Mirrors the desktop band — provider header, then a card per window read as
+/// headroom with one row per account — with the phone's trade: accounts stack
+/// as rows instead of sharing a proportional segment row, because four segments
+/// on a 390pt screen is four unreadable slivers.
 struct SettingsUsagePaceProvider: View {
   let provider: String
   let windows: [MobileUsageQuotaWindow]
+  let accounts: [ADEUsageAccountView]
   let status: MobileUsageProviderStatus?
   let spendControlReached: Bool
-  /// Which provider the chart is currently focused on, so the bar can show it.
-  let focusedProvider: String?
-  /// Tapping any bar in this card focuses the provider in the chart above; a
-  /// second tap (or tapping another provider) releases it.
-  let onToggleFocus: (String) -> Void
+
+  @Environment(\.openURL) private var openURL
+  @State private var detail: ADEUsageLimitSegment?
+
+  private var cards: [ADEUsageLimitCard] {
+    adeUsageLimitCards(provider: provider, windows: windows, accounts: accounts)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      HStack(spacing: 8) {
-        if let assetName = providerAssetName(provider) {
-          Image(assetName)
-            .resizable()
-            .scaledToFit()
-            .frame(width: 16, height: 16)
-            .accessibilityHidden(true)
-        }
-        Text(providerLabel(provider))
-          .font(ADEUsageType.bodyFont(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 8)
-        Text(sourceLabel)
-          .font(ADEUsageType.microFont())
-          .foregroundStyle(ADEColor.textMuted)
-      }
+      header
 
       if spendControlReached {
         Text("Spending cap reached")
@@ -215,18 +198,16 @@ struct SettingsUsagePaceProvider: View {
           .foregroundStyle(ADEColor.warning)
       }
 
-      if windows.isEmpty {
+      if cards.isEmpty {
         Text(status?.state == "ok" ? "Waiting for the next reading." : "No limits reported yet.")
           .font(ADEUsageType.detailFont())
           .foregroundStyle(ADEColor.textMuted)
       } else {
-        ForEach(windows) { window in
-          SettingsUsagePaceBar(
-            window: window,
+        ForEach(cards) { card in
+          SettingsUsageLimitCard(
+            card: card,
             tint: ADEColor.providerBrand(for: provider),
-            focusId: provider,
-            isFocused: focusedProvider == provider,
-            onToggleFocus: onToggleFocus
+            onSelect: { detail = $0 }
           )
         }
       }
@@ -238,7 +219,68 @@ struct SettingsUsagePaceProvider: View {
       }
     }
     .accessibilityElement(children: .contain)
+    .sheet(item: $detail) { segment in
+      ADEUsageAccountDetailSheet(
+        provider: provider,
+        windowLabel: adeUsageWindowLabel(segment.window),
+        segment: segment,
+        fallbackAccountUrl: status?.accountUrl
+      )
+    }
   }
+
+  private var header: some View {
+    HStack(spacing: 8) {
+      if let assetName = providerAssetName(provider) {
+        Image(assetName)
+          .resizable()
+          .scaledToFit()
+          .frame(width: 16, height: 16)
+          .accessibilityHidden(true)
+      }
+      VStack(alignment: .leading, spacing: 1) {
+        Text(providerLabel(provider))
+          .font(ADEUsageType.bodyFont(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        // The account the numbers belong to, and the plan it is on. Absent on
+        // older hosts and on providers that keep no local account record — the
+        // line hides rather than guessing.
+        if let subtitle = accountSubtitle {
+          Text(subtitle)
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
+      Spacer(minLength: 8)
+      Text(sourceLabel)
+        .font(ADEUsageType.microFont())
+        .foregroundStyle(ADEColor.textMuted)
+      if let url = limitsURL {
+        Button {
+          openURL(url)
+        } label: {
+          Image(systemName: "arrow.up.right.square")
+            .font(ADEUsageType.detailFont(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(providerLabel(provider)) limits in the browser")
+      }
+    }
+  }
+
+  private var accountSubtitle: String? {
+    let email = status?.accountEmail?.trimmingCharacters(in: .whitespaces)
+    let plan = status?.accountPlan?.trimmingCharacters(in: .whitespaces)
+    return [email, plan].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+      .nilIfEmpty
+  }
+
+  /// The host supplies the URL (one source shared with desktop), so a provider
+  /// whose host predates the field simply shows no link.
+  private var limitsURL: URL? { adeUsageLimitsURL(status?.accountUrl) }
 
   private var sourceLabel: String {
     switch status?.source {
@@ -258,85 +300,205 @@ struct SettingsUsagePaceProvider: View {
   }
 }
 
-struct SettingsUsagePaceBar: View {
-  let window: MobileUsageQuotaWindow
+/// One window, read as headroom: the pooled number, the next restore, and a row
+/// per account underneath.
+struct SettingsUsageLimitCard: View {
+  let card: ADEUsageLimitCard
   let tint: Color
-  let focusId: String
-  let isFocused: Bool
-  let onToggleFocus: (String) -> Void
+  let onSelect: (ADEUsageLimitSegment) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(card.label)
+          .font(ADEUsageType.detailFont(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Text("\(Int(card.percentLeft.rounded()))%")
+            .font(ADEUsageType.titleFont(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(
+              ADEUsagePressure.color(percent: card.percentUsed, providerColor: ADEColor.textPrimary)
+            )
+          Text("left")
+            .font(ADEUsageType.detailFont())
+            .foregroundStyle(ADEColor.textMuted)
+          Spacer(minLength: 0)
+          if let forecast = card.forecast {
+            Label(
+              "+\(Int(forecast.percent.rounded()))% in \(adeUsageDurationLabel(milliseconds: forecast.resetsInMs))",
+              systemImage: "arrow.clockwise"
+            )
+            .font(ADEUsageType.microFont())
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted)
+            .labelStyle(.titleAndIcon)
+          }
+        }
+      }
+
+      ForEach(card.segments) { segment in
+        SettingsUsageAccountRow(segment: segment, tint: tint, onSelect: onSelect)
+      }
+    }
+  }
+}
+
+private struct SettingsUsageAccountRow: View {
+  let segment: ADEUsageLimitSegment
+  let tint: Color
+  let onSelect: (ADEUsageLimitSegment) -> Void
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
-  private var percent: Double { window.clampedPercentUsed }
-  private var pace: ADEUsageWindowPace? { adeUsageWindowPace(window) }
+  private var accent: Color { adeUsageAccountAccent(segment.account?.id ?? segment.id) }
+  private var left: Double { segment.percentLeft }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text(adeUsageWindowLabel(window))
-          .font(ADEUsageType.detailFont(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Text("\(Int(percent.rounded()))%")
-          .font(ADEUsageType.bodyFont(.semibold))
+    Button {
+      onSelect(segment)
+    } label: {
+      VStack(alignment: .leading, spacing: 5) {
+        HStack(spacing: 6) {
+          Text(segment.account?.initials ?? "··")
+            .font(ADEUsageType.microFont(.semibold))
+            .foregroundStyle(accent)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+          Text("\(Int(left.rounded()))%")
+            .font(ADEUsageType.detailFont(.medium))
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textPrimary)
+            // Reserved width so a live tick cannot shuffle the row.
+            .frame(width: 44, alignment: .leading)
+          if let email = segment.account?.email {
+            Text(email)
+              .font(ADEUsageType.microFont())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          Spacer(minLength: 4)
+          Label(
+            adeUsageDurationLabel(milliseconds: segment.resetsInMs),
+            systemImage: "arrow.clockwise"
+          )
+          .font(ADEUsageType.microFont())
           .monospacedDigit()
-          // Reserved width so a live tick from 9% to 10% cannot shuffle the row.
-          .frame(width: 46, alignment: .trailing)
-          .foregroundStyle(ADEUsagePressure.color(percent: percent, providerColor: ADEColor.textPrimary))
-      }
+          .foregroundStyle(ADEColor.textMuted)
+          .labelStyle(.titleAndIcon)
+        }
 
-      GeometryReader { proxy in
-        ZStack(alignment: .leading) {
-          Capsule()
-            .fill(ADEColor.textMuted.opacity(contrast == .increased ? 0.28 : 0.16))
-          Capsule()
-            .fill(ADEUsagePressure.color(percent: percent, providerColor: tint))
-            .frame(width: max(2, proxy.size.width * percent / 100))
+        GeometryReader { proxy in
+          ZStack(alignment: .leading) {
+            Capsule()
+              .fill(ADEColor.textMuted.opacity(contrast == .increased ? 0.28 : 0.16))
+            Capsule()
+              .fill(ADEUsagePressure.color(percent: 100 - left, providerColor: accent))
+              .frame(width: max(2, proxy.size.width * left / 100))
+          }
+        }
+        .frame(height: 6)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: left)
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "\(adeUsageWindowLabel(segment.window)) limit, \(segment.account?.email ?? "this machine"), "
+      + "\(Int(left.rounded())) percent left"
+    )
+    .accessibilityHint("Show account details")
+  }
+}
+
+/// The phone's version of the desktop hover popover: plan, machines, headroom,
+/// reset, restore — and the way out to the provider's own page.
+struct ADEUsageAccountDetailSheet: View {
+  let provider: String
+  let windowLabel: String
+  let segment: ADEUsageLimitSegment
+  let fallbackAccountUrl: String?
+
+  @Environment(\.dismiss) private var dismiss
+  @Environment(\.openURL) private var openURL
+
+  private var pace: ADEUsageWindowPace? { adeUsageWindowPace(segment.window) }
+
+  var body: some View {
+    NavigationStack {
+      List {
+        Section {
+          row("Plan", segment.account?.plan ?? "Unknown")
+          row("Via", segment.account?.machines.map(\.label).joined(separator: " · ") ?? "This machine")
+          row("Left", "\(Int(segment.percentLeft.rounded()))%")
+          row("Resets", resetsValue)
+          if segment.restoresPercentOfPool >= 0.5 {
+            row("Restores", "+\(Int(segment.restoresPercentOfPool.rounded()))% of pool")
+          }
           if let pace {
-            // Pace marker: where an even burn would have you by now.
-            Rectangle()
-              .fill(ADEColor.textPrimary.opacity(0.45))
-              .frame(width: 1.5)
-              .offset(x: proxy.size.width * pace.elapsedFraction - 0.75)
+            row("Pace", "\(pace.paceLabel) · \(pace.dryLabel)")
+          }
+        }
+        if let url = limitsURL {
+          Section {
+            Button {
+              openURL(url)
+            } label: {
+              Label("Open limits in browser", systemImage: "arrow.up.right.square")
+            }
           }
         }
       }
-      .frame(height: 8)
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: percent)
-
-      HStack(spacing: 6) {
-        if let pace {
-          Text(pace.paceLabel)
-            .foregroundStyle(pace.isAheadOfPace ? ADEColor.warning : ADEColor.textMuted)
-          Text("·")
-            .foregroundStyle(ADEColor.textMuted)
-          Text(pace.dryLabel)
-            .foregroundStyle(pace.dryInMs != nil ? ADEColor.warning : ADEColor.textMuted)
-          Text("·")
-            .foregroundStyle(ADEColor.textMuted)
+      .navigationTitle("\(providerLabel(provider)) · \(windowLabel)")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Done") { dismiss() }
         }
-        Text("Resets in \(adeUsageDurationLabel(milliseconds: window.resetsInMs))")
-          .foregroundStyle(ADEColor.textMuted)
-        Spacer(minLength: 0)
       }
-      .font(ADEUsageType.microFont())
-      .lineLimit(1)
     }
-    .padding(.horizontal, isFocused ? 8 : 0)
-    .padding(.vertical, isFocused ? 6 : 0)
-    .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(isFocused ? tint.opacity(0.10) : Color.clear)
-    )
-    .contentShape(Rectangle())
-    // A tap, not a press-and-hold drag: a zero-distance drag gesture inside the
-    // page's ScrollView would swallow the scroll before it started.
-    .onTapGesture { onToggleFocus(focusId) }
-    .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isButton)
-    .accessibilityLabel("\(adeUsageWindowLabel(window)) limit, \(Int(percent.rounded())) percent used")
-    .accessibilityValue(pace.map { "\($0.paceLabel). \($0.dryLabel)." } ?? "")
-    .accessibilityHint(isFocused ? "Show every provider in the chart" : "Pick this provider out of the chart")
+    .presentationDetents([.medium])
   }
+
+  private var resetsValue: String {
+    let countdown = adeUsageDurationLabel(milliseconds: segment.resetsInMs)
+    guard let date = ISO8601DateFormatter().date(from: segment.window.resetsAt) else {
+      return "in \(countdown)"
+    }
+    let absolute = date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
+    return "\(absolute) · in \(countdown)"
+  }
+
+  private var limitsURL: URL? {
+    adeUsageLimitsURL(segment.account?.accountUrl ?? fallbackAccountUrl)
+  }
+
+  private func row(_ label: String, _ value: String) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+      Text(label)
+        .font(ADEUsageType.detailFont())
+        .foregroundStyle(ADEColor.textMuted)
+      Spacer(minLength: 12)
+      Text(value)
+        .font(ADEUsageType.detailFont(.medium))
+        .foregroundStyle(ADEColor.textPrimary)
+        .multilineTextAlignment(.trailing)
+    }
+  }
+}
+
+/// Only an https URL the host supplied is ever opened.
+func adeUsageLimitsURL(_ raw: String?) -> URL? {
+  guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !trimmed.isEmpty,
+        let url = URL(string: trimmed),
+        url.scheme?.lowercased() == "https" else { return nil }
+  return url
+}
+
+private extension String {
+  var nilIfEmpty: String? { isEmpty ? nil : self }
 }

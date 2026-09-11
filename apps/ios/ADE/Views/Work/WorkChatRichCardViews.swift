@@ -2451,18 +2451,10 @@ struct WorkPlanReviewCard: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// Whether the full plan body is expanded in the scrollable block.
-  @State private var planExpanded = false
   /// True while the "Reject & Revise" flow is open.
   @State private var rejectFlowVisible = false
   /// Optional feedback text the user can supply when rejecting.
   @State private var feedbackText = ""
-
-  private let collapseThreshold = 400
-
-  private var shouldOfferExpand: Bool {
-    plan.planText.count > collapseThreshold
-  }
 
   /// Resolved asking provider: the parsed plan source, else the session
   /// fallback. Drives the header verb, logo, and per-provider accent.
@@ -2537,20 +2529,16 @@ struct WorkPlanReviewCard: View {
 
   @ViewBuilder
   private var planBody: some View {
-    let displayText = (shouldOfferExpand && !planExpanded)
-      ? String(plan.planText.prefix(collapseThreshold)) + "…"
-      : plan.planText
-
+    // The whole plan renders. It used to be cut at 400 characters behind a
+    // "View full plan" toggle and then held in a 220pt scroll box; a plan the
+    // reader is being asked to approve is never shown in part.
     VStack(alignment: .leading, spacing: 8) {
-      ScrollView {
-        Text(displayText)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .textSelection(.enabled)
-      }
-      .frame(maxHeight: planExpanded ? 420 : 220)
-      .padding(12)
+      Text(plan.planText)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+        .padding(12)
       .background(
         ADEColor.recessedBackground.opacity(0.75),
         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -2559,37 +2547,10 @@ struct WorkPlanReviewCard: View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .stroke(accent.opacity(0.10), lineWidth: 0.5)
       )
-      .animation(.spring(duration: 0.28), value: planExpanded)
 
-      if shouldOfferExpand {
-        HStack(spacing: 0) {
-          Button {
-            withAnimation(.spring(duration: 0.25)) {
-              planExpanded.toggle()
-            }
-          } label: {
-            HStack(spacing: 4) {
-              Image(systemName: planExpanded ? "arrow.up.left.and.arrow.down.right" : "arrow.down.left.and.arrow.up.right")
-                .font(.system(size: 9, weight: .bold))
-              Text(planExpanded ? "Collapse" : "View full plan")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .tracking(0.6)
-            }
-            .foregroundStyle(accent.opacity(0.60))
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel(planExpanded ? "Collapse plan" : "View full plan")
-
-          Spacer(minLength: 8)
-
-          // Copy plan button
-          WorkPlanCopyButton(text: plan.planText, accent: accent)
-        }
-      } else {
-        HStack {
-          Spacer(minLength: 0)
-          WorkPlanCopyButton(text: plan.planText, accent: accent)
-        }
+      HStack {
+        Spacer(minLength: 0)
+        WorkPlanCopyButton(text: plan.planText, accent: accent)
       }
     }
   }
@@ -3511,6 +3472,12 @@ private struct WorkChatInfoSubagentRow: View {
 
   private var subtitleText: Text? {
     var parts: [Text] = []
+    // The roster is where the agent TYPE lives now — the transcript row is
+    // glyph · name · status only, and the title prefers the spawn label /
+    // description. Second line, so it costs no width.
+    if let agentType = workHumanizedAgentType(snapshot.agentType) {
+      parts.append(Text(agentType))
+    }
     if let elapsed { parts.append(Text(elapsed)) }
     if let attribution = workSubagentModelAttribution(snapshotModel: snapshot.model, sessionModel: sessionModel) {
       var model = Text(attribution.label)
@@ -3897,7 +3864,7 @@ private func workSubagentGlyphBit(id: String, index: Int) -> Bool {
 private func workSubagentStatusLabel(_ status: WorkSubagentSnapshot.Status) -> String {
   switch status {
   case .running: return "Running"
-  case .succeeded: return "Completed"
+  case .succeeded: return "Done"
   case .failed: return "Failed"
   case .stopped: return "Stopped"
   }
@@ -3956,13 +3923,10 @@ struct WorkSubagentTimelineRowView: View {
     case .backgroundCommand:
       WorkSubagentBackgroundChipRow(row: row)
     case .spawn:
-      tappable { WorkSubagentSpawnRow(row: row) }
-        .overlay(alignment: .trailing) {
-          if let spawnStopAction {
-            WorkSquareStopButton(label: workSubagentStopLabel(row.snapshot), action: spawnStopAction)
-              .padding(.trailing, 12)
-          }
-        }
+      // The stop button is a layout sibling inside the row's own HStack, not a
+      // trailing overlay: an overlay takes no space and landed on top of the
+      // status capsule the row already put at the trailing edge.
+      tappable { WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction) }
     case .result:
       tappable { WorkSubagentResultRow(row: row) }
     }
@@ -4095,17 +4059,19 @@ struct WorkSubagentStoppedGroupCardView: View {
   }
 }
 
+/// Glyph · name · status, and nothing else. A phone row has roughly 60pt left
+/// after the fixed-width chips desktop can afford, which collapsed the name to a
+/// bare "…". The agent-type and `background` chips live in the Chat Info roster
+/// row instead, which has a second line and no width pressure; background-ness
+/// is already carried here by the glyph tint.
 private struct WorkSubagentSpawnRow: View {
   let row: WorkSubagentTimelineRow
+  /// Non-nil only while the task is running and stoppable. It replaces the
+  /// status capsule rather than sitting on top of it — desktop's
+  /// open / stop / jump-to-result ladder (SubagentActivityCards.tsx).
+  var stopAction: (() -> Void)? = nil
 
   private var snapshot: WorkSubagentSnapshot { row.snapshot }
-
-  private var agentTypeChip: String? {
-    guard let raw = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !raw.isEmpty else { return nil }
-    let generic: Set<String> = ["subagent", "opencode-subagent", "background"]
-    return generic.contains(raw.lowercased()) ? nil : raw
-  }
 
   var body: some View {
     HStack(alignment: .center, spacing: 10) {
@@ -4115,14 +4081,12 @@ private struct WorkSubagentSpawnRow: View {
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
         .truncationMode(.tail)
-      if let agentTypeChip {
-        WorkSubagentTinyChip(text: agentTypeChip, tint: ADEColor.accent)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      if let stopAction {
+        WorkSquareStopButton(label: workSubagentStopLabel(snapshot), action: stopAction)
+      } else {
+        WorkSubagentStatusChip(status: snapshot.status)
       }
-      if snapshot.background {
-        WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
-      }
-      Spacer(minLength: 6)
-      WorkSubagentStatusChip(status: snapshot.status)
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 9)

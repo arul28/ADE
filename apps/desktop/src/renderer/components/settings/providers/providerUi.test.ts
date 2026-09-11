@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeProviderVersion } from "./providerUi";
+import { describeAuthenticatedAccount, describeCredentialSource } from "./cliTools";
+import type { AiProviderConnectionStatus } from "../../../../shared/types";
 
 describe("normalizeProviderVersion", () => {
   // The string that shipped to a tile as `vgrok 1.0.13 (5e9a58528b76) [stable]`
@@ -39,5 +41,35 @@ describe("normalizeProviderVersion", () => {
     // A bare integer is not a version; printing "7" under a provider name
     // would be worse than printing nothing.
     expect(normalizeProviderVersion("7")).toBeNull();
+  });
+});
+
+describe("describeAuthenticatedAccount", () => {
+  const connection = (extra: Partial<AiProviderConnectionStatus>): AiProviderConnectionStatus => ({
+    provider: "codex",
+    authAvailable: true,
+    runtimeDetected: true,
+    runtimeAvailable: true,
+    usageAvailable: true,
+    path: null,
+    blocker: null,
+    lastCheckedAt: "2026-09-10T12:00:00.000Z",
+    sources: [{ kind: "local-credentials", detected: true, source: "codex-auth-file" }],
+    ...extra,
+  });
+
+  it("names the account and its plan", () => {
+    expect(describeAuthenticatedAccount(connection({ accountEmail: "dev@example.com", accountPlan: "ChatGPT Pro" })))
+      .toBe("Authenticated as dev@example.com · ChatGPT Pro");
+    expect(describeAuthenticatedAccount(connection({ accountEmail: "dev@example.com" })))
+      .toBe("Authenticated as dev@example.com");
+    expect(describeAuthenticatedAccount(connection({}))).toBeNull();
+  });
+
+  it("leads the credential line, and falls back to the file when the account is unknown", () => {
+    expect(describeCredentialSource(connection({ accountEmail: "dev@example.com", accountPlan: "ChatGPT Pro" })))
+      .toBe("Authenticated as dev@example.com · ChatGPT Pro.");
+    expect(describeCredentialSource(connection({})))
+      .toBe("Local credentials found in ~/.codex/auth.json.");
   });
 });

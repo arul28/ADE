@@ -36,6 +36,33 @@ export function formatResetIn(resetsAt: string, nowMs: number): string {
   return `resets in ${mins}m`;
 }
 
+/**
+ * "6d 7h" / "4h 5m" / "5m" — a bare countdown for a segment chip, where the
+ * glyph beside it already says "resets". `formatResetIn` keeps the sentence
+ * form for anywhere the words carry the meaning.
+ */
+export function formatCountdown(ms: number): string {
+  if (ms <= 0) return "now";
+  const days = Math.floor(ms / 86_400_000);
+  const hours = Math.floor((ms % 86_400_000) / 3_600_000);
+  const mins = Math.floor((ms % 3_600_000) / 60_000);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+/** Absolute reset time, e.g. "9/14 1:29 AM", beside the countdown. */
+export function formatResetClock(resetsAt: string): string | null {
+  const at = Date.parse(resetsAt);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toLocaleString(undefined, {
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function formatUsagePercent(percent: number): string {
   return `${percent.toFixed(1)}%`;
 }

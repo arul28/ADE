@@ -387,8 +387,17 @@ export type RightPaneContent =
         source?: UsageProviderSource;
         updatedAt?: string | null;
         message?: string | null;
+        /** Signed-in account for this provider, when the host could resolve one. */
+        accountEmail?: string | null;
       }>;
-      quotaWindows?: Array<{ id: string; label: string; percent: number; resetAt?: number | null }>;
+      quotaWindows?: Array<{
+        id: string;
+        label: string;
+        percent: number;
+        resetAt?: number | null;
+        /** Account initials (or email when it fits) for a multi-account window. */
+        account?: string | null;
+      }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;
       /** Codex account-level spend control tripped — surfaces a terse cap marker. */
       spendControlReached?: boolean;

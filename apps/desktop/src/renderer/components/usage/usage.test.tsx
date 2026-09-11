@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiProviderConnectionStatus,
@@ -367,12 +367,14 @@ describe("usage components", () => {
   }
 
   describe("UsageLimitsBand", () => {
-    it("renders the weekly used percent for each authed provider", async () => {
+    it("reads each authed provider's weekly window as headroom, not consumption", async () => {
       render(<MountedBand />);
 
       expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
-      expect(await screen.findByText(/63\.0% used/)).toBeTruthy();
-      expect(screen.queryByText("37.0% remaining")).toBeNull();
+      // 63% used is 37% left, and the card says so in one number.
+      expect((await screen.findAllByText("37%")).length).toBeGreaterThan(0);
+      expect((await screen.findAllByText("left")).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/63\.0% used/)).toBeNull();
     });
 
     it("opens each provider usage page in the user's browser", async () => {
@@ -384,6 +386,56 @@ describe("usage components", () => {
 
       expect(window.ade.app.openExternal).toHaveBeenCalledTimes(2);
       expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://claude.ai/new#settings/usage");
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith(
+        "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      );
+    });
+
+    it("names the signed-in account on each provider, and stays silent when the host omits it", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.providerStatus = {
+        ...snapshot.providerStatus,
+        claude: { ...snapshot.providerStatus!.claude!, accountEmail: "dev@example.com" },
+      };
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      render(<MountedBand />);
+
+      expect((await screen.findAllByText("dev@example.com")).length).toBe(1);
+    });
+
+    it("gives each account a chip and a details popover with plan, machines, and restore", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          plan: "ChatGPT Pro",
+          machines: [
+            { label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" },
+            { label: "nucbox-1", checkedAt: "2026-05-08T06:00:00.000Z" },
+          ],
+          accountUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, accountId: "codex:dev@example.com" } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<MountedBand />);
+
+      const segment = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
+      fireEvent.click(segment);
+
+      const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      expect(within(popover).getByText("ChatGPT Pro")).toBeTruthy();
+      // Freshest machine first, and every machine that reported this account.
+      expect(within(popover).getByText("studio · nucbox-1")).toBeTruthy();
+      expect(within(popover).getByText("+63% of pool")).toBeTruthy();
+
+      fireEvent.click(within(popover).getByRole("button", { name: /Open limits/ }));
       expect(window.ade.app.openExternal).toHaveBeenCalledWith(
         "https://chatgpt.com/codex/cloud/settings/analytics#usage",
       );
@@ -409,7 +461,7 @@ describe("usage components", () => {
 
       expect((await screen.findAllByText("Weekly")).length).toBeGreaterThan(0);
       expect(await screen.findByText("Monthly")).toBeTruthy();
-      expect(await screen.findByText(/44\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("56%")).length).toBeGreaterThan(0);
     });
 
     it("shows pacing for both Codex windows when both limits are reported", async () => {
@@ -458,10 +510,14 @@ describe("usage components", () => {
 
       render(<MountedBand />);
 
-      expect(await screen.findByRole("progressbar", { name: "5-hour: 48.0% used" })).toBeTruthy();
-      expect(screen.getByRole("progressbar", { name: "Weekly: 63.0% used" })).toBeTruthy();
+      // One card per window, each naming the account its segment belongs to.
+      const fiveHour = await screen.findByRole("button", { name: /5-hour .*: 52% left/ });
+      expect(fiveHour).toBeTruthy();
+      const weekly = screen.getByRole("button", { name: /Weekly .*: 37% left/ });
       expect(screen.getByText("on track")).toBeTruthy();
       expect(screen.getByText("13% ahead")).toBeTruthy();
+      // The projection moved into the segment's own details.
+      fireEvent.click(weekly);
       expect(screen.getByText(/trending to 126% by reset/)).toBeTruthy();
     });
 
@@ -579,7 +635,7 @@ describe("usage components", () => {
 
       expect(await screen.findByText(/Claude sign-in required/)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
-      expect(screen.queryByText(/20\.0% used/)).toBeNull();
+      expect(screen.queryByText("80%")).toBeNull();
     });
 
     // `Intl` throws a RangeError on a currency that is not a well-formed ISO
@@ -611,7 +667,7 @@ describe("usage components", () => {
       render(<MountedBand />);
 
       // The rest of the band is intact...
-      expect(await screen.findByText(/63\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("37%")).length).toBeGreaterThan(0);
       // ...and both bad-currency cards fall back to USD rather than throwing.
       expect(screen.getByText("$12.50")).toBeTruthy();
       expect(screen.getByText("$3.00")).toBeTruthy();
@@ -640,7 +696,7 @@ describe("usage components", () => {
 
       // The readings are still on screen, and the provider's sentence is real
       // text rather than a tooltip.
-      expect(await screen.findByText(/20\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("80%")).length).toBeGreaterThan(0);
       expect(screen.getByText("Couldn't refresh Claude — showing last reading")).toBeTruthy();
       // And it never implies the numbers below are gone.
       expect(screen.getByText(/Figures below are the last good reading/)).toBeTruthy();
@@ -718,7 +774,7 @@ describe("usage components", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Dismiss this warning" }));
       expect(screen.queryByText("Couldn't refresh Claude — showing last reading")).toBeNull();
       // The readings it was sitting above are untouched.
-      expect(screen.getByText(/20\.0% used/)).toBeTruthy();
+      expect(screen.getAllByText("80%").length).toBeGreaterThan(0);
 
       // Nothing is persisted, so the next open shows it again.
       unmount();
@@ -747,7 +803,7 @@ describe("usage components", () => {
 
       render(<MountedBand />);
 
-      expect(await screen.findByText(/63\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("37%")).length).toBeGreaterThan(0);
       await act(async () => { await Promise.resolve(); });
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
@@ -786,7 +842,7 @@ describe("usage components", () => {
 
       render(<HeaderUsageControl />);
       fireEvent.click(screen.getByRole("button", { name: /^Usage/ }));
-      expect(await screen.findByText(/63\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("37%")).length).toBeGreaterThan(0);
 
       fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
       await waitFor(() => expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1));
@@ -795,14 +851,14 @@ describe("usage components", () => {
       await act(async () => {
         onBindingChanged?.(null);
       });
-      expect(await screen.findByText(/42\.0% used/)).toBeTruthy();
+      expect((await screen.findAllByText("58%")).length).toBeGreaterThan(0);
 
       await act(async () => {
         refresh.resolve(oldBindingResponse);
         await refresh.promise;
       });
-      expect(screen.getByText(/42\.0% used/)).toBeTruthy();
-      expect(screen.queryByText(/91\.0% used/)).toBeNull();
+      expect(screen.getAllByText("58%").length).toBeGreaterThan(0);
+      expect(screen.queryByText("9%")).toBeNull();
     });
   });
 
@@ -1976,7 +2032,7 @@ describe("usage components", () => {
       expect(await screen.findByText("Estimated cost")).toBeTruthy();
 
       expect(screen.queryByRole("button", { name: /Live limits/ })).toBeNull();
-      expect(screen.queryByText(/63\.0% used/)).toBeNull();
+      expect(screen.queryByText("37%")).toBeNull();
       expect(localStorage.getItem("ade.stats.liveLimits.open.v1")).toBeNull();
     });
 

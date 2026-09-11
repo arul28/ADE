@@ -251,6 +251,10 @@ import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/s
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import {
+  createChunkedAttachmentStagingRegistry,
+  readAttachmentChunk,
+} from "../fileAttachment";
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -4487,6 +4491,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
 }
 
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  /**
+   * Chunked staging for file-shaped attachments (documents, videos). One
+   * registry per host, so an upload's chunks all land in the same session map.
+   * See `services/fileAttachment.ts` for why this exists alongside the base64
+   * image route and the streamed HTTP route.
+   */
+  const chunkedAttachments = createChunkedAttachmentStagingRegistry();
   register("chat.resolveSmartLinkPreview", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const url = requireString(payload.url, "chat.resolveSmartLinkPreview requires url.");
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
@@ -4553,6 +4564,26 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     saveAgentChatTempAttachment(args, payload));
   register("chat.createAttachmentUpload", { viewerAllowed: true }, async (payload) =>
     createAgentChatAttachmentUpload(args, payload));
+  register("chat.beginTempFileAttachment", { viewerAllowed: true }, async (payload) =>
+    chunkedAttachments.begin({
+      projectRoot: requireProjectRoot(args, "chat.beginTempFileAttachment"),
+      filename: payload.filename,
+      totalBytes: payload.totalBytes,
+    }));
+  register("chat.appendTempFileAttachmentChunk", { viewerAllowed: true }, async (payload) =>
+    chunkedAttachments.append({ uploadId: payload.uploadId, base64: payload.base64 }));
+  register("chat.finishTempFileAttachment", { viewerAllowed: true }, async (payload) =>
+    chunkedAttachments.finish({ uploadId: payload.uploadId }));
+  register("chat.abortTempFileAttachment", { viewerAllowed: true }, async (payload) =>
+    chunkedAttachments.abort({ uploadId: payload.uploadId }));
+  // Read side of the same contract: pulls any staged attachment back in bounded
+  // slices so a client can preview a PDF or play a video it did not upload.
+  // `chat.getImageDataUrl` cannot serve these — it sniffs for an image MIME and
+  // rejects everything else.
+  register("chat.getAttachmentChunk", { viewerAllowed: true }, async (payload) => {
+    const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getAttachmentChunk");
+    return readAttachmentChunk(filePath, payload.offset, payload.length);
+  });
   register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
     listPromptStashes(requireService(args.db, "Database not available.")));
   register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>

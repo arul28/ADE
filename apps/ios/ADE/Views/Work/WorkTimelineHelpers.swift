@@ -4405,3 +4405,76 @@ func workErrorCategory(message: String, detail: String?) -> String {
   }
   return "general"
 }
+
+// MARK: - Idle live-event prune
+
+/// How many *structural* envelopes the idle window keeps, on top of the heavy
+/// content tail. These rows are a few dozen bytes each, so several hundred of
+/// them cost far less than a single tool result — but the budget still exists,
+/// because a long-running chat can emit subagent progress indefinitely.
+let workChatIdleStructuralEventCap = 400
+
+/// A tiny lifecycle envelope that produces a timeline row the canonical *text*
+/// transcript can never regenerate.
+///
+/// The idle prune keeps the last N events and the reopen rebuild back-fills
+/// text from the canonical transcript. That combination made the thread look
+/// complete while every subagent card from an earlier turn was gone. These
+/// kinds are therefore exempt from the tail cut: the budget applies to heavy
+/// content events (assistant text, tool calls/results, diffs, command output)
+/// which the canonical transcript *can* restore.
+///
+/// `todoUpdate` is deliberately NOT structural: it is superseded wholesale by
+/// the next one, and it carries a list, so keeping every historical copy would
+/// spend the structural budget on rows nobody can scroll back to.
+func workChatEventIsStructuralEnvelope(_ event: AgentChatEvent) -> Bool {
+  switch event {
+  case .subagentStarted, .subagentProgress, .subagentResult:
+    return true
+  case .scheduledWorkUpdate:
+    return true
+  // Not a row of its own, but it *suppresses* rows — dropping it silently
+  // un-retracts a retracted message on reopen.
+  case .transcriptRetraction:
+    return true
+  case .userMessageResolution:
+    return true
+  case .contextCompact, .codexContextCompaction:
+    return true
+  case .claudeGoalUpdated, .claudeGoalCleared:
+    return true
+  case .conversationReset:
+    return true
+  default:
+    return false
+  }
+}
+
+/// Structure-aware idle prune. Keeps the last `heavyTailLimit` heavy content
+/// envelopes plus (up to `structuralCap`) structural ones, in their original
+/// order. Returns the retained events.
+func workPrunedIdleChatEventHistory(
+  _ events: [AgentChatEventEnvelope],
+  keepingHeavyTail heavyTailLimit: Int,
+  structuralCap: Int = workChatIdleStructuralEventCap
+) -> [AgentChatEventEnvelope] {
+  let heavyLimit = max(0, heavyTailLimit)
+  let structuralLimit = max(0, structuralCap)
+  var keptHeavy = 0
+  var keptStructural = 0
+  var keepFlags = [Bool](repeating: false, count: events.count)
+  // Walk from the tail so "keep the last N" falls out of the same pass for
+  // both budgets.
+  for index in stride(from: events.count - 1, through: 0, by: -1) {
+    if workChatEventIsStructuralEnvelope(events[index].event) {
+      guard keptStructural < structuralLimit else { continue }
+      keptStructural += 1
+    } else {
+      guard keptHeavy < heavyLimit else { continue }
+      keptHeavy += 1
+    }
+    keepFlags[index] = true
+  }
+  guard keptHeavy + keptStructural < events.count else { return events }
+  return zip(events, keepFlags).compactMap { $1 ? $0 : nil }
+}

@@ -59,13 +59,76 @@ let workDraftAutosaveDebounce: Duration = .milliseconds(400)
 /// each save, bounded by `maxEntries` (LRU by `updatedAt`) so a long-lived
 /// install can't grow it without limit.
 enum WorkComposerDraftStore {
-  struct Entry: Codable, Equatable {
-    var text: String
-    var updatedAt: Double
+  /// Who the staged attachment paths belong to, mirroring desktop's
+  /// `attachmentOwnerBinding`. A ref staged against one project is meaningless
+  /// in another, so a restore that does not match its owner drops the refs
+  /// rather than showing chips that can never resolve.
+  struct AttachmentOwner: Codable, Equatable {
+    var projectId: String?
+    var rootPath: String?
   }
 
-  /// Versioned so a future shape change can migrate rather than mis-decode.
-  private static let storageKey = "ade.work.composerDrafts.v1"
+  /// Text plus *references* to staged attachments — never bytes.
+  ///
+  /// This map is decoded, re-encoded and rewritten whole on every debounced
+  /// keystroke, on the main actor. Paths are short strings, so that property
+  /// survives; a JPEG would turn each keystroke into a multi-megabyte encode.
+  /// Desktop draws the same line (`stripComposerDraftScreenshots` strips inline
+  /// data URLs and keeps paths).
+  ///
+  /// `localFiles` is the offline leg: when the host is unreachable the bytes go
+  /// to a purgeable `Caches` directory and only their names live here.
+  struct Entry: Codable, Equatable {
+    var text: String
+    var attachments: [AgentChatFileRef] = []
+    var attachmentOwner: AttachmentOwner? = nil
+    var localFiles: [WorkComposerDraftAttachmentCache.StoredFile] = []
+    var updatedAt: Double
+
+    var isEmpty: Bool {
+      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && attachments.isEmpty
+        && localFiles.isEmpty
+    }
+
+    init(
+      text: String,
+      attachments: [AgentChatFileRef] = [],
+      attachmentOwner: AttachmentOwner? = nil,
+      localFiles: [WorkComposerDraftAttachmentCache.StoredFile] = [],
+      updatedAt: Double
+    ) {
+      self.text = text
+      self.attachments = attachments
+      self.attachmentOwner = attachmentOwner
+      self.localFiles = localFiles
+      self.updatedAt = updatedAt
+    }
+
+    /// Hand-written rather than synthesized. Swift's synthesized decoder does
+    /// NOT fall back to a property's default value for an absent key — it
+    /// throws `keyNotFound` — so a v1 blob (`{text, updatedAt}`) would fail to
+    /// decode as v2 and the whole map would silently read as empty. That is the
+    /// exact failure the migration exists to prevent, and it would also make
+    /// every future field addition a draft-wipe.
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+      attachments = try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments) ?? []
+      attachmentOwner = try container.decodeIfPresent(AttachmentOwner.self, forKey: .attachmentOwner)
+      localFiles = try container.decodeIfPresent(
+        [WorkComposerDraftAttachmentCache.StoredFile].self,
+        forKey: .localFiles
+      ) ?? []
+      updatedAt = try container.decodeIfPresent(Double.self, forKey: .updatedAt) ?? 0
+    }
+  }
+
+  /// v2 adds `attachments` / `attachmentOwner` / `localFiles`. v1 held only
+  /// `{text, updatedAt}` and is migrated (text preserved) rather than dropped —
+  /// an unsent prompt is the whole reason this store exists.
+  private static let storageKey = "ade.work.composerDrafts.v2"
+  private static let legacyStorageKey = "ade.work.composerDrafts.v1"
   /// Enough to cover every chat a user realistically juggles; older drafts are
   /// evicted oldest-first rather than kept forever.
   private static let maxEntries = 60
@@ -92,32 +155,89 @@ enum WorkComposerDraftStore {
     return loadAll()[key]?.text ?? ""
   }
 
-  /// Persists (or clears) the draft for one surface. An emptied composer removes
-  /// its entry outright: a user who deletes their text must not have it
-  /// resurrected the next time the screen mounts.
+  /// The whole entry, for the composer that also restores attachments.
+  static func loadEntry(_ key: String) -> Entry? {
+    guard !key.isEmpty else { return nil }
+    return loadAll()[key]
+  }
+
+  /// Persists (or clears) the draft text for one surface, leaving any staged
+  /// attachment refs in place. An emptied composer removes its entry only when
+  /// nothing is attached either: a user who deletes their text but keeps three
+  /// files staged has not abandoned the draft.
   static func save(_ text: String, for key: String) {
     guard !key.isEmpty else { return }
     var map = loadAll()
-    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    let existing = map[key]
+    let clipped = String(text.prefix(maxLength))
+    let trimmed = clipped.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty, existing?.attachments.isEmpty != false, existing?.localFiles.isEmpty != false {
       guard map.removeValue(forKey: key) != nil else { return }
+      WorkComposerDraftAttachmentCache.purge(key)
       WorkDefaultsJSONMap.persist(map, under: storageKey)
       return
     }
-    let clipped = String(text.prefix(maxLength))
     // Autosave runs on a keystroke debounce; skip the UserDefaults write when
     // the content is unchanged so idle typing pauses cost nothing.
-    if map[key]?.text == clipped { return }
-    map[key] = Entry(text: clipped, updatedAt: Date().timeIntervalSince1970)
-    map = WorkDefaultsJSONMap.evictingOldest(map, keeping: maxEntries, updatedAt: \.updatedAt)
-    WorkDefaultsJSONMap.persist(map, under: storageKey)
+    if existing?.text == clipped { return }
+    var entry = existing ?? Entry(text: clipped, updatedAt: 0)
+    entry.text = clipped
+    entry.updatedAt = Date().timeIntervalSince1970
+    map[key] = entry
+    persistEvicting(map)
   }
 
-  /// Drops a draft that has been consumed (sent) so it can't reappear.
+  /// Persists the staged attachment set for one surface. Refs are capped at the
+  /// composer's own per-message limit so one entry can't grow without bound.
+  static func saveAttachments(
+    _ attachments: [AgentChatFileRef],
+    owner: AttachmentOwner?,
+    localFiles: [WorkComposerDraftAttachmentCache.StoredFile],
+    for key: String
+  ) {
+    guard !key.isEmpty else { return }
+    var map = loadAll()
+    let capped = Array(attachments.prefix(workChatInputAttachmentLimit))
+    let cappedLocal = Array(localFiles.prefix(WorkComposerDraftAttachmentCache.maxFilesPerKey))
+    var entry = map[key] ?? Entry(text: "", updatedAt: 0)
+    if entry.attachments == capped, entry.localFiles == cappedLocal, entry.attachmentOwner == owner {
+      return
+    }
+    entry.attachments = capped
+    entry.localFiles = cappedLocal
+    entry.attachmentOwner = owner
+    entry.updatedAt = Date().timeIntervalSince1970
+    if entry.isEmpty {
+      guard map.removeValue(forKey: key) != nil else { return }
+      WorkComposerDraftAttachmentCache.purge(key)
+      WorkDefaultsJSONMap.persist(map, under: storageKey)
+      return
+    }
+    map[key] = entry
+    persistEvicting(map)
+  }
+
+  /// Drops a draft that has been consumed (sent) so it can't reappear — text,
+  /// refs, and any cached bytes together. Every clear site drops all three;
+  /// leaving the cache behind would resurrect attachments under a later draft.
   static func clear(_ key: String) {
     guard !key.isEmpty else { return }
+    WorkComposerDraftAttachmentCache.purge(key)
     var map = loadAll()
     guard map.removeValue(forKey: key) != nil else { return }
     WorkDefaultsJSONMap.persist(map, under: storageKey)
+  }
+
+  /// Eviction has to purge the byte cache too, or a dropped entry leaves its
+  /// files on disk with nothing left that names them.
+  private static func persistEvicting(_ map: [String: Entry]) {
+    let survivors = WorkDefaultsJSONMap.evictingOldest(map, keeping: maxEntries, updatedAt: \.updatedAt)
+    if survivors.count != map.count {
+      for key in map.keys where survivors[key] == nil {
+        WorkComposerDraftAttachmentCache.purge(key)
+      }
+    }
+    WorkDefaultsJSONMap.persist(survivors, under: storageKey)
   }
 
   private static func loadAll() -> [String: Entry] {
@@ -127,7 +247,23 @@ enum WorkComposerDraftStore {
     // answered a secret question on an intermediate build and never renders
     // another question card would keep the plaintext blob forever.
     WorkQuestionDraftStore.purgeLegacyStoreIfNeeded()
+    migrateV1IfNeeded()
     return WorkDefaultsJSONMap.load(storageKey)
+  }
+
+  /// One-shot v1 → v2 lift. v1's `{text, updatedAt}` decodes straight into v2's
+  /// entry (the new fields all have defaults), so the migration is a re-encode
+  /// under the new key followed by removing the old one.
+  private static func migrateV1IfNeeded() {
+    let defaults = ADESharedContainer.defaults
+    guard defaults.object(forKey: legacyStorageKey) != nil else { return }
+    if defaults.object(forKey: storageKey) == nil {
+      let legacy: [String: Entry] = WorkDefaultsJSONMap.load(legacyStorageKey)
+      if !legacy.isEmpty {
+        WorkDefaultsJSONMap.persist(legacy, under: storageKey)
+      }
+    }
+    defaults.removeObject(forKey: legacyStorageKey)
   }
 }
 

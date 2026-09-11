@@ -84,6 +84,8 @@ struct HubInlineComposer: View {
   @State private var modelPickerPresented = false
   @State private var destinationPickerPresented = false
   @State private var attachmentPickerPresented = false
+  @State private var filePickerPresented = false
+  @State private var videoPickerPresented = false
   @State private var isDictating = false
   @State private var controlsWidth: CGFloat = 0
   // Global top edge of the destination control, so the picker popover can size
@@ -275,6 +277,13 @@ struct HubInlineComposer: View {
     )
     .onAppear { onAppearSetup() }
     .workPersistedDraft($draft, key: WorkComposerDraftStore.hubNewChatKey)
+    .workPersistedDraftAttachments($attachments, key: WorkComposerDraftStore.hubNewChatKey)
+    .workChatFileAttachmentPickers(
+      filePickerPresented: $filePickerPresented,
+      videoPickerPresented: $videoPickerPresented,
+      attachments: $attachments,
+      onDismiss: { composerFocused = true }
+    )
     .onChange(of: composerFocused) { _, focused in
       if focused { withAnimation(hubComposerSpring) { expanded = true } }
     }
@@ -645,6 +654,8 @@ struct HubInlineComposer: View {
             if !isDictating {
               WorkComposerOverflowButton(
                 attachmentPickerPresented: $attachmentPickerPresented,
+                filePickerPresented: $filePickerPresented,
+                videoPickerPresented: $videoPickerPresented,
                 draft: $draft,
                 attachments: $attachments,
                 canCompose: !busy,

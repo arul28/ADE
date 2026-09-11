@@ -1001,7 +1001,31 @@ allowing a cross-provider fork.
   sockets (the relay brokers WebSocket frames, not HTTP), and SSH targets
   all fall back to `chat.saveTempAttachment` with the legacy 10 MB
   image-only contract. The capability is purely additive; **iOS stays on
-  the legacy path** and is not offered the upload route.
+  the legacy path for images** and is not offered the upload route.
+- **File-shaped attachments over sync (iOS).** Documents and videos cannot
+  use either of the routes above: `chat.saveTempAttachment` sniffs for an
+  image MIME and rejects them, and the HTTP upload route needs a direct TCP
+  leg the relay does not provide. They ride a chunked base64 contract
+  instead — `chat.beginTempFileAttachment` /
+  `chat.appendTempFileAttachmentChunk` / `chat.finishTempFileAttachment` /
+  `chat.abortTempFileAttachment` (`apps/ade-cli/src/services/fileAttachment.ts`)
+  — at the same 50 MB product ceiling, in 512 KiB slices, landing in a
+  `.part` file that is renamed only on finish. The host owns the ceiling, so
+  a client cannot talk past it by understating the size. The staged ref
+  carries type `File`, so the agent receives a path exactly as it does on
+  desktop. `chat.getAttachmentChunk` is the read mirror, used for in-thread
+  QuickLook and video previews on the phone.
+- **iOS composer.** Attachments upload the moment they are staged, so the
+  send button stays live while bytes move (the send awaits the in-flight
+  task) and the persisted draft holds *refs*, not bytes —
+  `WorkComposerDraftStore.Entry` v2 mirrors desktop's
+  `ComposerDraftStorageSnapshot`. When the host is unreachable the bytes go
+  to a purgeable `Caches/ade-composer-drafts/<key>` directory (<=5 files,
+  <=10 MB), purged on send, on clear, and on LRU eviction. The composer also
+  has a collapse control (`keyboard.chevron.compact.down`, top right of the
+  card) that lowers the keyboard, clamps the field to one line, hides the
+  suggestion strip and switches the tray to 24 pt chips; tapping a chip or
+  the field expands it again. Nothing is unstaged by collapsing.
 - Parallel launches reuse this same attachment path after the renderer
   validates the 12-file cap. Every child session receives identical
   attachment refs; provider-specific handling still happens inside

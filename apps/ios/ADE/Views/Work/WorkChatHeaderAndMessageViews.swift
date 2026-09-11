@@ -405,27 +405,13 @@ struct WorkChatMessageBubble: View, Equatable {
   private var assistantRow: some View {
     // Desktop parity: the agent answer is plain markdown prose on the flat
     // canvas — NO card, NO border, NO background. Just left-aligned text that
-    // reads like a document. The truncation / "Show more" affordance stays but
-    // unstyled so it doesn't reintroduce a boxed feel.
+    // reads like a document. It renders whole: there is no line budget, no
+    // "Show more" step, and no summary row counting what is missing, because
+    // nothing is missing.
     let preview = assistantPreview
-    let usesMonospacedPreview = preview.usesMonospacedRendering
 
     return VStack(alignment: .leading, spacing: 10) {
-      if preview.isTruncated {
-        if usesMonospacedPreview {
-          WorkAssistantMonospacedPreview(text: preview.text)
-            .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
-        } else {
-          WorkMarkdownRenderer(
-            markdown: preview.text,
-            streamingCacheKey: isStreaming ? message.id : nil,
-            fullMarkdown: message.markdown,
-            previewAnchor: preview.anchor,
-            fullMarkdownIdentity: "\(message.markdownDigest ?? workStableDigest(message.markdown)):\(message.markdownRevision)"
-          )
-            .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
-        }
-      } else if usesMonospacedPreview {
+      if preview.usesMonospacedRendering {
         WorkAssistantMonospacedPreview(text: preview.text)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       } else {
@@ -435,50 +421,6 @@ struct WorkChatMessageBubble: View, Equatable {
         )
           .accessibilityElement(children: .ignore)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
-      }
-
-      if preview.isTruncated {
-        HStack(spacing: 12) {
-              Text(workAssistantMessagePreviewSummaryText(preview))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(ADEColor.textMuted)
-
-          Spacer(minLength: 0)
-
-          Button {
-            UIPasteboard.general.string = message.markdown
-          } label: {
-            Label("Copy full", systemImage: "doc.on.doc")
-              .labelStyle(.titleAndIcon)
-              .font(.caption2.weight(.semibold))
-              .frame(minHeight: 44)
-              .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(ADEColor.textSecondary)
-
-          // Hybrid ladder: the first tap expands downward in place; anything
-          // still truncated after that goes to the full-screen viewer rather
-          // than paginating the reader through a thousand more lines.
-          if let onShowMore, !hasExpandedInPlace {
-            Button(action: onShowMore) {
-              Label("Show more", systemImage: "chevron.down")
-                .labelStyle(.titleAndIcon)
-                .font(.caption2.weight(.semibold))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(ADEColor.accent)
-          } else {
-            WorkOpenFullOutputButton(
-              title: "Response",
-              text: message.markdown,
-              label: "Open full output",
-              prominent: true
-            )
-          }
-        }
       }
     }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -916,88 +858,22 @@ func workAssistantMessagePreview(
   }
 
   let usesMonospacedPreview = classification ?? workAssistantMessageUsesMonospacedPreview(normalized)
-  let clampedLineBudget = workAssistantMessageEffectiveLineBudget(
-    requestedLineBudget: max(lineBudget, 1),
-    usesMonospacedPreview: usesMonospacedPreview
-  )
-  let clampedCharacterBudget = max(
-    usesMonospacedPreview
-      ? max(characterBudget, workAssistantMessageWideCharacterBudget(forLineBudget: clampedLineBudget))
-      : characterBudget,
-    256
-  )
   let totalLineCount = knownLineCount ?? workAssistantMessageLineCount(normalized)
   let totalCharacterCount = knownCharacterCount ?? normalized.count
-  let smallFullCharacterBudget = max(clampedCharacterBudget, workAssistantMessageSmallFullCharacterBudget)
-  if totalLineCount <= clampedLineBudget && totalCharacterCount <= smallFullCharacterBudget {
-    return WorkAssistantMessagePreview(
-      text: markdown,
-      isTruncated: false,
-      usesMonospacedRendering: usesMonospacedPreview,
-      visibleLineCount: totalLineCount,
-      totalLineCount: totalLineCount,
-      visibleCharacterCount: totalCharacterCount,
-      totalCharacterCount: totalCharacterCount,
-      anchor: anchor
-    )
-  }
-
-  if anchor == .tail {
-    return workAssistantMessageTailPreview(
-      normalized,
-      lineBudget: clampedLineBudget,
-      characterBudget: clampedCharacterBudget,
-      totalLineCount: totalLineCount,
-      totalCharacterCount: totalCharacterCount,
-      usesMonospacedRendering: usesMonospacedPreview,
-      containsFence: knownMarkdownContainsFence,
-      openingFence: knownMarkdownOpeningFence
-    )
-  }
-
-  var rendered = String()
-  rendered.reserveCapacity(min(totalCharacterCount, clampedCharacterBudget))
-  var usedCharacters = 0
-  var visibleLineCount = 0
-  var lineStart = normalized.startIndex
-
-  while lineStart <= normalized.endIndex, visibleLineCount < clampedLineBudget {
-    let lineEnd = normalized[lineStart...].firstIndex(of: "\n") ?? normalized.endIndex
-    let newlineCost = visibleLineCount == 0 ? 0 : 1
-    let remaining = clampedCharacterBudget - usedCharacters - newlineCost
-    guard remaining > 0 else { break }
-
-    if visibleLineCount > 0 {
-      rendered.append("\n")
-      usedCharacters += 1
-    }
-
-    let lineLength = normalized.distance(from: lineStart, to: lineEnd)
-    if lineLength > remaining {
-      let prefixEnd = normalized.index(lineStart, offsetBy: remaining)
-      rendered.append(contentsOf: normalized[lineStart..<prefixEnd])
-      usedCharacters = clampedCharacterBudget
-      visibleLineCount += 1
-      break
-    }
-
-    rendered.append(contentsOf: normalized[lineStart..<lineEnd])
-    usedCharacters += lineLength
-    visibleLineCount += 1
-
-    guard lineEnd < normalized.endIndex else { break }
-    lineStart = normalized.index(after: lineEnd)
-  }
-
+  // Assistant answers render whole, always. There is no line or character
+  // budget any more: a thousand-line answer is on screen the moment it
+  // arrives, with no "Show more" step and no full-screen viewer detour. The
+  // budget parameters survive only so the preview cache can keep its keying;
+  // they no longer bound what the reader sees.
   return WorkAssistantMessagePreview(
-    text: rendered,
-    isTruncated: visibleLineCount < totalLineCount || rendered.count < totalCharacterCount,
+    text: markdown,
+    isTruncated: false,
     usesMonospacedRendering: usesMonospacedPreview,
-    visibleLineCount: visibleLineCount,
+    visibleLineCount: totalLineCount,
     totalLineCount: totalLineCount,
-    visibleCharacterCount: rendered.count,
+    visibleCharacterCount: totalCharacterCount,
     totalCharacterCount: totalCharacterCount,
-    anchor: .head
+    anchor: anchor
   )
 }
 

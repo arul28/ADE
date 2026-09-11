@@ -122,9 +122,24 @@ export function buildClaudeAvailabilityMessage(
   return "Ready";
 }
 
+/** "Authenticated as dev@example.com · ChatGPT Pro", when the provider says so. */
+export function describeAuthenticatedAccount(
+  connection: AiProviderConnectionStatus | null | undefined,
+): string | null {
+  const email = connection?.accountEmail?.trim();
+  const plan = connection?.accountPlan?.trim();
+  if (!email && !plan) return null;
+  if (!email) return `Authenticated · ${plan}`;
+  return plan ? `Authenticated as ${email} · ${plan}` : `Authenticated as ${email}`;
+}
+
 export function describeCredentialSource(
   connection: AiProviderConnectionStatus | null | undefined,
 ): string | null {
+  // The account, when the provider records one locally, says more than the file
+  // it was read from — so it leads, and the file stays as the fallback.
+  const account = describeAuthenticatedAccount(connection);
+  if (account) return `${account}.`;
   const localSource = connection?.sources.find((entry) => entry.kind === "local-credentials" && entry.detected);
   if (!localSource?.source) return null;
   if (localSource.source === "macos-keychain") return "Local credentials found in macOS Keychain.";

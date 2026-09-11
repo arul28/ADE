@@ -63,3 +63,16 @@ export function providerColor(provider: string, theme: ThemeId = "dark"): string
   const pair = PROVIDER_COLORS[key] ?? FALLBACK_PALETTE[hashIndex(key, FALLBACK_PALETTE.length)]!;
   return theme === "light" ? pair.light : pair.dark;
 }
+
+/**
+ * A stable accent for an account chip.
+ *
+ * Accounts have no brand of their own, so they borrow the same theme-aware
+ * fallback palette an unknown provider uses, indexed by a hash of the account
+ * id. Same account, same colour, in both themes — and no palette that exists
+ * only for this one surface.
+ */
+export function accountAccentColor(accountId: string, theme: ThemeId = "dark"): string {
+  const pair = FALLBACK_PALETTE[hashIndex(accountId.trim().toLowerCase(), FALLBACK_PALETTE.length)]!;
+  return theme === "light" ? pair.light : pair.dark;
+}
