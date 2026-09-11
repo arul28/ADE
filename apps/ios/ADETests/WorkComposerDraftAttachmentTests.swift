@@ -149,4 +149,65 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     WorkComposerDraftAttachmentCache.purge(draftKey)
     XCTAssertTrue(WorkComposerDraftAttachmentCache.read(stored, for: draftKey).isEmpty)
   }
+
+  /// The cache directory token has to be the SAME on the next launch.
+  ///
+  /// It used to be `String(format:)` over `draftKey.hashValue`, which Swift
+  /// seeds per process: after a relaunch the key resolved to a different
+  /// directory, so every restore came back empty AND `purge(key)` could only
+  /// ever delete the current launch's copy. This asserts the property a
+  /// single-process test otherwise cannot see — the token is a pure function of
+  /// the key, with no per-run entropy.
+  func testDirectoryTokenIsDeterministicForAKey() {
+    let draftKey = "chat:8B2A5A0E-0000-4000-8000-000000000001"
+    let token = workStableFileToken(draftKey)
+
+    XCTAssertEqual(token, workStableFileToken(draftKey))
+    // SHA-256 prefix: hex, fixed width, and separator-free so it is a legal
+    // single path component for a key containing ":".
+    XCTAssertEqual(token.count, 24)
+    XCTAssertTrue(token.allSatisfy { $0.isHexDigit })
+    XCTAssertNotEqual(token, workStableFileToken(draftKey + "x"))
+    // A known digest prefix, so a future "optimisation" back to a seeded hash
+    // fails here rather than silently in the field.
+    XCTAssertEqual(workStableFileToken("chat:example"), "003d647841f8b540e95b998e")
+  }
+
+  /// Directories no live draft key names are reclaimed. That is the only route
+  /// to the copies earlier builds wrote under per-process tokens, and to keys
+  /// evicted from the store while the app was not running.
+  func testOrphanSweepDropsUnreferencedCacheDirectories() {
+    let liveKey = key()
+    let deadKey = key()
+    defer {
+      WorkComposerDraftAttachmentCache.purge(liveKey)
+      WorkComposerDraftAttachmentCache.purge(deadKey)
+    }
+
+    let attachment = WorkChatInputAttachment(
+      uploadData: Data("bytes".utf8),
+      filename: "note.txt",
+      mimeType: "text/plain",
+      kind: .file,
+      state: .ready
+    )
+    let liveFiles = WorkComposerDraftAttachmentCache.write([attachment], for: liveKey)
+    let deadFiles = WorkComposerDraftAttachmentCache.write([attachment], for: deadKey)
+    XCTAssertFalse(WorkComposerDraftAttachmentCache.read(liveFiles, for: liveKey).isEmpty)
+    XCTAssertFalse(WorkComposerDraftAttachmentCache.read(deadFiles, for: deadKey).isEmpty)
+
+    WorkComposerDraftAttachmentCache.purgeOrphans(liveKeys: [liveKey])
+
+    XCTAssertFalse(WorkComposerDraftAttachmentCache.read(liveFiles, for: liveKey).isEmpty)
+    XCTAssertTrue(WorkComposerDraftAttachmentCache.read(deadFiles, for: deadKey).isEmpty)
+  }
+
+  /// A 0-byte file is rejected before the upload, with the same reason the host
+  /// gives at `finish`.
+  func testEmptyAttachmentMessageNamesTheFile() {
+    XCTAssertEqual(
+      workChatFileAttachmentEmptyMessage("notes.txt"),
+      "\"notes.txt\" is empty. Attach a file with content."
+    )
+  }
 }

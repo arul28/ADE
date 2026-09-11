@@ -27,19 +27,23 @@ export type UsageAccountView = {
   email?: string;
   plan?: string;
   machines: UsageAccountMachine[];
-  accountUrl?: string;
+  url?: string;
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
 
 /**
- * Two letters for an account chip.
+ * Two letters for an account chip, from an EMAIL.
+ *
+ * Not to be confused with `renderer/lib/account.ts`'s `accountInitials`, which
+ * monograms the signed-in ADE account's display NAME. Different input,
+ * different rule; they were one grep away from looking like one helper.
  *
  * `first.last@host` → FL, `dev@host` → DE, and a bare label falls back to its
  * own first two letters so a machine-only account still gets a stable chip
  * rather than a placeholder glyph.
  */
-export function accountInitials(email: string | undefined, fallback = ""): string {
+export function emailInitials(email: string | undefined, fallback = ""): string {
   const local = (email ?? "").split("@")[0] ?? "";
   const parts = local.split(/[._+-]+/).filter(Boolean);
   if (parts.length >= 2) {
@@ -72,8 +76,8 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         ...(account.email ? { email: account.email } : {}),
         ...(account.plan ? { plan: account.plan } : {}),
         machines: [...account.machines],
-        ...(account.accountUrl ? { accountUrl: account.accountUrl } : {}),
-        initials: accountInitials(account.email, account.machines[0]?.label),
+        ...(account.url ? { url: account.url } : {}),
+        initials: emailInitials(account.email, account.machines[0]?.label),
       });
       continue;
     }

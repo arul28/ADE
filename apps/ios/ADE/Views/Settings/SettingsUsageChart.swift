@@ -271,12 +271,7 @@ struct SettingsUsagePaceProvider: View {
     }
   }
 
-  private var accountSubtitle: String? {
-    let email = status?.accountEmail?.trimmingCharacters(in: .whitespaces)
-    let plan = status?.accountPlan?.trimmingCharacters(in: .whitespaces)
-    return [email, plan].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
-      .nilIfEmpty
-  }
+  private var accountSubtitle: String? { adeUsageAccountSubtitle(status) }
 
   /// The host supplies the URL (one source shared with desktop), so a provider
   /// whose host predates the field simply shows no link.
@@ -465,7 +460,7 @@ struct ADEUsageAccountDetailSheet: View {
 
   private var resetsValue: String {
     let countdown = adeUsageDurationLabel(milliseconds: segment.resetsInMs)
-    guard let date = ISO8601DateFormatter().date(from: segment.window.resetsAt) else {
+    guard let date = adeUsageParseISODate(segment.window.resetsAt) else {
       return "in \(countdown)"
     }
     let absolute = date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
@@ -473,7 +468,7 @@ struct ADEUsageAccountDetailSheet: View {
   }
 
   private var limitsURL: URL? {
-    adeUsageLimitsURL(segment.account?.accountUrl ?? fallbackAccountUrl)
+    adeUsageLimitsURL(segment.account?.url ?? fallbackAccountUrl)
   }
 
   private func row(_ label: String, _ value: String) -> some View {
@@ -499,6 +494,3 @@ func adeUsageLimitsURL(_ raw: String?) -> URL? {
   return url
 }
 
-private extension String {
-  var nilIfEmpty: String? { isEmpty ? nil : self }
-}

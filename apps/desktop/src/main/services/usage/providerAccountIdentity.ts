@@ -135,10 +135,13 @@ export async function readCodexAccount(home: string = os.homedir()): Promise<Pro
   const parsed = await readJsonFile(path.join(codexHome, "auth.json"));
   if (!parsed) return {};
   const tokens = isRecord(parsed.tokens) ? parsed.tokens : parsed;
-  const claims = decodeJwtClaims(typeof tokens.id_token === "string" ? tokens.id_token : undefined);
+  const idToken = typeof tokens.id_token === "string" ? tokens.id_token : undefined;
+  const claims = decodeJwtClaims(idToken);
   if (!claims) return {};
   const auth = isRecord(claims["https://api.openai.com/auth"]) ? claims["https://api.openai.com/auth"] : null;
-  const email = normalizeEmail(claims.email) ?? normalizeEmail(claims.preferred_username);
+  // The email/preferred_username fallback lives in `decodeJwtEmail`; the raw
+  // claim set is still needed here for the OpenAI plan claim.
+  const email = decodeJwtEmail(idToken);
   const plan = formatCodexPlan(auth?.chatgpt_plan_type);
   return { ...(email ? { email } : {}), ...(plan ? { plan } : {}) };
 }
@@ -208,15 +211,24 @@ export async function resolveProviderAccounts(
     ["claude", () => readClaudeAccount()],
     ["codex", () => readCodexAccount()],
   ];
+  // Total by construction: this is the ONE guard for account identity. Callers
+  // (the usage poller, `buildProviderConnections`) used to wrap it in a catch
+  // each, which is two guards for a call that already swallows every IO and
+  // parse error in its readers — and two places for the contract to drift.
   await Promise.all(readers.map(async ([provider, read]) => {
-    const cached = cache.get(provider);
-    if (cached && nowMs - cached.at < ACCOUNT_EMAIL_TTL_MS) {
-      if (cached.identity.email || cached.identity.plan) out[provider] = cached.identity;
-      return;
+    try {
+      const cached = cache.get(provider);
+      if (cached && nowMs - cached.at < ACCOUNT_EMAIL_TTL_MS) {
+        if (cached.identity.email || cached.identity.plan) out[provider] = cached.identity;
+        return;
+      }
+      const identity = await read();
+      cache.set(provider, { at: nowMs, identity });
+      if (identity.email || identity.plan) out[provider] = identity;
+    } catch {
+      // Identity is a display string. A provider that cannot be read leaves the
+      // line blank rather than failing the poll it is attached to.
     }
-    const identity = await read();
-    cache.set(provider, { at: nowMs, identity });
-    if (identity.email || identity.plan) out[provider] = identity;
   }));
   return out;
 }

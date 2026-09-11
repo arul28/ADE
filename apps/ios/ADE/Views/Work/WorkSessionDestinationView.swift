@@ -2534,6 +2534,25 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  /// Retire the idle-prune latch.
+  ///
+  /// `liveEventWindowTruncated` arms the "load earlier" head slot when the idle
+  /// prune drops heavy content: what is on screen is a tail, so offering the
+  /// slot is honest at that moment. It is NOT honest forever. Once a load has
+  /// run to a non-failure conclusion, the real cursors
+  /// (`olderChatEventHistoryCursor` / `olderTranscriptCursor`) know whether
+  /// anything older exists — and when they say no, a latch that never clears
+  /// leaves a permanently armed control whose every tap is a no-op.
+  ///
+  /// Chosen over "re-hydrate from the canonical transcript on tap": the tap
+  /// already does exactly that when a cursor exists, and when none does there
+  /// is nothing to re-hydrate from, so the only truthful move is to stop
+  /// offering the slot. A transient `.failed` deliberately does not clear it.
+  @MainActor
+  private func retireLiveEventWindowTruncationLatch() {
+    liveEventWindowTruncated = false
+  }
+
   /// Fetch the next strictly-older transcript page from the host and prepend
   /// it to the fallback entries that feed the chat timeline.
   @MainActor
@@ -2545,6 +2564,9 @@ struct WorkSessionDestinationView: View {
     defer { olderTranscriptLoading = false }
     switch await loadOlderChatEventHistoryPageIfPossible() {
     case .loaded(let addedTimelineEntries):
+      // The event-page cursor is authoritative from here; the prune latch has
+      // nothing left to say.
+      retireLiveEventWindowTruncationLatch()
       return .loaded(
         hasMoreHistory: hasOlderTranscriptHistory,
         addedTimelineEntries: addedTimelineEntries
@@ -2560,6 +2582,10 @@ struct WorkSessionDestinationView: View {
     // path as soon as its ack arrives.
     guard !isCrossProject else { return .failed }
     guard let cursor = olderTranscriptCursor, cursor > 0 else {
+      // No event page, no canonical cursor: there is provably nothing older to
+      // fetch, so the head slot retires instead of staying armed on a tap that
+      // can only ever be a no-op.
+      retireLiveEventWindowTruncationLatch()
       return .loaded(hasMoreHistory: false, addedTimelineEntries: false)
     }
     var loadedPage: SyncService.AgentChatTranscriptPage?
@@ -2599,6 +2625,8 @@ struct WorkSessionDestinationView: View {
     if transcriptChanged {
       setTranscript(merged)
     }
+    // A canonical page landed; `olderTranscriptCursor` owns the answer now.
+    retireLiveEventWindowTruncationLatch()
     return .loaded(
       hasMoreHistory: hasOlderTranscriptHistory,
       addedTimelineEntries: fallbackChanged || transcriptChanged

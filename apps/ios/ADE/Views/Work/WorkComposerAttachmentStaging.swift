@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import PhotosUI
 import SwiftUI
@@ -33,6 +34,12 @@ func workChatFileAttachmentTooLargeMessage(_ name: String) -> String {
   "\"\(name)\" is larger than 50 MB. Attach a smaller file."
 }
 
+/// The host rejects a 0-byte upload at `finish` — it would reach the agent as a
+/// path with nothing behind it. Saying so here costs no round trip.
+func workChatFileAttachmentEmptyMessage(_ name: String) -> String {
+  "\"\(name)\" is empty. Attach a file with content."
+}
+
 /// Best-effort kind for a UTI or a filename, used by both pickers.
 func workChatInputAttachmentKind(forFilename filename: String, contentType: UTType?) -> WorkChatInputAttachmentKind {
   if let contentType {
@@ -40,9 +47,18 @@ func workChatInputAttachmentKind(forFilename filename: String, contentType: UTTy
     if contentType.conforms(to: .image) { return .image }
     return .file
   }
-  let ext = (filename as NSString).pathExtension.lowercased()
-  if ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(ext) { return .video }
-  if ["png", "jpg", "jpeg", "gif", "heic", "webp", "bmp"].contains(ext) { return .image }
+  return workChatInputAttachmentKind(forExtension: (filename as NSString).pathExtension)
+}
+
+/// One list per kind, so the picker and the already-staged-ref classifier cannot
+/// disagree about whether `.webm` is a video.
+private let workChatVideoExtensions: Set<String> = ["mov", "mp4", "m4v", "avi", "mkv", "webm"]
+private let workChatImageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "webp", "bmp"]
+
+private func workChatInputAttachmentKind(forExtension rawExtension: String) -> WorkChatInputAttachmentKind {
+  let ext = rawExtension.lowercased()
+  if workChatVideoExtensions.contains(ext) { return .video }
+  if workChatImageExtensions.contains(ext) { return .image }
   return .file
 }
 
@@ -50,8 +66,32 @@ func workChatInputAttachmentKind(forFilename filename: String, contentType: UTTy
 func workChatAttachmentRefKind(_ ref: AgentChatFileRef) -> WorkChatInputAttachmentKind {
   if workChatAttachmentIsImage(ref) { return .image }
   let ext = (ref.path as NSString).pathExtension.lowercased()
-  if ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(ext) { return .video }
-  return .file
+  return workChatVideoExtensions.contains(ext) ? .video : .file
+}
+
+/// A stable, separator-free directory/file token for an arbitrary key.
+///
+/// `String.hashValue` is seeded per process (only `SWIFT_DETERMINISTIC_HASHING`
+/// pins it), so a name derived from it resolves to a DIFFERENT directory after
+/// every relaunch — which for a cache that exists precisely to survive a
+/// relaunch means the bytes are never found and the old directory is never
+/// purged. SHA-256 of the UTF-8 key is stable across launches and OS versions.
+///
+/// Not to be confused with `workStableDigest` (WorkMarkdownParsing.swift), the
+/// other cross-launch-stable hash in this app. That one is FNV-1a and feeds
+/// in-memory render caches, where the only requirements are "cheap enough to
+/// run on every markdown block of every frame" and "stable within a build".
+/// This one names things on DISK — directories and files that outlive the
+/// process and are attacker-influenced (host-supplied paths and filenames) —
+/// so it wants SHA-256's collision resistance and pays for it once per key.
+func workStableFileToken(_ key: String) -> String {
+  SHA256.hash(data: Data(key.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+}
+
+/// The one signature that says "these attachments changed in a way worth
+/// persisting": identity plus readiness, nothing about bytes.
+func workChatAttachmentSignature(_ attachments: [WorkChatInputAttachment]) -> String {
+  attachments.map { "\($0.id.uuidString):\($0.isReady ? 1 : 0)" }.joined(separator: ",")
 }
 
 // MARK: - Upload on attach
@@ -254,12 +294,31 @@ enum WorkComposerDraftAttachmentCache {
   }
 
   /// Draft keys contain `:` (`chat:<id>`), which is legal on APFS but a
-  /// path-shaped value from an id we did not mint. Hashing it keeps the
-  /// directory name a fixed, separator-free token.
+  /// path-shaped value from an id we did not mint. Digesting it keeps the
+  /// directory name a fixed, separator-free token — and, unlike `hashValue`,
+  /// the SAME token on the next launch, which is the only thing that makes this
+  /// cache a cache rather than a leak.
   private static func directory(for draftKey: String) -> URL? {
     guard !draftKey.isEmpty, let root else { return nil }
-    let token = String(format: "%016llx", UInt64(bitPattern: Int64(draftKey.hashValue)))
-    return root.appendingPathComponent(token, isDirectory: true)
+    return root.appendingPathComponent(workStableFileToken(draftKey), isDirectory: true)
+  }
+
+  /// Drop directories no live draft key names any more.
+  ///
+  /// Every launch before the token became deterministic wrote under a different
+  /// name, and `purge(key)` could only ever reach the current launch's. This is
+  /// what reclaims those, plus any directory whose draft entry has since been
+  /// evicted. Best-effort: a cache sweep must never fail a composer.
+  static func purgeOrphans(liveKeys: [String]) {
+    guard let root else { return }
+    let live = Set(liveKeys.filter { !$0.isEmpty }.map { workStableFileToken($0) })
+    guard let entries = try? FileManager.default.contentsOfDirectory(
+      at: root,
+      includingPropertiesForKeys: nil
+    ) else { return }
+    for entry in entries where !live.contains(entry.lastPathComponent) {
+      try? FileManager.default.removeItem(at: entry)
+    }
   }
 
   @discardableResult
@@ -320,12 +379,43 @@ enum WorkComposerDraftAttachmentCache {
 
 // MARK: - Document and video pickers
 
+/// Which attachment picker a composer currently has open.
+///
+/// One mode, not three booleans. The three are mutually exclusive — a composer
+/// cannot present a photo sheet, a document browser, and a video sheet at once
+/// — and three sibling `Bool`s are that invariant with nothing enforcing it,
+/// threaded through five files as six separate props.
+enum WorkComposerPicker: Equatable {
+  case photos
+  case files
+  case videos
+}
+
+extension Binding where Value == WorkComposerPicker? {
+  /// The `isPresented` binding SwiftUI's sheet modifiers want, for one picker.
+  ///
+  /// Dismissal only clears the mode when this picker is still the open one, so
+  /// a late `false` from a sheet that is already being replaced cannot close
+  /// the picker that replaced it.
+  func isPresenting(_ picker: WorkComposerPicker) -> Binding<Bool> {
+    Binding(
+      get: { wrappedValue == picker },
+      set: { isPresented in
+        if isPresented {
+          wrappedValue = picker
+        } else if wrappedValue == picker {
+          wrappedValue = nil
+        }
+      }
+    )
+  }
+}
+
 /// Adds "Attach file…" and "Attach video…" to a composer. The photo picker's
 /// `.images` filter lives in `workChatAttachmentPicker`; these are the two
 /// routes it cannot serve.
 private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
-  @Binding var filePickerPresented: Bool
-  @Binding var videoPickerPresented: Bool
+  @Binding var presentedPicker: WorkComposerPicker?
   @Binding var attachments: [WorkChatInputAttachment]
   let onDismiss: () -> Void
 
@@ -338,7 +428,7 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
   func body(content: Content) -> some View {
     content
       .fileImporter(
-        isPresented: $filePickerPresented,
+        isPresented: $presentedPicker.isPresenting(.files),
         allowedContentTypes: [.item, .data, .pdf, .movie, .audio, .plainText],
         allowsMultipleSelection: true
       ) { result in
@@ -351,7 +441,7 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
         onDismiss()
       }
       .photosPicker(
-        isPresented: $videoPickerPresented,
+        isPresented: $presentedPicker.isPresenting(.videos),
         selection: $videoItems,
         maxSelectionCount: remainingSlots,
         matching: .videos,
@@ -362,8 +452,8 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
         videoItems = []
         Task { await appendVideos(newItems) }
       }
-      .onChange(of: videoPickerPresented) { wasPresented, nowPresented in
-        if wasPresented && !nowPresented { onDismiss() }
+      .onChange(of: presentedPicker) { previous, current in
+        if previous == .videos && current != .videos { onDismiss() }
       }
   }
 
@@ -404,6 +494,15 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
         ))
         continue
       }
+      guard !data.isEmpty else {
+        attachments.append(WorkChatInputAttachment(
+          id: id,
+          filename: name,
+          kind: workChatInputAttachmentKind(forFilename: name, contentType: contentType),
+          state: .failed(workChatFileAttachmentEmptyMessage(name))
+        ))
+        continue
+      }
       let kind = workChatInputAttachmentKind(forFilename: name, contentType: contentType)
       if kind == .image, let image = UIImage(data: data),
          let prepared = workChatInputAttachment(from: image, filename: name, id: id) {
@@ -434,6 +533,10 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
         }
         guard data.count <= workChatFileAttachmentMaxBytes else {
           mark(id, failed: workChatFileAttachmentTooLargeMessage(fallbackName))
+          continue
+        }
+        guard !data.isEmpty else {
+          mark(id, failed: workChatFileAttachmentEmptyMessage(fallbackName))
           continue
         }
         replace(id, with: WorkChatInputAttachment(
@@ -467,14 +570,12 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
 
 extension View {
   func workChatFileAttachmentPickers(
-    filePickerPresented: Binding<Bool>,
-    videoPickerPresented: Binding<Bool>,
+    presentedPicker: Binding<WorkComposerPicker?>,
     attachments: Binding<[WorkChatInputAttachment]>,
     onDismiss: @escaping () -> Void
   ) -> some View {
     modifier(WorkChatFileAttachmentPickerModifier(
-      filePickerPresented: filePickerPresented,
-      videoPickerPresented: videoPickerPresented,
+      presentedPicker: presentedPicker,
       attachments: attachments,
       onDismiss: onDismiss
     ))
@@ -496,9 +597,7 @@ private struct WorkPersistedDraftAttachmentsModifier: ViewModifier {
 
   @State private var restored = false
 
-  private var signature: String {
-    attachments.map { "\($0.id.uuidString):\($0.isReady ? 1 : 0)" }.joined(separator: ",")
-  }
+  private var signature: String { workChatAttachmentSignature(attachments) }
 
   func body(content: Content) -> some View {
     content

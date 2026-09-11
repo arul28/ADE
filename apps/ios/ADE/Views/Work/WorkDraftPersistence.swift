@@ -228,6 +228,17 @@ enum WorkComposerDraftStore {
     WorkDefaultsJSONMap.persist(map, under: storageKey)
   }
 
+  /// Reclaim cache directories no draft entry names any more.
+  ///
+  /// `purge(key)` can only reach a key the caller still holds. Anything written
+  /// by a build whose directory token was per-process seeded, or by an entry
+  /// that fell off the LRU while the app was not running, is unreachable that
+  /// way — this is what collects it. Cheap (one `contentsOfDirectory`), so it
+  /// hangs off backgrounding rather than off a keystroke.
+  static func purgeOrphanedAttachmentCaches() {
+    WorkComposerDraftAttachmentCache.purgeOrphans(liveKeys: Array(loadAll().keys))
+  }
+
   /// Eviction has to purge the byte cache too, or a dropped entry leaves its
   /// files on disk with nothing left that names them.
   private static func persistEvicting(_ map: [String: Entry]) {

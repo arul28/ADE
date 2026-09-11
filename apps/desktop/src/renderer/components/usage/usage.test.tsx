@@ -415,7 +415,7 @@ describe("usage components", () => {
             { label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" },
             { label: "nucbox-1", checkedAt: "2026-05-08T06:00:00.000Z" },
           ],
-          accountUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+          url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
         },
       ];
       snapshot.windows = snapshot.windows.map((window) =>
@@ -439,6 +439,52 @@ describe("usage components", () => {
       expect(window.ade.app.openExternal).toHaveBeenCalledWith(
         "https://chatgpt.com/codex/cloud/settings/analytics#usage",
       );
+    });
+
+    /**
+     * The popover renders after the segment button in DOM order, so tabbing
+     * forward moves focus INTO it. Closing on the button's own `blur` unmounted
+     * it mid-tab and made "Open limits" mouse-only; the close now hangs off the
+     * container's focusout with a `relatedTarget` check.
+     */
+    it("keeps the popover open while keyboard focus moves into it", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          plan: "ChatGPT Pro",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+          url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, accountId: "codex:dev@example.com" } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<MountedBand />);
+
+      const segment = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
+      fireEvent.focus(segment);
+      const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      const openLimits = within(popover).getByRole("button", { name: /Open limits/ });
+
+      // Tab forward: focus leaves the segment button for a node still inside
+      // the segment container. The panel must survive that.
+      fireEvent.blur(segment, { relatedTarget: openLimits });
+      expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();
+
+      fireEvent.click(openLimits);
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith(
+        "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      );
+
+      // Focus leaving the whole segment does close it.
+      fireEvent.blur(openLimits, { relatedTarget: document.body });
+      expect(screen.queryByRole("dialog", { name: "Weekly details" })).toBeNull();
     });
 
     it("renders weekly and monthly windows as separate meters", async () => {

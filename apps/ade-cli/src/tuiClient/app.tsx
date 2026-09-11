@@ -323,6 +323,7 @@ import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from ".
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
 import { ExternalSessionPreview } from "./components/ExternalSessionPreview";
+import { usageWindowAccountLabel } from "./components/UsagePane";
 import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
@@ -11032,13 +11033,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const label = window.windowType === "five_hour"
             ? "5-hour"
             : window.windowType.replaceAll("_", " ");
-          // Which account's window this is. One account per provider is the
-          // normal case and needs no tag; more than one, and the row says which.
-          const providerAccounts = (snapshot.accounts ?? [])
-            .filter((account) => account.provider === window.provider);
-          const account = providerAccounts.length > 1
-            ? providerAccounts.find((candidate) => candidate.id === window.accountId)?.email
-            : undefined;
+          const account = usageWindowAccountLabel(snapshot.accounts, window);
           return {
             id: `${window.provider}:${window.windowType}:${window.accountId ?? index}`,
             label: `${provider} ${label}`,

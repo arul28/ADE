@@ -6223,7 +6223,10 @@ struct MobileUsageAccount: Codable, Equatable, Identifiable {
   var email: String?
   var plan: String?
   var machines: [MobileUsageAccountMachine]
-  var accountUrl: String?
+  /// Provider-hosted limits page. Unprefixed on a type already called
+  /// `MobileUsageAccount`; `MobileUsageProviderStatus` keeps `accountUrl`,
+  /// where the prefix distinguishes it from the status's own fields.
+  var url: String?
 }
 
 struct MobileUsageProviderStatus: Codable, Equatable {

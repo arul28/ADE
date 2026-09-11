@@ -88,7 +88,37 @@ enum WorkChatAttachmentPreviewFiles {
     return ext.isEmpty ? stem : "\(stem).\(ext)"
   }
 
-  static func purge() {
+  /// Identity of every preview sheet currently on screen. A materialized URL is
+  /// live for exactly as long as one of them is: `QLPreviewController` and
+  /// `AVPlayer` both read the file lazily, long after the sheet's `task`
+  /// returned, so the file can only be dropped once none are presented.
+  ///
+  /// A set keyed by the sheet's own token rather than a counter because SwiftUI
+  /// is free to repeat `onAppear`/`onDisappear` for the same sheet: inserting
+  /// and removing the same token twice is a no-op, where a counter would drift
+  /// and either leak the temp directory forever or drop it under a live player.
+  @MainActor private static var presentedTokens: Set<UUID> = []
+
+  /// A preview sheet appeared. Balanced by `endPresenting(token:)`.
+  @MainActor
+  static func beginPresenting(token: UUID) {
+    presentedTokens.insert(token)
+  }
+
+  /// A preview sheet tore down. Drops every materialized preview once the last
+  /// one is gone — a full copy of every previewed attachment, 40 MB videos
+  /// included, otherwise sits in `tmp` until iOS decides to reclaim it.
+  @MainActor
+  static func endPresenting(token: UUID) {
+    presentedTokens.remove(token)
+    guard presentedTokens.isEmpty else { return }
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  /// Launch-time sweep. Anything left behind by a previous process — a sheet
+  /// that was on screen when the app was killed, a `.part` from an interrupted
+  /// download — has no owner in this one.
+  static func sweepAtLaunch() {
     try? FileManager.default.removeItem(at: directory)
   }
 }
@@ -114,30 +144,62 @@ func workChatMaterializeAttachmentForPreview(
     let url = WorkChatAttachmentPreviewFiles.url(
       forName: WorkChatAttachmentPreviewFiles.safeName(
         for: path,
-        discriminator: String(UInt64(bitPattern: Int64(path.hashValue)), radix: 16)
+        // Deterministic, so "same bytes, same name" actually holds across
+        // launches. `hashValue` is seeded per process, which made the reuse
+        // below fire only within one launch while the files piled up anyway.
+        discriminator: workStableFileToken(path)
       )
     )
     // Same bytes, same name: a re-open of a preview already fetched costs
-    // nothing rather than re-downloading a 40 MB video.
+    // nothing rather than re-downloading a 40 MB video. Only a file that
+    // reached its final name is complete — see the `.part` staging below.
     if FileManager.default.fileExists(atPath: url.path) { return url }
-    FileManager.default.createFile(atPath: url.path, contents: nil)
-    let handle = try FileHandle(forWritingTo: url)
-    defer { try? handle.close() }
-    var offset = 0
-    while true {
-      let chunk = try await syncService.chatAttachmentChunk(
-        path: path,
-        offset: offset,
-        length: nil,
-        chatSessionId: request.chatSessionId
-      )
-      if let data = Data(base64Encoded: chunk.base64), !data.isEmpty {
-        try handle.write(contentsOf: data)
+    // Download into `<name>.part` and move it into place only once the host
+    // reports EOF. Writing straight to the final name meant any mid-stream
+    // failure — a dropped relay, a cancelled task, a throwing chunk — left a
+    // TRUNCATED file that the `fileExists` check above would then serve
+    // forever: a PDF that will not open, with no way for the user to force a
+    // refetch. Same `.part`-then-rename rule the host side uses.
+    // Unique per attempt. A deterministic `<name>.part` is shared by every
+    // concurrent or retried fetch of the same host path — two sheets opened on
+    // one PDF, or a retry racing a cancelled task — so one attempt's
+    // `removeItem`/`createFile` truncates the other's in-flight handle and the
+    // survivor publishes interleaved bytes under the final name.
+    let partURL = url.appendingPathExtension("\(UUID().uuidString).part")
+    FileManager.default.createFile(atPath: partURL.path, contents: nil)
+    do {
+      let handle = try FileHandle(forWritingTo: partURL)
+      defer { try? handle.close() }
+      var offset = 0
+      while true {
+        let chunk = try await syncService.chatAttachmentChunk(
+          path: path,
+          offset: offset,
+          length: nil,
+          chatSessionId: request.chatSessionId
+        )
+        if let data = Data(base64Encoded: chunk.base64), !data.isEmpty {
+          try handle.write(contentsOf: data)
+        }
+        offset = chunk.offset + chunk.byteLength
+        if chunk.eof || chunk.byteLength == 0 { break }
+        if offset >= chunk.totalBytes { break }
+        try Task.checkCancellation()
       }
-      offset = chunk.offset + chunk.byteLength
-      if chunk.eof || chunk.byteLength == 0 { break }
-      if offset >= chunk.totalBytes { break }
-      try Task.checkCancellation()
+      try handle.close()
+    } catch {
+      try? FileManager.default.removeItem(at: partURL)
+      throw error
+    }
+    do {
+      try FileManager.default.moveItem(at: partURL, to: url)
+    } catch {
+      try? FileManager.default.removeItem(at: partURL)
+      // Another attempt published the same bytes first. The destination only
+      // ever appears under a completed download, so losing the race is a
+      // success: serve what is already there rather than failing the sheet.
+      guard !FileManager.default.fileExists(atPath: url.path) else { return url }
+      throw error
     }
     return url
   }
@@ -151,6 +213,9 @@ struct WorkChatAttachmentPreviewSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var fileURL: URL?
   @State private var failure: String?
+  /// Identity of *this* sheet for the presentation registry. Stable for the
+  /// lifetime of the view, independent of which request it is showing.
+  @State private var presentationToken = UUID()
 
   var body: some View {
     NavigationStack {
@@ -190,6 +255,8 @@ struct WorkChatAttachmentPreviewSheet: View {
         }
       }
     }
+    .onAppear { WorkChatAttachmentPreviewFiles.beginPresenting(token: presentationToken) }
+    .onDisappear { WorkChatAttachmentPreviewFiles.endPresenting(token: presentationToken) }
     .task(id: request.id) {
       do {
         fileURL = try await workChatMaterializeAttachmentForPreview(request, syncService: syncService)

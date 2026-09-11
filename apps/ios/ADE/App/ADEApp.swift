@@ -23,6 +23,10 @@ struct ADEApp: App {
   @MainActor
   init() {
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
+    // Nothing from a previous launch can still be on screen, so this is the one
+    // moment the whole preview cache is provably unreferenced. Previews are
+    // otherwise reclaimed when the last preview sheet tears down.
+    WorkChatAttachmentPreviewFiles.sweepAtLaunch()
   }
 
   var body: some Scene {
@@ -84,6 +88,13 @@ struct ADEApp: App {
             syncService.handleBackgroundTransition()
             accountService.stopAttentionPolling()
             ProductAnalytics.shared.flush()
+            // Reclaim draft-attachment directories no live key names. Preview
+            // copies are NOT dropped here: backgrounding does not dismiss a
+            // sheet, so a QuickLook controller or an `AVPlayer` can still be
+            // holding one of those URLs open — deleting it out from under them
+            // is a blank preview or a stalled video on the next foreground.
+            // They are reclaimed on preview teardown and at launch instead.
+            WorkComposerDraftStore.purgeOrphanedAttachmentCaches()
             Task { await accountService.updateAttentionAppForeground(false) }
             return
           }

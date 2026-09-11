@@ -14,7 +14,6 @@ final class WorkAssistantRenderingTests: XCTestCase {
     All tests passed. Let me know if you want the diff.
     """
     XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-    XCTAssertEqual(effectiveLineBudget(workAssistantMessageInitialLineBudget, for: markdown), workAssistantMessageInitialLineBudget)
   }
 
   func testAssistantMessageFencedCodeWithAlignedColumnsIsNotMonospaced() {
@@ -62,13 +61,11 @@ final class WorkAssistantRenderingTests: XCTestCase {
     The parser helpers stay in one file.
     """
     XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
-    XCTAssertEqual(effectiveLineBudget(workAssistantMessageInitialLineBudget, for: markdown), workAssistantMessageInitialLineBudget)
   }
 
   func testAssistantMessageUnfencedWireframeStaysMonospaced() {
     let markdown = (1...40).map { "│ pane \($0)  │" }.joined(separator: "\n")
     XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(markdown))
-    XCTAssertEqual(effectiveLineBudget(workAssistantMessageInitialLineBudget, for: markdown), workAssistantMessageWideInitialLineBudget)
   }
 
   func testAssistantMessagePlainAsciiLayoutDominatedByAlignedColumnsIsMonospaced() {
@@ -92,16 +89,7 @@ final class WorkAssistantRenderingTests: XCTestCase {
     ).joined(separator: "\n")
     XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
 
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(
-        forLineBudget: workAssistantMessageTailFullLineBudget,
-        tailCanRenderFull: true
-      ),
-      anchor: .tail
-    )
-    XCTAssertFalse(preview.isTruncated)
+    let preview = workAssistantMessagePreview(markdown)
     XCTAssertEqual(preview.text, markdown)
 
     var message = makeAssistantMessage(id: "assistant-table-answer", markdown: markdown)
@@ -125,13 +113,7 @@ final class WorkAssistantRenderingTests: XCTestCase {
     let markdown = markdownLines.joined(separator: "\n")
     XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
 
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageTailFullCharacterBudget,
-      anchor: .tail
-    )
-    XCTAssertFalse(preview.isTruncated)
+    let preview = workAssistantMessagePreview(markdown)
     XCTAssertEqual(preview.text, markdown)
 
     var message = makeAssistantMessage(id: "assistant-fifty-four-lines", markdown: markdown)
@@ -146,28 +128,17 @@ final class WorkAssistantRenderingTests: XCTestCase {
 
   // MARK: - Nothing is ever truncated
 
-  /// The owner's rule, at the seam every render path goes through: whatever
-  /// line or character budget is asked for, the preview hands back the whole
-  /// message and reports itself untruncated, so no caller can draw a
-  /// "Show more" row.
-  func testAssistantPreviewRendersTheWholeMessageAtAnyBudget() {
+  /// The owner's rule, at the seam every render path goes through: the preview
+  /// hands back the WHOLE message and reports its real counts, so no caller has
+  /// a "visible vs total" gap to draw a "Show more" row from.
+  func testAssistantPreviewRendersTheWholeMessage() {
     let markdown = (1...1_200).map { "Line \($0): the agent explained another step." }
       .joined(separator: "\n")
 
-    for anchor in [WorkAssistantMessagePreviewAnchor.head, .tail] {
-      for lineBudget in [1, workAssistantMessageInitialLineBudget, workAssistantMessageTailFullLineBudget] {
-        let preview = workAssistantMessagePreview(
-          markdown,
-          lineBudget: lineBudget,
-          characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
-          anchor: anchor
-        )
-        XCTAssertFalse(preview.isTruncated, "budget \(lineBudget) anchor \(anchor) truncated the message")
-        XCTAssertEqual(preview.text, markdown)
-        XCTAssertEqual(preview.visibleLineCount, preview.totalLineCount)
-        XCTAssertEqual(preview.visibleCharacterCount, preview.totalCharacterCount)
-      }
-    }
+    let preview = workAssistantMessagePreview(markdown)
+    XCTAssertEqual(preview.text, markdown)
+    XCTAssertEqual(preview.totalLineCount, 1_200)
+    XCTAssertEqual(preview.totalCharacterCount, markdown.count)
   }
 
   /// A very wide monospaced answer used to walk the slower 24-line ladder.
@@ -175,23 +146,9 @@ final class WorkAssistantRenderingTests: XCTestCase {
   func testWideMonospacedAnswerRendersWhole() {
     let markdown = (1...400).map { _ in String(repeating: "█", count: 200) }
       .joined(separator: "\n")
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
-      anchor: .head
-    )
-    XCTAssertFalse(preview.isTruncated)
+    let preview = workAssistantMessagePreview(markdown)
     XCTAssertEqual(preview.text, markdown)
   }
-
-
-  // MARK: - Budget stability
-
-
-
-
-
 
 
   // MARK: - Position-stable block ids
@@ -227,43 +184,6 @@ final class WorkAssistantRenderingTests: XCTestCase {
     XCTAssertEqual(Array(first.prefix(2)).map(\.id), Array(second.prefix(2)).map(\.id))
     XCTAssertEqual(Array(first.prefix(2)), Array(second.prefix(2)))
   }
-
-  // MARK: - Copy is always the full content
-
-
-
-  /// A slice that cannot be located falls back to what is on screen rather than
-  /// copying some other block's contents.
-  func testUnresolvableCodeBlockOrdinalFallsBackToTheRenderedSlice() {
-    let markdown = "```swift\nlet a = 1\n```"
-    let source = WorkCodeBlockSource(markdown: markdown, ordinal: 7, countsFromEnd: false)
-    XCTAssertEqual(source.resolvedCode(fallback: "let a = 1"), "let a = 1")
-  }
-
-  func testCodeBlockSourceIdentityDetectsSameLengthAuthoritativeEdits() {
-    let first = WorkCodeBlockSource(
-      markdown: "```swift\nlet a = 1\n```",
-      ordinal: 0,
-      countsFromEnd: false
-    )
-    let second = WorkCodeBlockSource(
-      markdown: "```swift\nlet b = 2\n```",
-      ordinal: 0,
-      countsFromEnd: false
-    )
-
-    XCTAssertNotEqual(first, second)
-  }
-
-  func testCodeBlockOrdinalsCountFromTheEndForATailSlice() {
-    let blocks = parseMarkdownBlocks("```\na\n```\n\ntext\n\n```\nb\n```")
-    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: false).values.sorted(), [0, 1])
-    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true).values.sorted(), [0, 1])
-    let codeIds = blocks.filter { if case .code = $0.kind { return true }; return false }.map(\.id)
-    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[0]], 1)
-    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[1]], 0)
-  }
-
 
   /// The result box shows a slice; the clipboard never does.
   func testToolResultBoxSeparatesWhatIsShownFromWhatIsCopied() {
@@ -356,61 +276,6 @@ final class WorkAssistantRenderingTests: XCTestCase {
 
   // MARK: - Helpers
 
-  private struct RenderedCodeBlock {
-    let code: String
-    let source: WorkCodeBlockSource?
-  }
-
-  private func codeBlockMarkdown(blockCount: Int, linesPerBlock: Int) -> String {
-    var parts: [String] = []
-    for block in 1...blockCount {
-      parts.append("Step \(block): here is the change.")
-      parts.append("")
-      parts.append("```swift")
-      parts.append(contentsOf: (1...linesPerBlock).map { "let block\(block)Line\($0) = \($0)" })
-      parts.append("```")
-      parts.append("")
-    }
-    parts.append("That is every change.")
-    return parts.joined(separator: "\n")
-  }
-
-  private func codeBlockPayloads(of markdown: String) -> [String] {
-    parseMarkdownBlocks(markdown).compactMap { block in
-      guard case .code(_, let code) = block.kind else { return nil }
-      return code
-    }
-  }
-
-  /// Runs the real render path so the test covers the plumbing, not just the
-  /// resolver: preview → timeline entries → per-block render models.
-  private func renderedCodeBlocks(
-    markdown: String,
-    preview: WorkAssistantMessagePreview,
-    id: String
-  ) -> [RenderedCodeBlock] {
-    var message = makeAssistantMessage(id: id, markdown: markdown)
-    message.assistantPreview = preview
-    let rendered = workTimelineRenderEntries(
-      from: [makeMessageEntry(message)],
-      streamingAssistantMessageId: nil,
-      splitAssistantMessageId: message.id
-    )
-    return rendered.compactMap { entry in
-      guard case .assistantMarkdownBlock(let model) = entry.payload,
-            case .code(_, let code) = model.block.kind
-      else { return nil }
-      return RenderedCodeBlock(code: code, source: model.codeSource)
-    }
-  }
-
-  private func effectiveLineBudget(_ requested: Int, for markdown: String) -> Int {
-    workAssistantMessageEffectiveLineBudget(
-      requestedLineBudget: requested,
-      usesMonospacedPreview: workAssistantMessageUsesMonospacedPreview(markdown)
-    )
-  }
-
   private func makeAssistantMessage(id: String, markdown: String) -> WorkChatMessage {
     WorkChatMessage(
       id: id,
@@ -429,6 +294,5 @@ final class WorkAssistantRenderingTests: XCTestCase {
   private func assertMarkdownOnly(_ rendered: [WorkTimelineRenderEntry], file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertTrue(rendered.contains { if case .assistantMarkdownBlock = $0.payload { return true }; return false }, file: file, line: line)
     XCTAssertFalse(rendered.contains { if case .assistantMonospaced = $0.payload { return true }; return false }, file: file, line: line)
-    XCTAssertFalse(rendered.contains { if case .assistantControls = $0.payload { return true }; return false }, file: file, line: line)
   }
 }

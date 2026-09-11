@@ -182,11 +182,18 @@ func adeUsageFormatDay(_ date: String) -> String {
   return adeUsageDayDisplay.string(from: parsed)
 }
 
+/// Hoisted: `ISO8601DateFormatter()` is expensive to build, and these are used
+/// per render and inside sort comparators.
+private let adeUsageFractionalISOParser: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+private let adeUsagePlainISOParser = ISO8601DateFormatter()
+
 func adeUsageParseISODate(_ iso: String?) -> Date? {
   guard let iso, !iso.isEmpty else { return nil }
-  let fractional = ISO8601DateFormatter()
-  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  return fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+  return adeUsageFractionalISOParser.date(from: iso) ?? adeUsagePlainISOParser.date(from: iso)
 }
 
 func adeUsageRelativeTime(_ iso: String?) -> String {
@@ -282,6 +289,18 @@ func adeUsageWindowPace(_ window: MobileUsageQuotaWindow) -> ADEUsageWindowPace?
     dryInMs: dryInMs,
     resetsInMs: resetsInMs
   )
+}
+
+/// "email · plan" for a provider status, or nil when the host reported neither.
+///
+/// Both the Settings page and the Work limits module print this line; they had
+/// two spellings of it, one of which carried a one-use `String.nilIfEmpty`
+/// extension.
+func adeUsageAccountSubtitle(_ status: MobileUsageProviderStatus?) -> String? {
+  let parts = [status?.accountEmail, status?.accountPlan]
+    .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+    .filter { !$0.isEmpty }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 func adeUsageWindowLabel(_ window: MobileUsageQuotaWindow) -> String {
@@ -635,7 +654,7 @@ struct ADEUsageAccountView: Identifiable, Equatable {
   var email: String?
   var plan: String?
   var machines: [MobileUsageAccountMachine]
-  var accountUrl: String?
+  var url: String?
   var initials: String
 }
 
@@ -673,13 +692,13 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
       email: account.email,
       plan: account.plan,
       machines: account.machines,
-      accountUrl: account.accountUrl,
+      url: account.url,
       initials: adeUsageAccountInitials(email: account.email, fallback: account.machines.first?.label ?? "")
     )
   }
   let freshness: (MobileUsageAccountMachine) -> Double = { machine in
     guard let checkedAt = machine.checkedAt,
-          let date = ISO8601DateFormatter().date(from: checkedAt) else { return 0 }
+          let date = adeUsagePlainISOParser.date(from: checkedAt) else { return 0 }
     return date.timeIntervalSince1970
   }
   return order.compactMap { key in
@@ -785,18 +804,21 @@ func adeUsageLimitCards(
 
 /// A stable accent for an account chip, drawn from the existing provider
 /// fallback palette rather than a second colour system.
+/// Hoisted: `adeUsageAccountAccent` is called twice per account chip per render
+/// by the Work limits rows, and this array was rebuilt on every one of them.
+private let adeUsageAccountAccentPalette: [Color] = [
+  ADEColor.providerBrand(for: "codex"),
+  ADEColor.providerBrand(for: "claude"),
+  ADEColor.providerBrand(for: "gemini"),
+  ADEColor.providerBrand(for: "opencode"),
+  ADEColor.providerBrand(for: "droid"),
+  ADEColor.providerBrand(for: "cursor"),
+]
+
 func adeUsageAccountAccent(_ accountId: String) -> Color {
-  let palette: [Color] = [
-    ADEColor.providerBrand(for: "codex"),
-    ADEColor.providerBrand(for: "claude"),
-    ADEColor.providerBrand(for: "gemini"),
-    ADEColor.providerBrand(for: "opencode"),
-    ADEColor.providerBrand(for: "droid"),
-    ADEColor.providerBrand(for: "cursor"),
-  ]
   var hash: UInt32 = 0
   for byte in accountId.lowercased().unicodeScalars {
     hash = hash &* 31 &+ byte.value
   }
-  return palette[Int(hash % UInt32(palette.count))]
+  return adeUsageAccountAccentPalette[Int(hash % UInt32(adeUsageAccountAccentPalette.count))]
 }

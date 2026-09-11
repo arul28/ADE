@@ -900,9 +900,6 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   /// The one block still receiving deltas. Its renders are throwaway, so they
   /// are kept out of the shared inline-markdown cache.
   var isStreamingTail = false
-  /// Set on fenced code blocks of a message the transcript is only rendering a
-  /// slice of, so Copy and the viewer reach the whole block.
-  var codeSource: WorkCodeBlockSource? = nil
 
   static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
     lhs.id == rhs.id
@@ -910,7 +907,6 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
       && lhs.isStreamingTail == rhs.isStreamingTail
-      && lhs.codeSource == rhs.codeSource
       && lhs.block == rhs.block
   }
 }
@@ -937,37 +933,10 @@ struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
   }
 }
 
-struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
-  let id: String
-  let messageId: String
-  let summaryText: String
-  let visibleLineCount: Int
-  let totalLineCount: Int
-  let canShowMore: Bool
-  let nextLineBudget: Int
-  let willRemainTruncatedAfterNextStep: Bool
-  /// The reader has already taken one "Show more" step on this message, so the
-  /// ladder's next rung is the full-screen viewer rather than another step.
-  var hasExpandedInPlace = false
-
-  static func == (lhs: WorkAssistantMessageControlsModel, rhs: WorkAssistantMessageControlsModel) -> Bool {
-    lhs.id == rhs.id
-      && lhs.messageId == rhs.messageId
-      && lhs.summaryText == rhs.summaryText
-      && lhs.visibleLineCount == rhs.visibleLineCount
-      && lhs.totalLineCount == rhs.totalLineCount
-      && lhs.canShowMore == rhs.canShowMore
-      && lhs.nextLineBudget == rhs.nextLineBudget
-      && lhs.willRemainTruncatedAfterNextStep == rhs.willRemainTruncatedAfterNextStep
-      && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
-  }
-}
-
 enum WorkTimelineRenderPayload: Equatable {
   case entry(WorkTimelineEntry)
   case assistantMarkdownBlock(WorkAssistantMarkdownBlockRenderModel)
   case assistantMonospaced(WorkAssistantMonospacedRenderModel)
-  case assistantControls(WorkAssistantMessageControlsModel)
 }
 
 struct WorkTimelineRenderEntry: Identifiable, Equatable {

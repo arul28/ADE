@@ -56,13 +56,15 @@ import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapsho
 
 const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
-// URLs come from the shared source (`usageProviderAccountUrl`), which is also
-// what the host stamps onto `UsageProviderStatus.accountUrl` for iOS and the
-// web client. One place to change, every client follows.
-const PROVIDER_META: Record<UsageProvider, { label: string; usageUrl?: string }> = {
-  claude: { label: "Claude", usageUrl: usageProviderAccountUrl("claude") },
-  codex: { label: "Codex", usageUrl: usageProviderAccountUrl("codex") },
-  cursor: { label: "Cursor", usageUrl: usageProviderAccountUrl("cursor") },
+// Display names only. The limits URL is NOT re-listed here: it comes from
+// `usageProviderAccountUrl`, which is also what the host stamps onto
+// `UsageProviderStatus.accountUrl` for iOS and the web client. A second map of
+// the same thing is one edit away from the popover and the heading opening
+// different pages.
+const PROVIDER_META: Record<UsageProvider, { label: string }> = {
+  claude: { label: "Claude" },
+  codex: { label: "Codex" },
+  cursor: { label: "Cursor" },
 };
 
 /** 5-hour before Weekly before Monthly; anything else keeps provider order. */
@@ -602,7 +604,7 @@ function ProviderLimitsRow({
         provider={provider}
         color={tone}
         label={meta.label}
-        usageUrl={meta.usageUrl}
+        usageUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
         dim={windows.length === 0 && (!isAuthed || isUsageUnauthed)}
       />
       <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
@@ -704,7 +706,7 @@ function ProviderLimitsRow({
                 key={card.key}
                 card={card}
                 theme={theme}
-                fallbackAccountUrl={status?.accountUrl ?? meta.usageUrl}
+                fallbackAccountUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
                 nowMs={nowMs}
                 reducedMotion={reducedMotion}
               />
@@ -736,7 +738,6 @@ function ProviderHeading({
   dim?: boolean;
 }) {
   const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
-  const providerLabel = PROVIDER_META[provider].label;
   return (
     <div className="flex items-center gap-2">
       {Logo ? (
@@ -753,8 +754,8 @@ function ProviderHeading({
           type="button"
           onClick={() => openExternalUrl(usageUrl)}
           className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
-          aria-label={`Open ${providerLabel} usage in browser`}
-          title={`Open ${providerLabel} usage in browser`}
+          aria-label={`Open ${label} usage in browser`}
+          title={`Open ${label} usage in browser`}
         >
           <ArrowSquareOut size={12} weight="regular" />
         </button>
@@ -805,7 +806,7 @@ function ExtraUsageCard({
           provider={extra.provider}
           color={tone}
           label={`${meta.label} extra usage`}
-          usageUrl={meta.usageUrl}
+          usageUrl={usageProviderAccountUrl(extra.provider)}
         />
         <span className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-fg")}>
           {formatUsd(usedUsd)}

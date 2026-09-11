@@ -34,6 +34,9 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+// The fixture must demo the link the product actually opens, so it reads the
+// same source the host stamps onto every snapshot.
+import { usageProviderAccountUrl } from "../shared/types/usage";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
   CHAT_MENTION_KINDS,
@@ -2667,16 +2670,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   // than one account pooled across machines.
   const BROWSER_MOCK_NOW_MS = Date.now();
   const browserMockResetAt = (ms: number) => new Date(BROWSER_MOCK_NOW_MS + ms).toISOString();
+  // The threshold list, read top to bottom. It was a four-deep nested ternary,
+  // which hid which band a delta of exactly -4 lands in.
+  const browserMockPacingStatus = (delta: number): string => {
+    if (delta > 12) return "far-ahead";
+    if (delta > 4) return "ahead";
+    if (delta < -12) return "far-behind";
+    if (delta < -4) return "behind";
+    return "on-track";
+  };
   const browserMockPacing = (used: number, elapsed: number, resetsInHours: number) => ({
-    status: used - elapsed > 12
-      ? "far-ahead"
-      : used - elapsed > 4
-        ? "ahead"
-        : used - elapsed < -12
-          ? "far-behind"
-          : used - elapsed < -4
-            ? "behind"
-            : "on-track",
+    status: browserMockPacingStatus(used - elapsed),
     projectedWeeklyPercent: Math.min(100, elapsed > 0 ? (used / elapsed) * 100 : used),
     weekElapsedPercent: elapsed,
     expectedPercent: elapsed,
@@ -2696,7 +2700,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           { machineKey: "studio", label: "studio-mbp", checkedAt: now },
           { machineKey: "nucbox", label: "nucbox-1", checkedAt: now },
         ],
-        accountUrl: "https://claude.ai/settings/usage",
+        url: usageProviderAccountUrl("claude"),
       },
       {
         id: "claude:jo.martin@example.com",
@@ -2704,7 +2708,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         email: "jo.martin@example.com",
         plan: "Claude Pro",
         machines: [{ machineKey: "nucbox", label: "nucbox-1", checkedAt: now }],
-        accountUrl: "https://claude.ai/settings/usage",
+        url: usageProviderAccountUrl("claude"),
       },
       {
         id: "codex:dev@example.com",
@@ -2712,7 +2716,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         email: "dev@example.com",
         plan: "ChatGPT Pro 20x Subscription",
         machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }],
-        accountUrl: "https://chatgpt.com/codex/settings/usage",
+        url: usageProviderAccountUrl("codex"),
       },
     ],
     windows: [
@@ -2790,7 +2794,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         updatedAt: now,
         accountEmail: "ada.lovelace@example.com",
         accountPlan: "Claude Max 20x",
-        accountUrl: "https://claude.ai/settings/usage",
+        accountUrl: usageProviderAccountUrl("claude"),
       },
       codex: {
         state: "ok",
@@ -2799,7 +2803,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         updatedAt: now,
         accountEmail: "dev@example.com",
         accountPlan: "ChatGPT Pro 20x Subscription",
-        accountUrl: "https://chatgpt.com/codex/settings/usage",
+        accountUrl: usageProviderAccountUrl("codex"),
       },
     },
     dailyUsage7d: {

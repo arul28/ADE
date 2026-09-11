@@ -131,7 +131,7 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
       email: "solo@example.com",
       plan: nil,
       machines: [MobileUsageAccountMachine(machineKey: nil, label: "studio", checkedAt: nil)],
-      accountUrl: nil,
+      url: nil,
       initials: "SO"
     )
     let window = MobileUsageQuotaWindow(

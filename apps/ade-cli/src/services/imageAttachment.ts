@@ -12,7 +12,7 @@ import {
 // The base64/in-memory ceiling, single-sourced so the constant and every
 // rejection message that renders it stay in step.
 const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+export const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   ".bmp": "image/bmp",
   ".gif": "image/gif",
   ".ico": "image/x-icon",

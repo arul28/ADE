@@ -11,7 +11,8 @@
  * number is calm, warm, or hot, and it is fed consumption (100 − left) so a
  * nearly-empty account reads hot exactly as it did on the old pace bars.
  */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
+import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { ThemeId } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -33,12 +34,6 @@ import {
 } from "./usageWindowFormat";
 
 /**
- * The unused remainder of a segment, drawn as a hatch rather than a flat tint.
- *
- * A flat second tone reads as a second value; the hatch reads as "nothing here
- * yet", which is what the empty part of a headroom bar means.
- */
-/**
  * Where a segment's details panel hangs.
  *
  * The panel is 248px wide inside a 420px popover, so a centred panel on the
@@ -54,6 +49,12 @@ const POPOVER_ALIGN_CLASS: Record<PopoverAlign, string> = {
   right: "right-0",
 };
 
+/**
+ * The unused remainder of a segment, drawn as a hatch rather than a flat tint.
+ *
+ * A flat second tone reads as a second value; the hatch reads as "nothing here
+ * yet", which is what the empty part of a headroom bar means.
+ */
 const HATCH_STYLE = {
   backgroundImage:
     "repeating-linear-gradient(135deg, color-mix(in srgb, var(--color-muted-fg) 26%, transparent) 0 1px, transparent 1px 6px)",
@@ -113,9 +114,13 @@ export function UsageLimitCard({
       </div>
 
       <div className="flex min-w-0 items-stretch gap-1.5">
-        {card.segments.map((segment, index) => (
+        {card.segments.map((segment, index) => {
+          // One identity per segment: the React key and the open/close state
+          // were three separate spellings of the same question.
+          const segmentId = segment.account?.id ?? String(index);
+          return (
           <AccountSegment
-            key={segment.account?.id ?? `${card.key}:${index}`}
+            key={segmentId}
             card={card}
             segment={segment}
             theme={theme}
@@ -129,12 +134,11 @@ export function UsageLimitCard({
                   ? "right"
                   : "center"
             }
-            open={openSegment === (segment.account?.id ?? String(index))}
-            onOpenChange={(next) =>
-              setOpenSegment(next ? (segment.account?.id ?? String(index)) : null)
-            }
+            open={openSegment === segmentId}
+            onOpenChange={(next) => setOpenSegment(next ? segmentId : null)}
           />
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -162,7 +166,6 @@ function AccountSegment({
   onOpenChange: (open: boolean) => void;
 }) {
   const panelId = useId();
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const accent = accountAccentColor(segment.account?.id ?? card.key, theme);
   const left = Math.round(segment.percentLeft);
   const fill = usagePressureColor(100 - segment.percentLeft, accent);
@@ -170,6 +173,24 @@ function AccountSegment({
   const label = segment.account?.email ?? "this machine";
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
+  /**
+   * Focus leaves the SEGMENT, not the button.
+   *
+   * The popover renders after the button in DOM order, so tabbing forward from
+   * the segment moves focus INTO the popover — and a `blur` handler on the
+   * button would unmount it mid-tab, making "Open limits" and the whole details
+   * panel reachable by mouse only. Closing on the container's `focusout`, and
+   * only when the next focus target is outside it, keeps the popover alive for
+   * exactly as long as a keyboard user is inside it.
+   */
+  const onFocusOut = useCallback(
+    (event: React.FocusEvent<HTMLDivElement>) => {
+      const next = event.relatedTarget as Node | null;
+      if (next && event.currentTarget.contains(next)) return;
+      close();
+    },
+    [close],
+  );
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
@@ -181,10 +202,11 @@ function AccountSegment({
 
   return (
     <div
-      ref={containerRef}
       className="relative min-w-0 flex-1"
       onMouseEnter={() => onOpenChange(true)}
       onMouseLeave={close}
+      onFocus={() => onOpenChange(true)}
+      onBlur={onFocusOut}
     >
       <button
         type="button"
@@ -192,8 +214,6 @@ function AccountSegment({
         aria-controls={open ? panelId : undefined}
         aria-label={`${card.label} · ${label}: ${left}% left`}
         onClick={() => onOpenChange(!open)}
-        onFocus={() => onOpenChange(true)}
-        onBlur={close}
         className={cn(
           "relative flex h-7 w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-1.5 text-left",
           "focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-fg/40",
@@ -251,7 +271,7 @@ function AccountSegment({
           id={panelId}
           card={card}
           segment={segment}
-          accountUrl={segment.account?.accountUrl ?? fallbackAccountUrl}
+          accountUrl={segment.account?.url ?? fallbackAccountUrl}
           nowMs={nowMs}
           align={align}
         />

@@ -132,7 +132,7 @@ private struct SettingsAppUpdateRow: View {
       }
 
       Button {
-        Task { await advisor.checkForUpdates() }
+        Task { await advisor.checkForUpdates(force: true) }
       } label: {
         Label("Check for updates", systemImage: "arrow.clockwise")
           .font(.caption.weight(.semibold))

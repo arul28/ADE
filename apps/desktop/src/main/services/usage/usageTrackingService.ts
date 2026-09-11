@@ -2164,12 +2164,8 @@ async function stampProviderAccounts(
   previous: UsageProviderStatusMap | null,
   machineLabel: string,
 ): Promise<UsageAccount[]> {
-  let identities: Partial<Record<UsageProvider, ProviderAccountIdentity>> = {};
-  try {
-    identities = await resolveProviderAccounts();
-  } catch {
-    identities = {};
-  }
+  // `resolveProviderAccounts` never rejects — it is total by construction.
+  const identities = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
@@ -2190,7 +2186,7 @@ async function stampProviderAccounts(
       ...(email ? { email } : {}),
       ...(plan ? { plan } : {}),
       machines: [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }],
-      ...(url ? { accountUrl: url } : {}),
+      ...(url ? { url } : {}),
     });
   }
   return accounts;

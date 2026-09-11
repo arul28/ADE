@@ -288,6 +288,7 @@
 		E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0E /* WorkToolsSheet.swift */; };
 		E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000041 /* WorkNewChatScreen.swift */; };
 		E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000041 /* WorkUsageActivityCarousel.swift */; };
+		E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000042 /* WorkUsageLimitsModule.swift */; };
 		E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000056 /* WorkImportSessionScreen.swift */; };
 		E10000000000000000000F1 /* WorkOutputViewerScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F1 /* WorkOutputViewerScreen.swift */; };
 		E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000057 /* WorkExternalSessionAffordances.swift */; };
@@ -469,6 +470,7 @@
 		D10000000000000000000F0E /* WorkToolsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsSheet.swift; path = ADE/Views/Work/WorkToolsSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000041 /* WorkNewChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatScreen.swift; path = ADE/Views/Work/WorkNewChatScreen.swift; sourceTree = "<group>"; };
 		D30000000000000000000041 /* WorkUsageActivityCarousel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageActivityCarousel.swift; path = ADE/Views/Work/WorkUsageActivityCarousel.swift; sourceTree = "<group>"; };
+		D30000000000000000000042 /* WorkUsageLimitsModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitsModule.swift; path = ADE/Views/Work/WorkUsageLimitsModule.swift; sourceTree = "<group>"; };
 		D10000000000000000000056 /* WorkImportSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkImportSessionScreen.swift; path = ADE/Views/Work/WorkImportSessionScreen.swift; sourceTree = "<group>"; };
 		D10000000000000000000F1 /* WorkOutputViewerScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkOutputViewerScreen.swift; path = ADE/Views/Work/WorkOutputViewerScreen.swift; sourceTree = "<group>"; };
 		D10000000000000000000057 /* WorkExternalSessionAffordances.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkExternalSessionAffordances.swift; path = ADE/Views/Work/WorkExternalSessionAffordances.swift; sourceTree = "<group>"; };
@@ -942,6 +944,7 @@
 				D10000000000000000000F0E /* WorkToolsSheet.swift */,
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
+				D30000000000000000000042 /* WorkUsageLimitsModule.swift */,
 				D10000000000000000000056 /* WorkImportSessionScreen.swift */,
 				D10000000000000000000F1 /* WorkOutputViewerScreen.swift */,
 				D10000000000000000000057 /* WorkExternalSessionAffordances.swift */,
@@ -1688,6 +1691,7 @@
 				E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */,
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
+				E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */,
 				E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */,
 				E10000000000000000000F1 /* WorkOutputViewerScreen.swift in Sources */,
 				E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */,

@@ -56,10 +56,9 @@ export async function buildProviderConnections(
     readClaudeCredentials(),
     readCodexCredentials(),
     // The same reader the usage poller uses, so Settings > Providers and the
-    // Limits cards can never name two different accounts for one provider.
-    resolveProviderAccounts().catch(
-      (): Partial<Record<"claude" | "codex", ProviderAccountIdentity>> => ({}),
-    ),
+    // Limits cards can never name two different accounts for one provider. It
+    // is total by construction, so there is no catch here.
+    resolveProviderAccounts(),
   ]);
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");

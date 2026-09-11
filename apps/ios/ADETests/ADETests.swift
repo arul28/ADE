@@ -20714,7 +20714,7 @@ final class ADETests: XCTestCase {
       turnId: "turn-1",
       itemId: "item-1"
     )
-    message.assistantPreview = workInitialAssistantMessagePreview(markdown)
+    message.assistantPreview = workAssistantMessagePreview(markdown)
     let entry = WorkTimelineEntry(
       id: "message-assistant-1",
       timestamp: message.timestamp,
@@ -20766,7 +20766,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(renderedEntry, entry)
   }
 
-  func testWorkTimelineRenderEntriesPreserveControlsForTruncatedAssistantMessages() {
+  /// A 5000-line assistant answer renders as markdown block rows covering the
+  /// whole message, with no truncation and no "Show more" controls row.
+  func testWorkTimelineRenderEntriesNeverTruncateAssistantMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     var message = WorkChatMessage(
       id: "assistant-long",
@@ -20776,7 +20778,10 @@ final class ADETests: XCTestCase {
       turnId: "turn-1",
       itemId: "item-1"
     )
-    message.assistantPreview = workInitialAssistantMessagePreview(markdown)
+    let preview = workAssistantMessagePreview(markdown)
+    XCTAssertEqual(preview.totalLineCount, 5000)
+    XCTAssertEqual(preview.text, markdown)
+    message.assistantPreview = preview
     let entry = WorkTimelineEntry(
       id: "message-assistant-long",
       timestamp: message.timestamp,
@@ -20789,91 +20794,19 @@ final class ADETests: XCTestCase {
       streamingAssistantMessageId: nil,
       splitAssistantMessageId: message.id
     )
-    guard case .assistantControls(let controls) = rendered.last?.payload else {
-      return XCTFail("Expected a controls row after the truncated assistant preview.")
+
+    XCTAssertFalse(rendered.isEmpty)
+    // Every row is a markdown block of the message itself: no controls row,
+    // because the rendered rows ARE the full source.
+    for row in rendered {
+      guard case .assistantMarkdownBlock(let block) = row.payload else {
+        return XCTFail("Expected only assistant markdown block rows.")
+      }
+      XCTAssertEqual(block.messageId, "assistant-long")
     }
-
-    XCTAssertEqual(controls.messageId, "assistant-long")
-    XCTAssertEqual(controls.visibleLineCount, workAssistantMessageInitialLineBudget)
-    XCTAssertEqual(controls.totalLineCount, 5000)
-    XCTAssertTrue(controls.canShowMore)
-    XCTAssertEqual(controls.nextLineBudget, workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep)
-  }
-
-  func testAssistantMessagePreviewBoundsHugeResponses() {
-    let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
-
-    let firstPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
-    )
-
-    XCTAssertTrue(firstPage.isTruncated)
-    XCTAssertEqual(firstPage.visibleLineCount, 48)
-    XCTAssertEqual(firstPage.totalLineCount, 5000)
-    XCTAssertTrue(firstPage.text.contains("48. Line 48"))
-    XCTAssertFalse(firstPage.text.contains("49. Line 49"))
-
-    let secondPageBudget = workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
-    let secondPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: secondPageBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: secondPageBudget)
-    )
-
-    XCTAssertEqual(secondPage.visibleLineCount, 96)
-    XCTAssertTrue(secondPage.text.contains("96. Line 96"))
-    XCTAssertFalse(secondPage.text.contains("97. Line 97"))
-  }
-
-  func testTailAssistantMessagePreviewRendersSmallLatestAnswerFully() {
-    let lineCount = 110
-    let markdown = (1...lineCount).map { index in
-      "Line \(index): " + String(repeating: "latest transcript answer prose ", count: 2)
-    }.joined(separator: "\n")
-    XCTAssertGreaterThan(markdown.count, workAssistantMessageSmallFullCharacterBudget)
-    XCTAssertLessThan(markdown.count, workAssistantMessageTailFullCharacterBudget)
-
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(
-        forLineBudget: workAssistantMessageTailFullLineBudget,
-        tailCanRenderFull: true
-      ),
-      anchor: .tail
-    )
-
-    XCTAssertFalse(preview.isTruncated)
-    XCTAssertEqual(preview.visibleLineCount, lineCount)
-    XCTAssertEqual(preview.totalLineCount, lineCount)
-    XCTAssertEqual(preview.text, markdown)
-
-    var message = WorkChatMessage(
-      id: "assistant-tail-small",
-      role: "assistant",
-      markdown: markdown,
-      timestamp: "2026-03-25T00:00:01.000Z",
-      turnId: "turn-1",
-      itemId: "item-1"
-    )
-    message.assistantPreview = preview
-    let entry = WorkTimelineEntry(
-      id: "message-assistant-tail-small",
-      timestamp: message.timestamp,
-      rank: 0,
-      payload: .message(message)
-    )
-
-    let rendered = workTimelineRenderEntries(
-      from: [entry],
-      streamingAssistantMessageId: nil,
-      splitAssistantMessageId: message.id
-    )
-    XCTAssertFalse(rendered.contains { renderEntry in
-      if case .assistantControls = renderEntry.payload { return true }
-      return false
+    XCTAssertTrue(rendered.contains { row in
+      guard case .assistantMarkdownBlock(let block) = row.payload else { return false }
+      return block.block.kind.cacheKey.contains("5000. Line 5000")
     })
   }
 
@@ -20882,17 +20815,11 @@ final class ADETests: XCTestCase {
       "│ \(String(repeating: "─", count: 72)) │ row \(index)"
     }.joined(separator: "\n")
 
-    let firstPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
-    )
+    let preview = workAssistantMessagePreview(markdown)
 
-    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(firstPage.text))
-    XCTAssertFalse(firstPage.isTruncated)
-    XCTAssertEqual(firstPage.visibleLineCount, 120)
-    XCTAssertEqual(firstPage.totalLineCount, 120)
-    XCTAssertTrue(firstPage.text.contains("row 120"))
+    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(preview.text))
+    XCTAssertEqual(preview.totalLineCount, 120)
+    XCTAssertTrue(preview.text.contains("row 120"))
   }
 
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {
@@ -20910,8 +20837,6 @@ final class ADETests: XCTestCase {
     let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
 
     XCTAssertNil(message?.assistantPreview)
-    XCTAssertFalse(preview?.isTruncated == true)
-    XCTAssertEqual(preview?.visibleLineCount, 5000)
     XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
@@ -20938,8 +20863,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
     XCTAssertNil(message?.assistantPreview)
-    XCTAssertFalse(preview?.isTruncated == true)
-    XCTAssertEqual(preview?.visibleLineCount, 5000)
     XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
@@ -20983,10 +20906,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(message.markdownHasCarriageReturn, false)
     XCTAssertEqual(message.markdownContainsFence, false)
 
-    let preview = WorkAssistantPreviewCache().preview(for: message, anchor: .tail)
+    let preview = WorkAssistantPreviewCache().preview(for: message)
     XCTAssertEqual(preview.totalCharacterCount, message.markdown.count)
     XCTAssertEqual(preview.totalLineCount, 3)
-    XCTAssertFalse(preview.isTruncated)
   }
 
   func testStreamingPreviewMetadataKeepsGraphemeCountAcrossDeltaBoundary() {

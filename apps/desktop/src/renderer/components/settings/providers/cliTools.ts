@@ -133,13 +133,26 @@ export function describeAuthenticatedAccount(
   return plan ? `Authenticated as ${email} · ${plan}` : `Authenticated as ${email}`;
 }
 
+/**
+ * The credential line the detail page's left rail prints.
+ *
+ * The account, when the provider records one locally, says more than the file
+ * it was read from — so it leads, and the file stays as the fallback. Kept
+ * separate from {@link describeCredentialSource} so a caller that genuinely
+ * wants the *file* (a diagnostics view) can still reach it.
+ */
+export function describeProviderCredentialLine(
+  connection: AiProviderConnectionStatus | null | undefined,
+): string | null {
+  const account = describeAuthenticatedAccount(connection);
+  if (account) return `${account}.`;
+  return describeCredentialSource(connection);
+}
+
+/** Which file or environment variable the local credential was detected in. */
 export function describeCredentialSource(
   connection: AiProviderConnectionStatus | null | undefined,
 ): string | null {
-  // The account, when the provider records one locally, says more than the file
-  // it was read from — so it leads, and the file stays as the fallback.
-  const account = describeAuthenticatedAccount(connection);
-  if (account) return `${account}.`;
   const localSource = connection?.sources.find((entry) => entry.kind === "local-credentials" && entry.detected);
   if (!localSource?.source) return null;
   if (localSource.source === "macos-keychain") return "Local credentials found in macOS Keychain.";
@@ -160,7 +173,7 @@ export function describeCredentialSource(
 /**
  * The same credential, in two or three words.
  *
- * `describeCredentialSource` writes a sentence for the detail page's left rail;
+ * `describeProviderCredentialLine` writes a sentence for the detail page's left rail;
  * a tile has one short line and no room for "Local credentials found in
  * ~/.claude/.credentials.json." Both read the one `local-credentials` source
  * the auth detector reports, so they can never disagree about which credential

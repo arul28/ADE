@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { normalizeProviderVersion } from "./providerUi";
-import { describeAuthenticatedAccount, describeCredentialSource } from "./cliTools";
+import {
+  describeAuthenticatedAccount,
+  describeCredentialSource,
+  describeProviderCredentialLine,
+} from "./cliTools";
 import type { AiProviderConnectionStatus } from "../../../../shared/types";
 
 describe("normalizeProviderVersion", () => {
@@ -67,9 +71,19 @@ describe("describeAuthenticatedAccount", () => {
   });
 
   it("leads the credential line, and falls back to the file when the account is unknown", () => {
-    expect(describeCredentialSource(connection({ accountEmail: "dev@example.com", accountPlan: "ChatGPT Pro" })))
+    expect(describeProviderCredentialLine(connection({ accountEmail: "dev@example.com", accountPlan: "ChatGPT Pro" })))
       .toBe("Authenticated as dev@example.com · ChatGPT Pro.");
-    expect(describeCredentialSource(connection({})))
+    expect(describeProviderCredentialLine(connection({})))
+      .toBe("Local credentials found in ~/.codex/auth.json.");
+  });
+
+  /**
+   * `describeCredentialSource` names the FILE, always — a diagnostics view that
+   * wants to know where the token came from must not be handed the account line
+   * instead.
+   */
+  it("keeps describeCredentialSource about the file even when an account is known", () => {
+    expect(describeCredentialSource(connection({ accountEmail: "dev@example.com", accountPlan: "ChatGPT Pro" })))
       .toBe("Local credentials found in ~/.codex/auth.json.");
   });
 });

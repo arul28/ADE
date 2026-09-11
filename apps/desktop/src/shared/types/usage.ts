@@ -654,8 +654,14 @@ export type UsageAccount = {
   plan?: string;
   /** Every machine reporting this account, freshest first. */
   machines: UsageAccountMachine[];
-  /** Provider-hosted limits page, from the shared URL source. */
-  accountUrl?: string;
+  /**
+   * Provider-hosted limits page, from the shared URL source.
+   *
+   * Unprefixed: on a type already called `UsageAccount`, `accountUrl` repeats
+   * the noun — and it repeated it on only one of three fields, which is what
+   * made `email`/`plan`/`accountUrl` read as three different provenances.
+   */
+  url?: string;
 };
 
 export type UsageSnapshot = {

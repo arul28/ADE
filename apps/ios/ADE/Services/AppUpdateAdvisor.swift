@@ -99,14 +99,21 @@ final class AppUpdateAdvisor: ObservableObject {
     return dismissedVersion == availableVersion
   }
 
-  /// Checks in the background. A user-triggered check is subject to the same
-  /// six-hour window as foreground checks so repeated taps cannot create a
-  /// request storm.
-  func checkForUpdates() async {
+  /// Checks in the background.
+  ///
+  /// The automatic paths (launch, every foreground) are throttled to one lookup
+  /// per six hours. A user-triggered check passes `force: true` and skips that
+  /// window: `ADEApp` checks on launch AND on every foreground, so the window is
+  /// effectively always armed, and a Settings button that returns without
+  /// issuing a request — no state change, status line frozen on "Not checked
+  /// yet" after a cold-network launch — is a control that can never run.
+  /// `isChecking` still guards it, so repeated taps cannot create a storm.
+  func checkForUpdates(force: Bool = false) async {
     guard !isChecking else { return }
 
     let checkDate = now()
-    if let lastCheck = defaults.object(forKey: Self.lastCheckKey) as? Date,
+    if !force,
+       let lastCheck = defaults.object(forKey: Self.lastCheckKey) as? Date,
        checkDate.timeIntervalSince(lastCheck) < Self.checkInterval {
       return
     }

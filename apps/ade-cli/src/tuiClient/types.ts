@@ -395,7 +395,7 @@ export type RightPaneContent =
         label: string;
         percent: number;
         resetAt?: number | null;
-        /** Account initials (or email when it fits) for a multi-account window. */
+        /** Account email for a window whose provider has more than one account. */
         account?: string | null;
       }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;

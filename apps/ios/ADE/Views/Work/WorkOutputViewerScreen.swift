@@ -141,14 +141,10 @@ func workTruncatedOutputAffordance(
 struct WorkOpenFullOutputButton: View {
   let title: String
   var subtitle: String? = nil
-  /// What the box is displaying. Also the fallback text when `codeSource`
-  /// cannot resolve.
+  /// What the box is displaying.
   let text: String
   var kind: WorkOutputViewerRequest.Kind = .text
   var languageId: String? = nil
-  /// Set when `text` is a slice of a larger message; the whole block is
-  /// resolved at tap time rather than on every render pass.
-  var codeSource: WorkCodeBlockSource? = nil
   /// Box headers use the compact "Open"; the transcript's ladder spells it out.
   var label: String = "Open"
   var prominent = false
@@ -162,7 +158,7 @@ struct WorkOpenFullOutputButton: View {
           WorkOutputViewerRequest(
             title: title,
             subtitle: subtitle,
-            text: codeSource?.resolvedCode(fallback: text) ?? text,
+            text: text,
             kind: kind,
             languageId: languageId
           )

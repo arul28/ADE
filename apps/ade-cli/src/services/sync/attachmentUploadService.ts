@@ -4,9 +4,11 @@ import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import {
+  commitStagedAttachmentPart,
   projectAttachmentsDir,
-  safeAttachmentExtension,
+  resolveStagedAttachmentExtension,
   stagedAttachmentDestPath,
+  unlinkStagedAttachmentQuietly,
 } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 
 /**
@@ -106,14 +108,6 @@ function parseContentLength(request: http.IncomingMessage): number | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const parsed = Number(value.trim());
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
-
-async function unlinkQuietly(filePath: string): Promise<void> {
-  try {
-    await fs.promises.unlink(filePath);
-  } catch {
-    // A torn upload may never have created the file; nothing to clean up.
-  }
 }
 
 type BodyResult = { ok: true } | { ok: false; reason: "too_large" | "io"; message: string };
@@ -292,7 +286,7 @@ export function createAttachmentUploadRegistry(options?: {
 
     const result = await streamBodyToFile(request, partPath, maxBytes);
     if (!result.ok) {
-      await unlinkQuietly(partPath);
+      await unlinkStagedAttachmentQuietly(partPath);
       if (result.reason === "too_large") {
         respondAndDrop(request, response, 413, "Attachment exceeds the maximum upload size.");
         return;
@@ -306,10 +300,11 @@ export function createAttachmentUploadRegistry(options?: {
 
     try {
       // Rename only after the full body landed, so a torn upload never leaves a
-      // half file at the final path for the chat to pick up.
-      await fs.promises.rename(partPath, destPath);
+      // half file at the final path for the chat to pick up. The shared helper
+      // carries the bounded Windows sharing-violation retry.
+      await commitStagedAttachmentPart(partPath, destPath);
     } catch (error) {
-      await unlinkQuietly(partPath);
+      await unlinkStagedAttachmentQuietly(partPath);
       logger?.warn?.("attachment_upload.rename_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -331,7 +326,10 @@ export function createAttachmentUploadRegistry(options?: {
       pending.set(ticket, {
         ticket,
         projectRoot: root,
-        ext: safeAttachmentExtension(typeof filename === "string" ? filename : ""),
+        // Same resolver the chunked registry uses. Two spellings of "what
+        // extension may a client contribute" for one destination directory is
+        // one edit away from the two routes disagreeing.
+        ext: resolveStagedAttachmentExtension(typeof filename === "string" ? filename : "", null),
         expiresAtMs,
         deviceId: typeof deviceId === "string" && deviceId.trim() ? deviceId.trim() : null,
       });

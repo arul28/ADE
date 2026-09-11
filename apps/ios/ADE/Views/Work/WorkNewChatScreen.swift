@@ -1525,9 +1525,7 @@ private struct WorkNewChatComposerBar: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
-  @State private var attachmentPickerPresented = false
-  @State private var filePickerPresented = false
-  @State private var videoPickerPresented = false
+  @State private var presentedPicker: WorkComposerPicker?
   @State private var composerTextHeight: CGFloat = 28
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
@@ -1600,9 +1598,7 @@ private struct WorkNewChatComposerBar: View {
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
             WorkComposerOverflowButton(
-              attachmentPickerPresented: $attachmentPickerPresented,
-              filePickerPresented: $filePickerPresented,
-              videoPickerPresented: $videoPickerPresented,
+              presentedPicker: $presentedPicker,
               draft: $draft,
               attachments: $attachments,
               canCompose: !busy,
@@ -1685,15 +1681,14 @@ private struct WorkNewChatComposerBar: View {
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
     .workChatAttachmentPicker(
-      isPresented: $attachmentPickerPresented,
+      isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $attachments,
       onDismiss: { composerFocused = true }
     )
     .workPersistedDraft($draft, key: WorkComposerDraftStore.workNewChatKey)
     .workPersistedDraftAttachments($attachments, key: WorkComposerDraftStore.workNewChatKey)
     .workChatFileAttachmentPickers(
-      filePickerPresented: $filePickerPresented,
-      videoPickerPresented: $videoPickerPresented,
+      presentedPicker: $presentedPicker,
       attachments: $attachments,
       onDismiss: {}
     )

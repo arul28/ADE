@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UsageAccount, UsageWindow } from "../../../shared/types";
 import {
-  accountInitials,
+  emailInitials,
   buildLimitCards,
   percentLeft,
   poolAccounts,
@@ -19,16 +19,16 @@ function window(overrides: Partial<UsageWindow> & Pick<UsageWindow, "windowType"
   } as UsageWindow;
 }
 
-describe("accountInitials", () => {
+describe("emailInitials", () => {
   it("takes one letter from each name part, or two from a single one", () => {
-    expect(accountInitials("first.last@example.com")).toBe("FL");
-    expect(accountInitials("jane_goodall@example.com")).toBe("JG");
-    expect(accountInitials("dev@example.com")).toBe("DE");
+    expect(emailInitials("first.last@example.com")).toBe("FL");
+    expect(emailInitials("jane_goodall@example.com")).toBe("JG");
+    expect(emailInitials("dev@example.com")).toBe("DE");
   });
 
   it("falls back to the machine label, then to a neutral glyph", () => {
-    expect(accountInitials(undefined, "nucbox-1")).toBe("NU");
-    expect(accountInitials(undefined)).toBe("··");
+    expect(emailInitials(undefined, "nucbox-1")).toBe("NU");
+    expect(emailInitials(undefined)).toBe("··");
   });
 });
 

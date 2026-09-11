@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { UsageAccount, UsageWindow } from "../../../../desktop/src/shared/types/usage";
 import type { RightPaneContent } from "../types";
 import { theme } from "../theme";
 import { TokenBar, tokenBarColor } from "./FooterControls";
@@ -8,6 +9,25 @@ import { useShimmerTick } from "../spinTick";
 type UsageContent = Extract<RightPaneContent, { kind: "usage" }>;
 type QuotaWindow = NonNullable<UsageContent["quotaWindows"]>[number];
 type ProviderStatus = NonNullable<UsageContent["providerStatuses"]>[number];
+
+/**
+ * Which account a quota window belongs to, when saying so adds anything.
+ *
+ * One account per provider is the normal case and needs no tag — a row that
+ * says "Claude weekly · dev@example.com" when there is only one Claude account
+ * is noise. More than one, and the row has to name which. Desktop encodes the
+ * same rule in `buildLimitCards`/`poolAccounts`; the two bundles share no code,
+ * so this lives next to the pane that renders it rather than inline in the
+ * 17 900-line `app.tsx`.
+ */
+export function usageWindowAccountLabel(
+  accounts: UsageAccount[] | undefined,
+  window: Pick<UsageWindow, "provider" | "accountId">,
+): string | undefined {
+  const providerAccounts = (accounts ?? []).filter((account) => account.provider === window.provider);
+  if (providerAccounts.length <= 1) return undefined;
+  return providerAccounts.find((candidate) => candidate.id === window.accountId)?.email;
+}
 
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
