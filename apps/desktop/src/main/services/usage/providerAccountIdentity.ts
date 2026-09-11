@@ -169,13 +169,17 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
   return parsed;
 }
 
+function codexAuthPath(home: string = os.homedir()): string {
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
+  return path.join(codexHome, "auth.json");
+}
+
 /**
  * `~/.codex/auth.json` → `tokens.id_token` → `email` and the OpenAI auth claim's
  * `chatgpt_plan_type`. Honours `CODEX_HOME`.
  */
 export async function readCodexAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
-  const codexHome = process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
-  const parsed = await readJsonFile(path.join(codexHome, "auth.json"));
+  const parsed = await readJsonFile(codexAuthPath(home));
   if (!parsed) return {};
   const tokens = isRecord(parsed.tokens) ? parsed.tokens : parsed;
   const idToken = typeof tokens.id_token === "string" ? tokens.id_token : undefined;
@@ -190,21 +194,28 @@ export async function readCodexAccount(home: string = os.homedir()): Promise<Pro
 }
 
 /**
- * Claude's signed-in account, from the CLI's own config.
- *
  * `.claude.json` normally sits beside the home directory; a `CLAUDE_CONFIG_DIR`
  * install keeps it inside that directory instead, and then it is the *only*
- * file consulted — the home copy describes a different install's account.
+ * file consulted — the home copy describes a different install's account. A
+ * scoped install is a *different* account, not a fallback chain: if its
+ * `.claude.json` carries no account block, the home copy's email belongs to
+ * someone else's session and must never be stamped on this one's usage.
  */
-export async function readClaudeAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
+function claudeAccountCandidatePaths(home: string = os.homedir()): string[] {
   const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
-  // A scoped install is a *different* account, not a fallback chain: if its
-  // `.claude.json` carries no account block, the home copy's email belongs to
-  // someone else's session and must never be stamped on this one's usage.
-  const candidates = configDir
+  return configDir
     ? [path.join(configDir, ".claude.json")]
     : [path.join(home, ".claude.json"), path.join(home, ".claude", ".claude.json")];
-  for (const candidate of candidates) {
+}
+
+function claudeCredentialPath(home: string = os.homedir()): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+  return path.join(configDir, ".credentials.json");
+}
+
+/** Claude's signed-in account, from the CLI's own config. */
+export async function readClaudeAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
+  for (const candidate of claudeAccountCandidatePaths(home)) {
     const parsed = await readJsonFile(candidate);
     if (!parsed) continue;
     const account = isRecord(parsed.oauthAccount) ? parsed.oauthAccount : null;
@@ -232,15 +243,57 @@ export async function readClaudeAccount(home: string = os.homedir()): Promise<Pr
  * tokens in that file are never touched.
  */
 async function claudeCredentialPlan(home: string): Promise<ProviderAccountIdentity> {
-  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
-  const parsed = await readJsonFile(path.join(configDir, ".credentials.json"));
+  const parsed = await readJsonFile(claudeCredentialPath(home));
   const oauth = parsed && isRecord(parsed.claudeAiOauth) ? parsed.claudeAiOauth : null;
   const plan = formatClaudePlan(oauth?.subscriptionType ?? oauth?.rateLimitTier);
   return plan ? { plan } : {};
 }
 
-type CacheEntry = { at: number; identity: ProviderAccountIdentity };
+/**
+ * One candidate file and its change stamp: `mtime:size`, `"absent"`, or
+ * `"unknown"` when it could not be stat-ed. `"unknown"` is deliberately NOT a
+ * readability verdict — it never compares equal, so the pass falls through to
+ * the reader, the one place allowed to decide that a config exists but cannot
+ * be read.
+ */
+type SourceFingerprint = { filePath: string; fingerprint: string };
+const UNKNOWN_FINGERPRINT = "unknown";
+type CacheEntry = { at: number; identity: ProviderAccountIdentity; sourceFingerprints: SourceFingerprint[] };
 const cache = new Map<UsageProvider, CacheEntry>();
+
+async function fingerprintSources(filePaths: string[]): Promise<SourceFingerprint[]> {
+  return Promise.all(filePaths.map(async (filePath) => {
+    try {
+      const file = await fs.promises.stat(filePath);
+      return { filePath, fingerprint: `${file.mtimeMs}:${file.size}` };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      const absent = code === "ENOENT" || code === "ENOTDIR";
+      return { filePath, fingerprint: absent ? "absent" : UNKNOWN_FINGERPRINT };
+    }
+  }));
+}
+
+/**
+ * The TTL is an upper bound on staleness, not the only one: a sign-in or
+ * sign-out that lands inside the window must show up on the next poll, so the
+ * candidate files are compared too. The list is the reader's full superset, not
+ * just the files it happened to open, which can only over-invalidate — the
+ * re-read returns the same identity.
+ */
+function isCacheFresh(
+  cached: CacheEntry | undefined,
+  nowMs: number,
+  sources: SourceFingerprint[],
+): cached is CacheEntry {
+  if (!cached || nowMs - cached.at >= ACCOUNT_EMAIL_TTL_MS) return false;
+  const previous = cached.sourceFingerprints;
+  return previous.length === sources.length && previous.every((source, index) => (
+    source.filePath === sources[index].filePath
+    && source.fingerprint === sources[index].fingerprint
+    && source.fingerprint !== UNKNOWN_FINGERPRINT
+  ));
+}
 
 /**
  * Account identity for the providers that expose one locally. Cursor has no
@@ -252,23 +305,38 @@ export async function resolveProviderAccounts(
 ): Promise<ProviderAccountResolution> {
   const identities: Partial<Record<UsageProvider, ProviderAccountIdentity>> = {};
   const unreadable: Partial<Record<UsageProvider, boolean>> = {};
-  const readers: Array<[UsageProvider, () => Promise<ProviderAccountIdentity>]> = [
-    ["claude", () => readClaudeAccount()],
-    ["codex", () => readCodexAccount()],
+  const readers: Array<{
+    provider: UsageProvider;
+    read: () => Promise<ProviderAccountIdentity>;
+    /** Every file the reader may consult, in the order it consults them. */
+    sources: string[];
+  }> = [
+    {
+      provider: "claude",
+      read: readClaudeAccount,
+      sources: [...claudeAccountCandidatePaths(), claudeCredentialPath()],
+    },
+    { provider: "codex", read: readCodexAccount, sources: [codexAuthPath()] },
   ];
   // Total by construction: this is the ONE guard for account identity. Callers
   // (the usage poller, `buildProviderConnections`) used to wrap it in a catch
   // each, which is two guards for a call that already swallows every IO and
   // parse error in its readers — and two places for the contract to drift.
-  await Promise.all(readers.map(async ([provider, read]) => {
+  await Promise.all(readers.map(async ({ provider, read, sources }) => {
     try {
+      // Fingerprinted BEFORE the read, never after: a config rewritten while
+      // this pass is parsing it then mismatches on the next one. Stamping the
+      // post-read state onto the pre-read identity would instead pin the stale
+      // account for a whole TTL.
+      const sourceFingerprints = await fingerprintSources(sources);
       const cached = cache.get(provider);
-      if (cached && nowMs - cached.at < ACCOUNT_EMAIL_TTL_MS) {
-        if (cached.identity.email || cached.identity.plan) identities[provider] = cached.identity;
+      if (isCacheFresh(cached, nowMs, sourceFingerprints)) {
+        const identity = cached.identity;
+        if (identity.email || identity.plan) identities[provider] = identity;
         return;
       }
       const identity = await read();
-      cache.set(provider, { at: nowMs, identity });
+      cache.set(provider, { at: nowMs, identity, sourceFingerprints });
       if (identity.email || identity.plan) identities[provider] = identity;
     } catch {
       // Identity is a display string. A provider whose config exists but cannot

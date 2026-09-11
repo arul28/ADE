@@ -91,6 +91,25 @@ describe("provider account email files", () => {
     await expect(readCodexAccount(home)).resolves.toEqual({});
   });
 
+  it("clears a cached Codex identity when auth.json changes within the TTL", async () => {
+    const codexHome = path.join(home, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    const authPath = path.join(codexHome, "auth.json");
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({ tokens: { id_token: jwt({ email: "codex-user@example.com" }) } }),
+    );
+
+    const first = await resolveProviderAccounts(1_000);
+    expect(first.identities.codex).toEqual({ email: "codex-user@example.com" });
+
+    fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "secret-access-token" } }));
+    const signedOut = await resolveProviderAccounts(1_001);
+    expect(signedOut.identities.codex).toBeUndefined();
+    expect(signedOut.unreadable.codex).toBeUndefined();
+  });
+
   it("separates a config that is gone from one that cannot be read", async () => {
     const codexHome = path.join(home, ".codex");
     process.env.CODEX_HOME = codexHome;

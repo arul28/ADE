@@ -4465,6 +4465,9 @@ func workPrunedIdleChatEventHistory(
   keepingHeavyTail heavyTailLimit: Int,
   structuralCap: Int = workChatIdleStructuralEventCap
 ) -> [AgentChatEventEnvelope] {
+  // Explicit fast path: the reverse stride below is empty for an empty input
+  // and the trailing guard already returns `events`, but say so up front.
+  guard !events.isEmpty else { return events }
   let heavyLimit = max(0, heavyTailLimit)
   let structuralLimit = max(0, structuralCap)
   var keptHeavy = 0
