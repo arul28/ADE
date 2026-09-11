@@ -196,6 +196,19 @@ func adeUsageParseISODate(_ iso: String?) -> Date? {
   return adeUsageFractionalISOParser.date(from: iso) ?? adeUsagePlainISOParser.date(from: iso)
 }
 
+/// Milliseconds until a window resets, measured against the CURRENT clock.
+///
+/// `resetsInMs` is frozen at the instant the host polled. A cached snapshot
+/// stays on screen while the phone is offline or a refresh fails, so rendering
+/// that frozen number counts down to a reset that may already have happened —
+/// the card keeps promising headroom "in 12m" indefinitely. `resetsAt` is the
+/// durable fact (desktop and the CLI derive their countdowns from it); the
+/// polled delta is only the fallback for a host that sent an unparsable one.
+func adeUsageResetsInMs(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  guard let resetsAt = adeUsageParseISODate(window.resetsAt) else { return max(0, window.resetsInMs) }
+  return max(0, resetsAt.timeIntervalSince(now) * 1000)
+}
+
 func adeUsageRelativeTime(_ iso: String?) -> String {
   guard let date = adeUsageParseISODate(iso) else { return "not yet" }
   let seconds = max(0, Int(Date().timeIntervalSince(date)))
@@ -260,12 +273,19 @@ private func adeUsageNominalWindowMs(_ windowType: String) -> Double? {
   }
 }
 
-func adeUsageWindowPace(_ window: MobileUsageQuotaWindow) -> ADEUsageWindowPace? {
+/// `now` is threaded in for the same reason `adeUsageResetsInMs` takes it: the
+/// pace is measured against the CURRENT clock, and a caller that already fixed
+/// an instant (a card builder, a test) must get one consistent answer rather
+/// than a fresh `Date()` read per helper.
+func adeUsageWindowPace(
+  _ window: MobileUsageQuotaWindow,
+  now: Date = Date()
+) -> ADEUsageWindowPace? {
   var resolvedDuration = window.windowDurationMs ?? 0
   if resolvedDuration <= 0 { resolvedDuration = adeUsageNominalWindowMs(window.windowType) ?? 0 }
   let duration = resolvedDuration
   guard duration > 0 else { return nil }
-  let resetsInMs = max(0, min(window.resetsInMs, duration))
+  let resetsInMs = max(0, min(adeUsageResetsInMs(window, now: now), duration))
   let elapsedMs = max(0, duration - resetsInMs)
   let elapsedFraction = min(1, elapsedMs / duration)
   let percent = window.clampedPercentUsed
@@ -742,7 +762,8 @@ struct ADEUsageLimitCard: Identifiable, Equatable {
 func adeUsageLimitCards(
   provider: String,
   windows: [MobileUsageQuotaWindow],
-  accounts: [ADEUsageAccountView]
+  accounts: [ADEUsageAccountView],
+  now: Date = Date()
 ) -> [ADEUsageLimitCard] {
   let providerAccounts = accounts.filter { $0.provider == provider }
   var order: [String] = []
@@ -755,14 +776,15 @@ func adeUsageLimitCards(
       grouped[label] = []
       order.append(label)
     }
+    let fallbackIndex = grouped[label]?.count ?? 0
     grouped[label]?.append(
       ADEUsageLimitSegment(
-        id: "\(provider):\(label):\(account?.id ?? String(grouped[label]?.count ?? 0))",
+        id: "\(provider):\(label):\(account?.id ?? String(fallbackIndex))",
         account: account,
         window: window,
         percentLeft: window.percentLeft,
         restoresPercentOfPool: 0,
-        resetsInMs: max(0, window.resetsInMs)
+        resetsInMs: adeUsageResetsInMs(window, now: now)
       )
     )
   }

@@ -213,6 +213,10 @@ struct WorkChatAttachmentPreviewSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var fileURL: URL?
   @State private var failure: String?
+  /// Built once, when the file lands. Constructing it inside `body` handed
+  /// `VideoPlayer` a NEW player on every re-evaluation — playback restarted
+  /// from zero and each discarded player kept its `AVURLAsset` alive.
+  @State private var player: AVPlayer?
   /// Identity of *this* sheet for the presentation registry. Stable for the
   /// lifetime of the view, independent of which request it is showing.
   @State private var presentationToken = UUID()
@@ -222,8 +226,13 @@ struct WorkChatAttachmentPreviewSheet: View {
       Group {
         if let fileURL {
           if request.kind == .video {
-            VideoPlayer(player: AVPlayer(url: fileURL))
-              .ignoresSafeArea(edges: .bottom)
+            if let player {
+              VideoPlayer(player: player)
+                .ignoresSafeArea(edges: .bottom)
+            } else {
+              ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
           } else {
             WorkQuickLookPreview(url: fileURL)
               .ignoresSafeArea(edges: .bottom)
@@ -259,7 +268,9 @@ struct WorkChatAttachmentPreviewSheet: View {
     .onDisappear { WorkChatAttachmentPreviewFiles.endPresenting(token: presentationToken) }
     .task(id: request.id) {
       do {
-        fileURL = try await workChatMaterializeAttachmentForPreview(request, syncService: syncService)
+        let url = try await workChatMaterializeAttachmentForPreview(request, syncService: syncService)
+        fileURL = url
+        player = request.kind == .video ? AVPlayer(url: url) : nil
       } catch is CancellationError {
         return
       } catch {

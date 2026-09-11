@@ -158,6 +158,40 @@ describe("chunked attachment staging", () => {
   });
 
   /** A 0-byte attachment is rejected rather than staged as an empty path. */
+  it("serializes an append that overlaps a finish on the same upload id", async () => {
+    const projectRoot = tempProjectRoot();
+    const registry = createChunkedAttachmentStagingRegistry();
+    const begun = registry.begin({ projectRoot, filename: "race.bin" });
+    await registry.append({ uploadId: begun.uploadId, base64: Buffer.from("first").toString("base64") });
+
+    // Both commands are in flight at once — nothing upstream orders them. The
+    // append must either land BEFORE the commit or be refused outright; what it
+    // must never do is write into a `.part` the finish already renamed away and
+    // still report success.
+    const finish = registry.finish({ uploadId: begun.uploadId });
+    const late = registry.append({ uploadId: begun.uploadId, base64: Buffer.from("second").toString("base64") });
+    const finished = await finish;
+    await expect(late).rejects.toThrow(/expired/i);
+
+    expect(fs.readFileSync(finished.path).toString()).toBe("first");
+    expect(fs.existsSync(`${finished.path}.part`)).toBe(false);
+  });
+
+  it("bounds the bytes every upload stages at once, not just each one", async () => {
+    const projectRoot = tempProjectRoot();
+    const registry = createChunkedAttachmentStagingRegistry({ maxBytes: 64 });
+    const sessions = ["a", "b", "c", "d", "e"].map((name) =>
+      registry.begin({ projectRoot, filename: `${name}.bin` }));
+
+    for (const session of sessions.slice(0, 4)) {
+      await registry.append({ uploadId: session.uploadId, base64: Buffer.alloc(64).toString("base64") });
+    }
+    // Each session is still under its own ceiling; the aggregate is not.
+    await expect(
+      registry.append({ uploadId: sessions[4]!.uploadId, base64: Buffer.alloc(64).toString("base64") }),
+    ).rejects.toThrow(/too many attachments/i);
+  });
+
   it("rejects a finish with no bytes and leaves nothing on disk", async () => {
     const projectRoot = tempProjectRoot();
     const registry = createChunkedAttachmentStagingRegistry();
@@ -189,6 +223,21 @@ describe("readAttachmentChunk", () => {
       Buffer.from(first.base64, "base64"),
       Buffer.from(rest.base64, "base64"),
     ])).toEqual(body);
+  });
+
+  it("reports the bytes it actually read, never the size it asked for", async () => {
+    const projectRoot = tempProjectRoot();
+    const filePath = path.join(projectRoot, "short.bin");
+    const body = Buffer.from("abcdefghij");
+    fs.writeFileSync(filePath, body);
+
+    // A tail slice is shorter than the requested length. Reporting the request
+    // would hand the client zero-padding and advance its offset past bytes it
+    // never received.
+    const chunk = await readAttachmentChunk(filePath, 6, 64);
+    expect(chunk.byteLength).toBe(4);
+    expect(Buffer.from(chunk.base64, "base64").toString()).toBe("ghij");
+    expect(chunk.eof).toBe(true);
   });
 
   it("clamps a caller-requested length to the chunk ceiling", async () => {

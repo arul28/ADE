@@ -105,7 +105,15 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
 
     let accounts = adeUsagePoolAccounts(snapshot.accounts)
     XCTAssertEqual(accounts.map(\.initials), ["A", "B"])
-    let cards = adeUsageLimitCards(provider: "codex", windows: snapshot.windows, accounts: accounts)
+    // Fixed clock: countdowns are derived from `resetsAt` against the current
+    // time, so the forecast below is only deterministic with `now` pinned.
+    let now = try XCTUnwrap(adeUsageParseISODate("2026-09-10T12:00:00.000Z"))
+    let cards = adeUsageLimitCards(
+      provider: "codex",
+      windows: snapshot.windows,
+      accounts: accounts,
+      now: now
+    )
     XCTAssertEqual(cards.count, 1)
     let card = try XCTUnwrap(cards.first)
     // Two accounts, one exhausted: the pooled card reads 49% left and the next
@@ -146,6 +154,31 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
     let cards = adeUsageLimitCards(provider: "claude", windows: [window], accounts: [account])
     XCTAssertEqual(cards.first?.segments.first?.account?.email, "solo@example.com")
     XCTAssertEqual(Int((cards.first?.percentLeft ?? 0).rounded()), 60)
+  }
+
+  /// Pace is a rate read against the CURRENT clock, so it takes the same `now`
+  /// the card builder does. Pinning it is what makes the numbers below assertable
+  /// at all — with an implicit `Date()` this test would drift every run.
+  func testWindowPaceIsMeasuredAgainstTheSuppliedClock() throws {
+    let now = try XCTUnwrap(adeUsageParseISODate("2026-09-10T12:00:00.000Z"))
+    let window = MobileUsageQuotaWindow(
+      provider: "codex",
+      windowType: "five_hour",
+      percentUsed: 75,
+      // Half of the 5-hour window is left, so an even burn would be at 50%.
+      resetsAt: "2026-09-10T14:30:00.000Z",
+      resetsInMs: 1,
+      windowDurationMs: 18_000_000,
+      accountId: nil
+    )
+
+    let pace = try XCTUnwrap(adeUsageWindowPace(window, now: now))
+    XCTAssertEqual(pace.elapsedFraction, 0.5, accuracy: 0.0001)
+    XCTAssertEqual(pace.paceDelta, 25, accuracy: 0.0001)
+    XCTAssertEqual(pace.resetsInMs, 9_000_000, accuracy: 1)
+    // 25 points of headroom at 75 points per 2.5h runs dry in 50 minutes.
+    XCTAssertEqual(try XCTUnwrap(pace.dryInMs), 3_000_000, accuracy: 1)
+    XCTAssertTrue(pace.isAheadOfPace)
   }
 
   /// The cached copy on disk is written with `JSONEncoder`, so a round trip has

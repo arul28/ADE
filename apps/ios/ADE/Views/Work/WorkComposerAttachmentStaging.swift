@@ -300,9 +300,11 @@ func workChatUploadSingleAttachment(
     targetProjectId: targetProjectId,
     targetProjectRootPath: targetProjectRootPath
   )
-  // `File` is the ref type desktop uses for non-image attachments, so the agent
-  // receives a path rather than an inlined image.
-  return AgentChatFileRef(path: saved.path, type: "File")
+  // `file` is the ref type desktop uses for non-image attachments, so the agent
+  // receives a path rather than an inlined image. The host parser accepts the
+  // exact literals `image` and `file` and silently DROPS anything else, so the
+  // capitalisation here is load-bearing.
+  return AgentChatFileRef(path: saved.path, type: "file")
 }
 
 // MARK: - Offline byte cache
@@ -374,7 +376,11 @@ enum WorkComposerDraftAttachmentCache {
     }
     for attachment in attachments.prefix(maxFilesPerKey) {
       guard let data = attachment.uploadData else { continue }
-      guard totalBytes + data.count <= maxBytesPerKey else { break }
+      // `continue`, not `break`: one oversized attachment must not also strand
+      // every smaller one behind it. The bytes that do not fit are still lost
+      // on leave — this tier is a best-effort cache the OS may reclaim — but
+      // the ones that fit are kept.
+      guard totalBytes + data.count <= maxBytesPerKey else { continue }
       let name = UUID().uuidString
       do {
         try data.write(to: directory.appendingPathComponent(name), options: .atomic)
@@ -438,7 +444,7 @@ extension Binding where Value == WorkComposerPicker? {
   /// a late `false` from a sheet that is already being replaced cannot close
   /// the picker that replaced it.
   func isPresenting(_ picker: WorkComposerPicker) -> Binding<Bool> {
-    Binding(
+    Binding<Bool>(
       get: { wrappedValue == picker },
       set: { isPresented in
         if isPresented {
@@ -564,26 +570,36 @@ private struct WorkChatFileAttachmentPickerModifier: ViewModifier {
   private func appendVideos(_ items: [PhotosPickerItem]) async {
     for item in items {
       let id = UUID()
-      let fallbackName = "video-\(id.uuidString.prefix(8)).mov"
-      attachments.append(WorkChatInputAttachment(id: id, filename: fallbackName, kind: .video, state: .loading))
+      // The picked asset is not always QuickTime — an MP4 or an HEVC-in-MP4
+      // recording comes back as one. The host takes its extension and MIME from
+      // what we send, so guessing `.mov`/`video/quicktime` for everything
+      // stages an MP4 under a name that lies about its bytes. The item's own
+      // content type is the answer; the QuickTime pair stays as the fallback
+      // for an asset that reports no usable type at all.
+      let contentType = item.supportedContentTypes.first { $0.preferredMIMEType != nil }
+        ?? item.supportedContentTypes.first
+      let fileExtension = contentType?.preferredFilenameExtension ?? "mov"
+      let mimeType = contentType?.preferredMIMEType ?? "video/quicktime"
+      let name = "video-\(id.uuidString.prefix(8)).\(fileExtension)"
+      attachments.append(WorkChatInputAttachment(id: id, filename: name, kind: .video, state: .loading))
       do {
         guard let data = try await item.loadTransferable(type: Data.self) else {
           mark(id, failed: "This video could not be read.")
           continue
         }
         guard data.count <= workChatFileAttachmentMaxBytes else {
-          mark(id, failed: workChatFileAttachmentTooLargeMessage(fallbackName))
+          mark(id, failed: workChatFileAttachmentTooLargeMessage(name))
           continue
         }
         guard !data.isEmpty else {
-          mark(id, failed: workChatFileAttachmentEmptyMessage(fallbackName))
+          mark(id, failed: workChatFileAttachmentEmptyMessage(name))
           continue
         }
         replace(id, with: WorkChatInputAttachment(
           id: id,
           uploadData: data,
-          filename: fallbackName,
-          mimeType: "video/quicktime",
+          filename: name,
+          mimeType: mimeType,
           kind: .video,
           state: .ready
         ))

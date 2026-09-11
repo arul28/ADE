@@ -53,10 +53,7 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import {
-  resolveProviderAccounts,
-  type ProviderAccountIdentity,
-} from "./providerAccountIdentity";
+import { resolveProviderAccounts } from "./providerAccountIdentity";
 import {
   cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
@@ -234,11 +231,21 @@ async function writeCachedUsageSnapshot(snapshot: UsageSnapshot, logger: Logger)
   const tempPath = `${USAGE_SNAPSHOT_CACHE_PATH}.${process.pid}.${sequence}.tmp`;
   const write = usageSnapshotCacheWriteTail.then(async () => {
     try {
-      await fs.promises.mkdir(path.dirname(USAGE_SNAPSHOT_CACHE_PATH), { recursive: true });
+      const cacheDir = path.dirname(USAGE_SNAPSHOT_CACHE_PATH);
+      // Owner-only: the snapshot carries the signed-in account email and this
+      // machine's quota. On a shared *nix box the inherited umask would
+      // otherwise leave both world-readable. `chmod` is best-effort everywhere
+      // (and effectively a no-op on Windows) so a failure never blocks the write.
+      await fs.promises.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+      await fs.promises.chmod(cacheDir, 0o700).catch(() => {});
       await fs.promises.writeFile(
         tempPath,
         JSON.stringify({ version: USAGE_SNAPSHOT_CACHE_VERSION, snapshot }),
+        { mode: 0o600 },
       );
+      // `writeFile` only applies `mode` when it CREATES the file; a leftover
+      // temp from an earlier run keeps its old permissions.
+      await fs.promises.chmod(tempPath, 0o600).catch(() => {});
       await fs.promises.rename(tempPath, USAGE_SNAPSHOT_CACHE_PATH);
     } catch (error) {
       await fs.promises.rm(tempPath, { force: true }).catch(() => {});
@@ -2148,10 +2155,10 @@ function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: str
  * Stamp account identity onto each provider status and pool it into the
  * snapshot's account directory.
  *
- * Identity is carried forward from the previous snapshot when this read came up
- * empty (a transient unreadable config should not blank a line that was on
- * screen a second ago); the limits URL is a constant, so it is always
- * rewritten.
+ * `resolveProviderAccounts` owns the carry rule (a transiently unreadable
+ * config keeps the last identity it read; a config that is simply gone means
+ * the user signed out and reports nothing), so this is a plain read of what it
+ * returns. The limits URL is a constant, so it is always rewritten.
  *
  * Accounts are keyed by email, which is what makes the same login seen from two
  * machines one account with two `machines` entries. Today only this machine
@@ -2161,17 +2168,16 @@ function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: str
  */
 async function stampProviderAccounts(
   providerStatus: UsageProviderStatusMap,
-  previous: UsageProviderStatusMap | null,
   machineLabel: string,
 ): Promise<UsageAccount[]> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
-  const identities = await resolveProviderAccounts();
+  const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
     if (!status) continue;
-    const email = identities[key]?.email ?? previous?.[key]?.accountEmail;
-    const plan = identities[key]?.plan ?? previous?.[key]?.accountPlan;
+    const email = identities[key]?.email;
+    const plan = identities[key]?.plan;
     const url = usageProviderAccountUrl(key);
     providerStatus[key] = {
       ...status,
@@ -3592,7 +3598,6 @@ export function createUsageTrackingService({
         // facts from one source instead of each keeping its own copy.
         const accounts = await stampProviderAccounts(
           providerStatus,
-          lastSnapshot?.providerStatus ?? null,
           readLocalMachineIdentity()?.label ?? os.hostname(),
         );
         // Every window carries the account it describes, so a client can group

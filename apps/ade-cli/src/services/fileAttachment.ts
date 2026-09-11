@@ -62,6 +62,17 @@ export const ATTACHMENT_UPLOAD_SESSION_TTL_MS = 300_000;
 const MAX_PENDING_SESSIONS = 16;
 
 /**
+ * Ceiling on the bytes ALL in-flight uploads may stage at once.
+ *
+ * The per-session cap is the product limit for one file; without an aggregate
+ * one, `MAX_PENDING_SESSIONS` concurrent uploads can legally park 16× that on
+ * disk. Four files' worth of headroom clears the real concurrent case — one
+ * message's attachments uploading at once — and still bounds the worst case to
+ * a quarter of what it was.
+ */
+const MAX_PENDING_TOTAL_MULTIPLIER = 4;
+
+/**
  * Extension → MIME for the file kinds a client can preview in-thread. Anything
  * else stages fine and reports `application/octet-stream`; the agent receives a
  * path either way, so an unknown type is not an error.
@@ -109,6 +120,15 @@ type PendingUpload = {
   filename: string;
   received: number;
   touchedAtMs: number;
+  /**
+   * Serialization tail for this upload id. `append`, `finish`, and `abort` are
+   * separate remote commands on one file: nothing upstream orders them, so an
+   * `append` that parks on `appendFile` while a `finish` renames the `.part`
+   * out from under it would write the rest of the bytes into a fresh orphan
+   * and still report success, leaving the committed file short. Every mutation
+   * chains onto this promise, so the three always run one at a time per id.
+   */
+  tail: Promise<unknown>;
 };
 
 export type AttachmentUploadBeginResult = {
@@ -235,6 +255,36 @@ export function createChunkedAttachmentStagingRegistry(options?: {
     return entry;
   };
 
+  /**
+   * Still the registered session for its id?
+   *
+   * Re-checked INSIDE the exclusive section: an operation that was admitted
+   * while the upload was live can reach the front of the queue after a
+   * `finish` or `abort` already retired it, and writing then would resurrect a
+   * committed file's `.part`.
+   */
+  const requireLive = (entry: PendingUpload): void => {
+    if (pending.get(entry.uploadId) !== entry) {
+      throw new Error("This attachment upload expired. Attach the file again.");
+    }
+  };
+
+  /** Run `operation` after every earlier mutation of the same upload id. */
+  const runExclusive = <T>(entry: PendingUpload, operation: () => Promise<T>): Promise<T> => {
+    const run = entry.tail.then(operation, operation);
+    // The tail must never reject: it is only an ordering token, and a rejected
+    // one would reject every later operation that chains onto it.
+    entry.tail = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  /** Bytes every live session has already written, for the aggregate ceiling. */
+  const stagedBytes = (): number => {
+    let total = 0;
+    for (const entry of pending.values()) total += entry.received;
+    return total;
+  };
+
   return {
     begin({ projectRoot, filename, totalBytes }): AttachmentUploadBeginResult {
       const root = requireString(projectRoot, "Attachment upload requires a project root.");
@@ -259,6 +309,7 @@ export function createChunkedAttachmentStagingRegistry(options?: {
         filename: name,
         received: 0,
         touchedAtMs: now(),
+        tail: Promise.resolve(),
       });
       return { uploadId, chunkBytes: ATTACHMENT_CHUNK_BYTES, maxBytes };
     },
@@ -267,71 +318,85 @@ export function createChunkedAttachmentStagingRegistry(options?: {
       prune();
       const entry = requireUpload(uploadId);
       const chunk = decodeChunk(base64);
-      if (entry.received + chunk.byteLength > maxBytes) {
-        pending.delete(entry.uploadId);
-        await unlinkStagedAttachmentQuietly(entry.partPath);
-        throw new Error(
-          attachmentTooLargeMessage(entry.filename, entry.received + chunk.byteLength, maxBytes),
-        );
-      }
-      // Reserve the bytes BEFORE the write. Two appends that interleave on one
-      // upload id would otherwise both read the pre-write counter and overshoot
-      // the ceiling by a chunk each.
-      entry.received += chunk.byteLength;
-      try {
-        await fs.promises.mkdir(path.dirname(entry.partPath), { recursive: true });
-        await fs.promises.appendFile(entry.partPath, chunk);
-      } catch (error) {
-        // A failed append is NOT recoverable: `appendFile` can write part of
-        // the chunk before throwing (ENOSPC mid-write, a truncated device
-        // write), so the `.part` now holds an unknown number of bytes. Rolling
-        // the counter back would under-count what is on disk and the next
-        // `finish` would publish a silently corrupt file under a real name.
-        // Fail the whole upload instead: drop the session, unlink the part, and
-        // tell the client to attach the file again.
-        pending.delete(entry.uploadId);
-        await unlinkStagedAttachmentQuietly(entry.partPath);
-        throw new Error(
-          `This attachment could not be written. Attach the file again. (${
-            error instanceof Error ? error.message : String(error)
-          })`,
-        );
-      }
-      entry.touchedAtMs = now();
-      return { uploadId: entry.uploadId, receivedBytes: entry.received };
+      return runExclusive(entry, async () => {
+        requireLive(entry);
+        if (entry.received + chunk.byteLength > maxBytes) {
+          pending.delete(entry.uploadId);
+          await unlinkStagedAttachmentQuietly(entry.partPath);
+          throw new Error(
+            attachmentTooLargeMessage(entry.filename, entry.received + chunk.byteLength, maxBytes),
+          );
+        }
+        if (stagedBytes() + chunk.byteLength > maxBytes * MAX_PENDING_TOTAL_MULTIPLIER) {
+          pending.delete(entry.uploadId);
+          await unlinkStagedAttachmentQuietly(entry.partPath);
+          throw new Error(
+            "This host is already staging too many attachments at once. Send the ones in flight, then attach this file again.",
+          );
+        }
+        // The counter moves before the write so a failed append cannot under-count.
+        entry.received += chunk.byteLength;
+        try {
+          await fs.promises.mkdir(path.dirname(entry.partPath), { recursive: true });
+          await fs.promises.appendFile(entry.partPath, chunk);
+        } catch (error) {
+          // A failed append is NOT recoverable: `appendFile` can write part of
+          // the chunk before throwing (ENOSPC mid-write, a truncated device
+          // write), so the `.part` now holds an unknown number of bytes. Rolling
+          // the counter back would under-count what is on disk and the next
+          // `finish` would publish a silently corrupt file under a real name.
+          // Fail the whole upload instead: drop the session, unlink the part, and
+          // tell the client to attach the file again.
+          pending.delete(entry.uploadId);
+          await unlinkStagedAttachmentQuietly(entry.partPath);
+          throw new Error(
+            `This attachment could not be written. Attach the file again. (${
+              error instanceof Error ? error.message : String(error)
+            })`,
+          );
+        }
+        entry.touchedAtMs = now();
+        return { uploadId: entry.uploadId, receivedBytes: entry.received };
+      });
     },
 
     async finish({ uploadId }): Promise<AttachmentUploadFinishResult> {
       const entry = requireUpload(uploadId);
-      pending.delete(entry.uploadId);
-      // A 0-byte file is rejected rather than staged: it reaches the agent as a
-      // path with nothing behind it, which reads as a failed read rather than
-      // an empty file. Clients pre-check the same rule so the user does not
-      // spend a round trip to learn it.
-      if (entry.received <= 0) {
-        await unlinkStagedAttachmentQuietly(entry.partPath);
-        throw new Error("This attachment was empty.");
-      }
-      try {
-        await commitStagedAttachmentPart(entry.partPath, entry.destPath);
-      } catch (error) {
-        await unlinkStagedAttachmentQuietly(entry.partPath);
-        throw error instanceof Error ? error : new Error("Unable to store the attachment.");
-      }
-      return {
-        path: entry.destPath,
-        mimeType: attachmentMimeTypeForPath(entry.destPath),
-        byteLength: entry.received,
-      };
+      return runExclusive(entry, async () => {
+        requireLive(entry);
+        pending.delete(entry.uploadId);
+        // A 0-byte file is rejected rather than staged: it reaches the agent as a
+        // path with nothing behind it, which reads as a failed read rather than
+        // an empty file. Clients pre-check the same rule so the user does not
+        // spend a round trip to learn it.
+        if (entry.received <= 0) {
+          await unlinkStagedAttachmentQuietly(entry.partPath);
+          throw new Error("This attachment was empty.");
+        }
+        try {
+          await commitStagedAttachmentPart(entry.partPath, entry.destPath);
+        } catch (error) {
+          await unlinkStagedAttachmentQuietly(entry.partPath);
+          throw error instanceof Error ? error : new Error("Unable to store the attachment.");
+        }
+        return {
+          path: entry.destPath,
+          mimeType: attachmentMimeTypeForPath(entry.destPath),
+          byteLength: entry.received,
+        };
+      });
     },
 
     async abort({ uploadId }): Promise<{ aborted: boolean }> {
       const id = typeof uploadId === "string" ? uploadId.trim() : "";
       const entry = id ? pending.get(id) : undefined;
       if (!entry) return { aborted: false };
-      pending.delete(id);
-      await unlinkStagedAttachmentQuietly(entry.partPath);
-      return { aborted: true };
+      return runExclusive(entry, async () => {
+        if (pending.get(id) !== entry) return { aborted: false };
+        pending.delete(id);
+        await unlinkStagedAttachmentQuietly(entry.partPath);
+        return { aborted: true };
+      });
     },
 
     whenSweepSettled(): Promise<void> {
@@ -372,20 +437,29 @@ export async function readAttachmentChunk(
     : ATTACHMENT_CHUNK_BYTES;
   const length = Math.max(0, Math.min(requested, ATTACHMENT_CHUNK_BYTES, stat.size - offset));
   const buffer = Buffer.alloc(length);
+  // A regular-file read may return fewer bytes than asked for, so loop until
+  // the slice is full or the file ends. Reporting `length` off a short read
+  // would hand the client zero-padding and advance its offset past bytes it
+  // never received — a silently corrupt PDF or video with no failure anywhere.
+  let filled = 0;
   if (length > 0) {
     const handle = await fs.promises.open(filePath, "r");
     try {
-      await handle.read(buffer, 0, length, offset);
+      while (filled < length) {
+        const { bytesRead } = await handle.read(buffer, filled, length - filled, offset + filled);
+        if (bytesRead <= 0) break;
+        filled += bytesRead;
+      }
     } finally {
       await handle.close();
     }
   }
   return {
-    base64: buffer.toString("base64"),
+    base64: (filled === length ? buffer : buffer.subarray(0, filled)).toString("base64"),
     offset,
-    byteLength: length,
+    byteLength: filled,
     totalBytes: stat.size,
     mimeType: attachmentMimeTypeForPath(filePath),
-    eof: offset + length >= stat.size,
+    eof: offset + filled >= stat.size,
   };
 }

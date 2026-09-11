@@ -35,6 +35,22 @@ export type ProviderAccountIdentity = {
   plan?: string;
 };
 
+/**
+ * What one resolve pass learned about every provider it can read.
+ *
+ * `identities` holds every provider with an identity to show, including one
+ * carried over from the last successful read when this pass could not read the
+ * config. `unreadable` marks those carried-over providers, for callers that
+ * want to report the read failure itself. A provider in neither map is
+ * authoritatively signed out, and its account line must be cleared rather than
+ * carried forward forever — that clearing is already done here, so callers are
+ * plain reads of `identities`.
+ */
+export type ProviderAccountResolution = {
+  identities: Partial<Record<UsageProvider, ProviderAccountIdentity>>;
+  unreadable: Partial<Record<UsageProvider, boolean>>;
+};
+
 /** Re-reading two small JSON files on every poll is pointless; the signed-in account changes rarely. */
 const ACCOUNT_EMAIL_TTL_MS = 5 * 60_000;
 
@@ -116,14 +132,38 @@ export function formatClaudePlan(value: unknown): string | undefined {
   return `Claude ${words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")}`;
 }
 
-async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await fs.promises.readFile(filePath, "utf8");
-    const parsed = safeJsonParse<Record<string, unknown>>(raw, {});
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
+/**
+ * A provider config that EXISTS but could not be read or parsed.
+ *
+ * The distinction matters downstream: an absent config is the authoritative
+ * answer "nobody is signed in", and the poller must clear the account line on
+ * it. An unreadable one is transient (a half-written file, a permissions
+ * hiccup) and must not blank a line that was correct a second ago.
+ */
+export class ProviderAccountUnreadableError extends Error {
+  constructor(filePath: string) {
+    super(`Provider account config could not be read: ${filePath}`);
+    this.name = "ProviderAccountUnreadableError";
   }
+}
+
+/** `null` means "not there"; a throw means "there but unreadable". */
+async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(filePath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    // ENOENT/ENOTDIR/EISDIR are all "no config here" on every platform;
+    // anything else (EACCES, EBUSY, EIO) is a read we cannot trust.
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return null;
+    throw new ProviderAccountUnreadableError(filePath);
+  }
+  // `null` fallback, not `{}`: an empty object is a legitimate config, so a
+  // `{}` fallback would make unparsable JSON look like a valid signed-out one.
+  const parsed = safeJsonParse<Record<string, unknown> | null>(raw, null);
+  if (!isRecord(parsed)) throw new ProviderAccountUnreadableError(filePath);
+  return parsed;
 }
 
 /**
@@ -205,8 +245,9 @@ const cache = new Map<UsageProvider, CacheEntry>();
  */
 export async function resolveProviderAccounts(
   nowMs: number = Date.now(),
-): Promise<Partial<Record<UsageProvider, ProviderAccountIdentity>>> {
-  const out: Partial<Record<UsageProvider, ProviderAccountIdentity>> = {};
+): Promise<ProviderAccountResolution> {
+  const identities: Partial<Record<UsageProvider, ProviderAccountIdentity>> = {};
+  const unreadable: Partial<Record<UsageProvider, boolean>> = {};
   const readers: Array<[UsageProvider, () => Promise<ProviderAccountIdentity>]> = [
     ["claude", () => readClaudeAccount()],
     ["codex", () => readCodexAccount()],
@@ -219,20 +260,34 @@ export async function resolveProviderAccounts(
     try {
       const cached = cache.get(provider);
       if (cached && nowMs - cached.at < ACCOUNT_EMAIL_TTL_MS) {
-        if (cached.identity.email || cached.identity.plan) out[provider] = cached.identity;
+        if (cached.identity.email || cached.identity.plan) identities[provider] = cached.identity;
         return;
       }
       const identity = await read();
       cache.set(provider, { at: nowMs, identity });
-      if (identity.email || identity.plan) out[provider] = identity;
+      if (identity.email || identity.plan) identities[provider] = identity;
     } catch {
-      // Identity is a display string. A provider that cannot be read leaves the
-      // line blank rather than failing the poll it is attached to.
+      // Identity is a display string. A provider whose config exists but cannot
+      // be read must not blank a line that was correct a second ago, so the
+      // last identity this module actually read is carried forward and the
+      // provider is also flagged `unreadable`. Carrying happens HERE, once, so
+      // every caller is a plain read of `identities` and two surfaces can never
+      // name different accounts for one provider.
+      //
+      // A successful read always overwrites the cache — including with `{}` —
+      // so a sign-out that is followed by an unreadable pass carries nothing.
+      unreadable[provider] = true;
+      const carried = cache.get(provider)?.identity;
+      if (carried && (carried.email || carried.plan)) identities[provider] = carried;
     }
   }));
-  return out;
+  return { identities, unreadable };
 }
 
+/**
+ * Drops both the TTL cache and the carry-forward identity it doubles as, so a
+ * test can start from "this process has never read an account".
+ */
 export function clearProviderAccountCache(): void {
   cache.clear();
 }

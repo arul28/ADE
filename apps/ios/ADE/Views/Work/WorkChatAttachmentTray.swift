@@ -154,6 +154,19 @@ func workChatAttachmentIsImage(_ ref: AgentChatFileRef) -> Bool {
   return type == "image" || type == "image-url"
 }
 
+/// The ref as the HOST will accept it.
+///
+/// `parseAgentChatFileRefs` matches the exact literals `image` and `file` and
+/// silently drops every other spelling, so a ref that says `File` — including
+/// one restored from a draft written by a build that spelled it that way —
+/// vanishes from `chat.send` with no error anywhere. Normalizing on the way out
+/// is the one place that cannot be forgotten by a new call site.
+func workChatNormalizedOutboundRef(_ ref: AgentChatFileRef) -> AgentChatFileRef {
+  var normalized = ref
+  normalized.type = workChatAttachmentIsImage(ref) ? "image" : "file"
+  return normalized
+}
+
 func workChatAttachmentDisplayName(_ ref: AgentChatFileRef) -> String {
   if ref.type == "image-url", let url = ref.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
     if let host = URL(string: url)?.host, !host.isEmpty {
@@ -356,13 +369,13 @@ func workChatSaveInputAttachments(
     // back from a persisted draft. Re-uploading would duplicate the bytes and,
     // for a ref-restored attachment, there are no local bytes to send.
     if let hostRef = attachment.hostRef {
-      refs.append(hostRef)
+      refs.append(workChatNormalizedOutboundRef(hostRef))
       continue
     }
     // The upload started when the attachment was staged; wait for it rather
     // than racing a second upload of the same bytes.
     if let resolved = await WorkComposerAttachmentUploads.shared.resolve(attachment.id) {
-      refs.append(resolved)
+      refs.append(workChatNormalizedOutboundRef(resolved))
       continue
     }
     if attachment.kind != .image {
@@ -373,7 +386,9 @@ func workChatSaveInputAttachments(
         targetProjectId: targetProjectId,
         targetProjectRootPath: targetProjectRootPath
       )
-      refs.append(AgentChatFileRef(path: saved.path, type: "File"))
+      // Lowercase: the host ref parser drops any `type` that is not exactly
+      // `image` or `file`.
+      refs.append(AgentChatFileRef(path: saved.path, type: "file"))
       continue
     }
     guard let dataUrl = workChatInputAttachmentDataURL(attachment) else { continue }
@@ -616,8 +631,11 @@ struct WorkChatInputAttachmentTray: View {
   /// Routes a preview's byte fetch to the right project scope. Nil on the
   /// projectless "new chat" composers, which fall back to the active project.
   var chatSessionId: String?
-  @State private var expandedAttachment: WorkChatInputAttachment?
-  @State private var filePreview: WorkChatAttachmentPreviewRequest?
+  /// ONE presentation state, not two. Two `.sheet(item:)` modifiers on the same
+  /// view are not a supported SwiftUI arrangement — whichever one loses can
+  /// silently never present — and the two states are mutually exclusive anyway:
+  /// a tap opens either the image sheet or the file/video sheet.
+  @State private var preview: WorkChatInputTrayPreview?
 
   private var attachmentCountLabel: String {
     let readyCount = attachments.filter(\.isReady).count
@@ -692,17 +710,19 @@ struct WorkChatInputAttachmentTray: View {
         }
       }
       .padding(.horizontal, 2)
-      .sheet(item: $expandedAttachment) { attachment in
-        WorkChatInputAttachmentPreview(
-          attachment: attachment,
-          onRemove: {
-            attachments.removeAll { $0.id == attachment.id }
-            expandedAttachment = nil
-          }
-        )
-      }
-      .sheet(item: $filePreview) { request in
-        WorkChatAttachmentPreviewSheet(request: request)
+      .sheet(item: $preview) { item in
+        switch item {
+        case let .image(attachment):
+          WorkChatInputAttachmentPreview(
+            attachment: attachment,
+            onRemove: {
+              attachments.removeAll { $0.id == attachment.id }
+              preview = nil
+            }
+          )
+        case let .file(request):
+          WorkChatAttachmentPreviewSheet(request: request)
+        }
       }
     }
   }
@@ -711,7 +731,7 @@ struct WorkChatInputAttachmentTray: View {
   /// QuickLook / `VideoPlayer` without leaving the thread.
   private func open(_ attachment: WorkChatInputAttachment) {
     guard attachment.kind != .image else {
-      expandedAttachment = attachment
+      preview = .image(attachment)
       return
     }
     let source: WorkChatAttachmentPreviewSource
@@ -722,12 +742,26 @@ struct WorkChatInputAttachmentTray: View {
     } else {
       return
     }
-    filePreview = WorkChatAttachmentPreviewRequest(
+    preview = .file(WorkChatAttachmentPreviewRequest(
       filename: attachment.filename,
       kind: attachment.kind,
       source: source,
       chatSessionId: chatSessionId
-    )
+    ))
+  }
+}
+
+/// The one thing an input tray can have open: the image sheet or the
+/// file/video sheet.
+private enum WorkChatInputTrayPreview: Identifiable {
+  case image(WorkChatInputAttachment)
+  case file(WorkChatAttachmentPreviewRequest)
+
+  var id: String {
+    switch self {
+    case let .image(attachment): return "image:\(attachment.id.uuidString)"
+    case let .file(request): return "file:\(request.id.uuidString)"
+    }
   }
 }
 
@@ -1010,6 +1044,7 @@ private struct WorkChatAttachmentChip: View {
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
   @Environment(\.workChatIsPersonal) private var isPersonalChat
+  @Environment(\.workChatSessionId) private var chatSessionId
   @Environment(\.displayScale) private var displayScale
 
   @State private var previewImage: UIImage?
@@ -1082,7 +1117,10 @@ private struct WorkChatAttachmentChip: View {
         filename: workChatAttachmentDisplayName(attachment),
         kind: workChatAttachmentRefKind(attachment),
         source: .hostPath(attachment.path),
-        chatSessionId: nil
+        // Without the owning session the host resolves this path against
+        // whichever project is active, so a file from another project's chat
+        // fails to load.
+        chatSessionId: chatSessionId
       )
     } label: {
       fileChipFace
@@ -1236,6 +1274,10 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
   let laneId: String
   let requestedCwd: String?
   let isPersonalChat: Bool
+  /// The session these messages belong to. Attachment reads are routed by it,
+  /// so a chat from another project resolves against ITS project rather than
+  /// whichever one happens to be active on the host.
+  let sessionId: String?
 
   func body(content: Content) -> some View {
     content
@@ -1245,6 +1287,7 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
       .environment(\.workChatLaneId, laneId)
       .environment(\.workChatRequestedCwd, requestedCwd)
       .environment(\.workChatIsPersonal, isPersonalChat)
+      .environment(\.workChatSessionId, sessionId)
   }
 }
 
@@ -1258,6 +1301,10 @@ private struct WorkChatRequestedCwdEnvironmentKey: EnvironmentKey {
 
 private struct WorkChatIsPersonalEnvironmentKey: EnvironmentKey {
   static let defaultValue = false
+}
+
+private struct WorkChatSessionIdEnvironmentKey: EnvironmentKey {
+  static let defaultValue: String? = nil
 }
 
 extension EnvironmentValues {
@@ -1275,6 +1322,11 @@ extension EnvironmentValues {
   var workChatIsPersonal: Bool {
     get { self[WorkChatIsPersonalEnvironmentKey.self] }
     set { self[WorkChatIsPersonalEnvironmentKey.self] = newValue }
+  }
+
+  var workChatSessionId: String? {
+    get { self[WorkChatSessionIdEnvironmentKey.self] }
+    set { self[WorkChatSessionIdEnvironmentKey.self] = newValue }
   }
 }
 

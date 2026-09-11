@@ -137,7 +137,7 @@ struct HubInlineComposer: View {
   /// (not derived from focus) so every change happens inside a spring
   /// transaction instead of snapping with the focus flip.
   private var isExpanded: Bool {
-    expanded || isDictating || modelPickerPresented || destinationPickerPresented || presentedPicker == .photos
+    expanded || isDictating || modelPickerPresented || destinationPickerPresented || presentedPicker != nil
   }
 
   /// Collapses the panel, keeping the draft text and all settings.
@@ -297,7 +297,7 @@ struct HubInlineComposer: View {
       guard expanded,
             !modelPickerPresented,
             !destinationPickerPresented,
-            presentedPicker != .photos,
+            presentedPicker == nil,
             !isDictating else { return }
       collapse()
     }

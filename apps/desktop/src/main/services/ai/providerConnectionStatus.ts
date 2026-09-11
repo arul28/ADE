@@ -172,11 +172,16 @@ export async function buildProviderConnections(
       },
     ];
     status.blocker = resolveBlocker(args.label, args.loginHint, args.flags, args.extraBlocker);
-    const identity = args.provider === "claude" || args.provider === "codex"
-      ? accountIdentities[args.provider]
-      : undefined;
-    if (identity?.email) status.accountEmail = identity.email;
-    if (identity?.plan) status.accountPlan = identity.plan;
+    // Plain read: `resolveProviderAccounts` already carries the last-known
+    // account across a config that exists but could not be read, and already
+    // clears it on a real sign-out, so Settings > Providers and the Limits
+    // cards cannot name different accounts for one provider.
+    const account: ProviderAccountIdentity | undefined =
+      args.provider === "claude" || args.provider === "codex"
+        ? accountIdentities.identities[args.provider]
+        : undefined;
+    if (account?.email) status.accountEmail = account.email;
+    if (account?.plan) status.accountPlan = account.plan;
     applyRuntimeHealth(status, args.health);
     return status;
   }

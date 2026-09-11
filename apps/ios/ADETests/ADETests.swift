@@ -20804,10 +20804,28 @@ final class ADETests: XCTestCase {
       }
       XCTAssertEqual(block.messageId, "assistant-long")
     }
-    XCTAssertTrue(rendered.contains { row in
-      guard case .assistantMarkdownBlock(let block) = row.payload else { return false }
-      return block.block.kind.cacheKey.contains("5000. Line 5000")
-    })
+    // Reconstruct the source from the rendered blocks themselves. The numbered
+    // answer parses as ordered-list blocks, so the marker ("5000. ") lives in
+    // the block's `start` + item offset and never in the item text; asserting
+    // on `cacheKey` would only ever prove the item text, not the whole answer.
+    var reconstructedLines: [String] = []
+    for row in rendered {
+      guard case .assistantMarkdownBlock(let block) = row.payload else { continue }
+      switch block.block.kind {
+      case .orderedList(let start, let items):
+        for (offset, item) in items.enumerated() {
+          reconstructedLines.append("\(start + offset). \(item)")
+        }
+      case .paragraph(let text):
+        reconstructedLines.append(contentsOf: text.components(separatedBy: "\n"))
+      default:
+        return XCTFail("Unexpected block kind in a numbered assistant answer: \(block.block.kind)")
+      }
+    }
+    XCTAssertEqual(reconstructedLines.count, 5000)
+    XCTAssertEqual(reconstructedLines.first, "1. Line 1")
+    XCTAssertEqual(reconstructedLines.last, "5000. Line 5000")
+    XCTAssertEqual(reconstructedLines.joined(separator: "\n"), markdown)
   }
 
   func testAssistantMessagePreviewRendersWireframesWhole() {

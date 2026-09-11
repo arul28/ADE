@@ -9,6 +9,7 @@ import {
   formatCodexPlan,
   readClaudeAccount,
   readCodexAccount,
+  resolveProviderAccounts,
 } from "./providerAccountIdentity";
 import { usageProviderAccountUrl } from "../../../shared/types";
 
@@ -88,6 +89,61 @@ describe("provider account email files", () => {
       JSON.stringify({ tokens: { access_token: "secret-access-token" } }),
     );
     await expect(readCodexAccount(home)).resolves.toEqual({});
+  });
+
+  it("separates a config that is gone from one that cannot be read", async () => {
+    const codexHome = path.join(home, ".codex");
+    process.env.CODEX_HOME = codexHome;
+
+    // Nothing there: the authoritative "signed out" answer. A caller holding a
+    // previous account must clear it rather than keep showing it forever.
+    clearProviderAccountCache();
+    const absent = await resolveProviderAccounts(1_000);
+    expect(absent.identities.codex).toBeUndefined();
+    expect(absent.unreadable.codex).toBeUndefined();
+
+    // There but unparsable (a half-written file): transient, so the previous
+    // identity may be carried.
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(path.join(codexHome, "auth.json"), '{"tokens": {"id_to');
+    clearProviderAccountCache();
+    const broken = await resolveProviderAccounts(2_000);
+    expect(broken.identities.codex).toBeUndefined();
+    expect(broken.unreadable.codex).toBe(true);
+  });
+
+  it("carries the last identity it read across an unreadable pass, but not across a sign-out", async () => {
+    const codexHome = path.join(home, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    const authPath = path.join(codexHome, "auth.json");
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({ tokens: { id_token: jwt({ email: "codex-user@example.com" }) } }),
+    );
+
+    clearProviderAccountCache();
+    const read = await resolveProviderAccounts(1_000);
+    expect(read.identities.codex).toEqual({ email: "codex-user@example.com" });
+
+    // Half-written file: the account line must survive it. Carrying happens in
+    // the resolver, so callers never keep a copy of their own.
+    fs.writeFileSync(authPath, '{"tokens": {"id_to');
+    const unreadable = await resolveProviderAccounts(1_000 + 6 * 60_000);
+    expect(unreadable.unreadable.codex).toBe(true);
+    expect(unreadable.identities.codex).toEqual({ email: "codex-user@example.com" });
+
+    // Signed out: the authoritative answer clears the carry for good, so a
+    // later unreadable pass has nothing stale to resurrect.
+    fs.rmSync(authPath);
+    const signedOut = await resolveProviderAccounts(1_000 + 12 * 60_000);
+    expect(signedOut.identities.codex).toBeUndefined();
+    expect(signedOut.unreadable.codex).toBeUndefined();
+
+    fs.writeFileSync(authPath, '{"tokens": {"id_to');
+    const afterSignOut = await resolveProviderAccounts(1_000 + 18 * 60_000);
+    expect(afterSignOut.unreadable.codex).toBe(true);
+    expect(afterSignOut.identities.codex).toBeUndefined();
   });
 
   it("reads the Claude email from .claude.json oauthAccount", async () => {

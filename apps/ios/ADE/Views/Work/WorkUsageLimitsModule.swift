@@ -266,7 +266,7 @@ private struct WorkUsageQuotaRowInteraction: ViewModifier {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(label)
         .accessibilityHint("Show account details")
-        .accessibilityAction(perform: action)
+        .accessibilityAction { action() }
     } else {
       content
     }

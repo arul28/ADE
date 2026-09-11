@@ -1845,7 +1845,8 @@ struct WorkChatSessionView: View {
               modelLabel: transcriptModelLabel,
               laneId: session.laneId,
               requestedCwd: chatSummaryContext.requestedCwd,
-              isPersonalChat: isPersonalChat
+              isPersonalChat: isPersonalChat,
+              sessionId: session.id
             )
           )
         }

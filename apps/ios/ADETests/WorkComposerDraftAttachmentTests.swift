@@ -50,7 +50,7 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
 
     WorkComposerDraftStore.save("look at this", for: draftKey)
     WorkComposerDraftStore.saveAttachments(
-      [AgentChatFileRef(path: "/tmp/.ade/attachments/a.pdf", type: "File")],
+      [AgentChatFileRef(path: "/tmp/.ade/attachments/a.pdf", type: "file")],
       owner: nil,
       localFiles: [],
       for: draftKey
@@ -86,7 +86,7 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     let draftKey = key()
     WorkComposerDraftStore.save("about to send", for: draftKey)
     WorkComposerDraftStore.saveAttachments(
-      [AgentChatFileRef(path: "/tmp/.ade/attachments/b.mov", type: "File")],
+      [AgentChatFileRef(path: "/tmp/.ade/attachments/b.mov", type: "file")],
       owner: nil,
       localFiles: [],
       for: draftKey
@@ -103,8 +103,30 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
   /// re-downloading or re-uploading it.
   func testRefKindClassification() {
     XCTAssertEqual(workChatAttachmentRefKind(AgentChatFileRef(path: "/x/a.png", type: "image")), .image)
-    XCTAssertEqual(workChatAttachmentRefKind(AgentChatFileRef(path: "/x/a.mov", type: "File")), .video)
-    XCTAssertEqual(workChatAttachmentRefKind(AgentChatFileRef(path: "/x/a.pdf", type: "File")), .file)
+    XCTAssertEqual(workChatAttachmentRefKind(AgentChatFileRef(path: "/x/a.mov", type: "file")), .video)
+    XCTAssertEqual(workChatAttachmentRefKind(AgentChatFileRef(path: "/x/a.pdf", type: "file")), .file)
+  }
+
+  /// The host ref parser accepts only `image` and `file` and drops anything
+  /// else without a word, so a draft written by a build that stored `File` must
+  /// still send. Normalization happens on the way out, not at rest.
+  func testOutboundRefTypeIsNormalizedForTheHostParser() {
+    XCTAssertEqual(
+      workChatNormalizedOutboundRef(AgentChatFileRef(path: "/x/a.pdf", type: "File")).type,
+      "file"
+    )
+    XCTAssertEqual(
+      workChatNormalizedOutboundRef(AgentChatFileRef(path: "/x/a.mov", type: "video")).type,
+      "file"
+    )
+    XCTAssertEqual(
+      workChatNormalizedOutboundRef(AgentChatFileRef(path: "/x/a.png", type: "image")).type,
+      "image"
+    )
+    XCTAssertEqual(
+      workChatNormalizedOutboundRef(AgentChatFileRef(path: "/x/a.png", type: "image-url")).type,
+      "image"
+    )
   }
 
   /// A ref-only attachment carries no bytes. `isReady` has to accept it or the
@@ -113,7 +135,7 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     let attachment = WorkChatInputAttachment(
       filename: "spec.pdf",
       kind: .file,
-      hostRef: AgentChatFileRef(path: "/x/spec.pdf", type: "File"),
+      hostRef: AgentChatFileRef(path: "/x/spec.pdf", type: "file"),
       state: .ready
     )
     XCTAssertTrue(attachment.isReady)

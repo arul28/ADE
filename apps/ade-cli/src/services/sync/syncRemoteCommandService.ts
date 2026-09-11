@@ -4581,7 +4581,21 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // `chat.getImageDataUrl` cannot serve these — it sniffs for an image MIME and
   // rejects everything else.
   register("chat.getAttachmentChunk", { viewerAllowed: true }, async (payload) => {
-    const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getAttachmentChunk");
+    // Containment inside the PROJECT ROOT is not enough here. Unlike
+    // `chat.getImageDataUrl`, this route returns raw bytes of anything it is
+    // pointed at, so a project-root-relative `.env`, a credential file, or a
+    // Git object would come back base64-encoded to any viewer-allowed client.
+    // Every path this serves is a staged attachment, so the staging directory
+    // is the real bound.
+    const projectRoot = requireProjectRoot(args, "chat.getAttachmentChunk");
+    const attachmentsDir = projectAttachmentsDir(projectRoot);
+    const requested = resolveAllowedProjectPath(args, payload.path, "chat.getAttachmentChunk");
+    let filePath: string;
+    try {
+      filePath = resolvePathWithinRoot(attachmentsDir, requested);
+    } catch {
+      throw new Error("Only staged chat attachments can be read.");
+    }
     return readAttachmentChunk(filePath, payload.offset, payload.length);
   });
   register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
