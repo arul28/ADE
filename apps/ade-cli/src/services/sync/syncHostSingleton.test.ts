@@ -151,6 +151,37 @@ describe("sync host singleton", () => {
     }
   });
 
+  // The birth-time probe can fail or time out (a 2s PowerShell budget on a
+  // Defender-contended Windows box did it routinely). Falling back to
+  // `Date.now() - uptime()` wrote Node bootstrap time while the reader asks the
+  // OS for exec time, so the live owner failed its OWN matcher and
+  // `activeLockConflict` unlinked a live brain's lock as PID reuse.
+  it("records no birth identity when the probe fails, never a wrong-clock one", () => {
+    const lockPath = tempLockPath();
+    const lease = acquireSyncHostSingleton(
+      { port: 8787, projectRoot: null },
+      { lockPath, readOwnProcessStartTimeMs: () => null },
+    );
+    try {
+      expect(lease.owner.processStartedAt).toBeNull();
+      // `false` is the verdict that unlinks. A failed probe must never produce
+      // a record its own matcher rejects.
+      expect(defaultProcessMatchesOwner(lease.owner)).not.toBe(false);
+    } finally {
+      lease.dispose();
+    }
+
+    // ...and such a lock, held by another live brain, survives detection.
+    const otherLockPath = tempLockPath();
+    writeLock(otherLockPath, owner({ pid: 4242, processStartedAt: null }));
+    expect(detectSyncHostSingletonConflict({
+      lockPath: otherLockPath,
+      pidAlive: () => true,
+      skipListenerScan: true,
+    })).toMatchObject({ reason: "lock", owner: { pid: 4242 } });
+    expect(fs.existsSync(otherLockPath)).toBe(true);
+  });
+
   // The listener scan shells out synchronously (`lsof`, or PowerShell on a 15s
   // budget). The hello path and the per-command failure path run it for every
   // reconnect and every failing command while a host is down, which is exactly

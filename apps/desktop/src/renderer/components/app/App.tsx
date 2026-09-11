@@ -883,10 +883,19 @@ function ProjectTabHost() {
   }
 
   if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+    // A host conflict during first hydration lands here, not on a project
+    // surface, so the starting banner and the recovery takeover have to ride
+    // along with the welcome page — this is the one state where the machine
+    // has no project mounted to hang them off. The account and personal-chats
+    // routes are already excluded above: they need no project host.
     return (
-      <PageErrorBoundary>
-        <ProjectWelcomePage />
-      </PageErrorBoundary>
+      <div className="relative h-full min-h-0 w-full">
+        {webMode ? <ProjectHostStartingBanner /> : null}
+        <PageErrorBoundary>
+          <ProjectWelcomePage />
+        </PageErrorBoundary>
+        {webMode ? <ProjectHostRecoveryScreen /> : null}
+      </div>
     );
   }
 

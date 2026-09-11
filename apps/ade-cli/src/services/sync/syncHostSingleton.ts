@@ -65,6 +65,8 @@ export type SyncHostSingletonDeps = {
    * for a caller sitting in front of first paint. See the desktop launch gate.
    */
   skipListenerScan?: boolean;
+  /** Injectable birth-time probe for THIS process; `null` means "unknown". */
+  readOwnProcessStartTimeMs?: () => number | null;
 };
 
 // Which leases THIS process currently holds. The lock file answers "who owns
@@ -176,6 +178,9 @@ function defaultPidAlive(pid: number): boolean {
  * reading OS exec time back therefore unlinks a LIVE brain's lock as PID reuse
  * and makes one-tap recovery refuse every stop. One PowerShell spawn per lock
  * acquisition is the honest price; this is brain startup, not a hot path.
+ *
+ * `null` is a real answer ("the OS would not tell us"), never a cue to derive a
+ * time from another clock: the caller records no birth identity at all instead.
  */
 function readOwnProcessStartTimeMs(
   platform: NodeJS.Platform = process.platform,
@@ -190,7 +195,11 @@ function readOwnProcessStartTimeMs(
     const raw = execFileSync(
       resolveTrustedWindowsTool("powershell"),
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8", timeout: 2_000, maxBuffer: 16 * 1024, windowsHide: true },
+      // Starting the PowerShell runtime alone routinely outlasts the 2s POSIX
+      // budget on a cold or Defender-contended box (see `defaultScanText`).
+      // Timing out here costs the machine its recovery identity for the whole
+      // life of the lock, and this runs once per acquisition, so buy the time.
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true },
     );
     const startedAtMs = Date.parse(raw.trim());
     return Number.isFinite(startedAtMs) ? startedAtMs : null;
@@ -385,26 +394,30 @@ export function buildQuitCommand(args: {
   return parts.join("; ");
 }
 
-function currentOwner(args: {
-  port?: number | null;
-  projectRoot?: string | null;
-}): SyncHostSingletonOwner {
+function currentOwner(
+  args: {
+    port?: number | null;
+    projectRoot?: string | null;
+  },
+  readOwnStartTimeMs: () => number | null = readOwnProcessStartTimeMs,
+): SyncHostSingletonOwner {
   const now = new Date().toISOString();
   const channel = normalizedChannel(process.env.ADE_PACKAGE_CHANNEL);
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
   const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
-  // Same clock the reader uses, on every platform. `Date.now() - uptime()` is
-  // Node bootstrap time; the reader asks the OS for exec time. The gap is real
-  // (dyld and code-signing on macOS, Defender's on-access scan on Windows), and
-  // a stale-looking owner gets its live lock unlinked as PID reuse. Fall back
-  // to the uptime derivation only when the OS will not answer.
-  const processStartedAtMs = readOwnProcessStartTimeMs();
-  const processStartedAt = new Date(
-    processStartedAtMs !== null && Number.isFinite(processStartedAtMs)
-      ? processStartedAtMs
-      : Date.now() - Math.max(0, process.uptime() * 1_000),
-  ).toISOString();
+  // Same clock the reader uses, on every platform, or none at all. There is no
+  // safe second clock here: `Date.now() - uptime()` is Node bootstrap time
+  // while the reader asks the OS for exec time, and the gap is real (dyld and
+  // code-signing on macOS, Defender's on-access scan on Windows) — a live owner
+  // written from it fails its own matcher and gets its lock unlinked as PID
+  // reuse. A failed probe therefore records NO birth identity: `sameOwner`,
+  // `hasStableProcessIdentity`, and `defaultProcessMatchesOwner` all treat that
+  // as "unknown", which costs this machine one-tap recovery but never a lock.
+  const processStartedAtMs = readOwnStartTimeMs();
+  const processStartedAt = processStartedAtMs !== null && Number.isFinite(processStartedAtMs)
+    ? new Date(processStartedAtMs).toISOString()
+    : null;
   return {
     id: randomUUID(),
     pid: process.pid,
@@ -740,7 +753,10 @@ export function acquireSyncHostSingleton(
 ): SyncHostSingletonLease {
   assertNoSyncHostSingletonConflict(deps);
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
-  const owner = currentOwner(args);
+  const owner = currentOwner(
+    args,
+    deps.readOwnProcessStartTimeMs ?? (() => readOwnProcessStartTimeMs(deps.platform)),
+  );
   const processMatchesOwner = deps.processMatchesOwner
     ?? ((candidate) => defaultProcessMatchesOwner(candidate, deps.platform));
   for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSandboxUnsupportedFailureText,
   presentChatFailure,
   readChatErrorPresentation,
 } from "./chatErrorPresentation";
@@ -70,6 +71,28 @@ describe("presentChatFailure", () => {
     expect(presentChatFailure({ kind: "busy" }).title).toBe("This chat is already working");
     expect(presentChatFailure({ kind: "configuration", message: "sandboxing is not supported" }).body)
       .toBe("This ADE runtime can't provide the sandbox this agent asked for.");
+  });
+
+  // Each field is matched on its own. Joined, a "Sandbox" word in `message`
+  // paired with an unrelated "not supported" in `detail` and served Cursor
+  // sandbox guidance for a failure that had nothing to do with the sandbox.
+  it("does not read a sandbox failure out of two unrelated fields", () => {
+    expect(isSandboxUnsupportedFailureText("Sandbox startup failed", "Model not supported"))
+      .toBe(false);
+    const presented = presentChatFailure({
+      kind: "network",
+      message: "Sandbox startup failed",
+      detail: "Model not supported",
+      provider: "Cursor",
+    });
+    expect(presented.title).toBe("Connection issue");
+    // The real message survives instead of being discarded for sandbox copy.
+    expect(presented.body).toBe("Sandbox startup failed");
+    expect(presented.body).not.toContain("can't use Cursor's sandbox");
+
+    // A match inside one field is still a match.
+    expect(isSandboxUnsupportedFailureText(null, "sandboxing is not supported in this environment"))
+      .toBe(true);
   });
 
   it("normalizes a provider key into its display label", () => {

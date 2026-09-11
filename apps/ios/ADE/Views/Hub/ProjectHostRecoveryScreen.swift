@@ -271,9 +271,9 @@ func projectHostBlockedReason(_ snapshot: SyncHostReadinessSnapshot?) -> Project
 func projectHostIneligibleGuidance(_ snapshot: SyncHostReadinessSnapshot?) -> String? {
   switch projectHostBlockedReason(snapshot) {
   case .unauthorized:
-    return "This iPhone can't stop the other runtime — retry, switch Macs, or stop it on that Mac."
+    return "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer."
   case .unidentified:
-    return "ADE can't safely stop the other runtime from here, so stop it on that Mac."
+    return "ADE can't safely stop the other runtime from here, so stop it on that computer."
   case nil:
     return nil
   }

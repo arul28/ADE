@@ -720,15 +720,15 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           steerId: optionalString(eventDict["recoveryId"])
         )
       case "error":
-        let explicitDetail = optionalString(eventDict["detail"])
-        let detailText = explicitDetail ?? optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
-        // Replayed transcript rows carry no structured `errorInfo`, so this is
-        // always the per-category derivation — resolved through the same helper
-        // the live event mapper uses.
+        // A persisted row keeps the host's `errorInfo`, presentation included,
+        // so reopening a chat must read it exactly like the live mapper does —
+        // otherwise the same failed turn changes its title and next step on
+        // reload. `prettyPrintedRemoteJSONValue` folding of a legacy payload
+        // lives in the helper, so no `errorInfo` text is assembled here.
         let presented = workPresentedChatFailure(
           message: stringValue(eventDict["message"]),
-          detail: detailText,
-          errorInfo: nil
+          detail: optionalString(eventDict["detail"]),
+          errorInfo: remoteJSONValue(from: eventDict["errorInfo"])
         )
         event = .error(
           message: presented.body,

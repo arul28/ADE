@@ -360,6 +360,44 @@ describe("syncHostRecovery", () => {
     expect(result.steps.find((entry) => entry.id === "restart")?.status).toBe("done");
   });
 
+  // The wait loop polls `detect()` every 250ms. Defaulting it to the full
+  // detection ran the native listener scan on every pass -- `lsof`, or a
+  // full-machine `Get-NetTCPConnection` + `Get-CimInstance` on a 15s budget on
+  // Windows -- synchronously on the brain's event loop. The diagnosis still
+  // pays for it: that scan is the only way to see a blocker holding the port
+  // without a lock file. The poll only asks whether the conflict has cleared,
+  // which the lock check answers, so its cost must not grow with the wait.
+  it("does not run the listener scan once per wait poll", async () => {
+    const runWithPolls = async (pollsBeforeLease: number): Promise<number> => {
+      resetSyncHostRecoveryForTests();
+      let scans = 0;
+      let holds = false;
+      let polls = 0;
+      await recoverSyncHostConnection({
+        detectConflict: ({ skipListenerScan }) => {
+          if (!skipListenerScan) scans += 1;
+          return null;
+        },
+        holdsLease: () => holds,
+        sleep: async () => {
+          polls += 1;
+          if (polls >= pollsBeforeLease) holds = true;
+        },
+        now: () => 0,
+        // A real budget, so the loop polls instead of falling straight through.
+        waitMs: 1,
+        selfPid: 1,
+        prove: async () => true,
+      });
+      expect(polls).toBe(pollsBeforeLease);
+      return scans;
+    };
+    const shortWait = await runWithPolls(2);
+    const longWait = await runWithPolls(40);
+    expect(shortWait).toBeGreaterThan(0);
+    expect(longWait).toBe(shortWait);
+  });
+
   it("never targets this brain's pid", async () => {
     const terminated: number[] = [];
     await recoverSyncHostConnection({

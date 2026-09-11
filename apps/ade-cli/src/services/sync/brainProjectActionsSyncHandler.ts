@@ -85,6 +85,7 @@ import {
   SYNC_HOST_DIAGNOSE_ACTION,
   SYNC_HOST_RECOVER_ACTION,
 } from "../../../../desktop/src/shared/types/syncHostRecovery";
+import type { AdeUsageClientSurface } from "../../../../desktop/src/shared/types/usage";
 // The SAME parser the project sync host uses. This handler used to carry a
 // narrower private copy that only understood `bootstrap` and `paired` auth, so
 // a signed-in web client's `account` hello was rejected as "Invalid hello
@@ -146,7 +147,7 @@ type BrainProjectActionsSyncHandlerArgs = {
    */
   captureRecoveryAnalytics?: (args: {
     outcome: "success" | "partial" | "failed";
-    surface: "mobile" | "web";
+    surface: AdeUsageClientSurface;
   }) => void;
 };
 
@@ -164,6 +165,28 @@ type BrainPeerState = {
 };
 
 const WS_OPEN = 1;
+
+/**
+ * `canManageSyncHost` authorizes two different peers: a desktop runtime-host
+ * pairing record and the narrower phone/browser recovery grant. Read the
+ * surface from the stored device type instead of assuming the phone, and send
+ * an unrecognized type to the neutral `api` bucket — an unattributed repair is
+ * worth more than one filed under a surface the user never touched.
+ */
+export function recoveryAnalyticsSurface(
+  peerDeviceType: string | null | undefined,
+): AdeUsageClientSurface {
+  switch (peerDeviceType) {
+    case "phone":
+      return "mobile";
+    case "browser":
+      return "web";
+    case "desktop":
+      return "desktop";
+    default:
+      return "api";
+  }
+}
 
 function canManageSyncHost(peer: BrainPeerState): boolean {
   return peer.authKind === "paired"
@@ -1019,22 +1042,33 @@ export function createBrainProjectActionsSyncHandler(
               conflictReason: recovery.snapshot.conflict?.reason ?? null,
               steps: recovery.steps.map((step) => ({ id: step.id, status: step.status })),
             });
-            // `partial` is the restart handing off: the repair ran, but the
-            // client has to reconnect to learn the result. That is a different
-            // product answer from "one tap finished it".
-            args.captureRecoveryAnalytics?.({
-              outcome: recovery.ok
-                ? "success"
-                : recovery.status === "restarting" ? "partial" : "failed",
-              // Only a phone or a browser can hold the recovery grant, so the
-              // surface is one of these two by construction.
-              surface: peer.pairingRecord?.peerDeviceType === "browser" ? "web" : "mobile",
-            });
             send(peer.ws, "command_result", {
               commandId,
               ok: true,
               result: recovery,
             }, envelope.requestId);
+            // After the answer, and never able to change it. The repair has
+            // already stopped a process and may have restarted the brain; a
+            // throwing analytics client reaching the catch below would report
+            // `command_failed` for work that succeeded, and invite the client
+            // to retry a destructive operation.
+            //
+            // `partial` is the restart handing off: the repair ran, but the
+            // client has to reconnect to learn the result. That is a different
+            // product answer from "one tap finished it".
+            try {
+              args.captureRecoveryAnalytics?.({
+                outcome: recovery.ok
+                  ? "success"
+                  : recovery.status === "restarting" ? "partial" : "failed",
+                surface: recoveryAnalyticsSurface(peer.pairingRecord?.peerDeviceType),
+              });
+            } catch (error) {
+              args.logger.warn("sync_brain.sync_host_recovery_analytics_failed", {
+                commandId,
+                errorType: error instanceof Error ? error.name : typeof error,
+              });
+            }
           } catch (error) {
             if (!isCurrent()) return;
             args.logger.warn("sync_brain.sync_host_recovery_failed", {

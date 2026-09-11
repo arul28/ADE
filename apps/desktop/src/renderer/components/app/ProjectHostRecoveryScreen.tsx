@@ -63,8 +63,8 @@ function StepMark({ status }: { status: SyncHostRecoveryStepStatus }) {
 
 /** One sentence for the conflicts this browser is not allowed to end itself. */
 const BLOCKED_COPY = {
-  unauthorized: "This browser can't stop the other runtime — retry, switch machines, or stop it on that Mac.",
-  unidentified: "ADE can't safely stop the other runtime from here, so stop it on that Mac.",
+  unauthorized: "This browser can't stop the other runtime — retry, switch machines, or stop it on that computer.",
+  unidentified: "ADE can't safely stop the other runtime from here, so stop it on that computer.",
 } as const;
 
 export function ProjectHostRecoveryScreen() {

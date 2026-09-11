@@ -954,12 +954,20 @@ func workPresentedChatFailure(
   let body = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     ? workUnfinishedTurnBody(provider: workErrorInfoProvider(errorInfo))
     : message
+  // An older host sends `errorInfo` with no presentation and no `detail`. Its
+  // provider codes stay recoverable in the technical fold — never in the body.
+  let legacyDetail: String?
+  if let detail, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    legacyDetail = detail
+  } else {
+    legacyDetail = prettyPrintedRemoteJSONValue(errorInfo)
+  }
   return WorkPresentedChatFailure(
     title: style.title,
     body: body,
     category: category,
     nextAction: workFailureDefaultNextAction,
-    technicalDetail: workFailureTechnicalDetail(detail, body: body)
+    technicalDetail: workFailureTechnicalDetail(legacyDetail, body: body)
   )
 }
 
@@ -1082,6 +1090,35 @@ func prettyPrintedRemoteJSONValue(_ value: RemoteJSONValue?) -> String {
   guard let value else { return "" }
   let foundationObject = foundationObject(from: value)
   return prettyPrintedJSONString(foundationObject)
+}
+
+/// Inverse of `foundationObject(from:)`. Replayed transcript rows arrive as
+/// `JSONSerialization` values, so lifting them back into `RemoteJSONValue` lets
+/// the replay path reuse the structured readers the live decode path uses
+/// instead of parsing the host presentation a second time.
+func remoteJSONValue(from value: Any?) -> RemoteJSONValue? {
+  guard let value, !(value is NSNull) else { return nil }
+  if let string = value as? String {
+    return .string(string)
+  }
+  if let number = value as? NSNumber {
+    // `as? Bool` also succeeds for the numbers 0 and 1, so the CoreFoundation
+    // type is the only way to tell a real boolean apart from an integer.
+    if CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID() {
+      return .bool(number.boolValue)
+    }
+    return .number(number.doubleValue)
+  }
+  if let bool = value as? Bool {
+    return .bool(bool)
+  }
+  if let object = value as? [String: Any] {
+    return .object(object.mapValues { remoteJSONValue(from: $0) ?? .null })
+  }
+  if let array = value as? [Any] {
+    return .array(array.map { remoteJSONValue(from: $0) ?? .null })
+  }
+  return nil
 }
 
 func foundationObject(from value: RemoteJSONValue) -> Any {

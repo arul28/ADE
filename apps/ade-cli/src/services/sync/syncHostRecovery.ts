@@ -26,7 +26,11 @@ import {
 } from "./syncHostSingleton";
 
 export type SyncHostRecoveryDeps = {
-  detectConflict?: () => SyncHostSingletonConflict | null;
+  /**
+   * Takes the scan option so the caller, not the injected closure, decides
+   * which of its calls pays for the native listener scan.
+   */
+  detectConflict?: (options: { skipListenerScan: boolean }) => SyncHostSingletonConflict | null;
   holdsLease?: () => boolean;
   pidAlive?: (pid: number) => boolean;
   processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null;
@@ -44,7 +48,8 @@ export type SyncHostRecoveryDeps = {
    * SYNCHRONOUSLY (a 15s budget on Windows). The lock check alone answers the
    * common "the host has not taken its lease yet" case, so the hello path and
    * the per-command failure path pass this; only an explicit diagnose request
-   * pays for the full scan.
+   * and a repair's own first diagnosis pay for the full scan (a repair's wait
+   * poll never does — see `runSyncHostRecovery`).
    */
   skipListenerScan?: boolean;
 };
@@ -180,10 +185,10 @@ export function diagnoseSyncHostReadiness(deps: SyncHostRecoveryDeps = {}): Sync
   const skipListenerScan = deps.skipListenerScan ?? configured.skipListenerScan ?? false;
   const detect = deps.detectConflict
     ?? configured.detectConflict
-    ?? (() => detectSyncHostSingletonConflict({ skipListenerScan }));
+    ?? detectSyncHostSingletonConflict;
   const holds = deps.holdsLease ?? configured.holdsLease ?? holdsSyncHostSingleton;
   const env = deps.env ?? configured.env ?? process.env;
-  const conflict = detect();
+  const conflict = detect({ skipListenerScan });
   if (conflict) {
     const publicConflict = publicConflictFromOwner(conflict, env);
     const isDev = publicConflict.ownerKind === "development";
@@ -365,6 +370,14 @@ async function runSyncHostRecovery(
 
   const operationId = existingId || randomUUID();
   const detect = deps.detectConflict ?? detectSyncHostSingletonConflict;
+  // The listener scan spawns `lsof` — or, on Windows, a full-machine
+  // `Get-NetTCPConnection` + `Get-CimInstance` on a 15s budget — SYNCHRONOUSLY
+  // on the brain's event loop. It is the only way to see a blocker holding the
+  // port without a lock file, so the diagnosis and the pre-kill identity
+  // recheck pay for it. The wait poll below asks the narrower "has the conflict
+  // cleared yet", which the lock check answers on its own.
+  const scanOptions = { skipListenerScan: deps.skipListenerScan ?? false };
+  const lockOnlyOptions = { skipListenerScan: true };
   const holds = deps.holdsLease ?? holdsSyncHostSingleton;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
   const processMatchesOwner = deps.processMatchesOwner
@@ -391,7 +404,11 @@ async function runSyncHostRecovery(
     if (index >= 0) steps[index] = step(id, status, detail);
   };
 
-  const snapshot0 = diagnoseSyncHostReadiness(deps);
+  // One observation, used twice: it decides whether there is anything to stop,
+  // and the same conflict becomes the client-facing snapshot. Detecting twice
+  // would pay for a second listener scan and could disagree with itself.
+  const firstConflict = detect(scanOptions);
+  const snapshot0 = diagnoseSyncHostReadiness({ ...deps, detectConflict: () => firstConflict });
   let result: SyncHostRecoveryResult = store({
     operationId,
     ok: false,
@@ -446,7 +463,7 @@ async function runSyncHostRecovery(
         abort: "ineligible",
       };
     }
-    const rechecked = detect();
+    const rechecked = detect(scanOptions);
     if (
       !rechecked
       || processMatchesOwner(rechecked.owner) !== true
@@ -469,7 +486,6 @@ async function runSyncHostRecovery(
     }
   };
 
-  const firstConflict = detect();
   setStep("diagnose", "done");
 
   if (firstConflict) {
@@ -493,7 +509,7 @@ async function runSyncHostRecovery(
   setStep("wait", "active");
   const deadline = now() + waitMs;
   while (now() < deadline) {
-    if (!detect() && holds()) break;
+    if (!detect(lockOnlyOptions) && holds()) break;
     await sleep(250);
   }
   setStep("wait", "done");

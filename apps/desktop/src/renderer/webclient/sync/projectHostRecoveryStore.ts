@@ -218,17 +218,23 @@ function applyHostUnavailable(error: unknown): void {
   // failures are the repair happening, not news, and must not replace the
   // progress screen.
   if (state.phase === "recovering") return;
-  const snapshot = parseSyncHostReadinessSnapshot(details.snapshot) ?? state.snapshot;
+  const errorSnapshot = parseSyncHostReadinessSnapshot(details.snapshot);
+  const snapshot = errorSnapshot ?? state.snapshot;
   if (projectHostShouldTakeOverImmediately(snapshot) || details.reason === "conflict") {
     // Parse the conflict the error carried. Dropping it here used to cost the
     // owner label, the project, the impact line — and, because Fix connection
     // needs a conflict, the repair button itself.
-    applySnapshot(snapshot ?? {
+    const conflict = parseSyncHostConflict(details.conflict);
+    // A conflict verified right after a "starting" snapshot arrives with its
+    // own `details.conflict` and no `details.snapshot`; falling back to the
+    // held snapshot there would keep showing "starting" and discard it.
+    const carried = conflict ? errorSnapshot : snapshot;
+    applySnapshot(carried ?? {
       state: "conflict",
       headline: SYNC_HOST_CONFLICT_HEADLINE,
       body: details.message?.trim() || SYNC_HOST_CONFLICT_BODY,
-      conflict: parseSyncHostConflict(details.conflict),
-      recoveryEligible: details.recoveryEligible === true,
+      conflict,
+      recoveryEligible: details.recoveryEligible === true || conflict?.recoveryEligible === true,
     });
     return;
   }

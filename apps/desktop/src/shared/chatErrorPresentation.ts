@@ -118,7 +118,10 @@ function isSandboxUnsupportedText(text: string): boolean {
 export function isSandboxUnsupportedFailureText(
   ...texts: Array<string | null | undefined>
 ): boolean {
-  return isSandboxUnsupportedText(texts.filter(Boolean).join("\n"));
+  // Each field is matched on its own. Joining them let "Sandbox startup failed"
+  // in `message` pair with an unrelated "not supported" in `detail` and steal
+  // the sandbox-configuration card.
+  return texts.some((text) => (text ? isSandboxUnsupportedText(text) : false));
 }
 
 /**

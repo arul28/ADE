@@ -193,7 +193,7 @@ final class ProjectHostRecoveryTests: XCTestCase {
     ])
     XCTAssertEqual(projectHostBlockedReason(snapshot), .unauthorized)
     let copy = projectHostIneligibleGuidance(snapshot)
-    XCTAssertEqual(copy, "This iPhone can't stop the other runtime — retry, switch Macs, or stop it on that Mac.")
+    XCTAssertEqual(copy, "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer.")
     XCTAssertFalse(copy?.localizedCaseInsensitiveContains("pid") == true)
   }
 
@@ -214,11 +214,11 @@ final class ProjectHostRecoveryTests: XCTestCase {
     XCTAssertEqual(projectHostBlockedReason(snapshot), .unidentified)
     XCTAssertEqual(
       projectHostIneligibleGuidance(snapshot),
-      "ADE can't safely stop the other runtime from here, so stop it on that Mac."
+      "ADE can't safely stop the other runtime from here, so stop it on that computer."
     )
     XCTAssertNotEqual(
       projectHostIneligibleGuidance(snapshot),
-      "This iPhone can't stop the other runtime — retry, switch Macs, or stop it on that Mac."
+      "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer."
     )
   }
 
@@ -275,6 +275,109 @@ final class ProjectHostRecoveryTests: XCTestCase {
     XCTAssertEqual(presented.title, "Couldn't start this turn")
     XCTAssertTrue(presented.body.contains("can't use Cursor's sandbox"))
     XCTAssertEqual(presented.technicalDetail, "sandboxing is not supported")
+  }
+
+  // Reopening a chat replays the persisted rows. Reading `errorInfo` there the
+  // way the live mapper does is what keeps one failed turn from showing the
+  // host's copy while live and generic local copy after a reload.
+  func testReplayedErrorKeepsTheHostPresentation() throws {
+    let transcript = parseWorkChatTranscript("""
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-09-11T00:00:00.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "error",
+        "turnId": "turn-1",
+        "message": "Local SDK sandboxing was requested",
+        "errorInfo": {
+          "category": "configuration",
+          "provider": "Cursor",
+          "presentation": {
+            "title": "Couldn't start this turn",
+            "body": "This ADE runtime can't use Cursor's sandbox.",
+            "nextAction": "Retry the turn.",
+            "technicalDetail": "sandboxing is not supported"
+          }
+        }
+      }
+    }
+    """)
+    let replayed = try XCTUnwrap(transcript.last)
+    guard case .error(let message, let detail, let category, _, let title, let nextAction) = replayed.event else {
+      return XCTFail("the persisted row has to decode as an error")
+    }
+    XCTAssertEqual(title, "Couldn't start this turn")
+    XCTAssertEqual(message, "This ADE runtime can't use Cursor's sandbox.")
+    XCTAssertEqual(nextAction, "Retry the turn.")
+    XCTAssertEqual(detail, "sandboxing is not supported")
+    XCTAssertEqual(category, "configuration")
+  }
+
+  // An older host sends `errorInfo` with no presentation and no `detail`. Its
+  // provider codes have to stay recoverable from the transcript.
+  func testLegacyErrorInfoStillFillsTheTechnicalFold() throws {
+    let presented = workPresentedChatFailure(
+      message: "Request failed",
+      detail: nil,
+      errorInfo: .object([
+        "category": .string("network"),
+        "provider": .string("Cursor"),
+        "code": .string("ECONNRESET"),
+      ])
+    )
+    let technical = try XCTUnwrap(presented.technicalDetail)
+    XCTAssertTrue(technical.contains("ECONNRESET"))
+    XCTAssertEqual(presented.body, "Request failed")
+    XCTAssertFalse(presented.body.contains("ECONNRESET"))
+
+    // The same payload replayed from a persisted row.
+    let transcript = parseWorkChatTranscript("""
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-09-11T00:00:00.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "error",
+        "turnId": "turn-1",
+        "message": "Request failed",
+        "errorInfo": { "category": "network", "provider": "Cursor", "code": "ECONNRESET" }
+      }
+    }
+    """)
+    guard case .error(let message, let detail, _, _, _, _) = try XCTUnwrap(transcript.last).event else {
+      return XCTFail("the persisted row has to decode as an error")
+    }
+    XCTAssertEqual(message, "Request failed")
+    XCTAssertTrue(try XCTUnwrap(detail).contains("ECONNRESET"))
+  }
+
+  // The fold never repeats the body, and an empty `detail` must not shadow the
+  // legacy `errorInfo` payload behind it.
+  func testTechnicalFoldNeitherRepeatsTheBodyNorSwallowsErrorInfo() throws {
+    let repeated = workPresentedChatFailure(
+      message: "Request failed",
+      detail: "Request failed",
+      errorInfo: nil
+    )
+    XCTAssertNil(repeated.technicalDetail)
+
+    let blankDetail = workPresentedChatFailure(
+      message: "Request failed",
+      detail: "   ",
+      errorInfo: .object(["code": .string("ECONNRESET")])
+    )
+    XCTAssertTrue(try XCTUnwrap(blankDetail.technicalDetail).contains("ECONNRESET"))
+  }
+
+  // `as? Bool` also matches the numbers 0 and 1, so a replayed flag would turn
+  // into a number without the CoreFoundation check.
+  func testRemoteJSONValueConversionKeepsBoolsAndNumbersApart() {
+    XCTAssertEqual(remoteJSONValue(from: ["retryable": true]), .object(["retryable": .bool(true)]))
+    XCTAssertEqual(remoteJSONValue(from: ["attempts": 1]), .object(["attempts": .number(1)]))
+    XCTAssertEqual(remoteJSONValue(from: ["codes": ["a", NSNull()]]), .object(["codes": .array([.string("a"), .null])]))
+    XCTAssertNil(remoteJSONValue(from: nil))
+    XCTAssertNil(remoteJSONValue(from: NSNull()))
   }
 
   // The repair restarts the machine, so the command's own socket usually dies

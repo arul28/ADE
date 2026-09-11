@@ -64,7 +64,10 @@ import {
   syncConnectionTransportForOrigin,
   syncHeartbeatMissLimitForPeerMetadata,
 } from "./syncHostService";
-import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
+import {
+  createBrainProjectActionsSyncHandler,
+  recoveryAnalyticsSurface,
+} from "./brainProjectActionsSyncHandler";
 import {
   generateMachinePairingPin,
   resetBrainMachineSyncStoresForTests,
@@ -5277,6 +5280,150 @@ describe("sync host account authentication", () => {
       for (const client of clients) client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       cleanup();
+    }
+  });
+
+  // The repair stops a process and can restart the brain. A throwing analytics
+  // client used to land in the command's catch and answer `command_failed` for
+  // work that had already succeeded, inviting a retry of a destructive action.
+  it("reports a successful repair even when the analytics capture throws", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    resetBrainMachineSyncStoresForTests();
+    const { pairingStore } = resolveBrainMachineSyncStores(secretsDir);
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const peer = {
+      deviceId: "analytics-failure-phone",
+      deviceName: "Authorized iPhone",
+      platform: "iOS" as const,
+      deviceType: "phone" as const,
+      siteId: "analytics-failure-phone-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const secret = pairingStore.pairPeerViaAccount(peer, attestation).secret;
+    let holdsLease = false;
+    const terminated: number[] = [];
+    configureSyncHostRecovery({
+      detectConflict: () => (holdsLease ? null : {
+        reason: "lock",
+        owner: {
+          id: "development-owner",
+          pid: 19621,
+          port: 8787,
+          appName: "ADE",
+          packageChannel: null,
+          adeHome: "/tmp/ade-home",
+          serviceName: null,
+          socketPath: "/tmp/ade-remote-sim/sock/ade.sock",
+          projectRoot: "/tmp/worktrees/improving-browser",
+          commandLine: "node apps/ade-cli/dist/cli.cjs serve --socket /tmp/ade-remote-sim/sock/ade.sock",
+          processStartedAt: "2026-09-08T19:00:00.000Z",
+          quitCommand: "kill 19621",
+          createdAt: "2026-09-08T19:00:00.000Z",
+          updatedAt: "2026-09-08T19:00:00.000Z",
+        },
+      }),
+      holdsLease: () => holdsLease,
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      terminatePid: async (pid) => {
+        terminated.push(pid);
+        holdsLease = true;
+      },
+      prove: async () => holdsLease,
+      sleep: async () => {},
+      now: () => 0,
+      waitMs: 0,
+      selfPid: 1,
+    });
+    const logger = createDiscoveryLogger();
+    const handler = createBrainProjectActionsSyncHandler({
+      logger,
+      captureRecoveryAnalytics: () => {
+        throw new Error("posthog client exploded");
+      },
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }),
+        getAccessToken: async () => "host-account-lease",
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = await openAccountClient((server.address() as AddressInfo).port);
+      client.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "analytics-failure-hello",
+        payload: { peer, auth: { kind: "paired", deviceId: peer.deviceId, secret } },
+      }));
+      await waitForEnvelope(client.envelopes, "hello_ok", "analytics-failure-hello");
+      client.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "analytics-failure-recover",
+        payload: {
+          commandId: "analytics-failure-recover",
+          action: "sync.recoverHost",
+          args: {},
+        } satisfies SyncCommandPayload,
+      }));
+      await expect(waitForEnvelope(client.envelopes, "command_result", "analytics-failure-recover"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { status: "succeeded" } } });
+      expect(terminated).toEqual([19621]);
+      // The failed capture is a warn, not the command's verdict.
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_brain.sync_host_recovery_analytics_failed",
+        expect.objectContaining({ commandId: "analytics-failure-recover" }),
+      );
+    } finally {
+      resetSyncHostRecoveryForTests();
+      client?.ws.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
+  // `canManageSyncHost` also authorizes a desktop runtime host, so the surface
+  // is read from the stored device type rather than assumed to be a phone.
+  it("records the peer's real surface for a host repair", () => {
+    expect(recoveryAnalyticsSurface("phone")).toBe("mobile");
+    expect(recoveryAnalyticsSurface("browser")).toBe("web");
+    expect(recoveryAnalyticsSurface("desktop")).toBe("desktop");
+    for (const unknown of ["vps", "unknown", "", null, undefined]) {
+      expect(recoveryAnalyticsSurface(unknown)).toBe("api");
     }
   });
 

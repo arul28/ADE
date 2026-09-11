@@ -128,6 +128,39 @@ describe("projectHostRecoveryStore", () => {
     });
   });
 
+  // The transition the phone hits first: the host reports "starting", then the
+  // next command fails with a verified conflict that carries `details.conflict`
+  // and no `details.snapshot`. Falling back to the held starting snapshot there
+  // lost the owner label and, with it, Fix connection.
+  it("takes the conflict from an error that carries no snapshot", () => {
+    configureProjectHostRecoveryStoreForTests({ sleep: () => new Promise<void>(() => {}) });
+    applyProjectHostHello({
+      state: "starting",
+      headline: "Starting services",
+      body: "This machine is starting its project connection.",
+      conflict: null,
+      recoveryEligible: false,
+    }, activeClient);
+    expect(getProjectHostRecoveryState().phase).toBe("retrying");
+
+    noteProjectHostUnavailable({
+      code: "host_unavailable",
+      message: "A development runtime is using the connection your phone needs.",
+      details: {
+        code: "host_unavailable",
+        reason: "conflict",
+        recoveryEligible: true,
+        conflict: conflictSnapshot.conflict,
+      },
+    }, activeClient);
+
+    const state = getProjectHostRecoveryState();
+    expect(state.phase).toBe("takeover");
+    expect(state.snapshot?.state).toBe("conflict");
+    expect(state.snapshot?.conflict?.ownerLabel).toBe("Development runtime");
+    expect(state.snapshot?.recoveryEligible).toBe(true);
+  });
+
   it("Fix connection records a recovery result", async () => {
     applyProjectHostHello(conflictSnapshot, activeClient);
     bindProjectHostRecoverySend(async () => ({
