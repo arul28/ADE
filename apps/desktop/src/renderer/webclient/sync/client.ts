@@ -51,6 +51,12 @@ import {
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
+import {
+  applyProjectHostHello,
+  bindProjectHostRecoverySend,
+  noteProjectHostDisconnected,
+  releaseProjectHostRecoveryClient,
+} from "./projectHostRecoveryStore";
 
 export class AdeSyncError extends Error {
   constructor(message: string, readonly code: string, readonly details?: unknown) {
@@ -299,12 +305,14 @@ export class AdeSyncClient {
         this.readinessError = null;
       } else if (transportStatus.state !== "connected" && this.lastTransportState === "connected") {
         this.readiness = "disconnected";
+        noteProjectHostDisconnected(this);
       }
       this.lastTransportState = transportStatus.state;
       this.emitStatus();
     });
     this.connection.on("envelope", (envelope) => this.handleEnvelope(envelope));
     this.connection.on("helloOk", (payload) => {
+      applyProjectHostHello(payload.projectHost ?? null, this);
       this.beginRestoration(payload);
     });
     this.connection.on("pairingRejected", ({ envId }) => {
@@ -966,6 +974,10 @@ export class AdeSyncClient {
   dispose(): void {
     this.disconnect();
     this.connection.dispose();
+    // A disposed client must not keep answering for the recovery store — but
+    // only if it is the one bound. Disposing a background session must leave
+    // the active machine's Fix and Retry armed.
+    releaseProjectHostRecoveryClient(this);
     for (const listeners of Object.values(this.listeners)) listeners.clear();
   }
 
@@ -1672,4 +1684,20 @@ export class AdeSyncClient {
   private emit<K extends keyof ClientEvents>(event: K, payload: ClientEvents[K]): void {
     for (const listener of this.listeners[event]) listener(payload);
   }
+}
+
+/**
+ * Point the project-host recovery UI at one client, or disarm it with `null`.
+ *
+ * The binding follows whichever machine session is active rather than whichever
+ * client was built last: the repair this UI offers terminates a runtime process
+ * on the host, so it must only ever reach the machine on screen.
+ */
+export function bindProjectHostRecoveryClient(client: AdeSyncClient | null): void {
+  bindProjectHostRecoverySend(
+    client
+      ? (action, args) => client.sendCommand(action, args ?? {}, { projectId: null })
+      : null,
+    client,
+  );
 }

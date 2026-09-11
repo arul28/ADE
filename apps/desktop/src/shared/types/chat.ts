@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AdeCardPayload } from "../adeCard";
+import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -972,6 +973,7 @@ export type AgentChatEvent =
         code?: AdeRecoveryErrorCode;
         provider?: string;
         model?: string;
+        presentation?: ChatErrorPresentation;
         resumeFailure?: {
           kind: AgentChatResumeFailureKind;
           rolloutFileFound: boolean | null;

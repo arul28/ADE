@@ -1,6 +1,7 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
 import { detectCompactionSignalText } from "../../../shared/contextCompaction";
 import { classifyCursorSdkErrorText, type CursorSdkErrorKind } from "./cursorSdkProtocol";
+import { presentChatFailure } from "../../../shared/chatErrorPresentation";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -50,16 +51,6 @@ function readStatusDetail(record: SdkMessageRecord): string | null {
   return null;
 }
 
-function errorEventInfo(kind: CursorSdkErrorKind):
-  | { category: "rate_limit" | "network" | "busy" | "auth" | "unknown" }
-  | undefined {
-  if (kind === "rate_limit") return { category: "rate_limit" };
-  if (kind === "network") return { category: "network" };
-  if (kind === "busy") return { category: "busy" };
-  if (kind === "auth") return { category: "auth" };
-  return undefined;
-}
-
 function uniqueLines(lines: Array<string | null | undefined>, limit = 4): string | undefined {
   const out: string[] = [];
   for (const line of lines) {
@@ -71,19 +62,15 @@ function uniqueLines(lines: Array<string | null | undefined>, limit = 4): string
   return out.length ? out.join("\n") : undefined;
 }
 
-function cursorSdkErrorMessage(
-  kind: CursorSdkErrorKind,
-  errorCode: string | null,
-  detail: string | null,
-): string {
-  if (kind === "rate_limit") return "Cursor rate limited this request.";
-  // Transport failures (NGHTTP2 resets, ECANCELED/EPIPE writes, dropped
-  // sockets) are not the user's problem to parse — the raw code and request ID
-  // are preserved in the event detail instead.
-  if (kind === "network") return "Cursor's connection dropped mid-run.";
-  if (errorCode) return `Cursor run failed: ${errorCode}`;
-  return detail ?? "Cursor SDK run failed.";
-}
+/**
+ * Cursor-specific card copy for the failures whose raw text is unreadable.
+ * Every sentence here must pass the shared card's friendly-copy check, or it
+ * would be replaced by the generic fallback body.
+ */
+const CURSOR_FAILURE_MESSAGES: Partial<Record<CursorSdkErrorKind, string>> = {
+  rate_limit: "Cursor rate limited this request.",
+  network: "Cursor's connection dropped mid-run.",
+};
 
 function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -467,22 +454,27 @@ export function mapCursorSdkMessageToChatEvents(
         const detailName = readString(errorDetail?.name);
         const requestId = readString(errorDetail?.requestId);
         const kind = classifyCursorSdkErrorText(errorCode, detail, detailMessage, detailCode, detailName);
-        const message = cursorSdkErrorMessage(kind, errorCode, detail);
+        const presented = presentChatFailure({
+          kind,
+          message: CURSOR_FAILURE_MESSAGES[kind] ?? detail,
+          detail: detailMessage ?? detail,
+          errorCode,
+          provider: "Cursor",
+        });
+        const message = presented.body;
         const eventDetail = uniqueLines([
-          // When the friendly message replaces the raw code (rate limit,
-          // transport), keep the code itself as the first detail line so the
-          // underlying failure is still recoverable from the transcript.
+          presented.technicalDetail,
           errorCode
             && !message.includes(errorCode)
             && !(detailMessage?.includes(errorCode) ?? false)
             ? errorCode
             : null,
-          detailMessage && detailMessage !== message ? detailMessage : null,
-          detail && detail !== message && detail !== detailMessage ? detail : null,
-          detailCode && detailCode !== errorCode ? `Code: ${detailCode}` : null,
           requestId ? `Cursor request ID: ${requestId}` : null,
         ]);
-        const errorInfo = errorEventInfo(kind);
+        const category: "rate_limit" | "network" | "busy" | "auth" | "unknown" =
+          kind === "rate_limit" || kind === "network" || kind === "busy" || kind === "auth"
+            ? kind
+            : "unknown";
         return [
           ...compactionEvents,
           {
@@ -490,7 +482,7 @@ export function mapCursorSdkMessageToChatEvents(
             message,
             turnId,
             ...(eventDetail ? { detail: eventDetail } : {}),
-            ...(errorInfo ? { errorInfo } : {}),
+            errorInfo: { category, presentation: presented },
           },
         ];
       }

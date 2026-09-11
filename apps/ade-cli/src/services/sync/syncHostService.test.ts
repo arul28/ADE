@@ -74,6 +74,7 @@ import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
+import type { SyncHostSingletonConflict } from "./syncHostSingleton";
 import { createSyncPinStore } from "./syncPinStore";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
@@ -82,6 +83,7 @@ import {
   sha256RelayToken,
 } from "./relayAuthorization";
 import { DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, negotiateSyncApplicationCompression, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { configureSyncHostRecovery, resetSyncHostRecoveryForTests } from "./syncHostRecovery";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import {
@@ -95,6 +97,7 @@ import {
   verifyEd25519,
 } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import { createMachineIdentitySigningStore } from "./machineIdentitySigningStore";
+import { SYNC_HOST_RECOVER_ACTION } from "../../../../desktop/src/shared/types/syncHostRecovery";
 
 describe("syncHeartbeatMissLimitForPeerMetadata", () => {
   it("gives desktop peers a four-minute sleep grace and keeps the mobile grace", () => {
@@ -5064,6 +5067,208 @@ describe("sync host account authentication", () => {
       expect(rejection.payload).toMatchObject({ code: "host_update_required" });
     } finally {
       client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
+  it("keeps host recovery details and process control behind the server pairing grant", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    resetBrainMachineSyncStoresForTests();
+    const { pinStore, pairingStore } = resolveBrainMachineSyncStores(secretsDir);
+    pinStore.setPin("428193");
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const authorizedPeer = {
+      deviceId: "authorized-recovery-phone",
+      deviceName: "Authorized iPhone",
+      platform: "iOS" as const,
+      deviceType: "phone" as const,
+      siteId: "authorized-recovery-phone-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const unauthorizedPeer = {
+      deviceId: "pin-only-phone",
+      deviceName: "PIN-only iPhone",
+      platform: "iOS" as const,
+      deviceType: "phone" as const,
+      siteId: "pin-only-phone-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const authorizedSecret = pairingStore.pairPeerViaAccount(authorizedPeer, attestation).secret;
+    const unauthorizedSecret = pairingStore.pairPeer(unauthorizedPeer, "428193").secret;
+    let conflict: SyncHostSingletonConflict | null = {
+      reason: "lock",
+      owner: {
+        id: "development-owner",
+        pid: 19621,
+        port: 8787,
+        appName: "ADE",
+        packageChannel: null,
+        adeHome: "/tmp/ade-home",
+        serviceName: null,
+        socketPath: "/tmp/ade-remote-sim/sock/ade.sock",
+        projectRoot: "/tmp/worktrees/improving-browser",
+        commandLine: "node apps/ade-cli/dist/cli.cjs serve --socket /tmp/ade-remote-sim/sock/ade.sock",
+        processStartedAt: "2026-09-08T19:00:00.000Z",
+        quitCommand: "kill 19621",
+        createdAt: "2026-09-08T19:00:00.000Z",
+        updatedAt: "2026-09-08T19:00:00.000Z",
+      },
+    };
+    let holdsLease = false;
+    const terminated: number[] = [];
+    configureSyncHostRecovery({
+      detectConflict: () => conflict,
+      holdsLease: () => holdsLease,
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      terminatePid: async (pid) => {
+        terminated.push(pid);
+        conflict = null;
+        holdsLease = true;
+      },
+      prove: async () => holdsLease,
+      sleep: async () => {},
+      now: () => 0,
+      waitMs: 0,
+      selfPid: 1,
+    });
+    const logger = createDiscoveryLogger();
+    const handler = createBrainProjectActionsSyncHandler({
+      logger,
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      }),
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        }),
+        getAccessToken: async () => "host-account-lease",
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    const clients: WebSocket[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const port = (server.address() as AddressInfo).port;
+      const connectPaired = async (peer: SyncPeerMetadata, secret: string, requestId: string) => {
+        const client = await openAccountClient(port);
+        clients.push(client.ws);
+        client.ws.send(encodeSyncEnvelope({
+          type: "hello",
+          requestId,
+          payload: {
+            peer,
+            auth: { kind: "paired", deviceId: peer.deviceId, secret },
+          },
+        }));
+        await waitForEnvelope(client.envelopes, "hello_ok", requestId);
+        return client;
+      };
+      const unprivileged = await connectPaired(unauthorizedPeer, unauthorizedSecret, "unprivileged-hello");
+      const unprivilegedHello = unprivileged.envelopes.find(
+        (entry) => entry.type === "hello_ok" && entry.requestId === "unprivileged-hello",
+      );
+      expect(unprivilegedHello?.payload).toMatchObject({
+        projectHost: {
+          state: "conflict",
+          recoveryEligible: false,
+          conflict: {
+            ownerKind: "unknown",
+            ownerLabel: "Another ADE runtime",
+            projectLabel: null,
+            technicalDetail: expect.not.stringContaining("19621"),
+          },
+        },
+      });
+      expect((unprivilegedHello?.payload as {
+        features?: { commandRouting?: { supportedActions?: string[] } };
+      }).features?.commandRouting?.supportedActions).not.toContain(SYNC_HOST_RECOVER_ACTION);
+
+      unprivileged.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "unprivileged-recover",
+        payload: {
+          commandId: "unprivileged-recover",
+          action: "sync.recoverHost",
+          args: {},
+        } satisfies SyncCommandPayload,
+      }));
+      await expect(waitForEnvelope(unprivileged.envelopes, "command_ack", "unprivileged-recover"))
+        .resolves.toMatchObject({ payload: { accepted: false, status: "rejected" } });
+      await expect(waitForEnvelope(unprivileged.envelopes, "command_result", "unprivileged-recover"))
+        .resolves.toMatchObject({
+          payload: { ok: false, error: { code: "forbidden_command" } },
+        });
+      expect(terminated).toEqual([]);
+
+      const authorized = await connectPaired(authorizedPeer, authorizedSecret, "authorized-hello");
+      const authorizedHello = authorized.envelopes.find(
+        (entry) => entry.type === "hello_ok" && entry.requestId === "authorized-hello",
+      );
+      expect(authorizedHello?.payload).toMatchObject({
+        projectHost: {
+          state: "conflict",
+          recoveryEligible: true,
+          conflict: {
+            ownerKind: "development",
+            projectLabel: "improving-browser lane",
+            technicalDetail: expect.stringContaining("pid: 19621"),
+          },
+        },
+      });
+      expect((authorizedHello?.payload as {
+        features?: { commandRouting?: { supportedActions?: string[] } };
+      }).features?.commandRouting?.supportedActions).toContain(SYNC_HOST_RECOVER_ACTION);
+
+      authorized.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "authorized-recover",
+        payload: {
+          commandId: "authorized-recover",
+          action: "sync.recoverHost",
+          args: {},
+        } satisfies SyncCommandPayload,
+      }));
+      await expect(waitForEnvelope(authorized.envelopes, "command_result", "authorized-recover"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { status: "succeeded" } } });
+      expect(terminated).toEqual([19621]);
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_brain.sync_host_recovery_finished",
+        expect.objectContaining({ ok: true, status: "succeeded", operationId: expect.any(String) }),
+      );
+    } finally {
+      resetSyncHostRecoveryForTests();
+      for (const client of clients) client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       cleanup();
     }

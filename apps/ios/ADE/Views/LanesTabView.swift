@@ -68,15 +68,12 @@ struct LanesTabView: View {
         LazyVStack(spacing: 14) {
           addLaneActionButton
           if !syncService.connectionState.isHostUnreachable,
+            !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
           {
-            ADENoticeCard(
-              title: hydrationNotice.title,
-              message: hydrationNotice.message,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
+            ADEInstructionErrorCard(
+              notice: hydrationNotice,
+              retry: { Task { await reload(refreshRemote: true) } }
             )
             .transition(.opacity)
           }

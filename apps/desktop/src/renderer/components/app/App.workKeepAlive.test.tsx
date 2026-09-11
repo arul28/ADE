@@ -158,6 +158,11 @@ vi.mock("./ProjectRecoveryScreen", () => ({
   ProjectRecoveryScreen: () => <div data-testid="project-recovery-screen" />,
 }));
 
+vi.mock("./ProjectHostRecoveryScreen", () => ({
+  ProjectHostRecoveryScreen: () => null,
+  ProjectHostStartingBanner: () => null,
+}));
+
 vi.mock("../onboarding/OnboardingBootstrap", () => ({
   OnboardingBootstrap: () => null,
 }));

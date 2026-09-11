@@ -1828,9 +1828,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   It also answers `command` envelopes: when no project host owns the peer
   (host restarting, or blocked by a conflicting sync listener) it replies
   immediately with a `command_result` carrying
-  `error.code: "host_unavailable"` instead of silently dropping the
+  `error.code: "host_unavailable"` and a typed snapshot (`reason`, `conflict`,
+  `recoveryEligible`) instead of silently dropping the
   command — a dropped command used to leave the phone staring at a 30 s
-  timeout with a vague "took too long" banner. iOS treats that code as
+  timeout with a vague "took too long" banner. Controllers retry a generic
+  starting failure, then offer **Fix connection** for a verified conflict
+  (`sync.recoverHost`). iOS still treats that code as
   transient (retryable and queueable, like a timeout), so queued
   operations survive host restarts instead of being deleted on replay.
 - `syncHostSingleton.ts` — the machine-wide sync host lease. Owns the advisory

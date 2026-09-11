@@ -5,6 +5,11 @@ import type {
   AdeSyncClientStatus,
   WebClientEnvironmentRecord,
 } from "../../sync";
+import {
+  applyProjectHostHello,
+  recoverProjectHost,
+  resetProjectHostRecoveryStore,
+} from "../../sync/projectHostRecoveryStore";
 import { WEB_MACHINE_SESSION_LIMIT, WebMachineSessionManager } from "../WebMachineSessionManager";
 
 function environment(index: number): WebClientEnvironmentRecord {
@@ -74,6 +79,20 @@ class FakeSyncClient {
     };
   });
   removeEnvironment = vi.fn(async () => undefined);
+  sendCommand = vi.fn(async () => ({
+    operationId: "op-1",
+    ok: true,
+    status: "succeeded",
+    snapshot: {
+      state: "ready",
+      headline: "Connected",
+      body: "This machine's project connection is ready.",
+      conflict: null,
+      recoveryEligible: false,
+    },
+    steps: [{ id: "stop", status: "done" }],
+    message: "Project connection is ready.",
+  }));
   listEnvironments = vi.fn(async () => []);
   private readonly statusListeners = new Set<(status: AdeSyncClientStatus) => void>();
   private readonly catalogListeners = new Set<(payload: {
@@ -149,7 +168,24 @@ const accountClient = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetProjectHostRecoveryStore();
 });
+
+const conflictSnapshot = {
+  state: "conflict" as const,
+  headline: "Another ADE is blocking this machine",
+  body: "A development runtime is using the connection your phone needs.",
+  recoveryEligible: true,
+  conflict: {
+    reason: "listener" as const,
+    ownerKind: "development" as const,
+    ownerLabel: "Development runtime",
+    projectLabel: "improving-browser lane",
+    impact: "May interrupt improving-browser lane.",
+    recoveryEligible: true,
+    technicalDetail: "pid: 4242",
+  },
+};
 
 describe("WebMachineSessionManager", () => {
   it("parks the least recently used machine when the four-session pool is full", async () => {
@@ -345,6 +381,47 @@ describe("WebMachineSessionManager", () => {
       (session) => session.state === "live",
     )).toHaveLength(WEB_MACHINE_SESSION_LIMIT);
     expect(clients[WEB_MACHINE_SESSION_LIMIT].connect).not.toHaveBeenCalled();
+  });
+
+  it("points the destructive host repair at the active machine, not the newest client", async () => {
+    const primary = new FakeSyncClient();
+    const secondary = new FakeSyncClient();
+    const manager = new WebMachineSessionManager(
+      primary.asClient(),
+      accountClient,
+      () => secondary.asClient(),
+    );
+    manager.replaceEnvironments([environment(1), environment(2)]);
+    await manager.connectEnvironment("machine-1");
+    await manager.connectEnvironment("machine-2");
+
+    // Machine 2 connected last, so the store must now answer for it — and the
+    // parked-but-still-live machine 1 must not be able to write to the screen.
+    applyProjectHostHello(conflictSnapshot, primary.asClient());
+    applyProjectHostHello(conflictSnapshot, secondary.asClient());
+    await recoverProjectHost();
+    expect(secondary.sendCommand).toHaveBeenCalledWith("sync.recoverHost", {}, { projectId: null });
+    expect(primary.sendCommand).not.toHaveBeenCalled();
+
+    // Switching back re-aims it.
+    await manager.connectEnvironment("machine-1");
+    applyProjectHostHello(conflictSnapshot, primary.asClient());
+    await recoverProjectHost();
+    expect(primary.sendCommand).toHaveBeenCalledWith("sync.recoverHost", {}, { projectId: null });
+    expect(secondary.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("disarms the host repair when the active session is parked", async () => {
+    const primary = new FakeSyncClient();
+    const manager = new WebMachineSessionManager(primary.asClient(), accountClient);
+    manager.replaceEnvironments([environment(1)]);
+    await manager.connectEnvironment("machine-1");
+    applyProjectHostHello(conflictSnapshot, primary.asClient());
+
+    await manager.park("machine-1");
+
+    await recoverProjectHost();
+    expect(primary.sendCommand).not.toHaveBeenCalled();
   });
 
   it("removes stale browser trust after terminal authentication failure", async () => {

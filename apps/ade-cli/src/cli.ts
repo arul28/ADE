@@ -20268,6 +20268,19 @@ async function runServe(
       // itself is the claim. The one remaining way to lose the path — a rival
       // unlinking a socket it proved stale, which a bound socket never is —
       // is caught by `monitorBrainSocketOwnership`.
+      // Phone/web "Fix connection" uses the same start/restart closures as
+      // this loop. Wired here (not at ingress construction) because those
+      // closures do not exist yet when the fallback handler is created.
+      const { configureSyncHostRecovery } = await import("./services/sync/syncHostRecovery");
+      configureSyncHostRecovery({
+        startSyncHost: async () => {
+          await startSyncHost();
+        },
+        prove: async () => {
+          await machineProjectCatalogProvider.listProjects();
+          return true;
+        },
+      });
       await runSyncHostStartupLoop({
         startSyncHost,
         isDone: () => done,
@@ -20677,6 +20690,14 @@ async function runServe(
       onCoalesced: (failureEvent) => {
         headlessProjectLogger.info("brain.restart_coalesced", { failureEvent });
       },
+    });
+    // Awaited, not fire-and-forget: a "Fix connection" that arrives before this
+    // resolves would find no restart closure and skip the very step the
+    // self-conflict case needs.
+    const { configureSyncHostRecovery: configureSyncHostRecoveryRestart } =
+      await import("./services/sync/syncHostRecovery");
+    configureSyncHostRecoveryRestart({
+      restartBrain: () => restartBrainService("sync.host_recovery_restart"),
     });
     const freshnessMonitor = createBrainFreshnessMonitor({
       filePath: preparedServiceCommand.filePath,

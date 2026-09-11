@@ -10,6 +10,7 @@ import type { BrowserAccountClient } from "../account/client";
 import { machineCatalogKey } from "./machineIdentity";
 import {
   AdeSyncClient,
+  bindProjectHostRecoveryClient,
   type AdeSyncClientStatus,
   type WebClientEnvironmentRecord,
   type WebClientMachineCatalogRecord,
@@ -369,6 +370,7 @@ export class WebMachineSessionManager {
         existing.parked = false;
         this.touch(existing);
         this.activeTargetId = targetId;
+        this.bindRecoveryToActiveSession();
         this.emit();
         return existing;
       }
@@ -378,6 +380,7 @@ export class WebMachineSessionManager {
       admitted.parked = false;
       this.touch(admitted);
       this.activeTargetId = targetId;
+      this.bindRecoveryToActiveSession();
       this.emit();
       return admitted;
     });
@@ -395,6 +398,7 @@ export class WebMachineSessionManager {
       this.releaseClient(session);
       session.parked = false;
       if (this.activeTargetId === targetId) this.activeTargetId = null;
+      this.bindRecoveryToActiveSession();
       this.emit();
       throw error;
     }
@@ -427,7 +431,11 @@ export class WebMachineSessionManager {
 
     const client = await this.withAdmission(async () => {
       await this.makeRoom(null);
-      return this.takeClient();
+      const taken = this.takeClient();
+      // Pairing is a foreground action: its hello is the machine the user is
+      // waiting on, and it arrives before this session exists to activate.
+      bindProjectHostRecoveryClient(taken);
+      return taken;
     });
     let pairedSession: SessionRecord | null = null;
     try {
@@ -449,6 +457,7 @@ export class WebMachineSessionManager {
       session.projects = (await client.getProjectCatalog()).projects;
       session.lastStatus = client.getStatus();
       this.activeTargetId = environment.envId;
+      this.bindRecoveryToActiveSession();
       this.rememberCatalog(session);
       this.markMachineActive(environment.envId);
       this.touch(session);
@@ -463,6 +472,7 @@ export class WebMachineSessionManager {
       } else {
         this.releaseUnusedClient(client);
       }
+      this.bindRecoveryToActiveSession();
       throw error;
     }
   }
@@ -507,6 +517,7 @@ export class WebMachineSessionManager {
       project = record.projects.find((entry) => entry.id === projectId) ?? project;
       this.touch(record);
       this.activeTargetId = targetId;
+      this.bindRecoveryToActiveSession();
       this.emit();
       session = this.snapshotSession(record);
     }
@@ -519,6 +530,7 @@ export class WebMachineSessionManager {
     this.releaseClient(session);
     session.parked = true;
     if (this.activeTargetId === targetId) this.activeTargetId = null;
+    this.bindRecoveryToActiveSession();
     this.emit();
   }
 
@@ -545,6 +557,7 @@ export class WebMachineSessionManager {
 
   dispose(): void {
     for (const targetId of [...this.sessions.keys()]) this.disposeSession(targetId);
+    bindProjectHostRecoveryClient(null);
     for (const client of this.allClients) client.disconnect();
     this.availableClients.length = 0;
     this.allClients.clear();
@@ -681,6 +694,20 @@ export class WebMachineSessionManager {
     this.releaseClient(session);
     this.sessions.delete(targetId);
     if (this.activeTargetId === targetId) this.activeTargetId = null;
+    this.bindRecoveryToActiveSession();
+  }
+
+  /**
+   * Keep the project-host recovery UI pointed at the active session's client.
+   * That repair terminates a runtime process, so it must only ever reach the
+   * machine on screen — never whichever client happened to connect last. With
+   * no active session there is nothing safe to act on, so the store is disarmed.
+   */
+  private bindRecoveryToActiveSession(): void {
+    const client = this.activeTargetId
+      ? this.sessions.get(this.activeTargetId)?.client ?? null
+      : null;
+    bindProjectHostRecoveryClient(client);
   }
 
   private releaseClient(session: SessionRecord): void {

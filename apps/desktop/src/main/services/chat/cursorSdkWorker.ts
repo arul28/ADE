@@ -30,7 +30,6 @@ import {
 import { materializeWorkerImages } from "./workerAttachmentImages";
 import {
   cursorSdkResultWithStreamFailure,
-  isCursorSdkSandboxUnsupportedError,
   readCursorSdkRunFailureDetail,
   sdkErrorCode,
   sdkErrorDetail,
@@ -79,7 +78,6 @@ const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
 const activeRequests = new Map<string, CursorSdkWorkerRequest["type"]>();
 const reportedRequests = new Set<string>();
 let unhandledExitScheduled = false;
-let sandboxSupported = true;
 let lastLocalPermissionFingerprint: string | null = null;
 /**
  * Whether the current local agent has already been given a prompt.
@@ -234,18 +232,17 @@ function shouldUseHttp1ForAgent(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 function localPermissionFingerprint(policy: CursorSdkPermissionPolicy): string {
-  const local = buildCursorSdkLocalRunOptions(policy, { sandboxSupported });
+  const local = buildCursorSdkLocalRunOptions(policy);
   return JSON.stringify({
     mode: local.mode,
     tools: local.tools ?? null,
     disallowedTools: local.disallowedTools ?? null,
     autoReview: local.autoReview,
-    sandboxDirective: local.sandboxDirective,
   });
 }
 
 function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeMode {
-  const local = buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported });
+  const local = buildCursorSdkLocalRunOptions(init.policy);
   return {
     apiKey: init.apiKey?.trim() || undefined,
     model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
@@ -256,10 +253,9 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     local: {
       cwd: init.laneRoot,
       settingSources: cursorSdkSettingSources(init.policy),
-      // See CursorSdkSandboxDirective: absent is a third state, not a falsy off.
-      ...(local.sandboxDirective === "inherit"
-        ? {}
-        : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
+      // ADE never requests Cursor-native sandbox, including agent inherit of
+      // ~/.cursor/sandbox.json. ADE hook denials remain the permission guard.
+      sandboxOptions: { enabled: false },
       autoReview: local.autoReview,
       enableAgentRetries: true,
     },
@@ -322,28 +318,11 @@ async function createOrResumeLocalAgent(options: AgentOptionsWithAdeMode): Promi
 async function applyLocalAgentOptions(): Promise<AgentOptionsWithAdeMode> {
   if (!initState) throw new Error("Cursor SDK worker is not initialized.");
   const fingerprint = localPermissionFingerprint(initState.policy);
-  let options = buildLocalAgentOptions(initState);
+  const options = buildLocalAgentOptions(initState);
   if (agent && fingerprint === lastLocalPermissionFingerprint) return options;
-  try {
-    agent = await createOrResumeLocalAgent(options);
-    lastLocalPermissionFingerprint = fingerprint;
-    return options;
-  } catch (error) {
-    if (!isCursorSdkSandboxUnsupportedError(error) || !sandboxSupported) {
-      throw error;
-    }
-    sandboxSupported = false;
-    post({
-      type: "log",
-      level: "warn",
-      message: "Cursor SDK sandbox is unavailable in this environment; continuing with ADE hook denials.",
-      detail: { error: errorMessage(error) },
-    });
-    options = buildLocalAgentOptions(initState);
-    agent = await createOrResumeLocalAgent(options);
-    lastLocalPermissionFingerprint = localPermissionFingerprint(initState.policy);
-    return options;
-  }
+  agent = await createOrResumeLocalAgent(options);
+  lastLocalPermissionFingerprint = fingerprint;
+  return options;
 }
 
 
@@ -568,7 +547,6 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
       autoReview: agentOptions.local?.autoReview === true,
-      sandboxDirective: buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported }).sandboxDirective,
       tools: agentOptions.tools ?? null,
       disallowedTools: agentOptions.disallowedTools ?? null,
     },
@@ -788,7 +766,6 @@ async function dispose(): Promise<void> {
   agent = null;
   localAgentPlatform = null;
   localAgentStore = null;
-  sandboxSupported = true;
   lastLocalPermissionFingerprint = null;
   localAgentPrompted = false;
   if (hookServer) {

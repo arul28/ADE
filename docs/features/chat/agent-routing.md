@@ -407,18 +407,10 @@ init and on dispose.
 `initResult.currentModelId` does not exist in `@factory/droid-sdk`; reading it
 always yielded `null`.
 
-**Cursor.** The sandbox is a three-state directive, not a boolean:
-`CursorSdkSandboxDirective = "enable" | "disable" | "inherit"`
-(`cursorSdkPolicy.ts`). `inherit` omits `local.sandboxOptions` entirely so
-`~/.cursor/sandbox.json` decides. `disable` sends `{ enabled: false }`, which
-returns `insecure_none` without reading that file at all — which is exactly what
-ADE's full-access mode means, and what the retry after a `ConfigurationError`
-needs when the environment cannot sandbox and the alternative is a hard failure.
-`enable` asks for a sandbox, and a user policy still wins over ADE's: the SDK
-falls back to its own `workspace_readwrite` default only when the user has
-written no policy at all. The directive, not a boolean, is what the local
-permission fingerprint and the worker's ready payload carry, so a change between
-the three states restarts the agent options.
+**Cursor.** ADE always passes `sandboxOptions: { enabled: false }` for local
+Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the
+permission guard, so `~/.cursor/sandbox.json` is never consulted and there is no
+ADE-side sandbox setting to resolve.
 
 **OpenCode.** `OPENCODE_CONFIG_CONTENT` deep-merges last, so anything
 `buildOpenCodeConfig` names outranks the user's `opencode.json` and only
@@ -743,7 +735,7 @@ surfaces.
 
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
-sandbox mode, hard guards, orchestration-lead flag, and a `fullAuto` marker.
+hard guards, orchestration-lead flag, and a `fullAuto` marker.
 Hard guards refuse paths outside the lane. Read-only exceptions are this
 lane's Cursor `terminals`, `agent-transcripts`, and `assets` directories
 under `~/.cursor/projects/<slug>/`, plus the project's `.ade/attachments`
@@ -755,10 +747,9 @@ After realpath the directory basename must be `attachments`. Writes,
 shell, other projects' Cursor dirs, `.ade/secrets`, and a junction onto
 `.ade` or `.ade/secrets` stay denied.
 `buildCursorSdkLocalRunOptions` then reduces that policy to the SDK's local run
-options, where the sandbox is a three-state `CursorSdkSandboxDirective`
-(`enable` / `disable` / `inherit`) rather than a boolean — see
-[Provider config ownership](#provider-config-ownership) for why absent and
-`false` are not the same thing to `@cursor/sdk`.
+options. Sandboxing is not one of them: ADE always passes
+`sandboxOptions: { enabled: false }` for local Cursor workers and relies on ADE
+hook denials as the permission guard.
 `fullAuto` is only the name of ADE's full-auto permission mode — it partitions
 the worker pool and labels logs. It is deliberately not wired to the Cursor
 SDK's `local.force` send option, which expires the currently active persisted

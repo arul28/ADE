@@ -222,13 +222,26 @@ func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   let error = response["error"] as? [String: Any]
   let message = error?["message"] as? String ?? "Remote command failed."
   let code = error?["code"] as? String ?? "command_failed"
+  var userInfo: [String: Any] = [
+    NSLocalizedDescriptionKey: message,
+    "ADEErrorCode": code,
+  ]
+  if let reason = error?["reason"] as? String, !reason.isEmpty {
+    userInfo["ADEErrorReason"] = reason
+  }
+  if let recoveryEligible = error?["recoveryEligible"] {
+    userInfo["ADERecoveryEligible"] = recoveryEligible
+  }
+  if let snapshot = error?["snapshot"] {
+    userInfo["ADEHostSnapshot"] = snapshot
+  }
+  if let conflict = error?["conflict"] {
+    userInfo["ADEHostConflict"] = conflict
+  }
   throw NSError(
     domain: "ADE",
     code: 17,
-    userInfo: [
-      NSLocalizedDescriptionKey: message,
-      "ADEErrorCode": code,
-    ]
+    userInfo: userInfo
   )
 }
 
@@ -2752,6 +2765,12 @@ enum SyncUserFacingError {
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
+    if isSyncHostUnavailableError(error) {
+      if let snapshot = syncHostReadinessSnapshot(from: error) {
+        return snapshot.body
+      }
+      return "This machine's project connection isn't ready yet."
+    }
     if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."
     }
@@ -3798,6 +3817,30 @@ final class SyncService: ObservableObject {
     }
   }
   @Published private(set) var hostName: String?
+  @Published private(set) var projectHostPhase: ProjectHostUiPhase = .ready
+  @Published private(set) var projectHostSnapshot: SyncHostReadinessSnapshot?
+  @Published private(set) var projectHostRecovery: SyncHostRecoveryResult?
+  private var projectHostRetryTask: Task<Void, Never>?
+  private var projectHostRetryGeneration: UInt64 = 0
+
+  var shouldShowProjectHostRecovery: Bool {
+    projectHostPhase == .takeover || projectHostPhase == .recovering
+  }
+
+  var shouldSuppressDomainHydrationNotices: Bool {
+    projectHostPhase != .ready
+  }
+
+  /// While this machine's project services are still starting, every tab keeps
+  /// its cached rows on screen and marks them as possibly out of date. One
+  /// named predicate so the four tabs cannot drift apart on when to say so.
+  var projectHostContentMayBeStale: Bool {
+    projectHostPhase == .retrying
+  }
+
+  var projectHostIsLive: Bool {
+    projectHostPhase == .ready
+  }
 
   /// Attached to a machine — the single named success/attachment predicate for
   /// the whole app. Every surface that asks "did we get on the machine?" must
@@ -4501,6 +4544,188 @@ final class SyncService: ObservableObject {
   func closeProjectHub() {
     guard activeProjectId != nil else { return }
     projectHubPresented = false
+  }
+
+  func applyIncomingProjectHostSnapshot(_ snapshot: SyncHostReadinessSnapshot?, retriesExhausted: Bool = false) {
+    guard let snapshot else { return }
+    projectHostSnapshot = snapshot
+    if snapshot.state == .ready {
+      cancelProjectHostSilentRetry()
+      projectHostPhase = .ready
+      projectHostRecovery = nil
+      return
+    }
+    // `nextProjectHostPhase` holds `.recovering` for any non-ready snapshot, so
+    // a repair that restarts the brain and finds the SAME conflict still there
+    // would keep the phone on the spinner with no way out. Hand the helper
+    // `.takeover` once the reconnect proves a conflict survived, and keep
+    // polling while a repair is merely still in progress. The hosted web store
+    // does the same; without this the two clients disagree.
+    let current: ProjectHostUiPhase = projectHostPhase == .recovering
+      && projectHostShouldTakeOverImmediately(snapshot)
+      ? .takeover
+      : projectHostPhase
+    let next = nextProjectHostPhase(
+      current: current,
+      snapshot: snapshot,
+      retriesExhausted: retriesExhausted
+    )
+    projectHostPhase = next
+    if next == .retrying || next == .recovering {
+      startProjectHostSilentRetryIfNeeded()
+    } else {
+      cancelProjectHostSilentRetry()
+    }
+  }
+
+  func applyIncomingProjectHostFailure(_ error: Error) {
+    guard isSyncHostUnavailableError(error) else { return }
+    let snapshot = syncHostReadinessSnapshot(from: error)
+    if projectHostShouldTakeOverImmediately(snapshot)
+        || (error as NSError).userInfo["ADEErrorReason"] as? String == "conflict" {
+      applyIncomingProjectHostSnapshot(
+        snapshot ?? SyncHostReadinessSnapshot(
+          state: .conflict,
+          headline: "Another ADE is blocking this machine",
+          body: SyncUserFacingError.message(for: error),
+          conflict: parseSyncHostConflict((error as NSError).userInfo["ADEHostConflict"]),
+          recoveryEligible: ((error as NSError).userInfo["ADERecoveryEligible"] as? Bool) == true
+        )
+      )
+      return
+    }
+    applyIncomingProjectHostSnapshot(
+      snapshot ?? SyncHostReadinessSnapshot(
+        state: .starting,
+        headline: "Starting services",
+        body: SyncUserFacingError.message(for: error),
+        conflict: nil,
+        recoveryEligible: false
+      )
+    )
+  }
+
+  func retryProjectHost() async {
+    guard canSendLiveRequests() else { return }
+    // An explicit tap ends the "a repair is running" assumption. Without this,
+    // a repair whose restart never reports back would keep every later Retry
+    // short-circuited back into the same spinner.
+    if projectHostPhase == .recovering { projectHostPhase = .takeover }
+    do {
+      let raw = try await sendCommand(
+        action: projectHostDiagnoseAction,
+        args: [:],
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+      if let snapshot = parseSyncHostReadinessSnapshot(raw) {
+        applyIncomingProjectHostSnapshot(snapshot, retriesExhausted: snapshot.state != .ready)
+        if snapshot.state == .ready {
+          startInitialHydrationTask(for: connectionGeneration)
+        }
+        return
+      }
+    } catch {
+      applyIncomingProjectHostFailure(error)
+    }
+    applyIncomingProjectHostSnapshot(projectHostSnapshot, retriesExhausted: true)
+  }
+
+  func recoverProjectHost() async {
+    guard canSendLiveRequests() else { return }
+    projectHostPhase = .recovering
+    do {
+      let raw = try await sendCommand(
+        action: projectHostRecoverAction,
+        args: [:],
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+      if let result = parseSyncHostRecoveryResult(raw) {
+        projectHostRecovery = result
+        projectHostSnapshot = result.snapshot
+        if result.status == "restarting" {
+          projectHostPhase = .recovering
+          return
+        }
+        if result.ok && result.snapshot.state == .ready {
+          projectHostPhase = .ready
+          startInitialHydrationTask(for: connectionGeneration)
+          return
+        }
+        projectHostPhase = .takeover
+        return
+      }
+      if let snapshot = parseSyncHostReadinessSnapshot(raw) {
+        applyIncomingProjectHostSnapshot(snapshot, retriesExhausted: snapshot.state != .ready)
+        return
+      }
+    } catch {
+      applyIncomingProjectHostFailure(error)
+    }
+    if projectHostPhase == .recovering {
+      projectHostPhase = .takeover
+    }
+  }
+
+  private func resetProjectHostRecoveryState() {
+    cancelProjectHostSilentRetry()
+    projectHostPhase = .ready
+    projectHostSnapshot = nil
+    projectHostRecovery = nil
+  }
+
+  /// Retires the silent-retry loop. The generation bump is what makes an
+  /// already-running task's post-await guards fail, so it must always move with
+  /// the cancel and the clear.
+  private func cancelProjectHostSilentRetry() {
+    projectHostRetryGeneration += 1
+    projectHostRetryTask?.cancel()
+    projectHostRetryTask = nil
+  }
+
+  private func startProjectHostSilentRetryIfNeeded() {
+    // Also armed while `.recovering`: a restart drops the socket, and the poll
+    // is what discovers whether the machine came back healthy or still blocked.
+    guard projectHostPhase == .retrying || projectHostPhase == .recovering else { return }
+    if projectHostRetryTask != nil { return }
+    projectHostRetryGeneration += 1
+    let generation = projectHostRetryGeneration
+    projectHostRetryTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      for delay in projectHostSilentRetrySeconds {
+        let ns = UInt64(delay * 1_000_000_000)
+        do {
+          try await Task.sleep(nanoseconds: ns)
+        } catch {
+          return
+        }
+        guard self.projectHostRetryGeneration == generation, !Task.isCancelled else { return }
+        await self.retryProjectHostDuringSilentWait()
+        guard self.projectHostRetryGeneration == generation else { return }
+        if self.projectHostPhase != .retrying { return }
+      }
+      guard self.projectHostRetryGeneration == generation else { return }
+      self.applyIncomingProjectHostSnapshot(self.projectHostSnapshot, retriesExhausted: true)
+      self.projectHostRetryTask = nil
+    }
+  }
+
+  private func retryProjectHostDuringSilentWait() async {
+    guard canSendLiveRequests() else { return }
+    do {
+      let raw = try await sendCommand(
+        action: projectHostDiagnoseAction,
+        args: [:],
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+      if let snapshot = parseSyncHostReadinessSnapshot(raw) {
+        applyIncomingProjectHostSnapshot(snapshot)
+        if snapshot.state == .ready {
+          startInitialHydrationTask(for: connectionGeneration)
+        }
+      }
+    } catch {
+      applyIncomingProjectHostFailure(error)
+    }
   }
 
   /// Drops the sleep claim from the last failed attempt, keeping the failure
@@ -8882,6 +9107,7 @@ final class SyncService: ObservableObject {
     resetAndCancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
+    resetProjectHostRecoveryState()
     relayAuthorizationRequirement = nil
     hostCompatibilityMode = .unknown
     hostCompatibilityMissingActions = []
@@ -9137,6 +9363,7 @@ final class SyncService: ObservableObject {
         restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
         throw CancellationError()
       }
+      try rethrowIfProjectHostUnavailable(error, statusAttempt)
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
@@ -9235,6 +9462,7 @@ final class SyncService: ObservableObject {
         restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
         throw CancellationError()
       }
+      try rethrowIfProjectHostUnavailable(error, statusAttempt)
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
@@ -9600,6 +9828,7 @@ final class SyncService: ObservableObject {
         restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
         throw CancellationError()
       }
+      try rethrowIfProjectHostUnavailable(error, statusAttempt)
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
@@ -9679,6 +9908,7 @@ final class SyncService: ObservableObject {
         restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
         throw CancellationError()
       }
+      try rethrowIfProjectHostUnavailable(error, statusAttempt)
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
@@ -14943,7 +15173,8 @@ final class SyncService: ObservableObject {
   }
 
   private func commandIsRuntimeScoped(_ action: String) -> Bool {
-    commandDescriptor(for: action)?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "runtime"
+    if action == projectHostDiagnoseAction || action == projectHostRecoverAction { return true }
+    return commandDescriptor(for: action)?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "runtime"
   }
 
   func supportsRemoteAction(_ action: String) -> Bool {
@@ -18045,6 +18276,9 @@ final class SyncService: ObservableObject {
     // `.connected` idempotently; publishing here means no path can leave the
     // app in a transient non-attached state while hydration catches up.
     connectionState = .connected
+    if let snapshot = parseSyncHostReadinessSnapshot(payload["projectHost"]) {
+      applyIncomingProjectHostSnapshot(snapshot)
+    }
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       hostTransport: payload["connectionTransport"] as? String,
@@ -20495,7 +20729,12 @@ final class SyncService: ObservableObject {
       refreshProjectCatalog()
     }
 
-    setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
+    if projectHostPhase == .takeover || projectHostPhase == .recovering {
+      return
+    }
+    if projectHostPhase == .ready {
+      setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
+    }
 
     do {
       try ensureActiveProjectCacheRowForHydration()
@@ -20522,6 +20761,10 @@ final class SyncService: ObservableObject {
       return
     } catch {
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+      if isSyncHostUnavailableError(error) {
+        applyIncomingProjectHostFailure(error)
+        return
+      }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       lastError = friendlyMessage
       if connectionState == .disconnected || connectionState == .error {
@@ -20645,6 +20888,19 @@ final class SyncService: ObservableObject {
         domainHydrationAttemptIds[domain] = attempts
       }
     }
+  }
+
+  /// A host-unavailable failure belongs to the project host surface, not to the
+  /// domain that happened to ask: hand it to the recovery card, release the
+  /// attempt's status claim so the domain keeps its prior state, and rethrow.
+  private func rethrowIfProjectHostUnavailable(
+    _ error: Error,
+    _ statusAttempt: SyncDomainHydrationAttempt
+  ) throws {
+    guard isSyncHostUnavailableError(error) else { return }
+    applyIncomingProjectHostFailure(error)
+    restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+    throw error
   }
 
   private func restoreDomainStatusesAfterCancelledAttempt(

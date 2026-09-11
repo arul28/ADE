@@ -619,6 +619,7 @@ struct WorkChatSummaryTimelineKey: Equatable {
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @EnvironmentObject private var syncService: SyncService
 
   let session: WorkChatSessionRenderContext
   let chatSummaryContext: WorkChatSummaryRenderContext
@@ -1477,14 +1478,12 @@ struct WorkChatSessionView: View {
 
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
-    if let errorMessageSnapshot, !hostUnreachable {
-      ADENoticeCard(
-        title: "Chat error",
+    if let errorMessageSnapshot, !hostUnreachable, !syncService.shouldSuppressDomainHydrationNotices {
+      ADEInstructionErrorCard(
+        title: "Couldn't load this chat",
         message: errorMessageSnapshot,
-        icon: "exclamationmark.triangle.fill",
-        tint: ADEColor.danger,
-        actionTitle: "Retry",
-        action: { Task { await onRetryLoad() } }
+        retryTitle: "Retry",
+        retry: { Task { await onRetryLoad() } }
       )
     }
   }

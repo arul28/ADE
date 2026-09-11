@@ -722,11 +722,21 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "error":
         let explicitDetail = optionalString(eventDict["detail"])
         let detailText = explicitDetail ?? optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
-        event = .error(
+        // Replayed transcript rows carry no structured `errorInfo`, so this is
+        // always the per-category derivation — resolved through the same helper
+        // the live event mapper uses.
+        let presented = workPresentedChatFailure(
           message: stringValue(eventDict["message"]),
           detail: detailText,
-          category: workErrorCategory(message: stringValue(eventDict["message"]), detail: detailText),
-          turnId: turnId
+          errorInfo: nil
+        )
+        event = .error(
+          message: presented.body,
+          detail: presented.technicalDetail,
+          category: presented.category,
+          turnId: turnId,
+          title: presented.title,
+          nextAction: presented.nextAction
         )
       case "done":
         let usage = prettyPrintedJSONString(eventDict["usage"])

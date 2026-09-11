@@ -105,9 +105,19 @@ One more error code originates **outside** the registry:
 brain-level ingress while **no project sync host owns the peer** (the
 host is restarting, or was blocked by a conflicting sync listener),
 `brainProjectActionsSyncHandler` answers immediately with a failed
-`command_result` carrying that code instead of silently dropping the
-command into a 30 s client timeout. The state is transient by
-definition, so controllers treat it like a timeout: iOS marks it retryable
+`command_result` carrying that code plus a typed snapshot (`reason`,
+`conflict`, `recoveryEligible`). Controllers do not dump the raw host
+sentence. A verified conflict takes over the phone or hosted-web
+project surface immediately; a generic starting failure retries silently
+(2s / 4s / 8s) then takes over. `sync.diagnoseHost` and `sync.recoverHost`
+are runtime-scoped and work without a project host; **Fix connection**
+stops the verified blocking ADE runtime and restarts the intended brain.
+The brain checks a server-owned pairing grant before returning owner details or
+executing recovery: desktop runtime-host grants retain their existing authority,
+while phones and browsers receive the narrower recovery grant only through
+verified same-account adoption. PIN-only mobile pairings get a redacted
+diagnosis and cannot stop or restart a runtime.
+The state is still transient for queued work: iOS marks it retryable
 (`isSyncHostUnavailableError`), and queued operations are preserved — not
 deleted — when a replay hits it during a host restart window. Queueable actions
 normally enter the offline queue, but an already-attempted live `chat.send` is

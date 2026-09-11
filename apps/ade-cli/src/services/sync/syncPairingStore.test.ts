@@ -138,6 +138,7 @@ describe("sync SSH pairing trust", () => {
     store.pairPeer(peer, "428193", { allowDirectPinRuntimeHost });
 
     expect(store.getPairingRecord(peer.deviceId)?.runtimeHostGranted).toBe(expected);
+    expect(store.getPairingRecord(peer.deviceId)?.syncHostRecoveryGranted).toBe(false);
   });
 });
 

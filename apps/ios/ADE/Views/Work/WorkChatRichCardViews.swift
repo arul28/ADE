@@ -1344,6 +1344,15 @@ struct WorkEventCardView: View, Equatable {
       statusRibbonBody
     } else if isRibbonKind(card.kind) {
       ribbonBody
+    } else if card.kind == "error" {
+      ADEInstructionErrorCard(
+        title: card.title,
+        message: card.body ?? workUnfinishedTurnFallbackBody,
+        nextAction: card.nextAction,
+        technicalDetail: card.technicalDetail,
+        retryTitle: nil,
+        retry: nil
+      )
     } else {
       defaultBody
     }

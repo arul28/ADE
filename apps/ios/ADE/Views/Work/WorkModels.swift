@@ -1364,6 +1364,8 @@ struct WorkEventCardModel: Identifiable, Equatable {
   /// transcript): an unidentified completion folds into nothing and keeps its
   /// own row rather than silently absorbing a different child's.
   let spawnCompletionChildId: String?
+  let technicalDetail: String?
+  let nextAction: String?
 
   init(
     id: String,
@@ -1387,7 +1389,9 @@ struct WorkEventCardModel: Identifiable, Equatable {
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
-    spawnCompletionChildId: String? = nil
+    spawnCompletionChildId: String? = nil,
+    technicalDetail: String? = nil,
+    nextAction: String? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -1411,6 +1415,8 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
     self.spawnCompletionChildId = spawnCompletionChildId
+    self.technicalDetail = technicalDetail
+    self.nextAction = nextAction
   }
 }
 
@@ -1568,7 +1574,10 @@ enum WorkChatEvent: Equatable {
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
   case todoUpdate(items: [String], turnId: String?)
   case systemNotice(kind: String, message: String, detail: String?, turnId: String?, steerId: String?)
-  case error(message: String, detail: String?, category: String, turnId: String?)
+  /// `title` and `nextAction` carry the host's failure presentation verbatim
+  /// when it sent one, and the locally derived copy for the category when it
+  /// did not. Both are resolved once, where the event is built.
+  case error(message: String, detail: String?, category: String, turnId: String?, title: String, nextAction: String)
   case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?, terminalReason: String? = nil)
   case tokens(usage: WorkUsageSummary, turnId: String, itemId: String?)
   case promptSuggestion(text: String, turnId: String?)

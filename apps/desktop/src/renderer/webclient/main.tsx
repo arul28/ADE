@@ -4,7 +4,7 @@ import "../index.css";
 import jetbrainsMonoUrl from "../../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
 import geistVariableUrl from "../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
 import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
-import { AdeSyncClient } from "./sync";
+import { AdeSyncClient, bindProjectHostRecoveryClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
@@ -54,6 +54,8 @@ Object.defineProperty(window, "ade", {
 document.documentElement.setAttribute("data-theme", document.documentElement.getAttribute("data-theme") ?? "dark");
 
 const client = new AdeSyncClient();
+// Single-client boot: this one client is always the machine on screen.
+bindProjectHostRecoveryClient(client);
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,

@@ -179,7 +179,7 @@ describe("createSessionMetadataRegenerator", () => {
 
     const result = await regenerate({ sessionId: "sess-1" });
     expect(result.usedDeterministicFallback).toBe(true);
-    expect(result.generationError).toContain("sandboxing is not supported");
+    expect(result.generationError).toBe("This ADE runtime can't provide the sandbox this agent asked for.");
   });
 
   it("reports no generation error when a model answered", async () => {

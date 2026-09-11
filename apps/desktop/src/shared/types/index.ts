@@ -27,6 +27,7 @@ export * from "./packs";
 export * from "./usage";
 export * from "./projectState";
 export * from "./sync";
+export * from "./syncHostRecovery";
 export * from "./devTools";
 export * from "./adeCli";
 export * from "./remoteRuntime";

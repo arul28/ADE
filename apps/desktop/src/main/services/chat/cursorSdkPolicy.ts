@@ -62,30 +62,11 @@ export const CURSOR_SDK_READONLY_TOOLS = ["read", "grep", "glob", "ls"] as const
 
 export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
 
-/**
- * What ADE has to say about the Cursor sandbox, which is not a boolean.
- *
- * The SDK treats an explicit `false` and an absent key differently: `false`
- * returns `insecure_none` without ever reading the user's ~/.cursor/sandbox.json,
- * while absent lets that file decide. So ADE needs three states, not two.
- *
- * When ADE does ask for a sandbox ("enable"), a user policy still wins over
- * ADE's own — the SDK only falls back to its workspace_readwrite default when
- * the user has written no policy at all.
- *
- * "disable" also covers the retry after a ConfigurationError, where the
- * environment cannot sandbox at all and the alternative is a hard failure.
- *
- * See services/shared/providerConfigHomes.ts for the rule this follows.
- */
-export type CursorSdkSandboxDirective = "enable" | "disable" | "inherit";
-
 export type CursorSdkLocalRunOptions = {
   mode: CursorSdkAgentMode;
   tools?: string[];
   disallowedTools?: string[];
   autoReview: boolean;
-  sandboxDirective: CursorSdkSandboxDirective;
 };
 
 /**
@@ -99,21 +80,13 @@ export function cursorSdkLocalAgentMode(
 }
 
 /**
- * Local create/resume permission fields. `sandboxSupported: false` keeps hook
- * denials while disabling `sandboxOptions.enabled` after a ConfigurationError.
+ * Local create/resume permission fields. ADE never requests Cursor-native
+ * sandboxing in any local worker mode; ADE hook denials are the permission
+ * guard, so sandboxing is not part of these options.
  */
 export function buildCursorSdkLocalRunOptions(
   policy: CursorSdkPermissionPolicy,
-  args?: { sandboxSupported?: boolean },
 ): CursorSdkLocalRunOptions {
-  const sandboxSupported = args?.sandboxSupported !== false;
-  const sandboxDirective: CursorSdkSandboxDirective = !sandboxSupported
-    ? "disable"
-    : policy.sandbox === "cursor-native"
-      ? "enable"
-      : policy.sandbox === "off"
-        ? "disable"
-        : "inherit";
   return {
     mode: cursorSdkLocalAgentMode(policy),
     // `[]` is a real allowlist (no tools). Omitting the key is the SDK default
@@ -121,7 +94,6 @@ export function buildCursorSdkLocalRunOptions(
     ...(policy.tools !== undefined ? { tools: [...policy.tools] } : {}),
     ...(policy.disallowedTools !== undefined ? { disallowedTools: [...policy.disallowedTools] } : {}),
     autoReview: policy.autoReview,
-    sandboxDirective,
   };
 }
 
@@ -160,7 +132,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     return {
       chatMode: "agent",
       approvalPolicy: "never",
-      sandbox: "off",
       fullAuto: true,
       hardGuards: true,
       orchestrationLead,
@@ -174,7 +145,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     return {
       chatMode,
       approvalPolicy: "read-only",
-      sandbox: "cursor-native",
       fullAuto: false,
       hardGuards: true,
       orchestrationLead,
@@ -187,7 +157,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
   return {
     chatMode: "agent",
     approvalPolicy: "on-request",
-    sandbox: "ade",
     fullAuto: false,
     hardGuards: true,
     orchestrationLead,

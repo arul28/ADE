@@ -1589,6 +1589,31 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testUnwrapSyncCommandResponsePreservesHostUnavailableFields() {
+    let raw: [String: Any] = [
+      "commandId": "cmd-1",
+      "ok": false,
+      "error": [
+        "code": "host_unavailable",
+        "message": "This machine is starting its project connection.",
+        "reason": "starting",
+        "recoveryEligible": false,
+        "snapshot": [
+          "state": "starting",
+          "headline": "Starting services",
+          "body": "This machine is starting its project connection.",
+          "conflict": NSNull(),
+          "recoveryEligible": false,
+        ],
+      ],
+    ]
+    XCTAssertThrowsError(try unwrapSyncCommandResponse(raw)) { error in
+      XCTAssertTrue(isSyncHostUnavailableError(error))
+      XCTAssertEqual((error as NSError).userInfo["ADEErrorReason"] as? String, "starting")
+      XCTAssertEqual(syncHostReadinessSnapshot(from: error)?.state, .starting)
+    }
+  }
+
   func testCommandEnvelopePayloadIncludesProjectScope() throws {
     let payload = syncCommandEnvelopePayload(
       commandId: "cmd-1",
@@ -24761,13 +24786,78 @@ final class ADETests: XCTestCase {
         errorInfo: .object(["category": .string("network")])
       )
     )
-    guard case .error(let message, let detail, let category, let turnId) = mapped else {
+    guard case .error(let message, let detail, let category, let turnId, let title, let nextAction) = mapped else {
       return XCTFail("Expected mapped error event")
     }
     XCTAssertEqual(message, "Cursor SDK stream failed.")
     XCTAssertEqual(detail, "Cursor request ID: req-cursor-1")
     XCTAssertEqual(category, "network")
     XCTAssertEqual(turnId, "turn-1")
+    // No host presentation: the event carries the locally derived copy.
+    XCTAssertEqual(title, errorPresentation(for: "network").title)
+    XCTAssertEqual(nextAction, "Retry, or switch model.")
+  }
+
+  func testFailedTurnCardRendersHostPresentationTitleAndNextAction() {
+    let mapped = makeWorkChatEvent(
+      from: .error(
+        message: "429 rate_limit_error",
+        detail: nil,
+        turnId: "turn-1",
+        itemId: nil,
+        errorInfo: .object([
+          "category": .string("rate_limit"),
+          "presentation": .object([
+            "title": .string("Usage limit reached"),
+            "body": .string("Claude hit its usage limit for this window."),
+            "nextAction": .string("Retry after the limit resets, or choose another model."),
+            "technicalDetail": .string("429 rate_limit_error"),
+          ]),
+        ])
+      )
+    )
+    guard case .error(_, _, _, _, let title, let nextAction) = mapped else {
+      return XCTFail("Expected mapped error event")
+    }
+    XCTAssertEqual(title, "Usage limit reached")
+    XCTAssertEqual(nextAction, "Retry after the limit resets, or choose another model.")
+
+    let card = workIncrementalEventCard(
+      for: WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-12T00:00:00.000Z",
+        sequence: 1,
+        event: mapped
+      )
+    )
+    XCTAssertEqual(card?.title, "Usage limit reached")
+    XCTAssertEqual(card?.nextAction, "Retry after the limit resets, or choose another model.")
+    XCTAssertEqual(card?.body, "Claude hit its usage limit for this window.")
+    // Raw host text stays in the fold, never in the body.
+    XCTAssertEqual(card?.technicalDetail, "429 rate_limit_error")
+    XCTAssertFalse(card?.body?.contains("rate_limit_error") ?? true)
+  }
+
+  func testFailedTurnCardFallsBackToLocalCopyWithoutHostPresentation() {
+    let mapped = makeWorkChatEvent(
+      from: .error(
+        message: "The model provider refused this request.",
+        detail: nil,
+        turnId: "turn-1",
+        itemId: nil,
+        errorInfo: .object(["category": .string("rate_limit")])
+      )
+    )
+    let card = workIncrementalEventCard(
+      for: WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-12T00:00:00.000Z",
+        sequence: 1,
+        event: mapped
+      )
+    )
+    XCTAssertEqual(card?.title, errorPresentation(for: "rate_limit").title)
+    XCTAssertEqual(card?.nextAction, "Retry, or switch model.")
   }
 
   func testBuildWorkChatMessagesIncludesAttachmentMetadata() {
@@ -28699,7 +28789,9 @@ final class SyncPartialHydrationRenderingTests: XCTestCase {
 
       let notice = statuses[failedDomain]?.inlineHydrationFailureNotice(for: failedDomain)
       XCTAssertNotNil(notice, "\(failedDomain) must render a Retry notice")
-      XCTAssertEqual(notice?.message, "Timed out loading fresh data.")
+      // Raw host text belongs in the technical fold, never in the body.
+      XCTAssertEqual(notice?.technicalDetail, "Timed out loading fresh data.")
+      XCTAssertFalse(notice?.message.contains("Timed out loading fresh data.") ?? true)
       for healthyDomain in statuses.keys where healthyDomain != failedDomain {
         XCTAssertEqual(statuses[healthyDomain]?.phase, .ready)
         XCTAssertNil(statuses[healthyDomain]?.inlineHydrationFailureNotice(for: healthyDomain))
@@ -28710,8 +28802,9 @@ final class SyncPartialHydrationRenderingTests: XCTestCase {
   func testBlankHydrationErrorStillProducesConcreteCopy() {
     let status = SyncDomainStatus(phase: .failed, lastError: "  \n ", lastHydratedAt: nil)
     let notice = status.inlineHydrationFailureNotice(for: .work)
-    XCTAssertEqual(notice?.title, "Work hydration failed")
-    XCTAssertTrue(notice?.message.contains("Fresh data could not be loaded") == true)
+    XCTAssertEqual(notice?.title, "Couldn't load your chats")
+    XCTAssertTrue(notice?.message.contains("ADE couldn't get fresh chats") == true)
+    XCTAssertNil(notice?.technicalDetail)
   }
 }
 

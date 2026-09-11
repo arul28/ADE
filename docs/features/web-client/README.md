@@ -650,6 +650,12 @@ Machine runtime and sync host:
   pairing/hello auth, DPoP enforcement, changeset fan-out, project catalog,
   project switch, file/chat/terminal sub-protocols, and command routing
   advertisement.
+- `apps/ade-cli/src/services/sync/syncHostRecovery.ts` - typed project-host
+  readiness and **Fix connection**. Hosted web reads `hello_ok.projectHost`
+  and `host_unavailable` snapshots, retries a generic starting failure, then
+  overlays the same recovery card as iOS (`ProjectHostRecoveryScreen`).
+  Cached lists stay on screen; the overlay is not `ProjectRecoveryScreen`
+  (that screen is local disk/brain repair).
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
   command registry. It carries the web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub

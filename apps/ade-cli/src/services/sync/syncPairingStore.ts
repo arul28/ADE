@@ -18,6 +18,8 @@ export type SyncPairingRecord = {
   peerDeviceType: string;
   /** Server-issued authorization for full runtime RPC and forwarding. */
   runtimeHostGranted?: boolean;
+  /** Server-issued authorization for the narrower sync-host recovery flow. */
+  syncHostRecoveryGranted?: boolean;
   /**
    * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
    * Once present, paired hellos from this device must carry a valid proof.
@@ -281,6 +283,11 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         || trust.kind === "local"
         || (trust.kind === "pin" && options?.allowDirectPinRuntimeHost === true)
       );
+    // Host recovery is narrower than runtime RPC, but it still changes
+    // machine processes. Only an account-attested phone/browser receives this
+    // grant; a PIN-only mobile pairing remains read-only at the brain ingress.
+    const syncHostRecoveryGranted = (peer.deviceType === "phone" || peer.deviceType === "browser")
+      && trust.kind === "account";
     const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
     const validatedOfferedDpopKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey)
       ? offeredDpopKey
@@ -296,6 +303,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       peerPlatform: peer.platform,
       peerDeviceType: peer.deviceType,
       runtimeHostGranted,
+      syncHostRecoveryGranted,
       localTrustOrigin,
       // A gated re-pair may introduce or rotate the key when its caller allows
       // that. Omitting a key preserves the existing binding without downgrade.
@@ -335,6 +343,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         runtimeHostGranted: replacement.runtimeHostGranted === false
           ? false
           : existing.runtimeHostGranted,
+        syncHostRecoveryGranted: replacement.syncHostRecoveryGranted === false
+          ? false
+          : existing.syncHostRecoveryGranted,
         pendingRotation: { expiresAtMs, record: replacement },
       };
       writeRecords(records);

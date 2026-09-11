@@ -1043,11 +1043,28 @@ settings to pair or reconnect", and
 `accessibilityShowsLargeContentViewer()` keeps it reachable from
 VoiceOver and Large Content.
 
-The one remaining inline banner per tab is the hydration-failure
+The one remaining inline banner per tab is the domain-failure
 notice built from `SyncDomainStatus.inlineHydrationFailureNotice(for:)`
 on `RemoteModels.swift`. It surfaces only when a domain is in
 `.failed` phase (so cached rows may still render underneath) and
 offers a single "Retry" action that calls `reload(refreshRemote: true)`.
+Titles are concrete (`Couldn't load your chats`, lanes, files, or pull
+requests) rather than "hydration failed". These per-tab cards are
+suppressed while project-host recovery is retrying or taking over, so
+a host-not-ready conflict does not paint four duplicate error cards.
+
+When the brain answers `host_unavailable`, the phone reads the structured
+snapshot (`reason`, `conflict`, `recoveryEligible`) instead of the raw host
+sentence. A verified conflict opens a full-screen recovery overlay on the
+project tabs immediately. A generic starting failure waits silently (2s / 4s
+/ 8s) with one "Starting services…" banner and stale lists, then takes over if
+the host is still blocked. **Fix connection** calls `sync.recoverHost` to stop
+the verified blocking ADE runtime and restart the intended brain. **Switch Mac**
+opens Settings. Pairing and project data stay intact.
+
+Failed chat turns render an instruction card (title, one sentence, optional
+next step, folded technical details + Copy). The timeline never titles a turn
+"Error" or "Unknown", and it never repeats the body as a bullet.
 The read-only header strip in `FilesHeaderStrip` also appends a
 compact "Syncing" / "Connecting" / "Offline" suffix: "Syncing" comes from the
 Files domain phase (`.hydrating` / `.syncingInitialData`), "Connecting" from
@@ -1618,9 +1635,12 @@ raw response dict into either the `result` value or throws an `NSError` with
   operations still wait for their project to be active because `file_request`
   has no cross-project command router.
 - A `command_result` with `error.code: "host_unavailable"` (the brain-level
-  ingress answering while the project sync host is restarting — see
-  `remote-commands.md`) is treated exactly like a timeout, never like an
-  application rejection: `isSyncHostUnavailableError` makes it retryable, and
+  ingress answering while the project sync host is restarting or blocked —
+  see `remote-commands.md`) carries a typed snapshot. Generic starting
+  failures retry silently with one "Starting services…" banner; a verified
+  conflict opens the project-host recovery overlay. Queued work still treats
+  the code like a timeout, never like an application rejection:
+  `isSyncHostUnavailableError` makes it retryable, and
   the queue-drain loop **keeps** a pending operation that hits it so queued work
   survives host restarts instead of being deleted on replay. The same
   attempted-live-chat exception applies here: preserve the draft instead of

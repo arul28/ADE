@@ -1,5 +1,6 @@
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { AdeSyncClient } from "../../sync";
+import { noteProjectHostUnavailable } from "../../sync/projectHostRecoveryStore";
 import { stableCacheKey } from "./cacheKey";
 import { createCoalescingReadCache } from "./coalescingReadCache";
 import type { AdapterProjectState } from "./projectState";
@@ -141,6 +142,10 @@ export class CommandCaller {
           cacheable: true,
         };
       } catch (error) {
+        // noteProjectHostUnavailable ignores anything that is not a
+        // host_unavailable failure, and anything from a client that is not the
+        // active machine's, so it needs no guard of its own here.
+        noteProjectHostUnavailable(error, this.client);
         // A mutation that reached the transport can have an unknown outcome.
         // Never fabricate success from its UI fallback: callers such as the
         // chat composer rely on rejection to preserve the user's draft.

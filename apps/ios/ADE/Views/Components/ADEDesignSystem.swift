@@ -622,6 +622,173 @@ struct ADENoticeCard: View {
   }
 }
 
+/// One shared "these rows are not live" marker. While the machine's project
+/// services are still starting, every tab keeps showing its cached rows — this
+/// says so once, above them, instead of four bespoke banners.
+struct ADEStaleContentMarker: View {
+  /// Plural noun for the rows below: "chats", "lanes", "files", "pull requests".
+  let noun: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      line
+      Text("\(noun) (may be out of date)")
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+        .fixedSize(horizontal: false, vertical: true)
+      line
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("These \(noun) may be out of date")
+  }
+
+  private var line: some View {
+    Rectangle()
+      .fill(ADEColor.border.opacity(0.6))
+      .frame(height: 1)
+  }
+}
+
+/// The only place raw internals are allowed to appear. Collapsed by default,
+/// with Copy on the disclosure row itself so it reads as "copy these details"
+/// rather than floating under a closed fold.
+struct ADETechnicalDetailsFold: View {
+  let text: String
+  @State private var expanded = false
+  @State private var copied = false
+  @State private var copyResetTask: Task<Void, Never>?
+
+  var body: some View {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      EmptyView()
+    } else {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 8) {
+          // Hand-rolled rather than a DisclosureGroup: the Copy control has to
+          // share this row without the disclosure swallowing its taps.
+          Button {
+            withAnimation(.snappy) { expanded.toggle() }
+          } label: {
+            HStack(spacing: 4) {
+              Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+              Text("Technical details")
+                .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(ADEColor.textMuted)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(expanded ? "Hide technical details" : "Show technical details")
+
+          Spacer(minLength: 8)
+
+          Button(copied ? "Copied" : "Copy") {
+            copy(trimmed)
+          }
+          .buttonStyle(.plain)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .accessibilityLabel("Copy technical details")
+        }
+
+        if expanded {
+          Text(trimmed)
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .onDisappear {
+        copyResetTask?.cancel()
+        copyResetTask = nil
+      }
+    }
+  }
+
+  private func copy(_ value: String) {
+    UIPasteboard.general.string = value
+    copied = true
+    copyResetTask?.cancel()
+    copyResetTask = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      guard !Task.isCancelled else { return }
+      copied = false
+    }
+  }
+}
+
+/// Splits a `nextAction` sentence into the short "what to do" list the desktop
+/// instruction card renders. Two lines is the cap: a third is a paragraph, and
+/// nobody reads a paragraph on a failure card.
+func adeWhatToDoSteps(_ text: String?) -> [String] {
+  guard let text else { return [] }
+  return text
+    .split(whereSeparator: \.isNewline)
+    .map { $0.trimmingCharacters(in: .whitespaces) }
+    .filter { !$0.isEmpty }
+    .prefix(2)
+    .map { String($0) }
+}
+
+struct ADEInstructionErrorCard: View {
+  let title: String
+  let message: String
+  var nextAction: String? = nil
+  var technicalDetail: String? = nil
+  var retryTitle: String? = "Retry"
+  var retry: (() -> Void)? = nil
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(width: 32, height: 32)
+          .background(ADEColor.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title)
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(message)
+            .font(.subheadline)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 0)
+      }
+      let steps = adeWhatToDoSteps(nextAction)
+      if !steps.isEmpty {
+        VStack(alignment: .leading, spacing: 3) {
+          ForEach(steps, id: \.self) { step in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+              Text("•")
+              Text(step)
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
+            }
+          }
+        }
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+      }
+      if let retryTitle, let retry {
+        Button(retryTitle, action: retry)
+          .buttonStyle(.glassProminent)
+          .tint(ADEColor.warning)
+          .controlSize(.small)
+      }
+      ADETechnicalDetailsFold(text: technicalDetail ?? "")
+    }
+    .adeGlassCard()
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title). \(message)")
+  }
+}
+
 /// Warning card shown on connection surfaces when the saved machine expects a
 /// Tailscale route, this iPhone has no tailnet interface, and no saved ADE
 /// relay route is available (see `SyncService.tailscaleOffHintVisible`). The

@@ -21,6 +21,7 @@ import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
+import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectHostRecoveryScreen";
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
@@ -908,6 +909,7 @@ function ProjectTabHost() {
 
   return (
     <div className="relative h-full min-h-0 w-full">
+      {webMode ? <ProjectHostStartingBanner /> : null}
       {mountedProjects.map((entry) => {
         const { binding: projectBinding, project, surfaceKey } = entry;
         if (webMode && surfaceKey !== activeSurfaceKey) {
@@ -943,6 +945,7 @@ function ProjectTabHost() {
         </PageErrorBoundary>
       ) : null}
       {transitionLabel ? <ProjectTransitionVeil label={transitionLabel} /> : null}
+      {webMode && !isAccountRoute && !isPersonalChatsRoute ? <ProjectHostRecoveryScreen /> : null}
     </div>
   );
 }

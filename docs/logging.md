@@ -41,6 +41,14 @@ storage fault, the raw error text otherwise —
 provider — at the failure deduper's one-per-minute cadence) and
 `sync.host_start_recovered` replace the free-text stderr lines that once made
 the most frequent brain failure invisible to structured logs.
+The brain-level project-host recovery path also records
+`sync_brain.sync_host_recovery_forbidden`,
+`sync_brain.sync_host_recovery_finished`, and
+`sync_brain.sync_host_recovery_failed`. These contain only the peer device
+identifier/type, command or operation identifiers, coarse result/status/state,
+step identifiers/statuses, conflict reason, and an error type; they never copy
+PIDs, socket paths, command lines, raw failure text, or recovery details into
+the log event. They are local operational outcomes, not PostHog events.
 `brain.suspend_gap` records a sleep the watchdogs would previously have
 mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /

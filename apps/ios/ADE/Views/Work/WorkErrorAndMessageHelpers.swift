@@ -27,8 +27,10 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
     return WorkErrorPresentation(title: "Connection issue", icon: "wifi.exclamationmark", tint: .warning)
   case "permission":
     return WorkErrorPresentation(title: "Permission issue", icon: "hand.raised.fill", tint: .warning)
+  case "configuration":
+    return WorkErrorPresentation(title: "Couldn't start this turn", icon: "exclamationmark.triangle.fill", tint: .warning)
   default:
-    return WorkErrorPresentation(title: "Error", icon: "exclamationmark.triangle.fill", tint: .danger)
+    return WorkErrorPresentation(title: "Couldn't start this turn", icon: "exclamationmark.triangle.fill", tint: .danger)
   }
 }
 
@@ -2417,8 +2419,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["todo_update", turnId ?? "", items.joined(separator: "\n")].joined(separator: "|")
   case .systemNotice(let kind, let message, let detail, let turnId, let steerId):
     return ["system_notice", turnId ?? "", steerId ?? "", kind, message, detail ?? ""].joined(separator: "|")
-  case .error(let message, let detail, let category, let turnId):
-    return ["error", turnId ?? "", category, message, detail ?? ""].joined(separator: "|")
+  case .error(let message, let detail, let category, let turnId, let title, let nextAction):
+    return ["error", turnId ?? "", category, title, message, nextAction, detail ?? ""].joined(separator: "|")
   case .done(let status, let summary, let usage, let turnId, let model, let modelId, let terminalReason):
     return ["done", turnId, status, model ?? "", modelId ?? "", terminalReason ?? "", summary, workUsageSummaryMergeKey(usage)].joined(separator: "|")
   case .claudeGoalUpdated(let goal, let turnId):

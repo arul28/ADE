@@ -92,6 +92,7 @@ import type {
   ProjectBrowseResult,
   SyncRemoteCommandDescriptor,
   SyncRelayAuthorizationLease,
+  SyncHostReadinessSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTerminalHistoryResponsePayload,
   SyncTerminalDataPayload,
@@ -473,6 +474,17 @@ export function isRuntimeHostPairingRecord(
   record: SyncPairingRecord | null | undefined,
 ): boolean {
   return record?.runtimeHostGranted === true;
+}
+
+/**
+ * Host recovery is a distinct, smaller authority than runtime RPC/forwarding.
+ * Keep this check server-owned: a client-declared device type or capability
+ * must never grant process-control access by itself.
+ */
+export function isSyncHostRecoveryPairingRecord(
+  record: SyncPairingRecord | null | undefined,
+): boolean {
+  return record?.syncHostRecoveryGranted === true;
 }
 
 type SyncHostAuthKind = "bootstrap" | "paired" | "account" | null;
@@ -1585,6 +1597,7 @@ export function buildSyncHostHelloOkPayload(args: {
   runtimeChannelEnabled?: boolean;
   /** Fresh secret returned only for first-time verified account adoption. */
   accountPairing?: { deviceId: string; secret: string } | null;
+  projectHost?: SyncHostReadinessSnapshot | null;
 }): PairedRuntimeHelloOkPayload {
   const runtimeChannelEnabled = args.runtimeChannelEnabled === true;
   const actions = [
@@ -1621,6 +1634,7 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.relayAuthorization ? { relayAuthorization: args.relayAuthorization } : {}),
     ...(args.connectionTransport ? { connectionTransport: args.connectionTransport } : {}),
     ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
+    ...(args.projectHost ? { projectHost: args.projectHost } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,

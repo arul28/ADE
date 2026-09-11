@@ -1,8 +1,8 @@
 # Mobile sync incident and recovery UX handoff
 
-Date: 2026-09-08. Status: incident recovered; product changes discussed, not implemented.
+Date: 2026-09-08. Status: incident recovered. The recovery work proposed below now ships on this branch.
 Source baseline: `a26f0ac367119ed9d5319e71a2dc49ec6f5c3e3c` (desktop/runtime 1.2.73).
-Purpose: user-requested incident ledger and implementation handoff for a new ADE lane. This document records observations and proposed work; it does not describe shipped recovery features.
+Purpose: user-requested incident ledger. This document is the historical record of the incident and the direction it produced. It is not the description of the shipped behavior — for that, read `docs/features/sync-and-multi-device/` and `docs/features/chat/`, which this branch updates in present tense.
 
 ## Brief
 
@@ -156,4 +156,4 @@ Required proof for the eventual change:
 
 Open engineering questions: why did the development runtime acquire production sync ownership; why did the installed host later conflict with itself; which identity/active-work metadata can be trusted; and how should machine readiness avoid blocking on unrelated replica backlog? These were not resolved during the incident and should not be asserted as fixed.
 
-Documentation-only handoff: no application implementation, tests, release or PR merge is included in this branch. Authored from the Codex conversation and live diagnostic evidence.
+Authored from the Codex conversation and live diagnostic evidence. The implementation that answers this handoff landed on the same branch; the feature docs above carry the shipped behavior.

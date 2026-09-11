@@ -8,6 +8,7 @@ import {
   buildWindowsListeningPortHolderQueryArgs,
   parseWindowsPortHolders,
 } from "./windowsPortHolders";
+import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
@@ -166,17 +167,57 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Own start time from the SAME clock `defaultProcessMatchesOwner` reads back.
+ *
+ * `readProcessStartTimeMs` is POSIX-only by design (Windows has no `ps`), but
+ * the win32 reader below asks `Get-Process` for a real `StartTime` and then
+ * rejects a 2s mismatch outright. Writing Node bootstrap time on Windows and
+ * reading OS exec time back therefore unlinks a LIVE brain's lock as PID reuse
+ * and makes one-tap recovery refuse every stop. One PowerShell spawn per lock
+ * acquisition is the honest price; this is brain startup, not a hot path.
+ */
+function readOwnProcessStartTimeMs(
+  platform: NodeJS.Platform = process.platform,
+): number | null {
+  if (platform !== "win32") return readProcessStartTimeMs(process.pid, platform);
+  const script = [
+    `$target = Get-Process -Id ${Math.floor(process.pid)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $target) { exit 3 }",
+    "[Console]::Out.Write($target.StartTime.ToUniversalTime().ToString('o'))",
+  ].join("; ");
+  try {
+    const raw = execFileSync(
+      resolveTrustedWindowsTool("powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 2_000, maxBuffer: 16 * 1024, windowsHide: true },
+    );
+    const startedAtMs = Date.parse(raw.trim());
+    return Number.isFinite(startedAtMs) ? startedAtMs : null;
+  } catch {
+    return null;
+  }
+}
+
 function executableFromCommandLine(commandLine: string | null): string | null {
   const match = commandLine?.trim().match(/^(?:"([^"]+)"|(.+?\.exe))(?=\s|$)/i);
   const executable = match?.[1] ?? match?.[2] ?? null;
   return executable ? path.win32.basename(executable).toLowerCase() : null;
 }
 
-function defaultProcessMatchesOwner(
+export function defaultProcessMatchesOwner(
   owner: SyncHostSingletonOwner,
   platform: NodeJS.Platform = process.platform,
 ): boolean | null {
-  if (platform !== "win32") return null;
+  const expectedStartedAtMs = owner.processStartedAt
+    ? Date.parse(owner.processStartedAt)
+    : Number.NaN;
+  if (platform !== "win32") {
+    if (!Number.isFinite(expectedStartedAtMs)) return null;
+    const actualStartedAtMs = readProcessStartTimeMs(owner.pid, platform);
+    if (actualStartedAtMs === null || !Number.isFinite(actualStartedAtMs)) return null;
+    return Math.abs(actualStartedAtMs - expectedStartedAtMs) <= 2_000;
+  }
   const script = [
     `$target = Get-Process -Id ${Math.floor(owner.pid)} -ErrorAction SilentlyContinue`,
     "if ($null -eq $target) { exit 3 }",
@@ -215,20 +256,11 @@ function defaultProcessMatchesOwner(
     if (expectedExecutable && actualExecutable && expectedExecutable !== actualExecutable) {
       return false;
     }
-    const expectedStartedAtMs = owner.processStartedAt
-      ? Date.parse(owner.processStartedAt)
-      : Number.NaN;
     const actualStartedAtMs = typeof parsed.startedAt === "string"
       ? Date.parse(parsed.startedAt)
       : Number.NaN;
-    if (
-      Number.isFinite(expectedStartedAtMs)
-      && Number.isFinite(actualStartedAtMs)
-      && Math.abs(expectedStartedAtMs - actualStartedAtMs) > 2_000
-    ) {
-      return false;
-    }
-    return true;
+    if (!Number.isFinite(expectedStartedAtMs) || !Number.isFinite(actualStartedAtMs)) return null;
+    return Math.abs(expectedStartedAtMs - actualStartedAtMs) <= 2_000;
   } catch {
     return null;
   }
@@ -362,8 +394,16 @@ function currentOwner(args: {
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
   const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
+  // Same clock the reader uses, on every platform. `Date.now() - uptime()` is
+  // Node bootstrap time; the reader asks the OS for exec time. The gap is real
+  // (dyld and code-signing on macOS, Defender's on-access scan on Windows), and
+  // a stale-looking owner gets its live lock unlinked as PID reuse. Fall back
+  // to the uptime derivation only when the OS will not answer.
+  const processStartedAtMs = readOwnProcessStartTimeMs();
   const processStartedAt = new Date(
-    Date.now() - Math.max(0, process.uptime() * 1_000),
+    processStartedAtMs !== null && Number.isFinite(processStartedAtMs)
+      ? processStartedAtMs
+      : Date.now() - Math.max(0, process.uptime() * 1_000),
   ).toISOString();
   return {
     id: randomUUID(),
@@ -665,6 +705,18 @@ function defaultAdeHomeForChannel(channel: string | null): string {
 // brain hosting sync must never be reaped by a beta install (and vice
 // versa). Same-channel owners are stale siblings of the brain being
 // (re)started and are safe to replace.
+/**
+ * Windows and macOS resolve paths case-insensitively; Linux does not. A plain
+ * `path.resolve(a) === path.resolve(b)` therefore calls two spellings of one
+ * ADE_HOME different machines — and this comparison decides whether the phone
+ * may stop a runtime, so a false "different channel" hides the Fix button.
+ * Never lowercase unconditionally: that would make two real Linux homes equal.
+ */
+function adeHomeComparisonKey(value: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = path.resolve(value);
+  return platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
 export function isSameChannelSyncHostOwner(
   owner: SyncHostSingletonOwner,
   env: NodeJS.ProcessEnv = process.env,
@@ -672,7 +724,7 @@ export function isSameChannelSyncHostOwner(
   const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
   const currentAdeHome = env.ADE_HOME?.trim() || defaultAdeHomeForChannel(currentChannel);
   if (owner.adeHome) {
-    return path.resolve(owner.adeHome) === path.resolve(currentAdeHome);
+    return adeHomeComparisonKey(owner.adeHome) === adeHomeComparisonKey(currentAdeHome);
   }
   const currentServiceName = env.ADE_RUNTIME_SERVICE_NAME?.trim()
     || (currentChannel ? `com.ade.runtime.${currentChannel}` : "com.ade.runtime");
