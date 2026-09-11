@@ -27444,6 +27444,38 @@ private actor LinearLaunchSpy {
 }
 
 @MainActor
+private final class LinearLaunchViewTestState: ObservableObject {
+  @Published var issue: NormalizedLinearIssue
+  @Published var laneOnly = false
+
+  init(issue: NormalizedLinearIssue) {
+    self.issue = issue
+  }
+}
+
+@MainActor
+private struct LinearLaunchViewTestHost: View {
+  @ObservedObject var state: LinearLaunchViewTestState
+  let syncService: SyncService
+
+  var body: some View {
+    LinearLaunchDestination(issue: state.issue, laneOnly: state.laneOnly)
+      .environmentObject(syncService)
+  }
+}
+
+private func firstTextView(in view: UIView) -> UITextView? {
+  if let textView = view as? UITextView {
+    return textView
+  }
+  for subview in view.subviews {
+    if let textView = firstTextView(in: subview) {
+      return textView
+    }
+  }
+  return nil
+}
+
 private final class LinearPaneSyncSpy: LinearPaneSyncing {
   var linearConnectionStatus: LinearConnectionStatus? = LinearConnectionStatus(connected: true)
   var searchResults: [LinearIssueSearchResult] = []
@@ -27510,6 +27542,48 @@ final class LinearPaneTests: XCTestCase {
 
   func testLinearIssueLaneNameJoinsIdentifierAndTitle() {
     XCTAssertEqual(linearIssueLaneName(identifier: " ENG-1 ", title: " Do it "), "ENG-1 Do it")
+  }
+
+  func testLinearLaunchViewIdentityDistinguishesIssueAndMode() {
+    let firstIssue = LinearLaunchViewIdentity(issueID: "issue-1", laneOnly: false)
+    let secondIssue = LinearLaunchViewIdentity(issueID: "issue-2", laneOnly: false)
+    let laneOnly = LinearLaunchViewIdentity(issueID: "issue-1", laneOnly: true)
+
+    XCTAssertEqual(firstIssue, LinearLaunchViewIdentity(issueID: "issue-1", laneOnly: false))
+    XCTAssertNotEqual(firstIssue, secondIssue)
+    XCTAssertNotEqual(firstIssue, laneOnly)
+  }
+
+  @MainActor
+  func testLinearLaunchDestinationRecreatesKickoffForASecondIssue() {
+    let firstIssue = makeIssue(id: "issue-1", identifier: "VER-372", title: "First issue")
+    let secondIssue = makeIssue(id: "issue-2", identifier: "VER-373", title: "Second issue")
+    let state = LinearLaunchViewTestState(issue: firstIssue)
+    let database = DatabaseService(
+      baseURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    )
+    let syncService = SyncService(database: database)
+    let host = UIHostingController(
+      rootView: LinearLaunchViewTestHost(state: state, syncService: syncService)
+    )
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    window.rootViewController = host
+    window.makeKeyAndVisible()
+    host.view.frame = window.bounds
+    host.view.layoutIfNeeded()
+    defer { window.isHidden = true }
+
+    drainMainQueueForTesting()
+    host.view.setNeedsLayout()
+    host.view.layoutIfNeeded()
+    XCTAssertEqual(firstTextView(in: host.view)?.text, linearDefaultKickoff(for: firstIssue))
+
+    state.issue = secondIssue
+    drainMainQueueForTesting()
+    drainMainQueueForTesting()
+    host.view.setNeedsLayout()
+    host.view.layoutIfNeeded()
+    XCTAssertEqual(firstTextView(in: host.view)?.text, linearDefaultKickoff(for: secondIssue))
   }
 
   func testLinearIssueBranchNameSlugifiesAndSanitizes() {
