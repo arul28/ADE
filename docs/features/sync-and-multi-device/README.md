@@ -1411,6 +1411,27 @@ Cross-machine Work chat handoff:
 - `apps/desktop/src/preload/preload.ts` — source project-runtime routing plus
   the renderer bridge for machine-level project setup and destination actions,
   including the bound `agentChat.regenerateSessionMetadata` call.
+- `apps/desktop/src/shared/types/syncHostRecovery.ts` — the project-host
+  readiness and repair contract every surface shares: `SyncHostOwnerKind`,
+  `SyncHostReadinessState` (`ready` / `starting` / `conflict` /
+  `unavailable`), `SyncHostConflictPublic`, `SyncHostReadinessSnapshot`,
+  `SyncHostRecoveryStep` / `SyncHostRecoveryResult`, the two action names
+  (`sync.diagnoseHost`, `sync.recoverHost`), and the exact conflict copy plus
+  the redacted-detail sentence. The CLI brain authors snapshots from these
+  constants and the clients rebuild a snapshot from them when a
+  `host_unavailable` error names a conflict without carrying one, so neither
+  side invents its own wording. `types/sync.ts` re-uses the snapshot on
+  `SyncHelloOkPayload.projectHost` and on `SyncCommandResultPayload.error`.
+- `apps/desktop/src/shared/syncHostRecoveryUi.ts` — the client-side half,
+  shared by the desktop/hosted-web renderer and mirrored in Swift. It parses
+  untrusted snapshots, conflicts, recovery results and `host_unavailable`
+  errors; owns the silent-retry ladder (`PROJECT_HOST_SILENT_RETRY_MS` =
+  2 s / 4 s / 8 s); decides when a snapshot takes the screen over immediately
+  (`projectHostShouldTakeOverImmediately`); names why a conflict offers no
+  repair (`projectHostBlockedReason` → `unauthorized` when the detail is the
+  redacted sentence, `unidentified` otherwise); and classifies the transport
+  codes a deliberate brain restart produces so the drop is read as a step of
+  the repair rather than its verdict.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
@@ -1836,6 +1857,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (`sync.recoverHost`). iOS still treats that code as
   transient (retryable and queueable, like a timeout), so queued
   operations survive host restarts instead of being deleted on replay.
+  The same handler answers `sync.diagnoseHost` and `sync.recoverHost` itself,
+  because both are runtime-scoped and exist precisely for the window in which
+  no project host is answering. Every peer may diagnose — an unauthorized one
+  receives the redacted snapshot — while `sync.recoverHost` is refused with
+  `forbidden_command` unless the peer authenticated from a pairing record that
+  carries either the existing runtime-host grant or the narrower
+  `syncHostRecoveryGranted`, and is advertised in
+  `remoteCommandSupportedActions` only to peers that hold one. `hello_ok.projectHost` carries the same (redacted where appropriate)
+  snapshot on every connection, so a client learns that socket-up is not the
+  same as a usable project host without sending a command first.
 - `syncHostSingleton.ts` — the machine-wide sync host lease. Owns the advisory
   lock file (`$TMPDIR/ade-sync-host-<uid>.json`, override
   `ADE_SYNC_HOST_LOCK_PATH`) that records the owning pid, channel, project
@@ -1847,7 +1878,60 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `onSyncHostSingletonAuthorityChanged()` notifies subscribers on none-held →
   held and held → none-held transitions. That registry is what the relay tunnel
   and the account-directory publisher gate on — see *The machine-wide sync host
-  lease* above.
+  lease* above. The lock's `processStartedAt` is read from the OS's own
+  process clock on every platform, including a PowerShell `StartTime` read on
+  Windows, rather than derived from `Date.now() - process.uptime()`: the
+  reader (`defaultProcessMatchesOwner`) asks the OS for exec time, and writing
+  bootstrap time instead makes a live brain's lock look like PID reuse — which
+  both unlinks a healthy lease and makes one-tap recovery refuse every stop.
+  `isSameChannelSyncHostOwner` compares ADE homes case-insensitively on Windows
+  and macOS and case-sensitively on Linux, because that comparison decides
+  whether a phone may stop the runtime.
+- `syncHostRecovery.ts` — typed project-host readiness plus the one-tap repair
+  behind `sync.diagnoseHost` and `sync.recoverHost`.
+  `diagnoseSyncHostReadiness` returns a `SyncHostReadinessSnapshot` with
+  card-ready `headline` / `body`; PIDs, socket paths, and command lines exist
+  only in the conflict's `technicalDetail`. `classifySyncHostOwnerKind`
+  normalizes quotes and backslashes before matching, so it names
+  `development` / `installed` / `unknown` from macOS app bundles, per-user
+  (`%LOCALAPPDATA%\Programs\ADE`) and machine-wide Windows installs, `/opt`
+  Linux packages, and AppImage runs instead of degrading to "unknown"
+  everywhere but macOS. A conflict is `recoveryEligible` only when the owner
+  carries a parseable process start time — a PID alone is not an identity —
+  and is either a development runtime or this channel's own installed
+  runtime. `redactSyncHostReadinessSnapshot` is what an unauthorized peer
+  gets: owner kind, project, and impact collapse to one neutral sentence with
+  `recoveryEligible: false`.
+
+  `recoverSyncHostConnection` is **serialized and deadline-bounded**: one
+  repair per machine, a second caller joins the running one instead of opening
+  a second stop/restart sequence, and the whole run is raced against a 90 s
+  deadline so an injected start/restart/prove step that never settles cannot
+  leave every later tap — from every device — waiting on the same pending
+  promise. It walks `diagnose → stop → wait → start → restart → prove`,
+  re-resolves the owner immediately before the kill to close the PID-reuse
+  window, refuses to target this brain, and reports `restarting` rather than
+  a failure when it restarts the brain, because that drops the caller's socket
+  on purpose. Caller-supplied operation ids are length-capped and only the
+  last 32 are tracked, oldest evicted first.
+
+  `skipListenerScan` is what keeps diagnosis cheap. The listener scan shells
+  out to `lsof` or PowerShell **synchronously**, so the two paths that run
+  constantly while a host is down — the hello path (every reconnect in a
+  reconnect storm) and the per-command `host_unavailable` reply (every failing
+  command) — pass it and answer from the lock alone. Only an explicit
+  `sync.diagnoseHost` request pays for the full scan.
+
+  `ade brain status` reads this module too, so a terminal on the machine sees
+  the same **project host** state and **blocking runtime** label the phone's
+  card shows, and `--scan-listeners` is where the CLI opts into the expensive
+  scan. Two seams are injected there: the short-lived CLI process never took
+  the lease, so the running brain's own listener health answers "am I hosting",
+  and the running brain's pid is excluded before a conflict is reported, or
+  every healthy machine would claim it is blocked by the brain serving it. The
+  brain wires `startSyncHost` / `restartBrain` / `prove` into
+  `configureSyncHostRecovery` from `cli.ts`, next to the startup loop and the
+  restart coalescer that already own those closures.
 - `syncHostStartupLoop.ts` — retry loop around mobile sync host startup
   for the brain. Same-channel singleton conflicts (update races, restart
   overlap, a stale sibling) always retry — the loop may evict a stale
@@ -2059,7 +2143,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   sign-out / account-switch sweep: it deletes records owned by another account
   but demotes `localTrustOrigin` records back to `accountOwnerUserId: null`,
   and writes whenever it deleted **or** demoted. See *Adopting a manual pairing
-  into an account* for the gate.
+  into an account* for the gate. Each record also carries
+  `syncHostRecoveryGranted`, the narrower authority behind **Fix connection**:
+  it is minted only for a phone or browser whose pairing came from a verified
+  same-account attestation, so a PIN-only mobile pairing can read a redacted
+  diagnosis but can never stop or restart a runtime. Like `runtimeHostGranted`,
+  a pending rotation may drop the grant but never silently regains it.
 - `syncPinStore.ts` — on-disk storage for the user-set 6-digit
   pairing PIN at `~/.ade/secrets/sync-pin.json`, chmodded `0600`. The
   runtime never rotates the PIN; the operator sets or clears it from
@@ -3152,6 +3241,13 @@ desktop-only `rpc_*` and `fwd_*` extensions. The paired desktop treats missing
 `features.rpcChannel` or `features.portForward` exactly like `false` and does
 not attempt that channel, while legacy phone/browser clients continue on their
 existing mobile command surface when those keys are absent or present.
+
+`hello_ok.projectHost` is additive in the same way: it carries this
+connection's project-host readiness snapshot, and an older host simply omits
+it. A client that receives nothing there learns the same thing it always did —
+from the first command that fails with `host_unavailable`. The point of the
+field is that socket-up is not the same as a usable project host, so a client
+does not have to send a command to find out.
 
 An integer version below the floor or above the current version is different
 from an additive unknown type. The host sends an uncompressed

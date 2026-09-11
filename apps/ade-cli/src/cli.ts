@@ -72,6 +72,8 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
+import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
 import {
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
@@ -18429,6 +18431,69 @@ async function readBrainSyncStatus(
 }
 
 /**
+ * The project-host readiness snapshot `ade brain status` reports.
+ *
+ * Answered from the same module the phone's `sync.diagnoseHost` uses, so a
+ * terminal on the machine and a phone across the room name the same blocking
+ * runtime with the same words. Two seams have to be injected or the answer is
+ * wrong in this process:
+ *
+ * - `holdsSyncHostSingleton()` is process-local. This is a short-lived CLI
+ *   process that never took the lease, so it always answers false. The running
+ *   brain's own sync snapshot is the honest source of "am I hosting".
+ * - The machine's healthy brain owns the singleton lock, and from here that
+ *   reads as a conflict with itself. The running brain's pid is excluded before
+ *   any conflict is reported, or every healthy machine would claim it is
+ *   blocked by the very brain that is serving it.
+ *
+ * The listener scan is opt-in (`--scan-listeners`): it shells out to `lsof` or
+ * a full-machine PowerShell query, which no default status command should pay
+ * for. The lock read alone answers the common case.
+ */
+export async function readProjectHostReadiness(args: {
+  runtime: unknown;
+  sync: unknown;
+  scanListeners: boolean;
+  /** Injected by tests; production always reads the machine-wide lock. */
+  detectConflict?: (options: { skipListenerScan: boolean }) => SyncHostSingletonConflict | null;
+}): Promise<SyncHostReadinessSnapshot> {
+  const [{ diagnoseSyncHostReadiness }, { detectSyncHostSingletonConflict }] = await Promise.all([
+    import("./services/sync/syncHostRecovery"),
+    import("./services/sync/syncHostSingleton"),
+  ]);
+  const detect = args.detectConflict ?? detectSyncHostSingletonConflict;
+  const runtime = isRecord(args.runtime) ? args.runtime : null;
+  const brainRunning = runtime?.running === true;
+  const brainPid = typeof runtime?.pid === "number" ? runtime.pid : null;
+  const routeHealth = isRecord(args.sync) && isRecord(args.sync.routeHealth)
+    ? args.sync.routeHealth
+    : null;
+  const listenerBound = isRecord(routeHealth?.listener)
+    && routeHealth.listener.listenerBound === true;
+  const snapshot = diagnoseSyncHostReadiness({
+    detectConflict: () => {
+      const conflict = detect({ skipListenerScan: !args.scanListeners });
+      if (!conflict) return null;
+      return brainPid != null && conflict.owner.pid === brainPid ? null : conflict;
+    },
+    holdsLease: () => listenerBound,
+  });
+  // A brain that is not answering is not "still starting its project
+  // connection" — it is not running at all, and `ade brain start` is the fix.
+  // A conflict still outranks this: it is the reason the brain is down.
+  if (snapshot.state === "starting" && !brainRunning) {
+    return {
+      ...snapshot,
+      state: "unavailable",
+      headline: "Not hosting",
+      body: "This machine's ADE brain is not running, so nothing hosts the project connection. Run `ade brain start`.",
+      recoveryEligible: false,
+    };
+  }
+  return snapshot;
+}
+
+/**
  * Account state for `ade setup`, read straight off the machine brain.
  *
  * Deliberately non-throwing: setup uses this only to decide which prompt to
@@ -18821,6 +18886,7 @@ async function runBrainCommand(
   const socketOverride = readValue(args, ["--socket"]);
 
   if (sub === "status" || sub === "show") {
+    const scanListeners = readFlag(args, ["--scan-listeners"]);
     const [{ getRuntimeServiceStatus }] = await Promise.all([
       import("./serviceManager"),
     ]);
@@ -18842,12 +18908,17 @@ async function runBrainCommand(
     // not bound the socket yet is starting, not broken, so `ade brain status`
     // does not read as a failure that wants repairing.
     const starting = isRecord(runtime) && runtime.starting === true;
+    // What the phone's "Fix connection" card would say about this machine. The
+    // brain could already describe a blocking runtime in structured terms while
+    // this command showed an empty `port` and no reason for it.
+    const projectHost = await readProjectHostReadiness({ runtime, sync, scanListeners });
     return {
       ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
       starting,
       service,
       runtime,
       sync,
+      projectHost,
       port: isRecord(pairing) ? pairing.port ?? null : null,
       connectedPeers: isRecord(sync) ? sync.connectedPeers ?? null : null,
       lastFailure: lastFailure ? formatLastFailureLine(lastFailure) : null,
@@ -19878,6 +19949,13 @@ async function runServe(
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
+      captureRecoveryAnalytics: ({ outcome, surface }) => {
+        brainProductAnalytics?.capture({
+          event: "ade_feature_used",
+          surface,
+          properties: { feature: "connections", action: "sync_host_recovery", outcome },
+        });
+      },
     }),
   );
   // Shared by mobile roster delivery and protocol-2 Activity publishing. The
@@ -23883,7 +23961,20 @@ export function formatBrainStatus(value: unknown): string {
   const runtime = isRecord(result.runtime) ? result.runtime : result;
   const service = isRecord(result.service) ? result.service : null;
   const starting = result.starting === true || runtime.starting === true;
-  return renderKeyValues("ADE brain", [
+  // The readiness snapshot the phone's recovery card reads. Rendered here so a
+  // terminal on the wedged machine is told WHY phone sync has no port, instead
+  // of being shown a blank `port` row and left to guess.
+  const projectHost = isRecord(result.projectHost) ? result.projectHost : null;
+  const hostState = projectHost ? asString(projectHost.state) : null;
+  const hostConflict = projectHost && isRecord(projectHost.conflict)
+    ? projectHost.conflict
+    : null;
+  const hostOwner = hostConflict
+    ? [asString(hostConflict.ownerLabel), asString(hostConflict.projectLabel)]
+      .filter((entry): entry is string => Boolean(entry))
+      .join(" \u00b7 ")
+    : null;
+  const rendered = renderKeyValues("ADE brain", [
     ["ok", result.ok],
     ["endpoint", runtime.running === true ? "running" : "not responding"],
     ["socket", runtime.socketPath],
@@ -23902,9 +23993,41 @@ export function formatBrainStatus(value: unknown): string {
     ["service", service ? service.message : null],
     ["port", result.port],
     ["connected peers", result.connectedPeers],
+    [
+      "project host",
+      hostState
+        ? `${hostState}${projectHost?.headline ? ` \u00b7 ${asString(projectHost.headline) ?? ""}` : ""}`
+        : null,
+    ],
+    ["blocking runtime", hostOwner || null],
+    [
+      "recovery",
+      hostConflict
+        ? hostConflict.recoveryEligible === true
+          ? "a paired device can stop the blocking runtime"
+          : "not eligible for a one-tap stop"
+        : null,
+    ],
     ["last failure", result.lastFailure],
     ["message", starting ? null : result.message],
   ]);
+  // `technicalDetail` is multi-line (pid, port, socket, command line) and would
+  // be truncated to one 96-column cell by the key/value renderer, so it gets
+  // its own block — the same shape `formatGithubAppUserAuth` uses.
+  if (!projectHost || hostState === "ready") return rendered;
+  const detailLines = [
+    asString(projectHost.body),
+    ...(asString(hostConflict?.technicalDetail) ?? "").split(/\r?\n/),
+  ]
+    .map((line) => line?.trim() ?? "")
+    .filter(Boolean);
+  if (detailLines.length === 0) return rendered;
+  return [
+    rendered,
+    "",
+    "Project host",
+    ...detailLines.map((line) => `  ${line}`),
+  ].join("\n");
 }
 
 /**

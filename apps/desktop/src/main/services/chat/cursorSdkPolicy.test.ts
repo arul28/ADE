@@ -21,7 +21,6 @@ describe("Cursor SDK policy", () => {
     expect(CURSOR_SDK_ONESHOT_POLICY).toMatchObject({
       chatMode: "ask",
       approvalPolicy: "read-only",
-      sandbox: "off",
       fullAuto: false,
       autoReview: false,
       tools: [],

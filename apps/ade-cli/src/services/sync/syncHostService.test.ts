@@ -5124,6 +5124,7 @@ describe("sync host account authentication", () => {
     };
     let holdsLease = false;
     const terminated: number[] = [];
+    const recoveryAnalytics: Array<{ outcome: string; surface: string }> = [];
     configureSyncHostRecovery({
       detectConflict: () => conflict,
       holdsLease: () => holdsLease,
@@ -5143,6 +5144,7 @@ describe("sync host account authentication", () => {
     const logger = createDiscoveryLogger();
     const handler = createBrainProjectActionsSyncHandler({
       logger,
+      captureRecoveryAnalytics: (entry) => recoveryAnalytics.push(entry),
       projectCatalogProvider: {
         listProjects: vi.fn(async () => ({ projects: [] })),
         prepareProjectConnection: vi.fn(),
@@ -5266,6 +5268,10 @@ describe("sync host account authentication", () => {
         "sync_brain.sync_host_recovery_finished",
         expect.objectContaining({ ok: true, status: "succeeded", operationId: expect.any(String) }),
       );
+      // One bounded capture per completed repair, with the surface taken from
+      // the pairing record rather than anything the client claimed, and no
+      // pid, socket, owner label, or device id anywhere in it.
+      expect(recoveryAnalytics).toEqual([{ outcome: "success", surface: "mobile" }]);
     } finally {
       resetSyncHostRecoveryForTests();
       for (const client of clients) client.close();

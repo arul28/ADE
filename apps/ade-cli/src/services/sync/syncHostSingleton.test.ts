@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireSyncHostSingleton,
+  defaultProcessMatchesOwner,
   buildQuitCommand,
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
@@ -128,6 +129,55 @@ describe("sync host singleton", () => {
         appName: "ADE Beta",
       },
     });
+  });
+
+  // The lock WRITES a birth time and `defaultProcessMatchesOwner` READS one
+  // back to reject PID reuse. They used to come from different clocks — Node
+  // bootstrap time on the write, OS exec time on the read — so a live owner
+  // could look like a recycled pid and have its lock unlinked. This pins the
+  // round trip: whatever the lease records must still identify this process.
+  it("records a birth time the identity check accepts for this process", () => {
+    const lockPath = tempLockPath();
+    const lease = acquireSyncHostSingleton({ port: 8787, projectRoot: null }, { lockPath });
+    try {
+      expect(lease.owner.pid).toBe(process.pid);
+      expect(lease.owner.processStartedAt).toBeTruthy();
+      expect(Number.isFinite(Date.parse(lease.owner.processStartedAt ?? ""))).toBe(true);
+      // `null` means the platform cannot tell; `false` would mean this live
+      // process failed its own identity check, which is the bug.
+      expect(defaultProcessMatchesOwner(lease.owner)).not.toBe(false);
+    } finally {
+      lease.dispose();
+    }
+  });
+
+  // The listener scan shells out synchronously (`lsof`, or PowerShell on a 15s
+  // budget). The hello path and the per-command failure path run it for every
+  // reconnect and every failing command while a host is down, which is exactly
+  // the storm that wedges the brain. Those callers pass `skipListenerScan`.
+  it("skips the synchronous listener scan when the caller opts out", () => {
+    const lockPath = tempLockPath();
+    let scans = 0;
+    const scanListeners = () => {
+      scans += 1;
+      return [];
+    };
+
+    expect(detectSyncHostSingletonConflict({
+      lockPath,
+      pidAlive: () => false,
+      scanListeners,
+      skipListenerScan: true,
+    })).toBeNull();
+    expect(scans).toBe(0);
+
+    // And still runs it for the explicit diagnose path, which is allowed to pay.
+    expect(detectSyncHostSingletonConflict({
+      lockPath,
+      pidAlive: () => false,
+      scanListeners,
+    })).toBeNull();
+    expect(scans).toBe(1);
   });
 
   it("cleans malformed stale locks before acquiring a new lease", () => {

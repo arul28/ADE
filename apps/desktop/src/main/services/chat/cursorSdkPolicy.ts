@@ -180,7 +180,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
 export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freeze({
   chatMode: "ask",
   approvalPolicy: "read-only",
-  sandbox: "off",
   fullAuto: false,
   hardGuards: true,
   orchestrationLead: false,

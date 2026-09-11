@@ -117,6 +117,22 @@ executing recovery: desktop runtime-host grants retain their existing authority,
 while phones and browsers receive the narrower recovery grant only through
 verified same-account adoption. PIN-only mobile pairings get a redacted
 diagnosis and cannot stop or restart a runtime.
+
+Two properties of that pair of actions matter to anyone calling them. The
+repair is **serialized and bounded**: one repair runs per machine, a second
+caller (another device, or the same one reconnecting mid-repair) joins the
+running one instead of opening a second stop/restart sequence, and the whole
+run is raced against a 90 s deadline so a step that never settles cannot leave
+later callers waiting forever. And the two diagnosis paths cost different
+amounts: the `hello_ok.projectHost` snapshot and the per-command
+`host_unavailable` reply skip the synchronous listener scan — both run on every
+reconnect and every failing command while a host is down, and that scan shells
+out to `lsof` or PowerShell — while an explicit `sync.diagnoseHost` pays for
+the full scan. Clients keep **Retry** enabled for the duration of a repair on
+both iOS and hosted web, because the repair may restart the brain and a restart
+that never reports back would otherwise strand the screen on a spinner; an
+explicit Retry re-diagnoses instead of waiting.
+
 The state is still transient for queued work: iOS marks it retryable
 (`isSyncHostUnavailableError`), and queued operations are preserved — not
 deleted — when a replay hits it during a host restart window. Queueable actions

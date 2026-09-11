@@ -316,7 +316,7 @@ live runtime rather than read off a schema:
 | Claude | Agent SDK `settings` — flag tier, above every `settings.json` the SDK reads | the user's settings chain applies | `"Default"` is a real output style, not "no style" |
 | Codex | `thread/start` + `turn/start` JSON-RPC args | `config.toml`'s `service_tier` applies | `null` reports `"default"` — a real downgrade |
 | Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it |
-| Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file |
+| Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file — ADE always sends `false`, so the omit column never applies to it |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` | the user's `opencode.json` applies | n/a — this env var deep-merges **last**, so any key ADE names wins |
 
 ### Provider config homes
@@ -990,9 +990,10 @@ Review start requires an explicit run `modelId`.
 Every one-off call — the session-intelligence chain above and the utility
 tasks here — reaches its provider through `runProviderTask`. Every Cursor
 one-off runs on the pooled worker, through `runCursorSdkLocalPrompt` in
-`cursorSdkPool.ts`: it gets the sandbox-unsupported fallback, agent retries,
-trimmed setting sources, a throwaway state root, and an agent that is closed
-instead of leaked. Never call `Agent.create` in the host process.
+`cursorSdkPool.ts`: it gets agent retries, trimmed setting sources, a throwaway
+state root, the same `sandboxOptions: { enabled: false }` every local worker
+passes, and an agent that is closed instead of leaked. Never call
+`Agent.create` in the host process.
 
 The pool keeps one worker per workspace path and API key for a short idle
 window, so a three-model naming chain forks Node once, and it caps the warm
@@ -1007,7 +1008,9 @@ nothing here.
 `runNamingAcrossProviders` returns `lastFailure`, and the result carries it as
 `generationError` alongside `usedDeterministicFallback`. When nothing was
 applied the Work tab states that reason instead of always blaming a concurrent
-rename. Cursor Cloud chats skip that chain: Cursor owns the agent name, so
+rename. A sandbox-unsupported failure is rewritten through `presentChatFailure`
+before it becomes `generationError`, so the surface reads the same sentence a
+failed turn does rather than the SDK's "edit your sandbox config" text. Cursor Cloud chats skip that chain: Cursor owns the agent name, so
 `updateSession`, `regenerateSessionMetadata` (title), auto-title, and the
 user-facing meta writers refuse the write instead of overlaying an ADE title.
 

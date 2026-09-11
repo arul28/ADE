@@ -41,6 +41,19 @@ storage fault, the raw error text otherwise —
 provider — at the failure deduper's one-per-minute cadence) and
 `sync.host_start_recovered` replace the free-text stderr lines that once made
 the most frequent brain failure invisible to structured logs.
+A phone or browser that taps **Fix connection** records one
+`ade_feature_used` at the brain — the durable owner boundary, because only that
+side knows whether the repair worked — with `feature: "connections"`,
+`action: "sync_host_recovery"`, and a coarse `outcome` of `success`, `partial`
+(the repair handed off to a brain restart, so the client must reconnect to
+learn the result), or `failed`. `surface` is `mobile` or `web`, taken from the
+pairing record rather than anything the client claims. It carries no PID,
+socket path, command line, lane path, owner label, or device identifier. The
+repair is serialized and rare — at most one accepted event per incident, far
+inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits — so
+it needs no new event name, no new property key, and no raised ceiling.
+Diagnosis (`sync.diagnoseHost`) is a passive read and captures nothing.
+
 The brain-level project-host recovery path also records
 `sync_brain.sync_host_recovery_forbidden`,
 `sync_brain.sync_host_recovery_finished`, and
@@ -48,7 +61,14 @@ The brain-level project-host recovery path also records
 identifier/type, command or operation identifiers, coarse result/status/state,
 step identifiers/statuses, conflict reason, and an error type; they never copy
 PIDs, socket paths, command lines, raw failure text, or recovery details into
-the log event. They are local operational outcomes, not PostHog events.
+the log event. They are local operational outcomes, not PostHog events. The one
+product event the repair does send is a single `ade_feature_used`
+(`feature: "connections"`, `action: "sync_host_recovery"`) carrying only
+`outcome` (`success` / `partial` / `failed`, where `partial` is the brain
+restarting and handing the answer to the client's reconnect) and the `mobile` /
+`web` surface. It is captured on the brain, which is the only side that knows
+whether the repair worked, so one repair is one event no matter which client
+asked for it.
 `brain.suspend_gap` records a sleep the watchdogs would previously have
 mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /

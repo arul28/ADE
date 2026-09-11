@@ -182,7 +182,13 @@ apps/ios/
 │   │   │                            # `adeRootTabBarHidden()`. When no active
 │   │   │                            # project is selected the root shows the
 │   │   │                            # Hub (HubScreen, all-projects roster home)
-│   │   │                            # instead of the tabs; the Hub includes Add
+│   │   │                            # instead of the tabs. The tab view also
+│   │   │                            # owns the two project-host surfaces: the
+│   │   │                            # "Still starting this project's services…"
+│   │   │                            # top inset (with the stale marker naming
+│   │   │                            # the selected tab's rows) and the
+│   │   │                            # ProjectHostRecoveryScreen overlay; the Hub
+│   │   │                            # includes Add
 │   │   │                            # project when the runtime advertises
 │   │   │                            # projectActions
 │   │   ├── RemoteProjectAddSheet.swift # Open/create/clone project flow
@@ -295,7 +301,11 @@ apps/ios/
 │   │                                # discovery, personal-chat cache/actions/
 │   │                                # subscription routing, session.* lifecycle
 │   │                                # (settle / override / snooze / wake /
-│   │                                # clear-woke-marker) callers, and the
+│   │                                # clear-woke-marker) callers, the
+│   │                                # project-host readiness phase with its
+│   │                                # silent-retry loop and the
+│   │                                # diagnose/recover callers behind
+│   │                                # Fix connection, and the
 │   │                                # session read chokepoint (localSessions()
 │   │                                # / localSession(id:)) that overlays
 │   │                                # in-flight settle intents onto rows
@@ -337,6 +347,13 @@ apps/ios/
 │   │   │                            #   Hub quick-connect home; .row / .card looks),
 │   │   │                            # haptics, ADEMobilePrimitives (incl.
 │   │   │                            # ADEOptionButton for selection rows),
+│   │   │                            # ADEInstructionErrorCard (title, one
+│   │   │                            #   sentence, next step, optional Retry),
+│   │   │                            # ADETechnicalDetailsFold (the only place
+│   │   │                            #   raw internals appear; collapsed, with
+│   │   │                            #   Copy on the disclosure row),
+│   │   │                            # ADEStaleContentMarker (one shared
+│   │   │                            #   "<rows> (may be out of date)" rule),
 │   │   │                            # dictation mic, recording pill, global
 │   │   │                            # dictation pill
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
@@ -360,6 +377,15 @@ apps/ios/
 │   │   │                            #   VoiceOver label; it remains hidden when
 │   │   │                            #   the host does not advertise personal
 │   │   │                            #   chats.
+│   │   │                            # Also ProjectHostRecoveryScreen (the
+│   │   │                            #   Swift mirror of
+│   │   │                            #   shared/syncHostRecoveryUi.ts:
+│   │   │                            #   snapshot/conflict/result parsing, the
+│   │   │                            #   phase machine, step labels, and the
+│   │   │                            #   full-surface Fix connection / Retry /
+│   │   │                            #   Switch Mac card shown over the project
+│   │   │                            #   tabs when this Mac's project host is
+│   │   │                            #   blocked)
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -1049,22 +1075,39 @@ on `RemoteModels.swift`. It surfaces only when a domain is in
 `.failed` phase (so cached rows may still render underneath) and
 offers a single "Retry" action that calls `reload(refreshRemote: true)`.
 Titles are concrete (`Couldn't load your chats`, lanes, files, or pull
-requests) rather than "hydration failed". These per-tab cards are
-suppressed while project-host recovery is retrying or taking over, so
-a host-not-ready conflict does not paint four duplicate error cards.
+requests) rather than "hydration failed". The notice is a
+`SyncDomainFailureNotice` — title, a sentence that says the rows on screen are
+the last ones ADE loaded, an explicit next step, and the raw host text kept
+behind the technical fold — rendered through the shared
+`ADEInstructionErrorCard`. These per-tab cards are suppressed whenever the
+project-host phase is anything but `ready` (retrying, taken over, or
+repairing), so a host-not-ready conflict does not paint four duplicate error
+cards. Work's `isLive` also requires the project host, not just a connected
+socket.
 
 When the brain answers `host_unavailable`, the phone reads the structured
 snapshot (`reason`, `conflict`, `recoveryEligible`) instead of the raw host
-sentence. A verified conflict opens a full-screen recovery overlay on the
-project tabs immediately. A generic starting failure waits silently (2s / 4s
-/ 8s) with one "Starting services…" banner and stale lists, then takes over if
-the host is still blocked. **Fix connection** calls `sync.recoverHost` to stop
-the verified blocking ADE runtime and restart the intended brain. **Switch Mac**
-opens Settings. Pairing and project data stay intact.
+sentence. A verified conflict opens `ProjectHostRecoveryScreen` over the
+project tabs immediately. A generic starting failure waits silently (2 s / 4 s
+/ 8 s) behind one "Still starting this project's services…" banner, which keeps
+the cached rows visible and carries the single `ADEStaleContentMarker` naming
+them ("chats", "lanes", "files", "pull requests"); if the host is still blocked
+after the ladder, the screen takes over. **Fix connection** calls
+`sync.recoverHost` to stop the verified blocking ADE runtime and restart the
+intended brain, and the screen lists the host's repair steps as they complete.
+**Retry stays live during a repair** — the repair restarts the Mac's brain, so
+a restart that never reports back would otherwise leave the screen an inert
+spinner. **Switch Mac** opens Settings and is available at every moment,
+including mid-repair. Pairing and project data stay intact. When a conflict
+offers no repair, the card says which kind it is: this iPhone is not authorized
+to stop the other runtime, or ADE cannot identify it safely enough to stop it
+from here.
 
 Failed chat turns render an instruction card (title, one sentence, optional
-next step, folded technical details + Copy). The timeline never titles a turn
-"Error" or "Unknown", and it never repeats the body as a bullet.
+next step, folded technical details + Copy). The host's
+`errorInfo.presentation` supplies all four when it is present; otherwise the
+phone derives the same shape from the error category. The timeline never titles
+a turn "Error" or "Unknown", and it never repeats the body as a bullet.
 The read-only header strip in `FilesHeaderStrip` also appends a
 compact "Syncing" / "Connecting" / "Offline" suffix: "Syncing" comes from the
 Files domain phase (`.hydrating` / `.syncingInitialData`), "Connecting" from
@@ -1637,8 +1680,9 @@ raw response dict into either the `result` value or throws an `NSError` with
 - A `command_result` with `error.code: "host_unavailable"` (the brain-level
   ingress answering while the project sync host is restarting or blocked —
   see `remote-commands.md`) carries a typed snapshot. Generic starting
-  failures retry silently with one "Starting services…" banner; a verified
-  conflict opens the project-host recovery overlay. Queued work still treats
+  failures retry silently behind the one "Still starting this project's
+  services…" banner; a verified conflict opens the project-host recovery
+  overlay. Queued work still treats
   the code like a timeout, never like an application rejection:
   `isSyncHostUnavailableError` makes it retryable, and
   the queue-drain loop **keeps** a pending operation that hits it so queued work

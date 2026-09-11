@@ -47,6 +47,7 @@ import {
   shouldAutoRegisterProjectForPlan,
   formatBrainStatus,
   formatGithubAppUserAuth,
+  readProjectHostReadiness,
   shouldBlockManualMachineRuntimeSpawn,
   shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -1430,6 +1431,96 @@ describe("ADE CLI", () => {
     // The same output has to read as a plain failure when nothing is coming up.
     expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
       .not.toContain("nothing to repair");
+  });
+
+  it("never calls this machine's own brain a blocking runtime", async () => {
+    // `detectSyncHostSingletonConflict` reports every owner that is not THIS
+    // process, and `ade brain status` is a short-lived process that never holds
+    // the lease. Without the pid exclusion every healthy machine would claim it
+    // was blocked by the very brain serving it.
+    const ownLock = {
+      reason: "lock" as const,
+      owner: {
+        id: "own",
+        pid: 4242,
+        port: 8787,
+        appName: "ADE",
+        packageChannel: null,
+        adeHome: null,
+        serviceName: "com.ade.runtime",
+        socketPath: null,
+        projectRoot: null,
+        commandLine: "/Applications/ADE.app/Contents/MacOS/ADE",
+        processStartedAt: "2026-01-01T00:00:00.000Z",
+        quitCommand: "/bin/kill 4242",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    const ready = await readProjectHostReadiness({
+      runtime: { running: true, pid: 4242 },
+      sync: { routeHealth: { listener: { listenerBound: true } } },
+      scanListeners: false,
+      detectConflict: () => ownLock,
+    });
+    expect(ready.state).toBe("ready");
+    expect(ready.conflict).toBeNull();
+  });
+
+  it("names the blocking runtime in --text when another ADE owns the sync host", async () => {
+    const snapshot = await readProjectHostReadiness({
+      runtime: { running: true, pid: 4242 },
+      sync: { routeHealth: { listener: { listenerBound: false } } },
+      scanListeners: false,
+      detectConflict: () => ({
+        reason: "lock" as const,
+        owner: {
+          id: "rival",
+          pid: 9001,
+          port: 8787,
+          appName: "ADE",
+          packageChannel: null,
+          adeHome: null,
+          serviceName: null,
+          socketPath: "/tmp/rival.sock",
+          projectRoot: "/Users/example/.ade/worktrees/some-lane",
+          commandLine: "node /Users/example/.ade/worktrees/some-lane/apps/ade-cli/dist/cli.cjs serve",
+          processStartedAt: "2026-01-01T00:00:00.000Z",
+          quitCommand: "/bin/kill 9001",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    });
+    expect(snapshot.state).toBe("conflict");
+    expect(snapshot.conflict?.ownerLabel).toBe("Development runtime");
+
+    const text = formatBrainStatus({
+      ok: true,
+      runtime: { running: true, pid: 4242 },
+      projectHost: snapshot,
+    });
+    expect(text).toContain("project host");
+    expect(text).toContain("Another ADE is blocking this machine");
+    expect(text).toContain("Development runtime");
+    expect(text).toContain("some-lane lane");
+    // The multi-line technical detail gets its own block instead of being
+    // truncated into one key/value cell.
+    expect(text).toContain("Project host");
+    expect(text).toContain("pid: 9001");
+    expect(text).toContain("socket: /tmp/rival.sock");
+  });
+
+  it("reports a down brain as unavailable rather than 'still starting'", async () => {
+    const snapshot = await readProjectHostReadiness({
+      runtime: { running: false },
+      sync: null,
+      scanListeners: false,
+      detectConflict: () => null,
+    });
+    expect(snapshot.state).toBe("unavailable");
+    expect(snapshot.recoveryEligible).toBe(false);
+    expect(snapshot.body).toContain("ade brain start");
   });
 
   it("reports the GitHub App credential state, not the access-token expiry", () => {

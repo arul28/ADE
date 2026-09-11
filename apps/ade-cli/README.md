@@ -164,7 +164,7 @@ Manage the service from the CLI:
 ```bash
 ade brain start                   # enable/load the login service
 ade brain stop                    # disable/unload the login service
-ade brain status --text           # endpoint state, service state, sync state
+ade brain status --text           # endpoint state, service state, sync state, project-host readiness
 ade brain update --text           # stage/apply the latest standalone brain release and restart the service
 ade brain update status --text    # last headless update state
 ade brain restart                 # re-exec after an app update
@@ -206,13 +206,32 @@ ADE_HOME=/tmp/ade-embedded ADE_EMBEDDED_PARENT_PID=$$ \
 Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain restart` for user-facing lifecycle control. Use `ade brain pin ...` for phone pairing:
 
 ```bash
-ade brain status --text            # endpoint state, service state, sync state
+ade brain status --text            # endpoint state, service state, sync state, project-host readiness
+ade brain status --scan-listeners  # same, plus a native port scan for an orphaned sync listener
 ade brain restart                  # refresh the login service after an update
 ade brain repair-credentials       # fix a credential store the brain cannot read
 ade brain pin generate             # generate a phone pairing PIN
 ade brain pin set 123456
 ade brain pin clear
 ```
+
+`ade brain status` also reports `projectHost` — the readiness snapshot the
+phone's "Fix connection" card reads from `sync.diagnoseHost`, so a terminal on
+the machine and a phone across the room name the same blocking runtime with the
+same words. `state` is `ready`, `starting`, `conflict`, or `unavailable`; a
+`conflict` carries the owner label, the lane it belongs to, whether a paired
+device may stop it, and the pid/port/socket/command line under `Project host` in
+`--text`. It is answered from the machine-wide sync-host lock, which is a file
+read, so it costs nothing on a healthy machine and needs no running brain. The
+`listener` fallback — an ADE that was hard-killed and left a bound port without
+a lock — is behind `--scan-listeners`, because that scan shells out to `lsof`
+(POSIX) or a full-machine `Get-NetTCPConnection` query (Windows).
+
+There is deliberately no `ade` command that stops the blocking runtime: `ade
+brain restart` already re-execs this machine's brain, and a conflict's own
+`quitCommand` is printed by `ade serve` / `ade brain start` when they refuse to
+start. The one-tap stop exists only for a remote device that cannot reach its
+machine, where no terminal is available.
 
 `ade brain status` and `ade runtime status` report `starting: true` when the
 brain is not answering yet but its registered service and brain process say it

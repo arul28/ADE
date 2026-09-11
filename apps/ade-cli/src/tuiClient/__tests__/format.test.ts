@@ -940,6 +940,60 @@ describe("renderChatLines", () => {
     expect(body).toContain("⟳ compacting · manual");
   });
 
+  it("renders the host-authored failed-turn card instead of the raw provider sentence", () => {
+    // The point of `errorInfo.presentation`: every client shows one host title
+    // and one host sentence. The TUI must not fall back to `event.message`
+    // here, and the raw text belongs on the `detail` row only.
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "error",
+            message: "Error (unknown): 429 stream closed",
+            errorInfo: {
+              category: "rate_limit",
+              presentation: {
+                title: "Usage limit reached",
+                body: "The provider ended this turn at a usage limit.",
+                nextAction: "Retry after the limit resets, or choose another model.",
+                technicalDetail: "Error (unknown): 429 stream closed",
+              },
+            },
+          } as never,
+        },
+      ],
+    });
+
+    const body = lines.map((line) => line.body).join("\n");
+    expect(body).toContain("[error] Usage limit reached");
+    expect(body).toContain("The provider ended this turn at a usage limit.");
+    expect(body).toContain("next \u00b7 Retry after the limit resets");
+    expect(body).toContain("detail \u00b7 Error (unknown): 429 stream closed");
+    // The raw sentence must never be the headline.
+    expect(body).not.toContain("[error] Error (unknown)");
+  });
+
+  it("keeps the raw error line when an older host sends no presentation", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "error", message: "rate limited" } as never,
+        },
+      ],
+    });
+    expect(lines.map((line) => line.body).join("\n")).toContain("[error] rate limited");
+  });
+
   it("renders cloud, step_boundary, structured_question, prompt_suggestion, auto_approval_review, tool_use_summary, and delegation_state lines", () => {
     const lines = renderChatLines({
       activeSession: null,

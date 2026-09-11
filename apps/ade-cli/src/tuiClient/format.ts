@@ -7,6 +7,7 @@ import {
   hostSleepNoticeMergeKey,
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
+import { readChatErrorPresentation } from "../../../desktop/src/shared/chatErrorPresentation";
 import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import { renderAdeCardBody } from "./adeCardFormat";
@@ -32,6 +33,40 @@ function singleLine(value: unknown, max = 96): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
+}
+
+/**
+ * Failed-turn transcript copy.
+ *
+ * The host authors the card (`errorInfo.presentation`) so every client — the
+ * desktop `InstructionErrorCard`, the iOS work timeline and this TUI — shows
+ * one title and one sentence instead of inventing its own. Raw provider text
+ * is allowed only on the `detail` row, which is why `body` is never the raw
+ * message when a presentation is present. Older hosts send no presentation, so
+ * the legacy raw line stays as the fallback rather than a blank card.
+ */
+function failedTurnBody(
+  event: Extract<AgentChatEvent, { type: "error" }>,
+): string {
+  const presentation = readChatErrorPresentation(event.errorInfo);
+  if (!presentation) return `[error] ${singleLine(event.message, 160)}`;
+  const nextActions = (presentation.nextAction ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    // Same two-line cap the desktop card applies, so a multi-step nextAction
+    // cannot push the transcript around.
+    .slice(0, 2);
+  return [
+    `[error] ${singleLine(presentation.title, 120)}`,
+    singleLine(presentation.body, 240),
+    ...nextActions.map((line) => `next \u00b7 ${singleLine(line, 160)}`),
+    presentation.technicalDetail
+      ? `detail \u00b7 ${singleLine(presentation.technicalDetail, 160)}`
+      : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 // Web-search results (Codex) render as compact `title — domain` previews under
@@ -1144,7 +1179,7 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "error") {
-      lines.push({ id, tone: "error", body: `[error] ${singleLine(event.message, 160)}` });
+      lines.push({ id, tone: "error", body: failedTurnBody(event) });
       continue;
     }
     if (event.type === "done") {

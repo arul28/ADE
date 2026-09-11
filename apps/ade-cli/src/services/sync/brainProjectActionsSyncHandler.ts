@@ -138,6 +138,16 @@ type BrainProjectActionsSyncHandlerArgs = {
   getAccountAttestationConfig?: () => AccountAttestationConfig | null;
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
   personalChatScope?: PersonalChatScopeContract;
+  /**
+   * One bounded product-analytics capture per completed host repair. The brain
+   * is the durable owner boundary here: the tap happens on a phone or a
+   * browser, but only this side knows whether the repair actually worked, and
+   * capturing once here covers every client instead of once per client.
+   */
+  captureRecoveryAnalytics?: (args: {
+    outcome: "success" | "partial" | "failed";
+    surface: "mobile" | "web";
+  }) => void;
 };
 
 type BrainPeerState = {
@@ -1008,6 +1018,17 @@ export function createBrainProjectActionsSyncHandler(
               state: recovery.snapshot.state,
               conflictReason: recovery.snapshot.conflict?.reason ?? null,
               steps: recovery.steps.map((step) => ({ id: step.id, status: step.status })),
+            });
+            // `partial` is the restart handing off: the repair ran, but the
+            // client has to reconnect to learn the result. That is a different
+            // product answer from "one tap finished it".
+            args.captureRecoveryAnalytics?.({
+              outcome: recovery.ok
+                ? "success"
+                : recovery.status === "restarting" ? "partial" : "failed",
+              // Only a phone or a browser can hold the recovery grant, so the
+              // surface is one of these two by construction.
+              surface: peer.pairingRecord?.peerDeviceType === "browser" ? "web" : "mobile",
             });
             send(peer.ws, "command_result", {
               commandId,
