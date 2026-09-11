@@ -7,23 +7,14 @@
  * the Usage page is spend and history.
  */
 import type { UsagePacing, UsageWindow } from "../../../shared/types";
+import { computeResetsInMs, displayPercent } from "../../../shared/usageWindowPresentation";
+
+// The window's name and its fill are spoken by the `ade` CLI too, so they live
+// in shared and are re-exported here: renderer callers keep importing them from
+// the vocabulary module they already use.
+export { displayPercent, windowLabel } from "../../../shared/usageWindowPresentation";
 
 export const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-
-/**
- * Milliseconds until a window resets, floored at zero.
- *
- * Internal: the exported formatters are the vocabulary. Note the same name is
- * taken by an unrelated function in `main/services/usage/providerQuotaParsers`,
- * which reads the *host's* clock and takes no `nowMs` — exporting this one
- * invited importing the wrong one.
- */
-function computeResetsInMs(resetsAt: string, nowMs: number): number {
-  if (!resetsAt) return 0;
-  const parsed = new Date(resetsAt).getTime();
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, parsed - nowMs);
-}
 
 export function formatResetIn(resetsAt: string, nowMs: number): string {
   const ms = computeResetsInMs(resetsAt, nowMs);
@@ -91,39 +82,6 @@ function formatClock(targetMs: number, nowMs: number): string {
   const dayDiff = Math.round((startOfDay(targetMs) - startOfDay(nowMs)) / 86_400_000);
   const prefix = dayDiff <= 0 ? "today" : dayDiff === 1 ? "tomorrow" : WEEKDAYS[d.getDay()];
   return `${prefix} ${h12}${ampm}`;
-}
-
-export function windowLabel(window: UsageWindow): string {
-  if (window.windowType === "five_hour" && window.windowDurationMs && window.windowDurationMs > 0) {
-    const minutes = Math.round(window.windowDurationMs / 60_000);
-    if (minutes < 60) return `${minutes}-min`;
-    const hours = minutes / 60;
-    return Number.isInteger(hours) ? `${hours}-hour` : `${hours.toFixed(1)}-hour`;
-  }
-  switch (window.windowType) {
-    case "five_hour":
-      return "5-hour";
-    case "weekly":
-      return "Weekly";
-    case "monthly":
-      return "Monthly";
-    case "weekly_oauth_apps":
-      return "OAuth apps";
-    case "weekly_cowork":
-      return "Cowork";
-    default:
-      return window.windowType;
-  }
-}
-
-/**
- * A window past its reset time reads as 0, not as its last-known fill.
- * The snapshot can outlive the window it describes by a refresh interval.
- */
-export function displayPercent(window: UsageWindow, nowMs: number): number {
-  const resetsInMs = computeResetsInMs(window.resetsAt, nowMs);
-  const value = resetsInMs <= 0 ? 0 : window.percentUsed;
-  return Math.max(0, Math.min(100, value));
 }
 
 export type PaceVisual = { label: string; arrow: string; tone: "calm" | "warm" | "hot" | "cool" };

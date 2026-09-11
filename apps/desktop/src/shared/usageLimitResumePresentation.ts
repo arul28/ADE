@@ -85,8 +85,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   copilot: "Copilot",
 };
 
-/** Display name for the popover title (`Claude usage limit`). */
-export function usageLimitResumeProviderLabel(provider: AgentChatProvider | null | undefined): string {
+/**
+ * Display name for the popover title (`Claude usage limit`).
+ *
+ * Takes a plain `string`, not `AgentChatProvider`: the CLI and sync payloads
+ * carry provider ids that were never narrowed, and the unknown branch below
+ * already title-cases them. A narrower parameter only bought callers a cast.
+ */
+export function usageLimitResumeProviderLabel(provider: string | null | undefined): string {
   const key = (provider ?? "").trim();
   if (!key) return "Provider";
   return PROVIDER_LABELS[key.toLowerCase()] ?? `${key.charAt(0).toUpperCase()}${key.slice(1)}`;

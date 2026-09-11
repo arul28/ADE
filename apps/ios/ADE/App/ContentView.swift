@@ -66,6 +66,32 @@ struct ContentView: View {
   @State private var analyticsConsentPresented = false
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// One spring for the top banner stack (connect toast + update banner), so
+  /// the two cannot slide at different speeds when they overlap. Reduce Motion
+  /// keeps the mount/unmount but drops the spring.
+  private var topBannerAnimation: Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.35, dampingFraction: 0.86)
+  }
+
+  /// Everything that can mount, swap, or dismiss a banner in the top stack,
+  /// as one comparable value. Both banners carry a move+fade transition, so
+  /// every one of these has to be animated — keying only the toast left the
+  /// update banner to pop in and out with no transition at all.
+  private struct TopBannerKey: Equatable {
+    let connectLabel: String?
+    let updateVersion: String?
+    let updateDismissed: Bool
+  }
+
+  private var topBannerKey: TopBannerKey {
+    TopBannerKey(
+      connectLabel: syncService.accountConnectSuccessLabel,
+      updateVersion: appUpdateAdvisor.availableVersion,
+      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed
+    )
+  }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
@@ -223,8 +249,12 @@ struct ContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
+        // One key, on the banner container rather than the root: every value
+        // that mounts either banner is folded into `topBannerKey`, so both
+        // transitions still run, and a banner appearing no longer drags an
+        // unrelated root change (a tab switch, a sheet) into the same spring.
+        .animation(topBannerAnimation, value: topBannerKey)
       }
-      .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)

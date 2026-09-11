@@ -1660,10 +1660,21 @@ extension View {
   /// two of these side by side would overlap and the nearer one would win.
   /// Where a row can afford the height, a plain `.frame(width: 44, height: 44)`
   /// is the simpler choice.
-  func adeTapTarget(visual: CGFloat, minimum: CGFloat = 44) -> some View {
-    frame(width: minimum, height: minimum)
+  ///
+  /// `alignment` decides which way the extra area overflows. The default
+  /// `.center` spreads it evenly, which is right when there is slack on both
+  /// sides. Pass `.leading` when the control sits inside or over a wider
+  /// interactive row — a centred shape would put a strip of this control to the
+  /// LEFT of its glyph and steal taps meant for the row, so the growth is taken
+  /// on the trailing side only, where there is nothing but padding and the edge.
+  func adeTapTarget(
+    visual: CGFloat,
+    minimum: CGFloat = 44,
+    alignment: Alignment = .center
+  ) -> some View {
+    frame(width: minimum, height: minimum, alignment: alignment)
       .contentShape(Rectangle())
-      .frame(width: visual, height: visual)
+      .frame(width: visual, height: visual, alignment: alignment)
   }
 
   func adeGlassCard(cornerRadius: CGFloat = 16, padding: CGFloat = 16) -> some View {

@@ -80,10 +80,6 @@ func workChatFileAttachmentAvailability(
   return hostSupportsChunkedUpload ? .available : .unsupportedHost
 }
 
-/// The one action whose presence decides `hostSupportsChunkedUpload`. Begin is
-/// the gate: a host advertising it advertises the whole ladder.
-let workChatFileAttachmentHostAction = "chat.beginTempFileAttachment"
-
 /// Best-effort kind for a UTI or a filename, used by both pickers.
 func workChatInputAttachmentKind(forFilename filename: String, contentType: UTType?) -> WorkChatInputAttachmentKind {
   if let contentType {

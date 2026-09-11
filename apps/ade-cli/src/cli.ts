@@ -83,7 +83,12 @@ import {
 import {
   parseUsageLimitResume,
   usageLimitResumeAttemptsLabel,
+  usageLimitResumeProviderLabel,
 } from "../../desktop/src/shared/usageLimitResumePresentation";
+import {
+  displayPercent as usageWindowDisplayPercent,
+  windowLabel as usageWindowDisplayLabel,
+} from "../../desktop/src/shared/usageWindowPresentation";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import {
   isAgentChatStopMode,
@@ -21504,66 +21509,11 @@ function relativeTime(value: string): string {
   });
 }
 
-const USAGE_PROVIDER_TEXT_LABELS: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-};
-
+/** Provider display name, shared with the GUI so `codex` cannot read two ways. */
 function usageProviderTextLabel(provider: unknown): string {
-  const id = asString(provider) ?? "";
-  return USAGE_PROVIDER_TEXT_LABELS[id] ?? (id || "unknown");
-}
-
-/**
- * The window, named once — the text mirror of the desktop `windowLabel`, so a
- * "5-hour" card cannot read as `five_hour` here and "5-hour" there. The two
- * bundles share no code (the renderer helper lives under `components/usage`),
- * which is why the table is restated rather than imported.
- */
-function usageWindowTextLabel(window: JsonObject): string {
-  const windowType = asString(window.windowType) ?? "";
-  const durationMs =
-    typeof window.windowDurationMs === "number"
-      && Number.isFinite(window.windowDurationMs)
-      ? window.windowDurationMs
-      : 0;
-  if (windowType === "five_hour" && durationMs > 0) {
-    const minutes = Math.round(durationMs / 60_000);
-    if (minutes < 60) return `${minutes}-min`;
-    const hours = minutes / 60;
-    return Number.isInteger(hours) ? `${hours}-hour` : `${hours.toFixed(1)}-hour`;
-  }
-  switch (windowType) {
-    case "five_hour":
-      return "5-hour";
-    case "weekly":
-      return "Weekly";
-    case "monthly":
-      return "Monthly";
-    case "weekly_oauth_apps":
-      return "OAuth apps";
-    case "weekly_cowork":
-      return "Cowork";
-    default:
-      return windowType || "window";
-  }
-}
-
-/**
- * A window past its reset time reads as 0, not as its last-known fill: the
- * snapshot can outlive the window it describes by a whole refresh interval.
- * Same rule as the desktop `displayPercent`.
- */
-function usageDisplayPercent(window: JsonObject, nowMs: number): number {
-  const resetsAt = asString(window.resetsAt);
-  const parsed = resetsAt ? Date.parse(resetsAt) : Number.NaN;
-  const resetsInMs = Number.isFinite(parsed) ? Math.max(0, parsed - nowMs) : 0;
-  const percentUsed =
-    typeof window.percentUsed === "number" && Number.isFinite(window.percentUsed)
-      ? window.percentUsed
-      : 0;
-  return Math.max(0, Math.min(100, resetsInMs <= 0 ? 0 : percentUsed));
+  const id = asString(provider);
+  if (!id) return "unknown";
+  return usageLimitResumeProviderLabel(id);
 }
 
 type UsageAccountTextLine = {
@@ -21652,14 +21602,31 @@ export function formatUsageSnapshot(value: unknown): string {
   // `usageWindowAccountLabel` and the desktop's `buildLimitCards` apply.
   const windowRows = windows.map((window) => {
     const provider = asString(window.provider) ?? "";
-    const used = usageDisplayPercent(window, nowMs);
+    // The snapshot arrives as loose JSON over the socket; name the fields the
+    // shared presentation needs and let it do the phrasing, so a "5-hour" card
+    // cannot read as `five_hour` here and "5-hour" in the app.
+    const durationMs = window.windowDurationMs;
+    const percentUsed = window.percentUsed;
+    const used = usageWindowDisplayPercent(
+      {
+        resetsAt: asString(window.resetsAt) ?? "",
+        percentUsed:
+          typeof percentUsed === "number" && Number.isFinite(percentUsed) ? percentUsed : 0,
+      },
+      nowMs,
+    );
+    const windowName = usageWindowDisplayLabel({
+      windowType: asString(window.windowType) ?? "",
+      windowDurationMs:
+        typeof durationMs === "number" && Number.isFinite(durationMs) ? durationMs : null,
+    });
     const resetsAt = asString(window.resetsAt);
     const accountId = asString(window.accountId);
     const multipleAccounts =
       accountLines.filter((line) => line.provider === provider).length > 1;
     return [
       usageProviderTextLabel(provider),
-      usageWindowTextLabel(window),
+      windowName || "window",
       `${(100 - used).toFixed(1)}%`,
       `${used.toFixed(1)}%`,
       resetsAt ? relativeTime(resetsAt) : "",

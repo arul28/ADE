@@ -132,6 +132,12 @@ enum SyncChatMessageDelivery: Equatable {
   case dropped(reason: String?)
 }
 
+/// The wire name of the chunked-upload handshake, owned here with the code that
+/// sends it. The composer's file-attachment gate reads the same constant to
+/// decide whether the host supports the ladder at all — begin is the gate: a
+/// host advertising it advertises the whole ladder.
+let workChatFileAttachmentHostAction = "chat.beginTempFileAttachment"
+
 /// Host reply to `chat.beginTempFileAttachment`.
 struct ChunkedAttachmentUploadSession: Decodable, Equatable {
   var uploadId: String
@@ -14109,7 +14115,7 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "Personal chats accept images only."]
       )
     }
-    try requireInvokableRemoteAction("chat.beginTempFileAttachment")
+    try requireInvokableRemoteAction(workChatFileAttachmentHostAction)
     var projectId = targetProjectId
     var rootPath = targetProjectRootPath
     if let chatSessionId, !chatSessionId.isEmpty, projectId == nil, rootPath == nil {
@@ -14119,7 +14125,7 @@ final class SyncService: ObservableObject {
     }
     let trimmedName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let begun = try await sendDecodableCommand(
-      action: "chat.beginTempFileAttachment",
+      action: workChatFileAttachmentHostAction,
       args: [
         "filename": trimmedName.isEmpty ? "attachment" : trimmedName,
         "totalBytes": data.count

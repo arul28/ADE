@@ -3329,9 +3329,13 @@ private struct WorkSquareStopButton: View {
             .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
         }
         // Stopping a subagent is destructive and must not need a precise 28pt
-        // hit. The hit area reaches 44pt; the row keeps its 28pt rhythm, and
-        // every neighbour here is a label or a spacer.
-        .adeTapTarget(visual: 28)
+        // hit, so the target reaches 44pt while the row keeps its 28pt rhythm.
+        // Leading, not the default centre: this button sits inside (spawn row)
+        // or over (Chat Info row) a row-wide Button that OPENS the subagent, and
+        // a centred shape would put an 8pt strip of "stop" to the LEFT of the
+        // glyph, stealing row taps. The extra width is taken on the trailing
+        // side only, where the row has nothing but padding and the card edge.
+        .adeTapTarget(visual: 28, alignment: .leading)
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)

@@ -202,7 +202,11 @@ private struct WorkUsageQuotaWindowRow: View {
                 adeUsageAccountAccent(segment.account?.id ?? segment.id).opacity(0.14),
                 in: RoundedRectangle(cornerRadius: 5, style: .continuous)
               )
-              // Drawn chip stays compact; the target reaches 44pt.
+              // Only the drawn background stays compact: unlike
+              // `.adeTapTarget`, this frame really does take 44pt of layout.
+              // That is the point here — these chips sit side by side, so
+              // overflowing 44pt shapes would overlap and the nearer chip
+              // would swallow its neighbour's taps. The row pays the height.
               .frame(minWidth: 44, minHeight: 44)
               .contentShape(Rectangle())
             }
