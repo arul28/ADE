@@ -851,6 +851,8 @@ import {
   type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
 import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
+import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -5221,7 +5223,12 @@ function classifyProviderHostError(
 ): {
   message: string;
   detail?: string;
-  errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+  errorInfo: {
+    category: ChatErrorCategory;
+    provider?: string;
+    model?: string;
+    presentation?: ChatErrorPresentation;
+  };
 } {
   const rawMessage = readErrorMessage(error);
   const structuredCursorDetail = readCursorSdkStructuredErrorText(error);
@@ -5334,19 +5341,62 @@ function classifyProviderHostError(
     };
   }
 
-  if ((rawMessage === "[object Object]" || /^internal error(?::\s*agent error)?$/i.test(rawMessage)) && rawDetail) {
-    const promoted = splitDetailSummary(rawDetail);
+  if (isSandboxUnsupportedFailureText(rawMessage, rawDetail, errorCode)) {
+    const presented = presentChatFailure({
+      kind: "configuration",
+      message: rawMessage,
+      detail: rawDetail,
+      errorCode,
+      provider: providerLabel,
+    });
     return {
-      message: promoted.message ?? rawMessage,
-      ...(promoted.remainder ? { detail: promoted.remainder } : {}),
-      errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+      errorInfo: {
+        category: "unknown",
+        provider: providerLabel,
+        model: modelDisplayName,
+        presentation: presented,
+      },
     };
   }
 
-  return {
+  if ((rawMessage === "[object Object]" || /^internal error(?::\s*agent error)?$/i.test(rawMessage)) && rawDetail) {
+    const promoted = splitDetailSummary(rawDetail);
+    const presented = presentChatFailure({
+      kind: cursorErrorKind === "configuration" ? "configuration" : "unknown",
+      message: promoted.message ?? rawMessage,
+      detail: promoted.remainder,
+      provider: providerLabel,
+    });
+    return {
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+      errorInfo: {
+        category: "unknown",
+        provider: providerLabel,
+        model: modelDisplayName,
+        presentation: presented,
+      },
+    };
+  }
+
+  const presented = presentChatFailure({
+    kind: cursorErrorKind === "configuration" ? "configuration" : "unknown",
     message: rawMessage,
-    ...(rawDetail && rawDetail !== rawMessage ? { detail: rawDetail } : {}),
-    errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
+    detail: rawDetail && rawDetail !== rawMessage ? rawDetail : null,
+    errorCode,
+    provider: providerLabel,
+  });
+  return {
+    message: presented.body,
+    ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+    errorInfo: {
+      category: "unknown",
+      provider: providerLabel,
+      model: modelDisplayName,
+      presentation: presented,
+    },
   };
 }
 
@@ -5990,7 +6040,12 @@ function classifyCursorSdkChatError(
 ): {
   message: string;
   detail?: string;
-  errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+  errorInfo: {
+    category: ChatErrorCategory;
+    provider?: string;
+    model?: string;
+    presentation?: ChatErrorPresentation;
+  };
   /**
    * Machine-readable marker for the expired-access-token failure. The category
    * stays `auth` so renderers keep treating it like any other auth error; this
@@ -6000,13 +6055,20 @@ function classifyCursorSdkChatError(
 } {
   if (isCursorSdkStaleTokenError(error)) {
     const detail = readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error);
-    return {
+    const presented = presentChatFailure({
+      kind: "auth",
       message: CURSOR_SDK_STALE_TOKEN_MESSAGE,
-      ...(detail ? { detail } : {}),
+      detail,
+      provider: args.cloud ? "Cursor Cloud" : "Cursor",
+    });
+    return {
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
       errorInfo: {
         category: "auth",
         provider: args.cloud ? "Cursor Cloud" : "Cursor",
         ...(args.modelDisplayName ? { model: args.modelDisplayName } : {}),
+        presentation: presented,
       },
       cursorSdkStaleToken: true,
     };

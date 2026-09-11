@@ -4023,7 +4023,11 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     expect(await screen.findByText("Provider capacity")).toBeTruthy();
-    expect(screen.getAllByText("Error")).toHaveLength(1);
+    // The failed-turn card is host-authored now: it says what went wrong and
+    // what to do, and never titles the row "Error". The failure class still
+    // has a home in the identity footer asserted above.
+    expect(screen.queryByText("Error")).toBeNull();
+    expect(screen.getByText("Couldn't start this turn")).toBeTruthy();
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();

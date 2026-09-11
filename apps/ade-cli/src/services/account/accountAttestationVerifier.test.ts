@@ -246,6 +246,7 @@ describe("pairPeerViaAccount", () => {
     expect(store.getPairingRecord(phonePairing.deviceId)).toMatchObject({
       dpopPublicKey: publicKey,
       runtimeHostGranted: false,
+      syncHostRecoveryGranted: true,
       peerDeviceType: "phone",
       accountOwnerUserId: OWNER_USER_ID,
       lastUsedAt: expect.any(String),

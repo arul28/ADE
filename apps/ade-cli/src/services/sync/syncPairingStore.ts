@@ -18,6 +18,8 @@ export type SyncPairingRecord = {
   peerDeviceType: string;
   /** Server-issued authorization for full runtime RPC and forwarding. */
   runtimeHostGranted?: boolean;
+  /** Server-issued authorization for the narrower sync-host recovery flow. */
+  syncHostRecoveryGranted?: boolean;
   /**
    * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
    * Once present, paired hellos from this device must carry a valid proof.
@@ -102,6 +104,22 @@ function hashSecret(secret: string): string {
 
 function normalizeAccountOwnerUserId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * The recovery grant is only written when a record is created or rewritten, so
+ * a device that paired before the grant existed would never receive it — which
+ * is every already-paired device. An account-owned phone/browser record already
+ * carries the exact evidence the create path decides on (`accountOwnerUserId`
+ * is set only by account trust, and PIN/local trust clear it), so derive the
+ * grant from the stored record itself — never from anything the connecting
+ * client claims — and persist it once on the next successful hello.
+ */
+function withBackfilledSyncHostRecoveryGrant(record: SyncPairingRecord): SyncPairingRecord {
+  if (record.syncHostRecoveryGranted === true) return record;
+  if (record.peerDeviceType !== "phone" && record.peerDeviceType !== "browser") return record;
+  if (!normalizeAccountOwnerUserId(record.accountOwnerUserId)) return record;
+  return { ...record, syncHostRecoveryGranted: true };
 }
 
 /**
@@ -281,6 +299,11 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         || trust.kind === "local"
         || (trust.kind === "pin" && options?.allowDirectPinRuntimeHost === true)
       );
+    // Host recovery is narrower than runtime RPC, but it still changes
+    // machine processes. Only an account-attested phone/browser receives this
+    // grant; a PIN-only mobile pairing remains read-only at the brain ingress.
+    const syncHostRecoveryGranted = (peer.deviceType === "phone" || peer.deviceType === "browser")
+      && trust.kind === "account";
     const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
     const validatedOfferedDpopKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey)
       ? offeredDpopKey
@@ -296,6 +319,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       peerPlatform: peer.platform,
       peerDeviceType: peer.deviceType,
       runtimeHostGranted,
+      syncHostRecoveryGranted,
       localTrustOrigin,
       // A gated re-pair may introduce or rotate the key when its caller allows
       // that. Omitting a key preserves the existing binding without downgrade.
@@ -335,6 +359,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         runtimeHostGranted: replacement.runtimeHostGranted === false
           ? false
           : existing.runtimeHostGranted,
+        syncHostRecoveryGranted: replacement.syncHostRecoveryGranted === false
+          ? false
+          : existing.syncHostRecoveryGranted,
         pendingRotation: { expiresAtMs, record: replacement },
       };
       writeRecords(records);
@@ -457,22 +484,30 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return false;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) {
-        records[normalized] = { ...entry, lastUsedAt: nowIso() };
+        records[normalized] = withBackfilledSyncHostRecoveryGrant({
+          ...entry,
+          lastUsedAt: nowIso(),
+        });
         writeRecords(records);
         return true;
       }
       const pending = entry.pendingRotation;
       if (pending && safeHashEquals(pending.record.secretHash, presented)) {
         if (options.deferPendingCommit) {
-          records[normalized] = {
+          // Backfills the committed record only. The staged replacement keeps
+          // whatever the re-pair decided, so rotation staging is untouched.
+          records[normalized] = withBackfilledSyncHostRecoveryGrant({
             ...entry,
             pendingRotation: {
               ...pending,
               record: { ...pending.record, lastUsedAt: nowIso() },
             },
-          };
+          });
         } else {
-          records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+          records[normalized] = withBackfilledSyncHostRecoveryGrant({
+            ...pending.record,
+            lastUsedAt: nowIso(),
+          });
         }
         writeRecords(records);
         return true;
@@ -608,7 +643,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         // then has nothing to reject, and a later account hello re-adopts it.
         if (record?.localTrustOrigin === true) {
           if (records[deviceId]) {
-            records[deviceId] = { ...records[deviceId], accountOwnerUserId: null };
+            // The host-recovery grant is account-derived, so it cannot outlive
+            // the ownership it came from: a demoted record is local trust
+            // again, and local trust never conveys process control. Withdrawing
+            // it here costs at most one re-grant on the next account hello,
+            // which `withBackfilledSyncHostRecoveryGrant` performs; leaving it
+            // would let a phone the switched-away account paired keep stopping
+            // and restarting runtimes on this machine.
+            records[deviceId] = {
+              ...records[deviceId],
+              accountOwnerUserId: null,
+              syncHostRecoveryGranted: false,
+            };
             demoted = true;
           }
           continue;

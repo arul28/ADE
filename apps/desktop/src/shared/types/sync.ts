@@ -25,6 +25,7 @@ import type {
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type { LinearConnectionStatus } from "./linearSync";
+import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -1136,6 +1137,11 @@ export type SyncHelloOkPayload = {
     deviceId: string;
     secret: string;
   };
+  /**
+   * Project-host readiness on this connection. Absent on older hosts.
+   * Socket-up (`hello_ok`) is not the same as a usable project host.
+   */
+  projectHost?: SyncHostReadinessSnapshot | null;
 };
 
 type SyncHelloErrorHost = {
@@ -2143,6 +2149,10 @@ export type SyncCommandResultPayload = {
   error?: {
     code: string;
     message: string;
+    reason?: "conflict" | "starting" | "unavailable";
+    conflict?: SyncHostConflictPublic | null;
+    recoveryEligible?: boolean;
+    snapshot?: SyncHostReadinessSnapshot;
   };
 };
 

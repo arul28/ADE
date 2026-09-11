@@ -293,11 +293,13 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptionalText(detail, into: &hasher)
     combineOptional(turnId, into: &hasher)
     combineOptional(steerId, into: &hasher)
-  case .error(let message, let detail, let category, let turnId):
+  case .error(let message, let detail, let category, let turnId, let title, let nextAction):
     combineLongTextSignature(message, into: &hasher)
     combineOptionalText(detail, into: &hasher)
     hasher.combine(category)
     combineOptional(turnId, into: &hasher)
+    hasher.combine(title)
+    hasher.combine(nextAction)
   case .done(let status, let summary, let usage, let turnId, let model, let modelId, let terminalReason):
     hasher.combine(status)
     combineLongTextSignature(summary, into: &hasher)
@@ -3437,18 +3439,23 @@ private func eventCard(
         // only the child key is lifted out of the detail.
         spawnCompletionChildId: kind == "info" ? workSpawnCompletionChildId(from: detail) : nil
       )
-    case .error(let message, let detail, let category, _):
+    case .error(let message, let detail, let category, _, let title, let nextAction):
+      // Title, next action and the technical fold are already resolved on the
+      // event — the host's presentation when it sent one, the per-category
+      // derivation when it did not. Only the glyph and tint come from here.
       let errorStyle = errorPresentation(for: category)
       return WorkEventCardModel(
         id: envelope.id,
         kind: "error",
-        title: errorStyle.title,
+        title: title,
         icon: errorStyle.icon,
         tint: errorStyle.tint,
         timestamp: envelope.timestamp,
         body: message,
-        bullets: detail.map { [$0] } ?? [],
-        metadata: [category.replacingOccurrences(of: "_", with: " ").capitalized]
+        bullets: [],
+        metadata: category == "unknown" ? [] : [category.replacingOccurrences(of: "_", with: " ")],
+        technicalDetail: detail,
+        nextAction: nextAction
       )
     case .done:
       // Usage is rendered as a compact timeline banner near the completed
@@ -3894,7 +3901,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .pendingInputResolved(_, _, let turnId),
        .todoUpdate(_, let turnId),
        .systemNotice(_, _, _, let turnId, _),
-       .error(_, _, _, let turnId),
+       .error(_, _, _, let turnId, _, _),
        .promptSuggestion(_, let turnId),
        .contextCompact(_, _, _, let turnId, _),
        .autoApprovalReview(_, let turnId),

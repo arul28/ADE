@@ -105,9 +105,35 @@ One more error code originates **outside** the registry:
 brain-level ingress while **no project sync host owns the peer** (the
 host is restarting, or was blocked by a conflicting sync listener),
 `brainProjectActionsSyncHandler` answers immediately with a failed
-`command_result` carrying that code instead of silently dropping the
-command into a 30 s client timeout. The state is transient by
-definition, so controllers treat it like a timeout: iOS marks it retryable
+`command_result` carrying that code plus a typed snapshot (`reason`,
+`conflict`, `recoveryEligible`). Controllers do not dump the raw host
+sentence. A verified conflict takes over the phone or hosted-web
+project surface immediately; a generic starting failure retries silently
+(2s / 4s / 8s) then takes over. `sync.diagnoseHost` and `sync.recoverHost`
+are runtime-scoped and work without a project host; **Fix connection**
+stops the verified blocking ADE runtime and restarts the intended brain.
+The brain checks a server-owned pairing grant before returning owner details or
+executing recovery: desktop runtime-host grants retain their existing authority,
+while phones and browsers receive the narrower recovery grant only through
+verified same-account adoption. PIN-only mobile pairings get a redacted
+diagnosis and cannot stop or restart a runtime.
+
+Two properties of that pair of actions matter to anyone calling them. The
+repair is **serialized and bounded**: one repair runs per machine, a second
+caller (another device, or the same one reconnecting mid-repair) joins the
+running one instead of opening a second stop/restart sequence, and the whole
+run is raced against a 90 s deadline so a step that never settles cannot leave
+later callers waiting forever. And the two diagnosis paths cost different
+amounts: the `hello_ok.projectHost` snapshot and the per-command
+`host_unavailable` reply skip the synchronous listener scan — both run on every
+reconnect and every failing command while a host is down, and that scan shells
+out to `lsof` or PowerShell — while an explicit `sync.diagnoseHost` pays for
+the full scan. Clients keep **Retry** enabled for the duration of a repair on
+both iOS and hosted web, because the repair may restart the brain and a restart
+that never reports back would otherwise strand the screen on a spinner; an
+explicit Retry re-diagnoses instead of waiting.
+
+The state is still transient for queued work: iOS marks it retryable
 (`isSyncHostUnavailableError`), and queued operations are preserved — not
 deleted — when a replay hits it during a host restart window. Queueable actions
 normally enter the offline queue, but an already-attempted live `chat.send` is

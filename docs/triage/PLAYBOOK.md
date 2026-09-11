@@ -151,13 +151,23 @@ both running), a leftover brain, or an unrelated dev server.
 Read-only:
 
 ```bash
-ade sync status --text     # listener port, relay state, publish state
-ade brain status --text    # port + connectedPeers
+ade sync status --text              # listener port, relay state, publish state
+ade brain status --text             # port + connectedPeers + project host
+ade brain status --scan-listeners --text   # same, but also scans the port's listener
 ```
 
-To see who holds a port, use the OS tool in read-only form — `lsof -nP -iTCP:<port> -sTCP:LISTEN`
-on macOS/Linux, `netstat -ano | findstr :<port>` on Windows — and report the owner. Do not kill
-it. If it is another ADE channel, that is expected and the warn is cosmetic; if it is a stray
+`ade brain status` reports a **project host** row (`ready` / `starting` / `conflict` /
+`unavailable` plus the same headline a phone would see) and, on a conflict, a **blocking
+runtime** row naming the owner and its project. That is the same snapshot the phone's
+**Fix connection** card reads, so the terminal and the phone name the same process in the same
+words. The listener scan is opt-in because it shells out to `lsof` or a full-machine PowerShell
+query; without `--scan-listeners` the answer comes from the machine-wide lock alone, which covers
+the common "the host has not taken its lease yet" case. The running brain's own pid is excluded
+before any conflict is reported, so a healthy machine never accuses the brain that is serving it.
+
+When ADE cannot name the owner, use the OS tool in read-only form — `lsof -nP -iTCP:<port>
+-sTCP:LISTEN` on macOS/Linux, `netstat -ano | findstr :<port>` on Windows — and report the owner.
+Do not kill it. If it is another ADE channel, that is expected and the warn is cosmetic; if it is a stray
 process the user recognises, let them stop it themselves.
 
 ### 3.5 Sync, pairing, relay, and account

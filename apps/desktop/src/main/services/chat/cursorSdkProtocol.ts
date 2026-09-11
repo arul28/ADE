@@ -1,6 +1,7 @@
+import { isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+
 export type CursorSdkChatMode = "agent" | "ask" | "plan";
 export type CursorSdkApprovalPolicy = "on-request" | "read-only" | "never";
-export type CursorSdkSandboxMode = "ade" | "cursor-native" | "off";
 export type CursorSdkAgentMode = "agent" | "plan";
 
 export type CursorSdkErrorDetail = {
@@ -14,12 +15,11 @@ export type CursorSdkErrorDetail = {
   name?: string;
 };
 
-export type CursorSdkErrorKind = "auth" | "rate_limit" | "network" | "busy" | "not_found" | "unknown";
+export type CursorSdkErrorKind = "auth" | "rate_limit" | "network" | "busy" | "not_found" | "configuration" | "unknown";
 
 export type CursorSdkPermissionPolicy = {
   chatMode: CursorSdkChatMode;
   approvalPolicy: CursorSdkApprovalPolicy;
-  sandbox: CursorSdkSandboxMode;
   /**
    * The session runs under ADE's `full-auto` permission mode. This is a
    * permission-mode marker only: it separates full-auto sessions into their own
@@ -519,5 +519,6 @@ export function classifyCursorSdkErrorText(
   ) {
     return "auth";
   }
+  if (isSandboxUnsupportedFailureText(joined)) return "configuration";
   return "unknown";
 }

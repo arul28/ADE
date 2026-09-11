@@ -274,7 +274,7 @@ struct WorkRootScreen: View {
   }
 
   var isLive: Bool {
-    syncService.connectionState == .connected
+    syncService.connectionState == .connected && syncService.projectHostIsLive
   }
 
   var isLoadingSkeleton: Bool {
@@ -552,15 +552,12 @@ struct WorkRootScreen: View {
           // source of truth for connection state. Genuine mid-sync failures
           // while connected still show below via `errorMessage`.
           if !syncService.connectionState.isHostUnreachable,
+            !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work)
           {
-            ADENoticeCard(
-              title: hydrationNotice.title,
-              message: hydrationNotice.message,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
+            ADEInstructionErrorCard(
+              notice: hydrationNotice,
+              retry: { Task { await reload(refreshRemote: true) } }
             )
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)

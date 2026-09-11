@@ -8,6 +8,7 @@ import {
   buildWindowsListeningPortHolderQueryArgs,
   parseWindowsPortHolders,
 } from "./windowsPortHolders";
+import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
@@ -64,6 +65,8 @@ export type SyncHostSingletonDeps = {
    * for a caller sitting in front of first paint. See the desktop launch gate.
    */
   skipListenerScan?: boolean;
+  /** Injectable birth-time probe for THIS process; `null` means "unknown". */
+  readOwnProcessStartTimeMs?: () => number | null;
 };
 
 // Which leases THIS process currently holds. The lock file answers "who owns
@@ -166,17 +169,64 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Own start time from the SAME clock `defaultProcessMatchesOwner` reads back.
+ *
+ * `readProcessStartTimeMs` is POSIX-only by design (Windows has no `ps`), but
+ * the win32 reader below asks `Get-Process` for a real `StartTime` and then
+ * rejects a 2s mismatch outright. Writing Node bootstrap time on Windows and
+ * reading OS exec time back therefore unlinks a LIVE brain's lock as PID reuse
+ * and makes one-tap recovery refuse every stop. One PowerShell spawn per lock
+ * acquisition is the honest price; this is brain startup, not a hot path.
+ *
+ * `null` is a real answer ("the OS would not tell us"), never a cue to derive a
+ * time from another clock: the caller records no birth identity at all instead.
+ */
+function readOwnProcessStartTimeMs(
+  platform: NodeJS.Platform = process.platform,
+): number | null {
+  if (platform !== "win32") return readProcessStartTimeMs(process.pid, platform);
+  const script = [
+    `$target = Get-Process -Id ${Math.floor(process.pid)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $target) { exit 3 }",
+    "[Console]::Out.Write($target.StartTime.ToUniversalTime().ToString('o'))",
+  ].join("; ");
+  try {
+    const raw = execFileSync(
+      resolveTrustedWindowsTool("powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      // Starting the PowerShell runtime alone routinely outlasts the 2s POSIX
+      // budget on a cold or Defender-contended box (see `defaultScanText`).
+      // Timing out here costs the machine its recovery identity for the whole
+      // life of the lock, and this runs once per acquisition, so buy the time.
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true },
+    );
+    const startedAtMs = Date.parse(raw.trim());
+    return Number.isFinite(startedAtMs) ? startedAtMs : null;
+  } catch {
+    return null;
+  }
+}
+
 function executableFromCommandLine(commandLine: string | null): string | null {
   const match = commandLine?.trim().match(/^(?:"([^"]+)"|(.+?\.exe))(?=\s|$)/i);
   const executable = match?.[1] ?? match?.[2] ?? null;
   return executable ? path.win32.basename(executable).toLowerCase() : null;
 }
 
-function defaultProcessMatchesOwner(
+export function defaultProcessMatchesOwner(
   owner: SyncHostSingletonOwner,
   platform: NodeJS.Platform = process.platform,
 ): boolean | null {
-  if (platform !== "win32") return null;
+  const expectedStartedAtMs = owner.processStartedAt
+    ? Date.parse(owner.processStartedAt)
+    : Number.NaN;
+  if (platform !== "win32") {
+    if (!Number.isFinite(expectedStartedAtMs)) return null;
+    const actualStartedAtMs = readProcessStartTimeMs(owner.pid, platform);
+    if (actualStartedAtMs === null || !Number.isFinite(actualStartedAtMs)) return null;
+    return Math.abs(actualStartedAtMs - expectedStartedAtMs) <= 2_000;
+  }
   const script = [
     `$target = Get-Process -Id ${Math.floor(owner.pid)} -ErrorAction SilentlyContinue`,
     "if ($null -eq $target) { exit 3 }",
@@ -215,20 +265,11 @@ function defaultProcessMatchesOwner(
     if (expectedExecutable && actualExecutable && expectedExecutable !== actualExecutable) {
       return false;
     }
-    const expectedStartedAtMs = owner.processStartedAt
-      ? Date.parse(owner.processStartedAt)
-      : Number.NaN;
     const actualStartedAtMs = typeof parsed.startedAt === "string"
       ? Date.parse(parsed.startedAt)
       : Number.NaN;
-    if (
-      Number.isFinite(expectedStartedAtMs)
-      && Number.isFinite(actualStartedAtMs)
-      && Math.abs(expectedStartedAtMs - actualStartedAtMs) > 2_000
-    ) {
-      return false;
-    }
-    return true;
+    if (!Number.isFinite(expectedStartedAtMs) || !Number.isFinite(actualStartedAtMs)) return null;
+    return Math.abs(expectedStartedAtMs - actualStartedAtMs) <= 2_000;
   } catch {
     return null;
   }
@@ -353,18 +394,30 @@ export function buildQuitCommand(args: {
   return parts.join("; ");
 }
 
-function currentOwner(args: {
-  port?: number | null;
-  projectRoot?: string | null;
-}): SyncHostSingletonOwner {
+function currentOwner(
+  args: {
+    port?: number | null;
+    projectRoot?: string | null;
+  },
+  readOwnStartTimeMs: () => number | null = readOwnProcessStartTimeMs,
+): SyncHostSingletonOwner {
   const now = new Date().toISOString();
   const channel = normalizedChannel(process.env.ADE_PACKAGE_CHANNEL);
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
   const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
-  const processStartedAt = new Date(
-    Date.now() - Math.max(0, process.uptime() * 1_000),
-  ).toISOString();
+  // Same clock the reader uses, on every platform, or none at all. There is no
+  // safe second clock here: `Date.now() - uptime()` is Node bootstrap time
+  // while the reader asks the OS for exec time, and the gap is real (dyld and
+  // code-signing on macOS, Defender's on-access scan on Windows) — a live owner
+  // written from it fails its own matcher and gets its lock unlinked as PID
+  // reuse. A failed probe therefore records NO birth identity: `sameOwner`,
+  // `hasStableProcessIdentity`, and `defaultProcessMatchesOwner` all treat that
+  // as "unknown", which costs this machine one-tap recovery but never a lock.
+  const processStartedAtMs = readOwnStartTimeMs();
+  const processStartedAt = processStartedAtMs !== null && Number.isFinite(processStartedAtMs)
+    ? new Date(processStartedAtMs).toISOString()
+    : null;
   return {
     id: randomUUID(),
     pid: process.pid,
@@ -665,6 +718,18 @@ function defaultAdeHomeForChannel(channel: string | null): string {
 // brain hosting sync must never be reaped by a beta install (and vice
 // versa). Same-channel owners are stale siblings of the brain being
 // (re)started and are safe to replace.
+/**
+ * Windows and macOS resolve paths case-insensitively; Linux does not. A plain
+ * `path.resolve(a) === path.resolve(b)` therefore calls two spellings of one
+ * ADE_HOME different machines — and this comparison decides whether the phone
+ * may stop a runtime, so a false "different channel" hides the Fix button.
+ * Never lowercase unconditionally: that would make two real Linux homes equal.
+ */
+function adeHomeComparisonKey(value: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = path.resolve(value);
+  return platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
 export function isSameChannelSyncHostOwner(
   owner: SyncHostSingletonOwner,
   env: NodeJS.ProcessEnv = process.env,
@@ -672,7 +737,7 @@ export function isSameChannelSyncHostOwner(
   const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
   const currentAdeHome = env.ADE_HOME?.trim() || defaultAdeHomeForChannel(currentChannel);
   if (owner.adeHome) {
-    return path.resolve(owner.adeHome) === path.resolve(currentAdeHome);
+    return adeHomeComparisonKey(owner.adeHome) === adeHomeComparisonKey(currentAdeHome);
   }
   const currentServiceName = env.ADE_RUNTIME_SERVICE_NAME?.trim()
     || (currentChannel ? `com.ade.runtime.${currentChannel}` : "com.ade.runtime");
@@ -688,7 +753,10 @@ export function acquireSyncHostSingleton(
 ): SyncHostSingletonLease {
   assertNoSyncHostSingletonConflict(deps);
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
-  const owner = currentOwner(args);
+  const owner = currentOwner(
+    args,
+    deps.readOwnProcessStartTimeMs ?? (() => readOwnProcessStartTimeMs(deps.platform)),
+  );
   const processMatchesOwner = deps.processMatchesOwner
     ?? ((candidate) => defaultProcessMatchesOwner(candidate, deps.platform));
   for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -316,7 +316,7 @@ live runtime rather than read off a schema:
 | Claude | Agent SDK `settings` — flag tier, above every `settings.json` the SDK reads | the user's settings chain applies | `"Default"` is a real output style, not "no style" |
 | Codex | `thread/start` + `turn/start` JSON-RPC args | `config.toml`'s `service_tier` applies | `null` reports `"default"` — a real downgrade |
 | Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it |
-| Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file |
+| Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file — ADE always sends `false`, so the omit column never applies to it |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` | the user's `opencode.json` applies | n/a — this env var deep-merges **last**, so any key ADE names wins |
 
 ### Provider config homes
@@ -407,18 +407,10 @@ init and on dispose.
 `initResult.currentModelId` does not exist in `@factory/droid-sdk`; reading it
 always yielded `null`.
 
-**Cursor.** The sandbox is a three-state directive, not a boolean:
-`CursorSdkSandboxDirective = "enable" | "disable" | "inherit"`
-(`cursorSdkPolicy.ts`). `inherit` omits `local.sandboxOptions` entirely so
-`~/.cursor/sandbox.json` decides. `disable` sends `{ enabled: false }`, which
-returns `insecure_none` without reading that file at all — which is exactly what
-ADE's full-access mode means, and what the retry after a `ConfigurationError`
-needs when the environment cannot sandbox and the alternative is a hard failure.
-`enable` asks for a sandbox, and a user policy still wins over ADE's: the SDK
-falls back to its own `workspace_readwrite` default only when the user has
-written no policy at all. The directive, not a boolean, is what the local
-permission fingerprint and the worker's ready payload carry, so a change between
-the three states restarts the agent options.
+**Cursor.** ADE always passes `sandboxOptions: { enabled: false }` for local
+Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the
+permission guard, so `~/.cursor/sandbox.json` is never consulted and there is no
+ADE-side sandbox setting to resolve.
 
 **OpenCode.** `OPENCODE_CONFIG_CONTENT` deep-merges last, so anything
 `buildOpenCodeConfig` names outranks the user's `opencode.json` and only
@@ -743,7 +735,7 @@ surfaces.
 
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
-sandbox mode, hard guards, orchestration-lead flag, and a `fullAuto` marker.
+hard guards, orchestration-lead flag, and a `fullAuto` marker.
 Hard guards refuse paths outside the lane. Read-only exceptions are this
 lane's Cursor `terminals`, `agent-transcripts`, and `assets` directories
 under `~/.cursor/projects/<slug>/`, plus the project's `.ade/attachments`
@@ -755,10 +747,9 @@ After realpath the directory basename must be `attachments`. Writes,
 shell, other projects' Cursor dirs, `.ade/secrets`, and a junction onto
 `.ade` or `.ade/secrets` stay denied.
 `buildCursorSdkLocalRunOptions` then reduces that policy to the SDK's local run
-options, where the sandbox is a three-state `CursorSdkSandboxDirective`
-(`enable` / `disable` / `inherit`) rather than a boolean — see
-[Provider config ownership](#provider-config-ownership) for why absent and
-`false` are not the same thing to `@cursor/sdk`.
+options. Sandboxing is not one of them: ADE always passes
+`sandboxOptions: { enabled: false }` for local Cursor workers and relies on ADE
+hook denials as the permission guard.
 `fullAuto` is only the name of ADE's full-auto permission mode — it partitions
 the worker pool and labels logs. It is deliberately not wired to the Cursor
 SDK's `local.force` send option, which expires the currently active persisted
@@ -999,9 +990,10 @@ Review start requires an explicit run `modelId`.
 Every one-off call — the session-intelligence chain above and the utility
 tasks here — reaches its provider through `runProviderTask`. Every Cursor
 one-off runs on the pooled worker, through `runCursorSdkLocalPrompt` in
-`cursorSdkPool.ts`: it gets the sandbox-unsupported fallback, agent retries,
-trimmed setting sources, a throwaway state root, and an agent that is closed
-instead of leaked. Never call `Agent.create` in the host process.
+`cursorSdkPool.ts`: it gets agent retries, trimmed setting sources, a throwaway
+state root, the same `sandboxOptions: { enabled: false }` every local worker
+passes, and an agent that is closed instead of leaked. Never call
+`Agent.create` in the host process.
 
 The pool keeps one worker per workspace path and API key for a short idle
 window, so a three-model naming chain forks Node once, and it caps the warm
@@ -1016,7 +1008,9 @@ nothing here.
 `runNamingAcrossProviders` returns `lastFailure`, and the result carries it as
 `generationError` alongside `usedDeterministicFallback`. When nothing was
 applied the Work tab states that reason instead of always blaming a concurrent
-rename. Cursor Cloud chats skip that chain: Cursor owns the agent name, so
+rename. A sandbox-unsupported failure is rewritten through `presentChatFailure`
+before it becomes `generationError`, so the surface reads the same sentence a
+failed turn does rather than the SDK's "edit your sandbox config" text. Cursor Cloud chats skip that chain: Cursor owns the agent name, so
 `updateSession`, `regenerateSessionMetadata` (title), auto-title, and the
 user-facing meta writers refuse the write instead of overlaying an ADE title.
 

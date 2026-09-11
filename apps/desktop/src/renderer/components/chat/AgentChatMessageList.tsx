@@ -142,6 +142,8 @@ import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
+import { InstructionErrorCard } from "../shared/InstructionErrorCard";
+import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   collectUserMessageMinimapSourceEntries,
@@ -3709,6 +3711,15 @@ function renderEvent(
       ? `${event.message}\n\n${event.detail}`
       : event.message;
     const recovery = classifyProviderFailure(event);
+    const errorCategory = typeof event.errorInfo === "object" ? event.errorInfo?.category : undefined;
+    const errorProvider = typeof event.errorInfo === "object" ? event.errorInfo?.provider : undefined;
+    const presentation = readChatErrorPresentation(event.errorInfo)
+      ?? presentChatFailure({
+        kind: chatErrorKindFromCategory(errorCategory),
+        message: event.message,
+        detail: event.detail,
+        provider: errorProvider,
+      });
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
@@ -3749,29 +3760,15 @@ function renderEvent(
       );
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
-        <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
-        <div className="p-4">
-          <div className="mb-2 flex items-center gap-2">
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
-              <Warning size={13} weight="bold" className="text-red-400/90" />
-            </div>
-            <span className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-bold uppercase tracking-widest text-fg/85">Error</span>
-            {event.errorInfo && typeof event.errorInfo !== "string" && event.errorInfo.category ? (
-              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em] text-red-300/70">
-                {event.errorInfo.category}
-              </span>
-            ) : null}
-            <div className="ml-auto">
-              <MessageCopyButton value={errorCopyValue} className="opacity-0 group-hover:opacity-100 focus-within:opacity-100" />
-            </div>
-          </div>
-          <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/80">{event.message}</div>
-          {event.detail?.trim().length ? (
-            <div className="mt-2 whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-red-500/10 bg-red-500/[0.04] px-3 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
-              {event.detail}
-            </div>
-          ) : null}
+      <div className={cn(GLASS_CARD_CLASS, "group border-border/50 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
+        <div className="p-3">
+          <InstructionErrorCard
+            presentation={presentation}
+            disabled={Boolean(options?.sessionTurnActive)}
+            onRetry={options?.onRetryProviderFailure && !recovery
+              ? () => { void options.onRetryProviderFailure!(event.turnId ?? null); }
+              : undefined}
+          />
           {recovery ? (
             <ProviderFailureRecoveryCard
               recovery={recovery}
@@ -3783,6 +3780,11 @@ function renderEvent(
             />
           ) : null}
           {renderAgentCliAuthCard()}
+          {/* Names the failure class ("Provider capacity", "Usage limit") or the
+              raw provider/model identity. The instruction card above says what
+              to do; this says which thing went wrong, and dropping it would
+              lose the only place a Codex usage limit is distinguishable from a
+              generic stop. */}
           {event.errorInfo && !agentCliInfo ? (
             <div
               className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"

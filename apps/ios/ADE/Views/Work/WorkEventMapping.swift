@@ -322,10 +322,15 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .systemNotice(let noticeKind, let message, let detail, let turnId, let steerId):
     return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId, steerId: steerId)
   case .error(let message, let detail, let turnId, _, let errorInfo):
-    let detailText = detail ?? prettyPrintedRemoteJSONValue(errorInfo)
-    let category = workStructuredErrorCategory(from: errorInfo)
-      ?? workErrorCategory(message: message, detail: detailText)
-    return .error(message: message, detail: detailText, category: category, turnId: turnId)
+    let presented = workPresentedChatFailure(message: message, detail: detail, errorInfo: errorInfo)
+    return .error(
+      message: presented.body,
+      detail: presented.technicalDetail,
+      category: presented.category,
+      turnId: turnId,
+      title: presented.title,
+      nextAction: presented.nextAction
+    )
   case .done(let turnId, let status, let model, let modelId, let usage, let costUsd, let terminalReason):
     var parts = [status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized]
     if let model, !model.isEmpty {
@@ -859,11 +864,111 @@ private func workStructuredErrorCategory(from errorInfo: RemoteJSONValue?) -> St
 
   let category = rawCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   switch category {
-  case "auth", "rate_limit", "network", "permission", "general", "busy", "unknown":
+  case "auth", "rate_limit", "network", "permission", "general", "busy", "unknown", "configuration":
     return category
   default:
     return nil
   }
+}
+
+/// Body text for a chat failure that arrived with nothing to say, when not even
+/// the provider is known. Mirrors the desktop fallback in
+/// `shared/chatErrorPresentation.ts`, which stopped naming Cursor once
+/// provider-agnostic call sites began reaching it — a Droid failure must not
+/// tell the user Cursor stopped the turn.
+let workUnfinishedTurnFallbackBody = "This turn stopped before it could finish."
+
+/// The same sentence once the host told us which provider failed.
+func workUnfinishedTurnBody(provider: String?) -> String {
+  guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !provider.isEmpty else {
+    return workUnfinishedTurnFallbackBody
+  }
+  return "\(provider) stopped this turn before it could finish."
+}
+
+/// `errorInfo.provider` is the label the host already attaches when it knows
+/// which provider failed.
+func workErrorInfoProvider(_ errorInfo: RemoteJSONValue?) -> String? {
+  guard case .object(let fields)? = errorInfo,
+        case .string(let provider)? = fields["provider"] else { return nil }
+  let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+struct WorkPresentedChatFailure {
+  var title: String
+  var body: String
+  var category: String
+  var nextAction: String
+  var technicalDetail: String?
+}
+
+/// Shown when neither the host presentation nor the category derivation has a
+/// more specific recovery step.
+private let workFailureDefaultNextAction = "Retry, or switch model."
+
+/// The technical fold never repeats the body, and never renders blank.
+private func workFailureTechnicalDetail(_ detail: String?, body: String) -> String? {
+  guard let trimmed = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !trimmed.isEmpty,
+        trimmed != body else { return nil }
+  return trimmed
+}
+
+func workPresentedChatFailure(
+  message: String,
+  detail: String?,
+  errorInfo: RemoteJSONValue?
+) -> WorkPresentedChatFailure {
+  let category = workStructuredErrorCategory(from: errorInfo)
+    ?? workErrorCategory(message: message, detail: detail)
+  if case .object(let fields)? = errorInfo,
+     case .object(let presentation)? = fields["presentation"],
+     case .string(let title)? = presentation["title"],
+     case .string(let body)? = presentation["body"] {
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedTitle.isEmpty, !trimmedBody.isEmpty {
+      var next: String?
+      if case .string(let action)? = presentation["nextAction"] {
+        let trimmedAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        next = trimmedAction.isEmpty ? nil : trimmedAction
+      }
+      let technical: String?
+      if case .string(let detailText)? = presentation["technicalDetail"] {
+        technical = detailText
+      } else {
+        technical = detail
+      }
+      return WorkPresentedChatFailure(
+        title: trimmedTitle,
+        body: trimmedBody,
+        category: category,
+        nextAction: next ?? workFailureDefaultNextAction,
+        technicalDetail: workFailureTechnicalDetail(technical, body: trimmedBody)
+      )
+    }
+  }
+  let style = errorPresentation(for: category)
+  let body = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    ? workUnfinishedTurnBody(provider: workErrorInfoProvider(errorInfo))
+    : message
+  // An older host sends `errorInfo` with no presentation and no `detail`. Its
+  // provider codes stay recoverable in the technical fold — never in the body.
+  let legacyDetail: String?
+  if let detail, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    legacyDetail = detail
+  } else {
+    legacyDetail = prettyPrintedRemoteJSONValue(errorInfo)
+  }
+  return WorkPresentedChatFailure(
+    title: style.title,
+    body: body,
+    category: category,
+    nextAction: workFailureDefaultNextAction,
+    technicalDetail: workFailureTechnicalDetail(legacyDetail, body: body)
+  )
 }
 
 func ansiAttributedString(_ text: String) -> AttributedString {
@@ -985,6 +1090,35 @@ func prettyPrintedRemoteJSONValue(_ value: RemoteJSONValue?) -> String {
   guard let value else { return "" }
   let foundationObject = foundationObject(from: value)
   return prettyPrintedJSONString(foundationObject)
+}
+
+/// Inverse of `foundationObject(from:)`. Replayed transcript rows arrive as
+/// `JSONSerialization` values, so lifting them back into `RemoteJSONValue` lets
+/// the replay path reuse the structured readers the live decode path uses
+/// instead of parsing the host presentation a second time.
+func remoteJSONValue(from value: Any?) -> RemoteJSONValue? {
+  guard let value, !(value is NSNull) else { return nil }
+  if let string = value as? String {
+    return .string(string)
+  }
+  if let number = value as? NSNumber {
+    // `as? Bool` also succeeds for the numbers 0 and 1, so the CoreFoundation
+    // type is the only way to tell a real boolean apart from an integer.
+    if CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID() {
+      return .bool(number.boolValue)
+    }
+    return .number(number.doubleValue)
+  }
+  if let bool = value as? Bool {
+    return .bool(bool)
+  }
+  if let object = value as? [String: Any] {
+    return .object(object.mapValues { remoteJSONValue(from: $0) ?? .null })
+  }
+  if let array = value as? [Any] {
+    return .array(array.map { remoteJSONValue(from: $0) ?? .null })
+  }
+  return nil
 }
 
 func foundationObject(from value: RemoteJSONValue) -> Any {

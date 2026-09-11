@@ -85,7 +85,7 @@ struct PRsTabView: View {
   }
 
   private var isLive: Bool {
-    prsStatus.phase == .ready && syncService.connectionState == .connected
+    prsStatus.phase == .ready && syncService.connectionState == .connected && syncService.projectHostIsLive
   }
 
   private var isLoadingSkeleton: Bool {
@@ -333,15 +333,12 @@ struct PRsTabView: View {
           // unreachable — the red gear dot is the single source of truth
           // for connection state.
           if !syncService.connectionState.isHostUnreachable,
+            !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs)
           {
-            ADENoticeCard(
-              title: hydrationNotice.title,
-              message: hydrationNotice.message,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
+            ADEInstructionErrorCard(
+              notice: hydrationNotice,
+              retry: { Task { await reload(refreshRemote: true) } }
             )
             .prListRow()
           }

@@ -258,34 +258,51 @@ describe("Cursor SDK event mapper", () => {
       type: "status",
       status: "ERROR",
       error: { message: "Tool execution aborted" },
-    }, mapperMeta())).toEqual([{
+    }, mapperMeta())).toEqual([expect.objectContaining({
       type: "error",
       message: "Tool execution aborted",
       turnId: "turn-1",
-    }]);
+      errorInfo: expect.objectContaining({
+        presentation: expect.objectContaining({
+          title: "Couldn't start this turn",
+          body: "Tool execution aborted",
+        }),
+      }),
+    })]);
   });
 
-  it("keeps the generic Cursor SDK failure only when no detail is present", () => {
+  it("uses the shared card fallback body when an ERROR carries no detail", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",
       status: "ERROR",
-    }, mapperMeta())).toEqual([{
+    }, mapperMeta())).toEqual([expect.objectContaining({
       type: "error",
-      message: "Cursor SDK run failed.",
+      message: "Cursor stopped this turn before it could finish.",
       turnId: "turn-1",
-    }]);
+      errorInfo: expect.objectContaining({
+        presentation: expect.objectContaining({
+          title: "Couldn't start this turn",
+        }),
+      }),
+    })]);
   });
 
-  it("surfaces the run store errorCode in the ERROR message", () => {
+  it("keeps the run store errorCode out of the ERROR message and in technicalDetail", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",
       status: "ERROR",
       adeErrorCode: "insufficient_quota",
-    }, mapperMeta())).toEqual([{
+    }, mapperMeta())).toEqual([expect.objectContaining({
       type: "error",
-      message: "Cursor run failed: insufficient_quota",
+      message: "Cursor stopped this turn before it could finish.",
       turnId: "turn-1",
-    }]);
+      errorInfo: expect.objectContaining({
+        presentation: expect.objectContaining({
+          title: "Couldn't start this turn",
+          technicalDetail: "insufficient_quota",
+        }),
+      }),
+    })]);
   });
 
   it("classifies Cursor resource exhaustion as a rate limit", () => {
@@ -302,7 +319,7 @@ describe("Cursor SDK event mapper", () => {
       message: "Cursor rate limited this request.",
       detail: "[resource_exhausted] Error\nCursor request ID: req-cursor-1",
       turnId: "turn-1",
-      errorInfo: { category: "rate_limit" },
+      errorInfo: expect.objectContaining({ category: "rate_limit" }),
     }]);
   });
 
@@ -316,7 +333,7 @@ describe("Cursor SDK event mapper", () => {
       message: "Cursor rate limited this request.",
       detail: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
       turnId: "turn-1",
-      errorInfo: { category: "rate_limit" },
+      errorInfo: expect.objectContaining({ category: "rate_limit" }),
     }]);
   });
 
@@ -333,7 +350,7 @@ describe("Cursor SDK event mapper", () => {
       message: "Cursor's connection dropped mid-run.",
       detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
       turnId: "turn-1",
-      errorInfo: { category: "network" },
+      errorInfo: expect.objectContaining({ category: "network" }),
     }]);
   });
 
@@ -347,7 +364,7 @@ describe("Cursor SDK event mapper", () => {
       message: "Cursor's connection dropped mid-run.",
       detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
       turnId: "turn-1",
-      errorInfo: { category: "network" },
+      errorInfo: expect.objectContaining({ category: "network" }),
     }]);
   });
 
@@ -365,7 +382,7 @@ describe("Cursor SDK event mapper", () => {
       message: "Cursor's connection dropped mid-run.",
       detail: "[internal] write ECANCELED\nCursor request ID: req-cursor-ecanceled",
       turnId: "turn-1",
-      errorInfo: { category: "network" },
+      errorInfo: expect.objectContaining({ category: "network" }),
     }]);
   });
 
@@ -374,11 +391,16 @@ describe("Cursor SDK event mapper", () => {
       type: "status",
       status: "ERROR",
       error: { token: "secret-ish" },
-    }, mapperMeta())).toEqual([{
+    }, mapperMeta())).toEqual([expect.objectContaining({
       type: "error",
-      message: "Cursor SDK run failed.",
+      message: "Cursor stopped this turn before it could finish.",
       turnId: "turn-1",
-    }]);
+      errorInfo: expect.objectContaining({
+        presentation: expect.objectContaining({
+          title: "Couldn't start this turn",
+        }),
+      }),
+    })]);
   });
 
   it("treats Cursor task messages as parent-run summaries rather than child lifecycle", () => {

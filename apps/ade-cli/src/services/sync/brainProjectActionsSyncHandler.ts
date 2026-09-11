@@ -75,6 +75,17 @@ import {
   SyncProtocolVersionMismatchError,
   wsDataToText,
 } from "./syncProtocol";
+import {
+  diagnoseSyncHostReadiness,
+  hostUnavailableErrorPayload,
+  redactSyncHostReadinessSnapshot,
+  recoverSyncHostConnection,
+} from "./syncHostRecovery";
+import {
+  SYNC_HOST_DIAGNOSE_ACTION,
+  SYNC_HOST_RECOVER_ACTION,
+} from "../../../../desktop/src/shared/types/syncHostRecovery";
+import type { AdeUsageClientSurface } from "../../../../desktop/src/shared/types/usage";
 // The SAME parser the project sync host uses. This handler used to carry a
 // narrower private copy that only understood `bootstrap` and `paired` auth, so
 // a signed-in web client's `account` hello was rejected as "Invalid hello
@@ -88,6 +99,7 @@ import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   isRuntimeHostPairingRecord,
+  isSyncHostRecoveryPairingRecord,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -127,6 +139,16 @@ type BrainProjectActionsSyncHandlerArgs = {
   getAccountAttestationConfig?: () => AccountAttestationConfig | null;
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
   personalChatScope?: PersonalChatScopeContract;
+  /**
+   * One bounded product-analytics capture per completed host repair. The brain
+   * is the durable owner boundary here: the tap happens on a phone or a
+   * browser, but only this side knows whether the repair actually worked, and
+   * capturing once here covers every client instead of once per client.
+   */
+  captureRecoveryAnalytics?: (args: {
+    outcome: "success" | "partial" | "failed";
+    surface: AdeUsageClientSurface;
+  }) => void;
 };
 
 type BrainPeerState = {
@@ -143,6 +165,35 @@ type BrainPeerState = {
 };
 
 const WS_OPEN = 1;
+
+/**
+ * `canManageSyncHost` authorizes two different peers: a desktop runtime-host
+ * pairing record and the narrower phone/browser recovery grant. Read the
+ * surface from the stored device type instead of assuming the phone, and send
+ * an unrecognized type to the neutral `api` bucket — an unattributed repair is
+ * worth more than one filed under a surface the user never touched.
+ */
+export function recoveryAnalyticsSurface(
+  peerDeviceType: string | null | undefined,
+): AdeUsageClientSurface {
+  switch (peerDeviceType) {
+    case "phone":
+      return "mobile";
+    case "browser":
+      return "web";
+    case "desktop":
+      return "desktop";
+    default:
+      return "api";
+  }
+}
+
+function canManageSyncHost(peer: BrainPeerState): boolean {
+  return peer.authKind === "paired"
+    && (isRuntimeHostPairingRecord(peer.pairingRecord)
+      || isSyncHostRecoveryPairingRecord(peer.pairingRecord));
+}
+
 /**
  * Exported so the credential store's migration-exclusion list can be asserted
  * against the real key instead of a bare literal: this token is read by the
@@ -930,6 +981,113 @@ export function createBrainProjectActionsSyncHandler(
           : envelope.requestId ?? "";
         const action = typeof payload?.action === "string" ? payload.action : "";
         const commandArgs = payload?.args ?? {};
+        if (action === SYNC_HOST_DIAGNOSE_ACTION || action === SYNC_HOST_RECOVER_ACTION) {
+          const authorized = canManageSyncHost(peer);
+          if (action === SYNC_HOST_RECOVER_ACTION && !authorized) {
+            const message = "This device is not authorized to manage this machine's runtime.";
+            args.logger.warn("sync_brain.sync_host_recovery_forbidden", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+              peerDeviceType: peer.pairingRecord?.peerDeviceType ?? null,
+            });
+            send(peer.ws, "command_ack", {
+              commandId,
+              accepted: false,
+              status: "rejected",
+              message,
+            }, envelope.requestId);
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: false,
+              error: { code: "forbidden_command", message },
+            }, envelope.requestId);
+            break;
+          }
+          send(peer.ws, "command_ack", {
+            commandId,
+            accepted: true,
+            status: "accepted",
+            message: `Executing ${action}.`,
+          }, envelope.requestId);
+          try {
+            if (action === SYNC_HOST_DIAGNOSE_ACTION) {
+              // An explicit diagnose request is the one caller that pays for
+              // the full listener scan.
+              const snapshot = redactSyncHostReadinessSnapshot(
+                diagnoseSyncHostReadiness(),
+                authorized,
+              );
+              if (!isCurrent()) return;
+              send(peer.ws, "command_result", {
+                commandId,
+                ok: true,
+                result: snapshot,
+              }, envelope.requestId);
+              break;
+            }
+            const recovery = await recoverSyncHostConnection({
+              operationId: typeof commandArgs.operationId === "string"
+                ? commandArgs.operationId
+                : undefined,
+            });
+            if (!isCurrent()) return;
+            // Ids and enum statuses only. `steps[].detail` can carry raw
+            // failure text, so it is mapped away rather than logged.
+            args.logger.info("sync_brain.sync_host_recovery_finished", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+              commandId,
+              operationId: recovery.operationId,
+              ok: recovery.ok,
+              status: recovery.status,
+              state: recovery.snapshot.state,
+              conflictReason: recovery.snapshot.conflict?.reason ?? null,
+              steps: recovery.steps.map((step) => ({ id: step.id, status: step.status })),
+            });
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: true,
+              result: recovery,
+            }, envelope.requestId);
+            // After the answer, and never able to change it. The repair has
+            // already stopped a process and may have restarted the brain; a
+            // throwing analytics client reaching the catch below would report
+            // `command_failed` for work that succeeded, and invite the client
+            // to retry a destructive operation.
+            //
+            // `partial` is the restart handing off: the repair ran, but the
+            // client has to reconnect to learn the result. That is a different
+            // product answer from "one tap finished it".
+            try {
+              args.captureRecoveryAnalytics?.({
+                outcome: recovery.ok
+                  ? "success"
+                  : recovery.status === "restarting" ? "partial" : "failed",
+                surface: recoveryAnalyticsSurface(peer.pairingRecord?.peerDeviceType),
+              });
+            } catch (error) {
+              args.logger.warn("sync_brain.sync_host_recovery_analytics_failed", {
+                commandId,
+                errorType: error instanceof Error ? error.name : typeof error,
+              });
+            }
+          } catch (error) {
+            if (!isCurrent()) return;
+            args.logger.warn("sync_brain.sync_host_recovery_failed", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+              commandId,
+              action,
+              errorType: error instanceof Error ? error.name : typeof error,
+            });
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: false,
+              error: {
+                code: "command_failed",
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }, envelope.requestId);
+          }
+          break;
+        }
         const descriptor = action.startsWith("personalChats.")
           ? personalChatCommandDescriptors(args.personalChatScope).find((entry) => entry.action === action)
           : undefined;
@@ -969,10 +1127,14 @@ export function createBrainProjectActionsSyncHandler(
         send(peer.ws, "command_result", {
           commandId,
           ok: false,
-          error: {
-            code: "host_unavailable",
-            message: "This machine's project sync host is not running yet. It usually restarts within a few seconds — retry shortly, or reopen the project.",
-          },
+          error: hostUnavailableErrorPayload(
+            redactSyncHostReadinessSnapshot(
+              // Every failing command lands here while the host is down. A
+              // synchronous listener scan per command would wedge the brain.
+              diagnoseSyncHostReadiness({ skipListenerScan: true }),
+              canManageSyncHost(peer),
+            ),
+          ),
         }, envelope.requestId);
         break;
       }
@@ -1507,6 +1669,7 @@ export function createBrainProjectActionsSyncHandler(
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
+          const syncHostRecoveryAuthorized = canManageSyncHost(peer);
           const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
           const helloOkPayload = buildSyncHostHelloOkPayload({
             peer: hello.peer,
@@ -1519,7 +1682,11 @@ export function createBrainProjectActionsSyncHandler(
             projectCatalogEnabled: true,
             crossProjectChatEnabled: false,
             projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
-            remoteCommandSupportedActions: personalDescriptors.map((entry) => entry.action),
+            remoteCommandSupportedActions: [
+              ...personalDescriptors.map((entry) => entry.action),
+              SYNC_HOST_DIAGNOSE_ACTION,
+              ...(syncHostRecoveryAuthorized ? [SYNC_HOST_RECOVER_ACTION] : []),
+            ],
             remoteCommandDescriptors: personalDescriptors,
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
@@ -1536,6 +1703,12 @@ export function createBrainProjectActionsSyncHandler(
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
               recordBackedAuth && isRuntimeHostPairingRecord(authenticatedPairingRecord),
+            projectHost: redactSyncHostReadinessSnapshot(
+              // Hello runs for every reconnect, including the reconnect storm a
+              // down host causes. Keep it off the synchronous scan.
+              diagnoseSyncHostReadiness({ skipListenerScan: true }),
+              syncHostRecoveryAuthorized,
+            ),
           });
           // The selection frame itself must retain the legacy wire encoding.
           // Apply the selected codec only after it has been queued successfully.

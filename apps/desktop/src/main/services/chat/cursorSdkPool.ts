@@ -1133,7 +1133,6 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",
-      sandbox: "off",
       fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
@@ -1192,7 +1191,6 @@ export async function runCursorSdkCloudRequest<T = unknown>(
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",
-      sandbox: "off",
       fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,

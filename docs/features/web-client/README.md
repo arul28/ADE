@@ -153,6 +153,30 @@ Browser sync client:
 - `apps/desktop/src/renderer/webclient/sync/wireProtocol.ts` - browser codec
   for the shared sync envelope format, gzip, and project catalog chunk
   assembly.
+- `apps/desktop/src/renderer/webclient/sync/projectHostRecoveryStore.ts` - the
+  browser's project-host readiness state, fed by `hello_ok.projectHost` and by
+  every `host_unavailable` command failure `CommandCaller` forwards. It holds
+  one phase (`ready` / `retrying` / `takeover` / `recovering`), runs the shared
+  2 s / 4 s / 8 s silent-retry ladder over `sync.diagnoseHost` before taking
+  the screen, and calls `sync.recoverHost` for **Fix connection**. It is bound
+  to exactly one client at a time: `bindProjectHostRecoveryClient` in
+  `sync/client.ts` follows the active machine session, because the repair it
+  offers terminates a process on the host and must only ever reach the machine
+  on screen. A socket drop clears what is displayed but keeps the binding — a
+  repair that restarts the brain drops the socket on purpose, so the
+  `recovering` phase survives it and the next hello decides the outcome.
+  Disposing a background session never disarms the active one.
+- `apps/desktop/src/renderer/components/app/ProjectHostRecoveryScreen.tsx` -
+  the full-surface recovery card and the `ProjectHostStartingBanner` that
+  precedes it, both mounted by `App.tsx` only in web mode. The card names the
+  owner, the project, and what stopping it interrupts, keeps raw PIDs and
+  socket paths in the technical fold, and renders the host's repair steps in
+  past/present tense as they complete. **Retry stays enabled during a repair**
+  on purpose: a restart that never reports back would otherwise leave the card
+  an inert spinner, so an explicit tap ends the "a repair is running"
+  assumption and re-diagnoses. Switch Mac is available at every moment,
+  including mid-repair. The banner keeps the cached lists on screen and is the
+  one place that marks them as possibly out of date.
 
 Browser `window.ade` adapter:
 
@@ -650,6 +674,17 @@ Machine runtime and sync host:
   pairing/hello auth, DPoP enforcement, changeset fan-out, project catalog,
   project switch, file/chat/terminal sub-protocols, and command routing
   advertisement.
+- `apps/ade-cli/src/services/sync/syncHostRecovery.ts` - typed project-host
+  readiness and **Fix connection**. Hosted web reads `hello_ok.projectHost`
+  and `host_unavailable` snapshots, retries a generic starting failure, then
+  overlays the same recovery card as iOS (`ProjectHostRecoveryScreen`).
+  Cached lists stay on screen; the overlay is not `ProjectRecoveryScreen`
+  (that screen is local disk/brain repair). The repair itself is serialized and
+  deadline-bounded on the machine, so a second browser tab joins the running
+  one rather than opening a second stop/restart sequence. Parsing, the retry
+  ladder, and the "why is there no Fix button" classification are the shared
+  `apps/desktop/src/shared/syncHostRecoveryUi.ts` and
+  `apps/desktop/src/shared/types/syncHostRecovery.ts`, which iOS mirrors.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
   command registry. It carries the web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub

@@ -52,15 +52,12 @@ struct FilesRootScreen: View {
           // Suppress connection-caused load failure banners; the top-right
           // gear dot is the single source of truth for host reachability.
           if !syncService.connectionState.isHostUnreachable,
+            !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files)
           {
-            ADENoticeCard(
-              title: hydrationNotice.title,
-              message: hydrationNotice.message,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
+            ADEInstructionErrorCard(
+              notice: hydrationNotice,
+              retry: { Task { await reload(refreshRemote: true) } }
             )
             .transition(.opacity)
           }

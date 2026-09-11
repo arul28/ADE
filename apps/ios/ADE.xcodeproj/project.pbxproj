@@ -163,6 +163,8 @@
 		E2000000000000000000004E /* FilesSearchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004E /* FilesSearchScreen.swift */; };
 		E2000000000000000000004F /* RemoteRosterModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004F /* RemoteRosterModels.swift */; };
 		E20000000000000000000050 /* HubScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000050 /* HubScreen.swift */; };
+		AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */; };
+		AC8100000000000000000002 /* ProjectHostRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */; };
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
 		E20000000000000000000054 /* HubActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000054 /* HubActivityState.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
@@ -493,6 +495,8 @@
 		D2000000000000000000004E /* FilesSearchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesSearchScreen.swift; path = ADE/Views/Files/FilesSearchScreen.swift; sourceTree = "<group>"; };
 		D2000000000000000000004F /* RemoteRosterModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteRosterModels.swift; path = ADE/Models/RemoteRosterModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000050 /* HubScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubScreen.swift; path = ADE/Views/Hub/HubScreen.swift; sourceTree = "<group>"; };
+		AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectHostRecoveryScreen.swift; path = ADE/Views/Hub/ProjectHostRecoveryScreen.swift; sourceTree = "<group>"; };
+		AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectHostRecoveryTests.swift; path = ADETests/ProjectHostRecoveryTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
 		D20000000000000000000054 /* HubActivityState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubActivityState.swift; path = ADE/Views/Hub/HubActivityState.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
@@ -796,6 +800,7 @@
 			isa = PBXGroup;
 			children = (
 				D20000000000000000000050 /* HubScreen.swift */,
+				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
 				D20000000000000000000054 /* HubActivityState.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
@@ -1181,6 +1186,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */,
 				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
 				B7000000000000000000001F /* PairedHostCredentialStateTests.swift */,
@@ -1559,6 +1565,7 @@
 				E2000000000000000000004E /* FilesSearchScreen.swift in Sources */,
 				E2000000000000000000004F /* RemoteRosterModels.swift in Sources */,
 				E20000000000000000000050 /* HubScreen.swift in Sources */,
+				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				E20000000000000000000054 /* HubActivityState.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
@@ -1726,6 +1733,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				AC8100000000000000000002 /* ProjectHostRecoveryTests.swift in Sources */,
 				AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */,
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,
 				B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */,

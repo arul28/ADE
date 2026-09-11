@@ -29,7 +29,6 @@ const forkMock = vi.hoisted(() => vi.fn());
 const TEST_POLICY = {
   chatMode: "agent",
   approvalPolicy: "on-request",
-  sandbox: "ade",
   fullAuto: false,
   hardGuards: true,
   orchestrationLead: false,

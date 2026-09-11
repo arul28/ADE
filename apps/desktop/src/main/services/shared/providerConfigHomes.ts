@@ -18,8 +18,8 @@ import path from "node:path";
  *   Codex    omit -> config.toml service_tier applies; null forces "default"
  *   Droid    omit -> ~/.factory/settings.json applies, per key; null wedges the
  *                    RPC for 30s, so omit, never null
- *   Cursor   three states — absent lets ~/.cursor/sandbox.json decide, an
- *                    explicit false skips the file entirely
+ *   Cursor   ADE always sends an explicit false, so ~/.cursor/sandbox.json is
+ *                    never consulted; ADE hook denials are the permission guard
  *   OpenCode OPENCODE_CONFIG_CONTENT deep-merges last, so any key ADE names wins
  *
  * Each adapter states only its own non-derivable fact and points here.

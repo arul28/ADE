@@ -25,6 +25,7 @@ import {
   type SessionMetadataPromptRunner,
 } from "./sessionNaming";
 import type { Logger } from "../logging/logger";
+import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
 
 export type SessionMetadataManagedSession = {
   session: AgentChatSession;
@@ -240,6 +241,12 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;
       generationError = generated.result ? null : generated.lastFailure?.error ?? null;
+      if (generationError && isSandboxUnsupportedFailureText(generationError)) {
+        generationError = presentChatFailure({
+          kind: "configuration",
+          message: generationError,
+        }).body;
+      }
       const laneNameOnly = needs.laneName && !needs.title && !needs.statusLine;
       const metadata = generated.result ?? (laneNameOnly
         ? null

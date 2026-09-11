@@ -32,6 +32,18 @@ private enum RootTab: String, Hashable, CaseIterable, Identifiable {
     }
   }
 
+  /// The sync domain whose rows this tab lists. The CTO tab lists nothing the
+  /// machine's project services own, so it has none.
+  var syncDomain: SyncDomain? {
+    switch self {
+    case .work: return .work
+    case .lanes: return .lanes
+    case .prs: return .prs
+    case .files: return .files
+    case .cto: return nil
+    }
+  }
+
   var analyticsScreen: ADEAnalyticsScreen {
     switch self {
     case .work: return .work
@@ -258,6 +270,20 @@ struct ContentView: View {
       filesTab
       ctoTab
     }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      if syncService.projectHostContentMayBeStale {
+        ProjectHostStartingBanner(
+          syncService: syncService,
+          staleContentNoun: selectedTab.syncDomain?.contentNoun
+        )
+      }
+    }
+    .overlay {
+      if syncService.shouldShowProjectHostRecovery {
+        ProjectHostRecoveryScreen()
+          .environmentObject(syncService)
+      }
+    }
   }
 
   private var workTab: some View {
@@ -311,6 +337,46 @@ struct ContentView: View {
       // nowhere on the phone. A string badge renders as a dot-sized marker and
       // hides itself when nil.
       .badge(syncService.ctoAttention.isAwaitingInput ? "!" : nil)
+  }
+}
+
+/// Persistent while this machine's project services are still starting. The
+/// tabs below keep their cached rows, so this banner is what says the machine
+/// is not answering yet — and offers the same retry the recovery screen runs.
+private struct ProjectHostStartingBanner: View {
+  @ObservedObject var syncService: SyncService
+  /// What the rows under this banner are, so the stale marker names them.
+  /// `nil` on tabs that show nothing this machine's project services own.
+  let staleContentNoun: String?
+
+  var body: some View {
+    VStack(spacing: 6) {
+      HStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.small)
+        Text("Still starting this project's services…")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 8)
+        Button("Retry") {
+          Task { await syncService.retryProjectHost() }
+        }
+        .buttonStyle(.plain)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+      }
+      // The cached rows stay on screen; this is the one place that says they
+      // may be out of date, so no tab has to grow its own marker.
+      if let staleContentNoun {
+        ADEStaleContentMarker(noun: staleContentNoun)
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity)
+    .background(.ultraThinMaterial)
+    .accessibilityElement(children: .contain)
   }
 }
 

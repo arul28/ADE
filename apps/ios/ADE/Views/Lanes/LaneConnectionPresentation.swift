@@ -34,7 +34,7 @@ func laneRootEmptyState(
   if laneStatus.phase == .failed {
     return LaneEmptyStatePresentation(
       symbol: "exclamationmark.triangle.fill",
-      title: "Lane hydration unavailable",
+      title: "Couldn't load your lanes",
       message: laneStatus.lastError ?? "Retry lane sync or reconnect the machine.",
       actionTitle: "Retry",
       action: .retry

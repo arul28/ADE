@@ -442,28 +442,70 @@ struct SyncDomainStatus: Equatable {
   static let disconnected = SyncDomainStatus(phase: .disconnected)
 }
 
+extension SyncDomain {
+  /// Plural noun for the rows this domain owns, used in user-facing sentences.
+  var contentNoun: String {
+    switch self {
+    case .lanes: return "lanes"
+    case .files: return "files"
+    case .work: return "chats"
+    case .prs: return "pull requests"
+    }
+  }
+}
+
+/// An in-tab load failure as the user reads it: a human body, an explicit what
+/// to do, and the raw host text kept behind the technical fold.
+struct SyncDomainFailureNotice: Equatable {
+  var title: String
+  var message: String
+  var nextAction: String
+  var technicalDetail: String?
+}
+
 extension SyncDomainStatus {
   /// Inline notice when the domain is in `.failed` but cached rows may still render (no empty-state card).
-  func inlineHydrationFailureNotice(for domain: SyncDomain) -> (title: String, message: String)? {
+  func inlineHydrationFailureNotice(for domain: SyncDomain) -> SyncDomainFailureNotice? {
     guard phase == .failed else { return nil }
     let raw = lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    let message =
-      normalized.isEmpty
-      ? "Fresh data could not be loaded from the host. Cached content may be outdated until you retry or reconnect."
-      : normalized
     let title: String
     switch domain {
     case .lanes:
-      title = "Lane hydration failed"
+      title = "Couldn't load your lanes"
     case .files:
-      title = "Files hydration failed"
+      title = "Couldn't load your files"
     case .work:
-      title = "Work hydration failed"
+      title = "Couldn't load your chats"
     case .prs:
-      title = "PR hydration failed"
+      title = "Couldn't load your pull requests"
     }
-    return (title, message)
+    return SyncDomainFailureNotice(
+      title: title,
+      message: "ADE couldn't get fresh \(domain.contentNoun) from your machine. You're seeing the ones it loaded last.",
+      nextAction: "Tap Retry to load them again.\nIf it keeps failing, check the machine in Settings.",
+      technicalDetail: normalized.isEmpty ? nil : normalized
+    )
+  }
+}
+
+extension ADEInstructionErrorCard {
+  /// The in-tab hydration-failure shape: every root screen renders the same
+  /// card from a `SyncDomainFailureNotice`, so the unpacking lives next to the
+  /// notice rather than in the shared design system.
+  init(
+    notice: SyncDomainFailureNotice,
+    retryTitle: String? = "Retry",
+    retry: (() -> Void)?
+  ) {
+    self.init(
+      title: notice.title,
+      message: notice.message,
+      nextAction: notice.nextAction,
+      technicalDetail: notice.technicalDetail,
+      retryTitle: retryTitle,
+      retry: retry
+    )
   }
 }
 
