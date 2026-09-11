@@ -4,7 +4,7 @@ import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../../share
 import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { normalizePath } from "../../../lib/pathUtils";
 import { COLORS, MONO_FONT, outlineButton } from "../../lanes/laneDesignTokens";
-import { getFileIcon } from "../filePresentation";
+import { getFileIcon, useFileIconColor } from "../filePresentation";
 
 /** File names come from an in-memory index, so they can land almost immediately. */
 const NAME_DEBOUNCE_MS = 120;
@@ -151,6 +151,7 @@ export function FilesSearchPanel({
   // Arrow keys move the highlight while focus stays in the input, so the input
   // has to name the highlighted row for a screen reader to follow along.
   const resultsListId = useId();
+  const fileIconColorFor = useFileIconColor();
   const [names, setNames] = useState<NameState>({ key: "", items: [] });
   const [contents, setContents] = useState<ContentState>({ key: "", groups: [] });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -416,7 +417,7 @@ export function FilesSearchPanel({
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
             style={{ background: isActive ? COLORS.accentSubtle : "transparent" }}
           >
-            <Icon size={14} color={color} />
+            <Icon size={14} color={fileIconColorFor(color)} />
             <span className="shrink-0" style={{ color: COLORS.textPrimary }}>{name}</span>
             <span className="ml-auto truncate pl-3" style={{ color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10 }}>
               {item.path}
@@ -439,7 +440,7 @@ export function FilesSearchPanel({
               style={{ color: COLORS.textSecondary }}
             >
               {isCollapsed ? <CaretRight size={11} /> : <CaretDown size={11} />}
-              <Icon size={13} color={color} />
+              <Icon size={13} color={fileIconColorFor(color)} />
               <span className="truncate" style={{ color: COLORS.textPrimary }}>{name}</span>
               <span className="truncate pl-1 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
                 {group.path}

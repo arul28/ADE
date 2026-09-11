@@ -25,11 +25,28 @@ export const IPC = {
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
-  appZoomCommand: "ade.app.zoomCommand",
+  /**
+   * Every native-menu command main offers the renderer, on one channel:
+   * `{ kind: "zoom" | "menu", command }`. Main and preload ship in one bundle,
+   * so there is no version in which they can disagree about the shape — the
+   * two pre-unification channels were deleted with their last sender.
+   */
+  appCommand: "ade.app.command",
+  /**
+   * The renderer, once per load, saying "my menu-command subscriber is live".
+   *
+   * `executeJavaScript` proves a JS context exists, which is true seconds
+   * before React mounts — so without this ack ⌘W landed on a window with no
+   * listener and did nothing at all during boot. Until it arrives, a command
+   * with an app-wide fallback runs the fallback instead of being sent.
+   */
+  appCommandsReady: "ade.app.commandsReady",
+  appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",
+  appOpenSystemSettingsPane: "ade.app.openSystemSettingsPane",
   appRevealPath: "ade.app.revealPath",
   appOpenPath: "ade.app.openPath",
   appWriteClipboardText: "ade.app.writeClipboardText",
@@ -151,6 +168,16 @@ export const IPC = {
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
+  /**
+   * Main → renderer: every loopback forward for this machine is gone.
+   *
+   * A forward's local listener dies with the transport that carried it, and
+   * the OS is free to hand that port number straight back out, so anything
+   * holding a `localPort` for the target must forget it now rather than
+   * discover it by loading a dead — or worse, unrelated — page.
+   */
+  remoteRuntimePortForwardsInvalidated:
+    "ade.remoteRuntime.portForwardsInvalidated",
   remoteRuntimeAttachmentUploadCapability: "ade.remoteRuntime.attachmentUploadCapability",
   remoteRuntimeUploadChatAttachment: "ade.remoteRuntime.uploadChatAttachment",
   remoteRuntimeStreamEvents: "ade.remoteRuntime.streamEvents",
@@ -426,13 +453,23 @@ export const IPC = {
   appControlAttachToTarget: "ade.appControl.attachToTarget",
   appControlEvent: "ade.appControl.event",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
+  builtInBrowserGetAgentPresence: "ade.builtInBrowser.getAgentPresence",
   builtInBrowserRequestOriginAccess: "ade.builtInBrowser.requestOriginAccess",
   builtInBrowserGetProfileDiagnostics: "ade.builtInBrowser.getProfileDiagnostics",
   builtInBrowserListPermissions: "ade.builtInBrowser.listPermissions",
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
+  /**
+   * Login import. Trusted-renderer-only, like the profile diagnostics and
+   * permission administration above it: importing a browser's cookies hands
+   * over live identities, so it is a thing a human does at their own machine
+   * and never something `ade browser` or a daemon action can reach.
+   */
+  builtInBrowserLoginImportCapabilities: "ade.builtInBrowser.loginImport.capabilities",
+  builtInBrowserLoginImportListSources: "ade.builtInBrowser.loginImport.listSources",
+  builtInBrowserLoginImportListDomains: "ade.builtInBrowser.loginImport.listDomains",
+  builtInBrowserLoginImportImport: "ade.builtInBrowser.loginImport.import",
   builtInBrowserShowPanel: "ade.builtInBrowser.showPanel",
   builtInBrowserSetBounds: "ade.builtInBrowser.setBounds",
-  builtInBrowserAttachWebview: "ade.builtInBrowser.attachWebview",
   builtInBrowserNavigate: "ade.builtInBrowser.navigate",
   builtInBrowserCreateTab: "ade.builtInBrowser.createTab",
   builtInBrowserSwitchTab: "ade.builtInBrowser.switchTab",
@@ -447,6 +484,30 @@ export const IPC = {
   builtInBrowserSelectPoint: "ade.builtInBrowser.selectPoint",
   builtInBrowserSelectCurrent: "ade.builtInBrowser.selectCurrent",
   builtInBrowserClearSelection: "ade.builtInBrowser.clearSelection",
+  /** Human-only hand-back. Never exposed on the agent-facing desktop bridge. */
+  builtInBrowserEndHandoff: "ade.builtInBrowser.endHandoff",
+  builtInBrowserSetEmulation: "ade.builtInBrowser.setEmulation",
+  builtInBrowserSetZoom: "ade.builtInBrowser.setZoom",
+  builtInBrowserFindInPage: "ade.builtInBrowser.findInPage",
+  builtInBrowserStopFindInPage: "ade.builtInBrowser.stopFindInPage",
+  /**
+   * Move the OS keyboard focus off the page's `WebContentsView` and back onto
+   * the window's own renderer, so a control ADE just focused can be typed in.
+   */
+  builtInBrowserFocusHost: "ade.builtInBrowser.focusHost",
+  /**
+   * One forwarded `ade browser open`, one answering panel — decided in main,
+   * because the panels that would race for it live in different windows.
+   */
+  builtInBrowserClaimRemoteRequest: "ade.builtInBrowser.claimRemoteRequest",
+  builtInBrowserSetDevTools: "ade.builtInBrowser.setDevTools",
+  builtInBrowserSetNetworkLogging: "ade.builtInBrowser.setNetworkLogging",
+  builtInBrowserGetNetworkLog: "ade.builtInBrowser.getNetworkLog",
+  builtInBrowserExportHar: "ade.builtInBrowser.exportHar",
+  builtInBrowserStartRecording: "ade.builtInBrowser.startRecording",
+  builtInBrowserStopRecording: "ade.builtInBrowser.stopRecording",
+  builtInBrowserStartPreviewStream: "ade.builtInBrowser.startPreviewStream",
+  builtInBrowserStopPreviewStream: "ade.builtInBrowser.stopPreviewStream",
   builtInBrowserEvent: "ade.builtInBrowser.event",
   ptyCreate: "ade.pty.create",
   ptyResumeSession: "ade.pty.resumeSession",
@@ -935,6 +996,7 @@ export const IPC = {
   perfFinalize: "ade.perf.finalize",
   perfScenarioComplete: "ade.perf.scenarioComplete",
   localhostProbePort: "ade.localhost.probePort",
+  localhostGetDevServers: "ade.localhost.getDevServers",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

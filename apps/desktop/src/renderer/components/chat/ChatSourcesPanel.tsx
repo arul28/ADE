@@ -1,7 +1,7 @@
 import { File, Globe, LinkSimple, Plugs, type Icon } from "@phosphor-icons/react";
 import { useMemo } from "react";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { deriveChatSources, type ChatSource } from "./chatSources";
 
 type SourceSection = {
@@ -33,7 +33,7 @@ function SourceRow({ source, Icon }: { source: ChatSource; Icon: SourceSection["
       type="button"
       className={`${className} transition-colors hover:border-cyan-300/20 hover:bg-cyan-400/[0.035]`}
       title={source.url}
-      onClick={() => openUrlInAdeBrowser(source.url)}
+      onClick={(event) => openLinkFromUi(source.url, event)}
     >
       {body}
     </button>

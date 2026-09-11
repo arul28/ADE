@@ -139,9 +139,11 @@ advertised in its prompt. `createCtoRuntimeToolMap(managed)` in
 `agentChatService.ts` builds the executable map and returns `null` for anything
 whose `identityKey` is not `"cto"`, so no other chat can reach these tools.
 
-`buildCtoOperatorToolDeps` builds the dependency set for both the runtime map
-and `previewSessionToolNames`. Registered schemas are always loaded for CTO
-sessions and are the authoritative capability reference. A live measurement
+`buildCtoOperatorToolDeps` builds the dependency set for the runtime map. It
+was also shared with `previewSessionToolNames`, a name-enumeration helper that
+has since been removed because it had no non-test caller — there is no separate
+prompt manifest today. Registered schemas are always loaded for CTO sessions and
+are the authoritative capability reference. A live measurement
 found that repeating the generated inventory in the prompt added about 11.8k
 characters (roughly 2,945 estimated tokens) on top of about 28.8k tokens of MCP
 tool schemas, so `buildCtoCapabilityManifest` now carries only cross-tool

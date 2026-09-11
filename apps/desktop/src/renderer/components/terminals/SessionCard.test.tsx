@@ -12,6 +12,10 @@ import {
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import {
+  resetAgentBrowserPresenceForTest,
+  setAgentBrowserPresenceForTest,
+} from "./agentBrowserPresence";
 
 const { navigateMock, sessionDeltaMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -44,6 +48,7 @@ afterEach(() => {
   navigateMock.mockReset();
   sessionDeltaMock.mockReset();
   sessionDeltaMock.mockReturnValue(null);
+  resetAgentBrowserPresenceForTest();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -107,6 +112,80 @@ function row(container: HTMLElement): HTMLElement {
   if (!element) throw new Error("session row not found");
   return element as HTMLElement;
 }
+
+describe("SessionCard agent browser presence", () => {
+  it("badges only the chat that is using the browser", () => {
+    setAgentBrowserPresenceForTest([{
+      chatSessionId: "session-1",
+      laneId: "lane-1",
+      tabId: "tab-1",
+      since: "2026-09-09T10:00:00.000Z",
+      lastActivityAt: "2026-09-09T10:00:02.000Z",
+    }]);
+
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "Using the browser" })).toBeTruthy();
+
+    cleanup();
+    // Another chat's presence is not this row's.
+    const other = render(
+      <SessionCard
+        session={makeSession({ id: "session-2" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(other.container.querySelector('[data-testid="agent-browser-presence"]')).toBeNull();
+    void container;
+  });
+
+  it("shows nothing while no agent is browsing", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('[data-testid="agent-browser-presence"]')).toBeNull();
+  });
+
+  it("drops the badge when the browsing stretch expires", () => {
+    setAgentBrowserPresenceForTest([{
+      chatSessionId: "session-1",
+      laneId: "lane-1",
+      tabId: null,
+      since: "2026-09-09T10:00:00.000Z",
+      lastActivityAt: "2026-09-09T10:00:02.000Z",
+    }]);
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('[data-testid="agent-browser-presence"]')).toBeTruthy();
+
+    // Main expires the entry and publishes the new (empty) set.
+    act(() => setAgentBrowserPresenceForTest([]));
+    expect(container.querySelector('[data-testid="agent-browser-presence"]')).toBeNull();
+  });
+});
 
 describe("SessionCard orchestration identity", () => {
   it("stacks the current provider mark above the previous handoff mark", () => {

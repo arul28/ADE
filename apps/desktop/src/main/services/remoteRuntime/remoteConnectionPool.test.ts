@@ -666,6 +666,39 @@ describe("RemoteConnectionPool", () => {
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
+  it("announces that a target's port forwards are gone on both teardown paths", async () => {
+    // The browser's remote-origin registry and the preload's forward de-dupe
+    // both key on a local port that dies with the transport, and the OS hands
+    // that port straight back out. An explicit disconnect never notified
+    // `onEntryEvicted`, so the notification cannot ride that hook — a
+    // reconnected machine kept navigating to a port that had already moved.
+    const firstClient = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const onInvalidated = vi.fn();
+    pool.onPortForwardsInvalidated(onInvalidated);
+
+    await pool.connect(target);
+    await pool.disconnect(target.id);
+    expect(onInvalidated).toHaveBeenCalledWith(target.id);
+
+    onInvalidated.mockClear();
+    const secondClient = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    await pool.connect(target);
+    secondClient.emitDisconnect(new Error("stream closed"));
+    await Promise.resolve();
+    expect(onInvalidated).toHaveBeenCalledWith(target.id);
+  });
+
   it("does not emit an eviction notification for intentional disconnects", async () => {
     const client = createClient();
     const ssh = createSsh();

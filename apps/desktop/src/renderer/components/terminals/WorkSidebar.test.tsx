@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import type { ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,8 @@ import type {
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
+import { makeBuiltInBrowserStatus } from "../chat/__fixtures__/builtInBrowserStatus";
 
 const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
 
@@ -122,13 +125,11 @@ vi.mock("../chat/ChatTerminalDrawer", async () => {
   const React = await import("react");
   return {
     ChatTerminalDrawer: (props: {
-      variant?: string;
       laneId: string;
       chatSessionId?: string | null;
       open: boolean;
     }) => React.createElement("div", {
       "data-testid": "chat-terminal-drawer",
-      "data-variant": props.variant ?? "",
       "data-lane-id": props.laneId,
       "data-chat-session-id": props.chatSessionId ?? "",
       "data-open": props.open ? "true" : "false",
@@ -227,11 +228,14 @@ const otherLaneAppControlSession: AppControlSession = {
   cdpEndpoint: "http://127.0.0.1:9222",
   cdpTargetId: "target-2",
   provider: "cdp",
+  driver: "cdp",
   chatSessionId: "chat-2",
   startedAt: "2026-05-13T00:00:00.000Z",
   connectedAt: "2026-05-13T00:00:01.000Z",
   status: "connected",
   lastError: null,
+  lastObservationId: null,
+  lastTraceEntryId: null,
 };
 
 const otherLaneIosSession: IosSimulatorSession = {
@@ -278,29 +282,16 @@ const appControlContextItem: AppControlContextItem = {
   selectedAt: "2026-05-13T00:00:00.000Z",
 };
 
-const defaultBrowserStatus: BuiltInBrowserStatus = {
+const defaultBrowserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus({
   attached: false,
-  partition: "persist:ade-browser",
-  storageProfileKey: "global",
   collectionKey: "window",
-  collectionProjectRoot: null,
-  persistentProfile: true,
   visible: false,
   bounds: { x: 0, y: 0, width: 0, height: 0 },
   activeTabId: null,
   tabs: [],
   url: null,
   title: null,
-  isLoading: false,
-  canGoBack: false,
-  canGoForward: false,
-  isInspecting: false,
-  hasSelection: false,
-  ownerLaneId: null,
-  ownerChatSessionId: null,
-  ownerClaimedAt: null,
-  ownerLeaseExpiresAt: null,
-};
+});
 
 function installAdeMock(options: {
   appControlSession?: AppControlSession | null;
@@ -308,6 +299,7 @@ function installAdeMock(options: {
   browserStatus?: BuiltInBrowserStatus | null;
 } = {}) {
   const terminalWrite = vi.fn().mockResolvedValue({ ok: true });
+  const resumeSession = vi.fn().mockResolvedValue({ ok: true });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -328,9 +320,26 @@ function installAdeMock(options: {
       terminal: {
         write: terminalWrite,
       },
+      pty: {
+        resumeSession,
+      },
     },
   });
-  return { terminalWrite };
+  return { terminalWrite, resumeSession };
+}
+
+/**
+ * The feeds come from the page's provider in production; the pane opens no
+ * subscriptions of its own, so every render site here has to supply the owner.
+ */
+function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
+  return (
+    <MemoryRouter>
+      <NativeToolFeedsProvider active runtimePin={runtimePin}>
+        {children}
+      </NativeToolFeedsProvider>
+    </MemoryRouter>
+  );
 }
 
 function renderSidebar(args: {
@@ -340,25 +349,32 @@ function renderSidebar(args: {
   laneId?: string;
   lanes?: LaneSummary[];
   activeSession?: TerminalSessionSummary | null;
-  onTabChange?: (tab: WorkSidebarTab) => void;
+  onTabChange?: (tab: WorkSidebarTab | null) => void;
   runtimePin?: OpenProjectBinding | null;
 }) {
-  return render(
-    <MemoryRouter>
-      <WorkSidebar
-        active
-        laneId={args.laneId ?? "lane-1"}
-        lanes={args.lanes ?? [lane]}
-        activeSession={args.activeSession ?? activeSession}
-        tab={args.tab}
-        onTabChange={args.onTabChange ?? vi.fn()}
-        onClose={vi.fn()}
-        contextTarget={args.contextTarget}
-        contextDisabledReason={args.contextDisabledReason ?? null}
-        runtimePin={args.runtimePin ?? null}
-      />
-    </MemoryRouter>,
-  );
+  const runtimePin = args.runtimePin ?? null;
+  return render(withFeeds(runtimePin, (
+    <WorkSidebar
+      active
+      laneId={args.laneId ?? "lane-1"}
+      lanes={args.lanes ?? [lane]}
+      activeSession={args.activeSession === undefined ? activeSession : args.activeSession}
+      tool={args.tab}
+      onToolChange={args.onTabChange ?? vi.fn()}
+      onClose={vi.fn()}
+      contextTarget={args.contextTarget}
+      contextDisabledReason={args.contextDisabledReason ?? null}
+      runtimePin={runtimePin}
+    />
+  )));
+}
+
+/** A picker card, found by the tool name it renders. */
+function cardFor(label: string): HTMLButtonElement {
+  const heading = screen.getByText(label);
+  const card = heading.closest("button");
+  if (!card) throw new Error(`No picker card for ${label}`);
+  return card as HTMLButtonElement;
 }
 
 describe("WorkSidebar context targets", () => {
@@ -410,7 +426,6 @@ describe("WorkSidebar context targets", () => {
     });
 
     const drawer = screen.getByTestId("chat-terminal-drawer");
-    expect(drawer.getAttribute("data-variant")).toBe("panel");
     expect(drawer.getAttribute("data-lane-id")).toBe("lane-1");
     expect(drawer.getAttribute("data-chat-session-id")).toBe("term-1");
     expect(drawer.getAttribute("data-open")).toBe("true");
@@ -426,14 +441,34 @@ describe("WorkSidebar context targets", () => {
     expect(screen.getByTestId("chat-terminal-drawer").getAttribute("data-chat-session-id")).toBe("chat-1");
   });
 
-  it("explains why ended CLI sessions cannot open attached terminals", () => {
+  it("offers an ended CLI session the one action that brings its shells back", async () => {
+    const { resumeSession } = installAdeMock();
     renderSidebar({
       tab: "terminal",
       activeSession: { ...activeSession, status: "completed" },
       contextTarget: null,
     });
 
-    expect(screen.getByText(/Continue this .* session before opening an attached terminal\./)).toBeTruthy();
+    // One row, not a five-element column: what ended, and the two things you
+    // can do about it. The paragraph explaining what "ended" means and the
+    // `ade terminal` hint were both saying things the header already says.
+    const card = screen.getByTestId("terminal-ended-card");
+    expect(card.textContent).toMatch(/ended$|ended/);
+    expect(screen.queryByText("ade terminal")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume/ }));
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: activeSession.id }),
+    ));
+  });
+
+  it("keeps a lane with no owning session on the same warm empty state", () => {
+    installAdeMock();
+    renderSidebar({ tab: "terminal", activeSession: null, contextTarget: null });
+
+    expect(screen.getByText("Start a shell in this lane")).toBeTruthy();
+    // One line and nothing else — no paragraph, no `ade terminal` hint.
+    expect(screen.queryByText("ade terminal")).toBeNull();
   });
 
   it("writes formatted context to active PTY targets instead of dispatching chat events", async () => {
@@ -483,15 +518,19 @@ describe("WorkSidebar context targets", () => {
     expect(terminalWrite.mock.calls[0]?.[0].data).not.toContain("base64");
   });
 
-  it("keeps tools mounted but disables context insertion when there is no target", () => {
-    renderSidebar({
+  it("withholds the context callbacks — and says nothing about it — with no target", () => {
+    const { container } = renderSidebar({
       tab: "ios",
       contextTarget: null,
-      contextDisabledReason: "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.",
+      contextDisabledReason: "This shell cannot receive inserted context.",
     });
 
     expect(screen.getByTestId("ios-panel")).toBeTruthy();
-    expect(screen.getByText(/Shell sessions can use the lane tools/)).toBeTruthy();
+    // The pane does not narrate a capability it simply does not have here: the
+    // panels drop the controls that depend on it instead of explaining their
+    // absence in a bar above controls you can still see.
+    expect(screen.queryByText(/cannot receive inserted context/)).toBeNull();
+    expect(container.querySelector(".bg-amber-500\\/\\[0\\.055\\]")).toBeNull();
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
   });
@@ -550,7 +589,7 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This iOS Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
@@ -597,29 +636,66 @@ describe("WorkSidebar context targets", () => {
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("returns to the picker on Escape and parks the browser view on the way out", async () => {
+    installAdeMock({});
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "browser",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(screen.getByTestId("browser-panel")).toBeTruthy();
+    fireEvent.keyDown(container.querySelector("aside")!, { key: "Escape" });
+
+    expect(onTabChange).toHaveBeenCalledWith(null);
+    await waitFor(() => {
+      expect(window.ade.builtInBrowser.setBounds).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: false }),
+      );
+    });
+  });
+
+  it("offers an activity dot for another lane-usable tool that is live", async () => {
+    installAdeMock({
+      iosSession: { ...otherLaneIosSession, laneId: "lane-1", deviceName: "iPhone 17 Pro" },
+    });
+    const onTabChange = vi.fn();
+    renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
+
+    const dot = await screen.findByRole("button", {
+      name: "Switch to Simulator — iPhone 17 Pro",
+    });
+    fireEvent.click(dot);
+    expect(onTabChange).toHaveBeenCalledWith("ios");
+  });
+
   it("hides the browser view for the pinned checkout, not the tab's project", async () => {
     installAdeMock({});
     useAppStore.setState({
       project: { rootPath: "/repo-one", name: "Repo One" },
     } as any);
     const browser = window.ade.builtInBrowser;
+    const pin = {
+      kind: "local" as const,
+      key: "local:/repo-two",
+      rootPath: "/repo-two",
+      displayName: "Repo Two",
+    };
 
     renderSidebar({
       tab: "browser",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
-      runtimePin: {
-        kind: "local",
-        key: "local:/repo-two",
-        rootPath: "/repo-two",
-        displayName: "Repo Two",
-      },
+      runtimePin: pin,
     });
 
-    // The sidebar itself never reads browser status: that read is unpinned, so
-    // it could only ever answer for the tab's own machine.
-    expect(browser.getStatus).not.toHaveBeenCalled();
+    // Every browser read the pane makes follows the pin, so a pinned checkout
+    // never describes (or parks) the tab's own project's view.
+    await waitFor(() => {
+      expect(browser.getStatus).toHaveBeenCalledWith({ projectRoot: "/repo-two" }, pin);
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "Git" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to tools" }));
 
     await waitFor(() => {
       expect(browser.setBounds).toHaveBeenCalledWith(expect.objectContaining({
@@ -633,7 +709,46 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("only exposes remote-aware tool panes for remote projects", async () => {
+  it("disables only the this-computer tools for remote projects and falls back to the picker", async () => {
+    const onTabChange = vi.fn();
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // Every tool still has a card — an unavailable one says why rather than
+    // vanishing — but only the remote-capable ones are clickable.
+    expect(cardFor("Git").disabled).toBe(false);
+    expect(cardFor("Files").disabled).toBe(false);
+    expect(cardFor("Terminal").disabled).toBe(false);
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("App Control").disabled).toBe(true);
+    // The browser is NOT a this-computer tool. It is hosted by this window
+    // whatever the lane is bound to, and a remote lane is exactly what the
+    // loopback port-forward exists for.
+    expect(cardFor("Browser").disabled).toBe(false);
+    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
+    // The picker, not some other tool: being dumped into Git because the
+    // simulator is unavailable would be a non-sequitur.
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
+    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("opens the browser on a remote project rather than falling back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -653,20 +768,12 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
-    expect(screen.queryByTestId("browser-panel")).toBeNull();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
-    expect(window.ade.builtInBrowser.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId("browser-panel")).toBeTruthy();
+    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+    expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
-  it("hides the macOS-only iOS Simulator pane on Windows", async () => {
+  it("disables the macOS-only iOS Simulator card on Windows", async () => {
     Object.defineProperty(window.navigator, "platform", {
       configurable: true,
       value: "Win32",
@@ -679,11 +786,441 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
-    expect(screen.getByRole("button", { name: "App Control" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(screen.getByText("macOS only")).toBeTruthy();
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(cardFor("Browser").disabled).toBe(false);
     expect(screen.queryByTestId("ios-panel")).toBeNull();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkSidebar live tool status", () => {
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ project: null, projectBinding: null } as any);
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The pane with a terminal list that can change, plus the two events that can
+   * change it. `installAdeMock` deliberately has neither, so this builds on it
+   * rather than widening the mock every other test in this file shares.
+   */
+  function installLiveTerminalMock() {
+    installAdeMock();
+    const shells: Array<{ terminalId: string; ptyId: string; title: string; status: string }> = [];
+    const sessionListeners: Array<() => void> = [];
+    const list = vi.fn(async () => shells.map((shell) => ({ ...shell })));
+    Object.assign(window.ade as Record<string, unknown>, {
+      terminal: { ...(window.ade as { terminal: object }).terminal, list },
+      sessions: {
+        onChanged: vi.fn((cb: () => void) => {
+          sessionListeners.push(cb);
+          return () => {};
+        }),
+      },
+      pty: { onExit: vi.fn(() => () => {}) },
+    });
+    return {
+      list,
+      startShell(title: string) {
+        shells.push({ terminalId: `term-${shells.length + 1}`, ptyId: `pty-${shells.length + 1}`, title, status: "running" });
+        for (const listener of sessionListeners) listener();
+      },
+    };
+  }
+
+  it("re-reads attached shells when a session appears, without remounting the pane", async () => {
+    const live = installLiveTerminalMock();
+    const { container } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={null}
+        tool="terminal"
+        onToolChange={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+
+    // The defect: the header committed to this and never moved again. The live
+    // fact now rides on the active tab's accessible name (it is the tab's
+    // tooltip), not on a header line.
+    await waitFor(() => expect(
+      screen.getByRole("tab", { name: /No shells/ }),
+    ).toBeTruthy());
+    const paneBefore = container.querySelector("aside");
+
+    live.startShell("zsh");
+
+    // The count is the whole line: shell titles are unbounded and truncated the
+    // status at pane widths people actually use.
+    await waitFor(() => expect(
+      screen.getByRole("tab", { name: /1 shell/ }),
+    ).toBeTruthy());
+    expect(live.list).toHaveBeenCalledTimes(2);
+    // Same <aside> node: the status is live, not the product of a remount.
+    expect(container.querySelector("aside")).toBe(paneBefore);
+  });
+});
+
+describe("WorkSidebar pane chrome", () => {
+  beforeEach(() => {
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "MacIntel" });
+    installAdeMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ project: null, projectBinding: null } as any);
+    delete (window as unknown as { ade?: unknown }).ade;
+    if (originalNavigatorPlatform) {
+      Object.defineProperty(window.navigator, "platform", originalNavigatorPlatform);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("returns to the picker on Escape from inside the pane", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const inside = container.querySelector("aside")!.querySelector("div")!;
+    fireEvent.keyDown(inside, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps Escape working after a picker card is clicked", () => {
+    // The card that was clicked unmounts with the picker, and the browser then
+    // drops focus onto <body> — where a keydown is never dispatched inside the
+    // pane, so the pane's capture handler never saw it. Escape did nothing at
+    // all, which is the one keystroke a pane you just opened has to honour.
+    const onToolChange = vi.fn();
+    const tree = (tool: WorkSidebarTab | null) => withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={tool}
+        onToolChange={onToolChange}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    ));
+    const { container, rerender } = render(tree(null));
+
+    const aside = container.querySelector("aside")!;
+    fireEvent.click(cardFor("Git"));
+    expect(onToolChange).toHaveBeenCalledWith("git");
+    expect(document.activeElement).toBe(aside);
+
+    // The pane is controlled, so the parent's answer to that pick is the tool
+    // being on screen — which is the state Escape has to get you out of.
+    rerender(tree("git"));
+    fireEvent.keyDown(aside, { key: "Escape" });
+    expect(onToolChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("takes Escape from <body> when the pane was the last thing clicked", () => {
+    // The belt to the focus braces above: whatever drops focus — an unmounting
+    // card, a panel that blurs itself — a keystroke that lands on <body> still
+    // belongs to the surface the pointer last committed to.
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const inside = container.querySelector("aside")!.querySelector("div")!;
+    fireEvent.pointerDown(inside);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves a <body> Escape alone when the pointer last went somewhere else", () => {
+    const onTabChange = vi.fn();
+    renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // The composer, say: its Escape is its own, and the pane must not race it.
+    fireEvent.pointerDown(document.body);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  it("leaves plain Escape to the terminal and takes Shift+Escape instead", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // Stand in for xterm's helper textarea: the pane identifies a terminal by
+    // the `.xterm` container it always renders into.
+    const xterm = document.createElement("div");
+    xterm.className = "xterm";
+    const textarea = document.createElement("textarea");
+    xterm.appendChild(textarea);
+    container.querySelector("aside")!.appendChild(xterm);
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: "Escape", shiftKey: true });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves Escape to a tool that claimed it", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    // The browser's find bar marks itself: its Escape closes the find bar, and
+    // the pane must not also take you back to the picker on the same keystroke.
+    const findBar = document.createElement("div");
+    findBar.setAttribute("data-ade-escape-scope", "browser-find");
+    const input = document.createElement("input");
+    findBar.appendChild(input);
+    container.querySelector("aside")!.appendChild(findBar);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  it("leaves Escape to a text field that has something to clear, but not to an empty one", () => {
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const field = document.createElement("input");
+    field.value = "localhost:3000";
+    container.querySelector("aside")!.appendChild(field);
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    // An empty field has nothing to clear, so Escape is the pane's again.
+    field.value = "";
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("shows the picker with an empty strip, and keeps the strip up behind it", () => {
+    const { rerender } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        openTools={[]}
+        onToolChange={vi.fn()}
+        onToolClose={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    // Nothing open: the bar is the grid button and the ✕, and the page is the
+    // picker.
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(cardFor("Terminal")).toBeTruthy();
+
+    // Tabs stay drawn while the picker is showing — they are still open.
+    rerender(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        openTools={["git", "files"]}
+        onToolChange={vi.fn()}
+        onToolClose={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(cardFor("Terminal")).toBeTruthy();
+  });
+
+  it("closes a tab through the pane's own ×", () => {
+    const onToolClose = vi.fn();
+    render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        openTools={["git", "files"]}
+        onToolChange={vi.fn()}
+        onToolClose={onToolClose}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Files" }));
+    expect(onToolClose).toHaveBeenCalledWith("files");
+  });
+
+  it("puts the tool on screen in the strip even when the caller forgot to", () => {
+    render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        openTools={[]}
+        onToolChange={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+    // A pane showing a tool with no tab would have no mark anywhere saying what
+    // you are looking at.
+    expect(screen.getByRole("tab", { selected: true }).getAttribute("data-tool-tab")).toBe("git");
+  });
+
+  it("closes the pane on Escape at the picker, where there is nothing to go back to", () => {
+    const onClose = vi.fn();
+    const { container } = render(withFeeds(null, (
+      <WorkSidebar
+        active
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool={null}
+        onToolChange={vi.fn()}
+        onClose={onClose}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    )));
+
+    fireEvent.keyDown(container.querySelector("aside")!.querySelector("div")!, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("stands down entirely once the Work route is not the one on screen", () => {
+    // `TerminalsPage` is mounted unconditionally and hidden with CSS when the
+    // user is on Lanes or Settings, so `active` is the ONLY thing that tells
+    // this pane it is off screen. Ungated, its document listeners closed the
+    // tool behind the user's back and moved focus into an `opacity: 0`,
+    // `pointer-events: none` subtree on a route they were not on.
+    const onToolChange = vi.fn();
+    const tree = (active: boolean) => withFeeds(null, (
+      <WorkSidebar
+        active={active}
+        laneId="lane-1"
+        lanes={[lane]}
+        activeSession={activeSession}
+        tool="git"
+        onToolChange={onToolChange}
+        onClose={vi.fn()}
+        contextTarget={{ kind: "chat", sessionId: "chat-1" }}
+        contextDisabledReason={null}
+      />
+    ));
+    const { container, rerender } = render(tree(true));
+
+    // Commit the pointer to the pane, then leave the route by keyboard — which
+    // is exactly the sequence that leaves `paneHasPointerRef` stale.
+    fireEvent.pointerDown(container.querySelector("aside")!);
+    rerender(tree(false));
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+
+    // The pane's OWN capture handler is the sibling path, and it needs no stale
+    // pointer at all: leaving the route by keyboard (⌘2, the palette) with
+    // focus still on a pane button sends the next Escape straight to it.
+    const paneButton = container.querySelector("aside")!.querySelector("button")!;
+    fireEvent.keyDown(paneButton, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+
+    // And it re-arms when the user comes back — but only after a fresh click,
+    // because the pointer commitment was reset on the way out.
+    rerender(tree(true));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(container.querySelector("aside")!.querySelector("button")!, { key: "Escape" });
+    expect(onToolChange).toHaveBeenCalledWith(null);
+    onToolChange.mockClear();
+
+    fireEvent.pointerDown(container.querySelector("aside")!);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onToolChange).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps plain Escape with the terminal even when the keystroke lands on <body>", () => {
+    // xterm drops focus to <body> on a reconnect or a dispose. With no target
+    // to walk up from, the <body> path used to apply the plain-Escape binding
+    // and take a keystroke the terminal was owed.
+    const onTabChange = vi.fn();
+    const { container } = renderSidebar({
+      tab: "git",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    const xterm = document.createElement("div");
+    xterm.className = "xterm";
+    const textarea = document.createElement("textarea");
+    xterm.appendChild(textarea);
+    container.querySelector("aside")!.appendChild(xterm);
+
+    fireEvent.pointerDown(textarea);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    // Shift+Escape is the terminal's way out, and it still works from <body>.
+    fireEvent.keyDown(document.body, { key: "Escape", shiftKey: true });
+    expect(onTabChange).toHaveBeenCalledWith(null);
+  });
+
+  it("stands down while a modal layer owns Escape", () => {
+    const onTabChange = vi.fn();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    try {
+      const { container } = renderSidebar({
+        tab: "git",
+        contextTarget: { kind: "chat", sessionId: "chat-1" },
+        onTabChange,
+      });
+      fireEvent.keyDown(container.querySelector("aside")!.querySelector("div")!, { key: "Escape" });
+      expect(onTabChange).not.toHaveBeenCalled();
+    } finally {
+      dialog.remove();
+    }
   });
 });

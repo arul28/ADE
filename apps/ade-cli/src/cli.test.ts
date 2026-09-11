@@ -121,6 +121,32 @@ async function waitForDetachedProcessExit(
   await waitUntilGone(Date.now() + 2_000);
 }
 
+/**
+ * `withEnv` restores the environment as soon as `run` RETURNS, so an async
+ * callback would have its env pulled out from under it before the awaited work
+ * ever starts. Anything that reads process.env asynchronously needs this one.
+ */
+async function withEnvAsync<T>(
+  updates: Record<string, string | undefined>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    previous.set(key, process.env[key]);
+    const value = updates[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
   for (const key of Object.keys(updates)) {
@@ -828,6 +854,18 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("names the import roots this platform actually has in proof help", () => {
+    // `resolveTempImportRoots` adds `/tmp` only off Windows and `$TMPDIR` is
+    // not the Windows spelling, so unconditional POSIX guidance sends a Windows
+    // agent to a directory that is not a root — it retries and fails again.
+    const plan = buildCliPlan(["proof", "--help"]);
+    expect(plan.kind).toBe("help");
+    if (plan.kind !== "help") return;
+    expect(plan.text).toContain("$TMPDIR");
+    expect(plan.text).toContain("%TEMP%");
+    expect(plan.text).toContain("not a root on\n  Windows");
+  });
+
   it("keeps global help on the help surface", () => {
     const plan = buildCliPlan(["--help"]);
     expect(plan.kind).toBe("help");
@@ -983,6 +1021,14 @@ describe("ADE CLI", () => {
     });
   });
 
+  // Spawns a real owner process, writes a lock, then boots `serve`. The
+  // conflict is classified on the first attempt with no retry budget, so this
+  // costs about a second in isolation; 30s is headroom over that, not a
+  // schedule to fill. It inherited the 5s default and only ever passed on a
+  // favourable worker layout, so a 173rd file in the pool was enough to time
+  // it out. Deliberately NOT the sibling's 150s: that number is sized by the
+  // sibling's own 60s + 45s polling budget, which this test does not have, and
+  // copying it would let a 100s regression pass green.
   crdtHostIt("serve fails instead of exiting successfully when another channel owns mobile sync", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-serve-conflict-"));
     const projectRoot = path.join(adeHome, "project");
@@ -1045,7 +1091,7 @@ describe("ADE CLI", () => {
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   /**
    * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.
@@ -4826,6 +4872,174 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("carries the resolved projectId on desktop-socket action calls", async () => {
+    // Regression: when the machine-runtime handshake fails (build-hash skew,
+    // a role the daemon will not serve) the CLI falls back to the desktop
+    // socket — which on a modern brain is the SAME multi-project runtime.
+    // A bare pass-through there made every `ade/actions/call` fail with
+    // "requires params.projectId", which is what an ADE-launched agent hit
+    // when it ran `ade --socket browser status`.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-desktop-socket-project-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const seen: Array<{ method: string; params: any }> = [];
+    // A runtime that answers but will not serve this caller's role: the CLI
+    // rejects it WITHOUT trying to spawn a replacement (spawning is gated on
+    // `--socket` not being required), which is the fallback shape we want.
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        seen.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          return { projectId: "project-42", rootPath: request.params?.rootPath };
+        }
+        if (request.method === "ade/actions/call") {
+          const projectId = request.params?.projectId;
+          if (typeof projectId !== "string" || !projectId.trim()) {
+            throw new Error("Method ade/actions/call requires params.projectId.");
+          }
+          return {
+            domain: "built_in_browser",
+            action: "getStatus",
+            result: { visible: true, tabs: [] },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      // A bare `--socket` is exactly what the failing agent used: it demands a
+      // socket without naming one, so the override is empty and the
+      // machine-runtime branch is the one that gets tried first.
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "status", "--json"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.output)).toMatchObject({ visible: true, tabs: [] });
+      const actionCalls = seen.filter((entry) => entry.method === "ade/actions/call");
+      expect(actionCalls).toHaveLength(1);
+      expect(actionCalls[0]?.params?.projectId).toBe("project-42");
+      expect(seen.some((entry) => entry.method === "projects.add")).toBe(true);
+      // Machine-scoped methods must stay unscoped, exactly as on runtime-socket.
+      const initialize = seen.find((entry) => entry.method === "ade/initialize");
+      expect(initialize?.params?.projectId).toBeUndefined();
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS; the temp dir is
+        // disposable either way.
+      }
+    }
+  });
+
+  posixIt("stays a bare pass-through on a desktop socket with no project registry", async () => {
+    // A genuinely legacy single-project desktop socket has no `projects.add`.
+    // Failing to register must not fail the command.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-desktop-socket-legacy-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const seen: Array<{ method: string; params: any }> = [];
+    // A runtime that answers but will not serve this caller's role: the CLI
+    // rejects it WITHOUT trying to spawn a replacement (spawning is gated on
+    // `--socket` not being required), which is the fallback shape we want.
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        seen.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          throw new Error("Method not found: projects.add");
+        }
+        if (request.method === "ade/actions/call") {
+          return {
+            domain: "built_in_browser",
+            action: "getStatus",
+            result: { visible: false, tabs: [] },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "status", "--json"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const actionCalls = seen.filter((entry) => entry.method === "ade/actions/call");
+      expect(actionCalls).toHaveLength(1);
+      expect(actionCalls[0]?.params?.projectId).toBeUndefined();
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS; the temp dir is
+        // disposable either way.
+      }
+    }
+  });
+
   it("filters the typed chat model inventory by provider", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",
@@ -5003,6 +5217,34 @@ describe("ADE CLI", () => {
     expect(text).toContain("user 2026-06-29T12:00:00.000Z");
     expect(text).toContain("hello");
     expect(text).toContain("assistant 2026-06-29T12:00:01.000Z");
+  });
+
+  it("keeps --text a global output switch, not a value carrier", () => {
+    // Regression: the `ade browser` value-flag table was merged into the
+    // CLI-global carrier set, so `--text` swallowed the sessionId after it and
+    // `session show` silently fell back to the ambient chat session.
+    const sessionShow = buildCliPlan(["session", "show", "--text", "s1"]);
+    expect(sessionShow.kind).toBe("execute");
+    if (sessionShow.kind !== "execute") return;
+    expect(
+      (sessionShow.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })
+        ?.arguments?.args,
+    ).toMatchObject({ sessionId: "s1" });
+
+    const chatShow = buildCliPlan(["chat", "show", "--text", "s1"]);
+    expect(chatShow.kind).toBe("execute");
+    if (chatShow.kind !== "execute") return;
+    expect(chatShow.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "getSessionSummary", argsList: ["s1"] },
+    });
+
+    const chatSend = buildCliPlan(["chat", "send", "--text", "s1", "hello"]);
+    expect(chatSend.kind).toBe("execute");
+    if (chatSend.kind !== "execute") return;
+    expect(
+      (chatSend.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })
+        ?.arguments?.args,
+    ).toMatchObject({ sessionId: "s1" });
   });
 
   it("builds chat show as a session summary and chat status as turn status", () => {
@@ -7403,8 +7645,13 @@ describe("ADE CLI", () => {
         name: "Done",
         ownerKind: "chat",
         ownerId: "chat-1",
+        // Only a proof-named command files a drawer record; the bare tool is
+        // scratch agent vision.
+        proof: true,
       },
     });
+    expect((screenshot.steps[0]?.params as any)?.arguments?.proof).toBe(true);
+    expect((record.steps[0]?.params as any)?.arguments?.proof).toBe(true);
     expect(record.preferHeadless).toBe(true);
     expect(list.preferHeadless).toBeUndefined();
   });
@@ -7444,42 +7691,224 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("passes the caller cwd when ingesting proof directly", () => {
-    const plan = buildCliPlan([
-      "proof",
-      "ingest",
-      "--input-json",
-      JSON.stringify({
-        backendStyle: "external_cli",
-        backendName: "agent-browser",
-        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
-      }),
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") throw new Error("Expected proof ingest to produce an execute plan");
+  describe("proof callerRoot derivation", () => {
+    const laneEnvKeys = ["ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const;
+    const previous = new Map<string, string | undefined>();
 
-    expect(plan.steps[0]?.params).toMatchObject({
-      name: "ingest_computer_use_artifacts",
-      arguments: {
-        callerRoot: process.cwd(),
-        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
-      },
+    beforeEach(() => {
+      for (const key of laneEnvKeys) {
+        previous.set(key, process.env[key]);
+        delete process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of laneEnvKeys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it("passes the caller cwd when ingesting proof with no lane env", () => {
+      const plan = buildCliPlan([
+        "proof",
+        "ingest",
+        "--input-json",
+        JSON.stringify({
+          backendStyle: "external_cli",
+          backendName: "agent-browser",
+          inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+        }),
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof ingest to produce an execute plan");
+
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          callerRoot: process.cwd(),
+          callerRootSource: "cwd",
+          inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+        },
+      });
+    });
+
+    it("resolves a relative proof attach path against the caller's cwd", () => {
+      // The agent's cwd is its lane worktree; the runtime storing the artifact
+      // runs at the project root. Resolving here is what stops the runtime from
+      // having to guess which tree a bare "shots/proof.png" belongs to.
+      const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBe(process.cwd());
+      expect((args.inputs as Array<{ path: string }>)[0]?.path).toBe(
+        path.resolve(process.cwd(), "shots/proof.png"),
+      );
+    });
+
+    it("prefers the lane worktree in ADE_WORKSPACE_ROOT over the shell cwd", () => {
+      // A coordinator can spawn `ade proof attach` from a shell parked outside
+      // the lane worktree while still carrying the lane's env. Sending the cwd
+      // there is what got six attaches rejected as an unauthorized callerRoot.
+      process.env.ADE_WORKSPACE_ROOT = "/repo/.ade/worktrees/lane-9";
+      const plan = buildCliPlan(["proof", "attach", "/tmp/shot.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBe(path.resolve("/repo/.ade/worktrees/lane-9"));
+      expect(args.callerRootSource).toBe("env ADE_WORKSPACE_ROOT");
+    });
+
+    it("lets the runtime resolve the worktree when only ADE_LANE_ID is set", () => {
+      // Only the runtime can map a lane id to a worktree path, so omitting
+      // callerRoot is the env-derived answer — not a silent fallback to cwd,
+      // which is the path that was never authorized.
+      process.env.ADE_LANE_ID = "lane-9";
+      const plan = buildCliPlan(["proof", "attach", "/tmp/shot.png"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+
+      const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+      expect(args.callerRoot).toBeUndefined();
+      expect(args.callerRootSource).toBe(
+        "env ADE_LANE_ID=lane-9 (runtime-resolved lane worktree)",
+      );
     });
   });
 
-  it("resolves a relative proof attach path against the caller's cwd", () => {
-    // The agent's cwd is its lane worktree; the runtime storing the artifact
-    // runs at the project root. Resolving here is what stops the runtime from
-    // having to guess which tree a bare "shots/proof.png" belongs to.
-    const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
+  describe("proof filing confirmation", () => {
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const textOpts = () => ({
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    });
+    const ingestResult = {
+      artifacts: [
+        {
+          id: "artifact-1",
+          kind: "screenshot",
+          title: "roots check",
+          uri: ".ade/artifacts/computer-use/artifact-1.png",
+          laneId: "lane-9",
+        },
+      ],
+      links: [
+        { artifactId: "artifact-1", ownerKind: "lane", ownerId: "lane-9" },
+        {
+          artifactId: "artifact-1",
+          ownerKind: "chat_session",
+          ownerId: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071",
+        },
+      ],
+    };
 
-    const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
-    expect(args.callerRoot).toBe(process.cwd());
-    expect((args.inputs as Array<{ path: string }>)[0]?.path).toBe(
-      path.resolve(process.cwd(), "shots/proof.png"),
-    );
+    it("verifies the record by re-reading it and ends with the confirmation line", () => {
+      const plan = expectExecutePlan(
+        buildCliPlan(["proof", "attach", "/tmp/shot.png", "--caption", "roots check"]),
+      );
+      expect(plan.proofFiling).toEqual({ command: "proof attach", verify: true });
+      expect(plan.steps[1]?.params).toMatchObject({
+        name: "list_computer_use_artifacts",
+      });
+
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: ingestResult,
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      });
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output.trimEnd().split("\n").at(-1)).toBe(
+        "Attached 1 artifact to lane lane-9 / chat 8f3c2a11 (roots check)",
+      );
+    });
+
+    it("fails when the filed artifact cannot be read back", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      // The word "failed" is load-bearing: a caller grepping stderr for it is
+      // the whole reason an empty drawer went unnoticed for six attaches.
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: ingestResult, verify: { artifacts: [] } },
+        }),
+      ).toThrow(/proof attach failed — the runtime reported artifact-1/);
+    });
+
+    it("fails when the runtime files nothing at all", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "capture", "--caption", "x"]));
+      expect(plan.proofFiling).toEqual({ command: "proof capture", verify: true });
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: {
+            result: { proof: false, artifacts: [], links: [], note: "Scratch capture" },
+          },
+        }),
+      ).toThrow(/proof capture failed — the runtime filed no proof record: Scratch capture/);
+    });
+
+    it("skips the re-read only when --no-verify is passed", () => {
+      const plan = expectExecutePlan(
+        buildCliPlan(["proof", "attach", "/tmp/shot.png", "--no-verify"]),
+      );
+      expect(plan.proofFiling).toEqual({ command: "proof attach", verify: false });
+      expect(plan.steps).toHaveLength(1);
+      const summarized = summarizeExecution({ plan, connection, values: { result: ingestResult } });
+      expect(formatOutput(summarized, textOpts(), inferFormatter(plan))).toContain(
+        "verified: skipped (--no-verify)",
+      );
+    });
+
+    it("headers proof list with the owner scope it listed", () => {
+      const listPlan = expectExecutePlan(buildCliPlan(["proof", "list"]));
+      const output = formatOutput(
+        {
+          scope: {
+            projectWide: false,
+            owners: [
+              { kind: "lane", id: "lane-9" },
+              { kind: "chat_session", id: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071" },
+            ],
+          },
+          artifacts: [
+            {
+              id: "artifact-1",
+              kind: "screenshot",
+              createdAt: "2026-09-08T10:00:00.000Z",
+              title: "roots check",
+              uri: ".ade/artifacts/computer-use/artifact-1.png",
+              links: [
+                { ownerKind: "lane", ownerId: "lane-9" },
+                { ownerKind: "chat_session", ownerId: "8f3c2a11-4d5e-4f60-9a1b-2c3d4e5f6071" },
+              ],
+            },
+          ],
+        },
+        textOpts(),
+        inferFormatter(listPlan),
+      );
+      expect(output).toContain("Proof for lane lane-9 · chat 8f3c2a11: 1 artifact");
+      expect(output).toContain("owner");
+      expect(output).toContain("lane lane-9 · chat 8f3c2a11");
+    });
   });
 
   it("maps proof rm and prune --broken to the delete actions", () => {
@@ -11452,7 +11881,7 @@ describe("ADE CLI", () => {
     expect(click.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "click",
+        action: "agentClick",
         args: { x: 120, y: 420 },
       },
     });
@@ -11469,7 +11898,7 @@ describe("ADE CLI", () => {
     expect(type.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "typeText",
+        action: "agentType",
         args: { text: "hello" },
       },
     });
@@ -11489,7 +11918,7 @@ describe("ADE CLI", () => {
     expect(scroll.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "scroll",
+        action: "agentScroll",
         args: { x: 120, y: 420, deltaY: 600 },
       },
     });
@@ -11510,6 +11939,670 @@ describe("ADE CLI", () => {
       },
     });
   });
+
+  it("app-control agent actions mirror the browser observe/act contract", () => {
+    const observe = buildCliPlan([
+      "app-control",
+      "observe",
+      "--map",
+      "--session",
+      "session-9",
+    ]);
+    expect(observe.kind).toBe("execute");
+    if (observe.kind !== "execute") return;
+    expect(observe.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "observe",
+        args: { includeElementMap: true, sessionId: "session-9" },
+      },
+    });
+
+    const clickByHandle = buildCliPlan([
+      "app-control",
+      "click",
+      "--handle",
+      "obs-1:e:4",
+      "--fast",
+    ]);
+    expect(clickByHandle.kind).toBe("execute");
+    if (clickByHandle.kind !== "execute") return;
+    expect(clickByHandle.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentClick",
+        args: { handle: "obs-1:e:4", waitAfterMs: 0 },
+      },
+    });
+
+    const hover = buildCliPlan(["app-control", "hover", "--test-id", "row-3"]);
+    expect(hover.kind).toBe("execute");
+    if (hover.kind !== "execute") return;
+    expect(hover.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentHover",
+        args: { testId: "row-3" },
+      },
+    });
+
+    const fill = buildCliPlan([
+      "app-control",
+      "fill",
+      "--selector",
+      "#name",
+      "--value",
+      "Ada",
+    ]);
+    expect(fill.kind).toBe("execute");
+    if (fill.kind !== "execute") return;
+    expect(fill.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentFill",
+        args: { selector: "#name", value: "Ada" },
+      },
+    });
+
+    const clear = buildCliPlan(["app-control", "clear", "--selector", "#name"]);
+    expect(clear.kind).toBe("execute");
+    if (clear.kind !== "execute") return;
+    expect(clear.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "agentClear", args: { selector: "#name" } },
+    });
+
+    const press = buildCliPlan(["app-control", "press", "--key", "Enter"]);
+    expect(press.kind).toBe("execute");
+    if (press.kind !== "execute") return;
+    expect(press.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "agentPress", args: { key: "Enter" } },
+    });
+
+    const wait = buildCliPlan([
+      "app-control",
+      "wait",
+      "--text-match",
+      "Saved",
+      "--timeout-ms",
+      "8000",
+    ]);
+    expect(wait.kind).toBe("execute");
+    if (wait.kind !== "execute") return;
+    expect(wait.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentWait",
+        args: { text: "Saved", timeoutMs: 8000 },
+      },
+    });
+
+    const trace = buildCliPlan(["app-control", "trace", "--limit", "5"]);
+    expect(trace.kind).toBe("execute");
+    if (trace.kind !== "execute") return;
+    expect(trace.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "getTrace", args: { limit: 5 } },
+    });
+
+    const windows = buildCliPlan(["app-control", "windows"]);
+    expect(windows.kind).toBe("execute");
+    if (windows.kind !== "execute") return;
+    expect(windows.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "windows" },
+    });
+
+    const switchWindow = buildCliPlan([
+      "app-control",
+      "switch-window",
+      "--target",
+      "target-2",
+    ]);
+    expect(switchWindow.kind).toBe("execute");
+    if (switchWindow.kind !== "execute") return;
+    expect(switchWindow.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "switchWindow",
+        args: { targetId: "target-2" },
+      },
+    });
+
+    const drivers = buildCliPlan(["app-control", "drivers"]);
+    expect(drivers.kind).toBe("execute");
+    if (drivers.kind !== "execute") return;
+    expect(drivers.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "listDrivers" },
+    });
+
+    expect(() => buildCliPlan(["app-control", "fill", "--value", "Ada"])).toThrow(
+      /requires --selector/,
+    );
+    expect(() => buildCliPlan(["app-control", "wait"])).toThrow(/requires --selector/);
+  });
+
+  it("app-control proof observes and ingests under the ade-app-control backend", () => {
+    const plan = buildCliPlan([
+      "app-control",
+      "proof",
+      "--caption",
+      "Settings saved",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "observe",
+        args: { includeDom: false },
+      },
+    });
+    const ingest = plan.steps[1];
+    expect(ingest?.method).toBe("ade/actions/call");
+    const params = typeof ingest?.params === "function"
+      ? ingest.params({
+          observation: {
+            domain: "app_control",
+            action: "observe",
+            result: { filePath: "/repo/.ade/cache/app-control-observations/s/obs-1.png" },
+          },
+        })
+      : null;
+    expect(params).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendStyle: "manual",
+        backendName: "ade-app-control",
+        toolName: "app-control proof",
+        inputs: [
+          {
+            kind: "screenshot",
+            title: "Settings saved",
+            description: "Settings saved",
+            path: "/repo/.ade/cache/app-control-observations/s/obs-1.png",
+          },
+        ],
+      },
+    });
+  });
+
+  it("browser handoff raises the same hand `chat ask` does, then blocks on hand back", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const stepArgs = (
+      plan: ReturnType<typeof buildCliPlan>,
+      index: number,
+    ): { domain?: string; action?: string; args?: Record<string, unknown> } => {
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[index]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      return params?.arguments ?? {};
+    };
+
+    const plan = buildCliPlan([
+      "browser", "handoff", "--tab", "tab-1", "--reason", "sign in to staging",
+    ]);
+    if (plan.kind !== "execute") throw new Error("expected execute plan");
+    expect(plan.steps).toHaveLength(3);
+    expect(stepArgs(plan, 0)).toMatchObject({
+      domain: "built_in_browser",
+      action: "startHandoff",
+      args: { tabId: "tab-1", reason: "sign in to staging", timeoutMs: 900_000 },
+    });
+    // The hand-raise is the SAME action `ade chat ask` issues, so the Work row
+    // and the phone push come from one path, not two.
+    expect(stepArgs(plan, 1)).toMatchObject({
+      domain: "session",
+      action: "requestSessionAttention",
+      args: {
+        message: "Sign in for me: sign in to staging",
+        alertTitle: "Sign in for me",
+        alertBody: "sign in to staging",
+      },
+    });
+    expect(stepArgs(plan, 2)).toMatchObject({
+      domain: "built_in_browser",
+      action: "waitForHandoff",
+      args: { tabId: "tab-1" },
+    });
+    // The transport must outlive the wait it is there to perform.
+    expect(plan.minTimeoutMs).toBeGreaterThan(900_000);
+
+    const bounded = buildCliPlan([
+      "browser", "handoff", "--browser-session", "bs-1", "--timeout", "5m", "--reason", "solve the CAPTCHA",
+    ]);
+    expect(stepArgs(bounded, 0).args).toMatchObject({ sessionId: "bs-1", timeoutMs: 300_000 });
+
+    const noWait = buildCliPlan(["browser", "handoff", "--tab", "tab-1", "--no-wait", "--reason", "corp SSO"]);
+    if (noWait.kind !== "execute") throw new Error("expected execute plan");
+    expect(noWait.steps).toHaveLength(2);
+    expect(noWait.minTimeoutMs).toBeUndefined();
+
+    // Free text works without quoting, and a reasonless handoff is refused.
+    expect(stepArgs(buildCliPlan(["browser", "handoff", "--tab", "tab-1", "sign", "in"]), 0).args)
+      .toMatchObject({ reason: "sign in" });
+    expect(() => buildCliPlan(["browser", "handoff", "--tab", "tab-1"])).toThrow(/reason/);
+  }));
+
+  it("browser capability commands map to the new built-in browser actions", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments?.domain).toBe("built_in_browser");
+      return {
+        action: params?.arguments?.action,
+        ...(params?.arguments?.args ?? {}),
+      };
+    };
+
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--device", "iphone-17-pro"]))
+      .toMatchObject({ action: "setEmulation", tabId: "tab-1", preset: "iphone-17-pro" });
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--width", "1024", "--height", "768", "--scale", "2", "--mobile"]))
+      .toMatchObject({ action: "setEmulation", width: 1024, height: 768, deviceScaleFactor: 2, mobile: true });
+    expect(firstStepArgs(["browser", "emulate", "--tab", "tab-1", "--off"]))
+      .toMatchObject({ action: "setEmulation", preset: null });
+    expect(() => buildCliPlan(["browser", "emulate", "--tab", "tab-1"]))
+      .toThrow(/--device <preset>, --width\/--height, or --off/);
+
+    expect(firstStepArgs(["browser", "zoom", "--tab", "tab-1", "--factor", "1.25"]))
+      .toMatchObject({ action: "setZoom", tabId: "tab-1", factor: 1.25 });
+    expect(firstStepArgs(["browser", "zoom", "--tab", "tab-1", "--reset"]))
+      .toMatchObject({ action: "setZoom", reset: true });
+    expect(() => buildCliPlan(["browser", "zoom", "--tab", "tab-1"]))
+      .toThrow(/--factor <n> or --reset/);
+
+    expect(firstStepArgs(["browser", "find", "--tab", "tab-1", "checkout flow"]))
+      .toMatchObject({ action: "findInPage", tabId: "tab-1", text: "checkout flow" });
+    expect(firstStepArgs(["browser", "find", "--tab", "tab-1", "--match-case", "--backward", "x"]))
+      .toMatchObject({ action: "findInPage", matchCase: true, forward: false });
+    expect(firstStepArgs(["browser", "find-stop", "--tab", "tab-1"]))
+      .toMatchObject({ action: "stopFindInPage", tabId: "tab-1" });
+
+    expect(firstStepArgs(["browser", "devtools", "--tab", "tab-1", "--mode", "bottom"]))
+      .toMatchObject({ action: "setDevTools", tabId: "tab-1", open: true, mode: "bottom" });
+    expect(firstStepArgs(["browser", "devtools", "--tab", "tab-1", "--close"]))
+      .toMatchObject({ action: "setDevTools", open: false });
+
+    expect(firstStepArgs(["browser", "network", "on", "--tab", "tab-1"]))
+      .toMatchObject({ action: "setNetworkLogging", tabId: "tab-1", enabled: true });
+    expect(firstStepArgs(["browser", "network", "off", "--tab", "tab-1"]))
+      .toMatchObject({ action: "setNetworkLogging", enabled: false });
+    expect(firstStepArgs(["browser", "network", "--tab", "tab-1", "--failed", "--limit", "20"]))
+      .toMatchObject({ action: "getNetworkLog", failedOnly: true, limit: 20 });
+    expect(firstStepArgs(["browser", "network", "--tab", "tab-1", "--all"]))
+      .toMatchObject({ action: "getNetworkLog" });
+    expect(firstStepArgs(["browser", "har", "--tab", "tab-1"]))
+      .toMatchObject({ action: "exportHar", tabId: "tab-1" });
+
+    expect(firstStepArgs(["browser", "hover", "--tab", "tab-1", "--selector", ".menu"]))
+      .toMatchObject({ action: "hover", tabId: "tab-1", selector: ".menu" });
+    expect(() => buildCliPlan(["browser", "hover", "--tab", "tab-1"]))
+      .toThrow(/--x\/--y, --selector/);
+
+    expect(firstStepArgs([
+      "browser", "drag", "--tab", "tab-1",
+      "--handle", "obs-1:e:2", "--to-selector", ".dropzone", "--steps", "12", "--fast",
+    ])).toMatchObject({
+      action: "drag",
+      handle: "obs-1:e:2",
+      toSelector: ".dropzone",
+      steps: 12,
+      waitAfterMs: 0,
+    });
+    expect(() => buildCliPlan(["browser", "drag", "--tab", "tab-1", "--selector", ".a"]))
+      .toThrow(/requires a destination/);
+
+    expect(firstStepArgs([
+      "browser", "select-option", "--tab", "tab-1", "--selector", "select#plan", "--value", "pro",
+    ])).toMatchObject({ action: "selectOption", selector: "select#plan", value: "pro" });
+    expect(() => buildCliPlan(["browser", "select-option", "--tab", "tab-1", "--selector", "select#plan"]))
+      .toThrow(/--value, --label, or --index/);
+
+    expect(firstStepArgs([
+      "browser", "upload", "--tab", "tab-1", "--selector", "input[type=file]", "--file", "/tmp/a.png",
+    ])).toMatchObject({ action: "uploadFile", paths: ["/tmp/a.png"] });
+    expect(() => buildCliPlan(["browser", "upload", "--tab", "tab-1", "--selector", "input"]))
+      .toThrow(/at least one file path/);
+
+    // Every acting subcommand carries the tab target through, and the key is
+    // read as a standalone positional so a session id can never be sent as one.
+    expect(firstStepArgs(["browser", "key", "--browser-session", "sess-1", "Enter"]))
+      .toMatchObject({ action: "dispatchKey", sessionId: "sess-1", key: "Enter" });
+    expect(firstStepArgs(["browser", "key", "--tab", "tab-1", "Enter"]))
+      .toMatchObject({ action: "dispatchKey", tabId: "tab-1", key: "Enter" });
+    expect(firstStepArgs([
+      "browser", "drag", "--browser-session", "sess-1", "--selector", ".a", "--to-selector", ".b",
+    ])).toMatchObject({ action: "drag", sessionId: "sess-1", selector: ".a", toSelector: ".b" });
+    expect(firstStepArgs([
+      "browser", "upload", "--browser-session", "sess-1", "--selector", "input", "--file", "/tmp/a.png",
+    ])).toMatchObject({ action: "uploadFile", sessionId: "sess-1", paths: ["/tmp/a.png"] });
+    expect(firstStepArgs([
+      "browser", "select-option", "--browser-session", "sess-1", "--selector", "s", "--value", "pro",
+    ])).toMatchObject({ action: "selectOption", sessionId: "sess-1", value: "pro" });
+    expect(firstStepArgs([
+      "browser", "select-option", "--tab", "tab-1", "--selector", "s", "pro",
+    ])).toMatchObject({ action: "selectOption", tabId: "tab-1", value: "pro" });
+    // A flag this branch does not read must not be joined INTO the URL.
+    expect(firstStepArgs(["browser", "open", "--browser-session", "sess-1", "https://x.test"]))
+      .toMatchObject({ action: "navigate", url: "https://x.test" });
+
+    expect(firstStepArgs([
+      "browser", "record", "start", "--tab", "tab-1", "--fps", "60", "--caption", "Checkout",
+    ])).toMatchObject({ action: "startRecording", tabId: "tab-1", fps: 60, caption: "Checkout" });
+    const recordStop = buildCliPlan(["browser", "record", "stop", "--tab", "tab-1"]);
+    expect(recordStop.kind).toBe("execute");
+    if (recordStop.kind !== "execute") return;
+    expect(recordStop.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "stopRecording", args: { tabId: "tab-1" } },
+    });
+    // The proof step only ingests when `record start` was given a caption.
+    const proofStep = recordStop.steps[1];
+    expect(typeof proofStep?.params).toBe("function");
+    const withoutCaption = (proofStep!.params as (values: Record<string, unknown>) => {
+      arguments: { inputs: unknown[] };
+    })({ result: { domain: "built_in_browser", action: "stopRecording", result: { caption: null, path: "/tmp/a.webm" } } });
+    expect(withoutCaption.arguments.inputs).toEqual([]);
+    const withCaption = (proofStep!.params as (values: Record<string, unknown>) => {
+      arguments: { inputs: Array<Record<string, unknown>> };
+    })({ result: { domain: "built_in_browser", action: "stopRecording", result: { caption: "Checkout", path: "/tmp/a.webm" } } });
+    expect(withCaption.arguments.inputs).toEqual([
+      expect.objectContaining({ kind: "video_recording", path: "/tmp/a.webm", description: "Checkout" }),
+    ]);
+
+    expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
+      .toThrow(/Unknown browser record command/);
+
+    // Scope is never an argument here: `scopeBuiltInBrowserAdeActionArgs` drops
+    // any caller `laneId` and the desktop bridge substitutes the capability's
+    // lane, so the command deliberately sends no target of its own.
+    expect(firstStepArgs(["browser", "dev-servers"])).toEqual({ action: "getDevServers" });
+    for (const alias of ["dev-server", "devservers", "servers", "localhost"]) {
+      expect(firstStepArgs(["browser", alias])).toMatchObject({ action: "getDevServers" });
+    }
+  }));
+
+  it("work-tools exposes the read side of the Work tools pane and refuses the write", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments?.domain).toBe("work_tools");
+      return {
+        action: params?.arguments?.action,
+        ...(params?.arguments?.args ?? {}),
+      };
+    };
+
+    // Bare `work-tools` reads state; a chat-bound agent supplies no lane and the
+    // daemon forces its own, so an argument-free call must still be valid.
+    expect(firstStepArgs(["work-tools"])).toEqual({ action: "getLaneState" });
+    expect(firstStepArgs(["work-tools", "state", "--lane", "lane-1"]))
+      .toMatchObject({ action: "getLaneState", laneId: "lane-1" });
+    expect(firstStepArgs(["worktools", "status", "--lane", "lane-1"]))
+      .toMatchObject({ action: "getLaneState", laneId: "lane-1" });
+
+    const actions = buildCliPlan(["work-tools", "actions"]);
+    expect(actions.kind).toBe("execute");
+    if (actions.kind !== "execute") return;
+    expect(actions.steps[0]?.params).toMatchObject({ arguments: { domain: "work_tools" } });
+
+    // `setActiveTool` is the desktop publishing its own pane state and is denied
+    // to agents by adeRpcServer; the CLI says so instead of minting a call that
+    // can only fail.
+    expect(() => buildCliPlan(["work-tools", "browser"])).toThrow(/read-only/i);
+    expect(() => buildCliPlan(["work-tools", "set-active", "--lane", "lane-1"])).toThrow(/read-only/i);
+    expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
+  }));
+
+  it("reads browser positionals fenced behind a `--` terminator", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // `--` is how a person passes a value that would otherwise read as a flag.
+    // The generic positional scan stops AT the terminator and leaves it in the
+    // argv, so the URL and the key simply went missing and the command failed
+    // with "requires a URL" while the URL was right there.
+    const open = buildCliPlan(["browser", "open", "--", "https://x.example.test"]);
+    expect(open.kind).toBe("execute");
+    if (open.kind !== "execute") return;
+    expect(open.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://x.example.test" },
+      },
+    });
+
+    const key = buildCliPlan(["browser", "key", "--", "Enter"]);
+    expect(key.kind).toBe("execute");
+    if (key.kind !== "execute") return;
+    expect(key.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "dispatchKey", args: { key: "Enter" } },
+    });
+
+    // Flags before the fence are still read as flags.
+    const fenced = buildCliPlan(["browser", "open", "--new-tab", "--", "https://y.example.test"]);
+    expect(fenced.kind).toBe("execute");
+    if (fenced.kind !== "execute") return;
+    expect(fenced.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://y.example.test", newTab: true },
+      },
+    });
+  }));
+
+  it("keeps a flag-shaped value behind `--` literal on every browser branch", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // The readers run before the positional fallbacks and none of them stops at
+    // `--`, so a fenced value that happens to spell a flag used to be eaten as
+    // one ("browser open -- --new-tab" threw "requires a URL"). The tail is
+    // split once at the top of the browser parser instead.
+    const argsOf = (plan: ReturnType<typeof buildCliPlan>): Record<string, unknown> => {
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { args: Record<string, unknown> };
+      };
+      return params.arguments.args;
+    };
+
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--new-tab"]))).toMatchObject({
+      url: "--new-tab",
+    });
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--new-tab"])).newTab).toBeUndefined();
+    expect(argsOf(buildCliPlan(["browser", "key", "--", "--key"]))).toMatchObject({
+      key: "--key",
+    });
+    expect(
+      argsOf(buildCliPlan(["browser", "select-option", "--selector", "x", "--", "--value"])),
+    ).toMatchObject({ selector: "x", value: "--value" });
+    expect(argsOf(buildCliPlan(["browser", "open", "--", "--url", "https://z.test"]))).toMatchObject({
+      url: "--url https://z.test",
+    });
+    // `fill` reads the same grammar as the rest of the family.
+    expect(
+      argsOf(buildCliPlan(["browser", "fill", "--selector", "x", "--", "--literal"])),
+    ).toMatchObject({ selector: "x", text: "--literal" });
+  }));
+
+  it("routes every browser positional through the shared grammar, fenced or not", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // The `--` tail is spliced out of `args` once, at the top of the parser, so
+    // any branch still reading `args.join(" ")` / `args.filter(...)` / a raw
+    // `firstPositional` silently lost it (`browser new-tab -- https://x.test`
+    // opened a blank tab). Every branch below reads the one collector.
+    const planOf = (argv: string[]): { label: string; args: Record<string, unknown>; action: string } => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { action: string; args: Record<string, unknown> };
+      };
+      return { label: plan.label, action: params.arguments.action, args: params.arguments.args };
+    };
+    const bothWays = (
+      bare: string[],
+      fenced: string[],
+      action: string,
+      expected: Record<string, unknown>,
+    ): void => {
+      for (const argv of [bare, fenced]) {
+        const plan = planOf(argv);
+        expect(plan.action, argv.join(" ")).toBe(action);
+        expect(plan.args, argv.join(" ")).toMatchObject(expected);
+      }
+    };
+
+    bothWays(
+      ["browser", "new-tab", "https://x.example.test"],
+      ["browser", "new-tab", "--", "https://x.example.test"],
+      "createTab",
+      { url: "https://x.example.test" },
+    );
+    bothWays(
+      ["browser", "find", "hello"],
+      ["browser", "find", "--", "hello"],
+      "findInPage",
+      { text: "hello" },
+    );
+    bothWays(
+      ["browser", "upload", "--selector", "x", "foo.txt"],
+      ["browser", "upload", "--selector", "x", "--", "foo.txt"],
+      "uploadFile",
+      { selector: "x", paths: ["foo.txt"] },
+    );
+    bothWays(
+      ["browser", "session", "end", "s1"],
+      ["browser", "session", "end", "--", "s1"],
+      "endSession",
+      { sessionId: "s1" },
+    );
+    bothWays(
+      ["browser", "switch", "t1"],
+      ["browser", "switch", "--", "t1"],
+      "switchTab",
+      { tabId: "t1" },
+    );
+    bothWays(
+      ["browser", "close", "t1"],
+      ["browser", "close", "--", "t1"],
+      "closeTab",
+      { tabId: "t1" },
+    );
+    bothWays(
+      ["browser", "zoom", "1.5"],
+      ["browser", "zoom", "--", "1.5"],
+      "setZoom",
+      { factor: 1.5 },
+    );
+    bothWays(
+      ["browser", "devtools", "close"],
+      ["browser", "devtools", "--", "close"],
+      "setDevTools",
+      { open: false },
+    );
+    bothWays(
+      ["browser", "network", "on"],
+      ["browser", "network", "--", "on"],
+      "setNetworkLogging",
+      { enabled: true },
+    );
+    bothWays(
+      ["browser", "record", "start"],
+      ["browser", "record", "--", "start"],
+      "startRecording",
+      {},
+    );
+
+    // The same grammar means a flag's own value is never mistaken for the mode
+    // word or the subcommand: these all used to read the value instead.
+    expect(planOf(["browser", "record", "--fps", "30", "start"]).args).toMatchObject({ fps: 30 });
+    expect(planOf(["browser", "record", "--frame-rate", "30", "start"]).args).toMatchObject({
+      fps: 30,
+    });
+    expect(planOf(["browser", "devtools", "--mode", "bottom", "close"]).args).toMatchObject({
+      open: false,
+      mode: "bottom",
+    });
+    expect(planOf(["browser", "--tab", "t1", "close"]).action).toBe("closeTab");
+  }));
+
+  it("lets a value flag carry a literal `--`", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    // A `--` directly after a value-carrying flag is that flag's value, not the
+    // terminator; splitting the tail on it made `--value --` throw
+    // "--value requires a value."
+    const argsOf = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as {
+        arguments: { args: Record<string, unknown> };
+      };
+      return params.arguments.args;
+    };
+
+    expect(argsOf(["browser", "select-option", "--selector", "x", "--value", "--"]))
+      .toMatchObject({ selector: "x", value: "--" });
+    expect(argsOf(["browser", "fill", "--selector", "x", "--value", "--"]))
+      .toMatchObject({ selector: "x", text: "--" });
+    expect(argsOf(["browser", "open", "--url", "--"])).toMatchObject({ url: "--" });
+    // `find` carries it on `--query`; `--text` stays out of the value-carrier
+    // set because it is also the global `ade --text` output switch.
+    expect(argsOf(["browser", "find", "--query", "--"])).toMatchObject({ text: "--" });
+    expect(argsOf(["browser", "handoff", "--reason", "--"])).toMatchObject({ reason: "--" });
+    // A `--` no flag is waiting on still fences the tail off.
+    expect(argsOf(["browser", "open", "--new-tab", "--", "--url"])).toMatchObject({
+      url: "--url",
+      newTab: true,
+    });
+  }));
+
+  it("browser open --device applies emulation after navigating", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plan = buildCliPlan(["browser", "open", "localhost:5173", "--device", "ipad", "--tab", "tab-9"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "navigate", args: { url: "localhost:5173", tabId: "tab-9" } },
+    });
+    const emulationParams = plan.steps[1]?.params as (values: Record<string, unknown>) => {
+      arguments: { domain: string; action: string; args: Record<string, unknown> };
+    };
+    expect(typeof emulationParams).toBe("function");
+    expect(emulationParams({})).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "setEmulation",
+        args: { tabId: "tab-9", preset: "ipad" },
+      },
+    });
+  }));
 
   it("browser commands map to built-in browser actions", () => withEnv({
     ADE_LANE_ID: undefined,
@@ -11997,6 +13090,60 @@ describe("ADE CLI", () => {
       },
     });
   }));
+
+  it("browser proof --har exports the HAR and files it as a browser_trace beside the screenshot", () => {
+    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]);
+    expect(proof.kind).toBe("execute");
+    if (proof.kind !== "execute") return;
+
+    // observe → exportHar → ingest, so both artifacts come from the same tab
+    // state and land under the same owners.
+    expect(proof.steps).toHaveLength(3);
+    expect(proof.steps[1]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "built_in_browser",
+        action: "exportHar",
+        args: { tabId: "tab-1" },
+      },
+    });
+
+    const ingest = proof.steps[2]?.params;
+    expect(typeof ingest).toBe("function");
+    if (typeof ingest !== "function") return;
+    expect(ingest({
+      observation: { filePath: "/tmp/browser-proof.png" },
+      har: { filePath: "/tmp/network-1.har" },
+    })).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendName: "ade-browser",
+        toolName: "browser proof",
+        inputs: [
+          { kind: "screenshot", title: "Checkout 500s", path: "/tmp/browser-proof.png" },
+          { kind: "browser_trace", title: "Checkout 500s (network)", path: "/tmp/network-1.har" },
+        ],
+      },
+    });
+
+    // Network logging off means exportHar answered without a file: say so
+    // instead of quietly filing half the proof that was asked for.
+    expect(() => ingest({ observation: { filePath: "/tmp/browser-proof.png" }, har: {} }))
+      .toThrow(/network logging/i);
+  });
+
+  it("browser proof without --har files only the screenshot", () => {
+    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1"]);
+    expect(proof.kind).toBe("execute");
+    if (proof.kind !== "execute") return;
+    expect(proof.steps).toHaveLength(2);
+    const ingest = proof.steps[1]?.params;
+    if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
+    const params = ingest({ observation: { filePath: "/tmp/browser-proof.png" } }) as {
+      arguments: { inputs: unknown[] };
+    };
+    expect(params.arguments.inputs).toHaveLength(1);
+  });
 
   it("browser open and claim commands carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;

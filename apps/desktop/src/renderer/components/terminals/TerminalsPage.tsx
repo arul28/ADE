@@ -1,11 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { paneTransition } from "../../lib/motion";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
+import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
+import { useWorkSidebarTool } from "./useWorkSidebarTool";
+import {
+  clearPendingWorkToolRequest,
+  subscribeWorkToolRequests,
+  takePendingWorkToolRequest,
+} from "./workToolRequests";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -63,6 +72,13 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { clearSessionWokeMarker, renameSession } from "./sessionLifecycleActions";
+import {
+  beginWorkSidebarSplitterDrag,
+  clampWorkSidebarWidthPct,
+  MAX_WORK_SIDEBAR_WIDTH_PCT,
+  MIN_WORK_SIDEBAR_WIDTH_PCT,
+  nextWorkSidebarWidthPctForKey,
+} from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
@@ -81,8 +97,6 @@ const TERMINALS_TILING_TREE: PaneSplit = {
   ],
 };
 
-const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
-const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
 
@@ -93,9 +107,16 @@ type SessionMutationOptions<T> = {
   onSuccess?: (result: T) => void;
 };
 
-function clampWorkSidebarWidthPct(widthPct: number): number {
-  return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
-}
+/**
+ * The tools pane's flex box, found by attribute rather than held in a ref.
+ *
+ * It is the direct child of an `AnimatePresence`, and motion's `PopChild` reads
+ * `children.props.ref` on that child unconditionally — which under React 18
+ * trips the "`ref` is not a prop" warning for ANY ref, forwardRef included. The
+ * resize drag only needs the node while a drag is in flight, so it queries for
+ * it at mousedown instead of carrying one.
+ */
+const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
 
 function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   window.dispatchEvent(new Event(
@@ -183,7 +204,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
-  const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
 
@@ -1094,6 +1114,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     return null;
   }, [activeLaneId, activeWorkSession, activeWorkSessionRuntimePin, draftContextTargetId, work.draftKind]);
 
+  /**
+   * Why context insertion is closed, for the one path that still needs words:
+   * the error a tool throws if it tries anyway. NOT a banner — the pane no
+   * longer explains a missing capability above controls it is still showing;
+   * the panels drop those controls instead (`canInsertContext`).
+   */
   let contextDisabledReason: string | null;
   if (!activeWorkSession && contextTarget) {
     // Draft context target is available -- no session needed.
@@ -1104,19 +1130,27 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = "Tool context insertion is not available for chats on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
-  } else if (activeWorkSession.toolType === "shell") {
-    contextDisabledReason = "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.";
   } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
     contextDisabledReason = `Continue this ${formatToolTypeLabel(activeWorkSession.toolType)} session before inserting tool context.`;
   } else if (!contextTarget) {
-    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} session can use the lane tools, but it cannot receive inserted context.`;
+    // `formatToolTypeLabel` already ends in "session"/"chat" ("OpenCode CLI
+    // session"), so a second "session" here read as "…CLI session session".
+    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} cannot receive inserted context.`;
   } else {
     contextDisabledReason = null;
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const { setWorkSidebarTab, setOrchestratorEnabled } = work;
+  // Which tool the tools pane shows is per LANE, so it hangs off the lane this
+  // page has resolved rather than off the project-wide work view state.
+  const {
+    tool: workSidebarTool,
+    openTools: workSidebarOpenTools,
+    setTool: setWorkSidebarTool,
+    closeTool: closeWorkSidebarTool,
+  } = useWorkSidebarTool(activeLaneId);
+  const { setOrchestratorEnabled } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1124,7 +1158,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // (preserves main's remote-runtime hardening; the old viewMode switch is
       // dropped with the work-tab grid).
       if (isRemoteProject) return;
-      setWorkSidebarTab("browser");
+      setWorkSidebarTool("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
@@ -1147,7 +1181,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, setOrchestratorEnabled]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTool, setOrchestratorEnabled]);
+
+  // "Open this tool" asked for from outside the Work page — the app shell's
+  // browser open-request handler, the command palette. Only this page knows the
+  // lane the pane is following, so those surfaces request and this drains,
+  // including whatever was held while the page was still mounting.
+  useEffect(() => {
+    if (!active) return undefined;
+    const pending = takePendingWorkToolRequest();
+    if (pending) setWorkSidebarTool(pending.tool);
+    return subscribeWorkToolRequests((request) => {
+      clearPendingWorkToolRequest();
+      setWorkSidebarTool(request.tool);
+    });
+  }, [active, setWorkSidebarTool]);
 
   // A filename clicked in a chat opens in the tools-pane Files panel, which
   // means the panel has to exist first. The request itself is held in the
@@ -1156,9 +1204,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!active) return undefined;
     return subscribeFilesOpenInTools(() => {
-      setWorkSidebarTab("files");
+      setWorkSidebarTool("files");
     });
-  }, [active, setWorkSidebarTab]);
+  }, [active, setWorkSidebarTool]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
@@ -1166,19 +1214,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const toggleWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
   }, [work]);
-  const terminalPaneOpen = work.workSidebarOpen && work.workSidebarTab === "terminal";
+  const terminalPaneOpen = work.workSidebarOpen && workSidebarTool === "terminal";
   const toggleTerminalPane = useCallback(() => {
-    if (work.workSidebarOpen && work.workSidebarTab === "terminal") {
+    if (work.workSidebarOpen && workSidebarTool === "terminal") {
       work.setWorkSidebarOpen(false);
     } else {
-      work.setWorkSidebarTab("terminal");
+      setWorkSidebarTool("terminal");
     }
-  }, [work]);
+  }, [setWorkSidebarTool, work, workSidebarTool]);
   const openTerminalPane = useCallback(() => {
-    if (!work.workSidebarOpen || work.workSidebarTab !== "terminal") {
-      work.setWorkSidebarTab("terminal");
+    if (!work.workSidebarOpen || workSidebarTool !== "terminal") {
+      setWorkSidebarTool("terminal");
     }
-  }, [work]);
+  }, [setWorkSidebarTool, work, workSidebarTool]);
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
@@ -1262,26 +1310,46 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
     });
   }, [work]);
+  /**
+   * Teardown for a splitter drag that is currently in flight.
+   *
+   * The drag installs document listeners AND `pointer-events: none` on
+   * `<body>`; if the mouseup that normally ends it never arrives — the page
+   * unmounts mid-drag, the window loses focus to an OS drag or a screen
+   * capture, the pointer is cancelled — the whole renderer is left unclickable
+   * with no in-app way out. Held in a ref so every one of those paths can end
+   * it, and idempotent so they can all fire.
+   */
+  const workSidebarDragEndRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    workSidebarDragEndRef.current?.();
+    workSidebarDragEndRef.current = null;
+  }, []);
   const handleWorkSidebarResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     const container = event.currentTarget.parentElement;
     if (!container) return;
+    // A second mousedown while a drag is somehow still live: end the old one
+    // first, so its isolation cannot outlive it.
+    workSidebarDragEndRef.current?.();
     const totalWidth = container.getBoundingClientRect().width;
     if (totalWidth <= 0) return;
     const startX = event.clientX;
     const startWidthPct = work.workSidebarWidthPct;
-    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct);
+    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct, totalWidth);
     let animationFrame: number | null = null;
+    const sidebarPane = container.querySelector<HTMLElement>(`[${WORK_SIDEBAR_PANE_ATTR}]`);
     const applyWidth = (widthPct: number) => {
-      const nextWidthPct = clampWorkSidebarWidthPct(widthPct);
+      // Clamped against the REAL container width, not just the 26-55% range:
+      // 26% of a narrow window is a pane too small for its own header.
+      const nextWidthPct = clampWorkSidebarWidthPct(widthPct, totalWidth);
       pendingWidthPct = nextWidthPct;
       const contentPane = workContentPaneRef.current;
-      const sidebarPane = workSidebarPaneRef.current;
       if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
       if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
     };
     const scheduleWidth = (widthPct: number) => {
-      pendingWidthPct = clampWorkSidebarWidthPct(widthPct);
+      pendingWidthPct = clampWorkSidebarWidthPct(widthPct, totalWidth);
       if (animationFrame != null) return;
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
@@ -1292,25 +1360,72 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const deltaPct = ((startX - moveEvent.clientX) / totalWidth) * 100;
       scheduleWidth(startWidthPct + deltaPct);
     };
-    const onUp = () => {
+    const endDragIsolation = beginWorkSidebarSplitterDrag(event.currentTarget);
+    let finished = false;
+    /**
+     * The one exit. `commit` persists where the drag ended; `cancel` puts the
+     * pane back where it started, which is what Escape means everywhere else.
+     */
+    const finishDrag = (mode: "commit" | "cancel") => {
+      if (finished) return;
+      finished = true;
       if (animationFrame != null) {
         window.cancelAnimationFrame(animationFrame);
         animationFrame = null;
       }
-      applyWidth(pendingWidthPct);
+      applyWidth(mode === "cancel" ? startWidthPct : pendingWidthPct);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
-      work.setWorkSidebarWidthPct(pendingWidthPct);
+      document.removeEventListener("pointercancel", onPointerCancel);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", onBlur);
+      endDragIsolation();
+      if (workSidebarDragEndRef.current === cancelDrag) workSidebarDragEndRef.current = null;
+      if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
+      // Commit only. The drag never wrote intermediate values to the store —
+      // `applyWidth` only touches inline `flexGrow` — so on cancel the store
+      // already holds the width the user is going back to. Writing it again
+      // would re-run persistence and cross-window sync for a gesture that was
+      // explicitly abandoned, and would stamp the mousedown snapshot over any
+      // width that changed from another source mid-drag.
+      if (mode === "commit") work.setWorkSidebarWidthPct(pendingWidthPct);
     };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
+    const onUp = () => finishDrag("commit");
+    // Losing the pointer or the window is not a width the user chose, so those
+    // paths keep whatever the pane already shows rather than reverting it.
+    const onPointerCancel = () => finishDrag("commit");
+    const onBlur = () => finishDrag("commit");
+    const cancelDrag = () => finishDrag("cancel");
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key !== "Escape") return;
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      cancelDrag();
+    };
+    workSidebarDragEndRef.current = cancelDrag;
+    if (workSidebarTool === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
     applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    document.addEventListener("pointercancel", onPointerCancel);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", onBlur);
+  }, [work, workSidebarTool]);
+
+  /**
+   * The same drag, from the keyboard.
+   *
+   * A `role="separator"` with a value is a real ARIA widget: it has to be
+   * focusable and it has to move. Without this the pane's width was reachable
+   * only by mouse, which is the one input a resize handle must not require.
+   */
+  const handleWorkSidebarResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const containerWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? null;
+    const next = nextWorkSidebarWidthPctForKey(event.key, work.workSidebarWidthPct, containerWidth);
+    if (next == null) return;
+    event.preventDefault();
+    if (next === work.workSidebarWidthPct) return;
+    work.setWorkSidebarWidthPct(next);
   }, [work]);
 
   const workViewArea = useMemo(
@@ -1379,7 +1494,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.openExistingImportedSession,
       work.closingPtyIds,
       work.workSidebarOpen,
-      work.workSidebarTab,
       terminalPaneOpen,
       toggleWorkSidebar,
       toggleTerminalPane,
@@ -1396,65 +1510,103 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workViewWithSidebar = useMemo(
     () => (
-      <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
-        <div
-          ref={workContentPaneRef}
-          className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
-          style={{ flexGrow: 100 - work.workSidebarWidthPct }}
-        >
-          {workViewArea}
-        </div>
-        {/* Resize handle stays a row-level sibling so its width math is correct. */}
-        {workSidebarVisible ? (
+      /*
+        One feed provider per Work page. The tools pane and the corner card both
+        read the browser / App Control / simulator feeds, and mounting the hook
+        in each of them opened two of everything — six `getStatus` round-trips,
+        six subscriptions, and two `offline` values that disagreed. The provider
+        is the single owner; both children read `useNativeToolFeeds()`.
+      */
+      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
+        <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
           <div
-            role="separator"
-            aria-orientation="vertical"
-            onMouseDown={handleWorkSidebarResizeMouseDown}
-            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
-          />
-        ) : null}
-        <AnimatePresence initial={false}>
-          {workSidebarVisible ? (
-            // The panel slides via animated flex-grow so the content pane grows/
-            // shrinks smoothly with it — no instant reflow / black flash on close.
-            <motion.div
-              key="work-tools-sidebar"
-              ref={workSidebarPaneRef}
-              className="min-h-0 min-w-0 basis-0 overflow-hidden"
-              style={{ maxWidth: "55%" }}
-              initial={{ flexGrow: 0 }}
-              animate={{ flexGrow: work.workSidebarWidthPct }}
-              exit={{ flexGrow: 0 }}
-              transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
-            >
-              <WorkSidebar
-                active={active}
-                laneId={activeLaneId}
-                lanes={sortedLanes}
-                activeSession={activeWorkSession}
-                tab={work.workSidebarTab}
-                onTabChange={work.setWorkSidebarTab}
-                onClose={closeWorkSidebar}
-                contextTarget={contextTarget}
-                contextDisabledReason={contextDisabledReason}
-                runtimePin={activeWorkSessionRuntimePin}
-              />
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-        {activeLaneDeleteProgress ? (
-          <div
-            className="absolute inset-0 z-30 flex items-center justify-center bg-bg/75 backdrop-blur-[2px]"
-            aria-live="polite"
-            aria-busy="true"
+            ref={workContentPaneRef}
+            className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+            style={{ flexGrow: 100 - work.workSidebarWidthPct }}
           >
-            <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
-              <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
-              {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
-            </div>
+            {workViewArea}
+            {/*
+              One card per Work page, floating over the chat column. It shows the
+              screen tool you are NOT looking at, so its notion of "active" is the
+              tools pane's tool — and a closed pane means no tool is active, so
+              anything may show.
+            */}
+            <WorkLiveCornerCard
+              active={active}
+              laneId={activeLaneId}
+              activeTool={workSidebarVisible ? workSidebarTool : null}
+              runtimePin={activeWorkSessionRuntimePin}
+              onPick={setWorkSidebarTool}
+            />
           </div>
-        ) : null}
-      </div>
+          {/* Resize handle stays a row-level sibling so its width math is correct. */}
+          {workSidebarVisible ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize tools pane"
+              aria-valuenow={Math.round(work.workSidebarWidthPct)}
+              aria-valuemin={MIN_WORK_SIDEBAR_WIDTH_PCT}
+              aria-valuemax={MAX_WORK_SIDEBAR_WIDTH_PCT}
+              aria-valuetext={`Tools pane ${Math.round(work.workSidebarWidthPct)}% of the window`}
+              tabIndex={0}
+              onMouseDown={handleWorkSidebarResizeMouseDown}
+              onKeyDown={handleWorkSidebarResizeKeyDown}
+              // The app's one splitter: an 8px invisible hit area with a 1px
+              // hairline that appears on hover, focus and drag. Same class the
+              // browser and Work panes use, so the tools pane is not the one
+              // divider drawn as a permanent grey band.
+              className="ade-pane-gutter ade-tool-gutter vertical shrink-0"
+            />
+          ) : null}
+          <AnimatePresence initial={false}>
+            {workSidebarVisible ? (
+              // The panel slides via animated flex-grow so the content pane grows/
+              // shrinks smoothly with it — no instant reflow / black flash on close.
+              <motion.div
+                key="work-tools-sidebar"
+                data-work-sidebar-pane=""
+                className="min-h-0 min-w-0 basis-0 overflow-hidden"
+                // 55% is the taste ceiling; the `max()` keeps the pane's own
+                // 280px floor reachable in a window too narrow for both, which is
+                // the case where the ceiling would otherwise clip its close button.
+                style={{ maxWidth: "max(55%, 280px)" }}
+                initial={{ flexGrow: 0 }}
+                animate={{ flexGrow: work.workSidebarWidthPct }}
+                exit={{ flexGrow: 0 }}
+                transition={paneTransition}
+              >
+                <WorkSidebar
+                  active={active}
+                  laneId={activeLaneId}
+                  lanes={sortedLanes}
+                  activeSession={activeWorkSession}
+                  tool={workSidebarTool}
+                  openTools={workSidebarOpenTools}
+                  onToolChange={setWorkSidebarTool}
+                  onToolClose={closeWorkSidebarTool}
+                  onClose={closeWorkSidebar}
+                  contextTarget={contextTarget}
+                  contextDisabledReason={contextDisabledReason}
+                  runtimePin={activeWorkSessionRuntimePin}
+                />
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+          {activeLaneDeleteProgress ? (
+            <div
+              className="absolute inset-0 z-30 flex items-center justify-center bg-bg/75 backdrop-blur-[2px]"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
+                {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </NativeToolFeedsProvider>
     ),
     [
       activeLaneId,
@@ -1464,10 +1616,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       contextTarget,
       contextDisabledReason,
       handleWorkSidebarResizeMouseDown,
+      handleWorkSidebarResizeKeyDown,
       closeWorkSidebar,
       sortedLanes,
-      work.setWorkSidebarTab,
-      work.workSidebarTab,
+      setWorkSidebarTool,
+      closeWorkSidebarTool,
+      workSidebarTool,
+      workSidebarOpenTools,
       work.workSidebarWidthPct,
       workSidebarVisible,
       workViewArea,

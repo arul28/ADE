@@ -3998,6 +3998,10 @@ describe("local runtime connection pool", () => {
         projectId: "project-1",
         cursor: 20,
         limit: 5,
+        // This desktop is the App Control viewer for its own machine and the
+        // frames never leave the local socket, so it opts in to the
+        // high-volume stream the runtime now withholds by default.
+        includeHighVolumeEvents: true,
         category: "runtime",
       },
       { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },

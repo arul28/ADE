@@ -14,9 +14,37 @@ import {
 } from "./chatWorkspacePaths";
 
 const openUrlInAdeBrowser = vi.hoisted(() => vi.fn());
-vi.mock("../../lib/openExternal", () => ({
-  openUrlInAdeBrowser,
-}));
+const openExternalUrl = vi.hoisted(() => vi.fn());
+
+// Keep every other export real (`chatMarkdown` also pulls `openLinkFromUi` from
+// here) and re-implement only the routing this file asserts on: `openLinkFromUi`
+// picks a destination through the real preference + modifier rule, then hands
+// off to whichever opener is mocked.
+vi.mock("../../lib/openExternal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/openExternal")>();
+  const { resolveLinkOpenTarget } = await import("../../lib/linkOpenTarget");
+  return {
+    ...actual,
+    openUrlInAdeBrowser,
+    openExternalUrl,
+    openLinkFromUi: (
+      url?: string | null,
+      modifiers?: import("../../lib/linkOpenTarget").LinkOpenModifiers | null,
+    ) => {
+      if (!url) return;
+      const target = resolveLinkOpenTarget({
+        mode: actual.getLinkOpenMode(),
+        modifiers,
+        isMac: false,
+      });
+      if (target === "external" || !actual.canOpenInAdeBrowser(url)) {
+        openExternalUrl(url);
+        return;
+      }
+      openUrlInAdeBrowser(url);
+    },
+  };
+});
 
 /** Only the opener matters to these tests; the rest is inert. */
 function contextValue(
@@ -34,6 +62,7 @@ afterEach(() => {
   cleanup();
   resetFilesWorkspaceCacheForTests();
   openUrlInAdeBrowser.mockReset();
+  openExternalUrl.mockReset();
 });
 
 describe("chat markdown file paths", () => {
@@ -130,8 +159,10 @@ describe("chat markdown file paths", () => {
       </ChatWorkspacePathProvider>,
     );
 
+    // Default `in-app` link-open mode + an unmodified click = built-in browser.
     fireEvent.click(screen.getByText("the docs"));
     expect(openUrlInAdeBrowser).toHaveBeenCalledWith("https://example.com/guide");
+    expect(openExternalUrl).not.toHaveBeenCalled();
   });
 
   it("does not treat an external URL as a workspace path", () => {

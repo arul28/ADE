@@ -287,22 +287,28 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("createPrFromLane");
     });
 
-    it("includes captureScreenshot guidance when present", () => {
+    // `captureScreenshot` has no executable implementation in any live tool
+    // registry, so the prompt must not advertise it — an agent that believed
+    // the bullet got a tool-not-found error.
+    it("never advertises captureScreenshot", () => {
       const result = buildCodingAgentSystemPrompt({
         cwd: "/x",
-        toolNames: ["captureScreenshot"],
+        toolNames: ["captureScreenshot", "createLane"],
       });
       expect(result).toContain("## Workflow Tools");
-      expect(result).toContain("captureScreenshot");
+      expect(result).not.toContain("**captureScreenshot**");
     });
 
-    it("includes reportCompletion guidance when present", () => {
+    // Same state as `captureScreenshot`: named in the workflow tool list, with
+    // no implementation in any live registry. A bullet for it only earned the
+    // model a tool-not-found error, so the name alone must not open the section.
+    it("never advertises reportCompletion, and it alone does not open the section", () => {
       const result = buildCodingAgentSystemPrompt({
         cwd: "/x",
         toolNames: ["reportCompletion"],
       });
-      expect(result).toContain("## Workflow Tools");
-      expect(result).toContain("reportCompletion");
+      expect(result).not.toContain("## Workflow Tools");
+      expect(result).not.toContain("**reportCompletion**");
     });
 
     it("omits workflow section when no workflow tools present", () => {

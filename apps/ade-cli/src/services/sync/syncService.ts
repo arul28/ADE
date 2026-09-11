@@ -75,6 +75,7 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
@@ -157,6 +158,11 @@ type SyncServiceArgs = {
    */
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
+  /**
+   * Read-only Work tools-pane state (active tool, browser tabs, App Control)
+   * served to iOS and the hosted web client through `workTools.*`.
+   */
+  workToolsStateService?: WorkToolsStateService | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -738,6 +744,7 @@ export function createSyncService(args: SyncServiceArgs) {
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
+    workToolsStateService: args.workToolsStateService,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -879,6 +886,12 @@ export function createSyncService(args: SyncServiceArgs) {
       ctoMemoryService: args.ctoMemoryService,
       linearCredentialService: args.linearCredentialService,
       getLinearIssueTracker: args.getLinearIssueTracker,
+      // Production always supplies `remoteCommandService` below, so the host's
+      // own fallback never builds one — but pass this anyway, or the day a
+      // caller omits that service the fallback silently advertises an action set
+      // without `workTools.*`, which is a mobile capability disappearing with no
+      // error anywhere.
+      workToolsStateService: args.workToolsStateService,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

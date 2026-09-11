@@ -334,6 +334,7 @@ Right pane (open contextual content):
 | `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
 | `/output-style [style]` | List or select the active Claude output style (Claude only). |
 | `/plugin [reload\|native args]` | Claude: list plugins, reload, or run native plugin args. Codex: list installed plugins (read-only; no reload/toggle). |
+| `/tools [lane-id\|name]` | Read-only mirror of the desktop's Work tools pane for the lane — the same `work_tools.getLaneState` contract iOS and the hosted web client render: which tool the desktop has open, the browser's tabs, App Control's session. Nothing here drives anything; the pane is a `WebContentsView` and a CDP socket on a Mac. It is also how a terminal user learns an agent has handed a browser tab back for them to sign in, which otherwise just looks like a quiet lane. |
 | `/status` | Project, lane, and runtime state summary. |
 | `/context` | Show chat context usage. |
 | `/agents` | List Claude agents from user/project config (Claude only). |

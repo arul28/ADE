@@ -58,6 +58,24 @@ import {
   useUniversalSearch,
 } from "./commandPaletteSearch";
 import {
+  LANGUAGE_SWATCHES,
+  buildPaletteSections,
+  cachedProjectIcon,
+  defaultBrowseInput,
+  dirtyBreakdownTooltip,
+  loadLastBrowsePath,
+  locationKeyFor,
+  paletteSectionAt,
+  paletteSectionsTotal,
+  pathLabel,
+  relativeFromNow,
+  rememberProjectIcon,
+  saveLastBrowsePath,
+  stripTrailingSeparator,
+  walkPaletteSections,
+  withTrailingSeparator,
+} from "./commandPaletteSections";
+import {
   THREAD_RESULT_LIMIT,
   ThreadOverflowNote,
   ThreadResultRow,
@@ -67,10 +85,14 @@ import {
 } from "./commandPaletteThreads";
 import {
   buildWorkResults,
+  buildWorkToolCommands,
+  commandsLeadPaletteResults,
   WorkFilterBar,
   useWorkSessionActions,
   type WorkFilterMenuKey,
 } from "./commandPaletteWork";
+import { requestWorkTool } from "../terminals/workToolRequests";
+import type { WorkToolContext } from "../terminals/workTools";
 import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -151,153 +173,11 @@ const LOCAL_PROJECT_LOCATION: ProjectLocation = {
   name: "This computer",
 };
 
-function stripTrailingSeparator(input: string): string {
-  if (input.length <= 1) return input;
-  if (/^[a-z]:[\\/]$/i.test(input)) return input;
-  if (/^[/\\]{2}[^/\\]+[/\\][^/\\]+[/\\]?$/i.test(input)) return input;
-  return input.endsWith("/") || input.endsWith("\\")
-    ? input.slice(0, -1)
-    : input;
-}
-
-function relativeFromNow(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const diffMs = Date.now() - then;
-  if (diffMs < 0) return "just now";
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  const years = Math.floor(days / 365);
-  return `${years}y ago`;
-}
-
-const LANGUAGE_SWATCHES: Record<string, string> = {
-  TypeScript: "#3178C6",
-  JavaScript: "#F7DF1E",
-  Python: "#3776AB",
-  Rust: "#DE6F1B",
-  Go: "#00ADD8",
-  Ruby: "#CC342D",
-  Java: "#B07219",
-  Kotlin: "#A97BFF",
-  Swift: "#F05138",
-  "Objective-C": "#438EFF",
-  "Objective-C++": "#6866FB",
-  C: "#555555",
-  "C++": "#F34B7D",
-  "C#": "#178600",
-  PHP: "#4F5D95",
-  Lua: "#000080",
-  Shell: "#89E051",
-  PowerShell: "#012456",
-  SQL: "#E38C00",
-  HTML: "#E34C26",
-  CSS: "#563D7C",
-  SCSS: "#C6538C",
-  Less: "#1D365D",
-  Vue: "#41B883",
-  Svelte: "#FF3E00",
-  Astro: "#FF5D01",
-  JSON: "#8FB1D9",
-  YAML: "#CB171E",
-  TOML: "#9C4221",
-  Markdown: "#A78BFA",
-};
-
 const PROJECT_BROWSER_BROWSE_DEBOUNCE_MS = 120;
-
-function withTrailingSeparator(input: string): string {
-  if (input.endsWith("/") || input.endsWith("\\")) return input;
-  return `${input}${input.includes("\\") ? "\\" : "/"}`;
-}
-
-function defaultBrowseInput(projectRoot: string | null | undefined): string {
-  return projectRoot ? "../" : "~/";
-}
-
-// Per-location browse-path memory. The local explorer and each remote target
-// have their own filesystem, so a single shared `browseInput` would leak one
-// machine's path into another (showing a blank list because the path doesn't
-// exist there). Keyed by `locationKey` and persisted across restarts.
-const LAST_BROWSE_PATH_STORAGE_KEY = "ade.projectBrowser.lastPath.v1";
-
-function locationKeyFor(remoteTargetId: string | null): string {
-  return remoteTargetId ? `remote:${remoteTargetId}` : "local";
-}
-
-function readLastBrowsePathMap(): Record<string, string> {
-  try {
-    const raw = globalThis.localStorage?.getItem(LAST_BROWSE_PATH_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(
-      parsed as Record<string, unknown>,
-    )) {
-      if (typeof value === "string") out[key] = value;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function loadLastBrowsePath(locationKey: string): string | null {
-  const map = readLastBrowsePathMap();
-  const value = map[locationKey];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function saveLastBrowsePath(locationKey: string, path: string): void {
-  try {
-    if (!globalThis.localStorage) return;
-    const map = readLastBrowsePathMap();
-    if (map[locationKey] === path) return;
-    map[locationKey] = path;
-    globalThis.localStorage.setItem(
-      LAST_BROWSE_PATH_STORAGE_KEY,
-      JSON.stringify(map),
-    );
-  } catch {
-    // Ignore unavailable/quota-exceeded localStorage.
-  }
-}
-
-// Resolved project icons are stable for a given root path within a session, so
-// cache them module-wide to avoid rescanning the disk on every re-highlight.
-const PROJECT_ICON_CACHE_MAX = 64;
 const PALETTE_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
-const PROJECT_ICON_CACHE = new Map<string, ProjectIcon>();
-
-function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
-  PROJECT_ICON_CACHE.delete(rootPath);
-  PROJECT_ICON_CACHE.set(rootPath, icon);
-  while (PROJECT_ICON_CACHE.size > PROJECT_ICON_CACHE_MAX) {
-    const oldestKey = PROJECT_ICON_CACHE.keys().next().value;
-    if (typeof oldestKey !== "string") break;
-    PROJECT_ICON_CACHE.delete(oldestKey);
-  }
-}
 
 /** Stable empty array so the "no sessions yet" case never re-memoizes the index. */
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
-
-function pathLabel(input: string | null | undefined): string {
-  if (!input) return "";
-  const segments = input.split(/[\\/]/).filter(Boolean);
-  return segments[segments.length - 1] ?? input;
-}
 
 export function CommandPalette({
   open,
@@ -637,6 +517,18 @@ export function CommandPalette({
       window.removeEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
   }, [mode, onOpenChange, open]);
 
+  // Capability flags, never a platform sniff — the same three the Work tools
+  // pane gates its picker on. The palette must agree with the pane about which
+  // tools exist here, so both read `workToolAvailability` from this one shape.
+  const workToolContext = useMemo<WorkToolContext>(
+    () => ({
+      isRemoteProject: projectBinding?.kind === "remote",
+      supportsIosSimulator: isMacPlatform(),
+      isWebClient: isWebClientMode(),
+    }),
+    [projectBinding],
+  );
+
   const commands: Command[] = useMemo(() => {
     const next: Command[] = [
       {
@@ -767,6 +659,13 @@ export function CommandPalette({
         keywords: entry.keywords,
         run: () => navigate(settingsEntryPath(entry)),
       })),
+      // One entry per Work tool, plus the picker. Generated from the tools
+      // registry so a new tool never needs a second edit here.
+      ...buildWorkToolCommands({
+        navigate,
+        openTool: requestWorkTool,
+        context: workToolContext,
+      }),
       {
         id: "action-create-lane",
         title: "Create Lane",
@@ -880,6 +779,7 @@ export function CommandPalette({
     startProjectClone,
     startProjectCreate,
     startProjectRemote,
+    workToolContext,
   ]);
 
   const parsedWorkQuery = useMemo(() => parseWorkSearchQuery(q), [q]);
@@ -1023,14 +923,29 @@ export function CommandPalette({
     [workResults],
   );
 
-  // Flat keyboard index layout: threads, then commands, then entity results.
-  // Threads lead because the palette is the Work sidebar's search now — with an
-  // empty query the thing you most likely came here for is a chat you were just
-  // in, not a command. When a query matches no thread the section disappears
-  // and commands lead on their own, so the first row is always a live target.
-  const threadCount = visibleWorkResults.length;
-  const commandCount = filtered.length;
-  const totalFlat = threadCount + commandCount + flatEntities.length;
+  // `buildPaletteSections` is the ONE statement of palette order: the rendered
+  // nodes and the flat keyboard index are both produced by walking the array it
+  // returns, so ↓↓↵ always runs the row you are looking at.
+  const commandsLead = commandsLeadPaletteResults(
+    q,
+    filtered.map((command) => command.title),
+  );
+  const paletteSections = useMemo(
+    () =>
+      buildPaletteSections({
+        commandsLead,
+        threadCount: visibleWorkResults.length,
+        commandCount: filtered.length,
+        entityCount: flatEntities.length,
+      }),
+    [
+      commandsLead,
+      filtered.length,
+      flatEntities.length,
+      visibleWorkResults.length,
+    ],
+  );
+  const totalFlat = paletteSectionsTotal(paletteSections);
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1251,7 +1166,7 @@ export function CommandPalette({
       setDetailIcon(null);
       return;
     }
-    const cached = PROJECT_ICON_CACHE.get(detailTarget);
+    const cached = cachedProjectIcon(detailTarget);
     if (cached) {
       setDetailIcon(cached);
       return;
@@ -1556,19 +1471,23 @@ export function CommandPalette({
 
   const activateFlat = useCallback(
     (index: number) => {
-      if (index < threadCount) {
-        const result = visibleWorkResults[index];
+      // Same walk the renderer does, so the offset resolved here is the offset
+      // that produced the row on screen.
+      const hit = paletteSectionAt(paletteSections, index);
+      if (!hit) return;
+      if (hit.section.key === "threads") {
+        const result = visibleWorkResults[hit.offset];
         if (!result) return;
         if (result.type === "thread") activateThread(result.match.entry);
         else activateResult(result.item);
         return;
       }
-      if (index < threadCount + commandCount) {
-        const command = filtered[index - threadCount];
+      if (hit.section.key === "commands") {
+        const command = filtered[hit.offset];
         if (command) runCommand(command);
         return;
       }
-      const entity = flatEntities[index - threadCount - commandCount];
+      const entity = flatEntities[hit.offset];
       if (!entity) return;
       if (entity.type === "result") activateResult(entity.item);
       else toggleExpandKind(entity.kind);
@@ -1576,11 +1495,10 @@ export function CommandPalette({
     [
       activateResult,
       activateThread,
-      commandCount,
       filtered,
       flatEntities,
+      paletteSections,
       runCommand,
-      threadCount,
       toggleExpandKind,
       visibleWorkResults,
     ],
@@ -1933,7 +1851,11 @@ export function CommandPalette({
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
+                // Same overlay language as the app's dialogs (LaneDialogShell,
+                // the import browser): dim, then a light blur. `blur-2xl` over
+                // the whole window read as a different app taking over — and it
+                // is a full-window backdrop filter per frame of the fade.
+                className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -2543,8 +2465,11 @@ export function CommandPalette({
                       ) : (
                         <ul ref={listRef} className="py-2">
                           {(() => {
-                            let flatIndex = 0;
-                            const threadNodes =
+                            // Each builder is handed the flat index of its own
+                            // first row and derives every row index from it, so
+                            // nothing here depends on the order the builders
+                            // happen to be declared in.
+                            const buildThreadNodes = (startIndex: number) =>
                               visibleWorkResults.length > 0
                                 ? [
                                     <li key="threads">
@@ -2554,8 +2479,8 @@ export function CommandPalette({
                                           : "Recent threads"}
                                       </div>
                                       <ul>
-                                        {visibleWorkResults.map((result) => {
-                                          const index = flatIndex++;
+                                        {visibleWorkResults.map((result, rowIndex) => {
+                                          const index = startIndex + rowIndex;
                                           if (result.type === "content") {
                                             return (
                                               <SearchResultRow
@@ -2605,63 +2530,81 @@ export function CommandPalette({
                                     </li>,
                                   ]
                                 : [];
-                            const commandNodes = grouped.map((group) => (
-                              <li key={group.label}>
-                                <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                  {group.label}
-                                </div>
-                                <ul>
-                                  {group.items.map((command) => {
-                                    const index = flatIndex++;
-                                    const isSelected = index === selectedIdx;
-                                    return (
-                                      <li key={command.id}>
-                                        <button
-                                          type="button"
-                                          data-cmd-item
-                                          className={cn(
-                                            "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                                            isSelected
-                                              ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-                                              : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
-                                          )}
-                                          onMouseEnter={() =>
-                                            setSelectedIdx(index)
-                                          }
-                                          onClick={() => runCommand(command)}
-                                        >
-                                          <div className="min-w-0">
-                                            <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                              {command.title}
-                                            </div>
-                                            {command.hint ? (
-                                              <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-                                                {command.hint}
-                                              </div>
-                                            ) : null}
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            {command.shortcut ? (
-                                              <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
-                                                {command.shortcut}
-                                              </span>
-                                            ) : null}
-                                            <ArrowRight
-                                              size={14}
-                                              weight="regular"
-                                              className="text-[var(--color-muted-fg)]"
-                                            />
-                                          </div>
-                                        </button>
-                                      </li>
-                                    );
-                                  })}
-                                </ul>
-                              </li>
-                            ));
 
-                            const entityNodes = entitySections.map(
-                              (section) => {
+                            const buildCommandNodes = (startIndex: number) => {
+                              // The groups are consecutive slices of `filtered`,
+                              // so a group's first flat index is the running sum
+                              // of the groups before it.
+                              let cursor = startIndex;
+                              const groupStarts = grouped.map((group) => {
+                                const start = cursor;
+                                cursor += group.items.length;
+                                return start;
+                              });
+                              return grouped.map((group, groupIndex) => (
+                                <li key={group.label}>
+                                  <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                    {group.label}
+                                  </div>
+                                  <ul>
+                                    {group.items.map((command, itemIndex) => {
+                                      const index =
+                                        (groupStarts[groupIndex] ?? startIndex) +
+                                        itemIndex;
+                                      const isSelected = index === selectedIdx;
+                                      return (
+                                        <li key={command.id}>
+                                          <button
+                                            type="button"
+                                            data-cmd-item
+                                            className={cn(
+                                              "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                                              isSelected
+                                                ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
+                                                : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+                                            )}
+                                            onMouseEnter={() =>
+                                              setSelectedIdx(index)
+                                            }
+                                            onClick={() => runCommand(command)}
+                                          >
+                                            <div className="min-w-0">
+                                              <div className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                                {command.title}
+                                              </div>
+                                              {command.hint ? (
+                                                <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
+                                                  {command.hint}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              {command.shortcut ? (
+                                                <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
+                                                  {command.shortcut}
+                                                </span>
+                                              ) : null}
+                                              <ArrowRight
+                                                size={14}
+                                                weight="regular"
+                                                className="text-[var(--color-muted-fg)]"
+                                              />
+                                            </div>
+                                          </button>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                </li>
+                              ));
+                            };
+
+                            const buildEntityNodes = (startIndex: number) => {
+                              // A section claims one index per visible row plus
+                              // one for its "show more" row — the same shape
+                              // `flatEntities` is flattened into.
+                              let cursor = startIndex;
+                              const layout = entitySections.map((section) => {
                                 const expanded = expandedKinds.has(
                                   section.kind,
                                 );
@@ -2674,57 +2617,69 @@ export function CommandPalette({
                                 const showMore =
                                   !expanded &&
                                   section.rows.length > ENTITY_SECTION_PREVIEW;
-                                const hiddenCount =
-                                  section.total - ENTITY_SECTION_PREVIEW;
-                                return (
-                                  <li key={`entity:${section.kind}`}>
-                                    <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                      {section.label}
-                                    </div>
-                                    <ul>
-                                      {visible.map((item) => {
-                                        const index = flatIndex++;
-                                        return (
-                                          <SearchResultRow
-                                            key={item.id}
-                                            item={item}
-                                            query={entityQuery}
-                                            index={index}
-                                            isSelected={index === selectedIdx}
+                                const start = cursor;
+                                cursor += visible.length + (showMore ? 1 : 0);
+                                return { section, visible, showMore, start };
+                              });
+                              return layout.map(
+                                ({ section, visible, showMore, start }) => {
+                                  const hiddenCount =
+                                    section.total - ENTITY_SECTION_PREVIEW;
+                                  return (
+                                    <li key={`entity:${section.kind}`}>
+                                      <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                        {section.label}
+                                      </div>
+                                      <ul>
+                                        {visible.map((item, rowIndex) => {
+                                          const index = start + rowIndex;
+                                          return (
+                                            <SearchResultRow
+                                              key={item.id}
+                                              item={item}
+                                              query={entityQuery}
+                                              index={index}
+                                              isSelected={index === selectedIdx}
+                                              onHover={setSelectedIdx}
+                                              onActivate={activateResult}
+                                            />
+                                          );
+                                        })}
+                                        {showMore ? (
+                                          <ShowMoreRow
+                                            key={`more:${section.kind}`}
+                                            kind={section.kind}
+                                            hiddenCount={hiddenCount}
+                                            index={start + visible.length}
+                                            isSelected={
+                                              start + visible.length ===
+                                              selectedIdx
+                                            }
                                             onHover={setSelectedIdx}
-                                            onActivate={activateResult}
+                                            onToggle={toggleExpandKind}
                                           />
-                                        );
-                                      })}
-                                      {showMore
-                                        ? (() => {
-                                            const index = flatIndex++;
-                                            return (
-                                              <ShowMoreRow
-                                                key={`more:${section.kind}`}
-                                                kind={section.kind}
-                                                hiddenCount={hiddenCount}
-                                                index={index}
-                                                isSelected={
-                                                  index === selectedIdx
-                                                }
-                                                onHover={setSelectedIdx}
-                                                onToggle={toggleExpandKind}
-                                              />
-                                            );
-                                          })()
-                                        : null}
-                                    </ul>
-                                  </li>
-                                );
-                              },
-                            );
+                                        ) : null}
+                                      </ul>
+                                    </li>
+                                  );
+                                },
+                              );
+                            };
 
-                            return [
-                              ...threadNodes,
-                              ...commandNodes,
-                              ...entityNodes,
-                            ];
+                            // ONE ordering, walked once: `paletteSections` is
+                            // the same array `activateFlat` resolves against.
+                            return walkPaletteSections(
+                              paletteSections,
+                              (section, startIndex) => {
+                                if (section.key === "threads") {
+                                  return buildThreadNodes(startIndex);
+                                }
+                                if (section.key === "commands") {
+                                  return buildCommandNodes(startIndex);
+                                }
+                                return buildEntityNodes(startIndex);
+                              },
+                            ).flat();
                           })()}
                         </ul>
                       )}
@@ -2968,17 +2923,6 @@ function BrowsePreview({
       </div>
     </div>
   );
-}
-
-function dirtyBreakdownTooltip(
-  breakdown: ProjectDetail["dirtyBreakdown"],
-): string | undefined {
-  if (!breakdown) return undefined;
-  const parts: string[] = [];
-  if (breakdown.staged > 0) parts.push(`${breakdown.staged} staged`);
-  if (breakdown.unstaged > 0) parts.push(`${breakdown.unstaged} unstaged`);
-  if (breakdown.untracked > 0) parts.push(`${breakdown.untracked} untracked`);
-  return parts.length > 0 ? parts.join(" · ") : "no changes";
 }
 
 function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {

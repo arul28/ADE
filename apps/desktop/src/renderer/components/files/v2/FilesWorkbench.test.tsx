@@ -26,6 +26,25 @@ import { requestFilesOpenInTools, resetFilesOpenRequestsForTests } from "./files
 
 const dirtyBuffers = vi.hoisted(() => ({ replace: vi.fn(), clear: vi.fn() }));
 
+/**
+ * jsdom ships no ResizeObserver, so the pane measures 0 and stays two-column.
+ * This reports one width, once, which is all the layout rule reads.
+ */
+function installResizeObserver(width: number): void {
+  class FakeResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element): void {
+      this.callback(
+        [{ target, contentRect: { width } } as unknown as ResizeObserverEntry],
+        this as unknown as ResizeObserver,
+      );
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+}
+
 const testState = vi.hoisted(() => ({
   appState: {
     project: { rootPath: "/repo" },
@@ -50,11 +69,13 @@ vi.mock("../../../state/appStore", () => ({
 vi.mock("../FilesExplorer", () => ({
   FilesExplorer: ({
     tree,
+    expanded,
     onOpenFile,
     onToggleDirectory,
     onLoadMoreChildren,
   }: {
     tree: Array<{ path: string; children?: Array<unknown>; loadMoreOffset?: number | null }>;
+    expanded: Set<string>;
     onOpenFile: (path: string) => void;
     onToggleDirectory: (path: string, isExpanded: boolean, hasLoadedChildren: boolean) => void;
     onLoadMoreChildren?: (path: string, offset: number) => void;
@@ -62,6 +83,7 @@ vi.mock("../FilesExplorer", () => ({
     const bigdir = tree.find((node) => node.path === "bigdir");
     return (
       <div>
+        <div data-testid="explorer-expanded">{[...expanded].sort().join(",")}</div>
         <button type="button" data-testid="open-file" onClick={() => onOpenFile("src/a.ts")}>
           Open file
         </button>
@@ -242,6 +264,7 @@ describe("FilesWorkbench", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     useEditorGroupsStore.setState({ sessions: {} });
     localStorage.clear();
@@ -404,6 +427,86 @@ describe("FilesWorkbench", () => {
     expect(window.ade.files.readFile).not.toHaveBeenCalledWith(
       expect.objectContaining({ path: "docs/features" }),
     );
+  });
+
+  it("gives the embedded pane a breadcrumb that reveals a directory in the tree", async () => {
+    render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+
+    // Nothing open: the row still says where you are rather than sitting blank.
+    expect(screen.getByTestId("files-pane-chrome")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(screen.getByTestId("files-breadcrumb-a.ts")).toBeTruthy());
+
+    // The file crumb is the end of the trail, not a button that does nothing.
+    expect(screen.getByTestId("files-breadcrumb-a.ts")).toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByTestId("files-breadcrumb-src"));
+    await waitFor(() => expect(screen.getByTestId("explorer-expanded").textContent).toContain("src"));
+  });
+
+  it("shows one surface at a time in a narrow pane, and a crumb back to the tree", async () => {
+    // 447px is the pane width the defect was filed at: a 220px tree beside a
+    // 227px editor, both unusable.
+    installResizeObserver(447);
+
+    render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+
+    const pane = () => screen.getByTestId("files-workbench-v2");
+    /*
+      Only one column SHOWS, but both stay mounted: the hidden one is `hidden`
+      + `inert`, not `null`. Unmounting disposed the Monaco editor on every
+      "Back to files", losing cursor, scroll, selection and folding (the text
+      model is registry-owned, so edits survived — nothing held on the editor
+      did) and paying a full re-create on the way back.
+    */
+    const tree = () => screen.getByTestId("files-tree-column");
+    const editor = () => screen.getByTestId("files-editor-column");
+    const hidden = (el: HTMLElement) => el.hasAttribute("inert") && el.className.includes("hidden");
+
+    await waitFor(() => expect(pane().dataset.singleSurface).toBe("tree"));
+    expect(hidden(tree())).toBe(false);
+    expect(hidden(editor())).toBe(true);
+    expect(screen.queryByTestId("files-pane-back")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(pane().dataset.singleSurface).toBe("editor"));
+    expect(hidden(editor())).toBe(false);
+    expect(hidden(tree())).toBe(true);
+    expect(screen.getByTestId("tab-count")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("files-pane-back"));
+    await waitFor(() => expect(pane().dataset.singleSurface).toBe("tree"));
+    expect(hidden(tree())).toBe(false);
+    // The editor column is still THERE, just parked — that is the whole point.
+    expect(screen.getByTestId("files-editor-column")).toBeTruthy();
+  });
+
+  it("keeps both surfaces side by side once the pane is wide enough", async () => {
+    installResizeObserver(720);
+
+    render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+
+    await waitFor(() => expect(screen.getByTestId("open-file")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("open-file"));
+
+    // Both columns, at once: the tree stays put while the file opens beside it.
+    await waitFor(() => expect(screen.getByTestId("tab-count")).toBeTruthy());
+    expect(screen.getByTestId("files-workbench-v2").dataset.singleSurface).toBeUndefined();
+    expect(screen.getByTestId("open-file")).toBeTruthy();
+    // No back crumb, because there is nothing to go back from.
+    expect(screen.queryByTestId("files-pane-back")).toBeNull();
+  });
+
+  it("keeps the full Files tab free of the pane's chrome row", async () => {
+    render(<FilesWorkbench active />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+    // The tab has the workspace picker and the status bar; a breadcrumb here
+    // would be a third place saying the same thing.
+    expect(screen.queryByTestId("files-pane-chrome")).toBeNull();
   });
 
   it("does not replay a tools-pane request into the next panel that mounts", async () => {

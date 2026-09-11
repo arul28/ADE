@@ -1,9 +1,11 @@
 # Tool System
 
-Agents exposed through chat get three tiers of tools: **universal**,
-**workflow**, and **coordinator**. Each tier is scoped to a role so a
-regular chat session cannot, for example, start a run or force a
-worker to respawn.
+Agents exposed through chat get tools in tiers, each scoped to a role so a
+regular chat session cannot, for example, start a run or force a worker to
+respawn. Two tiers are live — **universal** and **coordinator** (plus the
+CTO-only operator set). The **workflow** tier below is retained as a
+historical record: its module was deleted, and the section explains which of
+its names were ever callable and which were not.
 
 ## Source file map
 
@@ -11,9 +13,7 @@ worker to respawn.
 |---|---|
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
-| `apps/desktop/src/main/services/ai/tools/workflowTools.ts` | `createLane`, `createPrFromLane`, `captureScreenshot`, `reportCompletion`, and the four PR issue-resolution tools. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`). |
-| `apps/desktop/src/main/services/ai/tools/linearTools.ts` | Linear-only tools for CTO when Linear is connected. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus ADE-child routing contract. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
 | `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` / `editFile.ts` | Primitive file/search tools used by every agent. |
@@ -121,44 +121,85 @@ Consequences worth knowing:
 The full mode-to-policy table lives in
 [Agent Routing › Pi](agent-routing.md#pi).
 
-## Tier 2: workflow tools
+## Tier 2: workflow tools (historical)
 
-Available to chat agents (CTO, named employees, regular chat sessions).
-Not exposed to headless run workers. Built by `createWorkflowTools()`
-in `workflowTools.ts`.
+**This tier no longer exists as code.** `workflowTools.ts`, its
+`workflowToolNames()` export, and `agentChatService.previewSessionToolNames`
+— the only consumer — have been deleted; none of them had a non-test caller.
+The table below is kept as the **historical record** of the names that tier
+used to enumerate, because the live/dead split across those names is not
+obvious and has already put a wrong claim into `ARCHITECTURE.md` once.
+
+Read it as: what an agent may actually call today is the **Live** row (the
+snake_case `pr_*` RPC tools) plus `createLane` / `createPrFromLane`, which
+are implemented in `ctoOperatorTools.ts` and reach agents through the CTO
+operator tier below. Everything else in the table was a name with no
+implementation behind it in any registry.
+
+**CAREFUL — camelCase versus snake_case.** The `pr*` names are the subtle
+case, and the reason this table survives its module: the **camelCase**
+spellings (`prGetChecks`, `prGetReviewComments`, …) were always dead, while
+their **snake_case** counterparts (`pr_get_checks`, …) are live agent tools
+registered on the ADE RPC server. Do not treat the two spellings as the same
+tool, and do not "fix" a snake_case name to camelCase. `systemPrompt.ts`
+keeps a code-comment copy of this warning next to `PR_ISSUE_TOOL_NAMES`;
+this is the canonical prose copy.
 
 | Tool | Purpose |
 |---|---|
 | `createLane({ name, description?, parentLaneId? })` | Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
-| `captureScreenshot()` | Screenshots the current environment and files the result through the proof broker. macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
-| `reportCompletion({ status, summary, artifacts, blockerDescription? })` | Persists an `AgentChatCompletionReport` on the session. Renders a closeout card in the transcript. |
-| `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. Each returned thread carries a `diffHunk` — the code the thread is anchored to, taken from the first comment that has one. Review feedback ("this leaks a handle") is not actionable from a path and a line number alone; without the hunk the resolver has to go re-find the code, or guess. GitHub's `diff_hunk` is normally a few hundred bytes, so the `REVIEW_THREAD_DIFF_HUNK_MAX_CHARS` = 2,000 cap only bites on pathological hunks. Trimming is from the **front** (on a line boundary where one exists, with the `...` marker counted inside the budget rather than added to it), because a diff hunk ends at the commented line — the tail is the part the comment is about. |
-| `prRerunFailedChecks({ prNumber })` | Re-triggers failed GitHub Actions check runs. |
-| `prReplyToReviewThread({ threadId, body })` | Posts a reply on a GitHub review thread. |
-| `prResolveReviewThread({ threadId })` | Marks a review thread as resolved. |
+| `captureScreenshot()` | **Not callable.** The name was listed by the deleted `workflowToolNames()` but no tool registry ever received an implementation, so an agent that called it got "tool not found". Use `ade proof capture --caption "…"` to file reviewer-facing proof, or `screenshot_environment` for a bare look at the screen. |
+| `reportCompletion(...)` | **Not callable.** A name with no implementation in any registry. Its system-prompt bullet has been removed, so nothing advertises it either. |
+| `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | **Live**, but not from this module. They are registered, allow-listed and dispatched in `apps/ade-cli/src/adeRpcServer.ts` (registration `:1109+`, allowlist `:1399+`, dispatch `:5415+`) under **snake_case** names, and are called by agents and by the TUI (`tuiClient/app.tsx:11383`). `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
+| `pr_get_check_log`, `pr_refresh_issue_inventory`, `pr_reply_to_comment` | **Not callable** under either spelling — no dispatch handler exists. The first two are still in `systemPrompt.ts`'s `PR_ISSUE_TOOL_NAMES` set, which is harmless: that set only filters names a caller already passed, so it can never make the prompt claim a tool that does not exist. |
+| The camelCase `pr*` names (`prGetChecks`, `prGetReviewComments`, …) | **Not callable.** They appeared only in the deleted `workflowToolNames()` and in the `PR_ISSUE_TOOL_NAMES` set, which survives. The working spellings are the snake_case ones above. |
 
 ### PR issue resolution
 
-The four `pr*` tools are specifically designed for the PR issue
-resolution workflow, where a chat is launched to fix failing CI checks
-and unresolved review threads. Availability is checked via
-`getPrIssueResolutionAvailability()` in
-`apps/desktop/src/shared/prIssueResolution.ts`.
+The **tools work**; the **automatic launcher does not**. Keep those apart — they
+fail in opposite directions.
 
-When a CTO spawns a chat via `launchPrIssueResolutionChat` (see
-`apps/desktop/src/main/services/prs/prIssueResolver.ts`), the spawned
-chat gets these four tools in its palette.
+An agent working a PR can already re-pull checks and review threads, re-trigger
+failed GitHub Actions runs, reply on review threads, and resolve them. Those are
+the five live `pr_*` RPC tools in the table above, dispatched from
+`apps/ade-cli/src/adeRpcServer.ts` and exercised by the TUI. Nothing about that
+path is speculative.
+
+What does not exist is the surface that was supposed to *launch* such a chat for
+you off a failing PR:
+
+- `launchPrIssueResolutionChat` is not defined anywhere in the repo.
+- `apps/desktop/src/main/services/prs/prIssueResolver.ts` does not exist, and
+  neither do `prRebaseResolver.ts` or `githubPrStackService.ts`. (`prs/` does
+  have `githubStackStore.ts`, `prCommentMutations.ts`, `integrationPlanning.ts`
+  and others — see [ARCHITECTURE.md](../../ARCHITECTURE.md).)
+- `getPrIssueResolutionAvailability()` in
+  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, and is
+  currently callerless: its one caller lived inside the dead
+  `prRefreshIssueInventory` body that was removed. It belongs to the unbuilt
+  inventory tool and is waiting for it, not left over from a deleted feature.
+
+So: driving a PR from an agent is supported today by calling the `pr_*` tools
+directly. Building the one-click "resolve this PR's issues" flow means adding a
+launcher and implementing `pr_refresh_issue_inventory` — not reimplementing the
+tools that already work.
 
 ### Proof capture
 
-`captureScreenshot` files the resulting image through
-`computerUseArtifactBrokerService.ingest()`. It is not gated by
-a policy — the proof-observer model (and `ComputerUsePolicy`) was
-removed. The tool still reports `blocked_by_capability` when it runs on
-a platform without a supported capture backend (Linux/Windows); the
-agent can fall back to `ade proof attach <path>` with a headless-browser
-or Playwright-produced PNG in that case.
+`captureScreenshot` was never callable (see the table above), so nothing ever
+reached `computerUseArtifactBrokerService.ingest()` from that module, and there
+is no `captureScreenshot` body left to report anything. Proof-drawer entries are
+explicit-only regardless: an agent that wants a reviewer to see something runs
+`ade proof capture --caption "…"`, or `ade proof attach <path> --caption "…"` to
+promote a scratch file it already has from `screenshot_environment`. See
+`docs/features/proof.md` for the rule and the other two paths it covers.
+
+It is not gated by a policy — the proof-observer model (and `ComputerUsePolicy`)
+was removed. The platform-capability behavior lives on `screenshot_environment`,
+which reports `blocked_by_capability` on a platform without a supported capture
+backend (Linux/Windows); the agent can fall back to `ade proof attach <path>`
+with a headless-browser or Playwright-produced PNG in that case.
 
 ## CTO operator tools
 
@@ -224,9 +265,12 @@ identifiers from one place instead of restating them:
   `closeHttpMcpServers(managed)` drops every lease, and all teardown paths use
   it.
 
-`buildCtoOperatorToolDeps` builds the dependency set for both the runtime map
-and `previewSessionToolNames` (which enumerates the same names for the prompt),
-so the advertised surface and the callable surface cannot drift.
+`buildCtoOperatorToolDeps` builds the dependency set for the runtime map. It
+used to be shared with `previewSessionToolNames`, a name-enumeration helper that
+was removed along with `workflowTools.ts` because it had no non-test caller — so
+"one definition feeds both the advertised and the callable surface" is a design
+intent to preserve if a prompt manifest is ever built, not a guarantee that
+holds today. There is no second enumeration of these names to drift from.
 
 ### Lane defaulting is read-only
 
@@ -259,17 +303,29 @@ runtime-specific filtering:
 
 Additional exposure rules:
 
-- `captureScreenshot` is hidden entirely when computer use is disabled.
-- Linear tools are hidden when the Linear integration is not connected.
+- Linear tools are NOT hidden when the Linear integration is not connected.
+  They come from `ctoOperatorTools.ts`, are registered unconditionally for CTO
+  sessions, and report `Linear issue tracker is not available.` at call time.
+  (A `linearTools.ts` module did hide them by returning an empty tool set; it
+  had no caller and was deleted.)
 
 ## Fragile and tricky wiring
 
 - **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
   exact tool-name matches (including `createLane`, `createPrFromLane`,
-  `captureScreenshot`, `reportCompletion`, `TodoWrite`, `TodoRead`, and
-  the four `pr*` tools). Renaming any of
-  these tools silently strips the corresponding prompt guidance. Keep
-  name changes synchronized.
+  `TodoWrite`, `TodoRead`, and the fourteen entries of `PR_ISSUE_TOOL_NAMES` —
+  seven camelCase spellings and their seven snake_case counterparts). Renaming
+  any of these silently strips the corresponding prompt guidance. Keep name
+  changes synchronized. Note the two kinds of branch are not equally risky: the
+  PR section *filters* names the caller already passed and echoes the result, so
+  a dead entry in that Set is inert. An `includes(X)` gate that emits a bullet
+  describing a capability is the dangerous shape — that is how the prompt came
+  to advertise `captureScreenshot` and `reportCompletion`, neither of which
+  existed. Note that all **six** live callers in `agentChatService`
+  (`:7678` codex-app-server, `:7718` opencode, `:13117` pi-sdk, `:24653`
+  claude-code-cli, `:32675` claude-agent-sdk-query, `:42167` droid-sdk) pass no
+  `toolNames` at all, so every one of these branches is inert in a real
+  session — they fire only where a caller supplies the list.
 - **Tool name normalisation.** ADE CLI-exposed tools appear as
   `ade.<server>__<tool>`. `normalizeToolName` in `systemPrompt.ts`
   unwraps that form; new tools that should appear in the prompt must be

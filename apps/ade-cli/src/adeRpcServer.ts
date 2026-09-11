@@ -5,6 +5,7 @@ import path from "node:path";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
+  createComputerUseScratchPath,
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
@@ -71,7 +72,11 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
+} from "./services/builtInBrowser/desktopBridgeMethods";
+import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -515,7 +520,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Capture a local screenshot/image and store it as visual ADE proof.",
+    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof capture --caption \"…\"` sets.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -525,13 +530,14 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
+        proof: { type: "boolean", default: false, description: "File the capture as reviewer-visible ADE proof. Set by `ade proof capture`; leave false for your own look at the screen." },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
       }
     }
   },
   {
     name: "record_environment",
-    description: "Fallback-only: record a short local screen video and store it as visual ADE proof.",
+    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof record` sets.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -540,6 +546,7 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
+        proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible ADE proof. Set by `ade proof record`; leave false for your own look at the screen." },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
@@ -557,6 +564,7 @@ const TOOL_SPECS: ToolSpec[] = [
         toolName: { type: "string" },
         command: { type: "string" },
         callerRoot: { type: "string", description: "Absolute directory that relative input paths are resolved against. Defaults to the agent's workspace root." },
+        callerRootSource: { type: "string", description: "Where callerRoot came from (e.g. \"cwd\" or \"env ADE_WORKSPACE_ROOT\"). Reported back in the authorization error so a caller can see which path was used." },
         inputs: {
           type: "array",
           items: {
@@ -566,7 +574,7 @@ const TOOL_SPECS: ToolSpec[] = [
               kind: { type: "string" },
               title: { type: "string" },
               description: { type: "string" },
-              path: { type: "string" },
+              path: { type: "string", description: "File to import, absolute or relative to callerRoot. Only these roots are importable: the project root, the lane worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp dir, /tmp (non-Windows), and ~/.agent-browser. .ade/secrets is denied, symlinks included; copy the file into an allowed root instead." },
               uri: { type: "string" },
               text: { type: "string" },
               json: {},
@@ -2112,6 +2120,19 @@ function isPathWithinAuthorizedRoot(root: string, candidate: string): boolean {
   }
 }
 
+/**
+ * Free-text label for where the caller says its `callerRoot` came from.
+ *
+ * Untrusted input that only ever lands in an error string, so it is bounded and
+ * stripped of newlines rather than validated against an enum — a caller on an
+ * older CLI sends nothing at all, and "cwd" is the historic behaviour.
+ */
+function describeCallerRootSource(raw: unknown): string {
+  const value = asOptionalTrimmedString(raw);
+  if (!value) return "cwd";
+  return value.replace(/[\r\n]+/g, " ").slice(0, 80);
+}
+
 async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2162,9 +2183,19 @@ async function resolveAuthorizedComputerUseIngestRoot(
     callerRoot
     && !isPathWithinAuthorizedRoot(authorizedRoot, callerRoot)
   ) {
+    // Name the path, where it came from, and the root it had to be inside.
+    // The bare rule was unactionable: an agent whose shell had wandered out of
+    // its worktree could not tell whether the CLI had sent its cwd or an
+    // environment-provided root, so it retried the same failing command.
+    const source = describeCallerRootSource(toolArgs.callerRootSource);
+    // Report the canonical root: the check realpaths both sides, so the raw
+    // lane path can differ from the one the caller has to be inside.
+    const canonicalAuthorizedRoot = canonicalAuthorizationPath(authorizedRoot);
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "callerRoot must be inside the server-authorized lane worktree",
+      "callerRoot must be inside the server-authorized lane worktree: "
+      + `used ${callerRoot} (from ${source}), authorized root is ${canonicalAuthorizedRoot}. `
+      + `Run ade from inside that worktree, or set ADE_WORKSPACE_ROOT to it.`,
     );
   }
   const canonicalRoot = canonicalAuthorizationPath(authorizedRoot);
@@ -2195,6 +2226,20 @@ function resolveAuthorizedProofOwners(
   add("lane", resolveChatSessionLaneId(runtime, session));
   add("automation_run", session.identity.runId);
   return owners;
+}
+
+/**
+ * Does this call intend to create a reviewer-facing proof-drawer entry?
+ *
+ * `screenshot_environment` and `record_environment` are two things at once: the
+ * agent's own eyes on the screen, and the capture engine behind
+ * `ade proof capture` / `ade proof record`. Only the second should file a
+ * record, so the drawer stays a set a reviewer can skim rather than a dump of
+ * every frame the agent looked at. The `ade proof` commands set `proof: true`;
+ * a bare tool call (agent vision, an automation-run capture) does not.
+ */
+export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean {
+  return toolArgs?.proof === true;
 }
 
 function validateComputerUseOwnerClaims(
@@ -2784,7 +2829,21 @@ function scopeBuiltInBrowserAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
   const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  if (!callerChatSessionId || !browserActorToken) {
+  // Headless machines cannot mint an actor capability: the issuer asks the
+  // desktop bridge for one, and on a box running only `ade serve` that socket
+  // is not listening. Without this carve-out the capability gate denies the
+  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // forwarding path (publish `built_in_browser_remote_request`, wait for a
+  // pinned desktop to ack) is unreachable. Only the three "put this URL on a
+  // screen" methods are exempt — they are exactly the forwardable set. This is
+  // not a privilege grant: if a desktop IS attached here, `desktopBridgeServer`
+  // still refuses a capability-less call, so the authority stays on the side
+  // that owns the browser.
+  const forwardableWithoutCapability =
+    !browserActorToken
+    && Boolean(callerChatSessionId)
+    && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(action);
+  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability)) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -2813,8 +2872,84 @@ function scopeBuiltInBrowserAdeActionArgs(
     projectRoot: undefined,
     tabCollection: undefined,
     force: false,
-    [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken,
+    ...(browserActorToken
+      ? { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken }
+      : {}),
   };
+}
+
+/**
+ * `work_tools` is the read-only mirror of the Work tools pane. The allowlist
+ * comment always said "read-only for everyone except the desktop that owns the
+ * pane", but nothing enforced it: `getLaneState` and `readObservationPreview`
+ * took a caller-supplied `laneId`/`path`, and `setActiveTool` was writable by
+ * anyone. So an agent in lane A could read lane B's latest observation path and
+ * then its bytes, and could flip what every paired phone believed the human had
+ * open. This is the enforcement the comment described.
+ *
+ * Two things this function does NOT decide:
+ * - A CTO-role caller skips the READ scoping entirely (the dispatch guard is
+ *   `domain === "work_tools" && (!callerIsCto || action === "setActiveTool")`).
+ *   The CTO thread is a deliberate cross-lane role — same carve-out
+ *   `external-sessions` takes — so it reads every lane's pane on purpose. The
+ *   WRITE is routed here even for CTO. Note what that actually catches:
+ *   `resolveSessionBoundRole` downgrades a `cto` role to `agent` whenever a
+ *   `chatSessionId` is present, so a CTO *chat* never reaches the carve-out at
+ *   all. What can be both elevated and agent-shaped is a run/step identity with
+ *   no chat session, and that caller must not flip what every paired phone
+ *   believes the human has open — the same gap the second bullet describes for
+ *   reads. The human's own desktop is elevated too but carries no run/step/chat
+ *   identity, so it stays a user client and keeps the write.
+ * - "Not a user client" and "has a resolvable lane" are NOT complements.
+ *   `isUserClientSession` is false as soon as any of
+ *   `runId`/`stepId`/`attemptId`/`chatSessionId` is set, while
+ *   `resolveChatSessionLaneId` needs a `chatSessionId` whose session record the
+ *   daemon can still resolve. The gap between them — an orchestration step, an
+ *   automation attempt, a chat whose session record is gone after a daemon
+ *   restart — is agent-shaped with no lane, and it is DENIED rather than passed
+ *   through unscoped. Passing it through is what let such a caller read any
+ *   lane's tab list and any lane's observation bytes.
+ */
+function scopeWorkToolsAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  isUserClient: boolean,
+  workToolsArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:work_tools.${action}`;
+  if (action === "setActiveTool") {
+    // Writing the pane's active tool is the human's move on their own desktop.
+    // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
+    if (!isUserClient) {
+      scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
+    }
+    return workToolsArgs;
+  }
+  if (action === "getLaneState" || action === "readObservationPreview") {
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    if (!isUserClient && !sessionLaneId) {
+      scopeAccessDenied(
+        "work_tools reads need a resolvable lane for this caller",
+        method,
+      );
+    }
+    // `callerLaneId` is the aggregator's ownership check, so it is never the
+    // caller's to supply — stripped unconditionally, including on the
+    // user-client path where it would otherwise have survived by accident.
+    const { callerLaneId: _callerSupplied, ...rest } = workToolsArgs;
+    if (action === "getLaneState") {
+      // A bound agent reads its OWN lane, whatever it asked for. A user client
+      // has no lane to be forced to and keeps the argument it supplied.
+      return sessionLaneId ? { ...rest, laneId: sessionLaneId } : rest;
+    }
+    // The path check itself lives in the aggregator (`resolvePathWithinRoot`
+    // plus an extension allow-list). What it could not know is who is asking,
+    // so the caller's lane travels with the request and the aggregator refuses
+    // a sidecar owned by a different one.
+    return sessionLaneId ? { ...rest, callerLaneId: sessionLaneId } : rest;
+  }
+  return workToolsArgs;
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
@@ -3610,7 +3745,30 @@ async function runTool(args: {
     mimeType: string;
     metadata: Record<string, unknown>;
     toolArgs: Record<string, unknown>;
+    /** True only for an explicit proof call — see `isExplicitProofCall`. */
+    proof: boolean;
   }) => {
+    if (!args.proof) {
+      // Scratch capture: the caller gets the bytes, the proof drawer stays a
+      // curated set. Nothing is lost — the file sits in the project's cache/tmp
+      // root and `ade proof attach <path> --caption "…"` can still promote it.
+      // Owner claims are deliberately not resolved here: nothing is filed, so
+      // there is no ownership to authorize.
+      return {
+        proof: false,
+        artifact: {
+          type: args.kind,
+          title: args.title,
+          uri: toProjectArtifactUri(runtime.projectRoot, args.artifactPath),
+          path: args.artifactPath,
+          mimeType: args.mimeType,
+          metadata: args.metadata,
+        },
+        artifacts: [],
+        links: [],
+        note: "Scratch capture — no proof-drawer record was created. Use `ade proof capture --caption \"…\"`, or `ade proof attach <path> --caption \"…\"` for this file, when a reviewer should see it.",
+      };
+    }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
@@ -3630,10 +3788,13 @@ async function runTool(args: {
       owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
     });
     return {
+      proof: true,
       artifact: {
         type: args.kind,
         title: args.title,
         uri: toProjectArtifactUri(runtime.projectRoot, args.artifactPath),
+        path: args.artifactPath,
+        mimeType: args.mimeType,
         metadata: args.metadata,
       },
       artifacts: result.artifacts,
@@ -3807,6 +3968,10 @@ async function runTool(args: {
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
+    /** Set by the browser branch; fired again once the dispatch has returned. */
+    let noteBrowserActivityOnSuccess: (() => void) | null = null;
+    /** Set only when the pre-dispatch edge is what opened the presence window. */
+    let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
     if (domain === "analytics" && action === "capture") {
@@ -3942,12 +4107,113 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+    } else if (
+      domain === "built_in_browser"
+      && action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+    ) {
+      // Not a browser action. This machine has no desktop attached, so a
+      // `browser open` here was published to whichever desktop holds a remote
+      // pin on this lane; this is that desktop saying it took it. It reaches
+      // nothing on this machine and grants nothing, so it cannot be gated on a
+      // browser actor capability — the desktop's capability lives on its own
+      // machine, not here. Still user-clients-only: an agent must not be able
+      // to forge the outcome its own CLI is about to print.
+      if (!isUserClient) {
+        builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
+      );
+    } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
+      // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's
+      // one write, so it goes through the scoping function whatever the role and
+      // is gated there on user clients — see that function's doc comment for
+      // which elevated caller this actually catches.
+      scopedObjectArgs = scopeWorkToolsAdeActionArgs(
+        runtime,
+        session,
+        action,
+        isUserClient,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (domain === "built_in_browser" && action === "endHandoff") {
+      // Tripwire, not a live path. Hand-back is the human's move, not the
+      // agent's: `endHandoff` is NOT on the desktop-bridge allowlist, and
+      // `ADE_ACTION_ALLOWLIST.built_in_browser` is spread straight from that
+      // list, so `runTool` rejects the action before this branch can run. The
+      // desktop renderer reaches hand-back through local IPC and ignores any
+      // runtime pin. This stays so that if `endHandoff` is ever put back on the
+      // bridge allowlist it lands user-clients-only rather than open — an agent
+      // asking for it would be ending the sign-in it itself asked a person to
+      // perform. `startHandoff` / `waitForHandoff` stay on the normal path.
+      if (!isUserClient) {
+        builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
+      );
     } else if (domain === "built_in_browser") {
       scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+      // The allowlist and the scoping above are both behind us, so reaching this
+      // line means a real, exposed browser action is about to run. The desktop
+      // records presence itself (it is the only side that sees tabs close and
+      // recordings end); this tells the Work-tools mirror that every client's
+      // copy just went stale, so a phone learns an agent picked up the browser
+      // without waiting for its next poll.
+      //
+      // Fired on BOTH edges, matching the desktop bridge. A `wait`, a slow
+      // navigate or a long `observe` is exactly the stretch a person is trying
+      // to explain, and firing only after the dispatch left the phone saying
+      // nobody was browsing for the whole of it. A call that throws did nothing
+      // to any browser, so the failure path retracts — but only when this call
+      // is what opened the window, so one failure inside a busy agent's stream
+      // cannot retract presence the rest of that stream still justifies.
+      //
+      // Only for a caller carrying a browser actor capability. The one caller
+      // the scoping lets through without one is the remote-forwarding carve-out
+      // — a chat on a headless box publishing "put this URL on a screen" to a
+      // desktop somewhere else — which drives no browser here and must not make
+      // this machine's Work-tools mirror claim an agent picked one up. (A user
+      // client cannot reach this branch at all: the scoping denies a caller with
+      // no chat session, and a session carrying one is not a user client.)
+      const bearsBrowserCapability = Boolean(
+        asOptionalTrimmedString(session.identity.browserActorToken),
+      );
+      if (bearsBrowserCapability) {
+        const presenceArgs = {
+          laneId: resolveChatSessionLaneId(runtime, session),
+          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+        };
+        const opened = runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs)
+          ?? null;
+        if (opened?.started) {
+          // Guarded by the sequence that opening edge returned: a concurrent
+          // command from the same chat that re-armed the window in between is a
+          // live agent, and wiping it here would drop presence on the phone
+          // while the desktop's own guarded tracker stayed lit.
+          undoBrowserActivityOnFailure = () => {
+            runtime.workToolsStateService?.clearAgentBrowserActivity({
+              ...presenceArgs,
+              sequence: opened.sequence,
+            });
+          };
+        }
+        noteBrowserActivityOnSuccess = () => {
+          runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs);
+        };
+      }
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
@@ -3983,18 +4249,24 @@ async function runTool(args: {
         if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
       }
     }
-    if (!scopedResultHandled) {
-      if (argsList) {
-        result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
-      } else if (hasScalarArg) {
-        result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
-      } else {
-        result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
-          service,
-          Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
-        );
+    try {
+      if (!scopedResultHandled) {
+        if (argsList) {
+          result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
+        } else if (hasScalarArg) {
+          result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
+        } else {
+          result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
+            Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
+          );
+        }
       }
+    } catch (error) {
+      undoBrowserActivityOnFailure?.();
+      throw error;
     }
+    noteBrowserActivityOnSuccess?.();
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
     }
@@ -4657,7 +4929,10 @@ async function runTool(args: {
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment screenshot";
-    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, format);
+    const proof = isExplicitProofCall(toolArgs);
+    const artifactPath = proof
+      ? createComputerUseArtifactPath(runtime.projectRoot, title, format)
+      : createComputerUseScratchPath(runtime.projectRoot, title, format);
     const commandArgs = ["-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
@@ -4675,6 +4950,7 @@ async function runTool(args: {
         format,
       },
       toolArgs,
+      proof,
     });
   }
 
@@ -4683,7 +4959,10 @@ async function runTool(args: {
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment recording";
-    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, "mov");
+    const proof = isExplicitProofCall(toolArgs);
+    const artifactPath = proof
+      ? createComputerUseArtifactPath(runtime.projectRoot, title, "mov")
+      : createComputerUseScratchPath(runtime.projectRoot, title, "mov");
     const commandArgs = ["-v", `-V${durationSec}`, "-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
@@ -4702,6 +4981,7 @@ async function runTool(args: {
         format: "mov",
       },
       toolArgs,
+      proof,
     });
   }
 
@@ -4794,12 +5074,21 @@ async function runTool(args: {
         }
       }
       return {
+        // The scope is part of the answer: an agent that sees only rows cannot
+        // tell whether it is looking at its own chat, its lane, or the project.
+        scope: { projectWide: false, owners: owners.map((owner) => ({ kind: owner.kind, id: owner.id })) },
         artifacts: [...artifacts.values()]
           .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
           .slice(0, limit),
       };
     }
     return {
+      scope: {
+        projectWide: !requestedOwnerKind && !requestedOwnerId,
+        owners: requestedOwnerKind && requestedOwnerId
+          ? [{ kind: requestedOwnerKind, id: requestedOwnerId }]
+          : authorizedOwners.map((owner) => ({ kind: owner.kind, id: owner.id })),
+      },
       artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
         ownerKind: requestedOwnerKind as any,
         ownerId: requestedOwnerId,

@@ -3,7 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
-import { createBuiltInBrowserService } from "./builtInBrowserService";
+import {
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+  BUILT_IN_BROWSER_PREVIEW_WARM_MS,
+} from "../../../shared/types";
+import {
+  BuiltInBrowserNoTabError,
+  createBuiltInBrowserService,
+  isBuiltInBrowserCaptureUnavailableError,
+  isBuiltInBrowserNoTabError,
+} from "./builtInBrowserService";
+import { createDevServerRegistry } from "../devServers/devServerRegistry";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -107,15 +120,35 @@ const fakes = vi.hoisted(() => {
     isLoading = (): boolean => false;
     canGoBack = (): boolean => false;
     canGoForward = (): boolean => false;
-    capturePage = async (): Promise<{
+    capturePageCalls: { stayHidden: boolean | undefined }[] = [];
+    /** Set by the tests that model a view with no compositor surface at all. */
+    captureAlwaysEmpty = false;
+    capturePage = async (
+      _rect?: unknown,
+      opts?: { stayHidden?: boolean },
+    ): Promise<{
       isEmpty: () => boolean;
       toDataURL: () => string;
       getSize: () => { width: number; height: number };
-    }> => ({
-      isEmpty: () => false,
-      toDataURL: () => "data:image/png;base64,dGVzdA==",
-      getSize: () => ({ width: 320, height: 180 }),
-    });
+      resize: (options: { width: number }) => unknown;
+      toJPEG: (quality: number) => Buffer;
+    }> => {
+      this.capturePageCalls.push({ stayHidden: opts?.stayHidden });
+      // Models the rule the corner card was broken by: Chromium can only hand
+      // back a frame for a view that HAS a compositor surface, and `stayHidden`
+      // is a promise not to create one. A tab the panel has never shown — the
+      // exact tab the card exists to picture — therefore answers an empty image
+      // to every `stayHidden` capture, forever, without ever erroring.
+      const empty = this.captureAlwaysEmpty || opts?.stayHidden === true;
+      const image = {
+        isEmpty: () => empty,
+        toDataURL: () => "data:image/png;base64,dGVzdA==",
+        getSize: () => ({ width: 320, height: 180 }),
+        resize: (): unknown => image,
+        toJPEG: (): Buffer => Buffer.from("jpeg-bytes"),
+      };
+      return image;
+    };
     isDestroyed = (): boolean => false;
     getURL = (): string => this.currentUrl;
     getTitle = (): string => "";
@@ -153,11 +186,54 @@ const fakes = vi.hoisted(() => {
     setBackgroundColor = (color: string): void => {
       this.backgroundColor = color;
     };
-    setBounds = (_rect: unknown): void => undefined;
-    setVisible = (_visible: boolean): void => undefined;
+    boundsCalls: { x: number; y: number; width: number; height: number }[] = [];
+    visibleCalls: boolean[] = [];
+    setBounds = (rect: { x: number; y: number; width: number; height: number }): void => {
+      this.boundsCalls.push({ ...rect });
+    };
+    setVisible = (visible: boolean): void => {
+      this.visibleCalls.push(visible);
+    };
+    borderRadiusCalls: number[] = [];
+    setBorderRadius = (radius: number): void => {
+      this.borderRadiusCalls.push(radius);
+    };
   }
 
   // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
+  /**
+   * A `screen` that a test can reshape and fire events from — the two things
+   * the parked-preview geometry depends on and neither of which a static stub
+   * can express.
+   */
+  const screenListeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  let displays: { bounds: { x: number; y: number; width: number; height: number } }[] = [
+    { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+  ];
+  const fakeScreen = {
+    getCursorScreenPoint: vi.fn(() => ({ x: 0, y: 0 })),
+    getAllDisplays: () => displays,
+    setDisplays: (next: { bounds: { x: number; y: number; width: number; height: number } }[]): void => {
+      displays = next;
+    },
+    on: (event: string, handler: (...args: unknown[]) => void): void => {
+      screenListeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void): void => {
+      const index = screenListeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) screenListeners.splice(index, 1);
+    },
+    emit: (event: string): void => {
+      for (const entry of [...screenListeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string): number => screenListeners.filter((entry) => entry.event === event).length,
+    clearListeners: (): void => {
+      screenListeners.length = 0;
+    },
+  };
+
   const debuggerInstances: FakeDebugger[] = [];
   const webContentsInstances: FakeWebContents[] = [];
   const webContentsViewInstances: FakeWebContentsView[] = [];
@@ -284,6 +360,7 @@ const fakes = vi.hoisted(() => {
   };
 
   return {
+    fakeScreen,
     WebContentsView: TrackedFakeWebContentsView,
     WebContents: TrackedFakeWebContents,
     debuggerInstances,
@@ -291,9 +368,7 @@ const fakes = vi.hoisted(() => {
     webContentsViewInstances,
     partitionCalls,
     openExternal: vi.fn(async (_url: string) => undefined),
-    screen: {
-      getCursorScreenPoint: vi.fn(() => ({ x: 0, y: 0 })),
-    },
+    screen: fakeScreen,
     beforeSendHeadersHandlers,
     beforeRequestHandlers,
     requestCompletedHandlers,
@@ -457,10 +532,58 @@ function fakeBrowserWindow() {
   const children: unknown[] = [];
   const addChildViewCalls: unknown[] = [];
   const removeChildViewCalls: unknown[] = [];
+  // Real listener bookkeeping, not `vi.fn()`: the service now registers window
+  // geometry watchers whose whole job is to fire, and a spy cannot be fired.
+  const listeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  const hostListeners: { event: string; handler: (...args: unknown[]) => void }[] = [];
+  const webContents = {
+    isDestroyed: () => false,
+    focusCalls: 0,
+    focus() {
+      webContents.focusCalls += 1;
+    },
+    on: (event: string, handler: (...args: unknown[]) => void) => {
+      hostListeners.push({ event, handler });
+    },
+    once: (event: string, handler: (...args: unknown[]) => void) => {
+      hostListeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+      const index = hostListeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) hostListeners.splice(index, 1);
+    },
+    emit: (event: string) => {
+      for (const entry of [...hostListeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string) => hostListeners.filter((entry) => entry.event === event).length,
+  };
+  let contentBounds = { x: 0, y: 0, width: 1280, height: 720 };
+  let focused = true;
+  let visibleOnScreen = false;
   return {
     id: fakeWindowId++,
     isDestroyed: () => false,
-    getContentBounds: () => ({ x: 0, y: 0, width: 1280, height: 720 }),
+    // The preview loop pauses on a window nobody can see, which is what keeps
+    // a stream a test forgot to stop from capturing against these stubs. The
+    // preview tests opt in explicitly with `setVisibleOnScreen(true)`.
+    isVisible: () => visibleOnScreen,
+    setVisibleOnScreen: (next: boolean): void => {
+      visibleOnScreen = next;
+    },
+    isMinimized: () => false,
+    // Focused by default: handing the keyboard back is guarded on it, and the
+    // sequences these tests drive are all ones the user just clicked through.
+    isFocused: () => focused,
+    setFocused: (next: boolean): void => {
+      focused = next;
+    },
+    getContentBounds: () => contentBounds,
+    setContentBounds: (next: { x: number; y: number; width: number; height: number }) => {
+      contentBounds = next;
+    },
+    webContents,
     addChildViewCalls,
     removeChildViewCalls,
     contentView: {
@@ -475,9 +598,70 @@ function fakeBrowserWindow() {
         if (index >= 0) children.splice(index, 1);
       },
     },
-    once: vi.fn(),
-    removeListener: vi.fn(),
+    on: (event: string, handler: (...args: unknown[]) => void) => {
+      listeners.push({ event, handler });
+    },
+    once: (event: string, handler: (...args: unknown[]) => void) => {
+      listeners.push({ event, handler });
+    },
+    removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+      const index = listeners.findIndex((entry) => entry.event === event && entry.handler === handler);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+    emit: (event: string) => {
+      for (const entry of [...listeners]) {
+        if (entry.event === event) entry.handler();
+      }
+    },
+    listenerCount: (event: string) => listeners.filter((entry) => entry.event === event).length,
   };
+}
+
+/** The `BrowserWindow` shape the service's public methods take. */
+type ServiceBrowserWindow = Parameters<
+  ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]
+>[0];
+
+/**
+ * A service wired for project-scoped routing, plus the two registries it reads.
+ *
+ * Six tests built this by hand, each repeating the same `as unknown as
+ * Parameters<…>[0]` double cast — the kind of cast that quietly stops matching
+ * the signature it names. One place to fix when the signature moves.
+ */
+function projectScopedService(onEvent?: Parameters<typeof createBuiltInBrowserService>[0]["onEvent"]) {
+  const projectRootByWindow = new Map<number, string>();
+  const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+  const service = createBuiltInBrowserService({
+    onEvent,
+    getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+    getWindowForProjectRoot: (projectRoot) =>
+      (windowsByProjectRoot.get(projectRoot) as unknown as ServiceBrowserWindow | undefined) ?? null,
+  });
+  /** Mints a window, registers it in both directions, and returns both shapes. */
+  const openWindow = (projectRoot?: string | null) => {
+    const win = fakeBrowserWindow();
+    if (projectRoot) {
+      projectRootByWindow.set(win.id, projectRoot);
+      windowsByProjectRoot.set(projectRoot, win);
+    }
+    return { win, browserWin: win as unknown as ServiceBrowserWindow };
+  };
+  /** The window's own project changed (the human switched project tabs). */
+  const setWindowProject = (
+    win: ReturnType<typeof fakeBrowserWindow>,
+    projectRoot: string,
+  ): void => {
+    projectRootByWindow.set(win.id, projectRoot);
+  };
+  /** A project the window merely has OPEN, without being its current one. */
+  const serveProjectFromWindow = (
+    projectRoot: string,
+    win: ReturnType<typeof fakeBrowserWindow>,
+  ): void => {
+    windowsByProjectRoot.set(projectRoot, win);
+  };
+  return { service, projectRootByWindow, openWindow, setWindowProject, serveProjectFromWindow };
 }
 
 describe("createBuiltInBrowserService — bounds and status dedupe", () => {
@@ -505,6 +689,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.permissionPrompt.mockClear();
     fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    // `screen` is a process singleton, so a service from an earlier test that
+    // was never detached leaves its watchers behind.
+    fakes.fakeScreen.clearListeners();
   });
 
   it("getStatus returns sane defaults before any window or tab is attached", () => {
@@ -669,6 +857,573 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus().tabs).toHaveLength(1);
     expect(win.contentView.children).toHaveLength(0);
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+  });
+
+  it("parks a previewed tab's view instead of detaching it when the panel hides", async () => {
+    // The corner card's whole premise. A WebContentsView that has been removed
+    // from the window has no compositor surface, so `capturePage()` comes back
+    // empty and the preview stream emits nothing at all — the card sat on its
+    // blank placeholder while cheerfully reporting "Live". A watched tab
+    // therefore stays attached, parked outside the window's content rect.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+    expect(win.contentView.children).toHaveLength(1);
+    const tabId = service.getStatus().activeTabId;
+    expect(tabId).toBeTruthy();
+
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+    expect(win.contentView.children).toHaveLength(1);
+
+    // Last watcher out: the view goes back to being detached, so a hidden panel
+    // nobody is previewing costs nothing.
+    service.stopPreviewStream({ tabId });
+    expect(win.contentView.children).toHaveLength(0);
+  });
+
+  it("warms a never-attended view against the window before parking it off screen", async () => {
+    /*
+      The mechanism behind the black card, pinned as geometry.
+
+      Parking preserves a compositor surface; it cannot create one. Measured
+      live over CDP: a tab the panel had shown captured 469x739 frames while
+      parked, and a tab created in the background captured `empty=true,
+      size=0x0` forever — same code path, same park point, same watcher. One
+      pixel of overlap with the window's content rect is what makes Chromium
+      allocate the surface, so the view is placed there for two frames and only
+      then moved past every display.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    // On screen: the overlap only produces a surface if there is a window
+    // being composited to overlap with.
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+
+    // Never shown in the panel: no `setBounds(visible: true)` anywhere.
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      const warming = view.boundsCalls.at(-1)!;
+      // Exactly one pixel inside, at the far corner — the least of the window
+      // it is possible to cover while still being on it.
+      expect(warming).toMatchObject({ x: 1279, y: 719 });
+      // Full size while warming, so the page lays out once at the size it will
+      // be captured at rather than resizing again on the way out.
+      expect(warming.width).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH);
+      expect(warming.height).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT);
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // …and then off every display, where nothing can reach it.
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked.x).toBe(1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+    expect(parked.y).toBe(720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("clips the warming pixel and never holds it longer than the warm bound", async () => {
+    // The overlap is a live web page composited over the ADE UI. Electron 41
+    // exposes no hit-test opt-out for a `View` — `setBorderRadius` is a layer
+    // mask — so the two things that keep it harmless are that the pixel is not
+    // painted and that it does not last. Both are pinned here.
+    expect(BUILT_IN_BROWSER_PREVIEW_WARM_MS).toBeLessThanOrEqual(120);
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      // Rounded while the corner pixel is on the UI, so it is outside the
+      // view's painted shape even on a window the OS does not round itself.
+      expect(view.borderRadiusCalls.at(-1)).toBeGreaterThan(0);
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+      // Square again once parked: a preview frame with four transparent
+      // notches in it is not what the corner card is asking for.
+      expect(view.borderRadiusCalls.at(-1)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("does not warm — or claim a surface — while the window is off screen", async () => {
+    // A minimised or hidden window has no surface to lend. Marking the tab
+    // surfaced on that evidence is how the black card comes back: nothing
+    // re-warms it until the view next leaves the window. And warming against it
+    // anyway would re-arm the 120 ms timer forever, because the warm can never
+    // complete.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      // Parked directly, never on the window's corner.
+      expect(view.boundsCalls.at(-1)).toMatchObject({
+        x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      });
+      const parkedCalls = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 5);
+      // No armed timer means no re-park storm behind a hidden window.
+      expect(view.boundsCalls.length).toBe(parkedCalls);
+
+      // The window comes back: now the warm happens, because now it can.
+      win.setVisibleOnScreen(true);
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+      expect(view.boundsCalls.at(-1)).toMatchObject({ x: 1279, y: 719 });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("drops the warming timer and surfaced entry when the tab is closed mid-warm", async () => {
+    // `closeTab` removes the view itself instead of going through
+    // `removeTabViewFromWindow`, so it has to drop the same warming state. An
+    // armed timer fires after the tab is gone, re-adds a dead id to the
+    // surfaced set and runs a pointless attach pass over every tab.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId });
+      expect(view.boundsCalls.at(-1)).toMatchObject({ x: 1279, y: 719 });
+
+      await service.closeTab({ tabId });
+      const afterClose = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 3);
+      // The timer that was armed for this tab is gone with it.
+      expect(view.boundsCalls.length).toBe(afterClose);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    service.dispose();
+  });
+
+  it("does not warm a view the panel has already shown", async () => {
+    // A view that has been on screen already has the surface, and warming it
+    // again would flash a pixel of the page for no reason on every tool switch.
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked).toMatchObject({
+      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      width: 640,
+      height: 360,
+    });
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("tags a capture that has no surface to photograph instead of throwing a bare error", async () => {
+    /*
+      The other half of the same P0. Switching Browser -> Terminal printed
+      `Error occurred in handler for 'ade.builtInBrowser.captureScreenshot':
+      Page.enable timed out after 3000ms` three times, because the panel's
+      underlay capture races the hide it belongs to: by the time it lands the
+      view has no surface, `capturePage` answers an empty image, and the CDP
+      fallback's `Page.enable` never returns against a surfaceless target.
+
+      Nothing was actually wrong — the panel has a last frame to fall back on —
+      so the failure is TAGGED here and softened to `{ ok: false }` at the
+      trusted-renderer IPC boundary. Agents do not come through that boundary
+      and still see a real failure.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const wc = fakes.webContentsInstances.at(-1)!;
+    wc.captureAlwaysEmpty = true;
+    fakes.setSendCommand(async (method) => {
+      if (method === "Page.enable") throw new Error("Page.enable timed out after 3000ms");
+      return {};
+    });
+
+    const error = await service.captureScreenshot({}).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    );
+    expect(isBuiltInBrowserCaptureUnavailableError(error)).toBe(true);
+    expect((error as Error).message).toContain("Page.enable timed out");
+    // Not the no-tab shape: there IS a tab, and conflating the two would have
+    // the renderer report "the browser closed" for a pane that is wide open.
+    expect(isBuiltInBrowserNoTabError(error)).toBe(false);
+
+    fakes.resetSendCommand();
+    service.dispose();
+  });
+
+  it("paints preview frames in the order the corner card actually drives: hide, subscribe, frames", async () => {
+    /*
+      The P0 the round-4 review caught: the card was a 320x200 black rectangle
+      with a live dot on it, every time.
+
+      The ordering is the whole bug. The card only exists for the tool you are
+      NOT looking at, so the tools pane hides the browser FIRST and the card
+      subscribes AFTER — by which point the view has no compositor surface, and
+      `capturePage({ stayHidden: true })` answers an empty image rather than an
+      error. The loop ticked, `isEmpty()` swallowed every frame as "nothing to
+      show right now", and nothing anywhere said a word.
+
+      Parking preserves a surface Chromium already has; it does not create one.
+      Raising the capturer count — which is what omitting `stayHidden` does — is
+      what makes a parked or never-attended view answer at all.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId!;
+    const wc = fakes.webContentsInstances.at(-1)!;
+
+    // 1. The pane switches away from Browser. Nothing is watching yet, so the
+    //    view is not even parked.
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    expect(win.contentView.children).toHaveLength(0);
+
+    // 2. The card mounts and subscribes, which is what parks the view.
+    vi.useFakeTimers();
+    try {
+      service.startPreviewStream({ tabId, fps: 10 });
+      expect(win.contentView.children).toHaveLength(1);
+      // 3. Frames — the assertion that was false before this fix.
+      await vi.advanceTimersByTimeAsync(450);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const frames = collector.events.filter((event) => event.type === "preview-frame");
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0]).toMatchObject({ tabId, width: 320, height: 180 });
+    expect(frames[0]).toHaveProperty("dataUrl", expect.stringContaining("data:image/jpeg;base64,"));
+    // The mechanism, pinned separately from the outcome, in both directions.
+    //
+    // Before the view has a surface, the capture must NOT ask to stay hidden —
+    // forcing visibility is the only thing that makes a surfaceless view answer,
+    // and a refactor that reintroduces the flag there brings the black card back
+    // with it. After the warm the parked view is attached and visible, so the
+    // page is already steadily visible for the whole watch: asking to stay
+    // hidden changes nothing except that it stops toggling `visibilityState`
+    // up to 24 times a second under the page.
+    expect(wc.capturePageCalls.length).toBeGreaterThan(0);
+    expect(wc.capturePageCalls.some((call) => call.stayHidden !== true)).toBe(true);
+    expect(wc.capturePageCalls.at(-1)?.stayHidden).toBe(true);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  /**
+   * A helper for the parking tests: a service with one tab that has been shown
+   * in the panel at `panel`, then hidden with a live preview watcher.
+   */
+  const parkedTabFixture = async (
+    collectorArg: ReturnType<typeof captureStatusEvents>,
+    panel: { width: number; height: number } | null,
+  ) => {
+    const service = createBuiltInBrowserService({ onEvent: collectorArg.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    if (panel) {
+      await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+    }
+    const tabId = service.getStatus().activeTabId!;
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    return { service, win, view, tabId };
+  };
+
+  it("parks a previewed view past every display, not just past this window", async () => {
+    // The blocker: the park point was `contentWidth + 64`, computed once. A
+    // window that later widened past it painted a live page over the ADE UI.
+    fakes.fakeScreen.setDisplays([
+      { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+      { bounds: { x: 1280, y: 0, width: 1920, height: 1080 } },
+    ]);
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+
+    const parked = view.boundsCalls.at(-1)!;
+    expect(parked.x).toBe(1280 + 1920 + 64);
+    expect(parked.y).toBe(1080 + 64);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("re-parks on window geometry events while a tab is parked", async () => {
+    const { service, win, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const beforeCalls = view.boundsCalls.length;
+
+    // Maximise onto a display that did not exist when the park was computed.
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 3840, height: 2160 } }]);
+    win.setContentBounds({ x: 0, y: 0, width: 3840, height: 2160 });
+    vi.useFakeTimers();
+    try {
+      win.emit("maximize");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(view.boundsCalls.length).toBeGreaterThan(beforeCalls);
+    const reparked = view.boundsCalls.at(-1)!;
+    // The whole point: outside the new content rect, in both axes.
+    expect(reparked.x).toBeGreaterThanOrEqual(3840);
+    expect(reparked.y).toBeGreaterThanOrEqual(2160);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("re-parks when a display is added or its metrics change", async () => {
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    const beforeCalls = view.boundsCalls.length;
+
+    fakes.fakeScreen.setDisplays([
+      { bounds: { x: 0, y: 0, width: 1280, height: 720 } },
+      { bounds: { x: 1280, y: 0, width: 2560, height: 1440 } },
+    ]);
+    vi.useFakeTimers();
+    try {
+      fakes.fakeScreen.emit("display-added");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(view.boundsCalls.length).toBeGreaterThan(beforeCalls);
+    expect(view.boundsCalls.at(-1)!.x).toBeGreaterThanOrEqual(1280 + 2560);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("drops its geometry watchers when it lets go of the window", async () => {
+    const { service, view, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.listenerCount("resize")).toBe(1);
+    // One PROCESS-wide screen subscription, fanned out — not one per service.
+    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(1);
+
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+
+    expect(win.listenerCount("resize")).toBe(0);
+    expect(win.listenerCount("maximize")).toBe(0);
+    // The shared listener may still be armed for another live service, so the
+    // contract is behavioural: a disposed service takes no more rechecks.
+    const afterDispose = view.boundsCalls.length;
+    vi.useFakeTimers();
+    try {
+      fakes.fakeScreen.emit("display-metrics-changed");
+      vi.advanceTimersByTime(60);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(view.boundsCalls).toHaveLength(afterDispose);
+  });
+
+  it("registers the screen listeners once per process, not once per window service", async () => {
+    // `screen` is a singleton but services are keyed per (window, collection),
+    // so three listeners each tripped Node's MaxListenersExceededWarning at
+    // eleven live services — 33 registrations for one question.
+    const services = Array.from({ length: 12 }, () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+      return service;
+    });
+
+    for (const event of ["display-metrics-changed", "display-added", "display-removed"]) {
+      expect(fakes.fakeScreen.listenerCount(event)).toBe(1);
+    }
+
+    // Ref-counted, so a service letting go never leaves the others unwatched:
+    // the count is still exactly one, not zero and not twelve.
+    services[0].dispose();
+    expect(fakes.fakeScreen.listenerCount("display-metrics-changed")).toBe(1);
+    for (const service of services) service.dispose();
+  });
+
+  it("does not touch window focus on the ordering the product actually drives", async () => {
+    // The corner card only previews the tool you are NOT looking at, so the
+    // panel always hides FIRST and the stream starts after — there is no
+    // attended tab to take the keyboard from. `parkedTabFixture` drives the
+    // opposite order deliberately, to exercise the branch; this pins the real
+    // one, which must never call `focus()` at all.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+    const tabId = service.getStatus().activeTabId!;
+
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    service.startPreviewStream({ tabId });
+
+    expect(win.webContents.focusCalls).toBe(0);
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("hands the keyboard back to the window exactly once when an attended tab is parked", async () => {
+    // The parked branch neither detaches nor hides the view, and those were the
+    // two operations that used to release the page's keyboard focus. Reachable
+    // only in the window between the panel hiding and the card's stop landing —
+    // kept because the guard has to hold if a second `startPreviewStream`
+    // caller (mobile, CLI, Mosaic) is ever added.
+    const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.webContents.focusCalls).toBe(1);
+
+    // Idempotent re-park passes must not keep stealing focus back.
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+    expect(win.webContents.focusCalls).toBe(1);
+
+    service.stopPreviewStream({ tabId });
+  });
+
+  it("leaves a background window alone rather than raising it to return focus", async () => {
+    // `WebContents.focus()` activates the owner window, so an unguarded call
+    // would yank ADE to the front from behind whatever the user is using.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+    const tabId = service.getStatus().activeTabId!;
+
+    win.setFocused(false);
+    service.startPreviewStream({ tabId });
+    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+
+    expect(win.webContents.focusCalls).toBe(0);
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("hands the keyboard back to the window's own renderer when the find bar opens", async () => {
+    /*
+      The reported ⌘F bug. Clicking the page moves the OS keyboard into the
+      tab's `WebContentsView`; the renderer can move `document.activeElement`
+      into the find field but not the OS focus, so every letter typed still went
+      to the page. Only the browser process can move focus between two
+      WebContents, which is why the bar asks for it here.
+    */
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+
+    expect(service.focusHost(win as unknown as Parameters<typeof service.attachToWindow>[0]))
+      .toEqual({ focused: true });
+    expect(win.webContents.focusCalls).toBe(1);
+    service.dispose();
+  });
+
+  it("refuses to focus a window that is not the one in front", async () => {
+    // `WebContents.focus()` activates the owning window, so answering this for a
+    // background window would raise ADE over whatever the user is actually in.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    win.setFocused(false);
+
+    expect(service.focusHost(win as unknown as Parameters<typeof service.attachToWindow>[0]))
+      .toEqual({ focused: false });
+    expect(service.focusHost(null)).toEqual({ focused: false });
+    expect(win.webContents.focusCalls).toBe(0);
+    service.dispose();
+  });
+
+  it("keeps the size the panel last showed a parked tab at", async () => {
+    // Parking used to floor every hidden tab at 960x600, firing a real window
+    // resize inside the page each way round.
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
+    service.stopPreviewStream({ tabId });
+
+    // The case that matters: the Work pane is clamped to 26-55% of the window,
+    // so EVERY realistic pane is narrower than the 960px floor. Flooring here
+    // is what fired a real `window` resize inside the page each way round.
+    const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
+    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 480, height: 640 });
+    narrow.service.stopPreviewStream({ tabId: narrow.tabId });
+
+    // A tab the panel never showed has no rect to reuse, so the floor applies.
+    const fresh = await parkedTabFixture(collector, null);
+    expect(fresh.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
+    fresh.service.stopPreviewStream({ tabId: fresh.tabId });
+  });
+
+  it("does not sweep every view for an unpaired preview stop", async () => {
+    // `stop` reports zero subscribers both when the last watcher leaves and
+    // when there was no stream at all; only the first is a state change.
+    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    service.stopPreviewStream({ tabId });
+    const afterUnpark = view.visibleCalls.length;
+
+    service.stopPreviewStream({ tabId });
+    service.stopPreviewStream({ tabId });
+
+    expect(view.visibleCalls).toHaveLength(afterUnpark);
+  });
+
+  it("releases preview subscriptions when the host renderer goes away", async () => {
+    // The preload's `pagehide` hook covers reloads and navigations but not a
+    // crash, and a leaked subscriber now pins a composited page off-screen.
+    const { win, view } = await parkedTabFixture(collector, { width: 640, height: 360 });
+    expect(win.contentView.children).toHaveLength(1);
+
+    win.webContents.emit("render-process-gone");
+
+    expect(win.contentView.children).toHaveLength(0);
+    expect(view.visibleCalls.at(-1)).toBe(false);
   });
 
   it("keeps a visible browser view attached to its owner window when another ADE window focuses", async () => {
@@ -951,62 +1706,246 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
-  it("rejects attached webviews from outside the global browser profile", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+  it("sends agent presence to each window scoped to that window's projects", async () => {
+    // A broadcast of the whole set lit a globe beside a chat in project A for an
+    // agent browsing in project B — and disagreed with the `getStatus` seed,
+    // which has always been scoped to the collection it describes.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
     });
+    const service = scoped.service;
+    const { win: alphaWin, browserWin: alphaBrowserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: betaWin, browserWin: betaBrowserWin } = scoped.openWindow("/Users/ade/project-beta");
+    service.attachToWindow(alphaBrowserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, alphaBrowserWin);
+    service.attachToWindow(betaBrowserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, betaBrowserWin);
+
+    const presenceFor = (windowId: number): string[] => {
+      const event = [...seen].reverse().find(
+        (entry) => entry.windowId === windowId && entry.payload.type === "agent-presence",
+      );
+      if (!event || event.payload.type !== "agent-presence") return [];
+      return event.payload.presence.map((entry) => entry.chatSessionId);
+    };
+
+    try {
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        laneId: "lane-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+      const targets = seen
+        .filter((entry) => entry.payload.type === "agent-presence")
+        .map((entry) => entry.windowId);
+      // Both windows hear, and neither hears the other's agent.
+      expect([...targets].sort()).toEqual([alphaWin.id, betaWin.id].sort());
+      expect(presenceFor(alphaWin.id)).toEqual(["chat-alpha"]);
+      expect(presenceFor(betaWin.id)).toEqual([]);
+
+      // A personal-collection chat belongs to no project and is visible to both.
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({ chatSessionId: "chat-personal", tabId: "tab-personal" });
+      expect([...presenceFor(alphaWin.id)].sort()).toEqual(["chat-alpha", "chat-personal"]);
+      expect(presenceFor(betaWin.id)).toEqual(["chat-personal"]);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+      builtInBrowserAgentPresence.clearForChatSession("chat-personal");
+    }
+  });
+
+  it("holds agent presence while a preview subscription is watching a tab", async () => {
+    // The skill tells agents that an active preview/observe subscription keeps
+    // presence alive. It is the other thing that runs for minutes with no
+    // command behind it, so it takes the same hold a recording does.
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId as string;
 
+    try {
+      builtInBrowserAgentPresence.touch({ chatSessionId: "chat-preview", tabId });
+      service.startPreviewStream({ tabId });
+
+      // Well past the 20s expiry, and still present: something is watching.
+      vi.advanceTimersByTime(60_000);
+      expect(builtInBrowserAgentPresence.list().map((entry) => entry.chatSessionId))
+        .toEqual(["chat-preview"]);
+
+      // The last subscriber leaves and the ordinary expiry resumes.
+      service.stopPreviewStream({ tabId });
+      vi.advanceTimersByTime(60_000);
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-preview");
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads agent presence without constructing a window service", async () => {
+    // The badge is mounted by every session card and the chat header. Seeding it
+    // through `getStatus` — a CREATING resolver whose factory restores and
+    // `loadURL`s every persisted tab — background-loaded the whole browser for a
+    // user who never opened the Browser pane.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: alphaWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: betaWin } = scoped.openWindow("/Users/ade/project-beta");
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        laneId: "lane-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+
+      expect(service.getAgentPresence(alphaWin).map((entry) => entry.chatSessionId))
+        .toEqual(["chat-alpha"]);
+      // Scoped the same way the pushed event is: beta hears nothing.
+      expect(service.getAgentPresence(betaWin)).toEqual([]);
+      // Nothing was built, attached or restored to answer either read.
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+      expect(service.getStatusForProjectScope("/Users/ade/project-alpha")).toBeNull();
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+    }
+  });
+
+  it("keeps pushing presence to a window that only ever seeded it", async () => {
+    // Presence events are routed per window, and the routing list is the set of
+    // windows that opened the browser pane. A window whose Work tab never
+    // activated the browser tool — offline, browser unavailable, a chat living
+    // outside Work — seeds the badge through `getAgentPresence` and nothing
+    // else, so without registering here it would take one seed and then never
+    // hear another word: a globe frozen at whatever it was when it mounted.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
+    });
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    try {
+      // The seed, and only the seed: no tab, no attach, nothing constructed.
+      expect(service.getAgentPresence(browserWin)).toEqual([]);
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+
+      seen.length = 0;
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: "tab-alpha",
+      });
+
+      const event = seen.find(
+        (entry) => entry.windowId === win.id && entry.payload.type === "agent-presence",
+      );
+      expect(event?.payload.type === "agent-presence"
+        ? event.payload.presence.map((entry) => entry.chatSessionId)
+        : null).toEqual(["chat-alpha"]);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+    }
+  });
+
+  it("clears agent presence for every tab of a window that closes", async () => {
+    // Closing the window destroys its tabs without a `closeTab` call and without
+    // the `recording:false` that would release a capture's hold, so nothing else
+    // in the process ever says the agent's turn at those tabs ended.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
     service.attachToWindow(browserWin);
-    await service.createTab({ url: "https://example.test", activate: true }, browserWin);
-
-    const status = service.getStatus(browserWin);
+    const status = await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
     const tabId = status.activeTabId;
-    if (!tabId) throw new Error("Expected an active browser tab");
+    expect(tabId).toBeTruthy();
 
-    const foreignView = new fakes.WebContentsView({
-      webPreferences: { partition: "persist:foreign-browser" },
-    });
-    await expect(service.attachWebview({
-      tabId,
-      webContentsId: foreignView.webContents.id,
-    }, browserWin)).rejects.toThrow(/partition does not match/);
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId,
+      });
+      builtInBrowserAgentPresence.holdForTab(tabId as string);
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(1);
 
-    const matchingView = new fakes.WebContentsView({
-      webPreferences: { partition: status.partition },
+      win.emit("closed");
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+    }
+  });
+
+  it("clears a two-collection window's tabs in one event", async () => {
+    // A window holds one service per collection — its project and, once the
+    // user opens it, the personal one. Clearing per service put the six-events
+    // problem back a level up: two broadcasts on the way out, the first of them
+    // describing a window that was already half torn down.
+    const seen: Array<{ windowId: number | null; payload: BuiltInBrowserEventPayload }> = [];
+    const scoped = projectScopedService((payload, targetWindow) => {
+      seen.push({ windowId: targetWindow?.id ?? null, payload });
     });
-    await expect(service.attachWebview({
-      tabId,
-      webContentsId: matchingView.webContents.id,
-    }, browserWin)).resolves.toMatchObject({
-      activeTabId: tabId,
-    });
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    // A second window that stays open, so the broadcast has somewhere to land
+    // and the count is the number of clears rather than a race with teardown.
+    const { win: betaWin, browserWin: betaBrowserWin } = scoped.openWindow("/Users/ade/project-beta");
+    service.attachToWindow(betaBrowserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, betaBrowserWin);
+    service.attachToWindow(browserWin);
+    const projectStatus = await service.createTab(
+      { url: "https://alpha.example.test", activate: true },
+      browserWin,
+    );
+    const personalStatus = await service.createTab(
+      { tabCollection: "personal", url: "https://personal.example.test", activate: true },
+      browserWin,
+    );
+    const projectTabId = projectStatus.activeTabId as string;
+    const personalTabId = personalStatus.activeTabId as string;
+    expect(projectTabId).toBeTruthy();
+    expect(personalTabId).toBeTruthy();
+    expect(personalTabId).not.toBe(projectTabId);
+
+    try {
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-alpha",
+        projectRoot: "/Users/ade/project-alpha",
+        tabId: projectTabId,
+      });
+      builtInBrowserAgentPresence.touch({
+        chatSessionId: "chat-personal",
+        tabId: personalTabId,
+      });
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(2);
+
+      seen.length = 0;
+      win.emit("closed");
+      expect(builtInBrowserAgentPresence.list()).toHaveLength(0);
+      // One clear, so one presence broadcast to the window still listening.
+      const presenceEvents = seen.filter(
+        (entry) => entry.payload.type === "agent-presence" && entry.windowId === betaWin.id,
+      );
+      expect(presenceEvents).toHaveLength(1);
+    } finally {
+      builtInBrowserAgentPresence.clearForChatSession("chat-alpha");
+      builtInBrowserAgentPresence.clearForChatSession("chat-personal");
+    }
   });
 
   it("routes project-scoped bridge calls to the matching project window", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const winA = fakeBrowserWindow();
-    const winB = fakeBrowserWindow();
-    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
-    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
-    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
-    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
-    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinB } = scoped.openWindow("/Users/ade/project-beta");
 
     service.attachToWindow(browserWinA);
     await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
@@ -1023,6 +1962,215 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha-two.example.test/");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" }).tabs).toHaveLength(1);
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" }).url).toBe("https://beta.example.test/");
+  });
+
+  it("answers getStatusForProjectScope from the asking project, not the frontmost window", async () => {
+    // The runtime daemon is project-scoped and the desktop bridge socket is
+    // machine-wide, so an unscoped answer here showed project B's phone the
+    // tabs of whichever window happened to be frontmost — hiding its own and
+    // leaking another project's titles and URLs.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinB } = scoped.openWindow("/Users/ade/project-beta");
+
+    service.attachToWindow(browserWinB);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWinB);
+    // Alpha is the frontmost window from here on.
+    service.attachToWindow(browserWinA);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
+
+    const beta = service.getStatusForProjectScope("/Users/ade/project-beta");
+    expect(beta?.tabs.map((tab) => tab.url)).toEqual(["https://beta.example.test/"]);
+    const alpha = service.getStatusForProjectScope("/Users/ade/project-alpha");
+    expect(alpha?.tabs.map((tab) => tab.url)).toEqual(["https://alpha.example.test/"]);
+    // Alpha is still the active window: a background status poll must not have
+    // moved the pane the human is looking at.
+    expect(service.getStatus().tabs.map((tab) => tab.url)).toEqual(["https://alpha.example.test/"]);
+  });
+
+  it("returns null from getStatusForProjectScope when no window serves the project", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWin);
+
+    // `null`, not beta's tabs: the daemon renders its own "not open here" state
+    // rather than another project's browsing.
+    expect(service.getStatusForProjectScope("/Users/ade/project-alpha")).toBeNull();
+    // A project-less daemon keeps the frontmost-window behaviour.
+    expect(service.getStatusForProjectScope(null)?.tabs).toHaveLength(1);
+  });
+
+  it("does not materialize a project's browser collection to answer a status poll", async () => {
+    // The Work-tools mirror polls this on a timer, once per project, for a phone
+    // that may not be looking. Constructing the collection here would restore
+    // and `loadURL` every persisted tab of a background project in the shared
+    // authenticated profile — for a pane nobody opened.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: betaWin } = scoped.openWindow("/Users/ade/project-beta");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+    const viewsBefore = fakes.webContentsViewInstances.length;
+
+    // Beta has a window open for it, but its Browser pane has never been used.
+    expect(betaWin.contentView.children).toHaveLength(0);
+    expect(service.getStatusForProjectScope("/Users/ade/project-beta")).toBeNull();
+    // No collection was built, so no persisted tab was restored or loaded.
+    expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+    // And the frontmost project is untouched.
+    expect(service.getStatus().collectionProjectRoot).toBe("/Users/ade/project-alpha");
+  });
+
+  it("tells a project with no window apart from one whose Browser pane was never opened", async () => {
+    // Both read as a null status, and they are NOT the same state: the phone
+    // words them differently (`desktop_not_attached_for_project` vs
+    // `browser_pane_not_opened`), because "ADE Desktop doesn't have this
+    // project open" sends a user whose project IS open — one click from the
+    // tabs — to look for something already in front of them.
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+    scoped.openWindow("/Users/ade/project-beta");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+
+    // Beta: a window serves it, its pane has just never been used.
+    expect(service.getStatusForProjectScope("/Users/ade/project-beta")).toBeNull();
+    expect(service.hasWindowForProjectScope("/Users/ade/project-beta")).toBe(true);
+    // Gamma: no window on this machine has it open at all.
+    expect(service.getStatusForProjectScope("/Users/ade/project-gamma")).toBeNull();
+    expect(service.hasWindowForProjectScope("/Users/ade/project-gamma")).toBe(false);
+    // Asking never materialized anything, in either branch.
+    expect(service.getStatus().collectionProjectRoot).toBe("/Users/ade/project-alpha");
+  });
+
+  it("stamps the dev-server chip with the lane's own collection, not the frontmost one", async () => {
+    // Every surface filters `dev-server-detected` on `status.collectionProjectRoot`,
+    // so a chip stamped with whichever collection happens to be frontmost is
+    // dropped by the lane's own panel and merged into another project's launchpad.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    const { browserWin: browserWinAlpha } = scoped.openWindow("/Users/ade/project-alpha");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+    });
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true, laneId: "lane-1" }, browserWinBeta);
+    // Alpha is the frontmost collection from here on, and it is NOT the lane's.
+    watched.attachToWindow(browserWinAlpha);
+    await watched.createTab({ url: "https://alpha.example.test", activate: true }, browserWinAlpha);
+
+    collector.events.length = 0;
+    registry.record({ port: 5199, url: "http://localhost:5199/", laneId: "lane-1", sessionId: "sess-1" });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    const chip = collector.events.find((entry) => entry.type === "dev-server-detected");
+    expect(chip).toMatchObject({ autoOpened: false, tabId: null });
+    expect(chip && "status" in chip ? chip.status.collectionProjectRoot : null)
+      .toBe("/Users/ade/project-beta");
+    watched.dispose();
+  });
+
+  it("stamps the chip with the detecting project's collection when the lane holds no tab", async () => {
+    // The lane owns no browser tab, so there is nothing to resolve the chip's
+    // collection from except the record's own project — and the frontmost
+    // window is another project's, with tabs in it. Stamped with that one, the
+    // lane's panel drops the chip and the other project's launchpad shows a
+    // `localhost` URL that has nothing to do with it.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinAlpha } = scoped.openWindow("/Users/ade/project-alpha");
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        projectRoot === "/Users/ade/project-alpha" ? browserWinAlpha : browserWinBeta,
+    });
+    // Alpha's pane exists (a human opened it) but holds no tab of this lane's.
+    watched.attachToWindow(browserWinAlpha);
+    await watched.createTab({ url: "https://alpha.example.test", activate: true }, browserWinAlpha);
+    // Beta is frontmost and has tabs, so it is not an auto-open target either.
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true }, browserWinBeta);
+
+    collector.events.length = 0;
+    registry.record({
+      port: 5288,
+      url: "http://localhost:5288/",
+      laneId: "lane-alpha",
+      sessionId: "sess-alpha",
+      projectRoot: "/Users/ade/project-alpha",
+    });
+    await vi.waitFor(() =>
+      expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(true));
+
+    const chip = collector.events.find((entry) => entry.type === "dev-server-detected");
+    expect(chip).toMatchObject({ autoOpened: false, tabId: null });
+    expect(chip && "status" in chip ? chip.status.collectionProjectRoot : null)
+      .toBe("/Users/ade/project-alpha");
+    watched.dispose();
+  });
+
+  it("emits no chip at all rather than filing it under another project's collection", async () => {
+    // The lane's project has no Browser collection on this machine, and
+    // building one to answer a chip would restore and load a background
+    // project's persisted tabs for a pane nobody opened. The registry still
+    // holds the record, so the pane lists the server the moment it is opened.
+    const registry = createDevServerRegistry();
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin: browserWinBeta } = scoped.openWindow("/Users/ade/project-beta");
+    scoped.openWindow("/Users/ade/project-alpha");
+    service.stopDevServerWatch();
+    const watched = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      stateFilePath: null,
+      permissionFilePath: null,
+      devServers: registry,
+      getProjectRootForWindow: (win) => scoped.projectRootByWindow.get(win.id) ?? null,
+    });
+    watched.attachToWindow(browserWinBeta);
+    await watched.createTab({ url: "https://beta.example.test", activate: true }, browserWinBeta);
+
+    collector.events.length = 0;
+    const viewsBefore = fakes.webContentsViewInstances.length;
+    registry.record({
+      port: 5299,
+      url: "http://localhost:5299/",
+      laneId: "lane-alpha",
+      sessionId: "sess-alpha",
+      projectRoot: "/Users/ade/project-alpha",
+    });
+    await vi.waitFor(() => expect(registry.list({ laneId: "lane-alpha" })).toHaveLength(1));
+
+    expect(collector.events.some((entry) => entry.type === "dev-server-detected")).toBe(false);
+    expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+    watched.dispose();
   });
 
   it("does not fall back to the active project for unmatched project-scoped bridge calls", async () => {
@@ -1047,22 +2195,11 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("routes project-scoped calls to an inactive project tab without activating the window project", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
-    windowsByProjectRoot.set("/Users/ade/project-beta", win);
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-beta");
+    // The window has alpha open as a tab too, without alpha being its current project.
+    scoped.serveProjectFromWindow("/Users/ade/project-alpha", win);
 
     service.attachToWindow(browserWin);
     await service.createTab({ url: "https://beta.example.test", activate: true }, browserWin);
@@ -1072,7 +2209,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       newTab: true,
     });
 
-    expect(projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
+    expect(scoped.projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).collectionProjectRoot).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).collectionProjectRoot).toBe("/Users/ade/project-alpha");
@@ -1080,24 +2217,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("attaches project-scoped browser views without waiting for a window focus event", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
-    windowsByProjectRoot.set("/Users/ade/project-beta", win);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow();
+    scoped.serveProjectFromWindow("/Users/ade/project-alpha", win);
+    scoped.serveProjectFromWindow("/Users/ade/project-beta", win);
 
     service.attachToWindow(browserWin);
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    scoped.setWindowProject(win, "/Users/ade/project-alpha");
+    // Showing the pane no longer conjures a tab, so each collection opens one
+    // explicitly; what is under test is which window the view attaches to.
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,
@@ -1114,7 +2244,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
     expect(win.contentView.children).toHaveLength(1);
 
-    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    scoped.setWindowProject(win, "/Users/ade/project-beta");
+    await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-beta",
       x: 12,
@@ -1137,23 +2268,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps same-project view attachment stable across repeated project-scoped calls", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const win = fakeBrowserWindow();
-    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
-    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win, browserWin } = scoped.openWindow("/Users/ade/project-alpha");
 
     service.attachToWindow(browserWin);
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,
@@ -1187,24 +2307,13 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps project browser views attached independently in separate ADE windows", async () => {
-    const projectRootByWindow = new Map<number, string>();
-    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
-    const service = createBuiltInBrowserService({
-      onEvent: collector.onEvent,
-      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
-      getWindowForProjectRoot: (projectRoot) =>
-        (
-          windowsByProjectRoot.get(projectRoot) as unknown as
-            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
-        ) ?? null,
-    });
-    const winA = fakeBrowserWindow();
-    const winB = fakeBrowserWindow();
-    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
-    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
-    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
-    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { win: winA } = scoped.openWindow("/Users/ade/project-alpha");
+    const { win: winB } = scoped.openWindow("/Users/ade/project-beta");
 
+    await service.createTab({ projectRoot: "/Users/ade/project-alpha", url: "https://alpha.test" });
+    await service.createTab({ projectRoot: "/Users/ade/project-beta", url: "https://beta.test" });
     await service.setBounds({
       projectRoot: "/Users/ade/project-alpha",
       x: 12,
@@ -2640,6 +3749,19 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
           }),
         ],
       });
+
+      // The tally is coalesced: three error signals above, one `diagnostics`
+      // event once the window closes. A page in an error loop used to emit one
+      // IPC event per error to every window, all moving the same red dot.
+      const diagnosticsEvents = () =>
+        collector.events.filter((event) => event.type === "diagnostics" && event.tabId === tabId);
+      expect(diagnosticsEvents()).toHaveLength(0);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(diagnosticsEvents()).toHaveLength(1);
+      expect(diagnosticsEvents().at(-1)).toMatchObject({
+        consoleErrorCount: 1,
+        failedRequestCount: 2,
+      });
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -3469,4 +4591,44 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     expect(service.getStatus().isInspecting).toBe(false);
   });
 
+});
+
+/**
+ * The soft "no tab" result the IPC boundary returns instead of an error.
+ *
+ * `registerIpc` narrows with `isBuiltInBrowserNoTabError` and then reads
+ * `error.tabId` for its debug line, so the predicate has to prove the field is
+ * there — not just that the name matches. A name-only match would hand those
+ * two readers `undefined` under a type that says `string | null`, which is the
+ * shape a second copy of this module (or an error rehydrated across a process
+ * boundary) actually produces.
+ */
+describe("BuiltInBrowserNoTabError", () => {
+  it("keeps the named tab in the message so a raw log still says which one lost", () => {
+    const named = new BuiltInBrowserNoTabError("No browser tab is open", "tab-7");
+    expect(named.tabId).toBe("tab-7");
+    expect(named.message).toBe("No browser tab is open: tab-7");
+    expect(named.reason).toBe("no_tab");
+
+    const anonymous = new BuiltInBrowserNoTabError("No browser tab is open");
+    expect(anonymous.tabId).toBeNull();
+    // Nothing to append, so the message is not decorated with an empty suffix.
+    expect(anonymous.message).toBe("No browser tab is open");
+  });
+
+  it("accepts a foreign copy only when it can actually answer `tabId`", () => {
+    expect(isBuiltInBrowserNoTabError(new BuiltInBrowserNoTabError("x", "tab-1"))).toBe(true);
+
+    // A second module copy: not `instanceof`, but it carries the field the
+    // readers dereference.
+    const foreign = Object.assign(new Error("x"), { name: "BuiltInBrowserNoTabError", tabId: null });
+    expect(isBuiltInBrowserNoTabError(foreign)).toBe(true);
+
+    // Same name, no field — narrowing this would be the unsound branch.
+    const nameOnly = Object.assign(new Error("x"), { name: "BuiltInBrowserNoTabError" });
+    expect(isBuiltInBrowserNoTabError(nameOnly)).toBe(false);
+    expect(isBuiltInBrowserNoTabError(new Error("No browser tab is open"))).toBe(false);
+    expect(isBuiltInBrowserNoTabError({ name: "BuiltInBrowserNoTabError", tabId: "t" })).toBe(false);
+    expect(isBuiltInBrowserNoTabError(null)).toBe(false);
+  });
 });

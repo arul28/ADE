@@ -23,7 +23,10 @@ const crossMachineMocks = vi.hoisted(() => ({
   seedOptimistic: vi.fn(),
 }));
 
-vi.mock("../../state/crossMachineLanes", () => ({
+vi.mock("../../state/crossMachineLanes", async () => ({
+  ...(await vi.importActual<typeof import("../../state/crossMachineLanes")>(
+    "../../state/crossMachineLanes",
+  )),
   cancelCrossMachineOptimisticChatSession: crossMachineMocks.cancelOptimistic,
   seedCrossMachineOptimisticChatSession: crossMachineMocks.seedOptimistic,
 }));
@@ -105,6 +108,7 @@ const workMocks = vi.hoisted(() => {
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
     setWorkViewState: vi.fn(),
+    setLaneWorkViewState: vi.fn(),
   };
 
   const baseWork = {
@@ -138,7 +142,6 @@ const workMocks = vi.hoisted(() => {
     workCollapsedSectionIds: [],
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
-    workSidebarTab: "git",
     workSidebarWidthPct: 36,
     pinnedSessionIds: [],
     closingPtyIds: new Set<string>(),
@@ -158,7 +161,6 @@ const workMocks = vi.hoisted(() => {
     removeSessionFromList: vi.fn(),
     setWorkFocusSessionsHidden: vi.fn(),
     setWorkSidebarOpen: vi.fn(),
-    setWorkSidebarTab: vi.fn(),
     setWorkSidebarWidthPct: vi.fn(),
     reorderLaneSessions: vi.fn(),
     togglePinnedSession: vi.fn(),
@@ -173,6 +175,8 @@ const workMocks = vi.hoisted(() => {
     projectRoot: null as string | null,
     projectBinding: null as OpenProjectBinding | null,
     handoffLaunchJobsByScope: {} as Record<string, unknown[]>,
+    laneWorkViewByScope: {} as Record<string, unknown>,
+    workViewByProject: {} as Record<string, unknown>,
     /** Bindings this window has open besides the active one (per-session pin targets). */
     openRemoteProjectTabs: [] as OpenProjectBinding[],
     /** Cross-machine union slices — lane ownership for `useWorkMachineRouter`. */
@@ -234,6 +238,26 @@ const workViewAreaProps = vi.hoisted(() => ({
 }));
 
 vi.mock("../../state/appStore", () => ({
+  // The real key builder: the pane's lane scope key is the store's own storage
+  // layout, and a mock that reimplemented it would test the mock.
+  laneWorkViewScopeKey: (projectRoot: string | null | undefined, laneId: string | null | undefined) => {
+    const project = typeof projectRoot === "string" ? projectRoot.trim() : "";
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    return project && lane ? `${project}::${lane}` : "";
+  },
+  // Same shape the real selectors return: the stored slice, or an empty one.
+  // The corner card reads its position/dismissals through these rather than
+  // reaching into the maps, so the mock has to answer them.
+  selectWorkViewState: (projectKey: string | null | undefined) =>
+    (state: { workViewByProject?: Record<string, unknown> }) =>
+      (projectKey ? state.workViewByProject?.[projectKey] : null) ?? {},
+  selectLaneWorkViewState: (projectKey: string | null | undefined, laneId: string | null | undefined) =>
+    (state: { laneWorkViewByScope?: Record<string, unknown> }) => {
+      const project = typeof projectKey === "string" ? projectKey.trim() : "";
+      const lane = typeof laneId === "string" ? laneId.trim() : "";
+      const key = project && lane ? `${project}::${lane}` : "";
+      return (key ? state.laneWorkViewByScope?.[key] : null) ?? {};
+    },
   selectActiveProjectRoot: (state: {
     projectBinding?: { kind?: string; rootPath?: string | null } | null;
     project?: { rootPath?: string | null } | null;
@@ -258,6 +282,9 @@ vi.mock("../../state/appStore", () => ({
     selectLane: typeof workMocks.fns.selectLane;
     focusSession: typeof workMocks.fns.focusSession;
     setWorkViewState: typeof workMocks.fns.setWorkViewState;
+    setLaneWorkViewState: typeof workMocks.fns.setLaneWorkViewState;
+    laneWorkViewByScope: Record<string, unknown>;
+    workViewByProject: Record<string, unknown>;
     lanes: LaneSummary[];
     openRemoteProjectTabs: OpenProjectBinding[];
     openProjectTabRoots: string[];
@@ -274,6 +301,9 @@ vi.mock("../../state/appStore", () => ({
       selectLane: workMocks.fns.selectLane,
       focusSession: workMocks.fns.focusSession,
       setWorkViewState: workMocks.fns.setWorkViewState,
+      setLaneWorkViewState: workMocks.fns.setLaneWorkViewState,
+      laneWorkViewByScope: workMocks.laneWorkViewByScope,
+      workViewByProject: workMocks.workViewByProject,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
@@ -515,6 +545,8 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.openRemoteProjectTabs = [];
     workMocks.crossMachineLanesByMachineId = {};
     workMocks.crossMachineLaneIntendedMachineIds = null;
+    workMocks.laneWorkViewByScope = {};
+    workMocks.workViewByProject = {};
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
     workViewAreaProps.latest = null;
@@ -1068,13 +1100,20 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { collectionProjectRoot: "/repo-two" },
     });
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
 
     browserEventListener.current?.({
       type: "open-request",
       status: { collectionProjectRoot: "/repo-one" },
     });
-    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("browser");
+    // The active tool is per lane, so the write lands on the lane scope the
+    // page resolved, not on the project-wide work view.
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "/repo-one",
+      "lane-primary",
+      // The strip is written with it: opening a tool opens its tab.
+      { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
+    );
   });
 
   it("ignores Browser sidebar open requests for remote projects", async () => {
@@ -1112,10 +1151,11 @@ describe("TerminalsPage chat session activation", () => {
     });
     // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
     // guard now just suppresses the browser-sidebar open.)
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
   });
 
   it("opens and closes the Work Terminal sidebar from the Work surface", async () => {
+    workMocks.projectRoot = "/repo-one";
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -1124,14 +1164,20 @@ describe("TerminalsPage chat session activation", () => {
     const { rerender } = render(<TerminalsPage />);
 
     fireEvent.click(await screen.findByRole("button", { name: "toggle terminal pane" }));
-    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("terminal");
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "/repo-one",
+      "lane-primary",
+      { workSidebarTool: "terminal", workSidebarOpenTools: ["terminal"] },
+    );
 
     vi.clearAllMocks();
     workMocks.currentWork = {
       ...workMocks.baseWork,
       workSidebarOpen: true,
-      workSidebarTab: "terminal",
       closingPtyIds: new Set<string>(),
+    };
+    workMocks.laneWorkViewByScope = {
+      "/repo-one::lane-primary": { workSidebarTool: "terminal" },
     };
     rerender(<TerminalsPage />);
 
@@ -1140,8 +1186,9 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setWorkSidebarOpen).toHaveBeenCalledWith(false);
 
     vi.clearAllMocks();
+    // Already on Terminal: "open terminal pane" must not re-write the scope.
     fireEvent.click(screen.getByRole("button", { name: "open terminal pane" }));
-    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
   });
 
   it("targets the visible Work draft when no saved session is active", async () => {
@@ -1152,7 +1199,6 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = {
       ...workMocks.baseWork,
       workSidebarOpen: true,
-      workSidebarTab: "browser",
       draftLaneId: "lane-background",
       draftKind: "chat",
       closingPtyIds: new Set<string>(),
@@ -1986,6 +2032,78 @@ describe("TerminalsPage chat session activation", () => {
     expect(banner.textContent).not.toContain("Error invoking remote method");
     expect(banner.textContent).toContain("Refresh the list");
     confirmSpy.mockRestore();
+  });
+
+  it("gives the tools-pane splitter a keyboard, not just a mouse", () => {
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarWidthPct: 36,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    const separator = screen.getByRole("separator", { name: "Resize tools pane" });
+    expect(separator.getAttribute("tabindex")).toBe("0");
+    expect(separator.getAttribute("aria-valuenow")).toBe("36");
+    expect(separator.getAttribute("aria-valuemin")).toBe("26");
+    expect(separator.getAttribute("aria-valuemax")).toBe("55");
+
+    // The separator moves, so ArrowLeft widens the pane on its right.
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(38);
+
+    fireEvent.keyDown(separator, { key: "Home" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(26);
+
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(55);
+  });
+
+  it("puts the pane back on Escape without writing the abandoned drag to the store", () => {
+    // The drag only ever touches inline `flexGrow`, so on cancel the store
+    // already holds the width being restored. Writing it again re-ran
+    // persistence and cross-window sync for a gesture the user abandoned — and
+    // stamped the mousedown snapshot over any width that changed mid-drag.
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarWidthPct: 36,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    const separator = screen.getByRole("separator", { name: "Resize tools pane" });
+    // jsdom lays nothing out, and a zero-width container refuses the drag.
+    vi.spyOn(separator.parentElement!, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 0, width: 1000, height: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const sidebarPane = separator.parentElement!.querySelector<HTMLElement>("[data-work-sidebar-pane]")!;
+
+    fireEvent.mouseDown(separator, { clientX: 600 });
+    expect(sidebarPane.style.flexGrow).toBe("36");
+
+    // Drag left: the separator moves, so the pane on its right widens.
+    fireEvent.mouseMove(document, { clientX: 500 });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(sidebarPane.style.flexGrow).toBe("36");
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
+
+    // A drag that ENDS normally still persists where it was let go.
+    fireEvent.mouseDown(separator, { clientX: 600 });
+    fireEvent.mouseUp(document);
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(36);
   });
 
   it("recovers a collapsed sessions list from a thin left rail", () => {

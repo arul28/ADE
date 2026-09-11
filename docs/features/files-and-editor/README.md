@@ -150,7 +150,11 @@ Renderer:
   dirty-buffer publishing for agent reads, optional Git-decoration
   fallback, and file-type viewers. Accepts optional
   `preferredLaneId` and `embedded` props so the same component can mount inside
-  the Work right-edge sidebar. It also owns the **machine pin**: the amber
+  the Work right-edge sidebar; embedded, it collapses its controls into one
+  `workToolChrome` row with the path breadcrumb, provides
+  `MonochromeFileIconsContext`, and below `EMBEDDED_SINGLE_SURFACE_PX` (520)
+  shows one surface at a time (tree, or editor with a "Back to files" crumb)
+  with the other column mounted but `inert`. It also owns the **machine pin**: the amber
   machine chip, the "Back to this computer" control, the pinned-machine
   liveness read, and the release of caches written under a pinned key.
 - `apps/desktop/src/renderer/components/files/v2/pinnedFilesApi.ts` —
@@ -189,7 +193,15 @@ Renderer:
   entirely, so the old client-side filter over whatever slice of the tree
   happened to be loaded is skipped.
 - `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
-  file-type icons and `changeStatus*` helpers shared with the explorer.
+  file-type icons and `changeStatus*` helpers shared with the explorer, plus
+  `MonochromeFileIconsContext` / `useFileIconColor`: the embedded Work pane
+  provides `true` and every glyph paints muted instead of its catalogue colour.
+- `apps/desktop/src/renderer/components/files/v2/monacoLoader.ts` — the
+  memoized Monaco init, and ADE's own `ade-dark` / `ade-light` themes. They
+  inherit `vs-dark` / `vs` tokenization and override only the surface colours,
+  which are literals rather than a live `--color-surface` read because the
+  themes are defined once and a token read would freeze both to whichever was
+  active when the first editor opened.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
   and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
   tree/decorations helpers used by the workbench. `treeHelpers` also

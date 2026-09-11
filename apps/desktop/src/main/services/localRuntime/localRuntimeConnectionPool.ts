@@ -3229,6 +3229,11 @@ async function subscribeToRuntimeEvents(
       projectId,
       cursor: clampCursor(request.cursor),
       limit: clampLimit(request.limit),
+      // This desktop IS the App Control viewer for its own machine, and the
+      // frames travel a local socket, so it opts in to the high-volume stream
+      // the runtime withholds by default. The remote pool deliberately does
+      // not — see `subscribeToRuntimeEvents` in `remoteConnectionPool`.
+      includeHighVolumeEvents: true,
       ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     }, { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS });

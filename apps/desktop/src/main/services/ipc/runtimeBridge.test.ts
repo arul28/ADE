@@ -17,7 +17,7 @@ const ipcHandlers = vi.hoisted(
 );
 const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
 const browserWindowFromId = vi.hoisted(() => vi.fn());
-const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
+const browserWindowGetAllWindows = vi.hoisted(() => vi.fn((): { webContents: any }[] => []));
 const showOpenDialogMock = vi.hoisted(() => vi.fn());
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
 const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>(() => []));
@@ -35,6 +35,21 @@ const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteStreamEventsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteSubscribeEventsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
+/** Captures the bridge's port-forward invalidation listener so a test can fire it. */
+const onPortForwardsInvalidatedMock = vi.hoisted(() => {
+  const listeners: ((targetId: string) => void)[] = [];
+  const register = vi.fn((listener: (targetId: string) => void) => {
+    listeners.push(listener);
+    return () => {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) listeners.splice(index, 1);
+    };
+  }) as unknown as ReturnType<typeof vi.fn> & { emit: (targetId: string) => void };
+  register.emit = (targetId: string) => {
+    for (const listener of [...listeners]) listener(targetId);
+  };
+  return register;
+});
 const hasKnownSshHostKeyForTargetMock = vi.hoisted(() => vi.fn(() => false));
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
@@ -115,6 +130,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     subscribeEventsForTarget: remoteSubscribeEventsForTargetMock,
     disconnect: remoteDisconnectMock,
     onEntryEvicted: vi.fn(() => () => {}),
+    onPortForwardsInvalidated: onPortForwardsInvalidatedMock,
   })),
 }));
 
@@ -142,6 +158,10 @@ import {
   registerRuntimeBridge,
 } from "./runtimeBridge";
 import { registerIpc } from "./registerIpc";
+import {
+  lookupRemoteTunnelOrigin,
+  resetRemoteTunnelOrigins,
+} from "../builtInBrowser/remoteTunnelOrigins";
 import {
   __testSetSimulatorWindowCaptureHooks,
   activeSimulatorParkingWindow,
@@ -1423,6 +1443,51 @@ describe("registerRuntimeBridge", () => {
         label: "preview",
       },
     );
+  });
+
+  it("forgets a machine's tunnel origins and tells every window when its forwards die", async () => {
+    // A forward's local port dies with its transport and the OS re-assigns it
+    // straight away, so both caches that remember one — the browser's
+    // remote-origin registry here in main, and the preload's forward de-dupe —
+    // have to be told. The pool announces on BOTH teardown paths because an
+    // explicit disconnect never fires `onEntryEvicted`.
+    resetRemoteTunnelOrigins();
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteEnsureLocalPortForwardMock.mockResolvedValue({
+      targetId: "target-1",
+      remoteHost: "127.0.0.1",
+      remotePort: 3000,
+      localHost: "127.0.0.1",
+      localPort: 49152,
+      localUrl: "http://127.0.0.1:49152",
+      label: "preview",
+      createdAt: 1,
+      lastUsedAt: 1,
+    });
+    const windowSender = sender(303);
+    browserWindowGetAllWindows.mockReturnValue([{ webContents: windowSender }]);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await ipcHandlers.get(IPC.remoteRuntimeEnsurePortForward)?.(
+      eventForSender(sender(302)),
+      { id: "target-1", request: { remoteHost: "127.0.0.1", remotePort: 3000, label: "preview" } },
+    );
+    expect(lookupRemoteTunnelOrigin("http://127.0.0.1:49152")).toEqual({
+      machineKey: "target-1",
+      remotePort: 3000,
+    });
+
+    onPortForwardsInvalidatedMock.emit("target-1");
+
+    expect(lookupRemoteTunnelOrigin("http://127.0.0.1:49152")).toBeNull();
+    expect(windowSender.send).toHaveBeenCalledWith(
+      IPC.remoteRuntimePortForwardsInvalidated,
+      { targetId: "target-1" },
+    );
+    resetRemoteTunnelOrigins();
   });
 
   it("forwards remote project action registry listing through the selected target and project", async () => {

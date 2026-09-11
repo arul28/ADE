@@ -444,15 +444,15 @@ describe("App Work route keep-alive", () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe("/work");
     });
-    // viewMode (the old tabs/grid switch) was removed by the work-tab overhaul;
-    // revealing the browser just opens the sidebar.
+    // viewMode (the old tabs/grid switch) was removed by the work-tab overhaul.
+    // Openness is project-wide and set here; WHICH tool opens is per lane, so it
+    // travels as a request the Work page drains.
     expect(appStoreState.setWorkViewState).toHaveBeenCalledWith(
       "/fake/project",
-      expect.objectContaining({
-        workSidebarOpen: true,
-        workSidebarTab: "browser",
-      }),
+      expect.objectContaining({ workSidebarOpen: true }),
     );
+    const { takePendingWorkToolRequest } = await import("../terminals/workToolRequests");
+    expect(takePendingWorkToolRequest()?.tool).toBe("browser");
   }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("hydrates project stores with root user preferences", async () => {

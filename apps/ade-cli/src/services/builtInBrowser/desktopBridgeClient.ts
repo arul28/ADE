@@ -2,8 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
+import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  isBuiltInBrowserBridgeServedMethod,
+  isBuiltInBrowserUnscopedBridgeMethod,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -19,14 +23,18 @@ import {
  * (see `MachineAdeLayout.desktopBridgeSocketPath`) and the daemon proxies
  * `built_in_browser.<method>` calls through this client.
  *
- * The connection is lazy. If no desktop is running, the first call surfaces
- * a clear error ("Desktop browser bridge not running…") and the daemon stays
- * functional for every other domain. Reconnection on next call is automatic
- * when the desktop comes back.
+ * The connection is lazy. If no desktop is running, the first call throws
+ * `DesktopBridgeUnavailableError` and the daemon stays functional for every
+ * other domain. Reconnection on next call is automatic when the desktop comes
+ * back. `remoteBrowserForwarder` catches that one error class for the three
+ * "put this URL on a screen" methods and hands them to a desktop that has this
+ * machine's lane pinned instead.
  */
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 3_000;
+/** Ceiling for a login handoff wait. The service's own cap, imported not copied. */
+const MAX_HANDOFF_WAIT_MS = MAX_HANDOFF_TIMEOUT_MS;
 
 async function raceWithTimeout<T>(
   operation: Promise<T>,
@@ -41,6 +49,24 @@ async function raceWithTimeout<T>(
     return await Promise.race([operation, timeout]);
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * No desktop is listening on this machine's bridge socket.
+ *
+ * Distinguished from every other bridge failure because it is the one case with
+ * a working alternative: a desktop pinned to this machine from somewhere else
+ * can open the URL in ITS browser over a port-forward, so `ade browser open`
+ * forwards instead of failing (see `remoteBrowserForwarder`).
+ */
+export class DesktopBridgeUnavailableError extends Error {
+  readonly socketPath: string;
+
+  constructor(socketPath: string, message: string) {
+    super(message);
+    this.name = "DesktopBridgeUnavailableError";
+    this.socketPath = socketPath;
   }
 }
 
@@ -67,15 +93,27 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   async function connect(): Promise<JsonRpcClient> {
     if (disposed) throw new Error("Desktop browser bridge client has been disposed.");
     if (!isNamedPipe && !fs.existsSync(socketPath)) {
-      throw new Error(
-        `Desktop browser bridge not running at ${socketPath}. Open ADE Desktop with a project to enable \`ade browser\` commands.`,
+      throw new DesktopBridgeUnavailableError(
+        socketPath,
+        `No ADE Desktop browser is attached to this machine (bridge socket ${socketPath} is not listening). The built-in browser runs inside ADE Desktop, so browser actions need a desktop attached here. \`ade browser open <url>\` is the exception: it forwards the URL to a desktop that has this lane pinned, which reaches this machine's localhost ports over a tunnel.`,
       );
     }
-    return await raceWithTimeout(
-      JsonRpcClient.connect(socketPath),
-      CONNECT_TIMEOUT_MS,
-      `Timed out connecting to desktop browser bridge at ${socketDescription}.`,
-    );
+    try {
+      return await raceWithTimeout(
+        JsonRpcClient.connect(socketPath),
+        CONNECT_TIMEOUT_MS,
+        `Timed out connecting to desktop browser bridge at ${socketDescription}.`,
+      );
+    } catch (error) {
+      // A stale socket file (desktop crashed) refuses the connection rather
+      // than being absent, so it is the same "no desktop here" condition.
+      throw new DesktopBridgeUnavailableError(
+        socketPath,
+        `Could not reach an ADE Desktop browser on this machine (${socketDescription}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   async function ensureClient(): Promise<JsonRpcClient> {
@@ -133,12 +171,35 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     };
   };
 
-  const authenticatedParams = (params: unknown): Record<string, unknown> => {
+  const authenticatedParams = (
+    params: unknown,
+    opts: { applyRuntimeScope: boolean },
+  ): Record<string, unknown> => {
     const bridgeAuthToken = args.getAuthToken()?.trim() ?? "";
     if (!bridgeAuthToken) {
+      // Debug, not warn: an absent bridge token is the ordinary state on a
+      // machine with no desktop attached, and on that machine every single
+      // `ade browser` call would otherwise emit a warning. The caller already
+      // gets a specific, actionable error — the log line adds nothing but noise.
+      logger.debug("built_in_browser_bridge.auth_token_missing", {
+        socketPath,
+        projectRoot,
+      });
+      // Reached only once a desktop has answered on the bridge socket (see the
+      // `ensureClient()` ordering in `callBridge`), so "there is a desktop, it
+      // just has not handed over its token" is the true diagnosis here and
+      // restarting it is the real fix. A machine with NO desktop never gets
+      // this far: it fails earlier with `DesktopBridgeUnavailableError`, which
+      // is the class `remoteBrowserForwarder` forwards on.
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
-    const scoped = withRuntimeScope(params);
+    // The two capability-lifecycle methods must not be rewritten to the
+    // daemon's own project root: they carry the scope of the chat being
+    // launched, which may be a personal (project-less) chat or a lane in
+    // another project. Everything else — including `getStatusForRuntime` —
+    // takes the daemon's scope, so the Work-tools mirror reads the collection
+    // of the project this daemon serves rather than the frontmost window's.
+    const scoped = opts.applyRuntimeScope ? withRuntimeScope(params) : params;
     return {
       ...(scoped && typeof scoped === "object" && !Array.isArray(scoped)
         ? scoped as Record<string, unknown>
@@ -148,13 +209,26 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   };
 
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
-    const requestParams = authenticatedParams(params);
+    // Connect BEFORE reading the auth token. Whether a desktop is attached to
+    // this machine is decided by the bridge socket, never by the token: the
+    // token is only ever set by a desktop that already attached, so a headless
+    // runtime and an attached-but-unauthenticated desktop are indistinguishable
+    // from the token alone. Checking the token first made a headless machine
+    // throw a plain Error, and `remoteBrowserForwarder` — which only forwards
+    // on `DesktopBridgeUnavailableError` — never fired, so `ade browser open`
+    // on a machine reachable from a pinned desktop failed instead of
+    // forwarding. `ensureClient()` raises the right class for that case, and
+    // the connection it makes here is cached and reused by the real call below.
     const c = await ensureClient();
+    const requestParams = authenticatedParams(params, {
+      applyRuntimeScope: !isBuiltInBrowserUnscopedBridgeMethod(method),
+    });
+    const timeoutMs = bridgeCallTimeoutMs(method, requestParams);
     try {
       return await raceWithTimeout(
         c.request(`built_in_browser.${method}`, requestParams),
-        REQUEST_TIMEOUT_MS,
-        `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
+        timeoutMs,
+        `Desktop browser bridge call ${method} timed out after ${timeoutMs}ms.`,
       );
     } catch (error) {
       // Drop the connection on any error so the next call reconnects.
@@ -175,12 +249,35 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
 
   return new Proxy(bridge, {
     get(target, property, receiver) {
-      if (typeof property === "string" && isBuiltInBrowserDesktopBridgeMethod(property)) {
+      if (
+        typeof property === "string"
+        && (isBuiltInBrowserDesktopBridgeMethod(property)
+          || isBuiltInBrowserBridgeServedMethod(property))
+      ) {
         return (params?: unknown) => callBridge(property, params);
       }
       return Reflect.get(target, property, receiver);
     },
   }) as BuiltInBrowserDesktopBridgeClient;
+}
+
+/**
+ * How long one bridge call may take.
+ *
+ * Everything the browser does is a page interaction and fits the flat budget —
+ * except `waitForHandoff`, which is *supposed* to sit there while a human signs
+ * in. Its budget is the handoff window the caller asked for plus slack, so the
+ * transport cannot report a timeout for a handoff that is still open.
+ */
+function bridgeCallTimeoutMs(method: string, params: unknown): number {
+  if (method !== "waitForHandoff") return REQUEST_TIMEOUT_MS;
+  const requested = params && typeof params === "object" && !Array.isArray(params)
+    ? (params as { timeoutMs?: unknown }).timeoutMs
+    : null;
+  const window = typeof requested === "number" && Number.isFinite(requested)
+    ? Math.floor(requested)
+    : MAX_HANDOFF_WAIT_MS;
+  return Math.min(MAX_HANDOFF_WAIT_MS, Math.max(REQUEST_TIMEOUT_MS, window)) + REQUEST_TIMEOUT_MS;
 }
 
 export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {
@@ -213,4 +310,36 @@ export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {
   } finally {
     client?.close();
   }
+}
+
+/**
+ * Daemon-side issuer for per-chat browser actor capabilities.
+ *
+ * The capability registry lives in Electron main — the only process that can
+ * validate a token — so the runtime daemon has the desktop mint and revoke
+ * them over the authenticated bridge instead of writing to a registry nothing
+ * downstream can read. With no bridge (headless machine, chat-only runtime)
+ * `issue` resolves to `null` and the caller omits `ADE_BROWSER_ACTOR_TOKEN`.
+ */
+export function createBridgeBrowserActorCapabilityIssuer(args: {
+  getBridge: () => BuiltInBrowserDesktopBridgeClient | null;
+}): BrowserActorCapabilityIssuer {
+  return {
+    issue: async (capability) => {
+      const bridge = args.getBridge();
+      if (!bridge) return null;
+      const result = await bridge.issueActorCapability({
+        chatSessionId: capability.chatSessionId,
+        laneId: capability.laneId,
+        projectRoot: capability.projectRoot,
+        tabCollection: capability.tabCollection,
+      });
+      return result?.token?.trim() || null;
+    },
+    revoke: async (chatSessionId) => {
+      const bridge = args.getBridge();
+      if (!bridge) return;
+      await bridge.revokeActorCapability({ chatSessionId });
+    },
+  };
 }

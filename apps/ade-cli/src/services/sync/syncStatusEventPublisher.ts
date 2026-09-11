@@ -1,0 +1,106 @@
+/** Trailing-edge window for status pushes. Below a human's perception of "live". */
+export const SYNC_STATUS_PUBLISH_INTERVAL_MS = 250;
+
+export type SyncStatusEventPublisher<TSnapshot> = {
+  /** Offer a snapshot. It is published, replaces a pending one, or is dropped. */
+  publish: (snapshot: TSnapshot) => void;
+  dispose: () => void;
+};
+
+/**
+ * Coalescing publisher for `sync-status` runtime events.
+ *
+ * The sync service reports every status transition, and a connection storm —
+ * a peer that reconnects in a loop, route arbitration retrying, a tunnel
+ * flapping — produces hundreds of them a second. Each one carries a full
+ * ~5 KB `SyncRoleSnapshot`, and they were pushed straight onto the runtime
+ * event buffer, so a desktop draining 100 events per poll got half a megabyte
+ * of status per response. Over a paired sync transport that response is
+ * `rpc_data`, a *required* send the host will not drop, so the socket buffered
+ * until the host closed the whole connection with 4001 "Required sync response
+ * backpressured" — which reconnected, which produced more status, which is the
+ * loop that took the transport down every few seconds.
+ *
+ * A status snapshot is last-writer-wins state, not a log: only the newest one
+ * is worth anything, and an identical one is worth nothing at all. So this
+ * drops both, and never queues:
+ *
+ * - a snapshot equal to the last one published is discarded outright;
+ * - a snapshot arriving inside the publish window replaces whatever else was
+ *   waiting, and exactly one — the newest — is published when the window ends.
+ *
+ * The first snapshot in an idle period still goes out immediately, so the
+ * common case (a real status change, seconds apart) is not delayed at all.
+ */
+export function createSyncStatusEventPublisher<TSnapshot>(args: {
+  emit: (snapshot: TSnapshot) => void;
+  intervalMs?: number;
+  now?: () => number;
+  serialize?: (snapshot: TSnapshot) => string;
+}): SyncStatusEventPublisher<TSnapshot> {
+  const intervalMs = Math.max(0, args.intervalMs ?? SYNC_STATUS_PUBLISH_INTERVAL_MS);
+  const now = args.now ?? Date.now;
+  const serialize = args.serialize ?? ((snapshot: TSnapshot) => {
+    try {
+      return JSON.stringify(snapshot) ?? "";
+    } catch {
+      // An unserializable snapshot can never be proven identical, so it is
+      // always treated as new rather than silently swallowed.
+      return `unserializable:${Math.random()}`;
+    }
+  });
+
+  let lastPublishedAtMs = Number.NEGATIVE_INFINITY;
+  let lastSerialized: string | null = null;
+  let pending: { snapshot: TSnapshot; serialized: string } | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const send = (snapshot: TSnapshot, serialized: string): void => {
+    lastSerialized = serialized;
+    lastPublishedAtMs = now();
+    args.emit(snapshot);
+  };
+
+  const flush = (): void => {
+    timer = null;
+    if (disposed || !pending) return;
+    const next = pending;
+    pending = null;
+    if (next.serialized === lastSerialized) return;
+    send(next.snapshot, next.serialized);
+  };
+
+  return {
+    publish: (snapshot) => {
+      if (disposed) return;
+      const serialized = serialize(snapshot);
+      // Nothing changed. Publishing it would cost a full snapshot on the wire
+      // to tell every client what it already knows.
+      if (serialized === lastSerialized) {
+        pending = null;
+        return;
+      }
+      const elapsed = now() - lastPublishedAtMs;
+      if (elapsed >= intervalMs && !timer) {
+        send(snapshot, serialized);
+        return;
+      }
+      // Inside the window: hold the newest and let the timer publish it. The
+      // one it replaces is dropped, which is the point — it is already stale.
+      pending = { snapshot, serialized };
+      if (!timer) {
+        timer = setTimeout(flush, Math.max(0, intervalMs - elapsed));
+        timer.unref?.();
+      }
+    },
+    dispose: () => {
+      disposed = true;
+      pending = null;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}

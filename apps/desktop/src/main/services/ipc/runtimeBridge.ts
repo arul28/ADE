@@ -63,6 +63,7 @@ import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineSto
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
+import { forgetRemoteTunnelOrigins, recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
@@ -433,6 +434,21 @@ export function registerRuntimeBridge({
   const remoteOpenProjectGenerations = new Map<string, number>();
   let remoteOpenProjectGeneration = 0;
   let lastDiscoveredMachines: RemoteRuntimeDiscoveryResult["machines"] = [];
+
+  remoteConnectionPool.onPortForwardsInvalidated((targetId) => {
+    // Two caches outlive the tunnel unless they are told. The browser's
+    // remote-origin registry maps a local origin to (machine, remote port) and
+    // gates per-chat agent approvals on it, so a recycled port would inherit
+    // an approval a human granted for a different tunnel. The preload memoizes
+    // forwards per (target, port) to keep navigations off the IPC path, and a
+    // stale entry there is the `ERR_CONNECTION_REFUSED` a reconnected machine
+    // reported for a port that had already moved.
+    forgetRemoteTunnelOrigins(targetId);
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.webContents.isDestroyed()) continue;
+      window.webContents.send(IPC.remoteRuntimePortForwardsInvalidated, { targetId });
+    }
+  });
 
   remoteConnectionService.onSnapshotChanged((snapshot) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -1184,11 +1200,22 @@ export function registerRuntimeBridge({
       if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
         throw new Error("Remote port must be an integer from 1 to 65535.");
       }
-      return await remoteConnectionService.ensurePortForward(id, {
+      const forward = await remoteConnectionService.ensurePortForward(id, {
         remoteHost,
         remotePort,
         label,
       });
+      // The browser's per-chat origin approvals key on origin, and a forward's
+      // local port is reused across machines and sessions. Record what this one
+      // currently stands for so one tunnel's approval cannot be inherited by
+      // another (see `remoteTunnelOrigins`).
+      recordRemoteTunnelOrigin({
+        localHost: forward.localHost,
+        localPort: forward.localPort,
+        machineKey: id,
+        remotePort: forward.remotePort,
+      });
+      return forward;
     },
   );
 

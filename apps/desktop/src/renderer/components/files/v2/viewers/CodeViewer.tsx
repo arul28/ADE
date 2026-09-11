@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from "react";
 import type * as Monaco from "monaco-editor";
+import { claimAppMenuCommands } from "../../../../lib/appMenuCommands";
 import { resolveLanguageId } from "../../filePresentation";
-import { loadMonaco } from "../monacoLoader";
+import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
 import { takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
@@ -78,7 +79,7 @@ export function CodeViewer({
         language: "plaintext",
         automaticLayout: true,
         readOnly,
-        theme: theme === "light" ? "vs" : "vs-dark",
+        theme: adeMonacoTheme(theme),
         fontSize: 13,
         minimap: { enabled: true },
         stickyScroll: { enabled: true },
@@ -148,12 +149,39 @@ export function CodeViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, content.content, content.languageId]);
 
+  /**
+   * ⌘F while this editor holds the keyboard.
+   *
+   * `Edit ▸ Find…` is a native menu accelerator, and Electron consumes an
+   * accelerator in the browser process *before* the renderer sees a keydown —
+   * so Monaco's own ⌘F keybinding never fires on the packaged app. The menu
+   * sends a `find` command down instead; claim it here and run the same action
+   * Monaco would have. Declining when the editor does not own focus leaves the
+   * chord to whoever does (the built-in browser's find bar, or nothing).
+   */
+  useEffect(() => {
+    return claimAppMenuCommands((command) => {
+      if (command !== "find") return false;
+      const editor = editorRef.current;
+      const host = hostRef.current;
+      if (!editor || !host || !host.isConnected) return false;
+      // Single-surface Files keeps the inactive column mounted but `inert`.
+      if (host.closest("[inert]")) return false;
+      const active = document.activeElement;
+      const focused =
+        editor.hasTextFocus() || (active instanceof Node && host.contains(active));
+      if (!focused) return false;
+      void editor.getAction("actions.find")?.run();
+      return true;
+    });
+  }, []);
+
   // React to readOnly / theme without recreating the editor.
   useEffect(() => {
     editorRef.current?.updateOptions({ readOnly });
   }, [readOnly]);
   useEffect(() => {
-    monacoRef.current?.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+    monacoRef.current?.editor.setTheme(adeMonacoTheme(theme));
   }, [theme]);
 
   function attachModel(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor) {

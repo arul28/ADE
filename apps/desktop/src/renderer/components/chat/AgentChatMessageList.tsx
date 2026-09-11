@@ -60,7 +60,7 @@ import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../.
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
-import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
@@ -1097,7 +1097,7 @@ function WebSearchActionList({ actions, isFailed }: WebSearchActionListProps) {
             type="button"
             className={className}
             title={title}
-            onClick={() => openUrlInAdeBrowser(action.url)}
+            onClick={(event) => openLinkFromUi(action.url, event)}
           >
             {content}
           </button>
@@ -1158,7 +1158,7 @@ function WebSearchResultList({ results, resultsTotal, isFailed }: WebSearchResul
             type="button"
             className={className}
             title={display.href}
-            onClick={() => openUrlInAdeBrowser(display.href!)}
+            onClick={(event) => openLinkFromUi(display.href, event)}
           >
             {body}
           </button>
@@ -3842,7 +3842,7 @@ function renderEvent(
         {event.prUrl ? (
           <button
             type="button"
-            onClick={() => openUrlInAdeBrowser(event.prUrl!)}
+            onClick={(clickEvent) => openLinkFromUi(event.prUrl, clickEvent)}
             className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
           >
             PR

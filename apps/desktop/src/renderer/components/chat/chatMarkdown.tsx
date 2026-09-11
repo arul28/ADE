@@ -4,7 +4,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import {
   isWindowsAbsolutePath,
@@ -184,7 +184,7 @@ function ChatMarkdownAnchor({
       className={className}
       onClick={(event) => {
         event.preventDefault();
-        openUrlInAdeBrowser(href);
+        openLinkFromUi(href, event);
       }}
     >
       {children}

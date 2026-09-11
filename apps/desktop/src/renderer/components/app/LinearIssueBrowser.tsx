@@ -15,7 +15,7 @@ import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 import { BranchIcon } from "../ui/vcsIcons";
 import { buildChatMarkdownComponents } from "../chat/chatMarkdown";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 
 import type {
   CtoGetLinearIssuePickerDataResult,
@@ -440,7 +440,7 @@ const LINEAR_MARKDOWN_COMPONENTS: Components = buildChatMarkdownComponents("neut
       onClick={(event) => {
         event.preventDefault();
         if (typeof href === "string" && href.trim() !== "") {
-          openUrlInAdeBrowser(href);
+          openLinkFromUi(href, event);
         }
       }}
       className="font-medium text-[color:var(--color-accent,#A78BFA)] underline underline-offset-2 transition-opacity hover:opacity-80"

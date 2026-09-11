@@ -1976,9 +1976,6 @@ struct WorkChatSessionView: View {
                 )
             }
           )
-          .overlay(alignment: .top) {
-            WorkChatNavigationBackdrop()
-          }
           .overlay(alignment: .bottomTrailing) {
             if unreadBelowCount > 0 || !isNearBottom {
               WorkJumpToLatestPill(count: unreadBelowCount) {
@@ -2002,6 +1999,16 @@ struct WorkChatSessionView: View {
   @ViewBuilder
   private func chatColumn(proxy: ScrollViewProxy) -> some View {
       VStack(spacing: 0) {
+        // Read-only summary of the Work tools pane running on the user's Mac.
+        // It hides itself when the brain cannot describe one, so a lane with no
+        // desktop attached costs nothing but a probe.
+        // No vertical padding: the row carries its own 44pt tap target, which
+        // already supplies the breathing room above the transcript.
+        WorkToolsRow(laneId: session.laneId)
+          // 16 matches the transcript's own inset and the floating badge row,
+          // so the capsule's leading edge lines up with the content column.
+          .padding(.horizontal, 16)
+
         transcriptScrollView(proxy: proxy)
           .overlay(alignment: .bottomLeading) {
             // Floats over the thread instead of consuming composer height, so
@@ -2047,6 +2054,15 @@ struct WorkChatSessionView: View {
           )
       }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Anchored on the column, not on the transcript. The gradient fades the
+        // canvas out from under the translucent navigation bar, so it has to
+        // touch the top safe-area edge — and `WorkToolsRow` now sits between
+        // that edge and the transcript, so an overlay on the transcript would
+        // either no-op its `ignoresSafeArea` and scrim the first message, or
+        // expand upward and paint over the tools capsule.
+        .overlay(alignment: .top) {
+          WorkChatNavigationBackdrop()
+        }
         .background(workChatCanvasBackground.ignoresSafeArea())
         .adeNavigationGlass()
         .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
@@ -2276,7 +2292,7 @@ struct WorkChatSessionView: View {
           WorkOutputViewerScreen(request: request)
         }
         .sheet(isPresented: $artifactDrawerPresented) {
-          WorkArtifactDrawerSheet(
+          WorkProofSheet(
             artifacts: artifacts,
             artifactContent: $artifactContent,
             isRefreshing: artifactRefreshInFlight,

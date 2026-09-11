@@ -13988,6 +13988,88 @@ final class SyncService: ObservableObject {
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
+  // MARK: - Work tools (read-only)
+
+  /// Whether this brain can describe the desktop's Work tools pane at all.
+  ///
+  /// Optional on purpose: a brain that predates the feature, or a chat-only
+  /// runtime that never built the aggregator, simply omits the action. The
+  /// phone hides the Tools row rather than offering a disclosure that opens
+  /// onto an error.
+  var supportsWorkToolsState: Bool {
+    supportsRemoteAction("workTools.getLaneState")
+  }
+
+  /// Whether frames can be fetched at all. Registered alongside `getLaneState`
+  /// today, but feature-detected separately so a host that advertises only the
+  /// state read never gets a preview RPC it would answer with an error.
+  var supportsWorkToolsObservationPreview: Bool {
+    supportsRemoteAction("workTools.readObservationPreview")
+  }
+
+  /// Timeout for both Work-tools reads. Deliberately short: these are polls
+  /// behind a disclosure row, so a slow answer should be dropped and retried on
+  /// the next tick rather than held open.
+  private static let workToolsRequestTimeoutNanoseconds: UInt64 = 8_000_000_000
+
+  /// What the desktop currently has open in this lane's tools pane.
+  ///
+  /// `disconnectOnTimeout: false` is load-bearing. This runs on a timer behind
+  /// every open chat transcript (10s) and again while the Tools sheet is up
+  /// (3s), so the default — tear the socket down and recover — would let a
+  /// read-only disclosure drop the user's whole sync connection on one slow
+  /// cellular round trip.
+  func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
+    try requireWorkToolsAction("workTools.getLaneState")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Project-scoped, resolved from the active project binding: a lane only
+    // exists inside the project the phone is already looking at.
+    return try decode(
+      try await sendCommand(
+        action: "workTools.getLaneState",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: WorkToolsLaneState.self
+    )
+  }
+
+  /// Refuses a Work-tools read the connected host never advertised, rather than
+  /// putting an unknown action on the wire every poll. Older brains and
+  /// chat-only runtimes simply omit these commands.
+  private func requireWorkToolsAction(_ action: String) throws {
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
+  /// Bytes for one observation, fetched by the path the state handed us.
+  ///
+  /// Frames are never pushed with the state: a tools-pane refresh that carried
+  /// a screenshot would put a megabyte on the wire every few seconds for a
+  /// picture nobody may be looking at.
+  func readWorkToolsObservationPreview(path: String) async throws -> WorkToolsObservationPreview? {
+    try requireWorkToolsAction("workTools.readObservationPreview")
+    let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let result = try await sendCommand(
+      action: "workTools.readObservationPreview",
+      args: ["path": trimmed],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+    )
+    guard result is [String: Any] else { return nil }
+    return try? decode(result, as: WorkToolsObservationPreview.self)
+  }
+
   func createPullRequest(
     laneId: String,
     title: String,
@@ -14399,13 +14481,40 @@ final class SyncService: ObservableObject {
     lastSyncAt = now
   }
 
+  /// Advance the cursor the host restores from `hello` (`dbVersionBySite`).
+  ///
+  /// ONLY a db_version the host itself sent may advance it. The phone's own CRR
+  /// clock (`applyChanges(...).dbVersion`) is NOT such a value: it is seeded from
+  /// the highest db_version ever applied from the host and then incremented once
+  /// per local write (`ade_next_db_version`), so it mints numbers INSIDE the
+  /// host's version space and runs ahead of the host's watermark. Folding it in
+  /// pushed `remoteDbVersionBySite[hostSite]` past host versions that were never
+  /// delivered, and the host's pump only exports `db_version > cursor` — so every
+  /// host row in the skipped span is lost permanently, surviving app restarts,
+  /// reconnects and the mobile replica reseed.
+  ///
+  /// The batch value is also AUTHORITATIVE, not a floor. `max()` against the
+  /// previously held value is what let a poisoned cursor survive the fix: the
+  /// host rewinds and replays from its own delivery watermark, and every
+  /// replayed batch carries a LOWER `toDbVersion` than the inflated value the
+  /// phone was holding — so a max would pin the phone to the poisoned number
+  /// forever. Batches arrive in order on one connection, and a new connection
+  /// re-seeds this from the profile, so plain assignment is correct.
+  private func advanceRemoteDbCursor(appliedBatchToDbVersion: Int) {
+    latestRemoteDbVersion = appliedBatchToDbVersion
+    scheduleRemoteDbCursorProfilePersist(
+      dbVersion: latestRemoteDbVersion,
+      cursorSite: activeRemoteDbSiteId
+    )
+  }
+
+  /// The debounce coalesces to the LAST value seen, not the highest: every
+  /// caller reaches here from `advanceRemoteDbCursor`, where the host's batch
+  /// boundary is authoritative in both directions.
   private func scheduleRemoteDbCursorProfilePersist(dbVersion: Int, cursorSite: String?) {
-    pendingRemoteProfileDbVersion = max(pendingRemoteProfileDbVersion ?? 0, dbVersion)
+    pendingRemoteProfileDbVersion = dbVersion
     if let cursorSite {
-      pendingRemoteProfileDbVersionBySite[cursorSite] = max(
-        pendingRemoteProfileDbVersionBySite[cursorSite] ?? 0,
-        dbVersion
-      )
+      pendingRemoteProfileDbVersionBySite[cursorSite] = dbVersion
     }
     remoteCursorProfilePersistTask?.cancel()
     remoteCursorProfilePersistTask = Task { @MainActor [weak self] in
@@ -14423,11 +14532,17 @@ final class SyncService: ObservableObject {
     remoteCursorProfilePersistTask = nil
 
     updateProfile { profile in
-      profile.lastRemoteDbVersion = max(profile.lastRemoteDbVersion, dbVersion)
+      // Assign, never max. `max` is only correct ACROSS sites (entries for
+      // other host DBs are left untouched below), never ACROSS TIME for the
+      // same site: the host is the authority on how far it has delivered, and
+      // it can legitimately move a peer's cursor DOWN when it replays from its
+      // own watermark. Maxing against the persisted value kept a poisoned
+      // cursor alive across the very replay meant to heal it.
+      profile.lastRemoteDbVersion = dbVersion
       if !dbVersionBySite.isEmpty {
         var bySite = profile.remoteDbVersionBySite ?? [:]
         for (siteId, version) in dbVersionBySite {
-          bySite[siteId] = max(bySite[siteId] ?? 0, version)
+          bySite[siteId] = version
         }
         profile.remoteDbVersionBySite = bySite
       }
@@ -18326,11 +18441,8 @@ final class SyncService: ObservableObject {
         // ack belong to the dead connection — advancing the new site's cursor
         // here would make the host skip the new project DB's backlog.
         guard isCurrentConnectionGeneration(generation) else { return }
-        latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
+        advanceRemoteDbCursor(appliedBatchToDbVersion: batch.toDbVersion)
         markSyncActivity()
-        let advancedVersion = latestRemoteDbVersion
-        let cursorSite = activeRemoteDbSiteId
-        scheduleRemoteDbCursorProfilePersist(dbVersion: advancedVersion, cursorSite: cursorSite)
         sendChangesetAck(
           batch: batch,
           ok: true,

@@ -1,5 +1,6 @@
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { STANDARD_EASE } from "../../lib/motion";
 import {
   ArrowClockwise,
   ArrowUp,
@@ -740,7 +741,7 @@ function ClosedCliSessionSurface({
   );
 }
 
-const CLI_PR_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+const CLI_PR_PANE_FADE = { duration: 0.16, ease: STANDARD_EASE } as const;
 const CLI_FLOATING_PANE_CARD_CLASS =
   "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
 
@@ -954,17 +955,39 @@ function SessionSurface({
         />
       );
     }
+    // A plain shell used to be the one Work surface with no header at all —
+    // and therefore the one surface you could not open the Tools pane from,
+    // even though a shell is exactly where you want Git or the browser beside
+    // you. It gets the same header every other CLI surface has; only the
+    // terminal's own paste behaviour stays shell-specific.
     return (
-      <TerminalView
-        key={session.id}
-        ptyId={session.ptyId}
-        sessionId={session.id}
-        isActive={surfaceActive}
-        isVisible={pageActive && terminalVisible}
-        runtimePin={runtimePin}
-        toolType={session.toolType}
-        className="h-full w-full"
-      />
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+        {layoutVariant !== "grid-tile" ? (
+          <CliSessionWorkSurfaceHeader
+            session={session}
+            lanes={lanes}
+            stopping={stopping}
+            onInfoClick={onInfoClick}
+            onContextMenu={onContextMenu}
+            onStopRunningSession={onStopRunningSession}
+            onToggleToolsPane={onToggleToolsPane}
+            toolsPaneOpen={toolsPaneOpen}
+            runtimePin={runtimePin}
+          />
+        ) : null}
+        <div className="min-h-0 w-full flex-1 overflow-hidden">
+          <TerminalView
+            key={session.id}
+            ptyId={session.ptyId}
+            sessionId={session.id}
+            isActive={surfaceActive}
+            isVisible={pageActive && terminalVisible}
+            runtimePin={runtimePin}
+            toolType={session.toolType}
+            className="h-full w-full"
+          />
+        </div>
+      </div>
     );
   }
 
@@ -1343,7 +1366,7 @@ export function WorkViewArea({
           initial={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
           animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
           exit={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
-          transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+          transition={{ duration: 0.3, ease: STANDARD_EASE }}
         >
           {workAreaContent}
         </motion.div>

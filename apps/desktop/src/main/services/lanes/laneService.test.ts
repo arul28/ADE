@@ -171,6 +171,220 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
+  it("includes cached git age, file totals, and split change counts", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-git-summary-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-git-summary", repoRoot });
+      const childPath = path.join(repoRoot, "child");
+      const commitAt = "2026-09-09T16:00:00.000Z";
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") {
+          return {
+            exitCode: 0,
+            stdout: cwd === childPath
+              ? [
+                "# branch.head feature/child",
+                "1 MM N... 100644 100644 100644 aaa bbb src/both.ts",
+                "1 M. N... 100644 100644 100644 aaa bbb src/staged.ts",
+                "1 .M N... 100644 100644 100644 aaa bbb src/unstaged.ts",
+                "? new.txt",
+              ].join("\n")
+              : "# branch.head feature/parent\n",
+            stderr: "",
+          } as any;
+        }
+        // One spawn carries both the committed tree and the commit date.
+        if (args[0] === "log") {
+          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
+          return { exitCode: 0, stdout: `tree-child\0${commitAt}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          return { exitCode: 0, stdout: "2\t3\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 0, stdout: "origin/feature/child\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}") {
+          return { exitCode: 0, stdout: "4\n", stderr: "" } as any;
+        }
+        return { exitCode: 1, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-git-summary",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const summary = await service.getSummary("lane-child", { includeStatus: true });
+
+      expect(summary).toMatchObject({
+        lastCommitAt: commitAt,
+        trackedFileCount: 3,
+        status: {
+          dirty: true,
+          changedFileCount: 4,
+          staged: 2,
+          unstaged: 2,
+          untracked: 1,
+          ahead: 3,
+          behind: 2,
+          remoteBehind: 4,
+          lastCommitAt: commitAt,
+          trackedFileCount: 3,
+        },
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("caches tracked-file totals by tree hash and refreshes them after the TTL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
+
+    const repoRoot = makeTempRepoRoot("ade-lane-service-tracked-file-cache-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-tracked-file-cache", repoRoot });
+      let treeHash = "tree-a";
+      let trackedFiles = "src/a.ts\0src/b.ts\0";
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") {
+          expect(args).toEqual([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+            "-z",
+          ]);
+          return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
+        }
+        if (args[0] === "log") {
+          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
+          return { exitCode: 0, stdout: `${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
+        }
+        if (args[0] === "ls-files") return { exitCode: 0, stdout: trackedFiles, stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "" } as any;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-tracked-file-cache",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const first = await service.getSummary("lane-child", { includeStatus: true });
+      expect(first?.trackedFileCount).toBe(2);
+      const callCountAfterFirst = vi.mocked(runGit).mock.calls.length;
+
+      const sameTree = await service.getSummary("lane-child", { includeStatus: true });
+      expect(sameTree?.trackedFileCount).toBe(2);
+      const secondRefreshCalls = vi.mocked(runGit).mock.calls.slice(callCountAfterFirst);
+      expect(secondRefreshCalls.filter(([args]) => args[0] === "ls-files")).toHaveLength(0);
+      // The tree hash rides along on the commit-date spawn, so a cached refresh
+      // adds exactly one metadata process per lane and no `rev-parse` for it.
+      expect(secondRefreshCalls.filter(([args]) =>
+        args[0] === "rev-parse" && args[1] === "HEAD^{tree}"
+      )).toHaveLength(0);
+      // Exactly one metadata spawn per lane in the refresh (parent + child).
+      expect(secondRefreshCalls.filter(([args]) => args[0] === "log")).toHaveLength(2);
+
+      treeHash = "tree-b";
+      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0";
+      const changedTree = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedTree?.trackedFileCount).toBe(3);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(2);
+
+      vi.advanceTimersByTime(10 * 60_000 + 1);
+      const expired = await service.getSummary("lane-child", { includeStatus: true });
+      expect(expired?.trackedFileCount).toBe(3);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(3);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports no tracked-file total when the ls-files listing was truncated, and does not cache it", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-tracked-file-truncated-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-tracked-file-truncated", repoRoot });
+      let truncated = true;
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
+        if (args[0] === "log") {
+          return { exitCode: 0, stdout: "tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
+        }
+        if (args[0] === "ls-files") {
+          return truncated
+            ? { exitCode: 0, stdout: "a\0b\0", stderr: "", stdoutTruncated: true } as any
+            : { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
+        }
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" } as any;
+        }
+        return { exitCode: 1, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-tracked-file-truncated",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const first = await service.getSummary("lane-child", { includeStatus: true });
+      // A truncated listing is a wrong number, not a smaller one.
+      expect(first?.trackedFileCount).toBeNull();
+
+      // ...and it was not cached, so the next refresh asks git again.
+      truncated = false;
+      const before = vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files").length;
+      const second = await service.getSummary("lane-child", { includeStatus: true });
+      expect(second?.trackedFileCount).toBe(3);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files").length)
+        .toBeGreaterThan(before);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("preserves agent summaries during status-only snapshot refreshes", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-status-snapshot-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -4498,6 +4712,12 @@ describe("laneService stale worktree status", () => {
       ahead: 0,
       behind: 0,
       remoteBehind: -1,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      lastCommitAt: null,
+      trackedFileCount: null,
       rebaseInProgress: false,
       headBranchRef: null,
     });

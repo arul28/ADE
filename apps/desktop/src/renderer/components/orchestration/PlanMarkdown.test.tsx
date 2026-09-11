@@ -14,7 +14,10 @@ vi.mock("mermaid", () => ({
   },
 }));
 
-vi.mock("../../lib/openExternal", () => ({
+// Spread the real module so newer exports (`openLinkFromUi`, …) stay defined for
+// anything else in the tree that imports them; only the opener is stubbed.
+vi.mock("../../lib/openExternal", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/openExternal")>()),
   openUrlInAdeBrowser: vi.fn(),
 }));
 

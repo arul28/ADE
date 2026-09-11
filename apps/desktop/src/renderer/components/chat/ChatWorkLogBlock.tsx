@@ -15,7 +15,7 @@ import {
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
@@ -437,7 +437,7 @@ function WebSearchResultRows({ entry }: { entry: ChatWorkLogEntry }) {
           <button
             key={`${display.href}:${index}`}
             type="button"
-            onClick={() => openUrlInAdeBrowser(display.href!)}
+            onClick={(event) => openLinkFromUi(display.href, event)}
             className={cn(className, "transition-colors hover:bg-cyan-400/[0.06] hover:text-cyan-50")}
             title={display.href}
           >
@@ -529,7 +529,7 @@ function ToolCallRow({
               <button
                 key={`${action.url}:${index}`}
                 type="button"
-                onClick={() => openUrlInAdeBrowser(action.url)}
+                onClick={(event) => openLinkFromUi(action.url, event)}
                 className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-cyan-300/15 bg-cyan-400/[0.06] px-2 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/78 transition-colors hover:border-cyan-300/30 hover:bg-cyan-400/[0.11] hover:text-cyan-50"
                 title={action.url}
               >
@@ -1009,7 +1009,7 @@ function LocalhostServersStrip({
     <div className="mb-1.5 flex max-w-full flex-wrap items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]">
       <button
         type="button"
-        onClick={() => openUrlInAdeBrowser(primary.href)}
+        onClick={(event) => openLinkFromUi(primary.href, event)}
         title={openTitle}
         aria-label={openTitle}
         className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-300/15 bg-sky-400/[0.06] py-0.5 pr-1.5 pl-2 text-sky-100/80 transition-colors hover:border-sky-300/30 hover:bg-sky-400/[0.11] hover:text-sky-50"

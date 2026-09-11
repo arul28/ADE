@@ -6,6 +6,7 @@ import {
   createSyncPairedChannelService,
   type SyncRuntimeRpcHandler,
 } from "./syncPairedChannelService";
+import { RPC_CHANNEL_BACKPRESSURE_BYTES } from "./syncProtocol";
 import { isRuntimeHostPairingRecord } from "./syncHostService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 
@@ -96,6 +97,7 @@ async function waitFor(
 function createHarness(options: {
   createRpcHandler?: () => SyncRuntimeRpcHandler;
   bufferedAmount?: () => number;
+  rpcBackpressureBytes?: number;
   forwardPendingBytes?: number;
   backpressurePollMs?: number;
   forwardConnectTimeoutMs?: number;
@@ -106,6 +108,7 @@ function createHarness(options: {
     logger: { warn: vi.fn() },
     createRpcHandler: options.createRpcHandler,
     getBufferedAmount: options.bufferedAmount ?? (() => 0),
+    rpcBackpressureBytes: options.rpcBackpressureBytes,
     forwardPendingBytes: options.forwardPendingBytes,
     backpressurePollMs: options.backpressurePollMs,
     forwardConnectTimeoutMs: options.forwardConnectTimeoutMs,
@@ -181,6 +184,162 @@ describe("createSyncPairedChannelService", () => {
     await service.handleEnvelope(peer, "rpc_close", { channelId: "rpc-1", reason: "done" }, true, true);
     expect(disposed).toHaveBeenCalledTimes(1);
     expect(sent.some((envelope) => envelope.type === "rpc_close")).toBe(false);
+    service.dispose();
+  });
+
+  it("drops an RPC response instead of queueing it when the peer is backpressured", async () => {
+    // `rpc_data` is a REQUIRED send: the host will not drop it, it buffers and
+    // then closes the entire peer at the required-send ceiling — taking chat,
+    // changesets and phone sync down with the RPC channel. So a runtime that
+    // outruns the link must be refused at the door, exactly as `fwd_data`
+    // already is, and only this channel pays for it.
+    let bufferedAmount = 0;
+    const createRpcHandler = vi.fn(() => (async () => ({ ok: true })) as SyncRuntimeRpcHandler);
+    const { service, sent, peer } = createHarness({
+      createRpcHandler,
+      bufferedAmount: () => bufferedAmount,
+    });
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-1" }, true, true);
+    const request = `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" })}\n`;
+    await service.handleEnvelope(peer, "rpc_data", {
+      channelId: "rpc-1",
+      data: Buffer.from(request, "utf8").toString("base64"),
+    }, true, true);
+    await waitFor(() => rpcText(sent, "rpc-1").length > 0, "the healthy RPC response");
+
+    // Past the RPC ceiling — below the host's own peer-kill mark, which is
+    // the point: the channel gives out before the connection does.
+    bufferedAmount = RPC_CHANNEL_BACKPRESSURE_BYTES;
+    const before = sent.filter((envelope) => envelope.type === "rpc_data").length;
+    await service.handleEnvelope(peer, "rpc_data", {
+      channelId: "rpc-1",
+      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })}\n`, "utf8")
+        .toString("base64"),
+    }, true, true);
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "rpc_close"),
+      "the RPC channel close",
+    );
+
+    // Nothing extra was handed to the transport, and the channel — not the
+    // peer connection — is what closed.
+    expect(sent.filter((envelope) => envelope.type === "rpc_data").length).toBe(before);
+    expect(sent.find((envelope) => envelope.type === "rpc_close")?.payload).toMatchObject({
+      channelId: "rpc-1",
+      reason: "Runtime RPC channel fell behind the sync connection.",
+    });
+    // A normal large response — over the droppable-traffic mark but well
+    // inside what the link drains — must still go out. Gating at 4 MiB killed
+    // the channel every few seconds on a healthy connection.
+    expect(RPC_CHANNEL_BACKPRESSURE_BYTES).toBeGreaterThan(4 * 1024 * 1024);
+    expect(RPC_CHANNEL_BACKPRESSURE_BYTES).toBeLessThan(16 * 1024 * 1024);
+    service.dispose();
+  });
+
+  it("counts the payload it is about to write against the RPC ceiling", async () => {
+    // Gating on the *pre-existing* buffer alone let one big response (a
+    // screenshot data URL, a wide artifact list) walk a buffer that was under
+    // the ceiling straight past the host's required-send kill mark — the exact
+    // 4001 the gate exists to prevent.
+    const ceiling = 4 * 1024 * 1024;
+    const big = "x".repeat(3 * 1024 * 1024);
+    const { service, sent, peer } = createHarness({
+      createRpcHandler: () => (async () => ({ big })) as SyncRuntimeRpcHandler,
+      // Comfortably under the ceiling on its own; over it once the response lands.
+      bufferedAmount: () => 2 * 1024 * 1024,
+      rpcBackpressureBytes: ceiling,
+    });
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-big" }, true, true);
+    await service.handleEnvelope(peer, "rpc_data", {
+      channelId: "rpc-big",
+      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "read" })}\n`, "utf8")
+        .toString("base64"),
+    }, true, true);
+
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "rpc_close"),
+      "the RPC channel close",
+    );
+    expect(sent.some((envelope) => envelope.type === "rpc_data")).toBe(false);
+    expect(sent.find((envelope) => envelope.type === "rpc_close")?.payload).toMatchObject({
+      channelId: "rpc-big",
+      reason: "Runtime RPC channel fell behind the sync connection.",
+    });
+    service.dispose();
+  });
+
+  it("re-reads the RPC ceiling between chunks so a mid-payload stall stops the write", async () => {
+    // Mirrors `handleForwardSocketData`, which re-reads the buffered amount
+    // inside its own chunk loop: a link that stalls part-way through a payload
+    // must be caught before the remaining chunks are handed over.
+    const ceiling = 4 * 1024 * 1024;
+    const big = "x".repeat(2 * 1024 * 1024);
+    const sentRef: { current: SentEnvelope[] } = { current: [] };
+    const harness = createHarness({
+      createRpcHandler: () => (async () => ({ big })) as SyncRuntimeRpcHandler,
+      // The link stops draining: every chunk handed over stays buffered.
+      bufferedAmount: () => sentRef.current
+        .filter((envelope) => envelope.type === "rpc_data")
+        .length * 1024 * 1024,
+      rpcBackpressureBytes: ceiling,
+    });
+    sentRef.current = harness.sent;
+    const { service, sent, peer } = harness;
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-stall" }, true, true);
+    await service.handleEnvelope(peer, "rpc_data", {
+      channelId: "rpc-stall",
+      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "read" })}\n`, "utf8")
+        .toString("base64"),
+    }, true, true);
+
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "rpc_close"),
+      "the RPC channel close",
+    );
+    const chunks = sent.filter((envelope) => envelope.type === "rpc_data").length;
+    // Some chunks made it out before the stall was noticed, and the rest of the
+    // payload was refused rather than pushed onto a buffer that had stopped moving.
+    expect(chunks).toBeGreaterThan(0);
+    expect(chunks).toBeLessThan(Math.ceil(big.length / (256 * 1024)));
+    service.dispose();
+  });
+
+  it("keeps the peer's port forwards alive when one RPC channel outruns the link", async () => {
+    // The backpressure kill is a per-channel budget failure. Forwards belong to
+    // the peer, not to the channel, so tearing them all down drops unrelated
+    // lanes' live previews because one agent pulled a large response.
+    const socket = new FakeForwardSocket();
+    const ceiling = 1024 * 1024;
+    const big = "x".repeat(2 * 1024 * 1024);
+    const { service, sent, peer } = createHarness({
+      createRpcHandler: () => (async () => ({ big })) as SyncRuntimeRpcHandler,
+      bufferedAmount: () => 0,
+      rpcBackpressureBytes: ceiling,
+      connectForward: () => socket,
+    });
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-hungry" }, true, true);
+    await service.handleEnvelope(peer, "fwd_open", {
+      forwardId: "fwd-preview",
+      host: "127.0.0.1",
+      port: 4173,
+    }, true, true);
+    socket.connect();
+    await service.handleEnvelope(peer, "rpc_data", {
+      channelId: "rpc-hungry",
+      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "read" })}\n`, "utf8")
+        .toString("base64"),
+    }, true, true);
+
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "rpc_close"),
+      "the RPC channel close",
+    );
+    expect(socket.destroyed).toBe(false);
+    expect(sent.some((envelope) => envelope.type === "fwd_close")).toBe(false);
     service.dispose();
   });
 

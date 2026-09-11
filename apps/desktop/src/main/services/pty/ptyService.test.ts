@@ -360,8 +360,12 @@ import {
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
 } from "../../../shared/backgroundUtilityModel";
-import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import {
+  resolveBuiltInBrowserActorCapability,
+  type BrowserActorCapabilityIssuer,
+} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
+import { devServerRegistry } from "../devServers/devServerRegistry";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -422,6 +426,7 @@ function createHarness(overrides: {
   projectConfigService?: {
     get: ReturnType<typeof vi.fn>;
   };
+  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -566,6 +571,9 @@ function createHarness(overrides: {
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
     ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
     ...(overrides.projectConfigService ? { projectConfigService: overrides.projectConfigService as any } : {}),
+    ...(overrides.browserActorCapabilityIssuer
+      ? { browserActorCapabilityIssuer: overrides.browserActorCapabilityIssuer }
+      : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -1559,6 +1567,71 @@ describe("ptyService", () => {
         expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
       },
     );
+
+    // The registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in Electron
+    // main; the runtime daemon that builds this env is a different process. It
+    // must take the token from the desktop rather than mint a local one that
+    // nothing could ever validate.
+    it("takes the browser actor capability from the injected desktop issuer", async () => {
+      const issue = vi.fn(async () => "desktop-issued-token");
+      const revoke = vi.fn(async () => {});
+      const { service, loadPty } = createHarness({
+        browserActorCapabilityIssuer: { issue, revoke } satisfies BrowserActorCapabilityIssuer,
+      });
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_BROWSER_ACTOR_TOKEN).toBe("desktop-issued-token");
+      expect(issue).toHaveBeenCalledWith({
+        chatSessionId: result.sessionId,
+        laneId: "lane-1",
+        projectRoot: "/tmp/test-project",
+        tabCollection: null,
+      });
+      // Nothing was written to this process's registry.
+      expect(resolveBuiltInBrowserActorCapability("desktop-issued-token")).toBeNull();
+
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+
+      expect(revoke).toHaveBeenCalledWith(result.sessionId);
+    });
+
+    // Headless machine, or ADE Desktop closed: the bridge cannot mint a
+    // capability. Launching the terminal without one is right — failing the
+    // launch, or leaking the host process's token, is not.
+    it("omits the browser actor token when the desktop issuer is unreachable", async () => {
+      const { service, loadPty } = createHarness({
+        browserActorCapabilityIssuer: {
+          issue: async () => {
+            throw new Error("Desktop browser bridge not running at /tmp/desktop-bridge.sock.");
+          },
+          revoke: async () => {},
+        },
+      });
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
+      expect(opts?.env?.ADE_CHAT_SESSION_ID).toBe(result.sessionId);
+    });
 
     it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
       const { service, loadPty } = createHarness();
@@ -5920,8 +5993,13 @@ describe("ptyService", () => {
         service.sendToSession({ sessionId: "session-concurrent-send", text: "first" }),
         service.sendToSession({ sessionId: "session-concurrent-send", text: "second" }),
       ]);
-      for (let i = 0; i < 10 && loadPty.mock.calls.length === 0; i += 1) {
-        await Promise.resolve();
+      // Drain until the resume actually reaches the pty backend. A fixed tick
+      // budget breaks whenever an await is added upstream (env building now
+      // asks the desktop for a browser capability), and the emit below would
+      // then fire before anything is listening.
+      const deadline = Date.now() + 5_000;
+      while (loadPty.mock.calls.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setImmediate(resolve));
       }
       await Promise.resolve();
       mockPty._emitter.emit("data", "OpenAI Codex\n› ");
@@ -7328,6 +7406,41 @@ describe("ptyService", () => {
         { clearSettled: true },
       );
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
+    it("records a dev server from terminal output and forgets it when the session ends", async () => {
+      devServerRegistry.clear();
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Dev server",
+        cols: 80,
+        rows: 24,
+        toolType: "shell",
+      });
+
+      // Split across chunks, exactly as a PTY delivers it.
+      mockPty._emitter.emit("data", "  \u001B[32m\u27A1\u001B[39m  Local:   http://localh");
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([]);
+      mockPty._emitter.emit("data", "ost:5173/\n");
+
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([
+        expect.objectContaining({
+          port: 5173,
+          url: "http://localhost:5173/",
+          // The project is stamped at detection time: this is the only place
+          // that knows it, and the Browser tool routes the chip by it.
+          source: { laneId: "lane-1", sessionId, projectRoot: "/tmp/test-project" },
+        }),
+      ]);
+
+      // A plain URL in later output is not a second server.
+      mockPty._emitter.emit("data", "see http://localhost:9999/docs\n");
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toHaveLength(1);
+
+      // The process serving that port is gone, so the chip must go with it.
+      service.dispose({ ptyId });
+      expect(devServerRegistry.list({ laneId: "lane-1" })).toEqual([]);
     });
 
     it("broadcasts data events when the PTY emits data", async () => {

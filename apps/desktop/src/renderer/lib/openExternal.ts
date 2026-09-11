@@ -1,4 +1,8 @@
 import type { AppNavigationTarget } from "../../shared/types/core";
+import type { BrowserLinkOpenMode } from "../../shared/types/config";
+import { completeBrowserUrl } from "./browserUrl";
+import { isMacRuntimeTarget } from "./platform";
+import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget";
 
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
@@ -66,31 +70,13 @@ export function openAdeDeeplink(url: string | undefined | null): void {
   );
 }
 
-// Coordination flag used by ChatBuiltInBrowserPanel to suppress the empty-state
-// default-tab creation when a link-click navigation is racing the panel mount.
-// Set synchronously here BEFORE the navigate IPC fires, then consumed (cleared)
-// by the panel's default-tab effect on the next render. Without this, the panel
-// can mount, observe getStatus() returning tabs: [], and create a Google tab
-// before the link-click's navigate IPC arrives — yielding two tabs.
-let pendingBuiltInBrowserNavigation = false;
-
-export function markPendingBuiltInBrowserNavigation(): void {
-  pendingBuiltInBrowserNavigation = true;
-}
-
-export function consumePendingBuiltInBrowserNavigation(): boolean {
-  if (!pendingBuiltInBrowserNavigation) return false;
-  pendingBuiltInBrowserNavigation = false;
-  return true;
-}
-
+/**
+ * "127.0.0.1:8080" → "http://127.0.0.1:8080", and anything already complete
+ * straight through. The completion rules themselves live in `lib/browserUrl`,
+ * shared with the omnibox and the clipboard chip.
+ */
 export function normalizeBrowserUrlInput(url: string | undefined | null): string | null {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return null;
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) return trimmed;
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)) return `http://${trimmed}`;
-  if (/^[^\s/]+\.[^\s]+/.test(trimmed)) return `https://${trimmed}`;
-  return trimmed;
+  return completeBrowserUrl(url, { fallback: "passthrough" });
 }
 
 export function canOpenInAdeBrowser(url: string | undefined | null): boolean {
@@ -120,10 +106,6 @@ export function openUrlInAdeBrowser(url: string | undefined | null): void {
     return;
   }
 
-  // Mark the navigation as pending BEFORE dispatching the event so the panel —
-  // which the event causes to mount via TerminalsPage — sees the flag in its
-  // first default-tab effect and skips creating a Google tab.
-  markPendingBuiltInBrowserNavigation();
   const openEvent = new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
     detail: { url: normalized },
     cancelable: true,
@@ -140,17 +122,86 @@ export function navigateUrlInAdeBrowser(
 ): void {
   const browser = typeof window !== "undefined" ? window.ade?.builtInBrowser : undefined;
   if (!browser) {
-    consumePendingBuiltInBrowserNavigation();
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
     return;
   }
 
   void browser.navigate({ url, ...options }).catch(() => {
-    consumePendingBuiltInBrowserNavigation();
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
   });
+}
+
+/* ── Link routing preference ──────────────────────────────────────────────── */
+
+/**
+ * The machine-local `browser.linkOpenMode` value, cached here rather than in the
+ * app store.
+ *
+ * A link click has to answer "in-app or external" synchronously — there is no
+ * await between mousedown and the window opening — so the preference has to be
+ * in hand before the click, not fetched during it. It is read once per renderer
+ * and refreshed by the Settings control that changes it.
+ */
+let linkOpenMode: BrowserLinkOpenMode = "in-app";
+let linkOpenModeLoad: Promise<void> | null = null;
+
+export function getLinkOpenMode(): BrowserLinkOpenMode {
+  return linkOpenMode;
+}
+
+export function setLinkOpenMode(mode: BrowserLinkOpenMode): void {
+  linkOpenMode = mode;
+}
+
+/** Loads the stored preference once. Safe to call from anywhere, repeatedly. */
+export function refreshLinkOpenMode(force = false): Promise<void> {
+  if (linkOpenModeLoad && !force) return linkOpenModeLoad;
+  const config = typeof window !== "undefined" ? window.ade?.projectConfig : undefined;
+  if (!config) return Promise.resolve();
+  linkOpenModeLoad = config
+    .get()
+    .then((snapshot) => {
+      setLinkOpenMode(snapshot.effective.browser?.linkOpenMode ?? "in-app");
+    })
+    .catch(() => {
+      // An unreadable config is not worth a visible failure; the default holds.
+    });
+  return linkOpenModeLoad;
+}
+
+/**
+ * Opens a link the user clicked inside ADE, honouring the preference and the
+ * Mod/Shift overrides.
+ *
+ * Every in-content link click routes through here so the rule lives in one
+ * place. Buttons that deliberately hand off to an external service (a provider's
+ * docs, a GitHub App install page) keep calling `openExternalUrl` directly —
+ * those are not "a link the user clicked", they are a specific destination the
+ * product chose.
+ */
+export function openLinkFromUi(
+  url: string | undefined | null,
+  modifiers?: LinkOpenModifiers | null,
+): void {
+  if (!url) return;
+  // Normalize once, for both branches. A terminal link is often written the way
+  // a dev server prints it — `127.0.0.1:8080`, `[::1]:5173` — and handing that
+  // raw to the OS opener made `new URL(...)` throw in main, which the renderer
+  // then swallowed: the click did nothing at all, with no error, for every
+  // scheme-less link once the preference was "In system browser".
+  const normalized = completeBrowserUrl(url, { fallback: "passthrough" }) ?? url;
+  const target = resolveLinkOpenTarget({
+    mode: linkOpenMode,
+    modifiers,
+    isMac: isMacRuntimeTarget(),
+  });
+  if (target === "external" || !canOpenInAdeBrowser(normalized)) {
+    openExternalUrl(normalized);
+    return;
+  }
+  openUrlInAdeBrowser(normalized);
 }
 
 export function openExternalUrl(url: string | undefined | null): void {
@@ -164,4 +215,10 @@ export function openExternalUrl(url: string | undefined | null): void {
   if (typeof window !== "undefined") {
     window.open(url, "_blank", "noopener,noreferrer");
   }
+}
+
+// Warm the preference as soon as the renderer loads, so the first link click
+// already has the right answer rather than the default.
+if (typeof window !== "undefined") {
+  void refreshLinkOpenMode();
 }

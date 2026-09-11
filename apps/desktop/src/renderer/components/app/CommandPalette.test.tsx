@@ -11,6 +11,10 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import {
+  buildWorkToolCommands,
+  commandsLeadPaletteResults,
+} from "./commandPaletteWork";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import {
   SESSION_TONE_DOT_CLASS,
@@ -38,6 +42,8 @@ function deferred<T>() {
 }
 
 const PROJECT_ROOT = "/Users/admin/Projects/ADE";
+
+const PALETTE_PLACEHOLDER = "Search commands, projects, and threads\u2026";
 
 function seedStore(overrides: Record<string, unknown> = {}) {
   useAppStore.setState({
@@ -1603,5 +1609,227 @@ describe("CommandPalette", () => {
     expect(await screen.findByText("bind failed")).toBeTruthy();
     expect(screen.getByRole("button", { name: /create and open/i })).toBeTruthy();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+  describe("Work tools commands", () => {
+    it("only leads with commands when the query is a command title prefix", () => {
+      const titles = ["Tools: Browser", "Go to Settings"];
+      expect(commandsLeadPaletteResults("Tools: Brow", titles)).toBe(true);
+      expect(commandsLeadPaletteResults("tools:", titles)).toBe(true);
+      // A bare word is what threads-lead was written for.
+      expect(commandsLeadPaletteResults("browser", titles)).toBe(false);
+      // One character is a keystroke, not an intent.
+      expect(commandsLeadPaletteResults("T", titles)).toBe(false);
+      expect(commandsLeadPaletteResults("   ", titles)).toBe(false);
+    });
+
+    it("keeps the Work tools group when thread results arrive, and leads with it", async () => {
+      // Every one of these matches the free text of "Tools: Browser". Before
+      // the fix they filled the capped Work-results section and pushed the
+      // command you had typed the full title of off the bottom of the list.
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+        makeSession({ id: "s3", title: "improving tools: browser picker" }),
+        makeSession({ id: "s4", title: "improving tools: browser corner card" }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads\u2026"),
+        { target: { value: "Tools: Browser" } },
+      );
+
+      // The threads still match...
+      expect(await screen.findByText("Work results")).toBeTruthy();
+      // ...and the command group is still there, which is the regression.
+      const commandsHeading = await screen.findByText("Work tools");
+      expect(screen.getByText("Tools: Browser")).toBeTruthy();
+
+      // Typing a command's full title means you meant the command: its group
+      // leads rather than trailing four chat rows.
+      const threadsHeading = screen.getByText("Work results");
+      expect(
+        commandsHeading.compareDocumentPosition(threadsHeading)
+          & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("still leads with threads for an ordinary word", async () => {
+      seedThreads([makeSession({ id: "s1", title: "browser lane" })]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads\u2026"),
+        { target: { value: "browser" } },
+      );
+
+      const threadsHeading = await screen.findByText("Work results");
+      const commandsHeading = await screen.findByText("Work tools");
+      expect(
+        threadsHeading.compareDocumentPosition(commandsHeading)
+          & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("offers only the Work tools this surface can actually run", () => {
+      const titlesFor = (context: {
+        isRemoteProject: boolean;
+        supportsIosSimulator: boolean;
+        isWebClient: boolean;
+      }) =>
+        buildWorkToolCommands({
+          navigate: () => {},
+          openTool: () => {},
+          context,
+        }).map((command) => command.title);
+
+      const local = titlesFor({
+        isRemoteProject: false,
+        supportsIosSimulator: true,
+        isWebClient: false,
+      });
+      expect(local).toContain("Tools: Simulator");
+      expect(local).toContain("Tools: Browser");
+
+      // No simulator here, so the command that lands on a "macOS only" card is
+      // not offered at all.
+      expect(
+        titlesFor({
+          isRemoteProject: false,
+          supportsIosSimulator: false,
+          isWebClient: false,
+        }),
+      ).not.toContain("Tools: Simulator");
+
+      // A remote project's work happens on the other machine — except the
+      // browser, which is this desktop's window reaching that machine's
+      // localhost through a port-forward.
+      const remote = titlesFor({
+        isRemoteProject: true,
+        supportsIosSimulator: true,
+        isWebClient: false,
+      });
+      expect(remote).toContain("Tools: Browser");
+      expect(remote).not.toContain("Tools: Simulator");
+      expect(remote).not.toContain("Tools: App Control");
+      expect(remote).not.toContain("Tools: Pull request");
+      expect(remote).toContain("Tools: Git");
+      // The picker is the fallback for every one of those, so it never goes.
+      expect(remote).toContain("Tools: Show picker");
+
+      // The hosted client can WATCH the browser and App Control, so those stay;
+      // the simulator pane is a video stream with nothing to report.
+      const web = titlesFor({
+        isRemoteProject: false,
+        supportsIosSimulator: true,
+        isWebClient: true,
+      });
+      expect(web).toContain("Tools: Browser");
+      expect(web).toContain("Tools: App Control");
+      expect(web).not.toContain("Tools: Simulator");
+    });
+
+    /**
+     * The flat keyboard index IS the DOM order of the rendered rows — the
+     * palette's own `scrollToSelected` indexes `[data-cmd-item]` by it. So the
+     * contract is checkable without reading a single style, and without
+     * predicting anything: clicking the k-th row runs that row's own handler,
+     * while ↓×k then Enter runs whatever the flat index resolves to. They must
+     * agree. Checked in both `commandsLead` states, since that flag is the only
+     * thing that reorders the sections.
+     */
+    async function openWithQuery(query: string) {
+      render(
+        <MemoryRouter>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+      const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
+      fireEvent.change(input, { target: { value: query } });
+      await screen.findByText("Work results");
+      await screen.findByText("Work tools");
+      return input;
+    }
+
+    function paletteRows(): Element[] {
+      return Array.from(document.body.querySelectorAll("[data-cmd-item]"));
+    }
+
+    function currentLocation(): string {
+      return screen.getByTestId("location").textContent ?? "";
+    }
+
+    /** True when the k-th rendered row belongs to the threads section. */
+    async function rowIsThread(query: string, rowIndex: number) {
+      await openWithQuery(query);
+      const isThread = paletteRows()[rowIndex]?.closest("[data-thread-id]") != null;
+      cleanup();
+      return isThread;
+    }
+
+    async function expectKeyboardOrderMatchesRenderOrder(query: string) {
+      await openWithQuery(query);
+      // Enough rows to cross the thread/command boundary either way; capped so
+      // a broad query cannot turn this into dozens of mounts.
+      const rowCount = Math.min(paletteRows().length, 6);
+      cleanup();
+      expect(rowCount).toBeGreaterThan(2);
+
+      const destinations: string[] = [];
+      for (let target = 0; target < rowCount; target += 1) {
+        await openWithQuery(query);
+        const row = paletteRows()[target];
+        expect(row).toBeTruthy();
+        fireEvent.click(row!);
+        const clicked = currentLocation();
+        cleanup();
+
+        const input = await openWithQuery(query);
+        for (let step = 0; step < target; step += 1) {
+          fireEvent.keyDown(input, { key: "ArrowDown" });
+        }
+        fireEvent.keyDown(input, { key: "Enter" });
+        const keyed = currentLocation();
+        cleanup();
+
+        expect(keyed).toBe(clicked);
+        destinations.push(keyed);
+      }
+      // Guards against a vacuous pass where every row happens to be inert.
+      expect(new Set(destinations).size).toBeGreaterThan(1);
+    }
+
+    it("walks the rendered rows in order when commands lead", async () => {
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+      ]);
+
+      // Sanity: this really is the commands-lead layout, so the traversal check
+      // is not silently exercising the threads-lead one twice.
+      expect(await rowIsThread("Tools: Browser", 0)).toBe(false);
+      await expectKeyboardOrderMatchesRenderOrder("Tools: Browser");
+    });
+
+    it("walks the rendered rows in order when threads lead", async () => {
+      seedThreads([
+        makeSession({ id: "s1", title: "improving tools: browser lane" }),
+        makeSession({ id: "s2", title: "improving tools: browser toolbar" }),
+      ]);
+
+      expect(await rowIsThread("browser", 0)).toBe(true);
+      await expectKeyboardOrderMatchesRenderOrder("browser");
+    });
   });
 });

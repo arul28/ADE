@@ -151,7 +151,7 @@ CLI and agent entry points:
 |------|---------------|
 | `apps/ade-cli/src/cli.ts` | User-facing `ade prs` commands and text formatters. `ade prs create --text` prints both the GitHub PR URL and the ADE HTTPS PR URL when repo owner/name and PR number are available. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private action/RPC wrapper for PR tools. `create_pr_from_lane` returns `{ pr, githubUrl, adeUrl }` so agents can include both links in closeout. Its `summarizePrChecks` delegates to the shared `rollupPrChecks` rather than carrying its own pass/fail rule, so the agent-facing `overall` is the full `PrChecksStatus` (including `not_run`) and a PR with zero checks no longer reads green. |
-| `apps/desktop/src/main/services/ai/tools/workflowTools.ts`, `ctoOperatorTools.ts` | Managed chat/CTO PR creation tools return both `githubUrl` and `adeUrl` alongside the PR object. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | Managed chat/CTO PR creation tools return both `githubUrl` and `adeUrl` alongside the PR object. |
 
 Service files (`apps/desktop/src/main/services/prs/`):
 
@@ -171,11 +171,9 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prSummaryService.ts` | Unused by current PR UI. Cached `PrAiSummary` generator remains in-process for the old IPC; desktop and iOS no longer fetch or show it. |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
 | `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `selectStepSection` returns the section **and** how it chose it (`named-step` / `errored-step` / `whole-log`); when neither a step name nor an `##[error]` identifies one it returns no section, because the previous "last section" fallback resolved to the `Post Run …` cleanup group on any job that passed. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
-| `githubPrStackService.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
+| `githubStackStore.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
-| `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
 
 AI review runs live in `apps/desktop/src/main/services/review/reviewService.ts`.
@@ -1770,13 +1768,23 @@ ADE supports agent-driven resolution of PR issues for two scopes:
 - `comments` — unresolved review threads (non-outdated)
 - `both` — combined
 
-`prIssueResolver.ts` assembles a structured prompt from live PR
-state (failing checks + workflow run detail, unresolved threads with
-compact summaries, changed files, recent commits) and launches a
-chat agent session scoped to the lane worktree. The session gets
-workflow tools to re-pull checks/threads/comments, re-trigger failed
-GitHub Actions check runs, post replies on review threads, and mark
-review threads resolved.
+> **The launcher is unbuilt; the tools are not.** `prIssueResolver.ts` and
+> `launchPrIssueResolutionChat` do not exist, so nothing auto-starts a
+> resolution chat from a failing PR. But the tools such a chat would use are
+> live today as `pr_*` RPC tools dispatched from
+> `apps/ade-cli/src/adeRpcServer.ts` — `pr_get_checks`,
+> `pr_get_review_comments`, `pr_rerun_failed_checks`,
+> `pr_reply_to_review_thread`, `pr_resolve_review_thread` — and an agent (or the
+> TUI) can call them directly. `pr_get_check_log` and
+> `pr_refresh_issue_inventory` are named but unimplemented. See
+> [chat/tool-system.md](../chat/tool-system.md#pr-issue-resolution).
+
+The intended launcher design was: assemble a structured prompt from live PR
+state (failing checks + workflow run detail, unresolved threads with compact
+summaries, changed files, recent commits) and launch a chat agent session scoped
+to the lane worktree, with tools to re-pull checks/threads/comments, re-trigger
+failed GitHub Actions check runs, post replies on review threads, and mark
+review threads resolved — the last four of which already work.
 
 The generated prompt frames each session as one bounded resolution
 round: the agent makes a coherent set of fixes for the current

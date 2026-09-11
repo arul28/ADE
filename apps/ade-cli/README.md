@@ -627,10 +627,45 @@ ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --lin
 ade --socket ios-sim preview-current --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade --socket app-control launch --command "npm run dev" --text
+ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text
 ade --socket app-control minimize --text
+ade --socket app-control observe --map --text                     # screenshot + numbered element map + handles
+ade --socket app-control click --handle obs-...:e:7                # click by handle, text-match, test-id, selector or coords
+ade --socket app-control fill --selector "#name" --value "Ada"     # also: hover, clear, type, press, scroll, wait
+ade --socket app-control windows --text                            # debuggable windows for the active session
+ade --socket app-control switch-window --target target-id          # drive a different window
+ade --socket app-control drivers --text                            # driver availability (cdp, computer_use)
+ade --socket app-control trace --limit 20 --text                   # recent actions for this session
+ade --socket app-control logs --text                               # read the App Control launch terminal
+ade --socket app-control terminal write --data "y\n"               # answer a prompt in that terminal
+ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
+ade --socket app-control actions --text                            # full app_control action inventory
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
 ade --socket browser authorize --tab tab-id --text                # native human grant for the current agent + origin
+ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
+ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
+ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
+ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
+ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
+                                                                  # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
+ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end
+ade --socket browser observe --tab tab-id --map --text            # screenshot + DOM + numbered element map
+ade --socket browser click --tab tab-id --handle obs-...:e:1      # also: type, key, fill, clear-field, hover, drag, select-option, upload, scroll, wait
+ade --socket browser emulate --tab tab-id --device iphone-17-pro  # --width/--height/--scale, or --off
+ade --socket browser zoom --tab tab-id --factor 1.25              # --reset to clear
+ade --socket browser find --tab tab-id "checkout"                 # find-stop clears the highlight
+ade --socket browser devtools --tab tab-id --mode bottom          # right | bottom | detach; --close
+ade --socket browser network on --tab tab-id                      # then `network --failed --limit 20 --text`, `network off`
+ade --socket browser har --tab tab-id                             # export the tab's HAR (needs network logging on)
+ade --socket browser record start --tab tab-id --fps 60 --caption "Checkout flow"   # `record stop` files the video
+ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
+ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
+ade --socket browser screenshot --tab tab-id --text
+ade --socket browser actions --text                               # full built_in_browser action inventory
+ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
+ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
+ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
@@ -743,6 +778,37 @@ no desktop and no brain running. The desktop's `agentToolsCacheService` is the
 same module behind an IPC snapshot feed for onboarding; there is nothing for
 `ade actions run` to reach that `ade tools status|ensure|gc` does not already
 cover.
+
+`ade browser` is capability-gated: the runtime accepts a `built_in_browser`
+action only from a chat or terminal ADE launched — one that carries the
+`ADE_BROWSER_ACTOR_TOKEN` the desktop minted for it — and the desktop, not the
+daemon, resolves that token, so a call always runs against the lane and tab
+collection it was minted for. A caller-supplied `--lane` on a
+`built_in_browser` action is dropped for that reason; `--lane` still selects
+which lane a *claim* attributes a tab to. `--force` is a reserved takeover
+flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
+on a machine with no ADE window: those three are forwarded to a desktop that
+has this lane pinned, which resolves its own capability there.
+
+`ade app-control` is not gated by a capability of its own — there is no
+app_control actor token, and the daemon has no app_control-specific scoping
+branch the way it has for `built_in_browser` and `work_tools`. A machine has
+one active App Control session at a time, and `--lane`/`--chat-session` (or
+`ade app-control claim`) attribute that session to the caller so the Work row,
+the trace and proof artifacts land on the right lane. `--force` here means
+"replace the existing session" and is available to agents.
+
+Browser profile diagnostics, saved site-permission administration, and login
+import (reading cookies out of Chrome, Safari or Firefox) have no CLI surface
+by design: they stay in the trusted ADE renderer where a human is present, and
+are refused on both the daemon and the desktop bridge rather than merely left
+unwrapped.
+
+`ade work-tools` is a read of that same pane, not a second way to drive it.
+`work_tools.setActiveTool` is limited to user clients because it is the desktop
+renderer publishing what it has open for phones and the hosted web client to
+mirror; an agent that wants a pane open should open the tool it needs
+(`ade browser panel`) rather than claim one is open.
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
 

@@ -1,7 +1,24 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import {
+  type AppOpenSystemSettingsPaneArgs,
+  type AppOpenSystemSettingsPaneResult,
+  type SystemSettingsPaneId,
+} from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
+import { machineNameForBinding } from "../shared/machineIdentity";
+import {
+  loopbackOriginLabel,
+  parseLoopbackUrl,
+  rewriteUrlHostPort,
+  type LocalizedRemoteUrl,
+} from "../shared/remoteLoopbackUrl";
+import {
+  BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+  type BuiltInBrowserRemoteRequest,
+  type BuiltInBrowserRemoteRequestAck,
+} from "../shared/types/builtInBrowserRemote";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
@@ -28,6 +45,12 @@ import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLi
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
+  createRemoteRuntimeFanout,
+  dispatchRemoteRuntimeFanouts,
+  hasRemoteRuntimeFanoutSubscribers,
+  type RemoteRuntimeFanoutEntry,
+} from "./remoteRuntimeFanout";
+import {
   createPinnedRuntimeEvents,
   isPinnedRuntimeEventStale,
   normalizePinnedRuntimeEventEpoch,
@@ -37,6 +60,14 @@ import {
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
+import type {
+  WorkToolId,
+  WorkToolsGetLaneStateArgs,
+  WorkToolsLaneState,
+  WorkToolsObservationPreview,
+  WorkToolsReadObservationPreviewArgs,
+  WorkToolsSetActiveToolArgs,
+} from "../shared/types/workTools";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   DiagnosticReportPayload,
@@ -90,6 +121,8 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppCommandPayload,
+  AppMenuCommand,
   AppZoomCommand,
   AutoUpdatePreferences,
   KeepAwakeFixResult,
@@ -722,21 +755,35 @@ import type {
   IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlObservation,
+  AppControlObservationArgs,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
+  AppControlTraceArgs,
+  AppControlTraceResult,
   AppControlTypeTextArgs,
-  BuiltInBrowserAttachWebviewArgs,
+  AppControlWindowsResult,
+  BrowserLoginImportArgs,
+  BrowserLoginImportCapabilities,
+  BrowserLoginImportListDomainsArgs,
+  BrowserLoginImportListDomainsResult,
+  BrowserLoginImportListSourcesResult,
+  BrowserLoginImportResult,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
@@ -750,7 +797,35 @@ import type {
   BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserEndHandoffArgs,
+  BuiltInBrowserHandoffResult,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserNetworkLoggingResult,
+  BuiltInBrowserNetworkLogResult,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserPreviewStreamResult,
+  BuiltInBrowserStartPreviewStreamArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
+  BuiltInBrowserStopRecordingResult,
+  BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
+  BuiltInBrowserAgentPresence,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -1419,20 +1494,112 @@ function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
 }
 
+/**
+ * De-dupe of concurrent loopback-forward requests per (machine, remote port).
+ *
+ * Only the IN-FLIGHT request is shared. The resolved forward used to be
+ * memoized for the life of the window, and that cache had no invalidation: a
+ * forward's local listener does not outlive its transport (the paired
+ * `SyncPortForwardClient` disposes on close; SSH forwards are closed by the
+ * pool), so after a disconnect the next navigation was handed a dead port and
+ * the page failed with `ERR_CONNECTION_REFUSED`. Worse, the OS re-assigns those
+ * ephemeral ports, so a cached entry could name a port some unrelated local
+ * server had since taken — a local page rendered under a remote origin badge.
+ *
+ * Asking main every time is the validation: `RemoteConnectionPool
+ * .ensurePortForward` answers from its own map in constant time and rebuilds a
+ * listener that is no longer listening, so the answer is always live. What is
+ * still worth keeping is the concurrency win the original cache also bought —
+ * two navigations to the same port share one request instead of racing to
+ * create two forwards.
+ */
+const remoteLoopbackForwards = new Map<string, Promise<RemoteRuntimePortForward>>();
+
+/**
+ * Main says this machine's forwards are gone (disconnect, or the transport
+ * dropped). Any request still in flight was issued against the connection that
+ * just died, so it must not be handed to a later caller.
+ */
+function forgetRemoteLoopbackForwards(targetId: string): void {
+  const prefix = `${targetId}:`;
+  for (const key of [...remoteLoopbackForwards.keys()]) {
+    if (key.startsWith(prefix)) remoteLoopbackForwards.delete(key);
+  }
+}
+
+ipcRenderer.on(IPC.remoteRuntimePortForwardsInvalidated, (_event, payload) => {
+  const targetId = typeof (payload as { targetId?: unknown } | null)?.targetId === "string"
+    ? (payload as { targetId: string }).targetId.trim()
+    : "";
+  if (targetId) forgetRemoteLoopbackForwards(targetId);
+});
+
+function ensureRemoteLoopbackForward(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  remotePort: number,
+  label: string,
+): Promise<RemoteRuntimePortForward> {
+  const key = `${binding.targetId}:${remotePort}`;
+  const existing = remoteLoopbackForwards.get(key);
+  if (existing) return existing;
+  const pending = (ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
+    id: binding.targetId,
+    request: { remoteHost: "127.0.0.1", remotePort, label },
+  }) as Promise<RemoteRuntimePortForward>).finally(() => {
+    // Settled either way, the entry stops being a de-dupe target: a failure
+    // must not be cached (the machine may have been mid-reconnect), and a
+    // success must not be reused, because only main can say whether the
+    // listener is still there.
+    if (remoteLoopbackForwards.get(key) === pending) remoteLoopbackForwards.delete(key);
+  });
+  remoteLoopbackForwards.set(key, pending);
+  return pending;
+}
+
+/**
+ * Rewrite one loopback URL onto a forward to the pinned machine.
+ *
+ * Returns the URL to actually load plus the tunnel it went through, so the
+ * caller can keep showing the remote origin the human asked for. A non-loopback
+ * URL is reachable from either machine and comes back untouched with
+ * `forward: null`.
+ */
+async function localizeRemoteLoopbackUrl(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  url: string | null | undefined,
+): Promise<LocalizedRemoteUrl> {
+  const text = (url ?? "").trim();
+  const parsed = parseLoopbackUrl(text);
+  if (!parsed) return { url: text, forward: null };
+  const forward = await ensureRemoteLoopbackForward(
+    binding,
+    parsed.port,
+    `${binding.displayName}:browser:${parsed.port}`,
+  );
+  return {
+    url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+    forward: {
+      machineKey: binding.targetId,
+      machineLabel: machineNameForBinding(binding),
+      remotePort: parsed.port,
+      remoteOrigin: loopbackOriginLabel(parsed.url),
+      localPort: forward.localPort,
+      localOrigin: `${parsed.url.protocol}//${forward.localHost}:${forward.localPort}`,
+    },
+  };
+}
+
 async function localizeRemoteLanePreviewInfo(
   binding: Extract<OpenProjectBinding, { kind: "remote" }>,
   info: LanePreviewInfo | null,
 ): Promise<LanePreviewInfo | null> {
   if (!info) return null;
   if (!isValidPreviewTargetPort(info.targetPort)) return info;
-  const forward = (await ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
-    id: binding.targetId,
-    request: {
-      remoteHost: "127.0.0.1",
-      remotePort: info.targetPort,
-      label: `${binding.displayName}:${info.laneId}`,
-    },
-  })) as RemoteRuntimePortForward;
+  const forward = await ensureRemoteLoopbackForward(
+    binding,
+    info.targetPort,
+    `${binding.displayName}:${info.laneId}`,
+  );
   return {
     ...info,
     hostname: forward.localHost,
@@ -1801,6 +1968,54 @@ function callAppControlActionOr<T>(
   return callPinnedOrBoundRuntimeActionOr(pin, "app_control", action, request, local);
 }
 
+/**
+ * The "local" arm for App Control actions that exist only on the runtime action
+ * domain. Rejecting with the reason beats inventing an IPC channel with no
+ * handler behind it, which would surface as an opaque
+ * "No handler registered for …".
+ */
+function appControlNeedsProjectRuntime(action: string): Promise<never> {
+  return Promise.reject(
+    new Error(
+      `App Control ${action} needs an open project. Open a project so ADE can reach its App Control service.`,
+    ),
+  );
+}
+
+/**
+ * Which pins the built-in browser actually routes on.
+ *
+ * The browser is a `WebContentsView` owned by THIS desktop's main process, so
+ * unlike the simulator or App Control there is no browser on the pinned machine
+ * to drive — a `kind: "remote"` pin used to refuse the pane outright. It no
+ * longer does: the pane mounts, drives this window's browser, and the pinned
+ * machine's loopback ports are reached through a TCP port-forward instead
+ * (`localizeRemoteLoopbackUrl`). A pin naming another *local* checkout still
+ * routes through that runtime, which proxies straight back to this same browser
+ * over the desktop bridge with the right project scope.
+ */
+function isLocalBrowserRoutingPin(
+  pin: OpenProjectBinding | null | undefined,
+): pin is OpenProjectBinding {
+  return Boolean(pin) && pin?.kind !== "remote";
+}
+
+/**
+ * Rewrite a browser call's `url` onto a forward when the chat is pinned to
+ * another machine. Non-loopback URLs, and every local pin, pass through
+ * unchanged — this is the only place a remote pin changes a browser argument.
+ */
+async function withLocalizedBrowserUrl<T extends { url?: string | null }>(
+  pin: OpenProjectBinding | null | undefined,
+  args: T,
+): Promise<T> {
+  if (pin?.kind !== "remote") return args;
+  const url = typeof args.url === "string" ? args.url : null;
+  if (!url) return args;
+  const localized = await localizeRemoteLoopbackUrl(pin, url);
+  return localized.forward ? { ...args, url: localized.url } : args;
+}
+
 function callComputerUseArtifactActionOr<T>(
   pin: OpenProjectBinding | null | undefined,
   action: string,
@@ -1944,99 +2159,281 @@ async function callProjectRuntimeSyncOr<T>(
   return localRuntime.handled ? localRuntime.result : local();
 }
 
-const remoteAgentChatEventCallbacks = new Set<
-  (payload: AgentChatEventEnvelope) => void
->();
+/**
+ * Every remote runtime event domain, in one table.
+ *
+ * `lib/../preload/remoteRuntimeFanout` explains why: a domain used to be four
+ * hand-copied edits in four places, two of which were independently maintained
+ * lists of thirty-four entries. Adding a domain is now one entry here, and the
+ * pump-liveness check and the dispatcher both read this array, so they cannot
+ * disagree about what is wired.
+ */
+const remoteAgentChatEventFanout = createRemoteRuntimeFanout<AgentChatEventEnvelope>({
+  eventType: "agent_chat_event",
+  label: "agent chat",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAgentChatEventEnvelope(payload),
+  invalidate: () => agentChatSummaryCache.clear(),
+});
 const pinnedLocalAgentChatEventCallbacks = new Map<
   string,
   Set<(event: RemoteRuntimeBufferedEvent) => void>
 >();
-const remoteSessionChangedCallbacks = new Set<
-  (payload: TerminalSessionChangedEvent) => void
->();
-const remoteLaneDeleteEventCallbacks = new Set<
-  (payload: LaneDeleteEvent) => void
->();
-const remoteLaneLifecycleEventCallbacks = new Set<
-  (payload: LaneLifecycleEvent) => void
->();
-const remoteLaneRebaseEventCallbacks = new Set<
-  (payload: RebaseRunEventPayload) => void
->();
-const remoteLaneRebaseSuggestionsEventCallbacks = new Set<
-  (payload: RebaseSuggestionsEventPayload) => void
->();
-const remoteLaneAutoRebaseEventCallbacks = new Set<
-  (payload: AutoRebaseEventPayload) => void
->();
-const remoteLaneEnvEventCallbacks = new Set<
-  (payload: LaneEnvInitEvent) => void
->();
-const remoteLanePortEventCallbacks = new Set<
-  (payload: PortAllocationEvent) => void
->();
-const remoteLaneProxyEventCallbacks = new Set<
-  (payload: LaneProxyEvent) => void
->();
-const remoteLaneOAuthEventCallbacks = new Set<
-  (payload: OAuthRedirectEvent) => void
->();
-const remoteOpenCodeOAuthStatusCallbacks = new Set<
-  (payload: OpenCodeOAuthStatusEvent) => void
->();
-const remotePiAuthStatusCallbacks = new Set<(payload: PiAuthStatusEvent) => void>();
-const remoteCursorAuthStatusCallbacks = new Set<(payload: CursorSdkAuthEvent) => void>();
-const remoteLaneDiagnosticsEventCallbacks = new Set<
-  (payload: RuntimeDiagnosticsEvent) => void
->();
-const remotePtyDataEventCallbacks = new Set<(payload: PtyDataEvent) => void>();
-const remotePtyExitEventCallbacks = new Set<(payload: PtyExitEvent) => void>();
+const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
+  eventType: "terminal_session_changed",
+  label: "session",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toTerminalSessionChangedEvent(payload),
+  invalidate: () => sessionDeltaCache.clear(),
+});
+const remoteLaneDeleteEventFanout = createRemoteRuntimeFanout<LaneDeleteEvent>({
+  eventType: "lane_delete_event",
+  label: "lane delete",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneLifecycleEventFanout = createRemoteRuntimeFanout<LaneLifecycleEvent>({
+  eventType: "lane_lifecycle_event",
+  label: "lane lifecycle",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneRebaseEventFanout = createRemoteRuntimeFanout<RebaseRunEventPayload>({
+  eventType: "lane_rebase_event",
+  label: "lane rebase",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remoteLaneRebaseSuggestionsEventFanout =
+  createRemoteRuntimeFanout<RebaseSuggestionsEventPayload>({
+    eventType: "lane_rebase_suggestions_event",
+    label: "rebase suggestions",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteLaneAutoRebaseEventFanout = createRemoteRuntimeFanout<AutoRebaseEventPayload>({
+  eventType: "lane_auto_rebase_event",
+  label: "auto rebase",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneEnvEventFanout = createRemoteRuntimeFanout<LaneEnvInitEvent>({
+  eventType: "lane_env_event",
+  label: "lane env",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLanePortEventFanout = createRemoteRuntimeFanout<PortAllocationEvent>({
+  eventType: "lane_port_event",
+  label: "lane port",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneProxyEventFanout = createRemoteRuntimeFanout<LaneProxyEvent>({
+  eventType: "lane_proxy_event",
+  label: "lane proxy",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteLaneOAuthEventFanout = createRemoteRuntimeFanout<OAuthRedirectEvent>({
+  eventType: "lane_oauth_event",
+  label: "lane OAuth",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteOpenCodeOAuthStatusFanout = createRemoteRuntimeFanout<OpenCodeOAuthStatusEvent>({
+  eventType: "opencodeOAuthStatus",
+  label: "OpenCode OAuth status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<OpenCodeOAuthStatusEvent>(
+    payload,
+    "opencodeOAuthStatus",
+    (event) => typeof event.providerId === "string",
+  ),
+});
+const remotePiAuthStatusFanout = createRemoteRuntimeFanout<PiAuthStatusEvent>({
+  eventType: "piAuthStatus",
+  label: "Pi sign-in status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<PiAuthStatusEvent>(
+    payload,
+    "piAuthStatus",
+    (event) => typeof event.providerId === "string",
+  ),
+});
+const remoteCursorAuthStatusFanout = createRemoteRuntimeFanout<CursorSdkAuthEvent>({
+  eventType: "cursorAuthStatus",
+  label: "Cursor sign-in status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAuthStatusEvent<CursorSdkAuthEvent>(
+    payload,
+    "cursorAuthStatus",
+    (event) => event.providerId === "cursor",
+  ),
+});
+const remoteLaneDiagnosticsEventFanout = createRemoteRuntimeFanout<RuntimeDiagnosticsEvent>({
+  eventType: "lane_diagnostics_event",
+  label: "lane diagnostics",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remotePtyDataEventFanout = createRemoteRuntimeFanout<PtyDataEvent>({
+  eventType: "pty_data",
+  label: "pty data",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  shouldDeliver: (event) => shouldDispatchPtyDataEvent(event),
+});
+const remotePtyExitEventFanout = createRemoteRuntimeFanout<PtyExitEvent>({
+  eventType: "pty_exit",
+  label: "pty exit",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 let ptyDataSubscriptionsConfigured = false;
 let subscribedPtyDataIds = new Set<string>();
-const remoteTestEventCallbacks = new Set<(payload: TestEvent) => void>();
-const remoteFileChangeEventCallbacks = new Set<
-  (payload: FileChangeEvent) => void
->();
-const remotePrEventCallbacks = new Set<(payload: PrEventPayload) => void>();
-const remotePrAiResolutionEventCallbacks = new Set<
-  (payload: PrAiResolutionEventPayload) => void
->();
-const remoteProjectStateEventCallbacks = new Set<
-  (payload: AdeProjectEvent) => void
->();
-const remoteSyncStatusEventCallbacks = new Set<
-  (payload: SyncStatusEventPayload) => void
->();
-const remoteReviewEventCallbacks = new Set<
-  (payload: ReviewEventPayload) => void
->();
-const remoteUsageUpdateEventCallbacks = new Set<
-  (payload: UsageSnapshot) => void
->();
-const remoteAutomationsEventCallbacks = new Set<
-  (payload: AutomationsEventPayload) => void
->();
-const remoteConflictEventCallbacks = new Set<
-  (payload: ConflictEventPayload) => void
->();
-const remoteGitHubStatusChangedCallbacks = new Set<
-  (payload: GitHubStatus) => void
->();
-const remoteFeedbackEventCallbacks = new Set<
-  (payload: FeedbackSubmissionEvent) => void
->();
-const remoteComputerUseEventCallbacks = new Set<
-  (payload: ComputerUseEventPayload) => void
->();
-const remoteIosSimulatorEventCallbacks = new Set<
-  (payload: IosSimulatorEventPayload) => void
->();
-const remoteAppControlEventCallbacks = new Set<
-  (payload: AppControlEventPayload) => void
->();
-const remoteOrchestrationEventCallbacks = new Set<
-  (payload: OrchestrationEventPayload) => void
->();
+const remoteTestEventFanout = createRemoteRuntimeFanout<TestEvent>({
+  eventType: "test_event",
+  label: "test",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toTestEvent(payload),
+});
+const remoteFileChangeEventFanout = createRemoteRuntimeFanout<FileChangeEvent>({
+  eventType: "file_change",
+  label: "file change",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearGitReadCaches(),
+});
+const remotePrEventFanout = createRemoteRuntimeFanout<PrEventPayload>({
+  eventType: "pr_event",
+  label: "PR",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remotePrAiResolutionEventFanout =
+  createRemoteRuntimeFanout<PrAiResolutionEventPayload>({
+    eventType: "pr_ai_resolution_event",
+    label: "PR AI resolution",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteProjectStateEventFanout = createRemoteRuntimeFanout<AdeProjectEvent>({
+  eventType: "project_state_event",
+  label: "project state",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteSyncStatusEventFanout = createRemoteRuntimeFanout<SyncStatusEventPayload>({
+  eventType: "sync-status",
+  label: "sync",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  // A status event is the envelope itself, not a wrapped `event`.
+  extract: (payload) => (
+    payload.type === "sync-status" && isRecord(payload.snapshot)
+      ? (payload as SyncStatusEventPayload)
+      : null
+  ),
+});
+const remoteReviewEventFanout = createRemoteRuntimeFanout<ReviewEventPayload>({
+  eventType: "review_event",
+  label: "review",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteUsageUpdateEventFanout = createRemoteRuntimeFanout<UsageSnapshot>({
+  eventType: "usage",
+  label: "usage",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => (
+    payload.type === "usage" && isRecord(payload.snapshot)
+      ? (payload.snapshot as unknown as UsageSnapshot)
+      : null
+  ),
+});
+const remoteAutomationsEventFanout = createRemoteRuntimeFanout<AutomationsEventPayload>({
+  eventType: "automations_event",
+  label: "automation",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toAutomationsRuntimeEvent(payload),
+});
+const remoteConflictEventFanout = createRemoteRuntimeFanout<ConflictEventPayload>({
+  eventType: "conflict_event",
+  label: "conflict",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteGitHubStatusChangedFanout = createRemoteRuntimeFanout<GitHubStatus>({
+  eventType: "github_status_changed",
+  label: "GitHub status",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => {
+    githubStatusCache.clear();
+    githubRemoteStatusCache.clear();
+    githubAppInstallationStatusCache.clear();
+  },
+});
+const remoteFeedbackEventFanout = createRemoteRuntimeFanout<FeedbackSubmissionEvent>({
+  eventType: "feedback_submission_event",
+  label: "feedback",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
+const remoteComputerUseEventFanout = createRemoteRuntimeFanout<ComputerUseEventPayload>({
+  eventType: "computer_use_event",
+  label: "computer use",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => computerUseOwnerSnapshotCache.clear(),
+});
+const remoteIosSimulatorEventFanout = createRemoteRuntimeFanout<IosSimulatorEventPayload>({
+  eventType: "ios_simulator_event",
+  label: "iOS simulator",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => clearIosSimulatorStatusCaches(),
+});
+const remoteAppControlEventFanout = createRemoteRuntimeFanout<AppControlEventPayload>({
+  eventType: "app_control_event",
+  label: "App Control",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  invalidate: () => appControlStatusCache.clear(),
+});
+const remoteBuiltInBrowserRemoteRequestFanout =
+  createRemoteRuntimeFanout<BuiltInBrowserRemoteRequest>({
+    eventType: BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+    label: "built-in browser request",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
+const remoteOrchestrationEventFanout = createRemoteRuntimeFanout<OrchestrationEventPayload>({
+  eventType: "orchestration_event",
+  label: "orchestration",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => toOrchestrationRuntimeEvent(payload),
+});
+
+/**
+ * The wiring itself. Exported so a test can assert every listed domain reaches
+ * its subscriber — a domain that is not in here is not wired at all.
+ */
+export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
+  remoteAgentChatEventFanout,
+  remoteSessionChangedFanout,
+  remoteLaneDeleteEventFanout,
+  remoteLaneLifecycleEventFanout,
+  remoteLaneRebaseEventFanout,
+  remoteLaneRebaseSuggestionsEventFanout,
+  remoteLaneAutoRebaseEventFanout,
+  remoteLaneEnvEventFanout,
+  remoteLanePortEventFanout,
+  remoteLaneProxyEventFanout,
+  remoteLaneOAuthEventFanout,
+  remoteOpenCodeOAuthStatusFanout,
+  remotePiAuthStatusFanout,
+  remoteCursorAuthStatusFanout,
+  remoteLaneDiagnosticsEventFanout,
+  remotePtyDataEventFanout,
+  remotePtyExitEventFanout,
+  remoteTestEventFanout,
+  remoteFileChangeEventFanout,
+  remotePrEventFanout,
+  remotePrAiResolutionEventFanout,
+  remoteProjectStateEventFanout,
+  remoteSyncStatusEventFanout,
+  remoteReviewEventFanout,
+  remoteUsageUpdateEventFanout,
+  remoteAutomationsEventFanout,
+  remoteConflictEventFanout,
+  remoteGitHubStatusChangedFanout,
+  remoteFeedbackEventFanout,
+  remoteComputerUseEventFanout,
+  remoteIosSimulatorEventFanout,
+  remoteAppControlEventFanout,
+  remoteBuiltInBrowserRemoteRequestFanout,
+  remoteOrchestrationEventFanout,
+];
 
 function createLocalIpcEventSubscription<T>(
   channel: string,
@@ -2068,6 +2465,44 @@ function createLocalIpcEventSubscription<T>(
         listener = null;
       }
     };
+  };
+}
+
+/** The command each menu-command kind carries, keyed by kind. */
+type AppCommandByKind = {
+  [TKind in AppCommandPayload["kind"]]: Extract<
+    AppCommandPayload,
+    { kind: TKind }
+  >["command"];
+};
+
+/**
+ * Native-menu commands, one channel down.
+ *
+ * Main sends every menu command on `IPC.appCommand` as `{ kind, command }`.
+ * There is no second channel to bridge: main and preload ship in the same
+ * bundle, so the pre-unification channels could never have had a sender this
+ * one does not.
+ */
+function subscribeAppCommand<TKind extends AppCommandPayload["kind"]>(
+  kind: TKind,
+  cb: (command: AppCommandByKind[TKind]) => void,
+): () => void {
+  type Command = AppCommandByKind[TKind];
+  const onUnified = (
+    _event: Electron.IpcRendererEvent,
+    payload: AppCommandPayload,
+  ) => {
+    if (!payload || payload.kind !== kind) return;
+    cb(payload.command as Command);
+  };
+  ipcRenderer.on(IPC.appCommand, onUnified);
+  // Main holds ⌘W back — and closes the window itself — until it hears that a
+  // subscriber exists, so announcing one is part of subscribing, not a
+  // separate step a caller can forget.
+  ipcRenderer.send(IPC.appCommandsReady);
+  return () => {
+    ipcRenderer.removeListener(IPC.appCommand, onUnified);
   };
 }
 
@@ -2175,51 +2610,13 @@ function shouldDispatchRemoteRuntimeEvent(
 }
 
 function hasRemoteRuntimeEventSubscribers(): boolean {
-  return (
-    remoteAgentChatEventCallbacks.size > 0 ||
-    remoteSyncStatusEventCallbacks.size > 0 ||
-    remoteReviewEventCallbacks.size > 0 ||
-    remoteSessionChangedCallbacks.size > 0 ||
-    remoteLaneDeleteEventCallbacks.size > 0 ||
-    remoteLaneLifecycleEventCallbacks.size > 0 ||
-    remoteLaneRebaseEventCallbacks.size > 0 ||
-    remoteLaneRebaseSuggestionsEventCallbacks.size > 0 ||
-    remoteLaneAutoRebaseEventCallbacks.size > 0 ||
-    remoteLaneEnvEventCallbacks.size > 0 ||
-    remoteLanePortEventCallbacks.size > 0 ||
-    remoteLaneProxyEventCallbacks.size > 0 ||
-    remoteLaneOAuthEventCallbacks.size > 0 ||
-    remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
-    remotePiAuthStatusCallbacks.size > 0 ||
-    remoteCursorAuthStatusCallbacks.size > 0 ||
-    remoteLaneDiagnosticsEventCallbacks.size > 0 ||
-    remotePtyDataEventCallbacks.size > 0 ||
-    remotePtyExitEventCallbacks.size > 0 ||
-    remoteTestEventCallbacks.size > 0 ||
-    remoteFileChangeEventCallbacks.size > 0 ||
-    remotePrEventCallbacks.size > 0 ||
-    remoteProjectStateEventCallbacks.size > 0 ||
-    remoteUsageUpdateEventCallbacks.size > 0 ||
-    remoteAutomationsEventCallbacks.size > 0 ||
-    remoteConflictEventCallbacks.size > 0 ||
-    remoteGitHubStatusChangedCallbacks.size > 0 ||
-    remoteFeedbackEventCallbacks.size > 0 ||
-    remoteComputerUseEventCallbacks.size > 0 ||
-    remoteIosSimulatorEventCallbacks.size > 0 ||
-    remoteAppControlEventCallbacks.size > 0 ||
-    remoteOrchestrationEventCallbacks.size > 0 ||
-    remotePrAiResolutionEventCallbacks.size > 0
-  );
+  return hasRemoteRuntimeFanoutSubscribers(REMOTE_RUNTIME_FANOUTS);
 }
 
 function registerRemoteOrchestrationEventCallback(
   cb: (payload: OrchestrationEventPayload) => void,
 ): () => void {
-  remoteOrchestrationEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOrchestrationEventCallbacks.delete(cb);
-  };
+  return remoteOrchestrationEventFanout.subscribe(cb);
 }
 
 function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
@@ -2544,770 +2941,207 @@ ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
 function dispatchRemoteRuntimeEventPayload(
   payload: Record<string, unknown>,
 ): void {
-  if (payload.kind === "opencodeOAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (typeof event.providerId === "string" && typeof event.state === "string") {
-      for (const cb of [...remoteOpenCodeOAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as OpenCodeOAuthStatusEvent);
-        } catch (error) {
-          console.error("preload remote OpenCode OAuth status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.kind === "piAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (typeof event.providerId === "string" && typeof event.state === "string") {
-      for (const cb of [...remotePiAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as PiAuthStatusEvent);
-        } catch (error) {
-          console.error("preload remote Pi sign-in status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.kind === "cursorAuthStatus" && isRecord(payload.event)) {
-    const event = payload.event;
-    if (event.providerId === "cursor" && typeof event.state === "string") {
-      for (const cb of [...remoteCursorAuthStatusCallbacks]) {
-        try {
-          cb(event as unknown as CursorSdkAuthEvent);
-        } catch (error) {
-          console.error("preload remote Cursor sign-in status listener failed", error);
-        }
-      }
-    }
-  }
-
-  if (payload.type === "sync-status" && isRecord(payload.snapshot)) {
-    for (const cb of [...remoteSyncStatusEventCallbacks]) {
-      try {
-        cb(payload as SyncStatusEventPayload);
-      } catch (error) {
-        console.error("preload remote sync listener failed", error);
-      }
-    }
-  }
-
-  if (payload.type === "usage" && isRecord(payload.snapshot)) {
-    for (const cb of [...remoteUsageUpdateEventCallbacks]) {
-      try {
-        cb(payload.snapshot as unknown as UsageSnapshot);
-      } catch (error) {
-        console.error("preload remote usage listener failed", error);
-      }
-    }
-  }
-
-  const automationsEvent = toAutomationsRuntimeEvent(payload);
-  if (automationsEvent) {
-    for (const cb of [...remoteAutomationsEventCallbacks]) {
-      try {
-        cb(automationsEvent);
-      } catch (error) {
-        console.error("preload remote automation listener failed", error);
-      }
-    }
-  }
-
-  const orchestrationEvent = toOrchestrationRuntimeEvent(payload);
-  if (orchestrationEvent) {
-    for (const cb of [...remoteOrchestrationEventCallbacks]) {
-      try {
-        cb(orchestrationEvent);
-      } catch (error) {
-        console.error("preload remote orchestration listener failed", error);
-      }
-    }
-  }
-
-  const conflictEvent = toWrappedEvent<ConflictEventPayload>(
-    payload,
-    "conflict_event",
-  );
-  if (conflictEvent) {
-    for (const cb of [...remoteConflictEventCallbacks]) {
-      try {
-        cb(conflictEvent);
-      } catch (error) {
-        console.error("preload remote conflict listener failed", error);
-      }
-    }
-  }
-
-  const githubStatus = toWrappedEvent<GitHubStatus>(
-    payload,
-    "github_status_changed",
-  );
-  if (githubStatus) {
-    githubStatusCache.clear();
-    githubRemoteStatusCache.clear();
-    githubAppInstallationStatusCache.clear();
-    for (const cb of [...remoteGitHubStatusChangedCallbacks]) {
-      try {
-        cb(githubStatus);
-      } catch (error) {
-        console.error("preload remote GitHub status listener failed", error);
-      }
-    }
-  }
-
-  const feedbackEvent = toWrappedEvent<FeedbackSubmissionEvent>(
-    payload,
-    "feedback_submission_event",
-  );
-  if (feedbackEvent) {
-    for (const cb of [...remoteFeedbackEventCallbacks]) {
-      try {
-        cb(feedbackEvent);
-      } catch (error) {
-        console.error("preload remote feedback listener failed", error);
-      }
-    }
-  }
-
-  const computerUseEvent = toWrappedEvent<ComputerUseEventPayload>(
-    payload,
-    "computer_use_event",
-  );
-  if (computerUseEvent) {
-    computerUseOwnerSnapshotCache.clear();
-    for (const cb of [...remoteComputerUseEventCallbacks]) {
-      try {
-        cb(computerUseEvent);
-      } catch (error) {
-        console.error("preload remote computer use listener failed", error);
-      }
-    }
-  }
-
-  const iosSimulatorEvent = toWrappedEvent<IosSimulatorEventPayload>(
-    payload,
-    "ios_simulator_event",
-  );
-  if (iosSimulatorEvent) {
-    clearIosSimulatorStatusCaches();
-    for (const cb of [...remoteIosSimulatorEventCallbacks]) {
-      try {
-        cb(iosSimulatorEvent);
-      } catch (error) {
-        console.error("preload remote iOS simulator listener failed", error);
-      }
-    }
-  }
-
-  const appControlEvent = toWrappedEvent<AppControlEventPayload>(
-    payload,
-    "app_control_event",
-  );
-  if (appControlEvent) {
-    appControlStatusCache.clear();
-    for (const cb of [...remoteAppControlEventCallbacks]) {
-      try {
-        cb(appControlEvent);
-      } catch (error) {
-        console.error("preload remote App Control listener failed", error);
-      }
-    }
-  }
-
-  const reviewEvent = toWrappedEvent<ReviewEventPayload>(
-    payload,
-    "review_event",
-  );
-  if (reviewEvent) {
-    for (const cb of [...remoteReviewEventCallbacks]) {
-      try {
-        cb(reviewEvent);
-      } catch (error) {
-        console.error("preload remote review listener failed", error);
-      }
-    }
-  }
-
-  const chatEvent = toAgentChatEventEnvelope(payload);
-  if (chatEvent) {
-    agentChatSummaryCache.clear();
-    for (const cb of [...remoteAgentChatEventCallbacks]) {
-      try {
-        cb(chatEvent);
-      } catch (error) {
-        console.error("preload remote agent chat listener failed", error);
-      }
-    }
-  }
-
-  const sessionChanged = toTerminalSessionChangedEvent(payload);
-  if (sessionChanged) {
-    sessionDeltaCache.clear();
-    for (const cb of [...remoteSessionChangedCallbacks]) {
-      try {
-        cb(sessionChanged);
-      } catch (error) {
-        console.error("preload remote session listener failed", error);
-      }
-    }
-  }
-
-  const laneDeleteEvent = toWrappedEvent<LaneDeleteEvent>(
-    payload,
-    "lane_delete_event",
-  );
-  if (laneDeleteEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneDeleteEventCallbacks]) {
-      try {
-        cb(laneDeleteEvent);
-      } catch (error) {
-        console.error("preload remote lane delete listener failed", error);
-      }
-    }
-  }
-
-  const laneLifecycleEvent = toWrappedEvent<LaneLifecycleEvent>(
-    payload,
-    "lane_lifecycle_event",
-  );
-  if (laneLifecycleEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneLifecycleEventCallbacks]) {
-      try {
-        cb(laneLifecycleEvent);
-      } catch (error) {
-        console.error("preload remote lane lifecycle listener failed", error);
-      }
-    }
-  }
-
-  const laneRebaseEvent = toWrappedEvent<RebaseRunEventPayload>(
-    payload,
-    "lane_rebase_event",
-  );
-  if (laneRebaseEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteLaneRebaseEventCallbacks]) {
-      try {
-        cb(laneRebaseEvent);
-      } catch (error) {
-        console.error("preload remote lane rebase listener failed", error);
-      }
-    }
-  }
-
-  const rebaseSuggestionsEvent = toWrappedEvent<RebaseSuggestionsEventPayload>(
-    payload,
-    "lane_rebase_suggestions_event",
-  );
-  if (rebaseSuggestionsEvent) {
-    for (const cb of [...remoteLaneRebaseSuggestionsEventCallbacks]) {
-      try {
-        cb(rebaseSuggestionsEvent);
-      } catch (error) {
-        console.error(
-          "preload remote rebase suggestions listener failed",
-          error,
-        );
-      }
-    }
-  }
-
-  const autoRebaseEvent = toWrappedEvent<AutoRebaseEventPayload>(
-    payload,
-    "lane_auto_rebase_event",
-  );
-  if (autoRebaseEvent) {
-    for (const cb of [...remoteLaneAutoRebaseEventCallbacks]) {
-      try {
-        cb(autoRebaseEvent);
-      } catch (error) {
-        console.error("preload remote auto rebase listener failed", error);
-      }
-    }
-  }
-
-  const envEvent = toWrappedEvent<LaneEnvInitEvent>(payload, "lane_env_event");
-  if (envEvent) {
-    for (const cb of [...remoteLaneEnvEventCallbacks]) {
-      try {
-        cb(envEvent);
-      } catch (error) {
-        console.error("preload remote lane env listener failed", error);
-      }
-    }
-  }
-
-  const portEvent = toWrappedEvent<PortAllocationEvent>(
-    payload,
-    "lane_port_event",
-  );
-  if (portEvent) {
-    for (const cb of [...remoteLanePortEventCallbacks]) {
-      try {
-        cb(portEvent);
-      } catch (error) {
-        console.error("preload remote lane port listener failed", error);
-      }
-    }
-  }
-
-  const proxyEvent = toWrappedEvent<LaneProxyEvent>(
-    payload,
-    "lane_proxy_event",
-  );
-  if (proxyEvent) {
-    for (const cb of [...remoteLaneProxyEventCallbacks]) {
-      try {
-        cb(proxyEvent);
-      } catch (error) {
-        console.error("preload remote lane proxy listener failed", error);
-      }
-    }
-  }
-
-  const oauthEvent = toWrappedEvent<OAuthRedirectEvent>(
-    payload,
-    "lane_oauth_event",
-  );
-  if (oauthEvent) {
-    for (const cb of [...remoteLaneOAuthEventCallbacks]) {
-      try {
-        cb(oauthEvent);
-      } catch (error) {
-        console.error("preload remote lane OAuth listener failed", error);
-      }
-    }
-  }
-
-  const diagnosticsEvent = toWrappedEvent<RuntimeDiagnosticsEvent>(
-    payload,
-    "lane_diagnostics_event",
-  );
-  if (diagnosticsEvent) {
-    for (const cb of [...remoteLaneDiagnosticsEventCallbacks]) {
-      try {
-        cb(diagnosticsEvent);
-      } catch (error) {
-        console.error("preload remote lane diagnostics listener failed", error);
-      }
-    }
-  }
-
-  if (isRecord(payload) && payload.type === "lane_head_changed") {
-    clearGitReadCaches();
-  }
-
-  const ptyDataEvent = toWrappedEvent<PtyDataEvent>(payload, "pty_data");
-  if (ptyDataEvent) {
-    if (!shouldDispatchPtyDataEvent(ptyDataEvent)) return;
-    for (const cb of [...remotePtyDataEventCallbacks]) {
-      try {
-        cb(ptyDataEvent);
-      } catch (error) {
-        console.error("preload remote pty data listener failed", error);
-      }
-    }
-  }
-
-  const ptyExitEvent = toWrappedEvent<PtyExitEvent>(payload, "pty_exit");
-  if (ptyExitEvent) {
-    for (const cb of [...remotePtyExitEventCallbacks]) {
-      try {
-        cb(ptyExitEvent);
-      } catch (error) {
-        console.error("preload remote pty exit listener failed", error);
-      }
-    }
-  }
-
-  const testEvent = toTestEvent(payload);
-  if (testEvent) {
-    for (const cb of [...remoteTestEventCallbacks]) {
-      try {
-        cb(testEvent);
-      } catch (error) {
-        console.error("preload remote test listener failed", error);
-      }
-    }
-  }
-
-  const fileChangeEvent = toWrappedEvent<FileChangeEvent>(
-    payload,
-    "file_change",
-  );
-  if (fileChangeEvent) {
-    clearGitReadCaches();
-    for (const cb of [...remoteFileChangeEventCallbacks]) {
-      try {
-        cb(fileChangeEvent);
-      } catch (error) {
-        console.error("preload remote file change listener failed", error);
-      }
-    }
-  }
-
-  const prAiResolutionEvent = toWrappedEvent<PrAiResolutionEventPayload>(
-    payload,
-    "pr_ai_resolution_event",
-  );
-  if (prAiResolutionEvent) {
-    for (const cb of [...remotePrAiResolutionEventCallbacks]) {
-      try {
-        cb(prAiResolutionEvent);
-      } catch (error) {
-        console.error("preload remote PR AI resolution listener failed", error);
-      }
-    }
-  }
-
-  const prEvent = toWrappedEvent<PrEventPayload>(payload, "pr_event");
-  if (prEvent) {
-    for (const cb of [...remotePrEventCallbacks]) {
-      try {
-        cb(prEvent);
-      } catch (error) {
-        console.error("preload remote PR listener failed", error);
-      }
-    }
-  }
-
-  const projectStateEvent = toWrappedEvent<AdeProjectEvent>(
-    payload,
-    "project_state_event",
-  );
-  if (projectStateEvent) {
-    for (const cb of [...remoteProjectStateEventCallbacks]) {
-      try {
-        cb(projectStateEvent);
-      } catch (error) {
-        console.error("preload remote project state listener failed", error);
-      }
-    }
-  }
-
+  // Not a domain: nothing subscribes to a head change, it only invalidates.
+  if (payload.type === "lane_head_changed") clearGitReadCaches();
+  dispatchRemoteRuntimeFanouts(REMOTE_RUNTIME_FANOUTS, payload);
 }
 
 function subscribeRemoteAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
 ): () => void {
-  remoteAgentChatEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAgentChatEventCallbacks.delete(cb);
-  };
+  return remoteAgentChatEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSyncStatusEvents(
   cb: (payload: SyncStatusEventPayload) => void,
 ): () => void {
-  remoteSyncStatusEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteSyncStatusEventCallbacks.delete(cb);
-  };
+  return remoteSyncStatusEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteReviewEvents(
   cb: (payload: ReviewEventPayload) => void,
 ): () => void {
-  remoteReviewEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteReviewEventCallbacks.delete(cb);
-  };
+  return remoteReviewEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSessionChangedEvents(
   cb: (payload: TerminalSessionChangedEvent) => void,
 ): () => void {
-  remoteSessionChangedCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteSessionChangedCallbacks.delete(cb);
-  };
+  return remoteSessionChangedFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneDeleteEvents(
   cb: (payload: LaneDeleteEvent) => void,
 ): () => void {
-  remoteLaneDeleteEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneDeleteEventCallbacks.delete(cb);
-  };
+  return remoteLaneDeleteEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneLifecycleEvents(
   cb: (payload: LaneLifecycleEvent) => void,
 ): () => void {
-  remoteLaneLifecycleEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneLifecycleEventCallbacks.delete(cb);
-  };
+  return remoteLaneLifecycleEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneRebaseEvents(
   cb: (payload: RebaseRunEventPayload) => void,
 ): () => void {
-  remoteLaneRebaseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneRebaseEventCallbacks.delete(cb);
-  };
+  return remoteLaneRebaseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneRebaseSuggestionsEvents(
   cb: (payload: RebaseSuggestionsEventPayload) => void,
 ): () => void {
-  remoteLaneRebaseSuggestionsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneRebaseSuggestionsEventCallbacks.delete(cb);
-  };
+  return remoteLaneRebaseSuggestionsEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneAutoRebaseEvents(
   cb: (payload: AutoRebaseEventPayload) => void,
 ): () => void {
-  remoteLaneAutoRebaseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneAutoRebaseEventCallbacks.delete(cb);
-  };
+  return remoteLaneAutoRebaseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneEnvEvents(
   cb: (payload: LaneEnvInitEvent) => void,
 ): () => void {
-  remoteLaneEnvEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneEnvEventCallbacks.delete(cb);
-  };
+  return remoteLaneEnvEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLanePortEvents(
   cb: (payload: PortAllocationEvent) => void,
 ): () => void {
-  remoteLanePortEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLanePortEventCallbacks.delete(cb);
-  };
+  return remoteLanePortEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneProxyEvents(
   cb: (payload: LaneProxyEvent) => void,
 ): () => void {
-  remoteLaneProxyEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneProxyEventCallbacks.delete(cb);
-  };
+  return remoteLaneProxyEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneOAuthEvents(
   cb: (payload: OAuthRedirectEvent) => void,
 ): () => void {
-  remoteLaneOAuthEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneOAuthEventCallbacks.delete(cb);
-  };
+  return remoteLaneOAuthEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteOpenCodeOAuthStatusEvents(
   cb: (payload: OpenCodeOAuthStatusEvent) => void,
 ): () => void {
-  remoteOpenCodeOAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOpenCodeOAuthStatusCallbacks.delete(cb);
-  };
+  return remoteOpenCodeOAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemotePiAuthStatusEvents(
   cb: (payload: PiAuthStatusEvent) => void,
 ): () => void {
-  remotePiAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePiAuthStatusCallbacks.delete(cb);
-  };
+  return remotePiAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemoteCursorAuthStatusEvents(
   cb: (payload: CursorSdkAuthEvent) => void,
 ): () => void {
-  remoteCursorAuthStatusCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteCursorAuthStatusCallbacks.delete(cb);
-  };
+  return remoteCursorAuthStatusFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneDiagnosticsEvents(
   cb: (payload: RuntimeDiagnosticsEvent) => void,
 ): () => void {
-  remoteLaneDiagnosticsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLaneDiagnosticsEventCallbacks.delete(cb);
-  };
+  return remoteLaneDiagnosticsEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
 ): () => void {
-  remotePtyDataEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePtyDataEventCallbacks.delete(cb);
-  };
+  return remotePtyDataEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePtyExitEvents(
   cb: (payload: PtyExitEvent) => void,
 ): () => void {
-  remotePtyExitEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePtyExitEventCallbacks.delete(cb);
-  };
+  return remotePtyExitEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteTestEvents(
   cb: (payload: TestEvent) => void,
 ): () => void {
-  remoteTestEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteTestEventCallbacks.delete(cb);
-  };
+  return remoteTestEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteFileChangeEvents(
   cb: (payload: FileChangeEvent) => void,
 ): () => void {
-  remoteFileChangeEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteFileChangeEventCallbacks.delete(cb);
-  };
+  return remoteFileChangeEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePrAiResolutionEvents(
   cb: (payload: PrAiResolutionEventPayload) => void,
 ): () => void {
-  remotePrAiResolutionEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePrAiResolutionEventCallbacks.delete(cb);
-  };
+  return remotePrAiResolutionEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePrEvents(
   cb: (payload: PrEventPayload) => void,
 ): () => void {
-  remotePrEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remotePrEventCallbacks.delete(cb);
-  };
+  return remotePrEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteProjectStateEvents(
   cb: (payload: AdeProjectEvent) => void,
 ): () => void {
-  remoteProjectStateEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteProjectStateEventCallbacks.delete(cb);
-  };
+  return remoteProjectStateEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteUsageUpdateEvents(
   cb: (payload: UsageSnapshot) => void,
 ): () => void {
-  remoteUsageUpdateEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteUsageUpdateEventCallbacks.delete(cb);
-  };
+  return remoteUsageUpdateEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteAutomationsEvents(
   cb: (payload: AutomationsEventPayload) => void,
 ): () => void {
-  remoteAutomationsEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAutomationsEventCallbacks.delete(cb);
-  };
+  return remoteAutomationsEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteConflictEvents(
   cb: (payload: ConflictEventPayload) => void,
 ): () => void {
-  remoteConflictEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteConflictEventCallbacks.delete(cb);
-  };
+  return remoteConflictEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteGitHubStatusChangedEvents(
   cb: (payload: GitHubStatus) => void,
 ): () => void {
-  remoteGitHubStatusChangedCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteGitHubStatusChangedCallbacks.delete(cb);
-  };
+  return remoteGitHubStatusChangedFanout.subscribe(cb);
 }
 
 function subscribeRemoteFeedbackEvents(
   cb: (payload: FeedbackSubmissionEvent) => void,
 ): () => void {
-  remoteFeedbackEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteFeedbackEventCallbacks.delete(cb);
-  };
+  return remoteFeedbackEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteComputerUseEvents(
   cb: (payload: ComputerUseEventPayload) => void,
 ): () => void {
-  remoteComputerUseEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteComputerUseEventCallbacks.delete(cb);
-  };
+  return remoteComputerUseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteIosSimulatorEvents(
   cb: (payload: IosSimulatorEventPayload) => void,
 ): () => void {
-  remoteIosSimulatorEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteIosSimulatorEventCallbacks.delete(cb);
-  };
+  return remoteIosSimulatorEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
 ): () => void {
-  remoteAppControlEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteAppControlEventCallbacks.delete(cb);
-  };
+  return remoteAppControlEventFanout.subscribe(cb);
+}
+
+function subscribeRemoteBuiltInBrowserRemoteRequests(
+  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+): () => void {
+  return remoteBuiltInBrowserRemoteRequestFanout.subscribe(cb);
 }
 
 function subscribeAgentChatEvents(
@@ -3550,32 +3384,90 @@ function subscribeAppControlEvents(
   };
 }
 
+/**
+ * Preview-stream subscriptions this renderer holds.
+ *
+ * The service refcounts them, so an unpaired start leaves a `capturePage()`
+ * loop running for a card that no longer exists — which a renderer reload
+ * (dev HMR, a crash-recover) would otherwise do every time, because React
+ * cleanup never runs on an unload. `pagehide` is the one hook that does.
+ */
+const builtInBrowserPreviewSubscriptions = new Map<string, BuiltInBrowserProjectScopeArgs>();
+let builtInBrowserPreviewUnloadHooked = false;
+
+function trackBuiltInBrowserPreviewStream(
+  tabId: string,
+  args: BuiltInBrowserStartPreviewStreamArgs,
+): void {
+  if (!tabId) return;
+  builtInBrowserPreviewSubscriptions.set(tabId, {
+    ...(args.projectRoot == null ? {} : { projectRoot: args.projectRoot }),
+    ...(args.tabCollection == null ? {} : { tabCollection: args.tabCollection }),
+  });
+  if (builtInBrowserPreviewUnloadHooked) return;
+  builtInBrowserPreviewUnloadHooked = true;
+  window.addEventListener("pagehide", () => {
+    for (const [heldTabId, scope] of builtInBrowserPreviewSubscriptions) {
+      // Best-effort and deliberately not awaited: the page is going away, and
+      // the worst case is one loop that main tears down with the tab anyway.
+      void ipcRenderer.invoke(IPC.builtInBrowserStopPreviewStream, { ...scope, tabId: heldTabId })
+        .catch(() => {});
+    }
+    builtInBrowserPreviewSubscriptions.clear();
+  });
+}
+
+function untrackBuiltInBrowserPreviewStream(tabId: string): void {
+  builtInBrowserPreviewSubscriptions.delete(tabId);
+}
+
 function subscribeBuiltInBrowserEvents(
   cb: (payload: BuiltInBrowserEventPayload) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
   // Unlike every sibling panel, the built-in browser is hosted by THIS desktop's
   // main process (it owns a WebContentsView); the runtime daemon only proxies
-  // calls into it over the desktop bridge socket. So a pin on another *local*
-  // checkout still drives this machine's browser and must keep reading the local
-  // IPC stream. A pin on another *machine* is the case that breaks: those calls
-  // land on that desktop's browser, so this window's local stream describes a
-  // browser the panel is not driving, and the pinned runtime stream is the only
-  // one that can describe it.
-  if (pin?.kind === "remote") {
-    const removePinned = subscribePinnedProjectRuntimeEvents(
-      pin,
-      (payload) => toWrappedEvent<BuiltInBrowserEventPayload>(
-        payload,
-        "built_in_browser_event",
-      ),
-      cb,
-      "built-in browser",
-      () => builtInBrowserStatusCache.clear(),
-    );
-    if (removePinned) return removePinned;
-  }
+  // calls into it over the desktop bridge socket. There is no browser on the
+  // pinned machine to describe — a remote pin drives THIS window's browser and
+  // reaches the pinned machine's loopback ports through a port-forward — so
+  // every pin, local or remote, reads the local IPC stream. What a remote pin
+  // adds is `subscribeBuiltInBrowserRemoteRequests`: `ade browser open` run on
+  // that machine has no browser of its own and hands the URL here instead.
+  void pin;
   return builtInBrowserEventFanout(cb);
+}
+
+/**
+ * Browser-open requests forwarded from a headless machine this chat is pinned
+ * to. Only a remote pin can produce them: a local runtime opens the browser
+ * through the desktop bridge socket directly.
+ */
+function subscribeBuiltInBrowserRemoteRequests(
+  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  if (pin?.kind !== "remote") return () => {};
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<BuiltInBrowserRemoteRequest>(
+      payload,
+      BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+    ),
+    cb,
+    "built-in browser remote request",
+  );
+  if (removePinned) return removePinned;
+  /*
+    The pin IS the window's active binding — a remote project tab reading its
+    own runtime, which is the common case, not an edge one.
+
+    `subscribePinnedProjectRuntimeEvents` returns null there rather than open a
+    second stream against a runtime the shared pump already polls. Every sibling
+    domain then falls back to its remote fanout; this one had no fanout to fall
+    back to and returned a no-op, so `ade browser open` on the pinned machine
+    was published and never heard by the one desktop that could satisfy it.
+  */
+  return subscribeRemoteBuiltInBrowserRemoteRequests(cb);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3611,6 +3503,22 @@ function toTerminalSessionChangedEvent(
     sessionId: event.sessionId,
     reason: event.reason,
   };
+}
+
+/**
+ * The `{ kind, event }` shape the auth-status domains use instead of the
+ * ordinary `{ type, event }` wrapper. `guard` is the domain's own check on the
+ * provider id; every one of them also requires a string `state`.
+ */
+function toAuthStatusEvent<T>(
+  payload: Record<string, unknown>,
+  kind: string,
+  guard: (event: Record<string, unknown>) => boolean,
+): T | null {
+  if (payload.kind !== kind || !isRecord(payload.event)) return null;
+  const event = payload.event;
+  if (typeof event.state !== "string" || !guard(event)) return null;
+  return event as unknown as T;
 }
 
 function toWrappedEvent<T>(payload: unknown, type: string): T | null {
@@ -3917,6 +3825,15 @@ const adeBridge = {
       windowId?: number | null,
     ): Promise<{ closed: boolean }> =>
       ipcRenderer.invoke(IPC.appCloseWindow, { windowId: windowId ?? null }),
+    /**
+     * The ordinary window close, prompt and all — what ⌘W does when no surface
+     * in the renderer claimed the menu command for itself.
+     */
+    requestWindowClose: async (): Promise<{ requested: boolean }> =>
+      ipcRenderer.invoke(IPC.appRequestWindowClose),
+    /** Native-menu commands (⌘F, ⌘W) offered to the renderer first. */
+    onMenuCommand: (cb: (command: AppMenuCommand) => void) =>
+      subscribeAppCommand("menu", cb),
     onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -3962,6 +3879,15 @@ const adeBridge = {
     },
     openExternal: async (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenExternal, { url }),
+    /**
+     * Open an OS settings pane by id. Deliberately not `openExternal(url)`:
+     * `x-apple.systempreferences:` is outside the external-URL scheme
+     * allowlist, so main resolves the id against a vetted table instead.
+     */
+    openSystemSettingsPane: async (
+      paneId: SystemSettingsPaneId,
+    ): Promise<AppOpenSystemSettingsPaneResult> =>
+      ipcRenderer.invoke(IPC.appOpenSystemSettingsPane, { paneId } satisfies AppOpenSystemSettingsPaneArgs),
     revealPath: async (path: string): Promise<void> => {
       await assertNotRemoteProjectPathAction("Reveal path", [path]);
       return ipcRenderer.invoke(IPC.appRevealPath, { path });
@@ -8089,6 +8015,63 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
           ),
       ),
+    // Agent action model, read side only. The panel shows what an agent did —
+    // it never drives `agentClick`/`agentFill`/… from here, so those stay off
+    // `window.ade` and remain reachable only through the action registry.
+    //
+    // None of the five has an `IPC.appControl*` channel: they were added to the
+    // App Control service for the runtime action domain, which is how the
+    // desktop reaches App Control whenever a project is open. With no project
+    // runtime bound there is nothing to fall back to, so say that plainly
+    // instead of invoking a channel that does not exist.
+    listDrivers: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlDriversResult> =>
+      callAppControlActionOr(pin, "listDrivers", {}, () =>
+        appControlNeedsProjectRuntime("listDrivers"),
+      ),
+    observe: async (
+      args: AppControlObservationArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlObservation> =>
+      // Not a read: `observe` writes an observation record under
+      // `.ade/cache/app-control-observations/`, prunes older ones, and bumps
+      // `session.lastObservationId`. Callers must drive it from an explicit
+      // user action, never a timer.
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callAppControlActionOr(pin, "observe", { args }, () =>
+            appControlNeedsProjectRuntime("observe"),
+          ),
+      ),
+    getTrace: async (
+      args: AppControlTraceArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlTraceResult> =>
+      callAppControlActionOr(pin, "getTrace", { args }, () =>
+        appControlNeedsProjectRuntime("getTrace"),
+      ),
+    windows: async (
+      args: AppControlSessionTargetArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlWindowsResult> =>
+      callAppControlActionOr(pin, "windows", { args }, () =>
+        appControlNeedsProjectRuntime("windows"),
+      ),
+    switchWindow: async (
+      args: AppControlSwitchWindowArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlWindowsResult> =>
+      // Re-attaches CDP, restarts the screencast and clears the action trace,
+      // exactly like `attachToTarget` — so it invalidates the status cache too.
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callAppControlActionOr(pin, "switchWindow", { args }, () =>
+            appControlNeedsProjectRuntime("switchWindow"),
+          ),
+      ),
     onEvent: subscribeAppControlEvents,
   },
   builtInBrowser: {
@@ -8096,14 +8079,20 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "getStatus", { args })
         : builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+    // Seed-only, and deliberately separate from `getStatus`: the badge is
+    // mounted by every session card and the chat header, and `getStatus` is the
+    // creating resolver that restores and re-loads every persisted tab. Not
+    // cached — it is asked once per shared subscription, not per badge.
+    getAgentPresence: async (): Promise<BuiltInBrowserAgentPresence[]> =>
+      ipcRenderer.invoke(IPC.builtInBrowserGetAgentPresence),
     requestOriginAccess: async (
       args: BuiltInBrowserRequestOriginAccessArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserOriginAccessResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserOriginAccessResult>(pin, "built_in_browser", "requestOriginAccess", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8117,58 +8106,104 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // Human-only, like `getProfileDiagnostics` / `listPermissions` above: no
+    // `pin` overload, so there is no path from a pinned runtime action — and
+    // therefore from an agent — into someone's cookie jar.
+    loginImport: {
+      capabilities: async (): Promise<BrowserLoginImportCapabilities> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportCapabilities),
+      listSources: async (): Promise<BrowserLoginImportListSourcesResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportListSources),
+      listDomains: async (
+        args: BrowserLoginImportListDomainsArgs,
+      ): Promise<BrowserLoginImportListDomainsResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportListDomains, args),
+      import: async (args: BrowserLoginImportArgs): Promise<BrowserLoginImportResult> =>
+        ipcRenderer.invoke(IPC.builtInBrowserLoginImportImport, args),
+    },
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "showPanel", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserShowPanel,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     setBounds: async (
       args: BuiltInBrowserBoundsArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "setBounds", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args),
           ),
-    attachWebview: async (
-      args: BuiltInBrowserAttachWebviewArgs,
-    ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserAttachWebview, args),
-      ),
+    /**
+     * Resolve what a loopback URL means for a chat pinned to another machine,
+     * without navigating. The panel calls this so its URL bar can keep showing
+     * the REMOTE origin the human asked for while the view loads the forward.
+     */
+    localizeRemoteUrl: async (
+      args: { url: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LocalizedRemoteUrl> =>
+      pin?.kind === "remote"
+        ? localizeRemoteLoopbackUrl(pin, args.url)
+        : { url: (args.url ?? "").trim(), forward: null },
+    /**
+     * Tell the machine that asked for a browser open that this desktop took it.
+     * Deliberately routed to the PINNED runtime — the daemon waiting on the ack
+     * is the one that emitted `built_in_browser_remote_request`.
+     */
+    acknowledgeRemoteRequest: async (
+      args: BuiltInBrowserRemoteRequestAck,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      pin
+        ? callPinnedRuntimeAction<{ ok: boolean }>(
+            pin,
+            "built_in_browser",
+            "acknowledgeRemoteRequest",
+            { args },
+          )
+        : { ok: false },
     navigate: async (
       args: BuiltInBrowserNavigateArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "navigate", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserNavigate,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     createTab: async (
       args: BuiltInBrowserCreateTabArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "createTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args),
+            async () => ipcRenderer.invoke(
+              IPC.builtInBrowserCreateTab,
+              await withLocalizedBrowserUrl(pin, args),
+            ),
           ),
     switchTab: async (
       args: BuiltInBrowserTabArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "switchTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8178,7 +8213,7 @@ const adeBridge = {
       args: BuiltInBrowserTabArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "closeTab", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8188,7 +8223,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "reload", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8198,7 +8233,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goBack", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8208,7 +8243,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goForward", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8218,7 +8253,7 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stop", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8228,7 +8263,7 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "startInspect", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8238,7 +8273,7 @@ const adeBridge = {
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stopInspect", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
@@ -8247,35 +8282,196 @@ const adeBridge = {
     captureScreenshot: async (
       args: BuiltInBrowserTabTargetArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<BuiltInBrowserScreenshot> =>
-      pin
+    ): Promise<BuiltInBrowserScreenshotResult> =>
+      // A pinned runtime answers on the agent contract (no tab = a rejected
+      // request), so its success is tagged here to keep one shape for callers.
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserScreenshot>(pin, "built_in_browser", "captureScreenshot", { args })
+            .then((screenshot) => ({ ok: true as const, ...screenshot }))
         : ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectPoint", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
     selectCurrent: async (
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectCurrent", { args })
         : ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent, args),
     clearSelection: async (
       args: BuiltInBrowserProjectScopeArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      pin
+      isLocalBrowserRoutingPin(pin)
         ? callPinnedRuntimeAction<{ ok: true }>(pin, "built_in_browser", "clearSelection", { args })
         : clearAround(
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
           ),
+    /**
+     * Human hand-back. Deliberately NOT routed through a locally-pinned
+     * runtime, unlike every other browser call. The handed-off tab is this
+     * Electron process's own `WebContentsView`, and the daemon round-trip
+     * cannot reach it: `adeRpcServer` only accepts `endHandoff` from a user
+     * client (no `chatSessionId`), and `desktopBridgeServer` then refuses that
+     * same caller for having no chat capability. Routing it locally is the only
+     * shape where `Hand back` actually works on a local pin; the agent-facing
+     * gate is unaffected because agents never reach this preload surface.
+     */
+    endHandoff: async (
+      args: BuiltInBrowserEndHandoffArgs = {},
+      _pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserHandoffResult> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserEndHandoff, args),
+      ),
+    setEmulation: async (
+      args: BuiltInBrowserSetEmulationArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserEmulationResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserEmulationResult>(pin, "built_in_browser", "setEmulation", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetEmulation, args),
+          ),
+    setZoom: async (
+      args: BuiltInBrowserSetZoomArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserZoomResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserZoomResult>(pin, "built_in_browser", "setZoom", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetZoom, args),
+          ),
+    /**
+     * Dev servers ADE sniffed out of terminal output, for the launchpad chips.
+     * Always local: dev-server discovery is a property of this machine's PTYs,
+     * so it never routes through a pinned remote runtime.
+     */
+    getDevServers: async (args: DevServersArgs = {}): Promise<DevServersResult> =>
+      ipcRenderer.invoke(IPC.localhostGetDevServers, args),
+    findInPage: async (
+      args: BuiltInBrowserFindInPageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserFindInPageResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserFindInPageResult>(pin, "built_in_browser", "findInPage", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserFindInPage, args),
+    stopFindInPage: async (
+      args: BuiltInBrowserStopFindInPageArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStopFindInPageResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStopFindInPageResult>(pin, "built_in_browser", "stopFindInPage", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserStopFindInPage, args),
+    /*
+      Deliberately never pin-routed, both of these.
+
+      `focusHost` moves the OS keyboard focus between two WebContents of THIS
+      Electron process; a daemon round trip cannot reach either. `claimRemoteRequest`
+      arbitrates between the windows of this desktop, so asking the remote runtime
+      which of them wins would be asking the wrong computer.
+    */
+    focusHost: async (): Promise<{ focused: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserFocusHost),
+    claimRemoteRequest: async (args: { requestId: string }): Promise<{ claimed: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserClaimRemoteRequest, args),
+    setDevTools: async (
+      args: BuiltInBrowserSetDevToolsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserDevToolsResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserDevToolsResult>(pin, "built_in_browser", "setDevTools", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetDevTools, args),
+          ),
+    setNetworkLogging: async (
+      args: BuiltInBrowserSetNetworkLoggingArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserNetworkLoggingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserNetworkLoggingResult>(pin, "built_in_browser", "setNetworkLogging", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetNetworkLogging, args),
+          ),
+    getNetworkLog: async (
+      args: BuiltInBrowserNetworkLogArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserNetworkLogResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserNetworkLogResult>(pin, "built_in_browser", "getNetworkLog", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserGetNetworkLog, args),
+    exportHar: async (
+      args: BuiltInBrowserExportHarArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserExportHarResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserExportHarResult>(pin, "built_in_browser", "exportHar", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserExportHar, args),
+    startRecording: async (
+      args: BuiltInBrowserStartRecordingArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStartRecordingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStartRecordingResult>(pin, "built_in_browser", "startRecording", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStartRecording, args),
+          ),
+    stopRecording: async (
+      args: BuiltInBrowserStopRecordingArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserStopRecordingResult> =>
+      isLocalBrowserRoutingPin(pin)
+        ? callPinnedRuntimeAction<BuiltInBrowserStopRecordingResult>(pin, "built_in_browser", "stopRecording", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStopRecording, args),
+          ),
+    /**
+     * Live thumbnail frames for a tab, for surfaces that are not the browser
+     * panel. Deliberately local-only — no `callPinnedRuntimeAction` branch:
+     * the WebContentsView being previewed lives in THIS window's main process,
+     * and there is no agent tool behind this, so a pinned machine has nothing
+     * to answer with. Callers must pair start/stop; the service refcounts.
+     */
+    startPreviewStream: async (
+      args: BuiltInBrowserStartPreviewStreamArgs = {},
+    ): Promise<BuiltInBrowserPreviewStreamResult> => {
+      // Narrow rather than cast: in runtime-backed mode a missing handler
+      // resolves to something without `tabId`, and dereferencing it inside the
+      // preload throws a TypeError the caller cannot see or handle.
+      const raw: unknown = await ipcRenderer.invoke(IPC.builtInBrowserStartPreviewStream, args);
+      if (!isRecord(raw) || typeof raw.tabId !== "string") {
+        throw new Error("Built-in browser preview stream is unavailable in this window.");
+      }
+      const result = raw as unknown as BuiltInBrowserPreviewStreamResult;
+      trackBuiltInBrowserPreviewStream(result.tabId, args);
+      return result;
+    },
+    stopPreviewStream: async (
+      args: BuiltInBrowserStopPreviewStreamArgs = {},
+    ): Promise<BuiltInBrowserPreviewStreamResult> => {
+      const raw: unknown = await ipcRenderer.invoke(IPC.builtInBrowserStopPreviewStream, args);
+      if (!isRecord(raw) || typeof raw.tabId !== "string") {
+        throw new Error("Built-in browser preview stream is unavailable in this window.");
+      }
+      const result = raw as unknown as BuiltInBrowserPreviewStreamResult;
+      untrackBuiltInBrowserPreviewStream(result.tabId);
+      return result;
+    },
     onEvent: subscribeBuiltInBrowserEvents,
+    onRemoteRequest: subscribeBuiltInBrowserRemoteRequests,
   },
   terminal: {
     list: async (
@@ -10477,6 +10673,48 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
   },
+  /**
+   * Read-only Work tools-pane state, plus the one write the desktop owns.
+   *
+   * There is no local IPC fallback: the aggregator lives in the runtime daemon
+   * (it reads the App Control service and the desktop browser bridge), so with
+   * no runtime bound there is genuinely nothing to report and nowhere to
+   * publish. Both calls degrade to "unknown" rather than throwing, because this
+   * is a passive mirror — it must never break the pane it describes.
+   */
+  workTools: {
+    getLaneState: async (
+      laneId: string,
+    ): Promise<WorkToolsLaneState | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<WorkToolsLaneState>(
+        "work_tools",
+        "getLaneState",
+        { args: { laneId } satisfies WorkToolsGetLaneStateArgs },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
+    setActiveTool: async (
+      laneId: string,
+      tool: WorkToolId | null,
+      openTools: WorkToolId[] = [],
+    ): Promise<void> => {
+      await callProjectRuntimeActionIfBound(
+        "work_tools",
+        "setActiveTool",
+        { args: { laneId, tool, openTools } satisfies WorkToolsSetActiveToolArgs },
+      );
+    },
+    readObservationPreview: async (
+      observationPath: string,
+    ): Promise<WorkToolsObservationPreview | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<WorkToolsObservationPreview | null>(
+        "work_tools",
+        "readObservationPreview",
+        { args: { path: observationPath } satisfies WorkToolsReadObservationPreviewArgs },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
+  },
   tests: {
     listSuites: async (): Promise<TestSuiteDefinition[]> => {
       const runtime = await callProjectRuntimeActionIfBound<
@@ -10631,14 +10869,8 @@ const adeBridge = {
       zoomFactor?: number;
     }): Promise<{ applied: boolean }> =>
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
-    onCommand: (cb: (command: AppZoomCommand) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AppZoomCommand,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appZoomCommand, listener);
-      return () => ipcRenderer.removeListener(IPC.appZoomCommand, listener);
-    },
+    onCommand: (cb: (command: AppZoomCommand) => void) =>
+      subscribeAppCommand("zoom", cb),
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>

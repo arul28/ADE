@@ -151,6 +151,27 @@ export function matchesQuery(ctx: BranchMatchContext, query: ParsedSearchQuery):
   return true;
 }
 
+/**
+ * The same clock, spelled as prose: `"just now"` / `"30s ago"`.
+ *
+ * A second copy of this bucketing had grown in `chat/appControlTrace.ts`,
+ * differing only in the suffix and the sub-5s case. Composed rather than
+ * re-implemented so the two can never disagree about what "3h" means.
+ */
+export function formatRelativeTimeAgo(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  if (!iso) return "";
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  // Also catches a clock that is ahead of the timestamp's origin: "in 4s ago"
+  // is not a thing anybody wants to read.
+  if (now - ts < 5_000) return "just now";
+  const compact = formatRelativeTime(iso, now);
+  return compact ? `${compact} ago` : "";
+}
+
 export function formatRelativeTime(iso: string | undefined, now: number = Date.now()): string {
   if (!iso) return "";
   const ts = Date.parse(iso);

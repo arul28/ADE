@@ -4,6 +4,27 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
+import { terminalStatusLine } from "../terminals/useWorkToolStatuses";
+import {
+  getWorkTerminalShellCount,
+  resetWorkTerminalShellCounts,
+  subscribeWorkTerminalShells,
+} from "../terminals/workTerminalShells";
+
+/**
+ * The tools pane header, reduced to the one thing this file can prove: it reads
+ * the SAME list the drawer renders, through the same subscription, and it is a
+ * sibling of the drawer rather than its parent — so anything it re-renders for
+ * cannot have remounted the drawer.
+ */
+function ShellCountProbe({ ownerSessionId }: { ownerSessionId: string }) {
+  const count = React.useSyncExternalStore(
+    subscribeWorkTerminalShells,
+    () => getWorkTerminalShellCount(ownerSessionId),
+    () => null,
+  );
+  return <div data-testid="shell-count">{terminalStatusLine(null, count).line ?? "unmeasured"}</div>;
+}
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -51,11 +72,33 @@ describe("ChatTerminalDrawer", () => {
 
   afterEach(() => {
     cleanup();
+    resetWorkTerminalShellCounts();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
       globalThis.window.ade = originalAde;
     }
+  });
+
+  it("shows one affordance, not two, when a panel has no shells", async () => {
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    // The empty tab strip is gone: its "+" and the centred button were the same
+    // action rendered twice, 28px apart.
+    await waitFor(() => expect(screen.queryByTestId("terminal-new-shell")).toBeNull());
+    expect(screen.getByText("Start a shell in this lane")).toBeTruthy();
+    expect(screen.getByTestId("terminal-empty-new-shell")).toBeTruthy();
+    // One line and one button: no paragraph explaining what a shell is, and no
+    // `ade terminal` hint competing with the action for the same 280px.
+    expect(screen.queryByText("ade terminal")).toBeNull();
   });
 
   it("deduplicates a created tab when the same terminal was already revealed", async () => {
@@ -77,7 +120,7 @@ describe("ChatTerminalDrawer", () => {
 
     expect(await screen.findByText("Drawer event run")).toBeTruthy();
 
-    fireEvent.click(screen.getByTitle("New terminal"));
+    fireEvent.click(screen.getByTestId("terminal-new-shell"));
 
     await waitFor(() => {
       expect(window.ade.pty.create).toHaveBeenCalledTimes(1);
@@ -103,7 +146,9 @@ describe("ChatTerminalDrawer", () => {
       />,
     );
 
-    const createButton = screen.getByTitle("New terminal");
+    // No shells yet, so the only "+" on screen is the empty state's button —
+    // the strip is not rendered for tabs that do not exist.
+    const createButton = screen.getByTestId("terminal-empty-new-shell");
     fireEvent.click(createButton);
     fireEvent.click(createButton);
 
@@ -115,6 +160,168 @@ describe("ChatTerminalDrawer", () => {
       expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-once:pty-once");
     });
     expect(screen.getAllByText(/^Terminal \d+$/)).toHaveLength(1);
+  });
+
+  it("drives the panel chrome row: + opens a shell, split stacks a second, kill closes one", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "First terminal",
+        status: "running",
+      },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("terminal-new-shell"));
+    await waitFor(() => expect(window.ade.pty.create).toHaveBeenCalledTimes(1));
+
+    // One shell besides the active one already exists, so splitting shows it
+    // rather than opening a third.
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    expect(window.ade.pty.create).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("terminal-kill"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(1));
+    expect(window.ade.pty.dispose).toHaveBeenCalled();
+  });
+
+  it("splits again on one click after the split pane's own pill was activated", async () => {
+    /*
+      A13: clicking the split shell's pill makes it active, which retires the
+      second pane while leaving `splitTabId` truthy. Gating the toggle on the
+      raw id then read "a split is showing" and turned the next click into a
+      no-op toggle-off of something nobody could see — the button had already
+      relabelled itself "Split", so the user had to click it twice.
+    */
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "First terminal", status: "running" },
+      { terminalId: "terminal-2", ptyId: "pty-2", title: "Second terminal", status: "running" },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+
+    // Activate the split shell itself. One pane again — the same runtime
+    // cannot fill both — but the stale split id is still on state.
+    fireEvent.click(screen.getByText("Second terminal"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(1));
+
+    // ONE click brings the split back. No new PTY: the spare tab is reused.
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    expect(window.ade.pty.create).not.toHaveBeenCalled();
+  });
+
+  it("opens a second shell when splitting with nothing to split against", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "Only terminal",
+        status: "running",
+      },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("Only terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("terminal-split"));
+
+    await waitFor(() => expect(window.ade.pty.create).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    // The new shell lands in the split pane; focus stays where the split was
+    // requested from, so the top pane is still the shell you were using.
+    expect(screen.getAllByTestId("terminal-view")[0].textContent).toBe("terminal-1:pty-1");
+  });
+
+  it("moves the pane's shell count when a split opens a shell, without remounting", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "Only terminal", status: "running" },
+    ] as any);
+
+    render(
+      <>
+        <ShellCountProbe ownerSessionId="chat-1" />
+        <ChatTerminalDrawer
+          open
+          onToggle={vi.fn()}
+          laneId="lane-1"
+          chatSessionId="chat-1"
+          autoCreateOnOpen={false}
+        />
+      </>,
+    );
+
+    expect(await screen.findByText("Only terminal")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("shell-count").textContent).toBe("1 shell"));
+
+    // The exact regression: the header said "1 shell" over a split showing two
+    // panes, because it was counting a different list.
+    fireEvent.click(screen.getByTestId("terminal-split"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId("shell-count").textContent).toBe("2 shells"));
+
+    // One `terminal.list` for the whole exercise: the count moved because the
+    // panel published it, not because anything remounted and re-read.
+    expect(window.ade.terminal.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops reporting a shell count once the panel is gone", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      { terminalId: "terminal-1", ptyId: "pty-1", title: "Only terminal", status: "running" },
+    ] as any);
+
+    const view = render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("Only terminal")).toBeTruthy();
+    await waitFor(() => expect(getWorkTerminalShellCount("chat-1")).toBe(1));
+
+    // Switching to another tool unmounts the panel; a count left behind would
+    // describe shells nobody is showing.
+    view.unmount();
+    expect(getWorkTerminalShellCount("chat-1")).toBeNull();
   });
 
   it("does not restore terminal tabs while the drawer is closed", async () => {
@@ -136,7 +343,6 @@ describe("ChatTerminalDrawer", () => {
   it("uses the panel variant for CLI-owned attached terminals without a horizontal resize handle", async () => {
     const view = render(
       <ChatTerminalDrawer
-        variant="panel"
         open
         onToggle={vi.fn()}
         laneId="lane-1"
@@ -149,7 +355,9 @@ describe("ChatTerminalDrawer", () => {
     expect(view.container.querySelector(".cursor-row-resize")).toBeNull();
     expect((view.container.firstElementChild as HTMLElement).style.height).toBe("");
 
-    fireEvent.click(screen.getByTitle("New terminal"));
+    // With no shells the panel shows one affordance — the empty state's button
+    // — rather than that plus an empty tab strip carrying a second "+".
+    fireEvent.click(screen.getByTestId("terminal-empty-new-shell"));
 
     await waitFor(() => expect(window.ade.pty.create).toHaveBeenCalledTimes(1));
     expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -266,7 +474,10 @@ describe("ChatTerminalDrawer", () => {
     expect(screen.queryByText("First terminal")).toBeNull();
   });
 
-  it("resizes the drawer by dragging the resize handle", async () => {
+  it("fills its pane rather than carrying a draggable height of its own", async () => {
+    // There is one mode now. The bottom-drawer arm — a persisted pixel height
+    // and a resize gutter — had no caller left and is gone; the panel takes the
+    // height its pane gives it, and the pane's own splitter is the resize.
     const view = render(
       <ChatTerminalDrawer
         open
@@ -278,15 +489,9 @@ describe("ChatTerminalDrawer", () => {
     );
 
     await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
-    const drawer = view.container.firstElementChild as HTMLElement;
-    const handle = view.container.querySelector(".cursor-row-resize");
-    expect(handle).toBeTruthy();
-    expect(drawer.style.height).toBe("300px");
-
-    fireEvent.mouseDown(handle!, { clientY: 300 });
-    fireEvent.mouseMove(document, { clientY: 200 });
-    fireEvent.mouseUp(document);
-
-    expect(drawer.style.height).toBe("400px");
+    const panel = view.container.firstElementChild as HTMLElement;
+    expect(view.container.querySelector(".ade-tool-gutter.horizontal")).toBeNull();
+    expect(panel.style.height).toBe("");
+    expect(panel.className).toContain("h-full");
   });
 });

@@ -8,27 +8,46 @@ import type {
   AppControlClaimArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlConsoleDiagnostic,
   AppControlContextItem,
   AppControlCoordinateSpace,
+  AppControlDriver,
+  AppControlDriverCapability,
+  AppControlDriversResult,
   AppControlElement,
   AppControlEventPayload,
   AppControlFrame,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlNetworkDiagnostic,
   AppControlScreencastFrame,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlSourceMatch,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
   AppControlTypeTextArgs,
+  AppControlWindowsResult,
   WindowsShellKind,
 } from "../../../shared/types";
+import {
+} from "../../../shared/agentObservation";
+import {
+  MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS,
+  MAX_APP_CONTROL_NETWORK_DIAGNOSTICS,
+  isRecord,
+  normalizePositiveInteger,
+  optionalFiniteNumber,
+  stringOrNull,
+} from "./appControlObservations";
+import { createAppControlAgentActions } from "./appControlAgentActions";
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
 import { imageDimensions } from "../shared/imageDimensions";
@@ -51,6 +70,7 @@ const MAX_DOM_ELEMENTS = 450;
 const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html", ".css"]);
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
 const SOURCE_FILE_CACHE_MAX = 200;
+const MAX_PENDING_NETWORK_REQUESTS = 500;
 
 function cleanClaimId(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -1010,9 +1030,92 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   let screencastEndpoint: string | null = null;
   let screencastGeneration = 0;
   let lastScreencastFrame: AppControlScreencastFrame | null = null;
+  // Agent-observation state. Diagnostics ride along on the persistent
+  // screencast client so `observe` can report console errors, failed requests,
+  // and in-flight request count without opening another socket per call.
+  let consoleDiagnostics: AppControlConsoleDiagnostic[] = [];
+  let networkDiagnostics: AppControlNetworkDiagnostic[] = [];
+  const pendingNetworkRequests = new Map<string, { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number }>();
+  let lastNetworkActivityAtMs = Date.now();
+  // Trace before/after context. The controlled app has no tab bar to read, so
+  // observations and waits keep the last known document identity here.
+
+  /**
+   * Error tallies since the app's last navigation or reattach — the number the
+   * Work tools pane's red dot reports. Kept as counters rather than derived
+   * from the diagnostic buffers, which are capped rolling windows: an app that
+   * logs 200 errors would otherwise report only the last 50.
+   */
+  let consoleErrorCount = 0;
+  let failedRequestCount = 0;
+
+  const resetDiagnostics = (): void => {
+    consoleDiagnostics = [];
+    networkDiagnostics = [];
+    pendingNetworkRequests.clear();
+    lastNetworkActivityAtMs = Date.now();
+    if (consoleErrorCount === 0 && failedRequestCount === 0) return;
+    consoleErrorCount = 0;
+    failedRequestCount = 0;
+    // A reset is a state transition, not a storm: publish it now, and cancel
+    // any coalesced emit so the old tally cannot land after the zero.
+    forceEmitDiagnostics();
+  };
 
   const emit = (payload: AppControlEventPayload) => {
     args.onEvent?.(payload);
+  };
+
+  /**
+   * Publishes the session's error tally. Emitted on change only, and only from
+   * the paths that can move it, so nothing has to poll `observe` to find out
+   * whether the app under control is broken.
+   *
+   * Coalesced on a trailing edge because the target of App Control is by
+   * construction an app under active debugging: a render loop calling
+   * `console.error` produced one IPC event per error, fanned out to every
+   * subscribed window and CLI listener, to move the same red dot. 250 ms
+   * matches the debounce the Work-tools state service already uses for this
+   * class of signal. `flushDiagnostics` exists for the paths that must publish
+   * now (a reset, a teardown).
+   */
+  const DIAGNOSTICS_COALESCE_MS = 250;
+  let diagnosticsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const publishDiagnostics = (): void => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) return;
+    emit({
+      type: "diagnostics",
+      sessionId,
+      consoleErrorCount,
+      failedRequestCount,
+      updatedAt: nowIso(),
+    });
+  };
+
+  /** Publish immediately, cancelling any coalesced emit. */
+  const forceEmitDiagnostics = (): void => {
+    if (diagnosticsTimer) {
+      clearTimeout(diagnosticsTimer);
+      diagnosticsTimer = null;
+    }
+    publishDiagnostics();
+  };
+
+  /** Publish a coalesced emit that is still pending, if there is one. */
+  const flushDiagnostics = (): void => {
+    if (!diagnosticsTimer) return;
+    forceEmitDiagnostics();
+  };
+
+  const emitDiagnostics = (): void => {
+    if (diagnosticsTimer) return;
+    diagnosticsTimer = setTimeout(() => {
+      diagnosticsTimer = null;
+      publishDiagnostics();
+    }, DIAGNOSTICS_COALESCE_MS);
+    diagnosticsTimer.unref?.();
   };
 
   const updateSession = (patch: Partial<AppControlSession>) => {
@@ -1056,7 +1159,160 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     // image from the previous target after the user switches windows or the
     // app exits.
     lastScreencastFrame = null;
+    resetDiagnostics();
     await closeScreencastClient(client);
+  };
+
+  const pushConsoleDiagnostic = (entry: AppControlConsoleDiagnostic): void => {
+    consoleDiagnostics = [...consoleDiagnostics, entry].slice(-MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS);
+    if (entry.level === "error") {
+      consoleErrorCount += 1;
+      emitDiagnostics();
+    }
+  };
+
+  const pushNetworkDiagnostic = (entry: AppControlNetworkDiagnostic): void => {
+    networkDiagnostics = [...networkDiagnostics, entry].slice(-MAX_APP_CONTROL_NETWORK_DIAGNOSTICS);
+    // A transport failure and a 4xx/5xx both read as "this app is broken" to
+    // the person glancing at the tools pane; a 200 does not.
+    if (entry.error != null || (entry.statusCode != null && entry.statusCode >= 400)) {
+      failedRequestCount += 1;
+      emitDiagnostics();
+    }
+  };
+
+  const consoleLevelFor = (value: unknown): AppControlConsoleDiagnostic["level"] => {
+    const raw = typeof value === "string" ? value.toLowerCase() : "";
+    if (raw === "error" || raw === "assert") return "error";
+    if (raw === "warning" || raw === "warn") return "warning";
+    if (raw === "debug" || raw === "verbose") return "debug";
+    return "info";
+  };
+
+  /**
+   * Console + network capture for `observe`. Registered on the long-lived
+   * screencast client so observations carry the same diagnostics the built-in
+   * browser reports, and so a failed fetch is visible to the agent even when
+   * the UI looks unchanged.
+   */
+  const subscribeDiagnostics = (client: CdpClient): void => {
+    client.on("Runtime.consoleAPICalled", (params) => {
+      if (!isRecord(params)) return;
+      const argsList = Array.isArray(params.args) ? params.args : [];
+      const message = argsList
+        .map((entry) => {
+          if (!isRecord(entry)) return "";
+          if (typeof entry.value === "string") return entry.value;
+          if (entry.value !== undefined) return JSON.stringify(entry.value);
+          return stringOrNull(entry.description) ?? "";
+        })
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 2_000);
+      if (!message) return;
+      pushConsoleDiagnostic({
+        level: consoleLevelFor(params.type),
+        message,
+        sourceId: null,
+        line: null,
+        column: null,
+        timestamp: nowIso(),
+      });
+    });
+    client.on("Log.entryAdded", (params) => {
+      const entry = isRecord(params) && isRecord(params.entry) ? params.entry : null;
+      if (!entry) return;
+      const message = stringOrNull(entry.text);
+      if (!message) return;
+      pushConsoleDiagnostic({
+        level: consoleLevelFor(entry.level),
+        message: message.slice(0, 2_000),
+        sourceId: stringOrNull(entry.url),
+        line: normalizePositiveInteger(entry.lineNumber),
+        column: null,
+        timestamp: nowIso(),
+      });
+    });
+    client.on("Network.requestWillBeSent", (params) => {
+      if (!isRecord(params)) return;
+      const requestId = stringOrNull(params.requestId);
+      const request = isRecord(params.request) ? params.request : {};
+      const url = stringOrNull(request.url);
+      if (!requestId || !url) return;
+      lastNetworkActivityAtMs = Date.now();
+      // A long-lived app can start requests that never emit a finished/failed
+      // event (streams, aborted sockets). Bound the map so `pendingRequestCount`
+      // stays meaningful and the session cannot leak entries.
+      if (pendingNetworkRequests.size >= MAX_PENDING_NETWORK_REQUESTS) {
+        const oldest = pendingNetworkRequests.keys().next();
+        if (!oldest.done) pendingNetworkRequests.delete(oldest.value);
+      }
+      pendingNetworkRequests.set(requestId, {
+        url,
+        method: stringOrNull(request.method),
+        resourceType: stringOrNull(params.type),
+        startedAt: nowIso(),
+        startedAtMs: Date.now(),
+      });
+    });
+    const settleRequest = (requestId: string | null): { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number } | null => {
+      lastNetworkActivityAtMs = Date.now();
+      if (!requestId) return null;
+      const pending = pendingNetworkRequests.get(requestId) ?? null;
+      pendingNetworkRequests.delete(requestId);
+      return pending;
+    };
+    client.on("Network.responseReceived", (params) => {
+      if (!isRecord(params)) return;
+      const response = isRecord(params.response) ? params.response : {};
+      const statusCode = optionalFiniteNumber(response.status);
+      if (statusCode == null || statusCode < 400) {
+        lastNetworkActivityAtMs = Date.now();
+        return;
+      }
+      const requestId = stringOrNull(params.requestId);
+      const pending = requestId ? pendingNetworkRequests.get(requestId) ?? null : null;
+      pushNetworkDiagnostic({
+        url: stringOrNull(response.url) ?? pending?.url ?? "about:blank",
+        method: pending?.method ?? null,
+        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
+        statusCode,
+        error: null,
+        startedAt: pending?.startedAt ?? null,
+        endedAt: nowIso(),
+        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
+      });
+    });
+    client.on("Network.loadingFinished", (params) => {
+      settleRequest(isRecord(params) ? stringOrNull(params.requestId) : null);
+    });
+    client.on("Network.loadingFailed", (params) => {
+      if (!isRecord(params)) return;
+      const pending = settleRequest(stringOrNull(params.requestId));
+      if (params.canceled === true) return;
+      pushNetworkDiagnostic({
+        url: pending?.url ?? "about:blank",
+        method: pending?.method ?? null,
+        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
+        statusCode: null,
+        error: stringOrNull(params.errorText) ?? "Request failed.",
+        startedAt: pending?.startedAt ?? null,
+        endedAt: nowIso(),
+        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
+      });
+    });
+    client.on("Page.frameNavigated", (params) => {
+      // Main frame only: an iframe swapping documents is not a new page, and
+      // zeroing the tally on one would hide errors the app just logged.
+      const frame = isRecord(params) && isRecord(params.frame) ? params.frame : null;
+      if (!frame || stringOrNull(frame.parentId)) return;
+      resetDiagnostics();
+    });
+    // Best-effort: a target that refuses one of these still streams frames and
+    // serves input, it just reports fewer diagnostics.
+    void client.send("Runtime.enable").catch(() => {});
+    void client.send("Log.enable").catch(() => {});
+    void client.send("Network.enable").catch(() => {});
   };
 
   const startScreencast = async (sessionId: string, targetId: string | null, cdpEndpoint: string): Promise<void> => {
@@ -1101,6 +1357,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     screencastSessionId = sessionId;
     screencastTargetId = targetId;
     screencastEndpoint = cdpEndpoint;
+    resetDiagnostics();
+    subscribeDiagnostics(client);
     try {
       await client.send("Page.enable");
     } catch {
@@ -1303,6 +1561,56 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     });
   }) ?? null;
 
+  // ---------------------------------------------------------------------
+  // Driver capability gate
+  //
+  // `cdp` is the only implemented driver. `computer_use` is typed and listed
+  // so callers can discover it, but selecting it fails with a typed error
+  // instead of silently falling back to CDP.
+  // ---------------------------------------------------------------------
+  // Both facts, in one sentence: the driver does not exist in this build on any
+  // platform, and even when it does it will be macOS-only. Saying only the
+  // second told a Windows user the feature works if they switch to a Mac — it
+  // does not; on macOS the same driver reports "not implemented".
+  const COMPUTER_USE_PLATFORM_REASON =
+    "The computer-use App Control driver is not implemented in this build; native app control would be macOS only.";
+  const COMPUTER_USE_UNIMPLEMENTED_REASON =
+    "The computer-use App Control driver is not implemented in this build.";
+
+  const computerUseCapability = (): AppControlDriverCapability => (
+    process.platform === "darwin"
+      ? { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_UNIMPLEMENTED_REASON, implemented: false }
+      : { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_PLATFORM_REASON, implemented: false }
+  );
+
+  const listDrivers = (): AppControlDriversResult => ({
+    platform: process.platform,
+    activeDriver: activeSession?.driver ?? null,
+    drivers: [
+      {
+        driver: "cdp",
+        status: "available",
+        reason: null,
+        implemented: true,
+      },
+      computerUseCapability(),
+    ],
+  });
+
+  const normalizeDriver = (value: AppControlDriver | null | undefined): AppControlDriver => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw || raw === "cdp") return "cdp";
+    if (raw === "computer_use" || raw === "computer-use") return "computer_use";
+    throw new Error(`Unknown App Control driver '${raw}'. Supported drivers: cdp, computer_use.`);
+  };
+
+  const requireSupportedDriver = (value: AppControlDriver | null | undefined): AppControlDriver => {
+    const driver = normalizeDriver(value);
+    if (driver === "cdp") return driver;
+    const capability = computerUseCapability();
+    throw new Error(`App Control driver 'computer_use' is unavailable: ${capability.reason}`);
+  };
+
   const getStatus = (): AppControlStatus => {
     const waitingForCdp = activeSession
       && (activeSession.status === "starting" || activeSession.status === "running")
@@ -1493,6 +1801,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   };
 
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {
+    requireSupportedDriver(connectArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !connectArgs.force) {
       throw new Error("App Control already has an active session. Pass force=true to replace it.");
@@ -1525,11 +1834,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       cdpEndpoint: target.webSocketDebuggerUrl,
       cdpTargetId: target.id,
       provider: "cdp",
+      driver: "cdp",
       chatSessionId: connectArgs.chatSessionId ?? null,
       startedAt: nowIso(),
       connectedAt: nowIso(),
       status: "connected",
       lastError: null,
+      lastObservationId: null,
+      lastTraceEntryId: null,
     };
     emit({ type: "session-started", session: activeSession });
     startCdpHealthCheck(activeSession.id, cdpPort);
@@ -1538,6 +1850,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   };
 
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+    requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
       throw new Error("App Control already has an active session. Pass --force to replace it.");
@@ -1574,11 +1887,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       cdpEndpoint: null,
       cdpTargetId: null,
       provider: "cdp",
+      driver: "cdp",
       chatSessionId: launchArgs.chatSessionId ?? null,
       startedAt: nowIso(),
       connectedAt: null,
       status: "starting",
       lastError: null,
+      lastObservationId: null,
+      lastTraceEntryId: null,
     };
     activeSession = session;
     const inheritedEnv = Object.fromEntries(
@@ -2329,6 +2645,77 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return args.ptyService!.signalTerminal({ terminalId, signal: terminalArgs.signal ?? "SIGINT" });
   };
 
+  // =====================================================================
+  // Agent action model
+  //
+  // The agent surface (observe + the eight `agentX` actions + the trace) lives
+  // in `appControlAgentActions.ts`; it is one responsibility that reaches the
+  // session machinery only through the deps below. The legacy `click` /
+  // `typeText` / `scroll` / `dispatchKey` primitives above stay here for the
+  // renderer's live-frame input.
+  // =====================================================================
+
+  const agentActions = createAppControlAgentActions({
+    logger: args.logger,
+    resolveProjectRoot: (sessionProjectRoot) => normalizeProjectRoot(sessionProjectRoot, args.projectRoot),
+    getActiveSession: () => activeSession,
+    updateSession,
+    withCdp,
+    enablePageDomain,
+    normalizeViewportPoint,
+    snapshotDiagnostics: () => ({
+      capturedAt: nowIso(),
+      pendingRequestCount: pendingNetworkRequests.size,
+      console: [...consoleDiagnostics],
+      network: [...networkDiagnostics],
+    }),
+    isNetworkIdle: (idleMs) => (
+      pendingNetworkRequests.size === 0 && Date.now() - lastNetworkActivityAtMs >= idleMs
+    ),
+    getLastScreencastFrame: () => lastScreencastFrame,
+    imageDimensions,
+  });
+
+  const {
+    agentSessionFor,
+    observe,
+    agentClick,
+    agentHover,
+    agentFill,
+    agentClear,
+    agentType,
+    agentPress,
+    agentScroll,
+    agentWait,
+    getTrace,
+  } = agentActions;
+
+  const windows = async (input: AppControlSessionTargetArgs = {}): Promise<AppControlWindowsResult> => {
+    const session = agentSessionFor(input);
+    return {
+      sessionId: session.id,
+      activeTargetId: session.cdpTargetId,
+      windows: await listTargets(),
+    };
+  };
+
+  const switchWindow = async (input: AppControlSwitchWindowArgs): Promise<AppControlWindowsResult> => {
+    agentSessionFor(input);
+    const targetId = stringOrNull(input.targetId);
+    if (!targetId) throw new Error("App Control switchWindow requires a targetId.");
+    const updated = await attachToTarget(targetId);
+    // A different window means a different document: handles minted against
+    // the previous target no longer resolve (`readObservationElementHandle`
+    // rejects them by `cdpTargetId`), so start the trace ledger clean rather
+    // than letting stale entries look current.
+    agentActions.resetTrace();
+    return {
+      sessionId: updated.id,
+      activeTargetId: updated.cdpTargetId,
+      windows: await listTargets(),
+    };
+  };
+
   const focusWindow = (): Promise<{ ok: true }> => setWindowState("normal");
   const minimizeWindow = (): Promise<{ ok: true }> => setWindowState("minimized");
 
@@ -2353,6 +2740,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     getLastSelectedItem: () => lastSelectedItem,
     dispose: () => {
       unsubscribePtyExit?.();
+      flushDiagnostics();
       stopCdpPoller();
       stopCdpHealthCheck();
       void stopScreencast();
@@ -2362,5 +2750,19 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     dispatchKey,
     listTargets,
     attachToTarget,
+    // Agent action model (parity with the built-in browser).
+    listDrivers,
+    observe,
+    agentClick,
+    agentHover,
+    agentFill,
+    agentClear,
+    agentType,
+    agentPress,
+    agentScroll,
+    agentWait,
+    getTrace,
+    windows,
+    switchWindow,
   };
 }

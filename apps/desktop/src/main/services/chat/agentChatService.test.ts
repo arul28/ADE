@@ -677,14 +677,6 @@ vi.mock("../ai/tools/universalTools", () => ({
   })),
 }));
 
-vi.mock("../ai/tools/workflowTools", () => ({
-  createWorkflowTools: vi.fn(() => []),
-}));
-
-vi.mock("../ai/tools/linearTools", () => ({
-  createLinearTools: vi.fn(() => []),
-}));
-
 vi.mock("../ai/tools/ctoOperatorTools", async () => {
   const { z } = await import("zod");
   // Returns one real ExecutableTool so tests can assert the CTO tool surface is
@@ -2815,25 +2807,6 @@ describe("createAgentChatService", () => {
       "turnId",
     ]);
     service.forceDisposeAll();
-  });
-
-  it("previews native git ADE tools for regular workflow chats", () => {
-    const { service } = createService();
-    const toolNames = service.previewSessionToolNames({
-      laneId: "lane-1",
-      sessionProfile: "workflow",
-      identityKey: undefined,
-    });
-
-    expect(toolNames).toEqual(expect.arrayContaining([
-      "commit_changes",
-      "rebase_lane",
-      "stash_push",
-      "list_stashes",
-      "stash_pop",
-      "stash_clear",
-      "ask_user",
-    ]));
   });
 
   // --------------------------------------------------------------------------
@@ -31107,21 +31080,6 @@ describe("createAgentChatService", () => {
         ([event]) => event === "agent_chat.codex_runtime_start",
       );
       expect(runtimeStarts).toHaveLength(1);
-    });
-  });
-
-  describe("previewSessionToolNames", () => {
-    it("includes core lane git tools for regular workflow sessions", () => {
-      const { service } = createService();
-      expect(service.previewSessionToolNames({
-        laneId: "lane-1",
-        sessionProfile: "workflow",
-      } as any)).toEqual(expect.arrayContaining([
-        "commit_changes",
-        "rebase_lane",
-        "stash_push",
-        "list_stashes",
-      ]));
     });
   });
 

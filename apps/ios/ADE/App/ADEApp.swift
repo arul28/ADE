@@ -26,7 +26,29 @@ struct ADEApp: App {
 
   var body: some Scene {
     WindowGroup {
-      ContentView()
+      #if DEBUG
+      // Fixture-screen mode: `-adePreviewScreen <name>` renders one screen from
+      // in-process fixtures and starts none of the app's live machinery, so a
+      // simulator can screenshot a design change with no pairing, no brain, and
+      // no network. Absent the argument this is the normal app, and the whole
+      // branch is compiled out of release.
+      if let previewScreen = ADEPreviewScreen.requested {
+        ADEPreviewScreenHost(screen: previewScreen)
+          .environmentObject(syncService)
+          .environmentObject(dictationController)
+          .environmentObject(accountService)
+      } else {
+        mainContent
+      }
+      #else
+      mainContent
+      #endif
+    }
+  }
+
+  @ViewBuilder
+  private var mainContent: some View {
+    ContentView()
         .environmentObject(syncService)
         .environmentObject(dictationController)
         .environmentObject(accountService)
@@ -111,7 +133,6 @@ struct ADEApp: App {
           }
           .environmentObject(syncService)
         }
-    }
   }
 }
 

@@ -152,6 +152,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Sleep",
   },
   {
+    id: "general.link-open-mode",
+    label: "Open links",
+    keywords: ["browser", "external", "system browser", "in-app", "click", "url", "hyperlink"],
+    tab: "general",
+    anchor: "link-open-mode",
+    scope: "machine",
+    // The built-in browser is an Electron surface with a machine-local profile;
+    // a hosted tab has neither, and its own browser already owns link handling.
+    web: "hidden",
+    group: "Links",
+  },
+  {
     id: "general.analytics",
     label: "Product analytics",
     keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],

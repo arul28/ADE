@@ -2,7 +2,7 @@ import React, { useCallback, useState } from "react";
 import { Check } from "@phosphor-icons/react";
 
 import type { CtoLinearQuickView, LaneLinearIssue } from "../../../shared/types";
-import { canOpenInAdeBrowser, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
 import { LinearPaneModal } from "./LinearPaneModal";
@@ -137,10 +137,7 @@ function LinearIssueDetails({
             type="button"
             className="ade-shell-control inline-flex h-7 items-center rounded-md px-2.5 text-[12px]"
             data-variant="ghost"
-            onClick={() => {
-              if (canOpenInAdeBrowser(issue.url)) openUrlInAdeBrowser(issue.url);
-              else openExternalUrl(issue.url);
-            }}
+            onClick={(event) => openLinkFromUi(issue.url, event)}
           >
             Open
           </button>

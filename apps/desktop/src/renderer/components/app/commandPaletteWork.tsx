@@ -17,7 +17,13 @@ import type { SessionFilingBucket } from "../../lib/terminalAttention";
 import {
   projectStateKeyForBinding,
   type WorkProjectViewState,
+  type WorkSidebarTab,
 } from "../../state/appStore";
+import {
+  WORK_TOOL_DEFINITIONS,
+  workToolAvailability,
+  type WorkToolContext,
+} from "../terminals/workTools";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import {
@@ -468,4 +474,88 @@ export function useWorkSessionActions({
       switchRemoteProject,
     ],
   );
+}
+
+/**
+ * Should the static command groups be rendered ABOVE the async Work results?
+ *
+ * Threads normally lead: with an empty or vague query the thing you came for is
+ * a chat you were just in. But the backend index also matches the *words* of a
+ * command — every transcript that ever said "tools" and "browser" comes back
+ * for "Tools: Browser" — and those results are capped at a limit that filled
+ * the whole list. The exact command you typed the full title of was pushed
+ * below seven chat rows and read as missing.
+ *
+ * So: when the query is a prefix of a command's title, that command led the
+ * intent, and its group leads the list. Deliberately a prefix test on the title
+ * only — "browser" alone still puts your chats first, which is the behaviour
+ * threads-lead was written for.
+ */
+export function commandsLeadPaletteResults(
+  query: string,
+  commandTitles: readonly string[],
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2) return false;
+  return commandTitles.some((title) => title.toLowerCase().startsWith(needle));
+}
+
+export type WorkToolPaletteCommand = {
+  id: string;
+  title: string;
+  /** Only where the row's own title does not already say it. */
+  hint?: string;
+  keywords: string[];
+  group: string;
+  run: () => void;
+};
+
+/**
+ * "Tools: Browser", "Tools: Git", … plus "Tools: Show picker".
+ *
+ * The palette cannot write the pane's state itself — the active tool is stored
+ * per lane, and only the Work page knows which lane its pane is following. So
+ * each entry navigates to Work and files a `workToolRequests` request, which the
+ * page drains against the right scope whether it was already mounted or not.
+ */
+export function buildWorkToolCommands({
+  navigate,
+  openTool,
+  context,
+}: {
+  navigate: (path: string) => void;
+  openTool: (tool: WorkSidebarTab | null) => void;
+  /**
+   * The same capability flags the picker gates its cards on. A command that
+   * lands on a card reading "macOS only" or "Desktop app only" is a dead row,
+   * so an unavailable tool is not offered here either — the picker still shows
+   * the dimmed card WITH its reason, which is where that answer belongs.
+   */
+  context: WorkToolContext;
+}): WorkToolPaletteCommand[] {
+  return [
+    ...WORK_TOOL_DEFINITIONS.filter(
+      (definition) => workToolAvailability(definition.id, context).available,
+    ).map((definition) => ({
+      id: `work-tools-${definition.id}`,
+      title: `Tools: ${definition.label}`,
+      keywords: ["tools", "pane", "sidebar", definition.id, definition.label],
+      group: "Work tools",
+      run: () => {
+        navigate("/work");
+        openTool(definition.id);
+      },
+    })),
+    {
+      id: "work-tools-picker",
+      title: "Tools: Show picker",
+      hint: "Back to the grid of every tool in the Work pane",
+      keywords: ["tools", "picker", "pane", "sidebar", "grid"],
+      group: "Work tools",
+      run: () => {
+        navigate("/work");
+        openTool(null);
+      },
+    },
+  ];
 }

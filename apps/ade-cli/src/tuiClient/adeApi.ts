@@ -65,6 +65,7 @@ import type {
 } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import {
   buildPtyContinuationLaunchFields,
@@ -1272,6 +1273,32 @@ export async function pushModelPickerRecent(
     modelId,
   });
   return Array.isArray(result?.recents) ? result.recents : [];
+}
+
+// ---------------------------------------------------------------------------
+// Work tools: read-only mirror of the desktop's Work tools pane.
+// ---------------------------------------------------------------------------
+
+/**
+ * What tool the desktop has open for a lane, plus its browser tabs and App
+ * Control target. Read-only on purpose — the same contract iOS and the hosted
+ * web client get (`apps/desktop/src/shared/types/workTools.ts`). The pane, the
+ * `WebContentsView`, and the CDP connection all live in the desktop's main
+ * process, so a terminal can describe them but never drive them.
+ *
+ * `ade code` initializes with role `cto` and no chat session, so the daemon's
+ * `work_tools` read carve-out passes `laneId` straight through rather than
+ * pinning the caller to its own lane — the TUI can ask about the lane it is
+ * viewing even when that is not a lane it is chatting in.
+ *
+ * Throws when the daemon predates `work_tools`; callers render that as an
+ * unavailable pane rather than an error toast.
+ */
+export async function getWorkToolsLaneState(
+  connection: AdeCodeConnection,
+  laneId: string,
+): Promise<WorkToolsLaneState> {
+  return await connection.action<WorkToolsLaneState>("work_tools", "getLaneState", { laneId });
 }
 
 export function newestSession(sessions: AgentChatSessionSummary[]): AgentChatSessionSummary | null {

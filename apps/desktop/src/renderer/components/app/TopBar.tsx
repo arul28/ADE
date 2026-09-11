@@ -38,6 +38,8 @@ import {
   getStoredZoomLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
+import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
+import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
 import {
@@ -53,7 +55,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { modifierKeyLabel } from "../../lib/platform";
+import { isMac, modifierKeyLabel } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
@@ -1155,11 +1157,59 @@ export function TopBar({
     const onCommand = window.ade?.zoom?.onCommand;
     if (typeof onCommand !== "function") return;
     return onCommand((command) => {
+      // Electron consumes CmdOrCtrl+=/−/0 as menu accelerators before any
+      // renderer keydown, so a surface that wants those chords for its own
+      // content — the built-in browser's page zoom — has to be offered the
+      // command here. It declines unless it actually has focus.
+      if (consumeAppZoomCommand(command)) return;
       if (command === "in") applyZoom(zoomRef.current + ZOOM_STEP);
       else if (command === "out") applyZoom(zoomRef.current - ZOOM_STEP);
       else applyZoom(DEFAULT_ZOOM);
     });
   }, [applyZoom]);
+
+  /**
+   * ⌘F and ⌘W, offered to the pane that has the keyboard before the app
+   * answers them.
+   *
+   * Both are native menu accelerators, so a renderer keydown binding never sees
+   * them on the packaged app — and the built-in browser's page is a different
+   * WebContents, so when you are clicked into a page this renderer gets no key
+   * event at all. Whatever claims the command handles it; ⌘W otherwise means
+   * what it always meant, which is the ordinary window close WITH its prompt.
+   */
+  useEffect(() => {
+    const onMenuCommand = window.ade?.app?.onMenuCommand;
+    if (typeof onMenuCommand !== "function") return;
+    return onMenuCommand((command) => {
+      if (consumeAppMenuCommand(command)) return;
+      if (command === "close-tab") {
+        void window.ade?.app?.requestWindowClose?.().catch(() => {});
+        return;
+      }
+      /*
+        Unclaimed ⌘F. There is no app-wide find, so the last thing worth trying
+        is the surface that actually has the keyboard: replay the chord as a
+        keydown on the focused element, which is the path any panel with a
+        local `onKeyDown` find binding already listens on. The event is
+        untrusted, so it can trigger no browser default — if nothing handles
+        it, this is a no-op, which is the correct outcome for a screen with
+        nothing to find in.
+      */
+      const target = document.activeElement;
+      if (!(target instanceof HTMLElement) || !target.isConnected) return;
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          code: "KeyF",
+          metaKey: isMac,
+          ctrlKey: !isMac,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  }, []);
 
   const fetchRecent = useCallback((options?: { force?: boolean }) => {
     listRecentProjectsCached(options)

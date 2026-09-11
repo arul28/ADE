@@ -337,6 +337,13 @@ Renderer — settings:
   `keybindings`, dropped because it pointed at a tab with no keybindings
   UI. Welcome video replay and help preferences live under the Help menu
   in the top bar, not as a Settings tab.
+- `apps/desktop/src/renderer/components/settings/BrowserLinksSection.tsx`
+  — the General tab's **Links** group (`general.link-open-mode`, scope
+  `machine`, `web: "hidden"` because a hosted tab has no Electron browser
+  and its own browser already owns link handling). Writes
+  `browser.linkOpenMode` and `browser.autoOpenDevServer` into the
+  project's `.ade/local.yaml`; see
+  [Configuration schema](configuration-schema.md).
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
   `keywords`, `tab`, `anchor`, `scope`, `web`, `group`). Add a setting here and

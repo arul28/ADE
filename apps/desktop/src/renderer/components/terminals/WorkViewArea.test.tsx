@@ -551,6 +551,59 @@ describe("WorkViewArea", () => {
     expect(terminals.map((terminal) => terminal.getAttribute("data-session-id"))).toContain("session-1");
   });
 
+  it("gives a plain shell the same header, so every Work surface can open Tools", () => {
+    // A running `shell` session used to render a bare terminal with no header
+    // at all — the one surface with no Tools toggle, which is exactly where you
+    // want Git or the browser beside you.
+    const session = makeRunningSession("session-shell", "pty-shell");
+    expect(session.toolType).toBe("shell");
+    const onToggleToolsPane = vi.fn();
+
+    const view = render(
+      <WorkViewArea
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        onToggleWorkSidebar={onToggleToolsPane}
+      />,
+    );
+
+    const header = within(view.container).getByTestId("work-cli-session-header");
+    expect(header.getAttribute("data-session-id")).toBe("session-shell");
+    fireEvent.click(within(header).getByLabelText("Toggle tools pane"));
+    expect(onToggleToolsPane).toHaveBeenCalled();
+    expect(
+      within(view.container)
+        .getAllByTestId("terminal-view")
+        .map((terminal) => terminal.getAttribute("data-session-id")),
+    ).toContain("session-shell");
+  });
+
   it("pins the PR pane reads to the owning machine for a foreign running CLI", async () => {
     const session = { ...makeRunningSession("session-foreign", "pty-foreign"), toolType: "codex" as const };
     const runtimePin = {

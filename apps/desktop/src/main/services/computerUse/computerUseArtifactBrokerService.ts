@@ -130,6 +130,29 @@ function isAllowedExternalArtifactSource(
 }
 
 /**
+ * Agents hit this rejection with a plausible-looking path, so the message has
+ * to name the legal roots — an agent that only sees "outside allowed import
+ * roots" re-runs the same command with the same path. The temp conventions are
+ * roots now, so the remaining common cause is a file written somewhere else
+ * entirely, e.g. `~/Desktop`.
+ *
+ * The temp hint is platform-specific because the roots are: `resolveTempImportRoots`
+ * adds `/tmp` only off Windows, and `$TMPDIR` is not the Windows spelling. A
+ * Windows agent told to copy its file into `/tmp` retries and fails again.
+ */
+function outsideImportRootsError(absolutePath: string, roots: string[]): Error {
+  const unique = Array.from(new Set(roots.map((root) => root.trim()).filter(Boolean)));
+  const tempHint = process.platform === "win32"
+    ? "the OS temp dir %TEMP% qualifies"
+    : "the OS temp dir $TMPDIR and /tmp both qualify";
+  return new Error(
+    `Artifact path is outside allowed import roots: ${absolutePath}. `
+    + `Allowed roots: ${unique.join(", ")}. `
+    + `Copy the file into one of them (${tempHint}) and retry.`,
+  );
+}
+
+/**
  * Paths an agent may read but must never be able to copy into the artifact
  * store — artifacts are previewed in the renderer and synced to paired phones,
  * so promoting a secrets blob into one is an exfiltration path.
@@ -286,6 +309,49 @@ const IMPORTABLE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set([
   "log", "txt", "md",
 ]);
 
+/**
+ * Temp directories a caller may legitimately stage proof in.
+ *
+ * `os.tmpdir()` is the only temp dir the platform advertises, but on macOS it
+ * is a per-user `/var/folders/...` path while every agent, shell script, and
+ * habit reaches for `/tmp`. Rejecting `/tmp` there produced silent-looking
+ * failures — the agent wrote a real screenshot to a real directory and got
+ * "outside allowed import roots" back — so the conventional temp dir is a root
+ * too. It is no weaker a trust boundary than `os.tmpdir()`: both are
+ * world-writable scratch space, and the extension allow-list plus the
+ * `.ade/secrets` deny-list still decide what may actually be copied in.
+ *
+ * `/tmp` is a symlink to `/private/tmp` on macOS, so its realpath is added as
+ * well: the allow check realpaths the candidate file, and a root that is itself
+ * a symlink would never match once both sides are resolved.
+ *
+ * Windows has no `/tmp`; `%TEMP%`/`%TMP%` *are* `os.tmpdir()`, so there is
+ * nothing to add and nothing to widen.
+ */
+export function resolveTempImportRoots(
+  deps: {
+    platform?: NodeJS.Platform;
+    tmpdir?: () => string;
+    realpath?: (candidate: string) => string;
+  } = {},
+): string[] {
+  const platform = deps.platform ?? process.platform;
+  const tmpdir = deps.tmpdir ?? (() => os.tmpdir());
+  const realpath = deps.realpath ?? ((candidate: string) => fs.realpathSync(candidate));
+  const roots = [path.resolve(tmpdir())];
+  if (platform !== "win32") {
+    const conventional = "/tmp";
+    roots.push(conventional);
+    try {
+      roots.push(path.resolve(realpath(conventional)));
+    } catch {
+      // No /tmp on this host (or it is not resolvable) — the literal root stays
+      // listed so the error message still names what an agent will have typed.
+    }
+  }
+  return Array.from(new Set(roots.filter(Boolean)));
+}
+
 /** Extension of an import candidate, lowercased and without the dot. */
 function importExtension(absolutePath: string): string {
   return path.extname(absolutePath).replace(/^\./, "").trim().toLowerCase();
@@ -343,7 +409,7 @@ export function createComputerUseArtifactBrokerService(args: {
     // worktree can be relocated outside `projectRoot`.
     layout.worktreesDir,
     projectRoot,
-    os.tmpdir(),
+    ...resolveTempImportRoots(),
     path.join(os.homedir(), ".agent-browser"),
     ...(args.additionalAllowedImportRoots ?? [])
       .map((root) => root.trim())
@@ -465,8 +531,9 @@ export function createComputerUseArtifactBrokerService(args: {
       } catch {
         // Fall through to external import handling.
       }
-      if (!isAllowedExternalArtifactSource(absolutePath, [...allowedImportRoots, ...requestImportRoots])) {
-        throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
+      const importRoots = [...allowedImportRoots, ...requestImportRoots];
+      if (!isAllowedExternalArtifactSource(absolutePath, importRoots)) {
+        throw outsideImportRootsError(absolutePath, importRoots);
       }
       const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
@@ -1180,9 +1247,10 @@ export function createComputerUseArtifactBrokerService(args: {
       }
       const sourcePath = source.path;
       const artifactLaneRoots = resolveArtifactLaneRoots(record);
-      if (!isAllowedExternalArtifactSource(sourcePath, [...allowedImportRoots, ...artifactLaneRoots])
+      const recoveryImportRoots = [...allowedImportRoots, ...artifactLaneRoots];
+      if (!isAllowedExternalArtifactSource(sourcePath, recoveryImportRoots)
         || isDeniedArtifactSource(sourcePath, deniedImportRoots)) {
-        throw new Error(`Artifact path is outside allowed import roots: ${sourcePath}`);
+        throw outsideImportRootsError(sourcePath, recoveryImportRoots);
       }
       // Recovery re-imports bytes from a surviving lane worktree, so it is an
       // import like any other and gets the same file-type gate.

@@ -439,6 +439,76 @@ stay stale until it is.
 See [terminals and sessions](../terminals-and-sessions/README.md#gotchas) for
 the lifecycle side of this invariant.
 
+### The host never exports from an uncorroborated peer cursor
+
+A replica peer names its own resume point: `hello.peer.dbVersionBySite` maps
+each host site id to the last `db_version` that peer believes it has applied
+from that host. The host exports strictly `db_version > cursor`, so an
+*inflated* claim is silent and permanent data loss — every host row inside the
+skipped span is never sent, and the reconnect plus the mobile replica reseed
+both start from the same claim.
+
+The host therefore keeps its own record of what it actually delivered:
+`sync_peer_changeset_watermarks(peer_device_id, host_site_id, db_version,
+updated_at)`. It is host-local — listed in kvDb's
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`, never a CRR, never synced — because it is
+keyed by *this* host's site id and describes *this* host's send progress.
+`syncHostService` writes it on the paths that advance a peer's send cursor (an
+`ok` changeset ack, the immediate advance for a peer without the `changesetAck`
+capability, and an empty-window advance), throttled to one write per second per
+peer, and flushes it when the peer socket closes.
+
+The table's primary key is `(peer_device_id, host_site_id)`. A brain hosts one
+project DB at a time and each has its own `db_version` sequence, so a device
+gets one row per host site; a single-column key let one project's delivery
+record answer for another. Databases carrying the older single-column table
+drop and recreate it on open.
+
+`resolveInitialPeerCursor` in `syncPeerCursorResolution.ts` is the single rule
+applied everywhere a claim seeds `lastKnownServerDbVersion` — first hello,
+listener-handoff adoption, and every reconnect:
+
+- A watermark exists for this peer *and this host site* → `min(claimed,
+  watermark)`. The watermark is a **ceiling, never a floor**: a reinstalled or
+  reset phone legitimately claims *less* than the host once delivered, and that
+  lower claim wins so it is replayed rather than clamped forward.
+- No watermark → `0`, **whatever the claim says**.
+
+There is deliberately no "the claim looks plausible, trust it" branch. A
+poisoned claim usually sits *below* `hostDbVersion` — the phone mints its
+inflated number inside the host's own version space — so it is
+indistinguishable from an honest cursor by inspection. `claimed >
+hostDbVersion` is kept only as extra log detail
+(`claimExceededHostDbVersion`), never as a rule.
+
+**The one-time cost, stated plainly:** the first time each device connects to
+each host site after this ships, it receives a full changeset replay from
+version 0 — the entire synced backlog for that project DB, in the ordinary
+windowed batches, once. Nothing is lost or duplicated (CRR apply is
+idempotent), but the first post-upgrade connection is as expensive as a fresh
+pairing. It happens once per device per host site: the host writes the
+watermark row the moment it resolves the cursor, and every ack raises it, so a
+phone that dies mid-replay resumes from its last ack rather than starting over,
+and the next reconnect resumes normally.
+
+A resolved cursor below the claim is logged as `sync_host.peer_cursor_rewound`
+with `claimed`, `resolved`, the reason, and `claimExceededHostDbVersion`.
+Listener-handoff adoption merges the deposited cursor with the resolved claim
+and then clamps the result by the watermark too, so a parked socket cannot
+launder a poisoned cursor back in.
+
+The peer side must not fight this. `SyncService`'s persisted cursor is
+versioned (`HostConnectionProfile.cursorSchemaVersion`): decoding a profile
+written by a build from the poisoned era clears `lastRemoteDbVersion` and
+`remoteDbVersionBySite` once, and the cursor merge assigns the host's batch
+boundary rather than `max`-ing it against the stored value — the host is the
+authority on how far it has delivered, and it can legitimately move a peer's
+cursor *down* when it replays.
+
+The peer-side half of the same bug is `SyncService.swift`'s
+`advanceRemoteDbCursor`: iOS advances the host's entry from the batch's
+`toDbVersion` only, never from its own local write clock.
+
 ## Architecture layers
 
 ```
@@ -993,6 +1063,38 @@ Runtime support files outside `services/sync/`:
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
   reset stale cursors when a daemon restarts or history was evicted.
+- `apps/ade-cli/src/runtimeEventVolume.ts` — the one predicate for "this
+  runtime event carries a video frame, not a state change"
+  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events). App
+  Control's screencast is a CDP `Page.screencastFrame` pass-through at up to
+  1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at monitor
+  refresh, pushed whenever a session is attached whether or not anything is
+  watching. On a local socket that is merely wasteful; over a paired sync
+  transport it is fatal, because runtime RPC rides `rpc_data`, a **required**
+  send the host buffers rather than drops, so the peer was closed with 4001
+  "Required sync response backpressured" the moment `bufferedAmount` passed
+  16 MiB — roughly every ten seconds for a desktop bound to a remote runtime
+  with the Work tab open. The frames were not even rendered, since App Control
+  is reported unavailable for a remote project. Frames are therefore **opt-in
+  per subscription**: a subscriber that can actually paint them (a desktop on
+  its own local runtime) asks for them, and nobody else pays. Skipping is the
+  only correct response to a frame nobody asked for — a queued stale frame is
+  worse than none, because the next one is already better.
+- `apps/ade-cli/src/services/sync/syncStatusEventPublisher.ts` — coalescing
+  publisher for `sync-status` runtime events. Every status transition was
+  pushed straight onto the runtime event buffer carrying a full ~5 KB
+  `SyncRoleSnapshot`, so a connection storm (a peer reconnecting in a loop,
+  route arbitration retrying, a tunnel flapping) produced hundreds a second and
+  half a megabyte of status per 100-event poll — down the same `rpc_data`
+  backpressure path above, which reconnected, which produced more status. A
+  status snapshot is last-writer-wins state, not a log, so this drops both
+  redundancy and backlog: a snapshot equal to the last published is discarded
+  outright, and one arriving inside the `SYNC_STATUS_PUBLISH_INTERVAL_MS`
+  (250 ms) window replaces whatever was waiting so exactly one — the newest —
+  goes out when the window ends. The first snapshot in an idle period is
+  published immediately, so a real status change seconds apart is not delayed
+  at all. An unserializable snapshot can never be proven identical and is
+  always treated as new rather than silently swallowed.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
   surface for `projects.*`, `sync.*` (including `sync.runSelfProbe`, which
   resolves the active sync host and runs the tunnel client's relay end-to-end
@@ -1368,6 +1470,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `CONNECTION_ATTEMPT_MAX_FUTURE_MS`) plus `dbVersionBySite` and the
   application-compression offer. There is no second copy; the brain's narrower
   hand-rolled one is gone.
+- `syncPeerCursorResolution.ts` — `resolveInitialPeerCursor`, the pure rule
+  that reconciles a peer's claimed changeset cursor against the host's own
+  `sync_peer_changeset_watermarks` record before any export. See
+  [The host never exports from an uncorroborated peer cursor](#the-host-never-exports-from-an-uncorroborated-peer-cursor).
 - `syncAccountHelloAuth.ts` — the shared account-hello gate chain for both
   ingresses, and the canonical rejection strings
   (`SYNC_REPAIR_REQUIRED_MESSAGE`, `SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE`,

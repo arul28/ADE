@@ -485,6 +485,29 @@ export type AppNavigationRequest = {
  */
 export type AppZoomCommand = "in" | "out" | "reset";
 
+/**
+ * A native-menu command the renderer, not the menu, decides what to do with.
+ *
+ * Same reason as `AppZoomCommand`: Electron consumes a menu accelerator in the
+ * browser process before any renderer keydown fires, and the built-in browser's
+ * page has focus in a *different* WebContents entirely — so ⌘F and ⌘W can only
+ * reach the pane as a command sent down from the menu. A surface claims one
+ * (`lib/appMenuCommands`) and the app-wide default runs only if nobody did.
+ */
+export type AppMenuCommand = "find" | "close-tab";
+
+/**
+ * The one payload every native-menu command travels in.
+ *
+ * Zoom and menu commands are the same mechanism — an accelerator the browser
+ * process ate, handed down for a renderer surface to claim — so they share one
+ * channel (`IPC.appCommand`) and one dispatcher in main. `kind` is what tells
+ * the preload which of the two renderer subscriptions to fan it out to.
+ */
+export type AppCommandPayload =
+  | { kind: "zoom"; command: AppZoomCommand }
+  | { kind: "menu"; command: AppMenuCommand };
+
 export type AppNavigationResult = {
   ok: boolean;
   mode: "desktop" | "unavailable";
@@ -708,7 +731,7 @@ export type KeybindingDefinition = {
   id: string;
   description: string;
   defaultBinding: string;
-  scope: "global" | "lanes" | "files" | "graph" | "conflicts" | "history";
+  scope: "global" | "lanes" | "work" | "files" | "graph" | "conflicts" | "history";
 };
 
 export type KeybindingsSnapshot = {

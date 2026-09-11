@@ -10,6 +10,7 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
@@ -30,6 +31,7 @@ export type MiscNamespaces = {
   layout: AdeNamespace<"layout">;
   tilingTree: AdeNamespace<"tilingTree">;
   graphState: AdeNamespace<"graphState">;
+  workTools: AdeNamespace<"workTools">;
   rebase: AdeNamespace<"rebase">;
   history: AdeNamespace<"history">;
   cto: NonNullable<Window["ade"]["cto"]>;
@@ -614,6 +616,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     layout: localNamespaces.layout as AdeNamespace<"layout">,
     tilingTree: localNamespaces.tilingTree as AdeNamespace<"tilingTree">,
     graphState: localNamespaces.graphState as AdeNamespace<"graphState">,
+    workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
     cto: createCtoNamespace(call, localState),
@@ -632,11 +635,47 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
     iosSimulator: createNativeUnavailableNamespace() as AdeNamespace<"iosSimulator">,
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
-    builtInBrowser: createNativeUnavailableNamespace() as AdeNamespace<"builtInBrowser">,
+    builtInBrowser: {
+      ...createNativeUnavailableNamespace(),
+      // `getStatus` is the one member of this namespace whose *shape* is load
+      // bearing: the Work tools pane and the corner card treat the browser as a
+      // read-only tool and call it on the web client too, then read
+      // `status.tabs`. A bare `{ supported: false }` handed them `undefined`
+      // and crashed the Work tab on render, so the unavailable answer is a real
+      // `BuiltInBrowserStatus` that happens to describe an empty browser.
+      getStatus: async () => unsupportedBuiltInBrowserStatus(),
+      // Dev-server discovery reads this machine's PTY output. A phone or a web
+      // tab has none, so the honest answer is an empty list rather than the
+      // desktop's — the launchpad simply shows no chips.
+      getDevServers: async () => ({ servers: [] }),
+      loginImport: createLoginImportUnavailableStub(),
+      // The stub implements the handful of members the web client actually
+      // reaches for; the rest of the namespace is deliberately absent so a
+      // caller that needs it feature-detects instead of getting a fake.
+    } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
     review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
+}
+
+/**
+ * Read-only Work tools-pane mirror for the hosted web client.
+ *
+ * The browser and App Control panes cannot run here — they need a
+ * `WebContentsView` and a CDP connection to a local app — so the web client
+ * shows what the desktop is doing instead of pretending to offer it.
+ * `setActiveTool` is a deliberate no-op: publishing an active tool is the
+ * privilege of the surface that actually has one open, and a web tab echoing
+ * its own picker would overwrite the desktop's truth on every phone.
+ */
+function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
+  return {
+    getLaneState: (laneId: string) => call("workTools.getLaneState", { laneId }, null),
+    setActiveTool: async () => {},
+    readObservationPreview: (observationPath: string) =>
+      call("workTools.readObservationPreview", { path: observationPath }, null),
+  } as AdeNamespace<"workTools">;
 }
 
 function createZoomNamespace(infra: AdapterInfra): Record<string, unknown> {
@@ -820,6 +859,73 @@ function createFeedbackStubs(): Record<string, unknown> {
     submitDraft: async () => null,
     list: async () => [],
     onUpdate: () => () => {},
+  };
+}
+
+/**
+ * Login import reads cookie jars off a local disk with a local credential
+ * store. A hosted browser tab has neither, and there is no action the sync host
+ * could register that would change that — so this reports "not here" rather
+ * than routing to the paired machine, whose cookies are not the ones the person
+ * is looking at.
+ */
+function createLoginImportUnavailableStub(): Record<string, unknown> {
+  const unavailable = (sourceId = "") => ({
+    ok: false as const,
+    sourceId,
+    status: "unsupported" as const,
+    reason: "Login import needs the ADE desktop app on the machine holding the browser.",
+    settingsPaneId: null,
+  });
+  return {
+    capabilities: async () => ({ platform: "other" as const, anySupported: false, browsers: [] }),
+    listSources: async () => ({
+      platform: "other" as const,
+      sources: [],
+      capabilities: { platform: "other" as const, anySupported: false, browsers: [] },
+    }),
+    listDomains: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
+    import: async (args: { sourceId?: string } = {}) => unavailable(args.sourceId ?? ""),
+  };
+}
+
+/**
+ * The built-in browser, described honestly as "not here".
+ *
+ * Every field of `BuiltInBrowserStatus` is present so callers can read it the
+ * way they read the desktop's — `supported: false` is the flag they check, not
+ * a licence to omit the rest of the record.
+ */
+export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+  supported: false;
+  available: false;
+  state: "unsupported";
+} {
+  return {
+    supported: false,
+    available: false,
+    state: "unsupported",
+    attached: false,
+    partition: "",
+    storageProfileKey: "global",
+    collectionKey: "",
+    collectionProjectRoot: null,
+    persistentProfile: true,
+    visible: false,
+    bounds: { x: 0, y: 0, width: 0, height: 0 },
+    activeTabId: null,
+    tabs: [],
+    url: null,
+    title: null,
+    isLoading: false,
+    canGoBack: false,
+    canGoForward: false,
+    isInspecting: false,
+    hasSelection: false,
+    ownerLaneId: null,
+    ownerChatSessionId: null,
+    ownerClaimedAt: null,
+    ownerLeaseExpiresAt: null,
   };
 }
 

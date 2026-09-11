@@ -43,8 +43,8 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/ade-cli/src/adeRpcServer.ts` | Runtime action-policy boundary, including the narrow mixed-version kickoff shim. Modern launchers send a new chat's first prompt through `chat.messageSession`; an ADE ≤1.2.41 `chat.sendMessage` request may be normalized only when the target is provably the caller's still-blank direct child. Every other cross-session send remains denied. |
 | `apps/desktop/src/shared/modelRegistry.ts`, `apps/desktop/src/renderer/components/shared/ModelPicker/modelCatalog.ts` | Shared static model descriptors plus renderer merge of host-advertised catalogs. GPT-6 Astra leads the Codex list, GPT-5.6 Sol/Terra/Luna follow, Astra is the Codex default, and runtime reasoning ladders pass through in provider order: Astra/Luna end at Max, while Max precedes Ultra for Sol/Terra. |
-| `apps/desktop/src/main/services/builtInBrowser/` | Main-process broker and security boundary for the in-app browser. `builtInBrowserService.ts` uses the single persistent `persist:ade-browser` profile for every remote-content tab while keeping visible tab collections independent by ADE window plus project/personal collection. `builtInBrowserProfileMigration.ts` performs one bounded, idempotent migration of unexpired persistent cookies from this channel's legacy project partitions; global cookies win, session cookies are excluded, and legacy directories remain because DOM storage, IndexedDB, service-worker state, and WebAuthn credentials cannot be safely merged. `builtInBrowserStateStore.ts` restores bounded HTTP(S)/blank tab URLs and active-tab selection, but never agent ownership, lightweight sessions, or synthesized session cookies. The service caps each collection at 10 tabs, routes global-session network events by webContents id, preserves OAuth opener relationships, sanitizes download names, captures observations/traces/selections, and tracks per-tab owner/lease metadata. `builtInBrowserAuthentication.ts` owns non-persisted HTTP/proxy credential prompts and explicit client-certificate choice. `builtInBrowserPermissions.ts` persists deny-by-default decisions per requesting/embedding origin. `builtInBrowserAgentAccess.ts` requires a non-persistent human grant for every agent-used non-local origin and for local origins with an allowed privileged permission; it intercepts cross-origin navigation/redirects and blocks sensitive popups until approved. `builtInBrowserActorCapabilities.ts` binds ADE-launched chats to their trusted collection; `desktopBridgeServer.ts` validates those opaque tokens in the issuing Electron process, restores only their bound scope, and separately authenticates the runtime with a rotating desktop-launch token. Unbound/elevated callers cannot force takeovers, forge scope, read another agent's tab status, inspect cookie-domain diagnostics, or administer permissions. `builtInBrowserNavigation.ts` owns protocol policy and `builtInBrowserWebAuthn.ts` resolves credential account selection. Project scratch observations live under `.ade/cache/browser-observations/`; personal observations use the channel user-data `browser-observations/personal/` root. Both can be promoted through the proof broker's narrow import allowlist. The service backs `ade.builtInBrowser.*` and is consumed by `ChatBuiltInBrowserPanel` and `openExternal.ts`. |
-| `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (including per-tab owner/lease metadata), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserObservation` / `BuiltInBrowserDomSnapshot` / `BuiltInBrowserObservationElementMap`, browser diagnostics/action trace DTOs, agent action args for click/type/key/scroll/fill/clear/wait, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
+| `apps/desktop/src/main/services/builtInBrowser/` | Main-process broker and security boundary for the in-app browser. `builtInBrowserService.ts` uses the single persistent `persist:ade-browser` profile for every remote-content tab while keeping visible tab collections independent by ADE window plus project/personal collection. `builtInBrowserProfileMigration.ts` performs one bounded, idempotent migration of unexpired persistent cookies from this channel's legacy project partitions; global cookies win, session cookies are excluded, and legacy directories remain because DOM storage, IndexedDB, service-worker state, and WebAuthn credentials cannot be safely merged. `builtInBrowserStateStore.ts` restores bounded HTTP(S)/blank tab URLs and active-tab selection, but never agent ownership, lightweight sessions, or synthesized session cookies. The service caps each collection at 10 tabs, routes global-session network events by webContents id, preserves OAuth opener relationships, sanitizes download names, captures observations/traces/selections, and tracks per-tab owner/lease metadata. `builtInBrowserAuthentication.ts` owns non-persisted HTTP/proxy credential prompts and explicit client-certificate choice. `builtInBrowserPermissions.ts` persists deny-by-default decisions per requesting/embedding origin. `builtInBrowserAgentAccess.ts` requires a non-persistent human grant for every agent-used non-local origin and for local origins with an allowed privileged permission; it intercepts cross-origin navigation/redirects and blocks sensitive popups until approved. `builtInBrowserActorCapabilities.ts` binds ADE-launched chats to their trusted collection; `desktopBridgeServer.ts` validates those opaque tokens in the issuing Electron process, restores only their bound scope, and separately authenticates the runtime with a rotating desktop-launch token. Unbound/elevated callers cannot force takeovers, forge scope, read another agent's tab status, inspect cookie-domain diagnostics, or administer permissions. `builtInBrowserPresence.ts` derives "an agent is using the browser" from the commands themselves — touched for every capability-validated bridge call, held while a tab records, cleared on tab close / capability revoke / login handoff, and expiring twenty seconds after the last command (see [An agent is using the browser](#an-agent-is-using-the-browser)). `builtInBrowserPresenceRouter.ts` is the one place that turns those facts into presence and presence into per-window events: the event-stream transitions, the project-scope projection every seed and push shares, the tracker subscription, and the close/dispose hooks the coordinator calls at each lifecycle boundary. `builtInBrowserNavigation.ts` owns protocol policy and `builtInBrowserWebAuthn.ts` resolves credential account selection. Project scratch observations live under `.ade/cache/browser-observations/`; personal observations use the channel user-data `browser-observations/personal/` root. Both can be promoted through the proof broker's narrow import allowlist. The service backs `ade.builtInBrowser.*` and is consumed by `ChatBuiltInBrowserPanel` and `openExternal.ts`. |
+| `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (including per-tab owner/lease metadata), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserObservation` / `BuiltInBrowserDomSnapshot` / `BuiltInBrowserObservationElementMap`, browser diagnostics/action trace DTOs, agent action args for click/type/key/scroll/fill/clear/wait, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `found-in-page`, `diagnostics`, `dev-server-detected`, `error`). `BuiltInBrowserTab` also carries `isLaunchpad` (an unnavigated `about:blank` tab, titled "New tab") and `faviconUrl` (Chromium's own icon URL, cleared on cross-origin navigation), and `emulation` doubles as the letterboxing contract described below. Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work tools pane's Browser tool to open atomically with the navigation. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Machine-scope personal-chat action, capability, result, queue-policy, and event-stream contract layered over the same `AgentChatSession` DTOs. `PersonalChatCapabilities` optionally advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports push subscribe and caller-injected MCP from an older one that would ignore them. |
 | `apps/desktop/src/shared/callerMcpServers.ts` | Caller-injected MCP: validation (name/url/transport/reserved ADE names/`MAX_CALLER_MCP_SERVERS`), per-provider `CALLER_MCP_SUPPORT` (level / mechanism / residual / delivery), and `resolveCallerMcpCapability` — the one report `createSession` and model-switch both emit. Shared by desktop, ade-cli, and summarized by `@ade-dev/sdk`. |
 | `packages/sdk/` | Embeddable sidecar client. See [ADE SDK](../sdk/README.md). |
@@ -136,7 +136,21 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Serializes iOS, App Control, built-in browser, and attachment context into prompt text. |
 | `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Chat file-rewind confirmation surface. Claude uses the SDK `rewindFiles` control call; Codex uses ADE's git-backed file restore plan plus a version-gated app-server call — `thread/fork` before the target turn on servers >= 0.145.0, and the deprecated `thread/rollback` fallback on <= 0.144 or when the target turn has no usable id (see [agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)). `rewindFilesPreview.ts` maps the selected user message to turn diff summaries and per-file SHA ranges; the dialog lists every restored file, expands rows into `AdeDiffViewer`, and confirms the provider rewind without using browser-native confirm UI. |
 | `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `chatExecutionSummary.ts`, `chatSubagentIdentity.tsx`, `codex/CodexGoalCard.tsx` | Chat Info drawer content: Codex goal card, capped/collapsible plan and task sections, and capped Subagents/Background/Schedule rosters. Every subagent row shows a sentence-case model chip: a reported envelope `model` is ground truth, and a missing model falls back to the parent session label marked **inherited**. Running subagent and background durations derive from the wall clock and tick once per second; terminal rows retain their final compact duration. Terminal work moves into one **Completed** disclosure without reordering survivors; failed and pinned rows stay active; Clear hides only terminal Completed rows and Restore reverses it. Schedule pause/play remains in the Schedule header, recurring rows show last-run plus next-fire timing, and each active ADE-managed durable row exposes Cancel; provider-only/non-durable transcript rows stay visible without a false cancellation control. Running native subagent and background rows (those with a `sourceTaskId`, not spawned ADE `chat:` tasks) expose a square stop that calls `ade.agentChat.stopTask`. Spawned-chat snapshots carry a derived `childSessionId`; the derivation preserves the `chat:` task id and `spawnKind` when the canonical dotted lifecycle twin merges into the underscore event. Their roster rows show the child's live session title, put the runtime in the small kind chip, and navigate directly to the child instead of opening a provider transcript drawer. `chatSubagentIdentity.tsx` centralizes deterministic identity and exposes status-optional, size-configurable glyphs for both roster state and compact lineage cues. |
-| `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Its trusted-renderer-only **Profile** panel shows global cookie counts/domains, cache size, last safe flush, and remembered site permissions, with per-row Remove and Clear all controls. Because native `WebContentsView` content sits above the renderer, the panel hides it while ADE overlays, dialogs, menus, or popovers overlap the browser surface so ADE chrome remains reachable. Mounted by `WorkSidebar` under the `browser` tab and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper opens the sidebar Browser tab and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
+| `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Its trusted-renderer-only **Profile** panel shows global cookie counts/domains, cache size, last safe flush, and remembered site permissions, with per-row Remove and Clear all controls. Because native `WebContentsView` content sits above the renderer, the panel hides it while ADE overlays, dialogs, menus, or popovers overlap the browser surface so ADE chrome remains reachable. Mounted by `WorkSidebar` as its `browser` tool and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper asks the Work tools pane to open Browser and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
+| `apps/desktop/src/renderer/components/chat/browser/` | The browser pane's presentational pieces and pure helpers, split out of what was a 4,500-line component. `BrowserTabStrip.tsx` (a tablist with roving focus), `BrowserToolbarRow.tsx` (nav group, omnibox, and the buttons the row sheds as it narrows), `BrowserOverflowMenu.tsx` (every ability the row drops has to reappear here), `BrowserFindBar.tsx` (owns its own Escape, so dismissing a six-character search does not close the Browser tool), `BrowserHandoffBar.tsx`, `BrowserProfilePanel.tsx`, and `BrowserStage.tsx` (the measured 8px-inset, 10px-radius frame the native view is composited over, plus the snapshot underlay, capture crop, the grouped launchpad, and the letterbox caption). `browserChrome.tsx` is the shared control geometry and the one `BrowserChromeShared` object both toolbar pieces take whole; its ghost-button vocabulary is the same one `terminals/workToolChrome.tsx` spends across the other tools. |
+| `apps/desktop/src/renderer/components/chat/browser/builtInBrowserToolbar.ts`, `browserToolbarLabels.ts`, `browserViewGeometry.ts`, `browserPanelNormalizers.ts`, `browserPanelTypes.ts`, `browserCapture.ts`, `browserDevServers.ts`, `browserRecentUrls.ts` | The panel's pure half. Layout decides how much toolbar fits from the row's measured width (`BROWSER_TOOLBAR_URL_MIN_WIDTH` — below it the row gives up a control rather than squeezing the omnibox to nothing); labels own the words; `browserViewGeometry.ts` owns the letterbox arithmetic for a device larger than the pane; the normalizers read every wire payload field by field because the main process on the other end may be older, or may be the hosted web client's stub; `browserCapture.ts` is the DOM-touching half (measuring an `object-fit: contain` element and drawing through a canvas) kept apart from the pure one; `browserDevServers.ts` normalizes the typed `getDevServers()` read and the loose `dev-server-detected` payload into one de-duplicated list; `browserRecentUrls.ts` is the launchpad's `localStorage`-backed recents list, scoped per tab collection and sanitized on every write (no query, no fragment, no credential-bearing URL, no ephemeral loopback port). |
+| `apps/desktop/src/renderer/lib/appCommandClaims.ts`, `appMenuCommands.ts`, `appZoomCommands.ts`, `typingTarget.ts` | Who answers a native-menu command. `appCommandClaims.ts` is the generic claim registry — claims stack newest-first, a handler returns `false` when it is not the right moment, and the app-wide default then runs as before; `appMenuCommands.ts` and `appZoomCommands.ts` are its two instances (⌘F/⌘W and ⌘+/−/0). A claim is needed because Electron consumes accelerators in the browser process before any renderer keydown, and the built-in browser's page has focus in a different `WebContents` entirely. `typingTarget.ts` is the one "is this person typing?" test every single-key shortcut asks first — inputs, textareas, contenteditable, and any surface that declared `data-ade-escape-scope` (a find bar has claimed the keyboard even when focus sits on one of its buttons). |
+| `apps/desktop/src/renderer/components/chat/browser/useNativeBrowserViewBounds.ts` | Bounds measurement, the suppression count that hides the composited view for splitter drags and overlays, and the frozen-frame underlay so a menu never opens over a black rectangle. Measures against the pane's content box rather than the frame's own laid-out rect, which lags a pointer-driven resize. Owns no product state — every decision is handed in as a ref or callback. |
+| `apps/desktop/src/renderer/components/chat/browserRemoteTunnels.ts` | Per-tab memory of "this tab is really looking at another machine". The view loads `http://127.0.0.1:<ephemeral>`, but nobody asked for that, so every surface that shows a URL — URL bar, tab title, the observation an agent reads back — is rewritten to the origin that was actually requested on the pinned machine. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserTabCapabilities.ts` | Per-tab capability surface lifted out of the service closure: device emulation, zoom, find-in-page, DevTools, the network log and its HAR export, the extra page actions (hover / drag / select / upload), the live preview stream, and screen recording. Reaches the service only through the narrow `BuiltInBrowserTabCapabilityDeps` seam — resolve a tab, run it under a trace entry, hold the debugger, emit — the same shape `appControlAgentActions.ts` uses next door. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserCapabilities.ts` | The Electron-free rules behind that capability surface: the zoom clamp (0.25–5), the 500-entry network-log ring and its default/max read limits, the credential-header and query-parameter redaction sets that keep session cookies and bearer tokens out of observations, HAR exports and chat transcripts (the profile is authenticated, so a verbatim log would hand an agent live sessions for every site the human is signed into), the HAR document shape, the recording FPS options and wall-clock cap, and `resolvePathWithinRoot`-backed validation of upload paths. Pure, so every one of those rules is unit-tested without a live `WebContentsView`. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserFind.ts` | The `found-in-page` waiter: an inverted `findNext` flag, a 400 ms debounce that silently discards request ids, and a result Chromium can emit synchronously before `findInPage` has returned the id to compare it against. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserCdp.ts` | The one way ADE evaluates an expression inside a tab. The agent DOM collector, the element-map overlay, and the focused-element scripts had grown three copies of the same six lines; this is a plain function of the two debugger primitives, importable from either side of the service/capability seam without a cycle. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserPreviewStream.ts` | Refcounted, skip-never-queue, pause-when-invisible preview frames for the Work tab's corner card. Subscriber counts are keyed by owner so a departed renderer releases only its own holds. The Electron surface (`capturePage` / `nativeImage.resize` / `toJPEG`) is injected, so the scheduling rules are testable without a browser. |
+| `apps/desktop/src/main/services/devServers/devServerRegistry.ts` | Passive dev-server discovery riding `ptyService`'s existing output pass: one bounded regex per chunk plus a carry for a line split across chunk boundaries. Nothing opens a socket or makes a request. In-memory with no persistence — a port that was live last week says nothing about this app session. |
+| `apps/desktop/src/shared/agentObservationNormalizers.ts`, `apps/desktop/src/main/services/shared/agentObservationCache.ts` | The two halves shared by the built-in browser and App Control, which evaluate the *same* DOM collector and write the same `<id>.json` / `<id>.png` / `<id>.map.png` triples. The normalizers validate the untrusted CDP shapes and own the single trace-target redaction rule (a fork of `actionTargetForTrace` had already drifted, so typing an API key wrote a `textLength` on one surface and the key itself on the other); the cache owns the two disk sweeps. Both are dependency-free so the Electron browser and the headless-daemon App Control service can import them. |
+| `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`, `workLiveCard.ts`, `iosSimulatorPreviewStream.ts`, `apps/desktop/src/renderer/state/workLiveCardState.ts` | The floating live-preview card: which tool it shows, per-tool/per-lane dismissal stamps, the fractional position, and the shared refcounted simulator stream that never stops a stream the iOS panel started. The persisted shapes and their normalizers live in `state/` so the store can import them without reaching into a component module. |
+| `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`, `NativeToolFeedsContext.tsx`, `workToolErrors.ts` | The three native tool feeds (browser, App Control, simulator) as one subscription set, provided once by `TerminalsPage` and read by both the tools pane and the corner card, plus the pure fold over pushed browser `diagnostics` events behind the red half of the activity dots. |
 | `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out. Settled state is rendered by `ChatLifecycleBanner` as a compact pill above the composer; the header takes a `snoozeSessionId` for the remaining snooze affordance — see [composer-and-ui.md › Header](composer-and-ui.md#header). |
 | `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | Inline install / re-login card for missing or unauthenticated agent CLIs, rendered in the transcript from a decorated `error` event's `errorInfo.agentCli` payload. Copy chips + a tracked-PTY Run button (`window.ade.pty.create`) for the install / auth command. The logged-out (`category: "unauthenticated"`) variant is terracotta-toned for Claude (amber for other agents), retitles to "&lt;Provider&gt; is logged out", and adds an always-on **Retry turn** button that resends the last user message via the `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`) window event; it collapses to a "Reconnected" confirmation when `AgentChatPane` fires `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`) after a later turn succeeds. The "missing CLI" variant keeps the red-free amber install card. |
 | `apps/desktop/src/renderer/components/chat/ProviderFailureRecoveryCard.tsx` | Classifies terminal provider capacity and usage-limit errors into actionable transcript cards. The card explains that the thread remains safe, offers an explicit same-thread **Retry turn**, and opens the composer model picker through a one-shot request for **Choose model**; neither action is enabled while another turn is active. The usage-limit card remains the transcript evidence and fork entry point, while the live schedule is rendered once by `ChatUsageLimitResumePill` above the composer; it no longer owns the old **Continue automatically** / **Don't continue** block. |
@@ -151,7 +165,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/shared/chatAttachmentStagingFs.ts` | The disk-side rule for staging a chat attachment, shared by every process that writes into `<projectRoot>/.ade/attachments`: the desktop main process, the ADE action registry the local brain serves, the CLI sync host's HTTP upload route, and `imageAttachment.ts`. `projectAttachmentsDir` is the one spelling of the directory; `stageAttachmentCopy` copies a file that already exists on this machine's disk; `stageAttachmentBytes` writes bytes a caller already holds. Both give the destination a fresh UUID basename with only a regex-validated extension from the caller's display name (`safeAttachmentExtension`), then re-check containment with `path.relative` rather than a string prefix — the prefix form false-rejects a filesystem or Windows drive root and cannot see a cross-drive path at all. `stageAttachmentCopy` is deliberately *not* constrained to the project root (users drag files in from Downloads), stats for size before copying a byte, and must only ever be reachable from the machine that owns the file. There used to be three copies of this rule and only two validated the extension, so the same drag-and-drop produced a differently-named file depending on which process answered. |
 | `apps/desktop/src/renderer/components/chat/chatTurnState.ts` | Shared renderer turn-state invariant used by cache hydration, history snapshots, live event flushes, and locked-session summary refreshes. A terminal `status`/`done` at the end of the transcript outranks an eventually consistent `status: "active"` session summary, so failed/interrupted turns restore an idle composer. Also resolves the user message associated with a failed turn, including Codex optimistic user rows that predate assignment of a provider `turnId`. |
 | `apps/desktop/src/renderer/lib/claudeAuthPrompt.ts` | Renderer-side classifier for Claude logged-out / `/login`-required error text. Drives the header and sticky login CTAs; matches both Claude-first wording and ADE's own "Authentication failed for &lt;model&gt;" classified message. |
-| `apps/desktop/src/renderer/lib/openExternal.ts` | Renderer-side router for outbound URLs. Defines the `ADE_OPEN_BUILT_IN_BROWSER_EVENT` window event plus `openUrlInAdeBrowser(url)` and `openExternalUrl(url)`. `openUrlInAdeBrowser` dispatches the event (so any open `WorkSidebar` can flip to its Browser tab), then calls `window.ade.builtInBrowser.navigate({ url, newTab: true })`. Anything that is not a normal `http`/`https`/`about:blank` URL falls through to `window.ade.app.openExternal` (system browser). All in-renderer URL clicks (markdown links, lane-runtime open buttons, etc.) go through this helper so the user stays inside ADE. |
+| `apps/desktop/src/renderer/lib/openExternal.ts` | Renderer-side router for outbound URLs. Defines the `ADE_OPEN_BUILT_IN_BROWSER_EVENT` window event plus `openUrlInAdeBrowser(url)` and `openExternalUrl(url)`. `openUrlInAdeBrowser` dispatches the event (so the Work tools pane switches to its Browser tool), then calls `window.ade.builtInBrowser.navigate({ url, newTab: true })`. Anything that is not a normal `http`/`https`/`about:blank` URL falls through to `window.ade.app.openExternal` (system browser). All in-renderer URL clicks (markdown links, lane-runtime open buttons, etc.) go through this helper so the user stays inside ADE. |
 | `apps/desktop/src/renderer/components/chat/ChatSubagentTakeoverBanner.tsx` | Non-blocking composer banner on a subagent chat that still reports to its parent. **Take over** demotes to peer; **Keep reporting** and dismiss persist `subagentTakeoverPromptShownAt` without closing the report channel. Sending does not answer the prompt. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`, `DraftMachinePicker.tsx`, `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | Composer UI and draft runtime routing: single-session prompt entry, attachments, model/permission controls, slash commands, pending input answering, parallel launch slot configuration, and inline smart-link chips. Running chats show a read-only amber tower plus their owning machine name beside the model and thinking controls; moving a chat is the explicit Chat actions → Handoff → Continue on another machine flow. Completed GitHub, Linear, ADE, and generic web URLs become atomic violet chips while their literal URL remains the serialized prompt text; click/keyboard actions offer Copy link and Remove link, hover exposes the canonical URL, and Backspace/Delete removes the whole token. During an active Claude turn, the split Send caret selects inline, after-turn, or interrupt delivery without sending; the primary button and Enter execute the chosen mode. Staged messages expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. Permission popover rows keep only the mode title in the visible row (the explanation remains in the tooltip/title) for every provider-backed picker. Codex MCP elicitations show Allow once / Deny, conditionally show Always allow, and expose safe URL authorization through ADE's browser. Pasted, dropped, and native-path attachments are copied through `ade.agentChat.saveTempAttachment` on the draft's selected runtime, so a MacBook chat never receives a Studio-only path (and vice versa). The launch-prompt clipboard helper is gated separately from prompt copying: `launchPromptClipboardEnabled` controls copying and `launchPromptClipboardNoticeEnabled` controls whether composer reminder text is shown. Orchestration model-selection pending inputs decode the full agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) so the picker can show what the lead is spawning without preselecting a recommended model. The empty-draft launch shelf separates machine selection (`DraftMachinePicker`) from the lane list, scopes lanes to the chosen machine, and keeps Shell and Import beside the resulting target. It hides the machine control when there is only one choice and preserves Auto-create across machine changes. Attachment storage, model/auth discovery, slash commands, file search, parallel launch state, creation, rollback, and recovery all carry that captured `OpenProjectBinding`; unresolved or disconnected bindings fail closed instead of falling back to the tab's machine. `useDraftMachineRouting` restores the project/tab-selected machine before enabling the composer. When the user changes machines within the same draft scope, `draftAttachmentTransfer` copies pasted/local image bytes from the owning runtime into the newly selected runtime and rewrites their attachment paths; portable image URLs remain unchanged. Non-image files and iOS/App Control/built-in-browser visual context are removed because their paths and ownership cannot move safely. The composer blocks sends while a copy is pending, and a failed copy keeps the source images visible but blocks sending until the user switches back or removes them. A project-tab scope change establishes the restored machine as the attachment owner instead of treating tab hydration as a user-requested transfer. The **This computer** option resolves to *this repository's* local checkout through `thisMachineProjectRoot.ts` rather than to the first open local tab; when no matching local checkout exists, the composer shows an inline dismissible amber notice. |
 | `apps/desktop/src/renderer/components/chat/ComposerPromptStash.tsx` | Desktop prompt-stash control mounted immediately left of the context meter. Cmd/Ctrl+S and the bookmark share one path: non-empty text is persisted before the exact saved draft is cleared, while an empty draft opens the keyboard-navigable stash menu. Restore is a take operation, but it puts text into the composer before waiting for a remote delete so edits cannot be overwritten; delete failure intentionally favors a duplicate over lost text. Attachments and context items never enter the stash. |
@@ -184,6 +198,258 @@ Explicit session metadata regeneration is a user-invoked, one-shot call through 
 - ADE does not request Apple's managed-browser public-key credential entitlement or claim native AuthenticationServices integration. It also does not load Apple Passwords or arbitrary Chrome Web Store extensions: Electron supports only a documented subset of extension APIs. Roaming FIDO2 security keys and site-provided WebAuthn flows remain Chromium/Electron capabilities, subject to the hardware and site. See Electron's [extension support boundary](https://www.electronjs.org/docs/latest/api/extensions-api).
 - ADE never converts persistent cookies into session cookies or recreates expired/logout-cleared credentials. A clean restart restores tab URLs only; Chromium and each site remain authoritative for cookie expiry and logout semantics.
 - HTTP Basic/Digest and proxy authentication use a separate local, sandboxed modal. Entered values go directly to Electron's authentication callback and are never written to ADE storage or logs. Client-certificate requests always require an explicit human choice; cancellation returns no certificate rather than silently selecting the first one.
+
+## Built-in browser: new tabs, device presets, find, and dev servers
+
+- **A new tab is a launchpad, not a home page.** `createTab` with no URL parks the tab on `about:blank` and flags it `isLaunchpad` with the title "New tab"; ADE issues no request the person did not ask for. Closing the last tab leaves **zero** tabs, and revealing the pane does not conjure a replacement. `open-request` and the agent `open` command are unchanged: they navigate. The machine-local tab store migrated to v2 for exactly one reason: to drop the google.com home page v1 had persisted, so the old default is not resurrected on the next launch. A google tab saved after that migration is the person's own and is kept.
+- **The launchpad offers the addresses this machine already has.** A browser with no page is a browser waiting for an address, so `BrowserStage` renders an optically centred 576 px column of grouped rows rather than an apology: **Clipboard** ("Paste a link", only when the clipboard actually holds a URL), **Local servers** (the dev-server registry, every row of which came from a listening port), and **Recently used**. There is no field in the column — the chrome row's omnibox is the omnibox here too, and a boxed second copy put two live URL fields on screen writing the same state.
+- **Recents are per-window convenience, sanitized on write.** `browser/browserRecentUrls.ts` keeps the last `BROWSER_RECENT_URL_LIMIT` (10) pages in `localStorage`, keyed the way tabs are scoped (`ade.browser.recentUrls:<scope>`) so a project's history and the personal-chat browser's do not bleed into each other. Every entry point is total: bad JSON, a quota error, or a renderer with no `localStorage` all degrade to "no recents" rather than a broken pane. Because the store is plaintext and its rows are *rendered*, `sanitizeBrowserRecentUrl` gates every write — it drops the query and the fragment, refuses anything that carried a credential in either (`isRedactedBuiltInBrowserQueryParam`), and refuses ephemeral loopback ports at or above `EPHEMERAL_LOOPBACK_PORT_MIN` (32768), which is what a remote tunnel's OS-assigned forward looks like. A tunneled tab records the tunnel's remote-origin display URL instead; when that mapping is unknown the raw forward origin reaches the gate and is refused. Each row has a "forget", and the group has a **Clear**. A row shows the page's favicon and a cleaned title (`cleanBrowserRecentTitle` keeps the first segment of a long " · " / " | " / " — " / " - " title, capped at 60 characters). The renderer's image CSP has no wildcard, so the main service fetches the favicon itself on `page-favicon-updated` through the tab's own session (5 s, `image/*`, at most 64 KB, http(s) only, never a credentialed URL or an ephemeral loopback port), caches it per origin, and publishes it in the tab's `faviconUrl` as a `data:` URL; the raw URL is the fallback when the fetch fails, and `sanitizeBrowserRecentFaviconUrl` applies the same refusals before the recents store keeps it.
+- **The page is framed, and rounded on both layers.** `BrowserStage` insets the page 8 px on every side inside a 10 px-radius frame with a hairline inset ring, so ADE's chrome frames the page instead of butting a rounded pane against a square document. Because a `WebContentsView` is composited *above* the renderer, CSS `overflow-hidden` cannot mask it — the main process rounds the native layer itself with `View.setBorderRadius` to `BUILT_IN_BROWSER_VIEW_CORNER_RADIUS` (9, one hairline inside the frame's 10). Both sides read that constant so they cannot drift, and a build whose Electron lacks `setBorderRadius` degrades to a square page rather than failing.
+- **⌘F and ⌘W reach the pane through the app menu, not a keydown.** Both are native menu accelerators, so Electron consumes them in the browser process before any renderer keydown — and once you click into the page, focus is in the page's own `WebContents` and this renderer sees no key event at all. The menu sends one command down (`IPC.appCommand`), and `lib/appMenuCommands.ts` (one instance of the shared `lib/appCommandClaims.ts` registry) decides who answers. The browser panel claims both when `panelOwnsAppCommands` says it holds the keyboard — the same ownership rule as the zoom chords, so the two can never disagree about whose keyboard this is: `find` opens/refocuses the find bar, `close-tab` closes the active tab and returns *its* answer, so a ⌘W the pane could not act on is never reported as taken (which would turn it into a Quit prompt with a tab on screen). Unclaimed, `close-tab` is the ordinary window close with its prompt and `find` is replayed as an untrusted keydown on the focused element, which is a no-op on a screen with nothing to find in.
+- **Emulation says so in the caption, not in a banner.** A device preset is announced by the letterbox caption inside the framed card (the page's CSS pixel size) and by the toolbar's own device control; the pane draws no explanatory device banner over the page.
+- **A device preset owns the tab's debugger.** `setEmulation` sends `Emulation.setDeviceMetricsOverride` (including `screenWidth`/`screenHeight`), `Emulation.setUserAgentOverride` (with `userAgentMetadata` for mobile presets), `Emulation.setTouchEmulationEnabled` and `Emulation.setEmitTouchEventsForMouse`. Chromium reverts every `Emulation.*` override when the CDP session that set it detaches, so the override holds a debugger attachment for as long as it is in force and is re-applied on `did-navigate`. That places emulation under the same conflict rule as network logging: DevTools refuses to open on a tab that is emulating, and clearing the preset releases the hold.
+- **The emulation letterboxing contract.** A non-null `tab.emulation` carries the *effective* `{ width, height, deviceScaleFactor, mobile, label }`. Surfaces size the native view to exactly `width × height` CSS px, center it in the pane and letterbox the remainder — never stretched, never scaled to fit — so an agent's screenshot matches what the human sees.
+- **Find resolves on the first result.** `findInPage` resolves with the first `found-in-page` result for its request (`matches`, `activeMatchOrdinal`, `finalUpdate`), not on `finalUpdate`. Chromium only emits a final update once it has walked the whole document, and never for a find superseded by the next keystroke — waiting for it timed out on searches that had already produced correct counts, and the raw timeout reached the find bar as an error banner over working numbers. Later updates for the same request keep streaming as `found-in-page` events. A timeout is reported only when no result arrived at all.
+- **Dev servers are discovered, never probed.** The PTY output pipeline sniffs the ready lines frameworks already print (`Local:   http://localhost:5173/`, `ready on`, `listening on`) with one bounded regex per chunk plus a carry for lines split across chunk boundaries, and publishes `{ port, url, source: { sessionId, laneId, projectRoot }, detectedAt }` into an in-memory registry (`main/services/devServers/devServerRegistry.ts`). The registry forgets a session's ports when its terminal ends. Renderers read it through `builtInBrowser.getDevServers()` / `localhost.getDevServers()`; nothing opens a socket. When a lane's server appears and that lane already holds a browser tab — or the Browser tool has nothing open — ADE opens it in a **background** tab once per (lane, port) per app session (`openPanel: false`, no focus steal) and emits `dev-server-detected` for the corner card. Both the auto-open target and the event's stamped collection are resolved from the record's own `projectRoot` — the detecting terminal's project, captured at detection time because nothing downstream can recover it from a lane id. On a two-project machine that is the difference between the lane's launchpad showing its `localhost` chip and another project's pane showing it instead; when the lane's project has no Browser collection materialized at all there is no chip event, and its pane lists the server from the registry the moment it opens. `browser.autoOpenDevServer` (default `true`, same `browser:` config block as `linkOpenMode`) turns the auto-open off without turning discovery off.
+- **`ade browser proof --har`** exports the tab's HAR alongside the screenshot and ingests it as a `browser_trace` artifact under the same owners, in one call. It requires network logging to be on for that tab and fails with that message when it is not, rather than filing half the proof.
+
+## The corner card and parked preview views
+
+The Work tab has one pane for one screen tool, so the browser is
+frequently the thing you are *not* looking at. `WorkLiveCornerCard`
+(see [UI surfaces](../terminals-and-sessions/ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx))
+shows it anyway, and that pulls two contracts into the main process.
+
+- **A preview stream is not a recording.**
+  `builtInBrowserPreviewStream.ts` has no file, no encoder, and no
+  `getDisplayMedia` grant — just "a small picture, a few times a second,
+  while somebody is watching". It is **refcounted** (two surfaces
+  watching one tab share one loop; zero subscribers means no loop, no
+  idle timer, no warm capture), it **skips rather than queues** (a tick
+  that fires while the previous `capturePage()` is outstanding is
+  dropped, so a slow page degrades to a lower frame rate instead of
+  pinning a core with a backlog), and it **pauses rather than stops**
+  when the window is hidden or minimised, so returning to the app
+  resumes without a re-subscribe handshake. Subscriber counts are keyed
+  by owner (the renderer's `webContents` id) so a renderer that goes away
+  releases exactly its own holds.
+- **Parked, not detached.** A `WebContentsView` that has been removed
+  from the window — or merely `setVisible(false)` — has no compositor
+  surface, and with no surface `capturePage()` resolves an empty image
+  and CDP `Page.captureScreenshot` never answers at all. So a tab with a
+  live preview subscriber is moved past the **union of every display's
+  bounds** (in both axes, plus a margin) rather than detached: Chromium
+  keeps compositing it, and no window on any screen can grow, maximise,
+  or move onto it. Anchoring to "one window-width to the right" was not
+  enough, because child-view bounds are window-relative and written once,
+  so a window that later widened painted a live page over the ADE UI.
+  Geometry changes re-run the placement (`screen` display events plus the
+  window's own move/resize, debounced), and only tabs with a watcher pay
+  for any of this — everything else is still detached outright.
+- **Parking preserves a surface; it cannot create one.** A view whose
+  bounds have never intersected the window's content rect has no
+  compositor surface at all, so `capturePage()` resolves an *empty* image
+  forever and silently — that is the whole of the black corner card for an
+  agent's background tab, a launchpad tab, or a tab switched to while the
+  pane was on Terminal. Overlapping the window by a single pixel is enough
+  for Chromium to allocate the surface at the view's full size, so a
+  watched view is first placed with exactly its top-left pixel inside the
+  window's **bottom-right content corner**, at its parked size (the page
+  must lay out once at the size it will be captured at), held for
+  `BUILT_IN_BROWSER_PREVIEW_WARM_MS` (120 ms), then moved to the real park
+  point — which it now survives. That one pixel is a live page composited
+  over the ADE UI: the bottom-right corner is chosen because every modern
+  window manager masks it away with the window's own rounded corner, and a
+  2 px `warmingCornerRadius` clips it on a square-cornered window. Electron
+  exposes no hit-test opt-out for a `View`, so the 120 ms bound is what
+  makes a click on that pixel unreachable in practice and is the reason it
+  must not be lengthened. Warming is skipped entirely when the host window
+  is minimised, hidden, or has no content rect (there is no surface to
+  borrow, and re-arming every 120 ms against a hidden window would never
+  complete); the tab parks directly and warms when the window is back.
+  Surfaced tabs are tracked per tab (`surfacedTabIds`) with a **per-tab**
+  warming timer — one shared timer let a second watched tab cancel the
+  first, stranding it on its warming rect with its pixel showing — and the
+  surfaced mark is dropped whenever the view leaves the window, so the next
+  park re-warms rather than trusting a surface that may have been released.
+- **A parked view keeps its size.** The park reuses the tab's last panel
+  rect as-is rather than flooring it, because resizing on the way out and
+  again on the way back would fire real `resize` events inside the page.
+  The minimum size is only the fallback for a tab the panel never showed,
+  which has no rect to reuse and would otherwise capture nothing.
+- **Focus.** Parking neither detaches nor hides the view, so a page that
+  had the caret keeps it. The service hands focus back to the host window
+  on the attended → parked edge, and only when that window is already
+  frontmost — `WebContents.focus()` activates the owner window on every
+  platform, and raising a background window is the worse bug.
+
+## The Work tools pane on iOS and the hosted web client
+
+The Work tools pane runs on the desktop. The browser owns a `WebContentsView`,
+App Control owns a CDP socket to a local process, and the iOS panel owns a
+capture stream — none of which exists on a phone or in a browser tab. iOS and
+the hosted web client therefore get a **read-only mirror** of the pane, never a
+control surface.
+
+The mirror is aggregated per lane by
+`apps/ade-cli/src/services/workTools/workToolsStateService.ts`, which pulls from
+three different owners:
+
+- `activeTool` and `openTools` are **published by the desktop renderer**. The
+  pane is a tab strip, so the mirror carries the whole strip in order as well as
+  the tab on screen; a client reading only the active tool would describe a pane
+  with one tab in it. Which tools are open is renderer view state, so nothing
+  else can know it. A desktop older than the strip publishes no `openTools`, and
+  the aggregator reads that as the one-tab pane that build had.
+  `useWorkSidebarTool`
+  debounces changes by 250 ms and calls the `work_tools.setActiveTool` runtime
+  action, re-publishing whenever the project binding or runtime status changes
+  so a restarted brain relearns it. It is held **in memory only** — deliberately
+  not a cr-sqlite table, because a replicated row would outlive the desktop that
+  meant it and turn an ephemeral view preference into permanent per-device state.
+- `browser` is **proxied from the desktop bridge** (`built_in_browser.getStatus`
+  over `desktop-bridge.sock`). With no desktop attached to the machine there is
+  no browser to describe: the state reports `browser: null` with
+  `browserUnavailable: "desktop_not_attached"`, which clients render as absence,
+  not as an error. The bridge socket is **machine-wide** while the daemon asking
+  is **project-scoped**, so the daemon's `getStatusForRuntime` call carries its
+  own `projectRoot` — it is not exempt from the runtime-scope rewrite; only the
+  two capability-lifecycle methods are — and the desktop answers out of that
+  project's window collection rather than whichever window happens to be
+  frontmost. With two project windows open that is the difference between a
+  phone showing its own lane's tabs and showing the other project's. When it cannot answer for that project the
+  daemon gets an empty tab list with a `browserUnavailable` reason instead of
+  another project's tab titles and URLs, and the two reasons carry opposite
+  instructions: `"desktop_not_attached_for_project"` (no window has the project
+  open — worded differently from the no-desktop case, because ADE Desktop *is*
+  running) and `"browser_pane_not_opened"` (a window does have it open and its
+  Browser pane has simply never been used; the read deliberately does not build
+  a collection to answer a poll, since that would restore and load a background
+  project's persisted tabs for a pane nobody opened).
+- `appControl` is **read in-process** from the daemon's own App Control service,
+  so it survives a desktop that has quit.
+
+Frames never travel with the state. Observations are already on disk under
+`.ade/cache/browser-observations` and `.ade/cache/app-control-observations`; the
+state carries the newest one's path, and a client fetches the bytes separately
+through `workTools.readObservationPreview`, which resolves the path inside those
+two roots only, rejects non-image extensions, and caps a preview at 10 MiB. A
+routine poll or a `work_tools_state_changed` event therefore never carries an
+image.
+
+`work_tools` reads are lane-scoped **deny-by-default**. `getLaneState` and
+`readObservationPreview` are denied outright when the caller is not a user
+client and no lane can be resolved from its chat session — an orchestration
+step identified only by `runId`/`stepId`/`attemptId`, or a bound chat whose
+session record the daemon cannot resolve, previously fell through unscoped and
+could read any lane's tab list and any lane's observation bytes. A
+caller-supplied `callerLaneId` is stripped unconditionally rather than being
+trusted on the fall-through. User clients (desktop, iOS, hosted web) carry
+neither a `chatSessionId` nor a run identity, so they keep the unscoped path. A
+CTO-role caller is exempt from the scoping wholesale — the same deliberate
+cross-lane role as `external-sessions`.
+
+Surfaces:
+
+| Surface | Action / entry point | Behaviour |
+| --- | --- | --- |
+| Desktop | `work_tools.setActiveTool`, `work_tools.getLaneState` runtime actions via `window.ade.workTools` | Owns the pane; publishes the tab strip and which tab is on screen. |
+| Hosted web | `workTools.getLaneState` / `workTools.readObservationPreview` remote commands | `WorkToolReadOnlyView` replaces the browser and App Control panels. `isReadOnlyWorkTool` in `workTools.ts` is the capability gate; `setActiveTool` is a no-op so a web tab cannot overwrite the desktop's truth. The iOS Simulator tool stays unavailable — its pane is a live video stream with nothing describable to mirror. |
+| iOS | same two remote commands, gated on `SyncService.supportsWorkToolsState` | `WorkToolsRow` shows "Tools · Browser active · 3 tabs ›" above the chat transcript and opens `WorkToolsSheet`: active-tool card with the open-tab capsules (filled = on screen) and the last frame, then the tab list, then App Control. Pull to refresh; the sheet polls every 3 s while it is open, and the row polls every 10 s but **skips its tick while the sheet is up** — the sheet is presented from the row, so the row stays mounted underneath it and would otherwise duplicate the same read (and the same frame decode) for a summary line nobody can see. |
+| ADE Code (TUI) / `ade` CLI | `work_tools.getLaneState` via `/tools` and `ade work-tools state` | Same read-only mirror in the right pane or as text. `work_tools.actions` lists the full inventory; `setActiveTool` stays user-client-only, so an agent that wants a pane open opens the tool (`ade browser panel`) rather than claiming one is open. It is also how a terminal user learns a browser tab has been handed back for them to sign in. |
+
+Both remote commands are `viewerAllowed` and live in
+`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a brain that predates them —
+or a chat-only runtime that never builds the aggregator — omits them and the
+phone simply hides the row instead of flipping the host into `limited` mode.
+
+Neither iOS nor web polls on a schedule of its own beyond the open sheet or the
+visible pane: there is no generic named-event channel from the brain to either
+client (the web client's only push is cr-sqlite changesets, and this state is
+not table-backed), so `work_tools_state_changed` is emitted on the runtime event
+stream for the surfaces that already receive it, and the two read-only clients
+poll while they are looking.
+
+## "An agent is using the browser"
+
+Every surface that shows a chat can say whether that chat is driving the browser
+right now: a pulsing globe on the session card and next to the chat header
+title, a live dot on the Browser tab in the Work tools header, a line in the
+iOS Tools sheet and a glyph on the row above the transcript, and a line in the
+TUI's `/tools` pane.
+
+Presence is **derived, never announced**. An instruction to tell the user when
+it opens the browser is a fact an agent can forget, embellish, or leave set
+after it has moved on, so nothing an agent says feeds this. The evidence is the
+browser being driven: `desktopBridgeServer` records presence for every
+capability-validated `built_in_browser.*` command, keyed by the chat session the
+actor capability was minted for. Reads count too — `status` and `observe` are
+how an agent looks at a page, and a badge that lit only for clicks would go dark
+while it read.
+
+`apps/desktop/src/main/services/builtInBrowser/builtInBrowserPresence.ts` owns
+the lifecycle, in memory and process-local like the actor capabilities it is
+keyed by:
+
+- It **expires** twenty seconds after the last command, on a timer rather than a
+  poll. An agent that walks away sends nothing to say so.
+- It is **held** while a tab is recording, and while any preview/observe stream
+  is subscribed to it — both run for minutes without a command, and a
+  subscription's hold is taken when the first subscriber arrives and released
+  when the last one leaves. A recording's hold is released by the same
+  `recording` event that tells
+  every other surface the capture stopped, including the ones no agent asked for
+  (the wall-clock cap, a login handoff). Because that event is the only release,
+  each hold also carries a ten-minute deadline and is dropped when it passes, so
+  a release lost to a torn-down renderer costs one deadline rather than the life
+  of the process.
+- It **clears** when the tab closes, when the chat's capability is revoked, when
+  a login handoff moves the tab to a human — the one state whose whole point is
+  that the agent has stepped back — and for every tab of a window that closes,
+  which destroys its tabs without a `closeTab` call of its own.
+
+Two paths carry it, because two kinds of client need it:
+
+- The **desktop renderer** gets an `agent-presence` browser event (the whole set
+  each time, so a badge that mounted between two changes has nothing to
+  reconcile) plus a one-shot `builtInBrowser.getAgentPresence()` read as a seed
+  for a surface that mounted mid-stretch. That read exists precisely so the seed
+  is side-effect-free: `getStatus` is a *creating* resolver whose factory
+  restores and `loadURL`s every persisted tab, and the badge is mounted by every
+  session card and the chat header, so seeding through it background-loaded the
+  browser for a user who never opened the pane. Asking for the seed does
+  subscribe the asking window to the pushed event — a window that never
+  activates the Browser tool is on no other path that would register it, and
+  would otherwise hold its first seed forever. The event is sent per window and
+  scoped to the projects that window has open, the same routing every other
+  browser event takes and the same scoping the seed applies, so one project's
+  window never lights a dot for another project's agent. `agentBrowserPresence.ts` in the renderer
+  is one module store with a single shared subscription for every badge.
+- The **read-only clients** get `agentBrowserPresence` on the Work-tools lane
+  state, projected from the bridge's `getStatusForRuntime` and filtered to the
+  lane exactly like the tab list (another lane's entry belongs to that lane's
+  pane; a personal chat's laneless entry is shared browsing). The daemon proxies
+  every `ade browser` call, so it also fires `work_tools_state_changed` on both
+  edges of a browsing stretch — once when an agent picks the browser up and once
+  when the desktop's window has elapsed — instead of leaving a phone to discover
+  either edge on its next poll. Presence is recorded on **both edges of each
+  call**, in the daemon and in the bridge alike: a `wait`, a slow navigation or
+  a long `observe` is exactly the stretch a person is trying to explain, and
+  waiting for the call to return left the globe dark for the whole of it. A
+  command that throws touched no browser, so the failure path retracts what it
+  announced — but only when that call is what opened the window, so one failure
+  inside a busy agent's stream cannot dark the globe the rest of that stream
+  still justifies. The retraction is matched by sequence rather than by clock,
+  because parallel calls from one chat share an actor token and land in the same
+  millisecond, and it stands down entirely while a recording holds the record.
+  The trailing edge is skipped for the two calls that end the agent's turn at a
+  tab — `closeTab` and `startHandoff` — which clear presence from inside their
+  own dispatch; touching after them would relight the globe with a dead or
+  handed-off tab, beside the very banner asking a human to sign in. The daemon
+  deliberately keeps no copy of the
+  presence itself: the desktop is the only side that sees tabs close and
+  recordings end, so a second copy would only be a second answer to disagree
+  with.
 
 ## Where the chat service runs
 
@@ -1047,8 +1313,8 @@ Three rules are specific to the schedule itself:
   Navigation, tab create, switch-tab, and the dedicated
   `built_in_browser.showPanel` / `ade.builtInBrowser.showPanel` IPC
   channel each accept `openPanel: true|false`; `true` emits an
-  `open-request` event that `TerminalsPage` listens for to flip the
-  Work sidebar to its Browser tab. The `--no-panel` / `--hidden` flags
+  `open-request` event that `TerminalsPage` listens for to switch the
+  Work tools pane to its Browser tool. The `--no-panel` / `--hidden` flags
   on the matching `ade browser ...` CLI commands set `openPanel: false`
   so headless callers can prefetch tabs without yanking the user's
   attention. Browser commands are available only inside an ADE-launched,
@@ -1057,6 +1323,133 @@ Three rules are specific to the schedule itself:
   Inspect-mode hit-tests produce `BuiltInBrowserContextItem`
   payloads that the sidebar forwards to the active chat as composer
   chips alongside iOS / App Control selections.
+- **Login import.** A human can seed the shared profile with cookies
+  from a browser they already use, so ADE's browser starts out signed
+  in. `apps/desktop/src/main/services/builtInBrowser/loginImport/`
+  discovers installed browsers and profiles, reads the jar, and shows a
+  **domain picker with counts before anything is imported** — "import
+  Chrome" is not a decision anyone can make responsibly, since a cookie
+  jar is every identity the person holds. Cookies only: Electron has no
+  password store, and reading a browser's password vault is a materially
+  different consent. Firefox jars are plaintext SQLite; Chromium jars are
+  decrypted with the OS key (macOS keychain via PBKDF2-HMAC-SHA1,
+  `saltysalt`, 1003 iterations → AES-128-CBC with a fixed 16-space IV;
+  Linux libsecret or Chromium's `peanuts` fallback at 1 iteration;
+  Windows DPAPI → AES-256-GCM); Safari's `Cookies.binarycookies` is
+  unencrypted and gated by TCC instead. Every SQLite read runs against a
+  `VACUUM INTO` snapshot in a temp directory, never the browser's live
+  file. Expired cookies are skipped, session cookies stay session
+  cookies, partitioned (CHIPS) rows and Firefox container rows are
+  dropped because Electron has no equivalent identity, and `domain` is
+  omitted entirely for host-only cookies — Electron reads any `domain`
+  as marking a domain cookie and re-adds the leading dot, which would
+  widen the scope and break `__Host-` cookies. Cookie values are never
+  logged. The four IPC channels
+  (`ade.builtInBrowser.loginImport.capabilities|listSources|listDomains|import`)
+  are trusted-renderer-only, exactly like the profile diagnostics above:
+  an agent that could import cookies could hand itself any logged-in
+  identity, so `ade browser` has no command for this. A completed import
+  emits a `login-import-completed` event (counts and hosts only) on the
+  existing browser event stream.
+
+  Two platform limits are stated rather than papered over.
+  **On Windows, only Firefox and Helium can be imported.** Chrome 127+
+  wraps the cookie key with App-Bound Encryption, tied to the browser's
+  own code identity, so no other process can unwrap it — Chrome,
+  Chromium, Brave, Edge, Vivaldi, Opera and Arc report `unsupported`
+  with that reason instead of failing silently. **Safari needs Full
+  Disk Access**: macOS never prompts for it, and `stat` succeeds on the
+  jar without it, so denial is detected by opening the file and checking
+  for a raw `EPERM` (TCC's errno — `EACCES` is an ordinary failure the
+  grant cannot fix). That case returns a typed `needs_full_disk_access`
+  result carrying the System Settings pane to open. The renderer never
+  holds that URL: `x-apple.systempreferences:` is deliberately outside
+  `ALLOWED_EXTERNAL_URL_SCHEMES`, so handing it to `openExternal` always
+  throws — which is how the "Open System Settings" button became a dead
+  control. The renderer names a pane **id** and the main process resolves
+  it against `SYSTEM_SETTINGS_PANE_URLS` in
+  `shared/types/systemSettings.ts` before calling `shell.openExternal`;
+  adding a pane is a deliberate edit to that table, not a widening of the
+  scheme allowlist.
+
+  Every jar read runs in a child process. `loginImportReadWorkerClient.ts`
+  spawns `loginImportReadWorkerEntry.ts` under `ELECTRON_RUN_AS_NODE=1`
+  (the reader needs only Node built-ins) for the decrypt-and-parse pass
+  (`loginImportRead.ts`, `chromiumCookies.ts`, `chromiumKeys.ts`,
+  `firefoxCookies.ts`, `safariCookies.ts`, `cookieDatabase.ts`,
+  `cookieDomains.ts`). The wait has **no timeout** on purpose: on macOS
+  the child is sitting behind a Keychain consent modal, and a timeout
+  racing the human means the prompt can be approved with nothing left
+  listening. What ends it instead is bookkeeping — every live child is
+  tracked, the promise's own settle path terminates it (spawn errors and
+  unreadable answers included), and `terminateLoginImportReadWorkers`
+  kills the rest at app quit, because Node does not reap non-detached
+  children on macOS and an orphan would still be holding an OS credential
+  prompt. `loginImportService.ts` coalesces concurrent reads of one source
+  through an `inFlightReads` map, so a source means one child and one
+  Keychain prompt.
+- **Link rules.** `browser.linkOpenMode` (`in-app` | `external`,
+  default `in-app`) decides where a link clicked inside ADE opens. It
+  lives in the project config's `browser` section and ADE writes it to
+  `.ade/local.yaml`, because which browser your links land in is a
+  property of the machine you are sitting at, not of the repository.
+  Settings → General → Links exposes it as "Open links: In ADE / In
+  system browser". Two overrides sit on top of the preference and are
+  absolute, so nobody has to open Settings to get the other behaviour
+  once: **Mod+Click** (Cmd on macOS, Ctrl elsewhere) always opens
+  externally, and **Shift+Click** always opens in ADE. Mod wins when
+  both are held — it is the escape hatch for a site that will not render
+  embedded. The rule is one pure function,
+  `resolveLinkOpenTarget()` in `renderer/lib/linkOpenTarget.ts`; every
+  in-content link click routes through `openLinkFromUi()` in
+  `renderer/lib/openExternal.ts` (chat markdown, work-log and message-list
+  action chips, chat sources, terminal link activation, Linear/GitHub
+  issue bodies and Open buttons). Buttons that deliberately hand off to a
+  named external service — a provider's docs, a GitHub App install page —
+  keep calling `openExternalUrl` directly: those are a destination the
+  product chose, not a link the user clicked.
+- **Per-tab browser capabilities.** Beyond navigation and the
+  click/type/fill/press/wait agent actions, each tab carries device
+  emulation, zoom, find-in-page, DevTools, an opt-in full network log and
+  a screen recording, all reachable from both the trusted renderer
+  (`window.ade.builtInBrowser.*`) and `ade browser ...` through the same
+  actor-capability scoping. `setEmulation` applies a shared preset table
+  (`shared/builtInBrowserEmulation.ts`: desktop, iPhone 17 / 17 Pro /
+  17 Pro Max, iPad, Pixel, responsive) over CDP
+  `Emulation.setDeviceMetricsOverride`; `setZoom` clamps
+  `webContents.setZoomFactor` to 0.25-5 and re-applies it after
+  cross-origin navigations; `findInPage` resolves with Chromium's match
+  counts and mirrors them onto the event bus as `found-in-page`;
+  `setDevTools` toggles the tab inspector and is logged whenever an
+  agent-bound caller drives it. DevTools and ADE's CDP debugger cannot
+  own the same target, so network logging and DevTools are mutually
+  exclusive per tab. `setNetworkLogging` records a bounded (500-entry)
+  per-tab request log from CDP `Network.*` — chosen over the
+  session-global `webRequest` API because it is the only source carrying
+  headers, protocol, per-phase timings and encoded sizes — with
+  `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie`
+  values redacted before storage, and `exportHar` writes HAR 1.2 into the
+  tab's observation scratch directory. `startRecording` /
+  `stopRecording` capture the tab through a hidden ADE-owned page calling
+  `getDisplayMedia()`, which Electron's
+  `session.setDisplayMediaRequestHandler` answers with the recorded tab's
+  frame only while main has explicitly armed that pair; `MediaRecorder`
+  encodes MP4/H.264 where available and WebM otherwise, so there are no
+  native dependencies and no screen-recording permission prompt. A
+  recording reaches the proof drawer only when `startRecording` was given
+  a caption. Tab state reports `zoomFactor`, `devToolsOpen`, `emulation`,
+  `networkLogging` and `recording`. A recording is capped at **5 minutes**
+  of wall clock so an agent that forgets `stopRecording` (or dies
+  mid-run) cannot capture until the app quits; the cap finalizes the file
+  the same way an explicit stop does. A login handoff also ends an
+  in-flight recording, aborting it to scratch rather than promoting it,
+  and turns network logging off with the buffered log cleared — neither
+  re-arms on hand-back. Both non-agent endings publish `endedBy` on the
+  `recording` event (`"max_duration"` or `"handoff"`) and write a
+  `stopRecording`-shaped tab-trace entry, so the agent that armed the
+  recording can find out why it stopped. (The handoff's own
+  `handoff-ended` event carries a separate `endedBy` from a different
+  union: `human`, `auto-offer`, `tab-closed`, `timeout`.)
 - **Localhost shortcuts in the work log.** When an agent's tool output
   surfaces a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL, the chat
   work-log block renders a sky-toned strip above the tool-call panels.

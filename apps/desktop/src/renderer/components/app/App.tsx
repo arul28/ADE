@@ -118,6 +118,7 @@ import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/filesTreeCache";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
+import { requestWorkTool } from "../terminals/workToolRequests";
 import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
@@ -372,12 +373,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!active || !projectRoot) return;
     const revealWorkBrowser = () => {
-      // The work-tab `viewMode` (tabs/grid) was the old grid this lane's overhaul
-      // replaces; just open the browser sidebar.
-      setWorkViewState(projectRoot, {
-        workSidebarOpen: true,
-        workSidebarTab: "browser",
-      });
+      // Openness is project-wide, so the shell can set it directly. WHICH tool
+      // is open is per lane, and only the Work page knows the lane its tools
+      // pane is following — so that half is a request the page drains, whether
+      // it is already mounted or arrives after this navigate.
+      setWorkViewState(projectRoot, { workSidebarOpen: true });
+      requestWorkTool("browser");
       if (!isWorkRoute) navigate("/work");
     };
     const handleBrowserEvent = (event: unknown) => {

@@ -4,7 +4,33 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 
-const STATE_VERSION = 1;
+/**
+ * v1 persisted whatever the pane had open, including the google.com home page
+ * ADE used to force onto every new tab. v2 exists only to drop that default on
+ * read once: without it, "new tab no longer loads google" would still be
+ * undone on the next launch by a restored tab.
+ *
+ * v3 changed how a project collection key is derived: the hash now runs over
+ * `pathKey(resolve(projectRoot))` instead of the raw string, so `C:\Users\dev`
+ * and `c:\users\dev` stop producing two invisible collections on Windows. The
+ * old key cannot be recomputed from the file (only the digest was stored), so a
+ * v2 read keeps the unhashed `window`/`personal` collections and drops the
+ * `project-*` ones — one launch of restored tabs, once.
+ */
+const STATE_VERSION = 3;
+const LEGACY_STATE_VERSION = 1;
+const REKEYED_COLLECTION_STATE_VERSION = 2;
+
+/**
+ * Home pages ADE itself put there. A google *search* URL is a real thing the
+ * person navigated to and is left alone; a bare home page is the old default.
+ */
+const LEGACY_DEFAULT_TAB_URL_PATTERN =
+  /^https?:\/\/(?:www\.)?google\.[a-z.]{2,6}\/?$/i;
+
+function isLegacyDefaultTabUrl(value: string): boolean {
+  return LEGACY_DEFAULT_TAB_URL_PATTERN.test(value.trim());
+}
 const MAX_COLLECTIONS = 100;
 const MAX_TABS_PER_COLLECTION = 10;
 const WRITE_DEBOUNCE_MS = 200;
@@ -27,10 +53,13 @@ export function createBuiltInBrowserStateStore(args: {
   filePath: string;
   getLogger?: () => Logger | null;
 }) {
-  const collections = new Map<string, StoredCollection>(loadState(args.filePath));
+  const loaded = loadState(args.filePath);
+  const collections = new Map<string, StoredCollection>(loaded.entries);
   let writeTimer: NodeJS.Timeout | null = null;
   let writeChain = Promise.resolve();
-  let dirty = false;
+  // A migrated file is dirty on load so the upgrade is persisted even if the
+  // person never opens the browser again this session.
+  let dirty = loaded.migrated;
 
   const logger = (): Logger | null => {
     try {
@@ -124,16 +153,25 @@ export function createBuiltInBrowserStateStore(args: {
   };
 }
 
-function loadState(filePath: string): Array<[string, StoredCollection]> {
+function loadState(filePath: string): { entries: Array<[string, StoredCollection]>; migrated: boolean } {
   try {
     const parsed = JSON.parse(fsSync.readFileSync(filePath, "utf8")) as unknown;
-    if (!isRecord(parsed) || parsed.version !== STATE_VERSION || !isRecord(parsed.collections)) return [];
-    return Object.entries(parsed.collections)
+    if (!isRecord(parsed) || !isRecord(parsed.collections)) return { entries: [], migrated: false };
+    const migrated = parsed.version === LEGACY_STATE_VERSION;
+    const rekeyed = parsed.version === REKEYED_COLLECTION_STATE_VERSION;
+    if (parsed.version !== STATE_VERSION && !migrated && !rekeyed) return { entries: [], migrated: false };
+    const entries = Object.entries(parsed.collections)
       .map(([key, value]): [string, StoredCollection] | null => {
         if (!isPersistentCollectionKey(key) || !isRecord(value) || !Array.isArray(value.tabs)) return null;
+        // Project keys written before v3 hash a different input, so they would
+        // restore into a collection nothing ever looks at.
+        if ((migrated || rekeyed) && key.startsWith("project-")) return null;
         const tabs = value.tabs
           .map((tab) => isRecord(tab) ? restorableBrowserUrl(tab.url) : null)
           .filter((url): url is string => Boolean(url))
+          // Drop the home page ADE used to force onto new tabs, but only while
+          // upgrading a v1 file — after that a google tab is the person's own.
+          .filter((url) => !migrated || !isLegacyDefaultTabUrl(url))
           .slice(0, MAX_TABS_PER_COLLECTION)
           .map((url) => ({ url }));
         const rawActiveIndex = typeof value.activeIndex === "number" ? Math.floor(value.activeIndex) : 0;
@@ -145,8 +183,9 @@ function loadState(filePath: string): Array<[string, StoredCollection]> {
       })
       .filter((entry): entry is [string, StoredCollection] => Boolean(entry))
       .slice(0, MAX_COLLECTIONS);
+    return { entries, migrated: migrated || rekeyed };
   } catch {
-    return [];
+    return { entries: [], migrated: false };
   }
 }
 

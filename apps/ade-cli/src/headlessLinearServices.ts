@@ -245,9 +245,6 @@ type HeadlessLinearServices = {
       nextCursor: number | null;
       cursorKind: "index";
     }>;
-    previewSessionToolNames: (args?: {
-      sessionId?: string | null;
-    }) => Promise<string[]>;
     createSession: (args: {
       laneId: string;
       title?: string;
@@ -3072,9 +3069,6 @@ function createHeadlessAgentChatService(
         nextCursor: nextCursor > 0 ? nextCursor : null,
         cursorKind: "index" as const,
       };
-    },
-    async previewSessionToolNames() {
-      return [];
     },
     async createSession(args: { laneId: string; title?: string }) {
       return ensureSession({ laneId: args.laneId, title: args.title });

@@ -14,6 +14,17 @@ describe("commands", () => {
     }));
   });
 
+  it("offers /tools as a right-pane command with an optional lane", () => {
+    const parsed = parseCommand("/tools other-lane");
+    expect(parsed?.name).toBe("/tools");
+    expect(parsed?.args).toBe("other-lane");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/tools")).toContainEqual(expect.objectContaining({
+      name: "/tools",
+      source: "ade",
+    }));
+  });
+
   it("keeps the old Attention command as a non-advertised alias", () => {
     const parsed = parseCommand("/attention");
     expect(parsed?.name).toBe("/activity");

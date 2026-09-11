@@ -2,7 +2,17 @@ import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { NO_CI_REASON, rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { CursorCloudFleetEntry } from "../../../desktop/src/shared/types/config";
+import {
+  isWorkToolId,
+  workToolsUnavailableMessage,
+  WORK_TOOLS_CONTROL_HINT,
+  type WorkToolId,
+  type WorkToolsBrowserTab,
+  type WorkToolsLaneState,
+  type WorkToolsObservation,
+} from "../../../desktop/src/shared/types/workTools";
 import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
+import { formatRelativePastTime } from "./relativeTime";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -602,4 +612,164 @@ export function formatCursorCloudFleetRows(entries: CursorCloudFleetEntry[]): st
     if (agentId && row.length + 3 + agentId.length <= rowBudget) row += ` · ${agentId}`;
     return row;
   });
+}
+
+// ---------------------------------------------------------------------------
+// /tools pane — the desktop's Work tools state, read-only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shown at the foot of the /tools pane. Reuses the shared constant rather than
+ * restating it, so the terminal, the phone, and the hosted web client all tell
+ * the reader the same thing about who can drive these panes.
+ */
+export const WORK_TOOLS_PANE_NOTE = WORK_TOOLS_CONTROL_HINT;
+
+/**
+ * Human label for a `WorkToolId`. Mirrors `workToolsDisplayName` in
+ * `apps/ios/ADE/Views/Work/WorkToolsRow.swift`, including its rule for ids this
+ * build has no name for: a newer desktop's tool is printed verbatim rather than
+ * dropped, because the terminal should not decide a tool does not exist just
+ * because it has not shipped a name for it.
+ *
+ * `WORK_TOOL_IDS` keys the record, so adding a tool there fails to compile here
+ * until it is named.
+ */
+const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
+  terminal: "Terminal",
+  git: "Git",
+  files: "Files",
+  ios: "Simulator",
+  "app-control": "App Control",
+  browser: "Browser",
+};
+
+export function workToolLabel(toolId: string | null | undefined): string | null {
+  const trimmed = asString(toolId);
+  if (!trimmed) return null;
+  return isWorkToolId(trimmed) ? WORK_TOOL_LABELS[trimmed] : trimmed;
+}
+
+/**
+ * One line for the pane title: the pane the desktop has open, then what is in
+ * it. Most-specific-first, same ordering as the iOS disclosure row, so the two
+ * surfaces summarise a lane identically.
+ */
+export function formatWorkToolsSummary(state: WorkToolsLaneState): string {
+  const parts: string[] = [];
+  const label = workToolLabel(state.activeTool);
+  if (label) parts.push(`${label} active`);
+  // The pane is a tab strip, so "how many other tools are open" is part of what
+  // it is doing. `?? []` because an older desktop publishes no strip at all.
+  const openCount = (state.openTools ?? []).length;
+  if (openCount > 1) parts.push(`${openCount} tools open`);
+  const tabCount = state.browser?.tabs.length ?? 0;
+  if (tabCount > 0) parts.push(tabCount === 1 ? "1 tab" : `${tabCount} tabs`);
+  const appName = asString(state.appControl?.appName);
+  if (appName) parts.push(appName);
+  return parts.length ? `Tools · ${parts.join(" · ")}` : "Tools";
+}
+
+function workToolsTabLines(tab: WorkToolsBrowserTab): string[] {
+  const badges: string[] = [];
+  if (tab.active) badges.push("active");
+  if (tab.recording) badges.push("recording");
+  // Deliberately not the id: a chat session id means nothing to a reader, and
+  // the scoping guarantees the owner is a chat in THIS lane, which is the part
+  // that changes how they read a tab they did not open.
+  if (asString(tab.ownerChatSessionId)) badges.push("claimed by a chat");
+  const title = asString(tab.title) ?? "Untitled tab";
+  const lines = [`${tab.active ? "●" : "○"} ${title}`];
+  const url = asString(tab.url);
+  if (url) lines.push(`  ${url}`);
+  if (badges.length) lines.push(`  ${badges.join(" · ")}`);
+  return lines;
+}
+
+function workToolsObservationLine(
+  observation: WorkToolsObservation | null,
+  nowMs: number,
+): string | null {
+  if (!observation) return null;
+  const caption = asString(observation.caption) ?? "frame captured";
+  return `${caption} · ${formatRelativePastTime(observation.capturedAt, nowMs)}`;
+}
+
+/**
+ * The /tools right-pane body.
+ *
+ * Read-only, like every other client of this state: the browser lives in the
+ * desktop's Electron main process, so a terminal can say what is open and why a
+ * lane looks stalled, but it cannot click anything. The handoff banner leads
+ * because it is the one state where the lane is waiting on the *reader* — an
+ * agent asked a human to sign in — and a terminal user staring at a quiet chat
+ * has no other way to learn that.
+ */
+export function formatWorkToolsLaneState(
+  state: WorkToolsLaneState,
+  nowMs = Date.now(),
+): string {
+  const lines: string[] = [];
+  const activeLabel = workToolLabel(state.activeTool);
+  lines.push(
+    activeLabel
+      ? `${activeLabel}${state.activeToolUpdatedAt ? ` · ${formatRelativePastTime(state.activeToolUpdatedAt, nowMs)}` : ""}`
+      : "No tool open on the desktop.",
+  );
+  // The desktop's strip, mirrored: `●` is the tab on screen, `○` is open behind
+  // it. One line, because the strip is a list of names and nothing else. An
+  // older desktop publishes no strip (`?? []`) and gets no line.
+  const openTools = state.openTools ?? [];
+  if (openTools.length > 1) {
+    lines.push(openTools
+      .map((tool) => `${tool === state.activeTool ? "●" : "○"} ${workToolLabel(tool) ?? tool}`)
+      .join("  "));
+  }
+
+  lines.push("", "Browser");
+  if (state.browser) {
+    // Leads the section, above the tab list: "an agent is on this right now" is
+    // the fact that changes how everything under it reads. Derived by the
+    // desktop from the commands themselves — never something an agent claimed —
+    // and `?? []` because a desktop older than the field cannot say.
+    const browsing = (state.agentBrowserPresence ?? []).length;
+    if (browsing > 0) {
+      lines.push(browsing === 1
+        ? "◍ An agent is using the browser"
+        : `◍ ${browsing} agents are using the browser`);
+    }
+    const handoff = state.browser.tabs
+      .map((tab) => asString(tab.handoffReason))
+      .find((reason): reason is string => Boolean(reason));
+    if (handoff) {
+      // Not stuck — waiting on a person, and the sign-in has to happen in the
+      // desktop browser, so this is a status line rather than a prompt.
+      lines.push("⚠ Waiting for you to sign in on the desktop", `  ${handoff}`);
+    }
+    if (state.browser.tabs.length) {
+      for (const tab of state.browser.tabs) lines.push(...workToolsTabLines(tab));
+    } else {
+      lines.push("No tabs open.");
+    }
+    const frame = workToolsObservationLine(state.browser.latestObservation, nowMs);
+    if (frame) lines.push(`last frame: ${frame}`);
+  } else {
+    // The five reasons are worded once, beside the union, so every read-only
+    // client says the same sentence — see `workToolsUnavailableMessage`.
+    lines.push(workToolsUnavailableMessage(state.browserUnavailable));
+  }
+
+  if (state.appControl) {
+    lines.push("", "App Control");
+    const status = [
+      asString(state.appControl.appName) ?? "unknown app",
+      asString(state.appControl.status),
+      asString(state.appControl.driver),
+    ].filter((part): part is string => Boolean(part));
+    lines.push(status.join(" · "));
+    const frame = workToolsObservationLine(state.appControl.latestObservation, nowMs);
+    if (frame) lines.push(`last frame: ${frame}`);
+  }
+
+  return lines.join("\n");
 }

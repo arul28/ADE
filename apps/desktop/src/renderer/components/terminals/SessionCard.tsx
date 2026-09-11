@@ -68,6 +68,7 @@ import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
+import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
@@ -951,6 +952,11 @@ export const SessionCard = React.memo(function SessionCard({
       runtimePin={runtimePin}
     />
   );
+  /* Live activity, not a property of the session: the agent is driving the
+     browser right now. Sits with `machineGlyph`/`gridIndicator` because it
+     answers the same question they do — where is this work happening — and it
+     renders nothing at all when the chat is not browsing. */
+  const browserPresenceGlyph = <AgentBrowserPresenceBadge chatSessionId={session.id} size={11} />;
   const gridIndicator = gridBadge ? (
     <span
       data-testid="session-grid-indicator"
@@ -1100,6 +1106,7 @@ export const SessionCard = React.memo(function SessionCard({
           {compactLineageGlyph}
           {cursorCloudLink}
           <SessionProviderLogoStack session={session} size={14} />
+          {browserPresenceGlyph}
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
           {machineGlyph}
@@ -1119,6 +1126,7 @@ export const SessionCard = React.memo(function SessionCard({
                 {part}
               </React.Fragment>
             ))}
+            {browserPresenceGlyph}
             {machineGlyph}
             {gridIndicator}
             {statusSlot}

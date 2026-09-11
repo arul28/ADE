@@ -29,9 +29,8 @@ filtering before exposing the final list.
 ### In-process path
 
 The chat runtime (`agentChatService.ts`) instantiates tool objects
-directly from `universalTools.ts`, `workflowTools.ts`,
-`ctoOperatorTools.ts`, `linearTools.ts`, and `orchestrationTools.ts`,
-then hands them to the provider adapter:
+directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
+`orchestrationTools.ts`, then hands them to the provider adapter:
 
 - **Claude Agent SDK:** the SDK `query()` stream receives ADE tools as
   SDK tool definitions alongside the runtime options for that session.
@@ -53,9 +52,10 @@ then hands them to the provider adapter:
   `ade_cto` dynamic-tool namespace inside `refreshCodexDynamicTools` for
   Codex, and a dedicated HTTP MCP lease (`ensureHttpMcpServer(managed,
   "cto")`, cached in `managed.httpMcpServers`) for Cursor, Droid, and
-  OpenCode. `buildCtoOperatorToolDeps` is shared with
-  `previewSessionToolNames`, so the prompt manifest and the callable tools
-  come from one definition. See
+  OpenCode. `buildCtoOperatorToolDeps` was shared with
+  `previewSessionToolNames`, a name-enumeration helper removed for having no
+  non-test caller; there is no prompt manifest to keep in step today, so the
+  runtime map is the single definition. See
   [chat/tool-system.md](../chat/tool-system.md#cto-operator-tools).
 - **Orchestration sessions:** `interactionMode` selects
   `orchestrator-lead`, `orchestrator-worker`, or

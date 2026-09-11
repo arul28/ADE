@@ -94,7 +94,20 @@ struct HostConnectionProfile: Codable, Equatable {
   /// from their account, while the underlying LAN/Tailscale pairing remains
   /// local-owned and survives sign-out.
   var relayAccountOwnerId: String?
+  /// Schema version for the *cursor* fields only (`lastRemoteDbVersion` and
+  /// `remoteDbVersionBySite`). A shipped build wrote a poisoned host cursor —
+  /// it folded the phone's own CRR write clock into the value it advertised
+  /// for the host's site — and that value survives an app upgrade in
+  /// UserDefaults, so a fixed build would keep advertising it. Decoding a
+  /// profile written below `currentCursorSchemaVersion` clears both fields
+  /// once; the host then replays from its own delivery watermark.
+  /// `nil` means "written before versioning", i.e. the poisoned era.
+  var cursorSchemaVersion: Int?
   var updatedAt: String
+
+  /// Bump this whenever a shipped build may have persisted an untrustworthy
+  /// changeset cursor. The cost of a bump is one full replay per host site.
+  static let currentCursorSchemaVersion = 2
 
   init(
     hostIdentity: String? = nil,
@@ -115,6 +128,7 @@ struct HostConnectionProfile: Codable, Equatable {
     networkRouteMemory: [HostConnectionNetworkRouteMemory]? = nil,
     accountOwnerId: String? = nil,
     relayAccountOwnerId: String? = nil,
+    cursorSchemaVersion: Int? = HostConnectionProfile.currentCursorSchemaVersion,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
   ) {
     self.hostIdentity = hostIdentity
@@ -135,7 +149,54 @@ struct HostConnectionProfile: Codable, Equatable {
     self.networkRouteMemory = networkRouteMemory
     self.accountOwnerId = accountOwnerId
     self.relayAccountOwnerId = relayAccountOwnerId
+    self.cursorSchemaVersion = cursorSchemaVersion
     self.updatedAt = updatedAt
+  }
+
+  /// Hand-written so the cursor migration runs at decode time, on every read
+  /// path (the active profile, the saved-machines dictionary, and any future
+  /// one) rather than only where someone remembered to call a migrator.
+  /// Every other field keeps exactly the synthesized requiredness so a profile
+  /// that used to fail to decode still fails, and one that used to decode
+  /// still decodes.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    hostIdentity = try container.decodeIfPresent(String.self, forKey: .hostIdentity)
+    hostName = try container.decodeIfPresent(String.self, forKey: .hostName)
+    siteId = try container.decodeIfPresent(String.self, forKey: .siteId)
+    port = try container.decode(Int.self, forKey: .port)
+    authKind = try container.decode(String.self, forKey: .authKind)
+    pairedDeviceId = try container.decodeIfPresent(String.self, forKey: .pairedDeviceId)
+    lastHostDeviceId = try container.decodeIfPresent(String.self, forKey: .lastHostDeviceId)
+    lastSuccessfulAddress = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulAddress)
+    savedAddressCandidates = try container.decode([String].self, forKey: .savedAddressCandidates)
+    discoveredLanAddresses = try container.decode([String].self, forKey: .discoveredLanAddresses)
+    tailscaleAddress = try container.decodeIfPresent(String.self, forKey: .tailscaleAddress)
+    savedRelayCandidates = try container.decodeIfPresent([String].self, forKey: .savedRelayCandidates)
+    endpointStates = try container.decodeIfPresent([HostConnectionEndpointState].self, forKey: .endpointStates)
+    networkRouteMemory = try container.decodeIfPresent(
+      [HostConnectionNetworkRouteMemory].self, forKey: .networkRouteMemory
+    )
+    accountOwnerId = try container.decodeIfPresent(String.self, forKey: .accountOwnerId)
+    relayAccountOwnerId = try container.decodeIfPresent(String.self, forKey: .relayAccountOwnerId)
+    updatedAt = try container.decode(String.self, forKey: .updatedAt)
+
+    let persistedCursorSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .cursorSchemaVersion) ?? 1
+    let storedLastRemoteDbVersion = try container.decode(Int.self, forKey: .lastRemoteDbVersion)
+    let storedRemoteDbVersionBySite = try container.decodeIfPresent(
+      [String: Int].self, forKey: .remoteDbVersionBySite
+    )
+    if persistedCursorSchemaVersion < HostConnectionProfile.currentCursorSchemaVersion {
+      // One-time clear on first launch after upgrade. Starting the host cursor
+      // over is cheap and self-healing; keeping an inflated one silently loses
+      // every host row below it, forever.
+      lastRemoteDbVersion = 0
+      remoteDbVersionBySite = nil
+    } else {
+      lastRemoteDbVersion = storedLastRemoteDbVersion
+      remoteDbVersionBySite = storedRemoteDbVersionBySite
+    }
+    cursorSchemaVersion = HostConnectionProfile.currentCursorSchemaVersion
   }
 
   init(legacy draft: ConnectionDraft) {
@@ -143,7 +204,10 @@ struct HostConnectionProfile: Codable, Equatable {
       port: draft.port,
       authKind: draft.authKind,
       pairedDeviceId: draft.pairedDeviceId,
-      lastRemoteDbVersion: draft.lastRemoteDbVersion,
+      // The legacy draft predates per-site cursors and the poisoned-cursor
+      // fix alike, so its single cursor is not trustworthy against any host
+      // DB. Start from 0 and let the host replay from its own watermark.
+      lastRemoteDbVersion: 0,
       lastHostDeviceId: draft.lastBrainDeviceId,
       lastSuccessfulAddress: draft.host,
       savedAddressCandidates: [draft.host],
@@ -6117,4 +6181,92 @@ struct MobileUsageQuotaSnapshot: Codable, Equatable {
   var errors: [String]
   /// Codex spending cap hit — surfaced from the desktop UsageSnapshot.
   var spendControlReached: Bool?
+}
+
+// MARK: - Work tools (read-only mirror of the desktop's tools pane)
+
+/// One browser tab as the desktop reports it.
+///
+/// Everything here is descriptive. The phone cannot open, close, or navigate a
+/// tab — the browser is a `WebContentsView` inside ADE Desktop — so this model
+/// deliberately carries no identifiers the phone could act on beyond `id`,
+/// which exists only to keep `ForEach` stable across refreshes.
+struct WorkToolsBrowserTab: Codable, Identifiable, Equatable {
+  var id: String
+  var title: String?
+  var url: String?
+  var ownerChatSessionId: String?
+  var recording: Bool
+  var active: Bool
+  /// Why the agent handed this tab to a person on the desktop. Read-only here:
+  /// the sign-in has to happen in the real browser, so the phone can only say
+  /// that the lane is waiting on it.
+  var handoffReason: String?
+}
+
+/// A screenshot the desktop already wrote to disk. `path` is opaque: it is
+/// handed straight back to `workTools.readObservationPreview`, which is the
+/// only thing allowed to turn it into bytes.
+///
+/// The host also sends `capturedAt`; nothing on the phone renders a timestamp
+/// for a frame, so it is not decoded. Codable ignores unknown keys, so adding
+/// it back is a one-line change if a surface ever needs it.
+struct WorkToolsObservation: Codable, Equatable {
+  var path: String
+  var caption: String?
+}
+
+/// The host also sends `activeTabId`; the phone marks the active tab from
+/// `WorkToolsBrowserTab.active` instead, so it is not decoded.
+struct WorkToolsBrowserState: Codable, Equatable {
+  var tabs: [WorkToolsBrowserTab]
+  var latestObservation: WorkToolsObservation?
+}
+
+struct WorkToolsAppControlState: Codable, Equatable {
+  var appName: String
+  var status: String
+  var driver: String
+  var latestObservation: WorkToolsObservation?
+}
+
+/// A chat in this lane that is using the desktop's browser right now.
+///
+/// Derived on the Mac from the browser commands themselves — an agent cannot
+/// claim it — and it expires about twenty seconds after the last one, which is
+/// why the phone renders it as a live indicator and never as a property of the
+/// chat. The host also sends `since` and `lastActivityAt`; nothing here shows a
+/// duration, so neither is decoded.
+struct WorkToolsAgentBrowserPresence: Codable, Equatable {
+  var chatSessionId: String
+  /// The tab the last command addressed, when it named one.
+  var tabId: String?
+}
+
+/// The host also sends `activeToolUpdatedAt` and `capturedAt`; the phone shows
+/// live state rather than "as of" timestamps, so neither is decoded.
+struct WorkToolsLaneState: Codable, Equatable {
+  var laneId: String
+  /// Which pane the desktop has open. Nil when no desktop has published one.
+  var activeTool: String?
+  /// Every tool the desktop has open as a tab, in strip order, with
+  /// `activeTool` among them. Nil from a desktop older than the tab strip;
+  /// empty means the pane is on its picker with nothing open.
+  var openTools: [String]?
+  /// Nil when no desktop is attached to the machine — see `browserUnavailable`.
+  var browser: WorkToolsBrowserState?
+  /// Why `browser` is nil. Mirrors the desktop's `WorkToolsUnavailableReason`
+  /// (`desktop_not_attached` | `desktop_not_attached_for_project` |
+  /// `browser_pane_not_opened` | `unsupported` | `error`) and is kept as a raw
+  /// string so a newer reason falls back instead of failing to decode.
+  var browserUnavailable: String?
+  /// Chats in this lane driving the browser right now. Nil from a desktop older
+  /// than the field, and empty is the normal state; both read as "nobody".
+  var agentBrowserPresence: [WorkToolsAgentBrowserPresence]?
+  var appControl: WorkToolsAppControlState?
+}
+
+struct WorkToolsObservationPreview: Codable, Equatable {
+  var dataUrl: String
+  var mimeType: String
 }

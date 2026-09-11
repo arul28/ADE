@@ -2056,6 +2056,29 @@ function coerceProjectUiConfig(value: unknown): ProjectConfigFile["ui"] {
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * Only the two modes are accepted. An unknown string is dropped rather than
+ * passed through, so a hand-edited YAML typo falls back to the in-app default
+ * instead of silently routing every link to the system browser. The same rule
+ * applies to `autoOpenDevServer`: anything that is not a boolean is dropped and
+ * the default (open it) stands.
+ */
+function coerceProjectBrowserConfig(value: unknown): ProjectConfigFile["browser"] {
+  if (!isRecord(value)) return undefined;
+  const rawLinkOpenMode = asString(value.linkOpenMode)?.trim();
+  const linkOpenMode = rawLinkOpenMode === "in-app" || rawLinkOpenMode === "external"
+    ? rawLinkOpenMode
+    : undefined;
+  const autoOpenDevServer = typeof value.autoOpenDevServer === "boolean"
+    ? value.autoOpenDevServer
+    : undefined;
+  if (linkOpenMode === undefined && autoOpenDevServer === undefined) return undefined;
+  return {
+    ...(linkOpenMode !== undefined ? { linkOpenMode } : {}),
+    ...(autoOpenDevServer !== undefined ? { autoOpenDevServer } : {}),
+  };
+}
+
 function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {
   if (!isRecord(value)) return undefined;
   const prPollingIntervalSeconds = asNumber(value.prPollingIntervalSeconds);
@@ -2153,6 +2176,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const ai = coerceAiConfig(value.ai);
   const linearSync = coerceLinearSync(value.linearSync);
   const ui = coerceProjectUiConfig(value.ui);
+  const browser = coerceProjectBrowserConfig(value.browser);
 
   if (providersRaw) {
     delete providersRaw.mode;
@@ -2175,7 +2199,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
     ...(linearSync ? { linearSync } : {}),
-    ...(ui ? { ui } : {})
+    ...(ui ? { ui } : {}),
+    ...(browser ? { browser } : {})
   };
 }
 
@@ -2227,7 +2252,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
     ...(config.linearSync ? { linearSync: config.linearSync } : {}),
-    ...(config.ui ? { ui: config.ui } : {})
+    ...(config.ui ? { ui: config.ui } : {}),
+    ...(config.browser ? { browser: config.browser } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
 }
@@ -2522,6 +2548,10 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
+  // Machine-local wins: `local.yaml` is the file that says "on this machine".
+  const mergedBrowser = shared.browser || local.browser
+    ? { ...(shared.browser ?? {}), ...(local.browser ?? {}) }
+    : undefined;
   const mergedUi = shared.ui || local.ui
     ? {
         ...(shared.ui ?? {}),
@@ -2582,7 +2612,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
     ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
-    ...(mergedUi ? { ui: mergedUi } : {})
+    ...(mergedUi ? { ui: mergedUi } : {}),
+    ...(mergedBrowser ? { browser: mergedBrowser } : {})
   };
 }
 

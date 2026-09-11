@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CheckCircle, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowsClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CaretDown, CheckCircle, CursorClick, DeviceMobile, FileCode, ImageSquare, Lightning, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   IosElementContextItem,
@@ -22,6 +22,15 @@ import type {
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { PaneTooltip } from "../ui/PaneTooltip";
+import {
+  WORK_TOOL_CHROME_CHIP,
+  WORK_TOOL_CHROME_CHIP_WRAP,
+  WORK_TOOL_CHROME_META,
+  WORK_TOOL_CHROME_ROW,
+  WORK_TOOL_PRIMARY_BUTTON,
+  WorkToolChromeButton,
+} from "../terminals/workToolChrome";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { buildIosSimToolChips, IosSimToolChips, IosSimUnsupportedCard } from "./IosSimToolChips";
 import { IosSimLaunchStepper, selectLaunchSteps } from "./IosSimLaunchStepper";
@@ -3029,147 +3038,157 @@ export function ChatIosSimulatorPanel({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", mediaExpanded ? "gap-0" : "gap-1")}>
-      <div className={cn("space-y-1 shrink-0", mediaExpanded ? "hidden" : null)}>
-        <div className="flex flex-wrap items-center justify-between gap-1.5 px-0.5 py-0.5">
-          <div className="flex rounded border border-white/[0.08] bg-black/20 p-px">
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-6 items-center gap-1 rounded-[3px] px-2 font-sans text-[10px] font-medium transition-colors",
-                activeSurface === "simulator" ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/50 hover:text-fg/75",
-              )}
-              onClick={() => setMode(lastSimulatorMode)}
-            >
-              <DeviceMobile size={11} />
-              Simulator
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-6 items-center gap-1 rounded-[3px] px-2 font-sans text-[10px] font-medium transition-colors",
-                activeSurface === "preview" ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/50 hover:text-fg/75",
-              )}
-              onClick={() => setMode("preview")}
-            >
-              <BracketsCurly size={11} />
-              Preview
-            </button>
-          </div>
+      <div className={cn("shrink-0", mediaExpanded ? "hidden" : null)}>
+        {/*
+          One 40px chrome row, in the tools pane's own language.
 
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {activeSurface === "simulator" && launchExtras.usedInstalledBinary ? (
-              <div
-                className="inline-flex h-6 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-sans text-[10px] font-medium text-amber-50/85"
-                title="This launch reused the installed app instead of building."
+          This was three stacked rows — a segmented mode switch beside a run of
+          tinted status pills, then a bordered `<select>` with its own refresh
+          and Stop, then a second `<select>` with Launch and Apply. Eleven
+          controls and four fills before the simulator itself got any height.
+          The same jobs are a device chip, a target chip, and four ghost glyphs;
+          what each one does is a tooltip, not a label.
+        */}
+        <div className={WORK_TOOL_CHROME_ROW} data-testid="ios-pane-chrome">
+          {activeSurface === "simulator" ? (
+            <>
+              <PaneTooltip
+                label={deviceLabel(activeDevice)}
+                side="bottom"
+                className={cn(WORK_TOOL_CHROME_CHIP_WRAP, "max-w-[190px]")}
               >
-                prebuilt — changes not included
-              </div>
-            ) : null}
-            {activeSurface === "simulator" && foreignBuildRoot ? (
-              <div
-                className="inline-flex h-6 min-w-0 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-mono text-[10px] font-medium text-amber-50/85"
-                title={`Built in ${foreignBuildRoot}, not this project's checkout.`}
+                <span className={cn(WORK_TOOL_CHROME_CHIP, "relative")}>
+                  <DeviceMobile size={12} aria-hidden className="shrink-0 text-muted-fg" />
+                  <span className="min-w-0 truncate">{deviceLabel(activeDevice)}</span>
+                  <CaretDown size={10} aria-hidden className="shrink-0 text-muted-fg/70" />
+                  {/* The native menu is the control; the chip is its face. An
+                      invisible `<select>` on top keeps the OS picker, the
+                      keyboard behaviour and the a11y role for free. */}
+                  <select
+                    aria-label="Simulator device"
+                    className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                    value={activeDevice?.udid ?? ""}
+                    disabled={interactionDisabled}
+                    onChange={(event) => {
+                      setSelectedDeviceUdid(event.currentTarget.value || null);
+                      setSnapshot(null);
+                    }}
+                  >
+                    {devices.length ? devices.map((device) => (
+                      <option key={device.udid} value={device.udid}>{deviceLabel(device)}</option>
+                    )) : (
+                      <option value="">No available simulator</option>
+                    )}
+                  </select>
+                </span>
+              </PaneTooltip>
+
+              <PaneTooltip
+                label={activeTarget ? targetLabel(activeTarget) : "No launchable app found"}
+                side="bottom"
+                className={cn(WORK_TOOL_CHROME_CHIP_WRAP, "max-w-[150px]")}
               >
-                <span className="truncate">{abbreviatePathTail(foreignBuildRoot)}</span>
-              </div>
+                <span className={cn(WORK_TOOL_CHROME_CHIP, "relative", !activeTarget && "text-muted-fg")}>
+                  <span className="min-w-0 truncate">
+                    {activeTarget ? targetLabel(activeTarget) : "No app"}
+                  </span>
+                  {visibleLaunchTargets.length > 1 ? (
+                    <>
+                      <CaretDown size={10} aria-hidden className="shrink-0 text-muted-fg/70" />
+                      <select
+                        aria-label="Launch target"
+                        className="absolute inset-0 cursor-pointer opacity-0"
+                        value={activeTarget?.id ?? ""}
+                        onChange={(event) => setSelectedTargetId(event.currentTarget.value || null)}
+                      >
+                        {visibleLaunchTargets.map((target) => (
+                          <option key={target.id} value={target.id}>{targetLabel(target)}</option>
+                        ))}
+                      </select>
+                    </>
+                  ) : null}
+                </span>
+              </PaneTooltip>
+
+              {/* Two build facts that change what you are looking at, as one
+                  muted word each rather than an amber pill each. */}
+              {launchExtras.usedInstalledBinary ? (
+                <PaneTooltip label="This launch reused the installed app instead of building." side="bottom">
+                  <span className={WORK_TOOL_CHROME_META}>prebuilt</span>
+                </PaneTooltip>
+              ) : null}
+              {foreignBuildRoot ? (
+                <PaneTooltip label={`Built in ${foreignBuildRoot}, not this project's checkout.`} side="bottom">
+                  <span className={cn(WORK_TOOL_CHROME_META, "min-w-0 truncate")}>
+                    {abbreviatePathTail(foreignBuildRoot)}
+                  </span>
+                </PaneTooltip>
+              ) : null}
+            </>
+          ) : (
+            <span className="min-w-0 truncate px-2 text-[12px] text-muted-fg">Xcode previews</span>
+          )}
+
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {activeSurface === "simulator" ? (
+              <>
+                <WorkToolChromeButton
+                  label={hasActiveSession ? "Rebuild and relaunch" : "Launch"}
+                  onClick={() => void launch()}
+                  disabled={busy || !status?.supported || !activeTarget || interactionDisabled}
+                  testId="ios-pane-launch"
+                >
+                  <Play size={16} weight="fill" />
+                </WorkToolChromeButton>
+                {hasActiveSession && !simulatorMutationBlocked ? (
+                  <WorkToolChromeButton
+                    label="Stop simulator"
+                    onClick={handleStopSimulator}
+                    disabled={busy}
+                    testId="ios-pane-stop"
+                  >
+                    <Power size={16} weight="bold" />
+                  </WorkToolChromeButton>
+                ) : null}
+                <WorkToolChromeButton
+                  label="Screenshot a region"
+                  onClick={() => {
+                    setSimulatorCaptureSelection(null);
+                    setSimulatorCaptureActive((current) => !current);
+                    setHoveredElement(null);
+                  }}
+                  active={simulatorCaptureActive}
+                  disabled={!snapshot?.screenshot.dataUrl || contextControlsBlocked}
+                  testId="ios-pane-screenshot"
+                >
+                  <ImageSquare size={16} />
+                </WorkToolChromeButton>
+                <WorkToolChromeButton
+                  label="Refresh simulator state"
+                  onClick={() => {
+                    void refreshStatus()
+                      .then(() => refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined))
+                      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+                  }}
+                  disabled={contextControlsBlocked}
+                  testId="ios-pane-refresh"
+                >
+                  <ArrowsClockwise size={16} />
+                </WorkToolChromeButton>
+              </>
             ) : null}
-            {activeSurface === "simulator" && hasActiveSession ? (
-              <div className="inline-flex h-6 items-center gap-1 rounded-full border border-cyan-300/20 bg-cyan-400/[0.09] px-2 font-sans text-[10px] font-medium text-cyan-50/80">
-                <Desktop size={11} />
-                Live
-              </div>
-            ) : null}
+            <WorkToolChromeButton
+              label={activeSurface === "preview" ? "Live simulator" : "Previews"}
+              onClick={() => setMode(activeSurface === "preview" ? lastSimulatorMode : "preview")}
+              testId="ios-pane-surface"
+            >
+              {activeSurface === "preview" ? <DeviceMobile size={16} /> : <BracketsCurly size={16} />}
+            </WorkToolChromeButton>
           </div>
         </div>
 
-        {activeSurface === "simulator" ? (
-          <>
-            <div className="flex items-center gap-1">
-              <select
-                className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none disabled:opacity-50"
-                value={activeDevice?.udid ?? ""}
-                disabled={interactionDisabled}
-                onChange={(event) => {
-                  setSelectedDeviceUdid(event.currentTarget.value || null);
-                  setSnapshot(null);
-                }}
-              >
-                {devices.length ? devices.map((device) => (
-                  <option key={device.udid} value={device.udid}>{deviceLabel(device)}</option>
-                )) : (
-                  <option value="">No available simulator</option>
-                )}
-              </select>
-              <button
-                type="button"
-                className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] text-fg/55 transition-colors hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-                onClick={() => {
-                  void refreshStatus()
-                    .then(() => refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined))
-                    .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
-                }}
-                disabled={contextControlsBlocked}
-                title="Refresh simulator state"
-              >
-                <ArrowClockwise size={14} />
-              </button>
-              {hasActiveSession && !simulatorMutationBlocked ? (
-                <button
-                  type="button"
-                  className="inline-flex h-7 items-center gap-1 rounded border border-rose-400/22 bg-rose-500/8 px-1.5 font-sans text-[10px] font-medium text-rose-200/80 transition-colors hover:bg-rose-500/12 disabled:cursor-not-allowed disabled:opacity-45"
-                  onClick={handleStopSimulator}
-                  disabled={busy}
-                  title="Stop the running simulator"
-                >
-                  <Power size={12} weight="bold" />
-                  Stop
-                </button>
-              ) : null}
-            </div>
-
-            <div className="flex items-center gap-1">
-              {visibleLaunchTargets.length > 1 ? (
-                <select
-                  className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
-                  value={activeTarget?.id ?? ""}
-                  onChange={(event) => setSelectedTargetId(event.currentTarget.value || null)}
-                >
-                  {visibleLaunchTargets.map((target) => (
-                    <option key={target.id} value={target.id}>{targetLabel(target)}</option>
-                  ))}
-                </select>
-              ) : (
-                <div className="min-w-0 flex-1 rounded-md border border-white/[0.08] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75">
-                  {activeTarget ? targetLabel(activeTarget) : "No launchable app found"}
-                </div>
-              )}
-              <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-2 font-sans text-[11px] font-medium text-emerald-100/85 transition-colors hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-45"
-                disabled={busy || !status?.supported || !activeTarget || interactionDisabled}
-                onClick={() => void launch()}
-              >
-                <Play size={13} weight="fill" />
-                Launch
-              </button>
-              {hasActiveSession && !simulatorMutationBlocked ? (
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-cyan-400/20 bg-cyan-500/10 px-2 font-sans text-[11px] font-medium text-cyan-100/85 transition-colors hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-45"
-                  disabled={busy || !status?.supported || !activeTarget}
-                  onClick={() => void launch()}
-                  title="Rebuild, reinstall, and relaunch the active app"
-                >
-                  <ArrowClockwise size={13} />
-                  Apply
-                </button>
-              ) : null}
-            </div>
-          </>
-        ) : null}
-
         {mode === "preview" ? (
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 px-0.5 pt-1">
             <div className="flex items-center gap-2">
               {previewTargets.length ? (
                 <select
@@ -3729,25 +3748,29 @@ export function ChatIosSimulatorPanel({
             <div className="font-sans text-[11px] text-muted-fg/60">Connecting to the simulator...</div>
           </div>
         ) : (
-          <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2.5 px-6 text-center">
-            <DeviceMobile size={24} className="text-muted-fg/35" />
-            <div className="font-sans text-[11px] text-muted-fg/60">No simulator running</div>
+          <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-3 px-6 text-center">
+            <p className="font-sans text-[14px] font-medium text-fg/85">Boot a simulator</p>
             <button
               type="button"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-400/24 bg-emerald-500/12 px-2.5 font-sans text-[10px] font-medium text-emerald-50/90 transition-colors hover:bg-emerald-500/18 disabled:cursor-not-allowed disabled:opacity-40"
+              className={WORK_TOOL_PRIMARY_BUTTON}
               disabled={busy || !status?.supported || !activeTarget || interactionDisabled}
               onClick={() => void launch()}
+              data-testid="ios-empty-launch"
             >
-              <Play size={11} weight="fill" />
-              Launch
+              <Play size={14} weight="fill" />
+              <span>Launch</span>
             </button>
           </div>
         )}
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-1">
-        {mode === "interact" && controlAvailable && !simulatorMutationBlocked && !setupBlocked ? (
-          <div className="flex items-center gap-1">
+        {/* Nothing to type into until something is booted. The composer used to
+            sit under the "Boot a simulator" empty state with its own Send
+            button, which read as a second, competing primary next to the one
+            button that page exists for. */}
+        {hasActiveSession && mode === "interact" && controlAvailable && !simulatorMutationBlocked && !setupBlocked ? (
+          <div className="flex items-center gap-1" data-testid="ios-type-composer">
             <input
               className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
               value={typedText}

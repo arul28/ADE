@@ -42,6 +42,15 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     description: "Pin selected lane tab",
     defaultBinding: "Enter",
     scope: "lanes"
+  },
+  // Scope "work" means "handled inside the Work tools pane", not globally: the
+  // pane attaches this to its own keydown handler. A global Escape binding would
+  // fight the composer, every dialog, and the browser panel's own URL field.
+  {
+    id: "work.tools.picker",
+    description: "Back to the Work tools picker",
+    defaultBinding: "Escape",
+    scope: "work"
   }
 ];
 

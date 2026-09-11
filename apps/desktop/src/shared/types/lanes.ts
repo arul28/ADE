@@ -23,6 +23,18 @@ export type LaneStatus = {
   behind: number;
   /** Commits the remote tracking branch is ahead of local (0 = in sync, -1 = no upstream) */
   remoteBehind: number;
+  /** Number of changed worktree entries, including untracked files. */
+  changedFileCount?: number;
+  /** Number of changed entries with index/staged changes. */
+  staged?: number;
+  /** Number of changed entries with worktree/unstaged changes. */
+  unstaged?: number;
+  /** Number of untracked entries. */
+  untracked?: number;
+  /** ISO-8601 timestamp of the current branch tip, or null for an empty repo. */
+  lastCommitAt?: string | null;
+  /** Number of tracked files in the worktree, or null when not measured. */
+  trackedFileCount?: number | null;
   /** true when the worktree is stuck in an interrupted rebase (rebase-merge / rebase-apply dir exists) */
   rebaseInProgress: boolean;
   /**
@@ -99,6 +111,10 @@ export type LaneSummary = {
   folder?: string | null;
   createdAt: string;
   archivedAt?: string | null;
+  /** ISO-8601 timestamp of the current branch tip, or null for an empty repo. */
+  lastCommitAt?: string | null;
+  /** Tracked files in this lane's worktree, counted during status refresh. */
+  trackedFileCount?: number | null;
   devicesOpen?: DeviceMarker[];
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;

@@ -2787,6 +2787,134 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("skips screencast frames for a subscriber that did not ask for them", async () => {
+    // App Control pushes a base64 JPEG per paint. Over a paired sync transport
+    // runtime RPC is a *required* send, so those frames were buffered rather
+    // than dropped and the host closed the whole connection at 16 MiB with
+    // 4001 "Required sync response backpressured" — roughly every ten seconds
+    // for a desktop bound to a remote runtime. They were not even rendered
+    // there. So frames are opt-in, and a frame nobody asked for is skipped,
+    // never queued: the next frame is already a better picture.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { eventBuffer, dispose: vi.fn() },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const quiet = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId },
+    }) as { subscriptionId: string };
+    const viewer = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId, includeHighVolumeEvents: true },
+    }) as { subscriptionId: string };
+
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "runtime",
+      payload: {
+        type: "app_control_event",
+        event: { type: "frame", frame: { data: "AAAA", mimeType: "image/jpeg" } },
+      },
+    });
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "app_control_event", event: { type: "status" } },
+    });
+
+    const subscriptionsFor = (type: string) => notify.mock.calls
+      .filter(([, params]) => (params as { event: { payload: { event: { type: string } } } })
+        .event.payload.event.type === type)
+      .map(([, params]) => (params as { subscriptionId: string }).subscriptionId);
+
+    // The frame reaches only the subscriber that opted in...
+    expect(subscriptionsFor("frame")).toEqual([viewer.subscriptionId]);
+    // ...while every other App Control event still reaches both. The gate is
+    // on frames, not on the domain.
+    expect(subscriptionsFor("status").sort()).toEqual(
+      [quiet.subscriptionId, viewer.subscriptionId].sort(),
+    );
+
+    handler.dispose();
+  });
+
+  it("does not replay buffered screencast frames to a subscriber that did not ask", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "runtime",
+      payload: {
+        type: "app_control_event",
+        event: { type: "frame", frame: { data: "AAAA", mimeType: "image/jpeg" } },
+      },
+    });
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "README.md" } },
+    });
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { eventBuffer, dispose: vi.fn() },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId },
+    });
+
+    // Replay is the same stream and pays the same cost: a reconnecting desktop
+    // must not be handed a backlog of frames as its first act.
+    const replayed = notify.mock.calls.map(
+      ([, params]) => (params as { event: { payload: { type: string } } }).event.payload.type,
+    );
+    expect(replayed).toEqual(["file_change"]);
+
+    handler.dispose();
+  });
+
   it("can subscribe to project runtime events without replaying buffered history", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);

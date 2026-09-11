@@ -172,8 +172,9 @@ import {
 import type { Logger } from "../logging/logger";
 import type { GithubService } from "../github/githubService";
 import {
-  issueBuiltInBrowserActorCapability,
-  revokeBuiltInBrowserActorCapability,
+  localBrowserActorCapabilityIssuer,
+  type BrowserActorCapabilityIssuer,
+  type BuiltInBrowserActorCapability,
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
@@ -561,8 +562,6 @@ import {
 } from "../ai/tools/orchestrationTools";
 import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
-import { createWorkflowTools } from "../ai/tools/workflowTools";
-import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { CTO_INTRO_ONBOARDING_STEP, CTO_INTRO_PROMPT } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -687,8 +686,6 @@ import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
-import type { LinearClient } from "../cto/linearClient";
-import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -3782,18 +3779,6 @@ type SessionTurnCollector = {
   lastError: string | null;
   timeout: NodeJS.Timeout | null;
 };
-
-const CORE_NATIVE_SESSION_TOOL_NAMES = [
-  "commit_changes",
-  "rebase_lane",
-  "stash_push",
-  "list_stashes",
-  "stash_apply",
-  "stash_pop",
-  "stash_drop",
-  "stash_clear",
-  "ask_user",
-] as const;
 
 type PreparedSendMessage = {
   sessionId: string;
@@ -8401,8 +8386,6 @@ export function createAgentChatService(args: {
       limit?: number;
     }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
   } | null;
-  linearClient?: LinearClient | null;
-  linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
@@ -8440,6 +8423,12 @@ export function createAgentChatService(args: {
   ) | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
+  /**
+   * Who mints this chat's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
+   * capability registry and validates against it, so only Electron can issue
+   * locally; the runtime daemon passes an issuer backed by the desktop bridge.
+   */
+  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
   /**
    * How long ADE waits for a native provider title before naming the chat
    * itself. Tests pass 0 so auto-title assertions do not sleep 8s.
@@ -8523,8 +8512,6 @@ export function createAgentChatService(args: {
     githubService,
     getOrchestrationService,
     getSearchService,
-    linearClient: linearClientRef,
-    linearCredentials: linearCredentialsRef,
     prService,
     diskPressureMonitor,
     getTestService,
@@ -8558,6 +8545,8 @@ export function createAgentChatService(args: {
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
   } = args;
+  const browserActorCapabilityIssuer =
+    args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
@@ -8700,20 +8689,114 @@ export function createAgentChatService(args: {
     return buildLinearSessionDirective(links);
   };
 
+  /**
+   * Tokens fetched from the desktop for a daemon-hosted chat. Electron main
+   * needs no cache — it mints straight out of the registry it owns.
+   */
+  const browserActorTokens = new Map<string, string>();
+  const browserActorTokenFlights = new Map<string, Promise<void>>();
+
+  const browserActorCapabilityFor = (
+    managed: ManagedChatSession,
+  ): BuiltInBrowserActorCapability => {
+    const personalSession = isPersonalSession(managed.session);
+    return {
+      chatSessionId: managed.session.id,
+      laneId: personalSession ? null : managed.session.laneId,
+      projectRoot: personalSession ? null : projectRoot,
+      tabCollection: personalSession ? "personal" : null,
+    };
+  };
+
+  /**
+   * Make this chat's browser capability available to `buildAgentRuntimeEnv`.
+   *
+   * Returns `null` in Electron main, which owns the capability registry and can
+   * mint inline — adding a suspension point there would reorder every agent
+   * launch. The runtime daemon has to ask the desktop over the bridge, so it
+   * gets a promise callers must await before building the env. Re-issuing on
+   * every launch is deliberate: it heals a chat whose token died with a
+   * previous desktop process. A failure (no desktop, headless machine) leaves
+   * the token absent rather than blocking the launch, and `ade browser` then
+   * reports that the bridge is not running.
+   *
+   * CONSTRAINT — why the `issueSync` fork stays: the obvious cleanup (drop
+   * `issueSync`, make `buildAgentRuntimeEnv` async, await `issue` inline) adds
+   * an `await` inside the synchronous stretch of agent launch that this
+   * service's dispatch ordering depends on. That ordering is load-bearing and
+   * asserted by the launch tests around it, so the sync path is kept and paid
+   * for with the preamble below.
+   *
+   * ORDERING — every `buildAgentRuntimeEnv(managed)` call site must be preceded
+   * by `const ready = prepareBrowserActorCapability(managed); if (ready) await
+   * ready;` in the same launch. Forget it and the env silently ships without
+   * `ADE_BROWSER_ACTOR_TOKEN` on daemon-hosted chats — an omission that
+   * compiles and reviews clean. `agentChatBrowserActorOrdering.test.ts` fails
+   * when a new call site appears without a preamble.
+   */
+  const prepareBrowserActorCapability = (
+    managed: ManagedChatSession,
+  ): Promise<void> | null => {
+    if (browserActorCapabilityIssuer.issueSync) return null;
+    const sessionId = managed.session.id;
+    const inFlight = browserActorTokenFlights.get(sessionId);
+    if (inFlight) return inFlight;
+    const flight = browserActorCapabilityIssuer
+      .issue(browserActorCapabilityFor(managed))
+      .then((token) => {
+        const normalized = token?.trim();
+        if (normalized) browserActorTokens.set(sessionId, normalized);
+        else browserActorTokens.delete(sessionId);
+      })
+      .catch((error: unknown) => {
+        browserActorTokens.delete(sessionId);
+        logger.warn("agent_chat.browser_actor_capability_issue_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (browserActorTokenFlights.get(sessionId) === flight) {
+          browserActorTokenFlights.delete(sessionId);
+        }
+      });
+    browserActorTokenFlights.set(sessionId, flight);
+    return flight;
+  };
+
+  const revokeBrowserActorToken = (chatSessionId: string): void => {
+    browserActorTokens.delete(chatSessionId);
+    void browserActorCapabilityIssuer.revoke(chatSessionId).catch((error: unknown) => {
+      logger.warn("agent_chat.browser_actor_capability_revoke_failed", {
+        sessionId: chatSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const personalSession = isPersonalSession(managed.session);
+    const issueSync = browserActorCapabilityIssuer.issueSync;
+    let browserActorToken: string | null = null;
+    if (issueSync) {
+      try {
+        browserActorToken = issueSync(browserActorCapabilityFor(managed))?.trim() || null;
+      } catch (error) {
+        logger.warn("agent_chat.browser_actor_capability_issue_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else {
+      browserActorToken = browserActorTokens.get(managed.session.id) ?? null;
+    }
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
       ADE_DEFAULT_ROLE: managed.session.orchestrationRole === "lead"
         ? "orchestrator"
         : "agent",
       ADE_CHAT_SESSION_ID: managed.session.id,
-      ADE_BROWSER_ACTOR_TOKEN: issueBuiltInBrowserActorCapability({
-        chatSessionId: managed.session.id,
-        laneId: personalSession ? null : managed.session.laneId,
-        projectRoot: personalSession ? null : projectRoot,
-        tabCollection: personalSession ? "personal" : null,
-      }),
+      ...(browserActorToken ? { ADE_BROWSER_ACTOR_TOKEN: browserActorToken } : {}),
       ...(personalSession
         ? { ADE_CHAT_SCOPE: "personal" }
         : {
@@ -8728,6 +8811,9 @@ export function createAgentChatService(args: {
           }
         : {}),
     };
+    // The daemon may itself run inside an agent shell that exported a token for
+    // a different chat. Never let an inherited one stand in for this chat's.
+    if (!browserActorToken) delete env.ADE_BROWSER_ACTOR_TOKEN;
     if (personalSession) {
       delete env.ADE_LANE_ID;
       delete env.ADE_PROJECT_ROOT;
@@ -9989,60 +10075,13 @@ export function createAgentChatService(args: {
     return lane.id;
   };
 
-  const previewSessionToolNames = ({
-    laneId,
-    sessionProfile,
-    identityKey,
-  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey">): string[] => {
-    const effectiveSessionProfile = sessionProfile ?? "workflow";
-    if (effectiveSessionProfile === "light") return [];
-
-    const sessionId = `preview:${laneId}`;
-    const toolNames = new Set<string>();
-    const workflowTools = createWorkflowTools({
-      laneService,
-      prService: prService ?? undefined,
-      computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-      onReportCompletion: null,
-      sessionId,
-      laneId,
-    });
-    for (const toolName of Object.keys(workflowTools)) {
-      toolNames.add(toolName);
-    }
-
-    const linearTools = createLinearTools({
-      linearClient: linearClientRef ?? null,
-      credentials: linearCredentialsRef ?? null,
-    });
-    for (const toolName of Object.keys(linearTools)) {
-      toolNames.add(toolName);
-    }
-
-    for (const toolName of CORE_NATIVE_SESSION_TOOL_NAMES) {
-      toolNames.add(toolName);
-    }
-
-    if (identityKey === "cto") {
-      const ctoTools = createCtoOperatorTools(buildCtoOperatorToolDeps({
-        sessionId,
-        laneId,
-        modelId: null,
-        reasoningEffort: null,
-      }));
-      for (const toolName of Object.keys(ctoTools)) {
-        toolNames.add(toolName);
-      }
-    }
-
-    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
-  };
-
   /**
-   * The CTO operator tool dependency set. Shared by `previewSessionToolNames`
-   * (which only reads the keys, to generate the prompt manifest) and by the
-   * runtime tool map below (which actually executes them) so the advertised
-   * surface and the callable surface cannot drift apart.
+   * The CTO operator tool dependency set.
+   *
+   * One builder, used by the runtime tool map below so every CTO session gets
+   * the same dependencies. It used to be shared with `previewSessionToolNames`
+   * as well — a name-enumeration helper deleted for having no non-test caller —
+   * which is why it is a separate function rather than an inline literal.
    */
   const buildCtoOperatorToolDeps = (args: {
     sessionId: string;
@@ -13032,6 +13071,10 @@ export function createAgentChatService(args: {
       piRuntimeSetupInterruptRequested.delete(managed);
       throw new Error("Pi session interrupted during setup.");
     }
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
     if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
       throw new Error(installation.blocker ?? "Pi SDK is not available. Install Pi or configure ADE_PI_PACKAGE_ROOT.");
@@ -19605,7 +19648,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
-    revokeBuiltInBrowserActorCapability(managed.session.id);
+    revokeBrowserActorToken(managed.session.id);
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
@@ -24812,6 +24855,10 @@ export function createAgentChatService(args: {
     cliArgs: string[],
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const env = buildAgentRuntimeEnv(managed);
     const resolved = resolveClaudeCodeExecutable({ env });
     const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
@@ -25548,6 +25595,10 @@ export function createAgentChatService(args: {
       throw new Error(`Session '${managed.session.id}' is not an ACP chat.`);
     }
     const dialect = acpDialectFor(provider);
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const runtimeEnv = buildAgentRuntimeEnv(managed);
 
     if (provider === "kimi") {
@@ -31930,6 +31981,10 @@ export function createAgentChatService(args: {
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
     });
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
     try {
@@ -33457,6 +33512,10 @@ export function createAgentChatService(args: {
       claudeSubprocessReaper.reapForSession(managed.session.id, "claude_stale_start");
       throw new Error("Claude query start superseded by reset/interrupt");
     };
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const options = buildClaudeQueryOptions(managed, runtime);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
@@ -33815,6 +33874,10 @@ export function createAgentChatService(args: {
         }
       };
       try {
+        // Daemon-hosted chats fetch the browser capability from the desktop; in
+        // Electron main this is a no-op and the launch stays synchronous.
+        const browserCapabilityReady = prepareBrowserActorCapability(managed);
+        if (browserCapabilityReady) await browserCapabilityReady;
         const options = buildClaudeQueryOptions(managed, runtime);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
@@ -39940,6 +40003,10 @@ export function createAgentChatService(args: {
     let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
     let released = false;
     let recoveredMissingCursorSdkAgentId: string | null = null;
+    // Daemon-hosted chats fetch the browser capability from the desktop; in
+    // Electron main this is a no-op and the launch stays synchronous.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     const acquireArgs = {
       poolKey,
       stateKey: cursorSdkStateKeyFor(managed),
@@ -42263,6 +42330,10 @@ export function createAgentChatService(args: {
         ]
         : undefined;
       const persisted = readPersistedState(managed.session.id);
+      // Daemon-hosted chats fetch the browser capability from the desktop; in
+      // Electron main this is a no-op and the launch stays synchronous.
+      const browserCapabilityReady = prepareBrowserActorCapability(managed);
+      if (browserCapabilityReady) await browserCapabilityReady;
       const acquired = await acquireDroidSdkConnection({
         poolKey,
         droidPath: resolveDroidExecutable({ auth }).path,
@@ -47239,7 +47310,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
-    revokeBuiltInBrowserActorCapability(sessionId);
+    revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
@@ -49216,7 +49287,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore emergency shutdown failures
       }
-      revokeBuiltInBrowserActorCapability(sessionId);
+      revokeBrowserActorToken(sessionId);
     }
     managedSessions.clear();
     void flushAllQueuedTranscriptWrites();
@@ -52756,7 +52827,6 @@ export function createAgentChatService(args: {
       githubService,
       linearIssueTracker,
     }),
-    previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,
     handleCursorCloudStatusChange,

@@ -681,23 +681,26 @@ Renderer surfaces:
   Auto-created lane launches keep import disabled because there is no
   existing target lane to import into yet.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
-  right-edge sidebar tied to the active lane (and active Work session
-  when present). Tabbed into `git` (lane git actions + selection-driven
-  diff), `files` (mounts `FilesTab` in `embedded` mode with the lane
-  worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
-  the active lane), `app-control` (mounts `ChatAppControlPanel`), and
-  `browser` (mounts `ChatBuiltInBrowserPanel` over the current ADE
-  window's `WebContentsView`-backed built-in browser; the sidebar hides
-  the browser viewport whenever the user switches off the tab or closes
-  the sidebar by setting bounds to `{ x: 0, y: 0, width: 0, height: 0,
-  visible: false }` and stopping any inspect mode). The browser tab is
-  not lane-scoped: each ADE window owns its own tabs and active inspect
-  state, while all windows share the same `persist:ade-browser`
-  partition for authentication. On remote-bound Work surfaces, the sidebar is
-  limited to the runtime-backed `git` and `files` tabs and automatically
-  switches away from local-only iOS / App Control / Browser tabs. It still
-  flows selections to the active
-  chat through the same dispatch path as the other tool tabs. The active
+  right-edge tools pane tied to the active lane (and active Work session
+  when present). It shows a **picker page** of tool cards, or **one
+  active tool**: `terminal` (attached shells), `browser` (mounts
+  `ChatBuiltInBrowserPanel` over the current ADE window's
+  `WebContentsView`-backed built-in browser), `git` (lane git actions +
+  selection-driven diff), `files` (mounts `FilesTab` in `embedded` mode
+  with the lane worktree pre-selected), `ios` (mounts
+  `ChatIosSimulatorPanel` against the active lane), `app-control`
+  (mounts `ChatAppControlPanel`). Which tool is open persists **per lane**; open/closed and width
+  stay per project. The pane hides the browser viewport whenever the user
+  switches to another tool or closes the pane, by setting bounds to
+  `{ x: 0, y: 0, width: 0, height: 0, visible: false }` and stopping any
+  inspect mode. The browser is not lane-scoped: each ADE window owns its
+  own tabs and active inspect state, while all windows share the same
+  `persist:ade-browser` partition for authentication. On remote-bound Work
+  surfaces the local-only tools (`ios`, `app-control`) render as disabled
+  cards explaining why — the browser stays available, because a remote lane
+  drives this desktop's own browser window — and an active tool that becomes
+  unavailable falls back to the picker. It still flows selections to the
+  active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
   (`WorkSidebarContextTarget`): chat sessions (`kind: "chat"`) and
   draft composers (`kind: "draft"`, carrying `draftTargetId`, `laneId`,
@@ -720,9 +723,13 @@ Renderer surfaces:
   existing App Control / iOS Simulator session are shown as an
   informational warning banner but no longer block context insertion —
   controls affect the running tool while inserted context goes to the
-  current chat, draft, or CLI target. The tab strip must stay reachable
-  when the Work pane is narrow: labels collapse to accessible icon
-  buttons while preserving stable hit targets and tooltips.
+  current chat, draft, or CLI target. The pane is a tab strip plus one
+  page: one tab per open tool, one of them on screen, and the picker page
+  behind the grid button and the `+`. A tool is open once — there is no
+  multi-instance. A narrow pane sheds tab labels for glyphs and then
+  overflows tabs into a `…` menu; below that the splitter clamp
+  (`workSidebarSplitter.ts`) refuses to shrink the pane past the width its
+  36 px header needs.
 
   The pane follows the **chat's** machine, not the tab's. `runtimePin`
   (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
@@ -750,6 +757,100 @@ Renderer surfaces:
   ("Tool context insertion is not available for chats on another machine."),
   because it travels as a DOM window event the chat pane consumes and that
   path carries no machine.
+- `apps/desktop/src/renderer/components/terminals/workTools.ts` — the tool
+  catalogue and the capability rules: `WORK_TOOL_DEFINITIONS` (order, icon,
+  label, a three-to-five-word `hint` for a tool that has measured nothing yet,
+  and a `contextLabel` rule for the header's one fact), `workToolAvailability`
+  (available, or a reason: local-only, desktop-only, macOS-only), and
+  `isReadOnlyWorkTool` for the hosted web client. Six tools, no Pull request
+  tool — PRs have their own tab. Availability is decided from capability flags,
+  never `process.platform` — the web client renders the same components.
+- `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
+  `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
+  `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
+  the pane's tab strip, its two pages, and the panel mounts. The picker is one centred 512 px
+  column of translucent cards over a slow violet WebGL mesh (the backdrop, at
+  DPR 1 / 600 k pixels / 30 fps, paused when unwatched and a static CSS
+  gradient with no WebGL) — name plus one line, which is the tool's measured
+  status, else its catalogue `hint`, else the reason it cannot run here — and
+  the only mark a card carries is a red dot for a broken tool; the header is
+  the 36 px tab strip — the `⊞ Tools` button, one tab per open tool with a
+  hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
+  those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
+  for tools with no tab, and ✕; the `×` is untouchable until the tab is
+  hovered or it is focused, and on a glyph-only tab it is a top-right corner
+  badge rather than a centred target that would swallow the tab's own click;
+  the strip is a roving-tabindex `tablist` (arrows move focus, activation
+  stays manual, the overflow menu button sits outside it) whose selected tab
+  names its pane with `aria-controls` (`workToolPanelId`); the active tool's
+  one fact is its tab's tooltip and accessible name, not a header line; the read-only view replaces
+  the browser and App Control panels on the hosted web client;
+  `workToolPanels.tsx` is one component per
+  tool id, replacing a 270-line `useMemo` in `WorkSidebar` that dispatched
+  through seven sequential `if` blocks over a 28-entry dependency array and
+  could never memoize; each panel now takes the same explicit props object,
+  keeps its own guards and empty states, and adding a tool is one entry here
+  plus one in `WORK_TOOL_DEFINITIONS`.
+- `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
+  `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
+  `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
+  data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
+  — no colour is named in the fragment shader, so a token change is one line
+  here), the builder's non-colour uniforms, and the pure size policy
+  (`resolveBackdropSize`, `BACKDROP_MAX_DPR` / `BACKDROP_PIXEL_BUDGET` /
+  `BACKDROP_FRAME_MS`, `isSoftwareRenderer`) that is testable without a GPU.
+  The renderer module is React-free: `createBackdropRenderer` takes a canvas
+  and an `onRefused` callback, owns the context, the program, the rAF loop and
+  every listener and observer that gates it, and returns a `dispose` — or
+  `null` when it refuses (no WebGL, a software rasteriser, a shader that will
+  not compile or link), having already handed the context back. The deferred
+  context release lives here too, so a picker ↔ tool crossfade cancels it
+  instead of churning a context per remount.
+- `apps/desktop/src/renderer/components/terminals/useWorkSidebarTool.ts`,
+  `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
+  `workSidebarSplitter.ts` — which tools are open and which one is on screen
+  (per lane, `openWorkToolTab` / `closeWorkToolTab` for the strip arithmetic,
+  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce),
+  the status
+  lines assembled only from reads the pane already makes, the request queue
+  surfaces outside the Work page file instead of writing pane state directly,
+  the pushed-diagnostics fold behind the red activity dots, and the two-unit
+  splitter clamp.
+- `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
+  chrome vocabulary every tool panel spends instead of inventing: a single
+  40 px row per tool under the pane's 36 px header, ghost controls that change
+  fill only over 120 ms, an inset focus hairline, 16 px icons, no sentences in
+  the row, and an 8 px inset / 10 px radius / 1 px inset ring around any
+  content that is its own surface. The browser composes its own row and App
+  Control draws a bordered variant; both spend these constants.
+- `apps/desktop/src/renderer/components/terminals/workTerminalShells.ts` — the
+  shell count the terminal panel publishes for the pane header and picker. The
+  panel is the only thing that knows how many shells are on screen, so it says
+  so: one number per owning session, a plain subscription, no polling and no
+  IPC. The pane's own `terminal.list` read disagreed in both directions (a
+  just-opened shell was still absent from the daemon's list, a finished split
+  pane was filtered out of it). When no panel is mounted the count is absent
+  and the pane falls back to its own read.
+- `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`,
+  `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
+  subscription set, mounted once by `TerminalsPage` and shared with both the
+  pane and the floating corner card.
+- `apps/desktop/src/renderer/components/terminals/agentBrowserPresence.ts`,
+  `AgentBrowserPresenceBadge.tsx` — "this chat is driving the browser right
+  now" in the renderer. The module store holds one shared subscription to the
+  `agent-presence` browser event plus the side-effect-free
+  `builtInBrowser.getAgentPresence()` seed (the seed is a separate read
+  precisely because `getStatus` restores and loads every persisted tab, and
+  this badge mounts on every session card). The badge is a pulsing 11–12 px
+  accent globe with the one label `Using the browser`; it renders `null` when
+  the chat is not browsing, so `SessionCard` and the chat header place it
+  unconditionally. See
+  [Chat › An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
+- `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
+  `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
+  live-preview card for the most recently active screen tool that is *not*
+  in the pane. See
+  [UI surfaces](ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx).
 - `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
   same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip
   primaries and `main`/`master`, pull later same-branch lanes (including
@@ -1940,12 +2041,15 @@ in-memory reset stays separate.
   wrong worktree. See [runtime-isolation.md](./runtime-isolation.md).
 - **Work view state persistence** — the Work tab persists per-project
   UI state (open items, filters, collapsed groups, focus-hidden flag,
-  right `WorkSidebar` open/tab/width) to `localStorage` under
+  right `WorkSidebar` open/width) to `localStorage` under
   `ade.workViewState.v1`. The sidebar fields are
-  `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
-  | "app-control" | "browser"`, and `workSidebarWidthPct: number`
-  (clamped to 26–55). Lane-scoped state uses a composite
-  `projectRoot::laneId` key. The payload is version 3 and also owns the Lanes
+  `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
+  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "files" |
+  "ios" | "app-control" | null` (null = the picker page).
+  `workSidebarTool` is read and written on the **lane** scope, falling back
+  to the project scope when no lane is bound; the other two are always
+  project-wide. Lane-scoped state uses a composite
+  `projectRoot::laneId` key. The payload is version 5 and also owns the Lanes
   tab's filter, pinned lane ids, and expanded lane id so those controls survive
   route/project remounts. Its version-2 one-shot migration is gated by the
   dedicated settled-collapse version, not by the current schema version, so
@@ -2018,9 +2122,12 @@ sensible target for attached-session agents. Every PTY launched through
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
 session-owned) `ADE_CHAT_SESSION_ID` plus an opaque
 `ADE_BROWSER_ACTOR_TOKEN` into the spawn env. The browser capability is
-bound in Electron memory to that owner chat/lane/project. The runtime rejects
-missing tokens and strips caller routing; Electron validates the token in the
-issuing process before restoring its scope on the authenticated bridge. The
+minted by Electron and bound in Electron memory to that owner
+chat/lane/project; a daemon-hosted terminal requests it over the desktop bridge
+and launches without one when no desktop is running. The runtime rejects
+missing tokens and strips caller routing; Electron validates the token against
+the registry that issued it before restoring its scope on the authenticated
+bridge. The
 remaining identity variables are how a
 plain shell that the user types `ade --socket terminal read --chat-session
 "$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's

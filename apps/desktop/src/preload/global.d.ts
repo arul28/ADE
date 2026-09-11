@@ -1,4 +1,13 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type {
+  AppOpenSystemSettingsPaneResult,
+  SystemSettingsPaneId,
+} from "../shared/types/systemSettings";
+import type { LocalizedRemoteUrl } from "../shared/remoteLoopbackUrl";
+import type {
+  BuiltInBrowserRemoteRequest,
+  BuiltInBrowserRemoteRequestAck,
+} from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
 import type {
   AdeCleanupResult,
@@ -28,6 +37,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppMenuCommand,
   AppZoomCommand,
   AutoUpdatePreferences,
   KeepAwakeFixResult,
@@ -491,6 +501,12 @@ import type {
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
+  BrowserLoginImportArgs,
+  BrowserLoginImportCapabilities,
+  BrowserLoginImportListDomainsArgs,
+  BrowserLoginImportListDomainsResult,
+  BrowserLoginImportListSourcesResult,
+  BrowserLoginImportResult,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigSnapshot,
@@ -655,21 +671,29 @@ import type {
   IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
   AppControlLaunchArgs,
+  AppControlObservation,
+  AppControlObservationArgs,
   AppControlScreenshot,
   AppControlSelectResult,
   AppControlSession,
+  AppControlSessionTargetArgs,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlStatus,
   AppControlStopArgs,
+  AppControlSwitchWindowArgs,
   AppControlTarget,
+  AppControlTraceArgs,
+  AppControlTraceResult,
   AppControlTypeTextArgs,
-  BuiltInBrowserAttachWebviewArgs,
+  AppControlWindowsResult,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
@@ -683,7 +707,35 @@ import type {
   BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserDevToolsResult,
+  BuiltInBrowserEmulationResult,
+  BuiltInBrowserEndHandoffArgs,
+  BuiltInBrowserHandoffResult,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserExportHarResult,
+  BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
+  BuiltInBrowserFindInPageResult,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserNetworkLoggingResult,
+  BuiltInBrowserNetworkLogResult,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStartRecordingResult,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
+  BuiltInBrowserStopRecordingArgs,
+  BuiltInBrowserPreviewStreamResult,
+  BuiltInBrowserStartPreviewStreamArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
+  BuiltInBrowserStopRecordingResult,
+  BuiltInBrowserZoomResult,
   BuiltInBrowserSelectResult,
+  BuiltInBrowserAgentPresence,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -751,6 +803,11 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  WorkToolId,
+  WorkToolsLaneState,
+  WorkToolsObservationPreview,
+} from "../shared/types/workTools";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -837,6 +894,8 @@ declare global {
           rootPath: string,
         ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
+        requestWindowClose: () => Promise<{ requested: boolean }>;
+        onMenuCommand: (cb: (command: AppMenuCommand) => void) => () => void;
         onProjectChanged: (
           cb: (project: ProjectInfo | null) => void,
         ) => () => void;
@@ -845,6 +904,9 @@ declare global {
         ) => () => void;
         onNavigate: (cb: (request: AppNavigationRequest) => void) => () => void;
         openExternal: (url: string) => Promise<void>;
+        openSystemSettingsPane: (
+          paneId: SystemSettingsPaneId,
+        ) => Promise<AppOpenSystemSettingsPaneResult>;
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
@@ -2338,6 +2400,35 @@ declare global {
           args: { targetId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /**
+         * Agent action model, read side only. `agentClick`/`agentFill`/… are
+         * deliberately absent: the panel reports what an agent did, it does not
+         * drive agent actions, so those stay behind the action registry.
+         *
+         * All five reject when no project runtime is bound — they have no IPC
+         * channel to fall back to.
+         */
+        listDrivers: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlDriversResult>;
+        /** Writes an observation record and prunes older ones — never poll it. */
+        observe: (
+          args?: AppControlObservationArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlObservation>;
+        getTrace: (
+          args?: AppControlTraceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlTraceResult>;
+        windows: (
+          args?: AppControlSessionTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlWindowsResult>;
+        /** Re-attaches CDP and clears the trace, like `attachToTarget`. */
+        switchWindow: (
+          args: AppControlSwitchWindowArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlWindowsResult>;
         onEvent: (
           cb: (ev: AppControlEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -2348,6 +2439,13 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /**
+         * Who is driving the browser right now, scoped to this window's
+         * projects. Side-effect-free: unlike `getStatus` it constructs no
+         * window service and restores no tabs, which is why the presence badge
+         * seeds from it.
+         */
+        getAgentPresence: () => Promise<BuiltInBrowserAgentPresence[]>;
         requestOriginAccess: (
           args?: BuiltInBrowserRequestOriginAccessArgs,
           pin?: OpenProjectBinding | null,
@@ -2357,6 +2455,18 @@ declare global {
         clearPermissions: (
           args?: BuiltInBrowserClearPermissionsArgs,
         ) => Promise<BuiltInBrowserClearPermissionsResult>;
+        /**
+         * Human-only login import. No `pin` overload anywhere in this group:
+         * an agent must not be able to hand itself a logged-in identity.
+         */
+        loginImport: {
+          capabilities: () => Promise<BrowserLoginImportCapabilities>;
+          listSources: () => Promise<BrowserLoginImportListSourcesResult>;
+          listDomains: (
+            args: BrowserLoginImportListDomainsArgs,
+          ) => Promise<BrowserLoginImportListDomainsResult>;
+          import: (args: BrowserLoginImportArgs) => Promise<BrowserLoginImportResult>;
+        };
         showPanel: (
           args?: BuiltInBrowserOpenPanelArgs,
           pin?: OpenProjectBinding | null,
@@ -2365,9 +2475,16 @@ declare global {
           args: BuiltInBrowserBoundsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
-        attachWebview: (
-          args: BuiltInBrowserAttachWebviewArgs,
-        ) => Promise<BuiltInBrowserStatus>;
+        /** Resolve a loopback URL onto a forward to the pinned machine. */
+        localizeRemoteUrl: (
+          args: { url: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LocalizedRemoteUrl>;
+        /** Tell the pinned machine this desktop took its browser-open request. */
+        acknowledgeRemoteRequest: (
+          args: BuiltInBrowserRemoteRequestAck,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         navigate: (
           args: BuiltInBrowserNavigateArgs,
           pin?: OpenProjectBinding | null,
@@ -2411,7 +2528,7 @@ declare global {
         captureScreenshot: (
           args?: BuiltInBrowserTabTargetArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<BuiltInBrowserScreenshot>;
+        ) => Promise<BuiltInBrowserScreenshotResult>;
         selectPoint: (
           args: BuiltInBrowserSelectPointArgs,
           pin?: OpenProjectBinding | null,
@@ -2424,8 +2541,84 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        /** Human hand-back of a login handoff; gated to user clients in the runtime. */
+        endHandoff: (
+          args?: BuiltInBrowserEndHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserHandoffResult>;
+        setEmulation: (
+          args?: BuiltInBrowserSetEmulationArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserEmulationResult>;
+        setZoom: (
+          args?: BuiltInBrowserSetZoomArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserZoomResult>;
+        /** Dev servers sniffed from terminal output; feature-detect before use. */
+        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
+        findInPage: (
+          args: BuiltInBrowserFindInPageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserFindInPageResult>;
+        stopFindInPage: (
+          args?: BuiltInBrowserStopFindInPageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStopFindInPageResult>;
+        /**
+         * Hand the OS keyboard back from the page's `WebContentsView` to this
+         * window's own renderer. Always local; feature-detect before use.
+         */
+        focusHost: () => Promise<{ focused: boolean }>;
+        /**
+         * First panel to claim a forwarded `ade browser open` acts on it; every
+         * other window's panel is told no. Always local; feature-detect before use.
+         */
+        claimRemoteRequest: (args: { requestId: string }) => Promise<{ claimed: boolean }>;
+        setDevTools: (
+          args: BuiltInBrowserSetDevToolsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserDevToolsResult>;
+        setNetworkLogging: (
+          args: BuiltInBrowserSetNetworkLoggingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserNetworkLoggingResult>;
+        getNetworkLog: (
+          args?: BuiltInBrowserNetworkLogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserNetworkLogResult>;
+        exportHar: (
+          args?: BuiltInBrowserExportHarArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserExportHarResult>;
+        startRecording: (
+          args?: BuiltInBrowserStartRecordingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStartRecordingResult>;
+        stopRecording: (
+          args?: BuiltInBrowserStopRecordingArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStopRecordingResult>;
+        /**
+         * Refcounted live thumbnail frames, delivered as `preview-frame` on
+         * `onEvent`. Local-only by design: the previewed view belongs to this
+         * window's main process, so there is no `pin` parameter.
+         */
+        startPreviewStream: (
+          args?: BuiltInBrowserStartPreviewStreamArgs,
+        ) => Promise<BuiltInBrowserPreviewStreamResult>;
+        stopPreviewStream: (
+          args?: BuiltInBrowserStopPreviewStreamArgs,
+        ) => Promise<BuiltInBrowserPreviewStreamResult>;
         onEvent: (
           cb: (ev: BuiltInBrowserEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /**
+         * Browser-open requests forwarded from a headless machine the chat is
+         * pinned to. A no-op unsubscribe for any non-remote pin.
+         */
+        onRemoteRequest: (
+          cb: (ev: BuiltInBrowserRemoteRequest) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
@@ -3165,6 +3358,22 @@ declare global {
       graphState: {
         get: (projectId: string) => Promise<GraphPersistedState | null>;
         set: (projectId: string, state: GraphPersistedState) => Promise<void>;
+      };
+      /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
+      workTools: {
+        getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
+        /**
+         * `openTools` is the pane's whole tab strip in order; `tool` is the one
+         * on screen. Defaulted so an older caller still publishes coherently.
+         */
+        setActiveTool: (
+          laneId: string,
+          tool: WorkToolId | null,
+          openTools?: WorkToolId[],
+        ) => Promise<void>;
+        readObservationPreview: (
+          observationPath: string,
+        ) => Promise<WorkToolsObservationPreview | null>;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;

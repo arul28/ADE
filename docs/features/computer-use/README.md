@@ -47,9 +47,9 @@ the remote host.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — merges the resolved `computer_use` server into every Codex `thread/start` and `thread/resume` config and handles MCP tool/source events plus elicitation requests.
 - `apps/desktop/src/shared/cliLaunch.ts` — emits the equivalent `-c mcp_servers.computer_use.*` flags for tracked Codex CLI start/resume commands. `agentChatCliLaunch.ts`, `ptyService.ts`, and `externalSessionsService.ts` resolve the config at each launch/resume so a newly installed or disabled plugin is respected.
 
-Computer-use services that used to exist and were deleted on this branch:
+Computer-use services that used to exist and are deliberately gone (do not re-add):
 
-- `proofObserver.ts` — the passive observer that auto-ingested screenshots from `tool_result` events. Captures are always intentional now.
+- `proofObserver.ts` — the passive observer that auto-ingested screenshots from `tool_result` events. Captures are always intentional: a bare `screenshot_environment` writes to the project's cache/tmp scratch root (`createComputerUseScratchPath` in `localComputerUse.ts`), which the broker already allows as an import root, and only a proof-named call creates a drawer record.
 - Ghost OS status shelling (`ghost status` / `ghost doctor` probes). The broker no longer shells out to external backend binaries.
 
 ### IPC and runtime RPC
@@ -69,6 +69,52 @@ Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUs
 Each channel routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
 
 The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`, `delete_computer_use_artifacts`, `list_broken_computer_use_artifacts`, `prune_broken_computer_use_artifacts`, `recover_computer_use_artifact`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's transcript/drawer collections go through the same broker instance.
+
+### Capture is not proof
+
+Computer use and proof are separate acts. Capturing the screen is something an
+agent does to see; filing a proof-drawer record is something it does on purpose,
+for a reviewer. Only an explicit proof call writes a record:
+
+- **`captureScreenshot`** (formerly in
+  `apps/desktop/src/main/services/ai/tools/workflowTools.ts`) is not a callable
+  tool and never was: that module exported names, not implementations, and no
+  tool registry ever received one. It never touched the broker, and the module
+  itself has now been deleted. Agents use `ade proof capture --caption "…"` for
+  reviewer-facing proof.
+- **`screenshot_environment` / `record_environment`** take a `proof` flag. It is
+  false by default, and `ade proof capture` / `ade proof record` are what set it
+  true. A bare call — an agent looking at the screen, or an automation run using
+  the `browser` tool family allow-list in
+  `apps/desktop/src/main/services/automations/automationService.ts` — writes the
+  capture to `.ade/cache/tmp/computer-use/` and returns its path. Explicit
+  `ownerKind`/`ownerId` are resolved only on the `proof: true` branch, because a
+  scratch capture has no ownership to authorize.
+- **`ade browser record start|stop`** follows the same explicit-proof rule. The
+  built-in browser records the tab itself (hidden ADE page + `getDisplayMedia` +
+  `MediaRecorder`, MP4 where available, WebM otherwise) and always returns the
+  scratch file path. It reaches the proof drawer as a `video_recording` artifact
+  **only** when `record start` was given a `--caption`, mirroring
+  `ade browser proof`; without one, nothing is ingested.
+- **Browser use is visible to the human, automatically.** Every
+  capability-validated `ade browser …` command marks the calling chat as using
+  the browser, so a globe appears on its session card and chat header, the
+  Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
+  Nothing is asked of the agent — there is no "announce it" instruction to
+  follow or forget — and the mark expires about twenty seconds after the last
+  command (held while a tab is recording, cleared when the tab closes or a login
+  handoff passes it to a person). See
+  [An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
+- **The `computer_use_artifacts` action domain** exposes reads and record
+  lifecycle (list, delete, broken/prune/recover, review, preview, owner
+  snapshot, backend status) but **not** `ingest`. It used to be a spread of the
+  whole broker, which let `ade actions call computer_use_artifacts.ingest` reach
+  ingestion without `validateComputerUseOwnerClaims` or the authorized
+  caller-root resolution that guard the `ingest_computer_use_artifacts` tool.
+
+Scratch captures are recoverable: `.ade/cache/tmp` and the OS temp root are both
+allowed broker import roots, so `ade proof attach <path> --caption "…"` promotes
+any of them later.
 
 ### Renderer
 
@@ -162,6 +208,8 @@ with the bytes.
 ## App Control bridge
 
 Alongside the proof broker, ADE exposes a separate **App Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, App Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. App Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
+
+App Control also carries the same agent action model as the built-in browser: `ade app-control observe` returns a screenshot plus a bounded element list with stable `obs-…:e:N` handles, and `click` / `hover` / `fill` / `clear` / `type` / `press` / `scroll` / `wait` act on those handles and answer with a post-action observation and a per-session action trace. `ade app-control proof` registers an observation as a proof artifact under the `ade-app-control` backend. Sessions carry a `driver` (`cdp` today; `computer_use` is typed and capability-gated but not implemented).
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 

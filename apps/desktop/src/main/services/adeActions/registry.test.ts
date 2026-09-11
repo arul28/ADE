@@ -289,6 +289,36 @@ describe("isAllowedAdeAction", () => {
   });
 });
 
+describe("work_tools runtime action domain", () => {
+  it("exposes the lane tool-state reads plus the desktop's one publish", () => {
+    expect(isAllowedAdeAction("work_tools", "getLaneState")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "setActiveTool")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "readObservationPreview")).toBe(true);
+    // The pane itself is never driven through this domain — the browser and
+    // App Control keep their own allowlists for that.
+    expect(isAllowedAdeAction("work_tools", "click")).toBe(false);
+    expect(isAllowedAdeAction("work_tools", "navigate")).toBe(false);
+  });
+
+  it("binds the domain to the runtime's aggregator, and reports nothing without one", () => {
+    const workToolsStateService = {
+      getLaneState: async () => ({ laneId: "lane-1" }),
+      setActiveTool: () => ({ ok: true }),
+      readObservationPreview: async () => null,
+    };
+    const services = getAdeActionDomainServices({ workToolsStateService } as never);
+    expect(listAllowedAdeActionNames(
+      "work_tools",
+      services.work_tools as Record<string, unknown>,
+    )).toEqual(["getLaneState", "readObservationPreview", "setActiveTool"]);
+
+    // A chat-only runtime builds no aggregator; the domain must be absent
+    // rather than present-and-throwing.
+    const without = getAdeActionDomainServices({} as never);
+    expect(without.work_tools ?? null).toBeNull();
+  });
+});
+
 describe("getAdeActionDomainServices feature gates", () => {
   it("keeps Automations domains available in packaged builds by default", () => {
     withEnv(
@@ -505,7 +535,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("readArtifactPreview");
     for (const action of [
       "deleteArtifacts",
-      "ingest",
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
@@ -513,6 +542,30 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     ]) {
       expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);
     }
+  });
+
+  it("keeps proof ingestion off the action domain so owner and caller-root validation cannot be skipped", () => {
+    // `ade actions call computer_use_artifacts.ingest` used to reach the broker
+    // directly, past `validateComputerUseOwnerClaims` and the authorized
+    // import-root check that live on the RPC tool path.
+    expect(ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? []).not.toContain("ingest");
+    expect(isAllowedAdeAction("computer_use_artifacts", "ingest")).toBe(false);
+
+    const broker = {
+      getBackendStatus: vi.fn(),
+      ingest: vi.fn(),
+      listArtifacts: vi.fn(),
+      readArtifactPreview: vi.fn(),
+      updateArtifactReview: vi.fn(),
+    };
+    const runtime = {
+      computerUseArtifactBrokerService: broker,
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const artifactService = getAdeActionDomainServices(runtime)
+      .computer_use_artifacts as Record<string, unknown>;
+
+    expect(artifactService.ingest).toBeUndefined();
+    expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).not.toContain("ingest");
   });
 
   it("exposes prompt stashes through the project runtime for connected desktops", () => {
@@ -1932,6 +1985,10 @@ describe("runtime session actions", () => {
       title: "Fix auth race",
       message: "Which account should I use?",
       laneId: "lane-1",
+      // A plain `chat ask` overrides neither alert line; only asks whose subject
+      // is the ask itself (browser login handoff) set these.
+      alertTitle: null,
+      alertBody: null,
     });
 
     expect(sessionActions.setSessionStatusNote({ sessionId: "session-1", note: "" }))

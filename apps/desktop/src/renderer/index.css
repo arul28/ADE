@@ -437,6 +437,29 @@ samp {
   overscroll-behavior: contain;
 }
 
+/*
+  The terminal's scrollbar is furniture, not content: a permanent track down the
+  right edge of every shell is a second vertical rule beside the pane's own. It
+  paints when the pointer is over the terminal and is invisible otherwise.
+
+  Colour only, never `scrollbar-width` or `display` — the gutter stays reserved
+  at every state, so a hover cannot reflow the terminal by a column. That
+  matters most on Windows and Linux, where the scrollbar has real width.
+*/
+.ade-terminal-host .xterm-viewport::-webkit-scrollbar-track,
+.ade-terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.ade-terminal-host:hover .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.28);
+}
+
+.ade-terminal-host:hover .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.45);
+}
+
 h1,
 h2,
 h3,
@@ -1393,6 +1416,47 @@ h6 {
   display: none;
 }
 
+/*
+  The Work tools pane and the chat terminal drawer share ONE splitter.
+
+  Before this the tools pane drew a permanent 5px grey bar that turned accent
+  blue on hover, the drawer drew a rounded pill, and the browser/Work panes
+  drew the gutter above — three treatments for the same gesture. This is the
+  gutter's 8px invisible hit area with a 1px hairline that only appears while
+  you are on it or dragging it, so the divider is a line you find rather than a
+  band you look at.
+*/
+.ade-tool-gutter::before {
+  opacity: 0;
+  border-radius: 0;
+  background: var(--color-separator-active);
+  box-shadow: none;
+}
+
+.ade-tool-gutter.vertical::before {
+  width: 1px;
+  height: 100%;
+}
+
+.ade-tool-gutter.horizontal::before {
+  width: 100%;
+  height: 1px;
+}
+
+.ade-tool-gutter:hover,
+.ade-tool-gutter:focus-visible,
+.ade-tool-gutter[data-resize-handle-active] {
+  background: transparent;
+  outline: none;
+}
+
+.ade-tool-gutter:hover::before,
+.ade-tool-gutter:focus-visible::before,
+.ade-tool-gutter[data-resize-handle-active]::before {
+  opacity: 1;
+  box-shadow: none;
+}
+
 /* ═══════════════════════════════════════════════════════════
    Lane Divider
    ═══════════════════════════════════════════════════════════ */
@@ -2181,6 +2245,220 @@ button:active, [role="button"]:active {
   }
 }
 
+/* Pane chrome (tool header, picker grid, terminal tab strip) is furniture, not
+   content. Dragging the pane divider or a tab used to leave half the labels
+   selected in accent blue; nothing in here is worth copying. */
+.ade-pane-chrome,
+.ade-pane-chrome * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The pane's own tooltip — see components/ui/PaneTooltip.tsx. Deliberately
+   plainer than `.ade-smart-tooltip`: one line, no card sections, and never
+   interactive, so it can carry `pointer-events: none`. */
+.ade-pane-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 24px));
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-popup-bg, #151325);
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.65);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-fg);
+  animation: ade-pane-tooltip-in 100ms ease forwards;
+}
+
+.ade-pane-tooltip-kbd {
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--color-muted-fg);
+}
+
+@keyframes ade-pane-tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-pane-tooltip {
+    animation: none;
+  }
+}
+
+/* Work tools picker: a shader backdrop with cards floating on it.
+
+   The backdrop is a <canvas> (or, with no WebGL, this same box painted as a
+   static gradient) pinned behind the column and untouchable — a canvas that
+   swallowed a click meant for a card would be a decoration breaking the page
+   it decorates. */
+.ade-tool-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
+   would be the most expensive thing in the window. */
+.ade-tool-picker-static {
+  background:
+    radial-gradient(
+      120% 90% at 16% 10%,
+      color-mix(in srgb, var(--color-accent-deep) 30%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      110% 80% at 86% 82%,
+      color-mix(in srgb, var(--color-accent) 18%, transparent),
+      transparent 60%
+    ),
+    var(--color-bg);
+}
+
+[data-theme="light"] .ade-tool-picker-static {
+  background:
+    radial-gradient(
+      120% 90% at 16% 10%,
+      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      110% 80% at 86% 82%,
+      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
+      transparent 60%
+    ),
+    var(--color-surface);
+}
+
+/* The card. Now that there is something behind it, the card is a piece of
+   glass rather than a flat rectangle: a translucent fill, one
+   hairline, and nothing else at rest. No `backdrop-filter` — six blur regions
+   over a 30fps animating canvas re-blur on every backdrop frame and spend back
+   everything the backdrop's own budget (DPR 1, 600k px, 30fps) saves. The
+   measured 82% fill is what carries the violet through and holds contrast.
+   Hover is the only place this page spends
+   colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
+   over 160ms. Press settles back to a 0.99 scale, so the card gives under the
+   cursor rather than jumping out from under it. */
+.ade-tool-card {
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  /* 82%, not the 50-ish a "glass" card wants to be: the mesh peaks at a
+     luminance of ~118 and a card thin enough to show that peak takes its own
+     12px muted line down to a 2.4:1 contrast. 82% keeps every line at or above
+     4:1 over the brightest spot the backdrop can produce, and the blur still
+     carries the violet through. */
+  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  transition:
+    transform 160ms ease-out,
+    background-color 160ms ease-out,
+    border-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+
+[data-theme="light"] .ade-tool-card {
+  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 84%, transparent);
+}
+
+.ade-tool-card:not(:disabled):hover,
+.ade-tool-card:not(:disabled)[data-highlighted="true"] {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+  box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+/* Press: the lift collapses and the card takes a hair off its own size. */
+.ade-tool-card:not(:disabled):active {
+  transform: translateY(-1px) scale(0.99);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+/* The last-opened tool is `aria-current` but carries NO fill: the picker is a
+   page for choosing, and a card pre-tinted in the same colour hover uses reads
+   as "already hovered" from across the pane. The state is still announced. */
+
+.ade-tool-card:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+/* Motion off: the fill and hairline still answer the cursor, the geometry does
+   not. A lift is the part of this that moves. */
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-card {
+    transition: none;
+  }
+
+  .ade-tool-card:not(:disabled):hover,
+  .ade-tool-card:not(:disabled)[data-highlighted="true"],
+  .ade-tool-card:not(:disabled):active {
+    transform: none;
+  }
+}
+
+/* The tools pane's own hairline — the header's bottom edge, at 60% of the
+   border token so it separates without drawing a line across the pane. */
+.ade-tool-pane-rule {
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* The tools pane header measures itself, so the pane can be dragged to 280px
+   without the window knowing anything about it. */
+.ade-tool-header {
+  container-type: inline-size;
+  container-name: ade-tool-header;
+}
+
+/* Work tools picker: placeholder status lines held for at most 300ms while the
+   tool reads settle. Stepped like the other idle animations here — a smooth
+   sweep costs a compositor frame per display refresh for a shimmer nobody is
+   reading, which is very expensive on a 240Hz panel. */
+@keyframes ade-tool-skeleton-sweep {
+  0% {
+    transform: translateX(-100%);
+    animation-timing-function: steps(6);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.ade-tool-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-muted-fg) 16%, transparent);
+}
+
+.ade-tool-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-muted-fg) 22%, transparent),
+    transparent
+  );
+  animation: ade-tool-skeleton-sweep 1.4s linear infinite;
+}
+
 @keyframes ade-timeline-arc {
   0% {
     transform: rotate(0deg);
@@ -2220,6 +2498,7 @@ button:active, [role="button"]:active {
   }
   .ade-streaming-shimmer,
   .ade-streaming-shimmer::after,
+  .ade-tool-skeleton::after,
   .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-title-landed,

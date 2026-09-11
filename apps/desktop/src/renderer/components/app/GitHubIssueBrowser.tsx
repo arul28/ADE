@@ -6,7 +6,7 @@ import {
   githubIssueToLaneIssue,
 } from "../../../shared/laneGitHubIssue";
 import type { LaneGitHubIssue } from "../../../shared/types";
-import { canOpenInAdeBrowser, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openLinkFromUi } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 
@@ -270,10 +270,7 @@ function IssueDetails({
           type="button"
           className="ade-shell-control inline-flex h-7 items-center rounded-md px-2.5 text-[12px]"
           data-variant="ghost"
-          onClick={() => {
-            if (canOpenInAdeBrowser(issue.url)) openUrlInAdeBrowser(issue.url);
-            else openExternalUrl(issue.url);
-          }}
+          onClick={(event) => openLinkFromUi(issue.url, event)}
         >
           Open
         </button>

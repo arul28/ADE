@@ -90,6 +90,13 @@ export function ChatSurfaceShell({
       </div>
       {footer ? (
         <div
+          /*
+            The composer, in the layout that renders it as the shell's footer
+            rather than inline. Marked so the Work tab's floating live card can
+            measure it and sit above it — the card is in another component tree
+            and has no other way to find the one thing it must not cover.
+          */
+          data-work-live-card-avoid=""
           className={cn(
             "relative w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
             footerClassName,

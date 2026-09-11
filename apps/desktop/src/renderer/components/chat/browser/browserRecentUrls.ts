@@ -1,0 +1,324 @@
+import {
+  isRedactedBuiltInBrowserQueryParam,
+} from "../../../../shared/types/builtInBrowser";
+import {
+  EPHEMERAL_LOOPBACK_PORT_MIN,
+  isLoopbackHostname,
+} from "../../../../shared/remoteLoopbackUrl";
+
+export { EPHEMERAL_LOOPBACK_PORT_MIN };
+
+/**
+ * The launchpad's "Recently used" list.
+ *
+ * A browser that forgets every page the moment its last tab closes makes the
+ * empty state a dead end — the local-server group only ever knows about ports
+ * this machine is serving right now, which is nothing at all for a staging URL
+ * or a PR preview. So the pane keeps the last few pages it actually loaded.
+ *
+ * Storage is `localStorage` rather than the app store or the browser service:
+ * this is a per-window convenience with no agent semantics, nothing else reads
+ * it, and a missing or failed read must degrade to "no recents" rather than to
+ * a broken pane. Every entry point is total — bad JSON, a quota error and a
+ * renderer with no `localStorage` at all are the same answer.
+ *
+ * Because the store is plaintext and its rows are RENDERED on the empty state,
+ * `sanitizeBrowserRecentUrl` below is the gate every write passes: it drops the
+ * query and the fragment, refuses anything that carried a credential in either,
+ * and refuses the ephemeral loopback ports a remote tunnel forwards through.
+ */
+
+export type BrowserRecentUrl = {
+  url: string;
+  /** The page's own title, when it had one by the time it settled. */
+  title: string | null;
+  /**
+   * The tab's favicon at the moment it settled, or null.
+   *
+   * Stored rather than re-fetched: this list renders with no network of its
+   * own, and asking six origins for `/favicon.ico` on every empty state would
+   * be six requests the person did not make. Passes the same gate the URL does
+   * — see {@link sanitizeBrowserRecentFaviconUrl}.
+   */
+  faviconUrl?: string | null;
+  /** Epoch ms, so the newest is first without re-sorting on read. */
+  visitedAt: number;
+};
+
+/** t3code's `PREVIEW_RECENT_URL_LIMIT`, and for the same reason: a list, not a history. */
+export const BROWSER_RECENT_URL_LIMIT = 10;
+
+const STORAGE_PREFIX = "ade.browser.recentUrls";
+
+/**
+ * Recents are scoped the way tabs are.
+ *
+ * A project's browser and the personal-chat browser are separate tab
+ * collections, so their histories must not bleed into each other — opening the
+ * personal browser should not offer the pages a work lane was looking at.
+ */
+export function browserRecentUrlsKey(scope: string | null | undefined): string {
+  const trimmed = (scope ?? "").trim();
+  return trimmed ? `${STORAGE_PREFIX}:${trimmed}` : STORAGE_PREFIX;
+}
+
+function readStorage(): Storage | null {
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    // A renderer with storage disabled simply has no recents.
+    return null;
+  }
+}
+
+function carriesCredential(params: URLSearchParams): boolean {
+  for (const name of params.keys()) {
+    if (isRedactedBuiltInBrowserQueryParam(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * The URL this list may keep, or `null` when it may keep nothing.
+ *
+ * Refuses, in order: anything that is not a navigable http(s) URL; anything
+ * whose query OR fragment names a credential parameter (an IdP callback's
+ * `?code=`, an implicit-flow `#access_token=`, a magic link's `?token=`); and
+ * any loopback URL on an ephemeral port. What survives is stored as
+ * `origin + pathname` — the query and the fragment are dropped even when they
+ * look innocent, because a list of visited pages does not need them and a
+ * per-site parameter this list has never heard of is exactly the one that
+ * turns out to be a session id.
+ */
+export function sanitizeBrowserRecentUrl(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (carriesCredential(url.searchParams)) return null;
+  // Implicit-flow tokens live in the fragment, which `searchParams` never sees.
+  if (url.hash.length > 1 && carriesCredential(new URLSearchParams(url.hash.slice(1)))) {
+    return null;
+  }
+  if (isLoopbackHostname(url.hostname)) {
+    const port = Number(url.port);
+    if (Number.isInteger(port) && port >= EPHEMERAL_LOOPBACK_PORT_MIN) return null;
+  }
+  return `${url.origin}${url.pathname}`;
+}
+
+/**
+ * The most a stored data-URL favicon may weigh, in characters.
+ *
+ * Main inlines a favicon by fetching at most 64KB of image bytes through the
+ * tab's own session, and base64 costs a third on top — so this is that same
+ * 64KB icon, expanded, with room for the `data:image/...;base64,` prefix. Real
+ * favicons are a couple of KB and never come near it; what the cap actually
+ * refuses is a mislabelled sprite sheet or download, which past this leaves the
+ * row wearing the globe rather than evicting somebody else's `localStorage`
+ * key. Ten rows at the worst case is still under a megabyte of a budget that is
+ * a few.
+ */
+export const BROWSER_RECENT_FAVICON_MAX_BYTES = 90 * 1024;
+
+/**
+ * The favicon this list may keep, or null.
+ *
+ * A favicon URL is a URL the pane renders, so it goes through the same refusals
+ * the page URL does — a credential in the query or fragment, an ephemeral
+ * loopback port — plus a length cap for the `data:` form. Only `http`, `https`
+ * and `data:` survive; anything else (a `chrome-extension://` icon, a `file:`
+ * path) is an address this renderer has no business fetching from a list.
+ */
+export function sanitizeBrowserRecentFaviconUrl(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  if (text.startsWith("data:")) {
+    // Only real image payloads, and only small ones. `data:text/html` in an
+    // <img> renders nothing, but storing it is storing arbitrary markup.
+    if (!/^data:image\/[a-z0-9.+-]+[;,]/iu.test(text)) return null;
+    return text.length <= BROWSER_RECENT_FAVICON_MAX_BYTES ? text : null;
+  }
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (carriesCredential(url.searchParams)) return null;
+  if (url.hash.length > 1 && carriesCredential(new URLSearchParams(url.hash.slice(1)))) return null;
+  if (isLoopbackHostname(url.hostname)) {
+    const port = Number(url.port);
+    if (Number.isInteger(port) && port >= EPHEMERAL_LOOPBACK_PORT_MIN) return null;
+  }
+  // The query survives here, unlike the page URL: a favicon is very often
+  // `?v=3` and dropping it serves a stale icon or a 404.
+  return url.toString();
+}
+
+/**
+ * The separators a site titles its pages with. All spaced, deliberately: an
+ * unspaced hyphen is part of a word ("sign-in"), not a segment break.
+ */
+const TITLE_SEGMENT_SEPARATORS = [" · ", " | ", " — ", " – ", " - "] as const;
+
+/** Past this a title is a sentence, and the site's name is stapled to the end of it. */
+const TITLE_SPLIT_THRESHOLD = 40;
+
+/** The hard cap, applied after any split. */
+const TITLE_MAX_LENGTH = 60;
+
+/**
+ * The title this list stores.
+ *
+ * Page titles are written for a browser tab that is 200px wide and a search
+ * result that is not — "Pull requests · ade/ade · GitHub", "Vite + React |
+ * Dashboard — Acme". In a 13px row the useful half is the FIRST segment, and
+ * the rest is the site's name, which the URL underneath already says. Only long
+ * titles are split: "Docs · ADE" is short enough to read whole, and cutting it
+ * would throw away the half that disambiguates it.
+ */
+export function cleanBrowserRecentTitle(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim().replace(/\s+/gu, " ");
+  if (!text) return null;
+  let kept = text;
+  if (text.length > TITLE_SPLIT_THRESHOLD) {
+    // The EARLIEST break wins, not the first separator in this list: a title
+    // that uses two of them ("Issue 12 - ade/ade | GitHub") has to cut at the
+    // one nearest the front, or the "first segment" keeps a second segment.
+    // A separator at index 0 would leave nothing, so it is not a break.
+    let cut = -1;
+    for (const separator of TITLE_SEGMENT_SEPARATORS) {
+      const index = text.indexOf(separator);
+      if (index > 0 && (cut < 0 || index < cut)) cut = index;
+    }
+    if (cut > 0) kept = text.slice(0, cut).trim();
+  }
+  if (!kept) kept = text;
+  return kept.length > TITLE_MAX_LENGTH ? kept.slice(0, TITLE_MAX_LENGTH).trimEnd() : kept;
+}
+
+function isRecent(value: unknown): value is BrowserRecentUrl {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.url === "string" && record.url.length > 0;
+}
+
+export function parseBrowserRecentUrls(raw: string | null | undefined): BrowserRecentUrl[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const entries: BrowserRecentUrl[] = [];
+  for (const value of parsed) {
+    if (!isRecent(value) || seen.has(value.url)) continue;
+    seen.add(value.url);
+    entries.push({
+      url: value.url,
+      title: typeof value.title === "string" && value.title.trim() ? value.title : null,
+      // Re-sanitized on READ, not only on write: rows written by an older
+      // build (or hand-edited in devtools) are rendered by this one.
+      faviconUrl: sanitizeBrowserRecentFaviconUrl(
+        typeof value.faviconUrl === "string" ? value.faviconUrl : null,
+      ),
+      visitedAt: typeof value.visitedAt === "number" && Number.isFinite(value.visitedAt)
+        ? value.visitedAt
+        : 0,
+    });
+    if (entries.length >= BROWSER_RECENT_URL_LIMIT) break;
+  }
+  return entries;
+}
+
+/**
+ * Put `entry` at the front, de-duplicated by URL and capped.
+ *
+ * Pure so the cap and the de-duplication can be proven without a DOM: the
+ * "reloading the same page ten times fills the list" bug is exactly the kind
+ * that only shows up on the tenth reload.
+ */
+export function withBrowserRecentUrl(
+  entries: readonly BrowserRecentUrl[],
+  entry: BrowserRecentUrl,
+): BrowserRecentUrl[] {
+  const rest = entries.filter((item) => item.url !== entry.url);
+  return [entry, ...rest].slice(0, BROWSER_RECENT_URL_LIMIT);
+}
+
+export function readBrowserRecentUrls(scope: string | null | undefined): BrowserRecentUrl[] {
+  const storage = readStorage();
+  if (!storage) return [];
+  try {
+    return parseBrowserRecentUrls(storage.getItem(browserRecentUrlsKey(scope)));
+  } catch {
+    return [];
+  }
+}
+
+function writeRecents(scope: string | null | undefined, entries: BrowserRecentUrl[]): void {
+  const storage = readStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(browserRecentUrlsKey(scope), JSON.stringify(entries));
+  } catch {
+    // A full or blocked store still leaves the in-memory list correct for this
+    // session, which is the half that the launchpad renders.
+  }
+}
+
+/**
+ * Record a visit and hand back the list the launchpad should now show.
+ *
+ * A URL `sanitizeBrowserRecentUrl` refuses is not an error: the list is simply
+ * returned unchanged, so a sign-in callback leaves no trace and the row before
+ * it stays where it was.
+ */
+export function rememberBrowserRecentUrl(
+  scope: string | null | undefined,
+  entry: BrowserRecentUrl,
+): BrowserRecentUrl[] {
+  const current = readBrowserRecentUrls(scope);
+  const url = sanitizeBrowserRecentUrl(entry.url);
+  if (!url) return current;
+  const next = withBrowserRecentUrl(current, {
+    ...entry,
+    url,
+    title: cleanBrowserRecentTitle(entry.title),
+    faviconUrl: sanitizeBrowserRecentFaviconUrl(entry.faviconUrl),
+  });
+  writeRecents(scope, next);
+  return next;
+}
+
+export function forgetBrowserRecentUrl(
+  scope: string | null | undefined,
+  url: string,
+): BrowserRecentUrl[] {
+  const next = readBrowserRecentUrls(scope).filter((entry) => entry.url !== url);
+  writeRecents(scope, next);
+  return next;
+}
+
+/** Drop the whole list for a scope — the group's "Clear" action. */
+export function clearBrowserRecentUrls(scope: string | null | undefined): BrowserRecentUrl[] {
+  const storage = readStorage();
+  if (storage) {
+    try {
+      storage.removeItem(browserRecentUrlsKey(scope));
+    } catch {
+      // See `writeRecents`.
+    }
+  }
+  return [];
+}

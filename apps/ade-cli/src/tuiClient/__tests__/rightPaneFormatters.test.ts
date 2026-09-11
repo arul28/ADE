@@ -10,8 +10,16 @@ import {
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
+  formatWorkToolsLaneState,
+  formatWorkToolsSummary,
+  workToolLabel,
+  WORK_TOOLS_PANE_NOTE,
 } from "../rightPaneFormatters";
 import type { CursorCloudFleetEntry } from "../../../../desktop/src/shared/types/config";
+import {
+  workToolsUnavailableMessage,
+  type WorkToolsLaneState,
+} from "../../../../desktop/src/shared/types/workTools";
 
 function fleetEntry(args: {
   agentId: string;
@@ -513,5 +521,127 @@ describe("rightPaneFormatters", () => {
 
   it("keeps the management note pointing at desktop/iOS", () => {
     expect(CURSOR_CLOUD_PANE_NOTE).toContain("desktop or iOS");
+  });
+});
+
+function workToolsState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneState {
+  return {
+    laneId: "lane-1",
+    activeTool: "browser",
+    openTools: ["browser"],
+    activeToolUpdatedAt: "2026-08-24T11:58:00Z",
+    browser: { activeTabId: "tab-1", tabs: [], latestObservation: null },
+    browserUnavailable: null,
+    agentBrowserPresence: [],
+    appControl: null,
+    capturedAt: "2026-08-24T12:00:00Z",
+    ...overrides,
+  };
+}
+
+const WORK_TOOLS_NOW = Date.parse("2026-08-24T12:00:00Z");
+
+describe("work tools pane", () => {
+  it("names known tools and passes unknown ids through", () => {
+    expect(workToolLabel("app-control")).toBe("App Control");
+    expect(workToolLabel("ios")).toBe("Simulator");
+    // A newer desktop's tool must not be dropped just because this build has
+    // no name for it.
+    expect(workToolLabel("hologram")).toBe("hologram");
+    expect(workToolLabel(null)).toBeNull();
+  });
+
+  it("summarises most-specific-first like the iOS disclosure row", () => {
+    const summary = formatWorkToolsSummary(workToolsState({
+      browser: {
+        activeTabId: "tab-1",
+        tabs: [
+          { id: "tab-1", title: "One", url: "https://one.test", ownerChatSessionId: null, recording: false, active: true, handoffReason: null },
+          { id: "tab-2", title: "Two", url: null, ownerChatSessionId: null, recording: false, active: false, handoffReason: null },
+        ],
+        latestObservation: null,
+      },
+      appControl: { appName: "Xcode", status: "running", driver: "ax", latestObservation: null },
+    }));
+    expect(summary).toBe("Tools · Browser active · 2 tabs · Xcode");
+  });
+
+  it("leads with the login handoff and badges tab state", () => {
+    const body = formatWorkToolsLaneState(workToolsState({
+      browser: {
+        activeTabId: "tab-1",
+        tabs: [
+          {
+            id: "tab-1",
+            title: "Sign in",
+            url: "https://accounts.test/login",
+            ownerChatSessionId: "chat-9",
+            recording: true,
+            active: true,
+            handoffReason: "Sign in to continue the checkout flow",
+          },
+        ],
+        latestObservation: { path: "/tmp/frame.png", capturedAt: "2026-08-24T11:59:00Z", caption: "click · Sign in" },
+      },
+    }), WORK_TOOLS_NOW);
+    const lines = body.split("\n");
+    // The banner precedes the tab list: it is the one state where the lane is
+    // waiting on the reader.
+    expect(lines.indexOf("⚠ Waiting for you to sign in on the desktop"))
+      .toBeLessThan(lines.findIndex((line) => line.startsWith("● Sign in")));
+    expect(body).toContain("Sign in to continue the checkout flow");
+    expect(body).toContain("active · recording · claimed by a chat");
+    // Never the raw session id — it means nothing to a reader.
+    expect(body).not.toContain("chat-9");
+    expect(body).toContain("last frame: click · Sign in · 1m ago");
+  });
+
+  it("mirrors the desktop's tab strip, marking the tool on screen", () => {
+    const body = formatWorkToolsLaneState(
+      workToolsState({ activeTool: "git", openTools: ["terminal", "git", "browser"] }),
+      WORK_TOOLS_NOW,
+    );
+    expect(body).toContain("○ Terminal  ● Git  ○ Browser");
+    expect(formatWorkToolsSummary(
+      workToolsState({ activeTool: "git", openTools: ["terminal", "git", "browser"] }),
+    )).toContain("3 tools open");
+
+    // One tab is what the section title already says, so no strip line.
+    expect(formatWorkToolsLaneState(workToolsState(), WORK_TOOLS_NOW)).not.toContain("●");
+  });
+
+  it("renders the shared unavailable sentence instead of inventing one", () => {
+    const body = formatWorkToolsLaneState(
+      workToolsState({ browser: null, browserUnavailable: "browser_pane_not_opened" }),
+      WORK_TOOLS_NOW,
+    );
+    expect(body).toContain(workToolsUnavailableMessage("browser_pane_not_opened"));
+  });
+
+  it("says so plainly when the desktop has no tool open", () => {
+    const body = formatWorkToolsLaneState(
+      workToolsState({ activeTool: null, openTools: [], activeToolUpdatedAt: null }),
+      WORK_TOOLS_NOW,
+    );
+    expect(body.split("\n")[0]).toBe("No tool open on the desktop.");
+    expect(body).toContain("No tabs open.");
+  });
+
+  it("reports the App Control target and its last frame", () => {
+    const body = formatWorkToolsLaneState(workToolsState({
+      activeTool: "app-control",
+      appControl: {
+        appName: "Xcode",
+        status: "running",
+        driver: "ax",
+        latestObservation: { path: "/tmp/ac.png", capturedAt: "2026-08-24T11:00:00Z", caption: null },
+      },
+    }), WORK_TOOLS_NOW);
+    expect(body).toContain("Xcode · running · ax");
+    expect(body).toContain("last frame: frame captured · 1h ago");
+  });
+
+  it("keeps the read-only note aligned with the shared hint", () => {
+    expect(WORK_TOOLS_PANE_NOTE).toBe("Control from the desktop");
   });
 });

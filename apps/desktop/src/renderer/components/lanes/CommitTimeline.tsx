@@ -48,7 +48,8 @@ export function CommitTimeline({
   refreshTrigger,
   hasUpstream,
   remoteMissing,
-  runtimePin = null
+  runtimePin = null,
+  hideHeader = false
 }: {
   laneId: string | null;
   active?: boolean;
@@ -59,6 +60,14 @@ export function CommitTimeline({
   remoteMissing?: boolean;
   /** Machine this lane lives on; `null` means the tab's bound machine. */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Drop the timeline's own "COMMITS n · blue = merge · REFRESH" bar.
+   *
+   * The Work tools pane already labels this section and already has a refresh
+   * on its chrome row, so the bar is a second title and a second refresh in a
+   * column narrow enough that both wrap.
+   */
+  hideHeader?: boolean;
 }) {
   const pin = runtimePin ?? null;
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
@@ -151,7 +160,12 @@ export function CommitTimeline({
       {/* Header */}
       <div
         className="flex items-center justify-between shrink-0"
-        style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        style={{
+          display: hideHeader ? "none" : "flex",
+          padding: "6px 12px",
+          background: COLORS.cardBg,
+          borderBottom: `1px solid ${COLORS.border}`,
+        }}
       >
         <div className="flex items-center gap-2">
           <span style={LABEL_STYLE}>COMMITS</span>

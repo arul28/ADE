@@ -5,6 +5,7 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -14,6 +15,12 @@ import {
   stageAttachmentBytes,
   stageAttachmentCopy,
 } from "../../../shared/chatAttachmentStagingFs";
+import {
+  isSystemSettingsPaneId,
+  SYSTEM_SETTINGS_PANE_URLS,
+  type AppOpenSystemSettingsPaneResult,
+} from "../../../shared/types/systemSettings";
+import { createBuiltInBrowserIpcArgParsers } from "./builtInBrowserIpcArgs";
 import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
 import type {
   KeepAwakeFixResult,
@@ -213,14 +220,29 @@ import type {
   AppControlSnapshotArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
-  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserScreenshotResult,
   BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserExportHarArgs,
+  BuiltInBrowserFindInPageArgs,
+  DevServersArgs,
+  DevServersResult,
+  BuiltInBrowserNetworkLogArgs,
+  BuiltInBrowserSetDevToolsArgs,
+  BuiltInBrowserSetEmulationArgs,
+  BuiltInBrowserSetNetworkLoggingArgs,
+  BuiltInBrowserSetZoomArgs,
+  BuiltInBrowserStartPreviewStreamArgs,
+  BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStopPreviewStreamArgs,
+  BuiltInBrowserStatus,
+  BuiltInBrowserStopFindInPageArgs,
+  BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   ReviewListRunsArgs,
@@ -798,6 +820,16 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
+import {
+  isBuiltInBrowserCaptureUnavailableError,
+  isBuiltInBrowserNoTabError,
+} from "../builtInBrowser/builtInBrowserService";
+import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
+import {
+  createBrowserLoginImportService,
+  type BrowserLoginImportService,
+} from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
@@ -2577,6 +2609,47 @@ export function registerIpc({
     return builtInBrowserService;
   };
 
+  /**
+   * A status for an error path, which must not be able to fail itself.
+   *
+   * `getStatus` resolves a project collection and throws when no window on this
+   * machine holds that project — a perfectly reasonable error for a read, and a
+   * useless one for a handler whose whole job is to answer "there was nothing
+   * to stop" without an exception.
+   */
+  const safeBuiltInBrowserStatus = (
+    input: BuiltInBrowserTabTargetArgs,
+    win: BrowserWindow | null,
+  ): BuiltInBrowserStatus => {
+    try {
+      return ensureBuiltInBrowser().getStatus(input, win);
+    } catch {
+      return {
+        attached: false,
+        partition: BUILT_IN_BROWSER_PARTITION,
+        storageProfileKey: "global",
+        collectionKey: "",
+        collectionProjectRoot: input.projectRoot ?? null,
+        persistentProfile: true,
+        visible: false,
+        bounds: { x: 0, y: 0, width: 0, height: 0 },
+        activeTabId: null,
+        tabs: [],
+        url: null,
+        title: null,
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        isInspecting: false,
+        hasSelection: false,
+        ownerLaneId: null,
+        ownerChatSessionId: null,
+        ownerClaimedAt: null,
+        ownerLeaseExpiresAt: null,
+      };
+    }
+  };
+
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
     if (!rawUrl) return false;
     try {
@@ -2686,6 +2759,13 @@ export function registerIpc({
     bucket.count += 1;
   };
 
+  /**
+   * Which window's panel gets a forwarded `ade browser open`. One registry per
+   * main process, because the panels that would race for it are in different
+   * renderers.
+   */
+  const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
+
   const guardBuiltInBrowserIpc = (
     event: IpcMainInvokeEvent,
     channel: string,
@@ -2705,211 +2785,43 @@ export function registerIpc({
     return win;
   };
 
-  const invalidBuiltInBrowserArg = (channel: string, reason: string): never => {
-    getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason });
-    throw new Error(`Invalid built-in browser payload: ${reason}`);
-  };
-
-  const builtInBrowserRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
-    if (value == null) {
-      if (required) invalidBuiltInBrowserArg(channel, "payload object is required");
-      return {};
-    }
-    if (!isRecord(value)) invalidBuiltInBrowserArg(channel, "payload must be an object");
-    return value as Record<string, unknown>;
-  };
-
-  const builtInBrowserNumber = (
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    options: { min?: number; max?: number } = {},
-  ): number => {
-    const value = record[field];
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      invalidBuiltInBrowserArg(channel, `${field} must be a finite number`);
-    }
-    const numberValue = value as number;
-    if (options.min != null && numberValue < options.min) invalidBuiltInBrowserArg(channel, `${field} is below the minimum`);
-    if (options.max != null && numberValue > options.max) invalidBuiltInBrowserArg(channel, `${field} is above the maximum`);
-    return numberValue;
-  };
-
-  const parseBuiltInBrowserBoundsArgs = (value: unknown, channel: string): BuiltInBrowserBoundsArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const visibleValue = record.visible;
-    if (typeof visibleValue !== "boolean") invalidBuiltInBrowserArg(channel, "visible must be a boolean");
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
-      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
-      width: builtInBrowserNumber(record, "width", channel, { min: 0, max: 100_000 }),
-      height: builtInBrowserNumber(record, "height", channel, { min: 0, max: 100_000 }),
-      visible: visibleValue as boolean,
-    };
-  };
-
-  const parseBuiltInBrowserAttachWebviewArgs = (value: unknown, channel: string): BuiltInBrowserAttachWebviewArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    return { ...parseBuiltInBrowserProjectScopeArgs(record, channel), tabId, webContentsId };
-  };
-
-  const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const urlValue = record.url;
-    if (typeof urlValue !== "string" || !urlValue.trim()) {
-      invalidBuiltInBrowserArg(channel, "url must be a non-empty string");
-    }
-    const url = urlValue as string;
-    if (url.length > 4096 || url.includes("\0")) {
-      invalidBuiltInBrowserArg(channel, "url is invalid");
-    }
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const newTab = record.newTab === true ? true : undefined;
-    const openPanel = optionalBoolean(record.openPanel);
-    return { url, tabId, newTab, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  function optionalBuiltInBrowserString(
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    maxLength: number,
-  ): string | null | undefined {
-    const value = record[field];
-    if (value == null) return undefined;
-    if (typeof value !== "string") return invalidBuiltInBrowserArg(channel, `${field} must be a string`);
-    const trimmed = value.trim();
-    if (!trimmed.length) return null;
-    if (trimmed.length > maxLength || trimmed.includes("\0")) return invalidBuiltInBrowserArg(channel, `${field} is invalid`);
-    return trimmed;
-  }
-
-  function optionalBoolean(value: unknown): boolean | undefined {
-    if (value === true) return true;
-    if (value === false) return false;
-    return undefined;
-  }
-
-  function optionalBuiltInBrowserNumber(
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    options: { min?: number; max?: number } = {},
-  ): number | undefined {
-    if (record[field] == null) return undefined;
-    return builtInBrowserNumber(record, field, channel, options);
-  }
-
-  const parseBuiltInBrowserProjectScopeArgs = (
-    record: Record<string, unknown>,
-    channel: string,
-  ): BuiltInBrowserProjectScopeArgs => {
-    const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
-    const tabCollection = optionalBuiltInBrowserString(record, "tabCollection", channel, 16);
-    if (tabCollection && tabCollection !== "personal") {
-      return invalidBuiltInBrowserArg(channel, "tabCollection is invalid");
-    }
-    if (tabCollection === "personal" && projectRoot) {
-      return invalidBuiltInBrowserArg(channel, "tabCollection and projectRoot cannot both be set");
-    }
-    return {
-      ...(projectRoot ? { projectRoot } : {}),
-      ...(tabCollection === "personal" ? { tabCollection } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserProjectScopeInput = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserProjectScopeArgs =>
-    parseBuiltInBrowserProjectScopeArgs(builtInBrowserRecord(value, channel, false), channel);
-
-  const parseBuiltInBrowserClearPermissionsArgs = (
-    value: unknown,
-    channel: string,
-  ): BuiltInBrowserClearPermissionsArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const origin = optionalBuiltInBrowserString(record, "origin", channel, 2048);
-    const permission = optionalBuiltInBrowserString(record, "permission", channel, 128);
-    return {
-      ...(origin ? { origin } : {}),
-      ...(permission ? { permission } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
-    const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
-    const force = optionalBoolean(record.force);
-    const leaseTtlMs = optionalBuiltInBrowserNumber(record, "leaseTtlMs", channel, {
-      min: 1_000,
-      max: 60 * 60_000,
-    });
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(laneId ? { laneId } : {}),
-      ...(chatSessionId ? { chatSessionId } : {}),
-      ...(force !== undefined ? { force } : {}),
-      ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserTabTargetRecord = (
-    record: Record<string, unknown>,
-    channel: string,
-  ): BuiltInBrowserTabTargetArgs => {
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
-    return {
-      ...parseBuiltInBrowserClaimArgs(record, channel),
-      ...(sessionId ? { sessionId } : {}),
-    };
-  };
-
-  const parseBuiltInBrowserTabTargetArgs = (value: unknown, channel: string): BuiltInBrowserTabTargetArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    return parseBuiltInBrowserTabTargetRecord(record, channel);
-  };
-
-  const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    const openPanel = optionalBoolean(record.openPanel);
-    return { ...parseBuiltInBrowserClaimArgs(record, channel), tabId, openPanel };
-  };
-
-  const parseBuiltInBrowserCreateTabArgs = (value: unknown, channel: string): BuiltInBrowserCreateTabArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
-    const activate = record.activate === false ? false : undefined;
-    const openPanel = optionalBoolean(record.openPanel);
-    return { url, activate, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
-    const record = builtInBrowserRecord(value, channel, false);
-    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    return { url, tabId, ...parseBuiltInBrowserClaimArgs(record, channel) };
-  };
-
-  const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
-    const record = builtInBrowserRecord(value, channel, true);
-    const includeScreenshot = record.includeScreenshot === false ? false : undefined;
-    return {
-      ...parseBuiltInBrowserTabTargetRecord(record, channel),
-      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
-      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
-      includeScreenshot,
-    };
-  };
-
+  // Payload validation lives in `builtInBrowserIpcArgs.ts` — pure functions of
+  // `(value, channel)` that can be unit tested without an `ipcMain`. Only the
+  // rejection log stays here, because only the registry has the context.
+  const {
+    invalidBuiltInBrowserArg,
+    builtInBrowserRecord,
+    builtInBrowserNumber,
+    parseBuiltInBrowserBoundsArgs,
+    parseBuiltInBrowserNavigateArgs,
+    optionalBuiltInBrowserString,
+    optionalBoolean,
+    optionalBuiltInBrowserNumber,
+    parseBuiltInBrowserProjectScopeArgs,
+    parseBuiltInBrowserProjectScopeInput,
+    parseBuiltInBrowserClearPermissionsArgs,
+    parseBuiltInBrowserClaimArgs,
+    parseBuiltInBrowserTabTargetRecord,
+    parseBuiltInBrowserTabTargetArgs,
+    parseBuiltInBrowserTabArgs,
+    parseBuiltInBrowserCreateTabArgs,
+    parseBuiltInBrowserOpenPanelArgs,
+    parseBuiltInBrowserSelectPointArgs,
+    parseBuiltInBrowserSetEmulationArgs,
+    parseBuiltInBrowserSetZoomArgs,
+    parseBuiltInBrowserFindInPageArgs,
+    parseBuiltInBrowserStopFindInPageArgs,
+    parseBuiltInBrowserSetDevToolsArgs,
+    parseBuiltInBrowserSetNetworkLoggingArgs,
+    parseBuiltInBrowserNetworkLogArgs,
+    parseBuiltInBrowserExportHarArgs,
+    parseBuiltInBrowserStartPreviewStreamArgs,
+    parseBuiltInBrowserStopPreviewStreamArgs,
+    parseBuiltInBrowserStartRecordingArgs,
+  } = createBuiltInBrowserIpcArgParsers({
+    onInvalid: (channel, reason) =>
+      getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason }),
+  });
   const invalidAppControlArg = (channel: string, reason: string): never => {
     getCtx().logger.warn("ipc.app_control.invalid_args", { channel, reason });
     throw new Error(`Invalid App Control payload: ${reason}`);
@@ -3512,6 +3424,15 @@ export function registerIpc({
     },
   );
 
+  // Dev servers ADE noticed in terminal output. Read-only and in-memory: this
+  // never probes a port, it reports what a command already printed.
+  ipcMain.handle(
+    IPC.localhostGetDevServers,
+    async (_event, args: DevServersArgs = {}): Promise<DevServersResult> => {
+      return ensureBuiltInBrowser().getDevServers(args ?? {});
+    },
+  );
+
   ipcMain.on(
     IPC.appLogDebugEvent,
     (event, arg: { event?: string; payload?: Record<string, unknown> | null }) => {
@@ -3620,9 +3541,57 @@ export function registerIpc({
     return closeWindow(requestedWindowId);
   });
 
+  /**
+   * The ordinary window close, asked for by the renderer.
+   *
+   * `appCloseWindow` deliberately skips the "you have work running" prompt —
+   * it is the programmatic close a project tab uses. ⌘W must NOT skip it, so
+   * this one calls `win.close()` and lets `handleMainWindowCloseRequested` ask
+   * the question exactly as the title-bar button and the old `role: "close"`
+   * menu item did. It exists because ⌘W is now a menu *command* the renderer
+   * may claim for the built-in browser's tab; when nothing claims it, the
+   * renderer asks for this instead.
+   */
+  ipcMain.handle(IPC.appRequestWindowClose, async (event): Promise<{ requested: boolean }> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { requested: false };
+    win.close();
+    return { requested: true };
+  });
+
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
     await openExternalUrl(arg?.url);
   });
+
+  /**
+   * Deep-link into an OS settings pane by id. The renderer cannot do this
+   * itself: `x-apple.systempreferences:` is not in the external-URL scheme
+   * allowlist, and widening that allowlist to fix one button would let any
+   * renderer-supplied string reach `shell.openExternal`. Resolving a small
+   * enum to a vetted constant here keeps the allowlist closed.
+   */
+  ipcMain.handle(
+    IPC.appOpenSystemSettingsPane,
+    async (_event, arg: { paneId?: unknown }): Promise<AppOpenSystemSettingsPaneResult> => {
+      const paneId = arg?.paneId;
+      if (!isSystemSettingsPaneId(paneId)) {
+        getCtx().logger.warn("app.open_system_settings_pane_unknown", {
+          paneId: typeof paneId === "string" ? paneId : null,
+        });
+        return { opened: false };
+      }
+      try {
+        await shell.openExternal(SYSTEM_SETTINGS_PANE_URLS[paneId]);
+        return { opened: true };
+      } catch (error) {
+        getCtx().logger.warn("app.open_system_settings_pane_failed", {
+          paneId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return { opened: false };
+      }
+    },
+  );
 
   const resolveRendererSuppliedPath = (rawPath: string, projectRoot: string): string => {
     let inputPath = rawPath;
@@ -9137,6 +9106,19 @@ export function registerIpc({
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
   });
 
+  // Side-effect-free presence read. `getStatus` is a CREATING resolver — it
+  // builds a window service, whose factory restores and `loadURL`s every
+  // persisted tab — and the presence badge is mounted by every session card and
+  // the chat header, so seeding the badge through it background-loaded the
+  // browser for a user who never opened the pane. This reads the tracker and
+  // subscribes the asking window to the pushed `agent-presence` event — one
+  // `once("closed")` listener, no service constructed — so a window that only
+  // ever seeds is not left holding that first seed forever.
+  ipcMain.handle(IPC.builtInBrowserGetAgentPresence, async (event) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetAgentPresence, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getAgentPresence(win);
+  });
+
   ipcMain.handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserRequestOriginAccess, { windowMs: 10_000, max: 10 });
     return ensureBuiltInBrowser().requestOriginAccess(
@@ -9162,6 +9144,79 @@ export function registerIpc({
     );
   });
 
+  // ── Login import (human-only) ──────────────────────────────────────────────
+  // Deliberately not routed through `ensureBuiltInBrowser()`: nothing here is
+  // reachable from the desktop bridge or a daemon action domain, and keeping it
+  // on its own service makes that structural rather than a review promise.
+  let browserLoginImportService: BrowserLoginImportService | null = null;
+  const ensureBrowserLoginImport = (): BrowserLoginImportService => {
+    if (!browserLoginImportService) {
+      browserLoginImportService = createBrowserLoginImportService({
+        getLogger: () => getCtx().logger,
+      });
+    }
+    return browserLoginImportService;
+  };
+
+  const parseLoginImportSourceId = (arg: unknown, channel: string): string => {
+    const record = builtInBrowserRecord(arg, channel, true);
+    const sourceId = record.sourceId;
+    if (typeof sourceId !== "string" || sourceId.trim().length === 0) {
+      return invalidBuiltInBrowserArg(channel, "sourceId must be a non-empty string");
+    }
+    return sourceId.trim();
+  };
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportCapabilities, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportCapabilities, { windowMs: 10_000, max: 20 });
+    return ensureBrowserLoginImport().capabilities();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportListSources, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListSources, { windowMs: 10_000, max: 20 });
+    return ensureBrowserLoginImport().listSources();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportListDomains, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListDomains, { windowMs: 60_000, max: 20 });
+    return ensureBrowserLoginImport().listDomains({
+      sourceId: parseLoginImportSourceId(arg, IPC.builtInBrowserLoginImportListDomains),
+    });
+  });
+
+  ipcMain.handle(IPC.builtInBrowserLoginImportImport, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportImport, { windowMs: 60_000, max: 10 });
+    const channel = IPC.builtInBrowserLoginImportImport;
+    const record = builtInBrowserRecord(arg, channel, true);
+    const rawDomains = record.domains;
+    if (!Array.isArray(rawDomains)) invalidBuiltInBrowserArg(channel, "domains must be an array");
+    const domains = (rawDomains as unknown[])
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    if (domains.length === 0) invalidBuiltInBrowserArg(channel, "domains must contain at least one host");
+
+    const result = await ensureBrowserLoginImport().import({
+      sourceId: parseLoginImportSourceId(arg, channel),
+      domains,
+    });
+    if (result.ok && !win.isDestroyed()) {
+      // Same event stream the browser panel already listens on, so the toast
+      // needs no second channel. Counts and hosts only — never a cookie.
+      try {
+        win.webContents.send(IPC.builtInBrowserEvent, {
+          type: "login-import-completed",
+          importedCount: result.importedCount,
+          domains: result.domains.map((entry) => entry.domain),
+          completedAt: new Date().toISOString(),
+        } satisfies BuiltInBrowserEventPayload);
+      } catch {
+        // A stale window is not a reason to fail an import that succeeded.
+      }
+    }
+    return result;
+  });
+
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel), win);
@@ -9170,11 +9225,6 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
     return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds), win);
-  });
-
-  ipcMain.handle(IPC.builtInBrowserAttachWebview, async (event, arg) => {
-    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserAttachWebview, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().attachWebview(parseBuiltInBrowserAttachWebviewArgs(arg, IPC.builtInBrowserAttachWebview), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {
@@ -9229,7 +9279,32 @@ export function registerIpc({
 
   ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
-    return ensureBuiltInBrowser().captureScreenshot(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserCaptureScreenshot), win);
+    // A renderer that polls the pane races tab closure by construction, so an
+    // empty pane answers with a typed result rather than throwing an IPC error
+    // on every tick. Every other failure still propagates.
+    try {
+      const screenshot = await ensureBuiltInBrowser().captureScreenshot(
+        parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserCaptureScreenshot),
+        win,
+      );
+      return { ok: true, ...screenshot } satisfies BuiltInBrowserScreenshotResult;
+    } catch (error) {
+      if (isBuiltInBrowserNoTabError(error)) {
+        // Softened to a typed result, so the tab that lost the race is the only
+        // thing left worth recording.
+        getCtx().logger.debug("built_in_browser.screenshot_no_tab", { tabId: error.tabId });
+        return { ok: false, reason: "no_tab" } satisfies BuiltInBrowserScreenshotResult;
+      }
+      if (isBuiltInBrowserCaptureUnavailableError(error)) {
+        // The panel's underlay capture racing its own hide. It happened three
+        // times per Browser -> Terminal switch and each one printed
+        // `Error occurred in handler ... Page.enable timed out after 3000ms`
+        // into the log of a session where nothing was actually wrong.
+        getCtx().logger.debug("built_in_browser.screenshot_unavailable", { err: error.message });
+        return { ok: false, reason: "unavailable" } satisfies BuiltInBrowserScreenshotResult;
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {
@@ -9245,6 +9320,143 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserEndHandoff, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserEndHandoff, { windowMs: 10_000, max: 30 });
+    const record = isRecord(arg) ? arg : {};
+    return ensureBuiltInBrowser().endHandoff(
+      {
+        ...parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserEndHandoff),
+        // Only the two human-initiated endings are reachable from a renderer;
+        // `tab-closed` and `timeout` are the service's own to record.
+        endedBy: record.endedBy === "auto-offer" ? "auto-offer" : "human",
+      },
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetEmulation, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetEmulation, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().setEmulation(
+      parseBuiltInBrowserSetEmulationArgs(arg, IPC.builtInBrowserSetEmulation),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetZoom, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetZoom, { windowMs: 10_000, max: 200 });
+    return ensureBuiltInBrowser().setZoom(parseBuiltInBrowserSetZoomArgs(arg, IPC.builtInBrowserSetZoom), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserFocusHost, async (event) => {
+    // Rate limit sized for the chord that drives it: a human pressing ⌘F, not
+    // a loop. Nothing here reads the payload, so there is nothing to parse.
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFocusHost, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().focusHost(win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserClaimRemoteRequest, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClaimRemoteRequest, { windowMs: 10_000, max: 120 });
+    const record = isRecord(arg) ? arg : {};
+    const requestId = typeof record.requestId === "string" ? record.requestId : "";
+    return { claimed: builtInBrowserRemoteRequestClaims.claim(requestId) };
+  });
+
+  ipcMain.handle(IPC.builtInBrowserFindInPage, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFindInPage, { windowMs: 10_000, max: 200 });
+    return ensureBuiltInBrowser().findInPage(parseBuiltInBrowserFindInPageArgs(arg, IPC.builtInBrowserFindInPage), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopFindInPage, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopFindInPage, { windowMs: 10_000, max: 200 });
+    const input = parseBuiltInBrowserStopFindInPageArgs(arg, IPC.builtInBrowserStopFindInPage);
+    // Same shape as `captureScreenshot` above, for the same reason: the find
+    // bar's own unmount is what ends a find, and unmounting because the last
+    // tab closed must not surface as an IPC error nobody can act on.
+    try {
+      return await ensureBuiltInBrowser().stopFindInPage(input, win);
+    } catch (error) {
+      if (isBuiltInBrowserNoTabError(error)) {
+        getCtx().logger.debug("built_in_browser.stop_find_no_tab", { tabId: error.tabId });
+        return {
+          tabId: "",
+          stopped: false,
+          // Deliberately guarded: `getStatus` routes through the project
+          // collection and throws its own error when no window holds that
+          // project — swapping a benign "there was no tab" for a different IPC
+          // rejection is exactly what this catch exists to avoid.
+          status: safeBuiltInBrowserStatus(input, win),
+        } satisfies BuiltInBrowserStopFindInPageResult;
+      }
+      throw error;
+    }
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetDevTools, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetDevTools, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().setDevTools(parseBuiltInBrowserSetDevToolsArgs(arg, IPC.builtInBrowserSetDevTools), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetNetworkLogging, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetNetworkLogging, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().setNetworkLogging(
+      parseBuiltInBrowserSetNetworkLoggingArgs(arg, IPC.builtInBrowserSetNetworkLogging),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGetNetworkLog, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetNetworkLog, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getNetworkLog(
+      parseBuiltInBrowserNetworkLogArgs(arg, IPC.builtInBrowserGetNetworkLog),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserExportHar, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserExportHar, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().exportHar(parseBuiltInBrowserExportHarArgs(arg, IPC.builtInBrowserExportHar), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStartRecording, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartRecording, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().startRecording(
+      parseBuiltInBrowserStartRecordingArgs(arg, IPC.builtInBrowserStartRecording),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
+    return ensureBuiltInBrowser().stopRecording(
+      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStopRecording),
+      win,
+    );
+  });
+
+  // Preview streams are refcounted in the service, so the rate limit only has
+  // to stop a wedged renderer from thrashing subscribe/unsubscribe — a card
+  // subscribes once per mount, not per frame.
+  ipcMain.handle(IPC.builtInBrowserStartPreviewStream, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartPreviewStream, { windowMs: 60_000, max: 120 });
+    return ensureBuiltInBrowser().startPreviewStream(
+      parseBuiltInBrowserStartPreviewStreamArgs(arg, IPC.builtInBrowserStartPreviewStream),
+      win,
+      // The subscription's owner, taken from the sender rather than the payload
+      // so a renderer cannot release another renderer's cards by claiming its
+      // id. A crash then drops exactly this renderer's streams.
+      String(event.sender.id),
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopPreviewStream, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopPreviewStream, { windowMs: 60_000, max: 120 });
+    return ensureBuiltInBrowser().stopPreviewStream(
+      parseBuiltInBrowserStopPreviewStreamArgs(arg, IPC.builtInBrowserStopPreviewStream),
+      win,
+      String(event.sender.id),
+    );
   });
 
   const requirePtyService = (): ReturnType<typeof createPtyService> => {

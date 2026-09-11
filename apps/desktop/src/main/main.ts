@@ -148,6 +148,7 @@ import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
+import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
@@ -207,6 +208,7 @@ import type {
   AttentionNotchAcknowledgeRequest,
   AttentionNotchSettings,
   AttentionSnapshot,
+  AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
   CreateProjectInput,
@@ -334,6 +336,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
@@ -1649,6 +1652,39 @@ app.whenReady().then(async () => {
       }
       broadcast(IPC.builtInBrowserEvent, payload);
     },
+    // `browser.autoOpenDevServer` is per project, and the browser service is
+    // process-wide — so resolve the setting from the project that owns the lane
+    // the ready line was printed in, not from whichever window happens to be in
+    // front. Reading the foreground project meant a project that had opted out
+    // still got auto-opened tabs while another project was focused.
+    isDevServerAutoOpenEnabled: async (record) => {
+      const laneId = record.source.laneId;
+      if (laneId) {
+        for (const ctx of projectContexts.values()) {
+          const lane = await ctx.laneService?.getSummary(laneId, { includeStatus: false })
+            .catch(() => null);
+          if (!lane) continue;
+          return ctx.projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
+        }
+      }
+      return getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
+    },
+    onHandoff: createBuiltInBrowserHandoffSessionListener({
+      getLogger: () => getActiveContext().logger,
+      // A chat session belongs to exactly one project context, and a handoff can
+      // outlive whichever project happens to be active — so find the context
+      // that actually owns the row instead of assuming the foreground one.
+      resolveServices: (chatSessionId) => {
+        for (const ctx of projectContexts.values()) {
+          if (!ctx.sessionService?.get(chatSessionId)) continue;
+          return {
+            sessionService: ctx.sessionService,
+            agentChatService: ctx.agentChatService,
+          };
+        }
+        return { sessionService: null, agentChatService: null };
+      },
+    }),
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy
@@ -1683,6 +1719,22 @@ app.whenReady().then(async () => {
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
+  /**
+   * Windows whose renderer has announced that its menu-command subscriber is
+   * mounted. Cleared on every main-frame navigation and on window close, so a
+   * reload puts the window back to "answer ⌘W from here" until it re-acks.
+   */
+  const windowCommandSubscribers = new Set<number>();
+  /** Native-menu commands (zoom, ⌘F, ⌘W) offered to the renderer before the app answers them. */
+  const appCommandSender = createAppCommandSender<BrowserWindow>({
+    hasRenderer: (windowId) => windowProjectRoots.has(windowId),
+    hasCommandSubscriber: (windowId) => windowCommandSubscribers.has(windowId),
+  });
+  ipcMain.on(IPC.appCommandsReady, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    windowCommandSubscribers.add(win.id);
+  });
   const windowProjectTabRoots = new Map<number, Set<string>>();
   /**
    * Every local project root this window has actually opened during this
@@ -3863,8 +3915,6 @@ app.whenReady().then(async () => {
       githubService,
       getOrchestrationService: () => orchestrationServiceRef,
       getSearchService: () => searchServiceHolder.current,
-      linearClient,
-      linearCredentials: linearCredentialService,
       prService,
       diskPressureMonitor,
       // Electron's `suspend` fires a beat BEFORE the machine goes down, which
@@ -6608,6 +6658,23 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * A login-import read sits behind an OS credential prompt with no timeout by
+   * design. Quitting ADE while one is up would otherwise leave an orphaned
+   * `Electron (ELECTRON_RUN_AS_NODE)` process still holding that prompt, since
+   * Node does not reap non-detached children when the parent exits on macOS.
+   */
+  const terminateLoginImportWorkersBestEffort = (): void => {
+    try {
+      const { terminateLoginImportReadWorkers } = require(
+        "./services/builtInBrowser/loginImport/loginImportReadWorkerClient",
+      );
+      terminateLoginImportReadWorkers();
+    } catch {
+      // ignore if module not loaded
+    }
+  };
+
   const disposeSharedTranscriptionService = (): void => {
     try {
       sharedTranscriptionService?.dispose();
@@ -6686,6 +6753,7 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
+    terminateLoginImportWorkersBestEffort();
   };
 
   const finalizeAppExit = (exitCode: number): void => {
@@ -7214,8 +7282,21 @@ app.whenReady().then(async () => {
       }
       builtInBrowserService.attachToWindow(win);
     });
+    /*
+      A committed main-frame navigation replaces the subscriber with a page
+      that has not mounted one yet — a dev reload, or the window being pointed
+      at a different entry point. Forgetting the ack here is what keeps ⌘W from
+      going dead for the second it takes React to come back.
+    */
+    win.webContents.on("did-navigate", () => {
+      windowCommandSubscribers.delete(win.id);
+    });
+    win.webContents.on("render-process-gone", () => {
+      windowCommandSubscribers.delete(win.id);
+    });
     win.on("closed", () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
+      windowCommandSubscribers.delete(win.id);
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
       windowKnownLocalProjectRoots.delete(win.id);
@@ -7533,20 +7614,44 @@ app.whenReady().then(async () => {
   };
 
   const installApplicationMenu = (): void => {
-    // Route menu/keyboard zoom through the renderer so it follows the same path
-    // as the in-app zoom counter (display %, persistence, macOS traffic-light
-    // inset). Falls back to the focused window when the click handler omits one
-    // (e.g. accelerator fired with no menu-provided window reference).
+    /**
+     * Every menu command the renderer gets first, on one route.
+     *
+     * Zoom (⌘+/−/0) follows the renderer so it takes the same path as the
+     * in-app zoom counter (display %, persistence, macOS traffic-light inset);
+     * ⌘F and ⌘W go down because Electron eats the accelerator in the browser
+     * process and the built-in browser's page has focus in a *different*
+     * WebContents, so a renderer keydown binding is shadowed on the packaged
+     * app while passing every jsdom test. The renderer decides
+     * (`lib/appCommandClaims`) and the app-wide default runs when nobody
+     * claims. See `appCommandDispatch.ts` for the fallback rules — a window
+     * with no ADE renderer, or one whose renderer cannot be shown to be alive,
+     * runs `fallback` instead of losing the keystroke.
+     */
+    const sendAppCommand = appCommandSender;
     const sendZoomCommand = (
       command: AppZoomCommand,
       browserWindow?: Electron.BaseWindow,
     ): void => {
-      const target =
+      sendAppCommand(
+        { kind: "zoom", command },
         browserWindow instanceof BrowserWindow
           ? browserWindow
-          : BrowserWindow.getFocusedWindow();
-      if (!target || target.isDestroyed()) return;
-      target.webContents.send(IPC.appZoomCommand, command);
+          : BrowserWindow.getFocusedWindow(),
+      );
+    };
+    const sendMenuCommand = (
+      command: AppMenuCommand,
+      browserWindow: Electron.BaseWindow | undefined,
+      fallback?: (win: BrowserWindow) => void,
+    ): void => {
+      sendAppCommand(
+        { kind: "menu", command },
+        browserWindow instanceof BrowserWindow
+          ? browserWindow
+          : BrowserWindow.getFocusedWindow(),
+        fallback,
+      );
     };
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
@@ -7574,7 +7679,15 @@ app.whenReady().then(async () => {
             },
           },
           { type: "separator" },
-          { role: "close" },
+          {
+            // Not `role: "close"`: inside the built-in browser ⌘W has to close
+            // the browser TAB, and the last tab was previously unclosable
+            // because this accelerator always beat the pane to the keystroke.
+            label: "Close",
+            accelerator: "CmdOrCtrl+W",
+            click: (_item, browserWindow) =>
+              sendMenuCommand("close-tab", browserWindow, (win) => win.close()),
+          },
         ],
       },
       {
@@ -7587,6 +7700,12 @@ app.whenReady().then(async () => {
           { role: "copy" },
           { role: "paste" },
           { role: "selectAll" },
+          { type: "separator" },
+          {
+            label: "Find…",
+            accelerator: "CmdOrCtrl+F",
+            click: (_item, browserWindow) => sendMenuCommand("find", browserWindow),
+          },
         ],
       },
       {

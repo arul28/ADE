@@ -185,6 +185,14 @@ export type PushSessionAttentionRequest = {
   title: string;
   message: string;
   laneId?: string | null;
+  /**
+   * Overrides the "<session> needs you" alert headline for asks whose subject
+   * is the ask itself rather than the session — a browser login handoff pushes
+   * "Sign in for me" with the reason as the body. The Work row still shows the
+   * full `message`; this only changes the notification's two lines.
+   */
+  alertTitle?: string | null;
+  alertBody?: string | null;
 };
 
 type PendingAlert = {
@@ -2648,7 +2656,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       enqueueAlert({
         sessionId: request.sessionId,
         dedupeKey: `alert:${request.sessionId}:question`,
-        render: () => ({ title: `${runSubject(run)} needs you`, body: request.message }),
+        render: () => ({
+          title: request.alertTitle?.trim() || `${runSubject(run)} needs you`,
+          body: request.alertBody?.trim() || request.message,
+        }),
         deepLink: `ade://session/${request.sessionId}`,
         threadId: request.sessionId,
         phase: "waiting",

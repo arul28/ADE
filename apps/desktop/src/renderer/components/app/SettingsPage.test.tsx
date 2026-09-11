@@ -45,6 +45,7 @@ vi.mock("../settings/DictationSection", () => ({ DictationSection: stubSection([
 vi.mock("../settings/LaneBehaviorSection", () => ({ LaneBehaviorSection: stubSection(["auto-rebase", "rebase-suggestions"]) }));
 vi.mock("../settings/LaneTemplatesSection", () => ({ LaneTemplatesSection: stubSection(["lane-templates"]) }));
 vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSection: stubSection(["pr-chat-transcripts"]) }));
+vi.mock("../settings/BrowserLinksSection", () => ({ BrowserLinksSection: stubSection(["link-open-mode"]) }));
 vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSection: stubSection(["github-connection"]) }));
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));

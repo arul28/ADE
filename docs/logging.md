@@ -265,6 +265,38 @@ operational lines (`agent_chat.auto_resume_scheduled`,
 which do carry session ids, schedule ids, and fire times, are not PostHog
 events.
 
+Which tool an installation opens in the Work tools pane records the existing
+`ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
+`setTool`, which every entry point funnels through — a picker card, the command
+palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
+`action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
+closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
+`tool_ios`, `tool_app_control`, or `tool_browser`. It is emitted from
+the renderer because tool selection has no durable backend mutation — the
+runtime publish that mirrors it to iOS and the hosted web client is a
+device-mirror push, not a record of the choice.
+
+The product question is only which of the six tools an installation actually
+uses; `ade_screen_viewed` `work` says the surface was reached and cannot tell a
+Browser install from a Git one. Nothing finer crosses the boundary: no lane,
+project, tab, URL, session, ordering, or dwell time — a tool id says what was
+used, and any of those would say what was being worked on. Returning to the
+picker deliberately emits nothing: a null tool is not a tool, and counting it
+would double every open/close pair and report closing as engagement. A seventh
+tool id is dropped rather than widening the allowlist, so a new tool has to be
+registered in the policy deliberately.
+
+A per-tool `work_tool_opened:<id>` deduplication key with a 24-hour minimum
+interval bounds this to at most six accepted events per installation per UTC
+day no matter how often the user flips between panes, which is well inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
+200-event ceiling; no ceiling was raised. The rest of the pane stays untracked
+by the high-frequency rule: browser navigation, find, zoom, device emulation,
+tab switching, tab opening and closing, clearing the browser's recently-used
+list, preview-stream frames, the App Control screencast and its agent
+actions, dev-server discovery polls, and every read the read-only iOS/web mirror
+performs. The dashboard spec is deliberately untouched: no card asks this yet.
+
 Applying an update is one transaction — app swap, background service reinstalled,
 service restarted, service answering — and the brain half failing (the app
 updated but the background service never came back) is its own product-level

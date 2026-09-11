@@ -16,7 +16,6 @@ import {
   type WorkDraftKind,
   type WorkGridSet,
   type WorkProjectViewState,
-  type WorkSidebarTab,
   type WorkSessionListOrganization,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
@@ -581,7 +580,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? EMPTY_STRING_ARRAY;
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
-  const workSidebarTab = projectViewState.workSidebarTab ?? "git";
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
   const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
@@ -936,13 +934,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const setWorkSidebarOpen = useCallback(
     (open: boolean) => {
       setProjectViewState({ workSidebarOpen: open });
-    },
-    [setProjectViewState],
-  );
-
-  const setWorkSidebarTab = useCallback(
-    (tab: WorkSidebarTab) => {
-      setProjectViewState({ workSidebarTab: tab, workSidebarOpen: true });
     },
     [setProjectViewState],
   );
@@ -2174,8 +2165,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setWorkFocusSessionsHidden,
     workSidebarOpen,
     setWorkSidebarOpen,
-    workSidebarTab,
-    setWorkSidebarTab,
     workSidebarWidthPct,
     setWorkSidebarWidthPct,
 

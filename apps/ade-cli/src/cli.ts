@@ -121,11 +121,16 @@ import {
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
+import {
+  isWorkToolId,
+  workToolsUnavailableMessage,
+} from "../../desktop/src/shared/types/workTools";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
   readAutomationsEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
+import { DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -351,6 +356,7 @@ type FormatterId =
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
+  | "proof-filed"
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
@@ -363,9 +369,11 @@ type FormatterId =
   | "app-control-snapshot"
   | "app-control-selection"
   | "browser-status"
+  | "browser-dev-servers"
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
+  | "work-tools-state"
   | "pty-create"
   | "terminal-list"
   | "terminal-read"
@@ -456,6 +464,18 @@ type CliPlan =
        * exits 1 when a query returns no results, so scripts can branch on it).
        */
       exitCodeFromResult?: (result: unknown) => number;
+      /**
+       * Marks a plan that files a proof record, so its result is summarized
+       * into an explicit confirmation line and its failures are prefixed with
+       * "<command> failed —".
+       *
+       * Six silent `ade proof attach` failures in one coordinator loop is what
+       * this exists for: the command exited 0-looking with a JSON blob nobody
+       * read, and the drawer stayed empty. A filing command now either prints
+       * one unambiguous "Attached …" line or a line with the word "failed" in
+       * it, so even a naive grep catches the difference.
+       */
+      proofFiling?: { command: string; verify: boolean };
       /**
        * Run a recovery step and re-execute the plan once, when the first result
        * says the command cannot succeed without it. Returning false leaves the
@@ -809,6 +829,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -2405,7 +2426,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
-    $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -2413,7 +2434,35 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
+
+  Where proof files may live
+
+  Attach/ingest only import from these roots: the project root, the lane
+  worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp directory
+  (\`$TMPDIR\` on macOS/Linux — under /var/folders on macOS; \`%TEMP%\` on
+  Windows), the conventional \`/tmp\` (\`/private/tmp\` on macOS; not a root on
+  Windows), and ~/.agent-browser.
+
+  \`.ade/secrets\` is denied even though it sits under the project root, and the
+  check resolves symlinks on both sides — a link pointing into it is refused
+  too. Anywhere else (~/Desktop, ~/Downloads) is rejected: copy the file into
+  one of the roots above and retry.
+
+  Which directory the call claims
+
+  \`ADE_WORKSPACE_ROOT\` (the lane worktree) wins over the shell cwd, and with
+  only \`ADE_LANE_ID\` set the runtime resolves the lane's worktree itself — so
+  a command spawned from outside the worktree still authorizes correctly. A
+  rejection names the path used, where it came from, and the authorized root.
+
+  Confirming a capture landed
+
+  \`attach\`, \`capture\`, \`ingest\`, and \`record\` re-read the record they just
+  filed and, with --text, end with a line like
+  \`Attached 1 artifact to lane <id> / chat <id> (<title>)\`. Anything else is a
+  failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
+  Pass --no-verify to skip the re-read.
 `,
   "ios-sim": `${ADE_BANNER}
   iOS Simulator
@@ -2525,12 +2574,31 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
     $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
 
-  Input:
-    $ ade app-control click 120 420                Click screenshot coordinates
+  Observe and act (agent loop, same shape as "ade browser"):
+    $ ade app-control observe --map --text         Screenshot + numbered element map + handles
+    $ ade app-control observe --no-dom --text      Screenshot only, no element list
+    $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
+    $ ade app-control click --text-match "Save"    Click by visible label
     $ ade app-control click 120 420 --coords viewport
+    $ ade app-control hover --test-id row-3
+    $ ade app-control fill --selector "#name" --value "Ada"
+    $ ade app-control clear --selector "#name"
+    $ ade app-control type "hello" --text          Type into the focused element
+    $ ade app-control press --key Enter            Alias: key
     $ ade app-control scroll --x 120 --y 420 --delta-y 600
-    $ ade app-control key --key Enter
-    $ ade app-control type "hello" --text          Type text into the focused element
+    $ ade app-control wait --text-match "Saved" --timeout-ms 8000
+    $ ade app-control wait --load-state network-idle
+    $ ade app-control trace --limit 20 --text      Recent actions for this session
+    $ ade app-control proof --caption "Settings saved"  Observe and register a proof artifact
+
+  Windows and drivers:
+    $ ade app-control windows --text               Debuggable windows for the active session
+    $ ade app-control switch-window --target <id>  Drive a different window
+    $ ade app-control drivers --text               Driver availability (cdp, computer_use)
+
+  Every act command answers with a post-action observation. Add --no-observe to
+  skip it, or --fast to skip the settle delay. --session <id> guards a command
+  against a session that is no longer active.
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -2568,7 +2636,36 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
+    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
     $ ade --socket browser actions --text          List built_in_browser actions
+
+  "dev-servers" reports what ADE passively noticed in its own terminal output
+  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
+  lane. An empty list means nothing printed a line ADE recognised, not that
+  nothing is listening — start the server in an ADE shell, or just open the URL.
+
+  No desktop on this machine
+
+  When this machine has no ADE window, "open"/"new-tab"/"panel" are forwarded to
+  a desktop that has this lane pinned, which reaches this machine's localhost
+  over a TCP port-forward. The result prints "opened: on <desktop> via tunnel",
+  or "waiting for approval on <desktop> — reaching this port needs a yes in ADE"
+  the first time you name a port the human has not allowed, or "no desktop is
+  attached to this machine…" when nobody answered inside 5 seconds. All three
+  exit 0: the approval one means "asked, not yet loaded" — the page opens when
+  they click Allow, so do not re-issue the open to retry it. Page actions
+  (observe/click/fill/screenshot) are not forwarded and still fail here.
+
+  Login handoff (you cannot sign in; a person must):
+    $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
+    $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+    $ ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+  Trailing words are the reason without --reason. A dashed word is read as a
+  flag, so fence the sentence: handoff -- fix the -2fa prompt
+  Blocks until the person presses Hand back (default 15m), so your next step
+  naturally waits. It raises the Work row's hand and pushes to their phone.
+  While the handoff is open every agent action on that tab fails with
+  handoff_active — do not retry, wait. You never hand the tab back yourself.
 
   Agent sessions:
     $ ade --socket browser session start --tab <tab-id> --text
@@ -2598,7 +2695,28 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser type --tab <tab-id> "hello"
     $ ade --socket browser key --tab <tab-id> Enter
     $ ade --socket browser scroll --tab <tab-id> --dy 700
+    $ ade --socket browser hover --tab <tab-id> --selector ".menu"
+    $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
+    $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
+    $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
+    $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
+    $ ade --socket browser emulate --tab <tab-id> --off
+    $ ade --socket browser open localhost:5173 --device ipad
+    $ ade --socket browser zoom --tab <tab-id> --factor 1.25
+    $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser find --tab <tab-id> "checkout"
+    $ ade --socket browser find-stop --tab <tab-id>
+    $ ade --socket browser devtools --tab <tab-id> --mode bottom
+    $ ade --socket browser devtools --tab <tab-id> --close
+    $ ade --socket browser network on --tab <tab-id>
+    $ ade --socket browser network --tab <tab-id> --failed --limit 20 --text
+    $ ade --socket browser network off --tab <tab-id>
+    $ ade --socket browser har --tab <tab-id>
+    $ ade --socket browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
+    $ ade --socket browser record stop --tab <tab-id>
     $ ade --socket browser proof --tab <tab-id> --caption "Verified"
+    $ ade --socket browser proof --tab <tab-id> --har --caption "Checkout 500s"
     $ ade --socket browser reload --tab <tab-id>
     $ ade --socket browser back --tab <tab-id>
     $ ade --socket browser forward --tab <tab-id>
@@ -2613,6 +2731,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser clear-selection
 
   Flags:
+    --                   Everything after it is a literal value, never a flag —
+                         for a URL, key, fill/type text or option that starts
+                         with a dash: "browser open -- --weird-url",
+                         "browser key -- --", "browser fill --selector x -- --literal".
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
     --new-tab           Always open navigation in a new tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
@@ -2636,7 +2758,31 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --diagnostics, --no-diagnostics
                          Include or skip console/network diagnostics in observations.
     --max-elements <n>   Cap DOM elements captured per observation (default 80).
-    --limit <n>          Trace entries to show for browser trace (default 20).
+    --limit <n>          Trace/network entries to show for browser trace or network (default 20/50).
+    --device <preset>    Emulation preset for browser emulate/open: desktop, iphone-17,
+                         iphone-17-pro, iphone-17-pro-max, ipad, pixel, responsive.
+    --width/--height <n> Custom emulation viewport for browser emulate.
+    --scale <n>          Device scale factor for browser emulate.
+    --factor <n>         Zoom factor for browser zoom (clamped 0.25-5).
+    --query, --find <text>
+                         Search text for browser find; the trailing positional
+                         works too ("browser find --tab <id> checkout").
+    --match-case         Case-sensitive browser find; alias: --case-sensitive.
+    --backward           Search upwards for browser find; aliases: --previous, --prev.
+    --next               Advance to the next hit of the current browser find
+                         instead of starting a new search; alias: --find-next.
+    --mode <dock>        DevTools dock mode for browser devtools: right, bottom, detach.
+    --filter <text>      Substring filter for browser network/har entries.
+    --failed             Only failed/4xx-5xx entries for browser network/har.
+    --har                Also export the tab's HAR with browser proof and file it as a
+                         browser_trace artifact beside the screenshot. Requires network
+                         logging on for that tab.
+    --to-selector, --to-text-match, --to-test-id, --to-element, --to-handle, --to-x, --to-y
+                         Drag destination for browser drag.
+    --option-value/--option-label/--option-index
+                         Option to pick for browser select-option.
+    --file <path>        Repeatable file path for browser upload.
+    --fps <30|60>        Frame rate for browser record start.
     --include-ended, --all
                          Include ended browser sessions in browser sessions output.
     --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
@@ -2652,6 +2798,40 @@ const HELP_BY_COMMAND: Record<string, string> = {
                          On panel/switch, claims only when passed explicitly.
     --chat-session <id>  Claim chat/session for open/new-tab/claim/session/actions.
                          On panel/switch, claims only when passed explicitly.
+`,
+  "work-tools": `${ADE_BANNER}
+  ADE work tools
+
+  The read-only mirror of the desktop's Work tools pane for one lane: which tool
+  the desktop has open, the browser tabs that lane owns (with owner, recording
+  and handoff state), the App Control session and driver, and the path of the
+  newest screenshot each already wrote to disk.
+
+  This is a state read, not a control surface. Which tool the pane shows is
+  published by the desktop renderer that owns it, so there is no command to set
+  it; open the tool in ADE Desktop. To drive a tool, use "ade browser" or
+  "ade app-control".
+
+    $ ade work-tools state --text                  Tools pane state for this agent's lane
+    $ ade work-tools state --lane <lane-id> --text Another lane (human callers only)
+    $ ade work-tools actions --text                List every callable work_tools action
+
+  Flags:
+    --lane, --lane-id <id> Lane to read. Ignored for chat-bound agents, which
+                           always read their own lane; falls back to ADE_LANE_ID.
+    --text                 Human-readable summary.
+    --json                 Structured JSON (default when piped).
+
+  Notes:
+    "browser" is null when the desktop cannot answer for this project, and the
+    reason is printed in its place — a desktop that is not attached, one with no
+    window on this project, or one whose Browser pane has never been opened.
+    Those are ordinary states, not errors.
+
+    Observation bytes never travel with the state. "state" prints the
+    host-absolute path the desktop wrote; read that file directly, or call
+    "ade actions run work_tools.readObservationPreview" when the caller cannot
+    see this machine's filesystem.
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -3014,6 +3194,17 @@ function readValue(args: string[], names: string[]): string | null {
   return null;
 }
 
+/** Repeatable option (`--file a --file b`), consumed like `readValue`. */
+function readRepeatedValues(args: string[], names: string[]): string[] {
+  const values: string[] = [];
+  for (;;) {
+    const value = readValue(args, names);
+    if (value == null) break;
+    values.push(value);
+  }
+  return values;
+}
+
 function readFlag(args: string[], names: string[]): boolean {
   for (let index = 0; index < args.length; index += 1) {
     if (!names.includes(args[index]!)) continue;
@@ -3099,7 +3290,22 @@ function firstPositional(args: string[]): string | null {
   return value ?? null;
 }
 
-function firstStandalonePositional(args: string[]): string | null {
+/**
+ * The value-carrier table a positional/terminator reader works against.
+ *
+ * A default parameter, not a module-wide constant read inside the loop: one
+ * command family's value flags must never widen the grammar of another. The
+ * default is the CLI-global set; `ade browser` passes its own table, so a name
+ * that carries a value only under `browser` (`--text`, `--state`, `--key`)
+ * cannot swallow the positional after it under `session`, `chat` or anything
+ * else.
+ */
+type ValueCarrierFlags = ReadonlySet<string>;
+
+function firstStandalonePositional(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): string | null {
   let previousTokenWasValueCarrier = false;
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
@@ -3113,7 +3319,7 @@ function firstStandalonePositional(args: string[]): string | null {
         ? token.slice(0, token.indexOf("="))
         : token;
       previousTokenWasValueCarrier =
-        !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+        !token.includes("=") && carriers.has(flagName);
       continue;
     }
     const [value] = args.splice(index, 1);
@@ -3122,8 +3328,66 @@ function firstStandalonePositional(args: string[]): string | null {
   return null;
 }
 
-function takeArgsAfterTerminator(args: string[]): string[] | null {
-  const index = args.indexOf("--");
+/** Every remaining positional, flags and their values left behind. */
+function standalonePositionals(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): string[] {
+  const values: string[] = [];
+  while (true) {
+    const next = firstStandalonePositional(args, carriers);
+    if (next == null) return values;
+    values.push(next);
+  }
+}
+
+/**
+ * The index of the `--` that ends this command's own argv, or -1.
+ *
+ * A `--` directly after a value-carrying flag is that flag's value, not the
+ * terminator: `--value --`, `--text --`, `--url --` and `--reason --` are how a
+ * person passes a literal `--`, and `readValue` consumes it. Only a `--` that
+ * no flag is waiting on fences off the tail — the same value-carrier rule
+ * {@link firstStandalonePositional} applies before it stops. (It stops there
+ * rather than reporting the index: a positional after the terminator is a
+ * fenced literal, and only the caller that owns the tail may read it.)
+ *
+ * Every reader of the terminator goes through here — positionals, the
+ * app-control trailing command and the help fence — so one argv cannot mean
+ * two different things depending on which reader looked at it first.
+ */
+function firstTerminatorIndex(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): number {
+  let previousTokenWasValueCarrier = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") {
+      if (previousTokenWasValueCarrier) {
+        previousTokenWasValueCarrier = false;
+        continue;
+      }
+      return index;
+    }
+    if (token.startsWith("-")) {
+      const flagName = token.includes("=")
+        ? token.slice(0, token.indexOf("="))
+        : token;
+      previousTokenWasValueCarrier =
+        !token.includes("=") && carriers.has(flagName);
+      continue;
+    }
+    previousTokenWasValueCarrier = false;
+  }
+  return -1;
+}
+
+function takeArgsAfterTerminator(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): string[] | null {
+  const index = firstTerminatorIndex(args, carriers);
   if (index < 0) return null;
   const rest = args.slice(index + 1);
   args.splice(index);
@@ -3511,7 +3775,13 @@ function readBrowserSessionsArgs(args: string[]): JsonObject {
   };
 }
 
-function readBrowserObservationArgs(args: string[]): JsonObject {
+/**
+ * The flags that shape an observation but say nothing about which tab it is of.
+ * Split out so `browser proof` can take the target back without a denylist of
+ * these key names — a denylist that had to be edited in lockstep with the
+ * reader, and would have silently leaked a sixth flag into `exportHar`.
+ */
+function readBrowserObservationOnlyArgs(args: string[]): JsonObject {
   const keepCount = readNumberOption(args, ["--keep", "--keep-count"]);
   const includeDom = readFlag(args, ["--dom", "--include-dom", "--elements"]);
   const skipDom = readFlag(args, ["--no-dom", "--no-elements"]);
@@ -3520,7 +3790,6 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
   const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
   const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
   return {
-    ...readBrowserOwnedTabTargetArgs(args),
     ...(keepCount == null ? {} : { keepCount }),
     ...(includeDom ? { includeDom: true } : {}),
     ...(skipDom ? { includeDom: false } : {}),
@@ -3528,6 +3797,13 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
     ...(skipDiagnostics ? { includeDiagnostics: false } : {}),
     ...(includeElementMap ? { includeElementMap: true } : {}),
     ...(maxElements == null ? {} : { maxElements }),
+  };
+}
+
+function readBrowserObservationArgs(args: string[]): JsonObject {
+  return {
+    ...readBrowserOwnedTabTargetArgs(args),
+    ...readBrowserObservationOnlyArgs(args),
   };
 }
 
@@ -3579,6 +3855,72 @@ function readBrowserClickTargetArgs(args: string[]): JsonObject {
     ...(testId ? { testId } : {}),
     ...(elementIndex == null ? {} : { elementIndex }),
     ...(handle ? { handle } : {}),
+  };
+}
+
+function readAppControlSessionArgs(args: string[]): JsonObject {
+  const sessionId = readValue(args, [
+    "--session",
+    "--session-id",
+    "--app-control-session",
+  ]);
+  return { ...(sessionId ? { sessionId } : {}) };
+}
+
+function readAppControlObservationArgs(args: string[]): JsonObject {
+  const keepCount = readNumberOption(args, ["--keep", "--keep-count"]);
+  const includeDom = readFlag(args, ["--dom", "--include-dom", "--elements"]);
+  const skipDom = readFlag(args, ["--no-dom", "--no-elements"]);
+  const includeDiagnostics = readFlag(args, ["--diagnostics", "--include-diagnostics"]);
+  const skipDiagnostics = readFlag(args, ["--no-diagnostics", "--without-diagnostics"]);
+  const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
+  const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
+  return {
+    ...readAppControlSessionArgs(args),
+    ...(keepCount == null ? {} : { keepCount }),
+    ...(includeDom ? { includeDom: true } : {}),
+    ...(skipDom ? { includeDom: false } : {}),
+    ...(includeDiagnostics ? { includeDiagnostics: true } : {}),
+    ...(skipDiagnostics ? { includeDiagnostics: false } : {}),
+    ...(includeElementMap ? { includeElementMap: true } : {}),
+    ...(maxElements == null ? {} : { maxElements }),
+  };
+}
+
+function readAppControlAgentActionArgs(args: string[]): JsonObject {
+  const waitAfterMs = readNumberOption(args, ["--wait-after-ms", "--settle-ms"]);
+  const fast = readFlag(args, ["--fast"]);
+  return {
+    ...readAppControlObservationArgs(args),
+    observe: readFlag(args, ["--no-observe"]) ? false : undefined,
+    ...(waitAfterMs == null ? (fast ? { waitAfterMs: 0 } : {}) : { waitAfterMs }),
+  };
+}
+
+function readAppControlTraceArgs(args: string[]): JsonObject {
+  const limit = readNumberOption(args, ["--limit", "--entries"]);
+  return {
+    ...readAppControlSessionArgs(args),
+    ...(limit == null ? {} : { limit }),
+  };
+}
+
+function readBrowserDragDestinationArgs(args: string[]): JsonObject {
+  const toSelector = readValue(args, ["--to-selector", "--to-css"]);
+  const toText = readValue(args, ["--to-text-match", "--to-label", "--to-name"]);
+  const toHandle = readValue(args, ["--to-handle", "--to-ref"]);
+  const toTestId = readValue(args, ["--to-test-id", "--to-testid", "--to-data-testid"]);
+  const toElementIndex = readNumberOption(args, ["--to-element", "--to-element-index", "--to-index"]);
+  const toX = readNumberOption(args, ["--to-x"]);
+  const toY = readNumberOption(args, ["--to-y"]);
+  return {
+    ...(toSelector ? { toSelector } : {}),
+    ...(toText ? { toText } : {}),
+    ...(toTestId ? { toTestId } : {}),
+    ...(toHandle ? { toHandle } : {}),
+    ...(toElementIndex == null ? {} : { toElementIndex }),
+    ...(toX == null ? {} : { toX }),
+    ...(toY == null ? {} : { toY }),
   };
 }
 
@@ -9375,6 +9717,61 @@ function readProofOwnerBase(args: string[]): JsonObject {
   };
 }
 
+/**
+ * Where `ade proof` resolves relative paths from, and the root the runtime
+ * authorizes the ingest against.
+ *
+ * `process.cwd()` alone was wrong for agents. A coordinator that runs
+ * `ade proof attach` from a shell parked outside the lane worktree still
+ * carries the lane's environment, and the runtime rejected the cwd the caller
+ * never meant to claim — six attaches in a row failed that way while the loop
+ * read the exit status of the wrong thing. The env-provided worktree is the
+ * agent's real workspace, so it wins; the runtime still validates it against
+ * the lane worktree it authorized, and its rejection now names both paths.
+ *
+ * With only `ADE_LANE_ID` there is no path to send: a lane's worktree is
+ * something only the runtime can resolve. Omitting `callerRoot` so it uses that
+ * authorized root *is* the env-derived answer, not a fallback to cwd.
+ */
+function proofCallerRoot(): { path: string | null; source: string } {
+  const workspaceFromEnv = process.env.ADE_WORKSPACE_ROOT?.trim();
+  if (workspaceFromEnv) {
+    return { path: path.resolve(workspaceFromEnv), source: "env ADE_WORKSPACE_ROOT" };
+  }
+  const laneFromEnv = process.env.ADE_LANE_ID?.trim();
+  if (laneFromEnv) {
+    return { path: null, source: `env ADE_LANE_ID=${laneFromEnv} (runtime-resolved lane worktree)` };
+  }
+  return { path: process.cwd(), source: "cwd" };
+}
+
+/** `callerRoot` + its provenance, as the ingest tool wants them. */
+function proofCallerRootArgs(): JsonObject {
+  const callerRoot = proofCallerRoot();
+  return {
+    ...(callerRoot.path ? { callerRoot: callerRoot.path } : {}),
+    callerRootSource: callerRoot.source,
+  };
+}
+
+/**
+ * Re-read step every filing command runs before reporting success.
+ *
+ * Ingest returning a row is not proof that the drawer has one: the record has
+ * to survive the read path the drawer itself uses. Optional so a listing that
+ * the caller is not scoped for degrades to "could not verify" instead of
+ * discarding a capture that did land.
+ */
+function proofVerifyStep(): InvocationStep {
+  return {
+    key: "verify",
+    method: "ade/actions/call",
+    params: { name: "list_computer_use_artifacts", arguments: { limit: 50 } },
+    unwrapToolResult: true,
+    optional: true,
+  };
+}
+
 function buildProofPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   const proofOwnerBase = () => readProofOwnerBase(args);
@@ -9441,19 +9838,27 @@ function buildProofPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "ingest")
+  if (sub === "ingest") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "proof ingest",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof ingest", verify },
       steps: [
         actionCallStep(
           "result",
           "ingest_computer_use_artifacts",
-          collectGenericObjectArgs(args, { callerRoot: process.cwd() }),
+          collectGenericObjectArgs(args, proofCallerRootArgs()),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
+  }
   if (sub === "attach") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const rawPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
@@ -9470,6 +9875,8 @@ function buildProofPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "proof attach",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof attach", verify },
       steps: [
         actionCallStep(
           "result",
@@ -9478,7 +9885,7 @@ function buildProofPlan(args: string[]): CliPlan {
             backendStyle: "manual",
             backendName: "ade-cli",
             toolName: "proof attach",
-            callerRoot: process.cwd(),
+            ...proofCallerRootArgs(),
             ...proofOwnerBase(),
             inputs: [
               {
@@ -9490,6 +9897,7 @@ function buildProofPlan(args: string[]): CliPlan {
             ],
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -9553,33 +9961,48 @@ function buildProofPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     return {
       kind: "execute",
       label: "computer-use screenshot",
+      formatter: "proof-filed",
+      proofFiling: { command: `proof ${sub === "capture" ? "capture" : "screenshot"}`, verify },
       steps: [
         actionCallStep(
           "result",
           "screenshot_environment",
           collectGenericObjectArgs(args, {
             ...proofOwnerBase(),
+            // `ade proof capture` is the explicit proof interface; the bare
+            // tool is scratch agent vision and files nothing.
+            proof: true,
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
       preferHeadless: true,
     };
   }
-  if (sub === "record")
+  if (sub === "record") {
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "computer-use record",
+      formatter: "proof-filed",
+      proofFiling: { command: "proof record", verify },
       steps: [
         actionCallStep(
           "result",
           "record_environment",
           collectGenericObjectArgs(args, {
             ...proofOwnerBase(),
+            // Same rule as `capture`: the proof command files, the tool alone
+            // does not.
+            proof: true,
             name:
               readValue(args, ["--name", "--title"]) ??
               readValue(args, ["--caption", "--description", "--desc"]),
@@ -9589,9 +10012,11 @@ function buildProofPlan(args: string[]): CliPlan {
             ]),
           }),
         ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
       preferHeadless: true,
     };
+  }
   if (sub === "launch")
     return {
       kind: "execute",
@@ -10411,7 +10836,7 @@ function buildIosSimulatorPlan(
 }
 
 function readTrailingCommand(args: string[]): string | null {
-  const index = args.indexOf("--");
+  const index = firstTerminatorIndex(args);
   if (index < 0) return null;
   const tokens = args.slice(index + 1);
   args.splice(index);
@@ -10726,7 +11151,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
+  if (sub === "inspect" || sub === "hit-test") {
     return {
       kind: "execute",
       label: "App Control inspect point",
@@ -10771,6 +11196,16 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "click" || sub === "tap") {
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const hasTarget = Object.keys(targetArgs).length > 0;
+    const x = hasTarget ? readNumberOption(args, ["--x"]) : readCoordinate("--x", 0);
+    const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
+    if (!hasTarget && (x == null || y == null)) {
+      throw new CliUsageError(
+        "app-control click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
     return {
       kind: "execute",
       label: "App Control click",
@@ -10778,10 +11213,40 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "click",
+          "agentClick",
           collectGenericObjectArgs(args, {
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
+            ...actionArgs,
+            ...targetArgs,
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
+            button: readValue(args, ["--button"]),
+            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "hover") {
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const hasTarget = Object.keys(targetArgs).length > 0;
+    const x = hasTarget ? readNumberOption(args, ["--x"]) : readCoordinate("--x", 0);
+    const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
+    return {
+      kind: "execute",
+      label: "App Control hover",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentHover",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
@@ -10789,7 +11254,225 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "fill") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control fill requires --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
+    const explicitValue = readValue(args, ["--value"]);
+    const value = explicitValue ?? args.filter((arg) => !arg.startsWith("-")).join(" ");
+    if (explicitValue == null && !value.length) {
+      throw new CliUsageError("app-control fill requires a value.");
+    }
+    return {
+      kind: "execute",
+      label: "App Control fill",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentFill",
+          collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs, value }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "clear" ||
+    sub === "clear-field" ||
+    sub === "clear-input" ||
+    sub === "clear-value"
+  ) {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control clear requires --selector, --text-match, --test-id, --element, or --handle.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "App Control clear",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentClear",
+          collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs }),
+        ),
+      ],
+    };
+  }
+  if (sub === "wait" || sub === "wait-for") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const url = readValue(args, ["--url"]);
+    const loadState =
+      readValue(args, ["--load-state", "--state"]) ??
+      (readFlag(args, ["--network-idle"]) ? "network-idle" : null);
+    if (!url && !loadState && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "app-control wait requires --selector, --text-match, --test-id, --element, --handle, --url, or --load-state.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "App Control wait",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "agentWait",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(url ? { url } : {}),
+            ...(loadState ? { loadState } : {}),
+            timeoutMs: readNumberOption(args, ["--timeout-ms", "--timeout"]),
+            networkIdleMs: readNumberOption(args, ["--network-idle-ms", "--idle-ms"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "observe") {
+    return {
+      kind: "execute",
+      label: "App Control observe",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "observe",
+          collectGenericObjectArgs(args, readAppControlObservationArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "trace" || sub === "action-trace" || sub === "timeline") {
+    return {
+      kind: "execute",
+      label: "App Control trace",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "getTrace",
+          collectGenericObjectArgs(args, readAppControlTraceArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "windows" || sub === "list-windows") {
+    return {
+      kind: "execute",
+      label: "App Control windows",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "windows",
+          collectGenericObjectArgs(args, readAppControlSessionArgs(args)),
+        ),
+      ],
+    };
+  }
+  if (sub === "switch-window" || sub === "switch") {
+    const sessionArgs = readAppControlSessionArgs(args);
+    const targetId = requireValue(
+      readValue(args, ["--target", "--target-id", "--window"]) ?? firstPositional(args),
+      "targetId",
+    );
+    return {
+      kind: "execute",
+      label: "App Control switch window",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "switchWindow",
+          collectGenericObjectArgs(args, { ...sessionArgs, targetId }),
+        ),
+      ],
+    };
+  }
+  if (sub === "drivers" || sub === "list-drivers") {
+    return {
+      kind: "execute",
+      label: "App Control drivers",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "listDrivers",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  }
+  if (sub === "proof" || sub === "promote") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const title =
+      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE App Control proof";
+    const ownerBase = readProofOwnerBase(args);
+    const observeArgs = collectGenericObjectArgs(args, {
+      ...readAppControlObservationArgs(args),
+      includeDom: false,
+    });
+    return {
+      kind: "execute",
+      label: "App Control proof",
+      steps: [
+        actionStep("observation", "app_control", "observe", observeArgs),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            // ade/actions/call answers with an {domain, action, result}
+            // envelope; the observation record lives under result.
+            const observation = unwrapActionEnvelope(values.observation);
+            const filePath = isRecord(observation)
+              ? asString(observation.filePath)
+              : null;
+            if (!filePath) {
+              throw new CliUsageError(
+                "App Control proof could not find an observation file path.",
+              );
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: "ade-app-control",
+                toolName: "app-control proof",
+                callerRoot: process.cwd(),
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    ...(caption ? { description: caption } : {}),
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
   if (sub === "scroll" || sub === "wheel") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const deltaX = readNumberOption(args, ["--delta-x", "--dx"]) ?? 0;
+    const deltaY = readNumberOption(args, ["--delta-y", "--dy"]) ?? 0;
+    if (deltaX === 0 && deltaY === 0) {
+      throw new CliUsageError("app-control scroll requires --delta-y or --delta-x.");
+    }
     return {
       kind: "execute",
       label: "App Control scroll",
@@ -10797,12 +11480,13 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "scroll",
+          "agentScroll",
           collectGenericObjectArgs(args, {
+            ...actionArgs,
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
-            deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
-            deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
+            deltaX,
+            deltaY,
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
@@ -10810,28 +11494,29 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "key" || sub === "dispatch-key") {
+  if (sub === "key" || sub === "press" || sub === "dispatch-key") {
+    const actionArgs = readAppControlAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
     const key = readValue(args, ["--key"]) ?? firstPositional(args);
     return {
       kind: "execute",
-      label: "App Control key",
+      label: "App Control press",
       steps: [
         actionStep(
           "result",
           "app_control",
-          "dispatchKey",
+          "agentPress",
           collectGenericObjectArgs(args, {
-            type: readValue(args, ["--event-type", "--type"]) ?? "keyDown",
+            ...actionArgs,
+            ...targetArgs,
             key: requireValue(key, "key"),
-            code: readValue(args, ["--code"]),
-            text: readValue(args, ["--text"]),
-            modifiers: readNumberOption(args, ["--modifiers"]),
           }),
         ),
       ],
     };
   }
   if (sub === "type" || sub === "text") {
+    const actionArgs = readAppControlAgentActionArgs(args);
     return {
       kind: "execute",
       label: "App Control type",
@@ -10839,8 +11524,9 @@ function buildAppControlPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "app_control",
-          "typeText",
+          "agentType",
           collectGenericObjectArgs(args, {
+            ...actionArgs,
             text: requireValue(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
@@ -10861,46 +11547,252 @@ function buildAppControlPlan(args: string[]): CliPlan {
   };
 }
 
-const BROWSER_SESSION_ACTION_MODES = new Set([
-  "observe",
-  "snapshot",
-  "click",
-  "type",
-  "type-text",
-  "fill",
-  "clear",
-  "clear-field",
-  "clear-input",
-  "clear-value",
-  "key",
-  "press",
-  "dispatch-key",
-  "scroll",
-  "wheel",
-  "wait",
-  "wait-for",
-  "trace",
-  "action-trace",
-  "timeline",
-  "proof",
-  "promote",
-  "reload",
-  "refresh",
-  "back",
-  "forward",
-  "screenshot",
-  "capture",
-  "select",
-  "select-point",
-  "point",
-]);
+/**
+ * Every `ade browser` subcommand that also works as
+ * `ade browser session <id> <cmd>`, keyed by canonical name, with its aliases.
+ *
+ * ONE table. `isBrowserSessionActionMode` is derived from it and
+ * `buildBrowserPlan` matches through `isBrowserSubcommand`, so an alias cannot
+ * be accepted by the planner and rejected by the session router. It was: seven
+ * aliases (`search-page`, `inspector`, `requests`, `drag-and-drop`,
+ * `attach-file`, `recording`, `emulation`) were reachable as
+ * `ade browser <alias>` but died with "Unknown browser session command" under
+ * `ade browser session <id> <alias>` because the hand-maintained Set never got
+ * them. Add an alias here and both sides get it.
+ */
+const BROWSER_SESSION_SUBCOMMANDS = {
+  observe: ["observe", "snapshot"],
+  click: ["click"],
+  type: ["type", "type-text"],
+  fill: ["fill"],
+  // `clear` is deliberately ambiguous at the CLI: with an element target it
+  // clears a field, without one it clears the selection. `buildBrowserPlan`
+  // keeps that branch written out because the disambiguation is a flag test,
+  // not an alias; the aliases still live here so session mode accepts them.
+  clear: ["clear", "clear-field", "clear-input", "clear-value"],
+  key: ["key", "press", "dispatch-key"],
+  scroll: ["scroll", "wheel"],
+  wait: ["wait", "wait-for"],
+  emulate: ["emulate", "device", "emulation"],
+  zoom: ["zoom"],
+  findStop: ["find-stop", "stop-find"],
+  find: ["find", "find-in-page", "search-page"],
+  devtools: ["devtools", "dev-tools", "inspector"],
+  network: ["network", "net", "requests"],
+  har: ["har", "export-har"],
+  hover: ["hover"],
+  drag: ["drag", "drag-and-drop"],
+  selectOption: ["select-option", "choose", "option"],
+  upload: ["upload", "upload-file", "attach-file"],
+  record: ["record", "recording"],
+  trace: ["trace", "action-trace", "timeline"],
+  proof: ["proof", "promote"],
+  reload: ["reload", "refresh"],
+  back: ["back"],
+  forward: ["forward"],
+  screenshot: ["screenshot", "capture"],
+  selectPoint: ["select", "select-point", "point"],
+} as const satisfies Record<string, readonly string[]>;
+
+type BrowserSessionSubcommand = keyof typeof BROWSER_SESSION_SUBCOMMANDS;
+
+function isBrowserSubcommand(sub: string, command: BrowserSessionSubcommand): boolean {
+  return (BROWSER_SESSION_SUBCOMMANDS[command] as readonly string[]).includes(sub);
+}
+
+const BROWSER_SESSION_ACTION_MODES = new Set<string>(
+  Object.values(BROWSER_SESSION_SUBCOMMANDS).flat(),
+);
 
 function isBrowserSessionActionMode(value: string): boolean {
   return BROWSER_SESSION_ACTION_MODES.has(value);
 }
 
+
+/**
+ * `ade work-tools` — the read-only mirror of the desktop's Work tools pane.
+ *
+ * Read-only is the whole domain, not a CLI choice: `work_tools.setActiveTool`
+ * is how a desktop renderer publishes which tool it has open, and
+ * `adeRpcServer` denies it to anything that is not a user client. Giving it a
+ * subcommand would only produce a command that always fails for the agents this
+ * CLI exists for, so `state` is the only typed verb and `actions` lists the
+ * rest. `readObservationPreview` has no wrapper either: it answers with base64
+ * image bytes, and `state` already prints the host-absolute path the desktop
+ * wrote — on this machine, reading that file is the shorter path. Clients that
+ * genuinely cannot see the filesystem (iOS, hosted web) call the action.
+ */
+function buildWorkToolsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "state";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["work-tools"] };
+  if (sub === "actions") {
+    return {
+      kind: "execute",
+      label: "work tools actions",
+      steps: [listActionsStep("actions", "work_tools")],
+    };
+  }
+  if (sub === "state" || sub === "status" || sub === "get") {
+    // A chat-bound agent never needs --lane: the daemon overwrites laneId with
+    // the lane its session resolves to, whatever was asked for. The flag (and
+    // ADE_LANE_ID) is for the human at a terminal, who is a user client and is
+    // therefore the only caller allowed to name another lane.
+    const laneId = asString(
+      readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+    );
+    return {
+      kind: "execute",
+      label: "work tools state",
+      steps: [
+        actionStep(
+          "result",
+          "work_tools",
+          "getLaneState",
+          collectGenericObjectArgs(args, laneId ? { laneId } : {}),
+        ),
+      ],
+    };
+  }
+  if (isWorkToolId(sub) || sub === "set" || sub === "set-active" || sub === "open") {
+    throw new CliUsageError(
+      "work-tools is read-only. Which tool the pane shows is published by the desktop that owns it; open the tool in ADE Desktop instead.",
+    );
+  }
+  throw new CliUsageError(
+    `Unknown work-tools command: ${sub}. Use state or actions.`,
+  );
+}
+
+/**
+ * `ade browser handoff` — the agent says out loud that it cannot get past this
+ * page and hands the tab to the human.
+ *
+ * Three steps, in this order, because each one only makes sense once the
+ * previous has landed:
+ *
+ * 1. `startHandoff` flips the tab to human ownership in the desktop and reveals
+ *    the pane. Nothing is asked of the person until the tab is actually theirs.
+ * 2. `session.requestSessionAttention` — the SAME call `ade chat ask` makes, so
+ *    the Work row raises its hand and the phone push goes out through the one
+ *    existing hand-raise path rather than a second notification channel.
+ * 3. `waitForHandoff` blocks until they press `Hand back` (or the handoff times
+ *    out), which is what makes the agent's next step naturally wait. `--no-wait`
+ *    drops this step; the desktop still clears the hand-raise on hand-back, so
+ *    the row does not stay raised just because nobody was blocked on it.
+ */
+function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): CliPlan {
+  // Not `--text`: it is the global output switch, and every `browser handoff`
+  // example ends with it.
+  const explicitReason = readValue(args, ["--reason", "--message", "--why"]);
+  const noWait = readFlag(args, ["--no-wait", "--nowait", "--async"]);
+  const timeoutValue = readValue(args, ["--timeout", "--for"]);
+  // Read both spellings unconditionally: an unconsumed flag would fall through
+  // into the free-text reason below and end up quoted back at the human.
+  const timeoutMsValue = readNumberOption(args, ["--timeout-ms"]);
+  const timeoutMs = timeoutValue
+    ? parseSnoozeDurationMs(timeoutValue)
+    : timeoutMsValue ?? DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS;
+  const target = readBrowserTabTargetArgs(args);
+  // Everything left over after the flags is the reason, so
+  // `ade browser handoff sign in to staging` works without quoting.
+  //
+  // The free-text fallback is refused outright once a leftover token is
+  // flag-shaped. Guessing was worse either way: joining `--text` raw quoted
+  // "--text sign in" back at the human in the phone alert body, and dropping
+  // it silently ate the next word out of the sentence when the name happened
+  // to be a carrier (`handoff --path sign in` → "in"). A literal tail after
+  // `--` is a person's own words, never argv, so it is taken verbatim —
+  // `handoff -- fix the -2fa prompt` still works.
+  const namedReason = explicitReason ?? collectGenericObjectArgs(args).reason;
+  if (namedReason == null) {
+    const flagLike = args.find((token) => token.startsWith("-"));
+    if (flagLike != null) {
+      throw new CliUsageError(
+        `browser handoff read ${flagLike} as a flag, not as part of the reason. Pass --reason "…", or put the literal words after --.`,
+      );
+    }
+  }
+  const reason = requireValue(
+    (namedReason ?? [...args, ...literalTail].join(" ")) as string | null,
+    "reason",
+  ).trim();
+  if (!reason) {
+    throw new CliUsageError(
+      "browser handoff requires --reason so the person knows what they are being asked to sign in to.",
+    );
+  }
+  const startArgs: JsonObject = { ...target, reason, timeoutMs };
+  const steps = [
+    actionStep("handoff", "built_in_browser", "startHandoff", startArgs),
+    actionStep("attention", "session", "requestSessionAttention", {
+      message: `Sign in for me: ${reason}`,
+      // The phone alert's subject is the ask, not the session, so it reads
+      // "Sign in for me" / "<reason>" instead of "<chat> needs you".
+      alertTitle: "Sign in for me",
+      alertBody: reason,
+    }),
+  ];
+  if (!noWait) {
+    steps.push(
+      actionStep("result", "built_in_browser", "waitForHandoff", { ...target, timeoutMs }),
+    );
+  }
+  return {
+    kind: "execute",
+    label: "browser handoff",
+    steps,
+    // The blocking wait is the point of the command; the transport must outlive it.
+    minTimeoutMs: noWait ? undefined : timeoutMs + 30_000,
+    progressNotice: noWait
+      ? undefined
+      : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
+  };
+}
+
+/**
+ * The `--` terminator for the `ade browser` parser.
+ *
+ * `standalonePositionals` stops AT the terminator and leaves it in place, which
+ * is right for commands where `--` fences off another program's argv. A browser
+ * value is not another program's argv: `--` is how a person passes a URL, a key
+ * or a field value that would otherwise be read as a flag
+ * (`browser open -- --weird-url`, `browser key -- --`), so everything after it
+ * is a literal positional and the terminator itself is consumed.
+ *
+ * The tail is split ONCE, here, before any `readValue` / `readFlag` /
+ * `collectGenericObjectArgs` runs. Splitting it inside the positional
+ * fallbacks was too late: those readers run first on every branch and none of
+ * them stops at `--`, so a fenced `--url` / `--key` / `--value` was eaten as a
+ * flag (or its own name demanded a value) long before the fallback was reached.
+ */
 function buildBrowserPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "status";
+  return buildBrowserPlanWithLiteralTail(
+    args,
+    takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [],
+  );
+}
+
+function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
+  // The tail is a queue, not a snapshot: whatever the subcommand word takes out
+  // of it must not come back as an argument further down.
+  const tail = [...literalTail];
+  // One collector for every fallback — the URL, the key, the fill/type text and
+  // the select-option value — because four copies of this rule is how two of
+  // them end up with a different one.
+  const browserPositionals = (rest: string[]): string[] => [
+    ...standalonePositionals(rest, BROWSER_VALUE_CARRIER_FLAGS),
+    ...tail,
+  ];
+  const firstBrowserPositional = (rest: string[]): string | null =>
+    browserPositionals(rest)[0] ?? null;
+  // `browserPositionals` drains EVERY positional in one pass, so a branch that
+  // needs two of them (`browser session end s1`) shifts from one queue instead
+  // of collecting twice and getting an empty second read.
+  // The subcommand goes through the same tail-aware grammar as its arguments:
+  // `browser --tab-id t1 close` dispatches on "close" and not on "t1", and
+  // `ade browser -- open` opens instead of silently printing status.
+  const sub =
+    firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS) ?? tail.shift() ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
   if (sub === "actions")
     return {
@@ -10936,8 +11828,39 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
+  // The launchpad chips the Browser pane renders, as a list. An agent that just
+  // ran `npm run dev` in an ADE shell reads the port from here instead of
+  // guessing it or grepping the terminal. Scope is not an argument: the daemon
+  // drops any caller-supplied `laneId` and the desktop bridge substitutes the
+  // actor capability's lane, so this always answers for the calling chat.
+  if (
+    sub === "dev-servers" ||
+    sub === "dev-server" ||
+    sub === "devservers" ||
+    sub === "servers" ||
+    sub === "localhost"
+  ) {
+    return {
+      kind: "execute",
+      label: "browser dev servers",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getDevServers",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  }
   if (sub === "session" || sub === "sessions") {
-    const mode = sub === "sessions" ? "list" : firstPositional(args) ?? "list";
+    // The mode word comes from the same tail-aware grammar as the rest, so
+    // `browser session --tab t1 end s1` reads "end" and not "t1", and
+    // `browser session -- end s1` ends s1 instead of listing sessions.
+    const mode =
+      sub === "sessions"
+        ? "list"
+        : firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS) ?? tail.shift() ?? "list";
     if (mode === "start" || mode === "begin" || mode === "claim") {
       return {
         kind: "execute",
@@ -10962,7 +11885,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         steps: [
           actionStep("result", "built_in_browser", "endSession", {
             sessionId: requireValue(
-              explicitSessionId ?? genericSessionId ?? firstPositional(args),
+              explicitSessionId ?? genericSessionId ?? firstBrowserPositional(args),
               "sessionId",
             ),
             ...genericArgs,
@@ -10986,10 +11909,26 @@ function buildBrowserPlan(args: string[]): CliPlan {
     }
     if (isBrowserSessionActionMode(mode)) {
       const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
-      const sessionId = requireValue(explicitSessionId ?? firstPositional(args), "sessionId");
-      return buildBrowserPlan([mode, "--browser-session", sessionId, ...args]);
+      // Exactly one positional: everything after it belongs to the wrapped
+      // command, and the fenced tail is forwarded untouched unless the id had
+      // to come out of it.
+      const wrappedTail = [...tail];
+      const sessionId = requireValue(
+        explicitSessionId
+          ?? firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS)
+          ?? wrappedTail.shift()
+          ?? null,
+        "sessionId",
+      );
+      return buildBrowserPlanWithLiteralTail(
+        [mode, "--browser-session", sessionId, ...args],
+        wrappedTail,
+      );
     }
     throw new CliUsageError(`Unknown browser session command: ${mode}`);
+  }
+  if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
+    return buildBrowserHandoffPlan(args, tail);
   }
   if (sub === "claim") {
     const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
@@ -11033,6 +11972,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "open" || sub === "navigate" || sub === "go") {
+    // Read every option before the URL, which falls back to whatever tokens are
+    // left over; otherwise `--device ipad` would be swallowed into the URL.
+    const openDevice = readValue(args, ["--device", "--emulate", "--preset"]);
     const explicitUrl = readValue(args, ["--url"]);
     const tabId = readValue(args, ["--tab", "--tab-id"]);
     const activeTab = readFlag(args, [
@@ -11050,27 +11992,61 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
-    const url = explicitUrl ?? genericUrl ?? args.join(" ");
+    // Standalone positionals, not `args.join(" ")`: a flag this branch does not
+    // read — `--browser-session`, say — used to be joined INTO the URL, so
+    // `browser open --browser-session s1 https://x` navigated to
+    // "--browser-session s1 https://x".
+    const url = explicitUrl ?? genericUrl ?? browserPositionals(args).join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
     const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
     const agentOwnedCall = Boolean(claimArgs.laneId || claimArgs.chatSessionId);
-    return {
-      kind: "execute",
-      label: "browser open",
-      steps: [
-        actionStep("result", "built_in_browser", "navigate", {
-          url,
-          tabId,
-          newTab: newTab && !activeTab ? true : undefined,
-          activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
-          reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
-          openPanel: showPanel || (!noPanel && !agentOwnedCall),
-          ...claimArgs,
-          ...genericArgs,
-        }),
-      ],
-    };
+    // One payload, built once. `--device` only appends an emulation step; the
+    // navigate itself is identical, and writing it twice meant every change to
+    // `activate` / `openPanel` / `reuseOwnedTab` had to be made in both copies.
+    const navigateStep = actionStep("result", "built_in_browser", "navigate", {
+      url,
+      tabId,
+      newTab: newTab && !activeTab ? true : undefined,
+      activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
+      reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
+      openPanel: showPanel || (!noPanel && !agentOwnedCall),
+      ...claimArgs,
+      ...genericArgs,
+    });
+    if (openDevice) {
+      // Navigate first, then apply emulation to whichever tab that resolved to.
+      return {
+        kind: "execute",
+        label: "browser open",
+        steps: [
+          navigateStep,
+          {
+            key: "emulation",
+            method: "ade/actions/call",
+            unwrapToolResult: true,
+            params: (values) => {
+              const status = unwrapActionEnvelope(values.result);
+              const resolvedTabId = tabId
+                ?? (isRecord(status) ? asString(status.activeTabId) : null);
+              return {
+                name: "run_ade_action",
+                arguments: {
+                  domain: "built_in_browser",
+                  action: "setEmulation",
+                  args: {
+                    ...(resolvedTabId ? { tabId: resolvedTabId } : {}),
+                    preset: openDevice,
+                    ...claimArgs,
+                  },
+                },
+              };
+            },
+          },
+        ],
+      };
+    }
+    return { kind: "execute", label: "browser open", steps: [navigateStep] };
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
@@ -11084,8 +12060,11 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
-    const url =
-      explicitUrl ?? genericUrl ?? (args.length ? args.join(" ") : undefined);
+    // `browserPositionals`, not `args.join(" ")`: the tail was spliced out of
+    // `args` at the boundary, so `browser new-tab -- https://x.test` would open
+    // a blank tab. Same collector as `open`.
+    const positionalUrl = browserPositionals(args).join(" ");
+    const url = explicitUrl ?? genericUrl ?? (positionalUrl || undefined);
     return {
       kind: "execute",
       label: "browser new tab",
@@ -11116,7 +12095,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       steps: [
         actionStep("result", "built_in_browser", "switchTab", {
           tabId: requireValue(
-            explicitTabId ?? genericTabId ?? firstPositional(args),
+            explicitTabId ?? genericTabId ?? firstBrowserPositional(args),
             "tabId",
           ),
           openPanel: !noPanel,
@@ -11137,7 +12116,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       steps: [
         actionStep("result", "built_in_browser", "closeTab", {
           tabId: requireValue(
-            explicitTabId ?? genericTabId ?? firstPositional(args),
+            explicitTabId ?? genericTabId ?? firstBrowserPositional(args),
             "tabId",
           ),
           ...genericArgs,
@@ -11145,7 +12124,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "observe" || sub === "snapshot")
+  if (isBrowserSubcommand(sub, "observe"))
     return {
       kind: "execute",
       label: "browser observe",
@@ -11189,9 +12168,13 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "type" || sub === "type-text") {
+  if (isBrowserSubcommand(sub, "type")) {
     const actionArgs = readBrowserAgentActionArgs(args);
-    const text = readValue(args, ["--text"]) ?? args.join(" ");
+    // Same positional grammar as `open` and `key`: leftover flags stay flags
+    // and a `--` fenced value is typed literally.
+    // Not `--text`: that is the global output switch every `ade browser`
+    // example ends with, so it cannot also name this command's value.
+    const text = readValue(args, ["--value"]) ?? browserPositionals(args).join(" ");
     if (!text.trim()) throw new CliUsageError("browser type requires text.");
     return {
       kind: "execute",
@@ -11216,7 +12199,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
       throw new CliUsageError("browser fill requires --selector, --text-match, --test-id, --element, or --handle.");
     }
     const explicitValue = readValue(args, ["--value"]);
-    const text = explicitValue ?? args.join(" ");
+    // `browserPositionals`, not `args.join(" ")`: `fill` is the same command
+    // family as `open` / `key` / `select-option`, so `fill --selector x --
+    // --literal` fills the literal string rather than "-- --literal".
+    const text = explicitValue ?? browserPositionals(args).join(" ");
     if (explicitValue == null && !text.length) throw new CliUsageError("browser fill requires text.");
     const fillPayloadKey = typeof targetArgs.text === "string" ? "value" : "text";
     return {
@@ -11263,10 +12249,14 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "key" || sub === "press" || sub === "dispatch-key") {
+  if (isBrowserSubcommand(sub, "key")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
-    const key = readValue(args, ["--key"]) ?? firstPositional(args);
+    // `firstBrowserPositional`, not `firstPositional`: any value-carrying flag
+    // this branch does not itself read would otherwise have its VALUE taken as
+    // the key ("browser key --button left Enter" → key "left"), and a key
+    // fenced behind `--` would not be found at all.
+    const key = readValue(args, ["--key"]) ?? firstBrowserPositional(args);
     if (!key) throw new CliUsageError("browser key requires a key.");
     return {
       kind: "execute",
@@ -11285,7 +12275,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "scroll" || sub === "wheel") {
+  if (isBrowserSubcommand(sub, "scroll")) {
     const deltaX = readNumberOption(args, ["--dx", "--delta-x"]) ?? 0;
     const deltaY = readNumberOption(args, ["--dy", "--delta-y"]) ?? 0;
     if (deltaX === 0 && deltaY === 0)
@@ -11309,7 +12299,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "wait" || sub === "wait-for") {
+  if (isBrowserSubcommand(sub, "wait")) {
     const actionArgs = readBrowserAgentActionArgs(args);
     const targetArgs = readBrowserClickTargetArgs(args);
     const url = readValue(args, ["--url"]);
@@ -11337,7 +12327,423 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "trace" || sub === "action-trace" || sub === "timeline")
+  if (isBrowserSubcommand(sub, "emulate")) {
+    const off = readFlag(args, ["--off", "--reset", "--clear", "--no-device", "--desktop"]);
+    const device = readValue(args, ["--device", "--preset", "--emulate"]);
+    const width = readNumberOption(args, ["--width"]);
+    const height = readNumberOption(args, ["--height"]);
+    const scale = readNumberOption(args, ["--scale", "--device-scale-factor", "--dpr"]);
+    const mobile = readFlag(args, ["--mobile", "--touch"]);
+    const notMobile = readFlag(args, ["--no-mobile", "--no-touch"]);
+    const userAgent = readValue(args, ["--user-agent", "--ua"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    // `firstBrowserPositional`, not `firstPositional`: the preset goes through
+    // the same grammar as every other browser value, so `browser emulate --
+    // --iphone` names a preset instead of losing it to the fence.
+    const preset = off ? null : device ?? firstBrowserPositional(args) ?? null;
+    if (!off && !preset && width == null && height == null) {
+      throw new CliUsageError(
+        "browser emulate requires --device <preset>, --width/--height, or --off.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "browser emulate",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setEmulation",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            preset,
+            ...(width == null ? {} : { width }),
+            ...(height == null ? {} : { height }),
+            ...(scale == null ? {} : { deviceScaleFactor: scale }),
+            ...(mobile ? { mobile: true } : {}),
+            ...(notMobile ? { mobile: false } : {}),
+            ...(userAgent ? { userAgent } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "zoom") {
+    const reset = readFlag(args, ["--reset", "--off", "--default"]);
+    const factor = readNumberOption(args, ["--factor", "--zoom", "--level"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = reset || factor != null ? null : firstBrowserPositional(args);
+    const resolvedFactor = factor ?? (positional ? Number(positional) : null);
+    if (!reset && (resolvedFactor == null || !Number.isFinite(resolvedFactor))) {
+      throw new CliUsageError("browser zoom requires --factor <n> or --reset.");
+    }
+    return {
+      kind: "execute",
+      label: "browser zoom",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setZoom",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(reset ? { reset: true } : { factor: resolvedFactor }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "findStop")) {
+    const action = readValue(args, ["--action", "--selection"]);
+    return {
+      kind: "execute",
+      label: "browser find stop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "stopFindInPage",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(action ? { action } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "find")) {
+    // `--text` is the global output switch, not this command's value.
+    const explicitText = readValue(args, ["--query", "--find"]);
+    const matchCase = readFlag(args, ["--match-case", "--case-sensitive"]);
+    const backward = readFlag(args, ["--backward", "--previous", "--prev"]);
+    const findNext = readFlag(args, ["--next", "--find-next"]);
+    const timeoutMs = readNumberOption(args, ["--timeout-ms", "--timeout"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    // `browserPositionals`, not `args.join(" ")`: the tail was spliced out at
+    // the boundary, so `browser find -- hello` had no search text left.
+    const text = explicitText ?? browserPositionals(args).join(" ");
+    if (!text.trim()) throw new CliUsageError("browser find requires search text.");
+    return {
+      kind: "execute",
+      label: "browser find",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "findInPage",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            text,
+            ...(matchCase ? { matchCase: true } : {}),
+            ...(backward ? { forward: false } : {}),
+            ...(findNext ? { findNext: true } : {}),
+            ...(timeoutMs == null ? {} : { timeoutMs }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "devtools")) {
+    const close = readFlag(args, ["--close", "--off", "--hide"]);
+    const open = readFlag(args, ["--open", "--on", "--show"]);
+    const mode = readValue(args, ["--mode", "--dock", "--position"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = (firstBrowserPositional(args) ?? "").toLowerCase();
+    const explicitClose = close || positional === "close" || positional === "off";
+    const explicitOpen = open || positional === "open" || positional === "on";
+    if (explicitClose && explicitOpen) {
+      throw new CliUsageError("browser devtools cannot both open and close.");
+    }
+    // Opening is the useful default; closing needs to be asked for.
+    const shouldOpen = !explicitClose;
+    return {
+      kind: "execute",
+      label: "browser devtools",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "setDevTools",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            open: shouldOpen,
+            ...(mode ? { mode } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "network")) {
+    const enable = readFlag(args, ["--on", "--enable", "--start", "--record"]);
+    const disable = readFlag(args, ["--off", "--disable", "--stop"]);
+    const failedOnly = readFlag(args, ["--failed", "--errors", "--failures"]);
+    const all = readFlag(args, ["--all"]);
+    const limit = readNumberOption(args, ["--limit", "--entries"]);
+    const filter = readValue(args, ["--filter", "--match", "--grep"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    const positional = (firstBrowserPositional(args) ?? "").toLowerCase();
+    const turnOn = enable || positional === "on" || positional === "start" || positional === "enable";
+    const turnOff = disable || positional === "off" || positional === "stop" || positional === "disable";
+    if (turnOn || turnOff) {
+      return {
+        kind: "execute",
+        label: "browser network logging",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "setNetworkLogging",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              enabled: turnOn,
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser network",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getNetworkLog",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(limit == null ? {} : { limit }),
+            ...(filter ? { filter } : {}),
+            ...(failedOnly && !all ? { failedOnly: true } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "har")) {
+    const failedOnly = readFlag(args, ["--failed", "--errors"]);
+    const filter = readValue(args, ["--filter", "--match", "--grep"]);
+    return {
+      kind: "execute",
+      label: "browser har",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "exportHar",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(filter ? { filter } : {}),
+            ...(failedOnly ? { failedOnly: true } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "hover") {
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const hasCoordinates = x != null || y != null;
+    if (hasCoordinates && (x == null || y == null)) {
+      throw new CliUsageError("browser hover requires both --x and --y when using coordinates.");
+    }
+    if (!hasCoordinates && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser hover requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser hover",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "hover",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            ...targetArgs,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "drag")) {
+    const destination = readBrowserDragDestinationArgs(args);
+    const x = readNumberOption(args, ["--x", "--from-x"]);
+    const y = readNumberOption(args, ["--y", "--from-y"]);
+    const steps = readNumberOption(args, ["--steps"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const hasCoordinates = x != null || y != null;
+    if (hasCoordinates && (x == null || y == null)) {
+      throw new CliUsageError("browser drag requires both --x and --y when using source coordinates.");
+    }
+    if (!hasCoordinates && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser drag requires a source: --x/--y, --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    if (Object.keys(destination).length === 0) {
+      throw new CliUsageError("browser drag requires a destination: --to-x/--to-y, --to-selector, --to-text-match, --to-test-id, --to-element, or --to-handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser drag",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "drag",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            ...targetArgs,
+            ...destination,
+            ...(steps == null ? {} : { steps }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "selectOption")) {
+    const value = readValue(args, ["--value", "--option-value"]);
+    // `--label` and `--index` already alias the element target flags, so the
+    // option selectors get their own unambiguous names.
+    const label = readValue(args, ["--option-label", "--option"]);
+    const index = readNumberOption(args, ["--option-index"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser select-option requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const positional = value == null && label == null && index == null
+      ? firstBrowserPositional(args)
+      : null;
+    if (value == null && label == null && index == null && !positional) {
+      throw new CliUsageError("browser select-option requires --value, --label, or --index.");
+    }
+    return {
+      kind: "execute",
+      label: "browser select option",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "selectOption",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(value != null ? { value } : {}),
+            ...(label != null ? { label } : {}),
+            ...(index != null ? { index } : {}),
+            ...(positional ? { value: positional } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "upload")) {
+    const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--upload"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser upload requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    // `browserPositionals`, not a raw filter: the filter both kept flag values
+    // and lost the tail, so `browser upload --selector x -- foo.txt` failed.
+    const paths = explicitPaths.length ? explicitPaths : browserPositionals(args);
+    if (!paths.length) throw new CliUsageError("browser upload requires at least one file path.");
+    return {
+      kind: "execute",
+      label: "browser upload",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "uploadFile",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "record")) {
+    const mode = (firstBrowserPositional(args) ?? "status").toLowerCase();
+    if (mode === "start" || mode === "begin") {
+      const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
+      const caption = readValue(args, ["--caption", "--description", "--desc"]);
+      return {
+        kind: "execute",
+        label: "browser record start",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "startRecording",
+            collectGenericObjectArgs(args, {
+              ...readBrowserOwnedTabTargetArgs(args),
+              ...(fps == null ? {} : { fps }),
+              ...(caption ? { caption } : {}),
+            }),
+          ),
+        ],
+      };
+    }
+    if (mode === "stop" || mode === "end" || mode === "finish") {
+      const ownerBase = readProofOwnerBase(args);
+      const title = readValue(args, ["--title", "--name"]) ?? "ADE browser recording";
+      return {
+        kind: "execute",
+        label: "browser record stop",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "stopRecording",
+            collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+          ),
+          {
+            key: "proof",
+            method: "ade/actions/call",
+            unwrapToolResult: true,
+            params: (values) => {
+              // A caption supplied at `record start` is the opt-in signal that
+              // this recording is reviewer-facing evidence. Without one the file
+              // stays scratch and nothing reaches the proof drawer.
+              const recording = unwrapActionEnvelope(values.result);
+              const caption = isRecord(recording) ? asString(recording.caption) : null;
+              const filePath = isRecord(recording) ? asString(recording.path) : null;
+              const shouldIngest = Boolean(caption && filePath);
+              return {
+                name: "ingest_computer_use_artifacts",
+                arguments: {
+                  backendStyle: "manual",
+                  backendName: "ade-browser",
+                  toolName: "browser record",
+                  callerRoot: process.cwd(),
+                  ...ownerBase,
+                  inputs: shouldIngest
+                    ? [
+                        {
+                          kind: "video_recording",
+                          title,
+                          description: caption,
+                          path: filePath,
+                        },
+                      ]
+                    : [],
+                },
+              };
+            },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unknown browser record command: ${mode}. Use start or stop.`);
+  }
+  if (isBrowserSubcommand(sub, "trace"))
     return {
       kind: "execute",
       label: "browser trace",
@@ -11350,12 +12756,17 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "proof" || sub === "promote") {
+  if (isBrowserSubcommand(sub, "proof")) {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
     const ownerBase = readProofOwnerBase(args);
+    const includeHar = readFlag(args, ["--har", "--with-har"]);
+    // `--tab` and the lane claim are read once and used by both steps, rather
+    // than re-read from an argv the observation reader has already consumed.
+    const harTargetArgs: JsonObject = readBrowserOwnedTabTargetArgs(args);
     const observeArgs = collectGenericObjectArgs(args, {
-      ...readBrowserObservationArgs(args),
+      ...harTargetArgs,
+      ...readBrowserObservationOnlyArgs(args),
       includeDom: false,
     });
     return {
@@ -11363,6 +12774,15 @@ function buildBrowserPlan(args: string[]): CliPlan {
       label: "browser proof",
       steps: [
         actionStep("observation", "built_in_browser", "observe", observeArgs),
+        // The HAR rides the same proof: a screenshot says what the page looked
+        // like, the trace says what it asked the network for. Exporting fails
+        // loudly (with the "turn network logging on" message) rather than
+        // filing a screenshot and silently dropping the half that was asked for.
+        ...(includeHar
+          ? [
+              actionStep("har", "built_in_browser", "exportHar", harTargetArgs),
+            ]
+          : []),
         {
           key: "result",
           method: "ade/actions/call",
@@ -11374,6 +12794,13 @@ function buildBrowserPlan(args: string[]): CliPlan {
             const filePath = isRecord(observation) ? asString(observation.filePath) : null;
             if (!filePath) {
               throw new CliUsageError("Browser proof could not find an observation file path.");
+            }
+            const harExport = includeHar ? unwrapActionEnvelope(values.har) : null;
+            const harPath = isRecord(harExport) ? asString(harExport.filePath) : null;
+            if (includeHar && !harPath) {
+              throw new CliUsageError(
+                "Browser proof could not find the exported HAR path. Turn network logging on for the tab (`ade browser network on`) and retry.",
+              );
             }
             return {
               name: "ingest_computer_use_artifacts",
@@ -11390,6 +12817,18 @@ function buildBrowserPlan(args: string[]): CliPlan {
                     ...(caption ? { description: caption } : {}),
                     path: filePath,
                   },
+                  // Same owners, same call: one ingest keeps the trace linked to
+                  // the screenshot it belongs with.
+                  ...(harPath
+                    ? [
+                        {
+                          kind: "browser_trace",
+                          title: `${title} (network)`,
+                          ...(caption ? { description: caption } : {}),
+                          path: harPath,
+                        },
+                      ]
+                    : []),
                 ],
               },
             };
@@ -11398,7 +12837,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "reload" || sub === "refresh")
+  if (isBrowserSubcommand(sub, "reload"))
     return {
       kind: "execute",
       label: "browser reload",
@@ -11450,7 +12889,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "screenshot" || sub === "capture")
+  if (isBrowserSubcommand(sub, "screenshot"))
     return {
       kind: "execute",
       label: "browser screenshot",
@@ -11463,7 +12902,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "select" || sub === "select-point" || sub === "point") {
+  if (isBrowserSubcommand(sub, "selectPoint")) {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
@@ -12889,10 +14328,157 @@ function buildUpdatePlan(args: string[]): CliPlan {
   };
 }
 
-const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
+/**
+ * Every flag the `ade browser` parser reads a VALUE for.
+ *
+ * One table, handed to the positional and terminator readers by the browser
+ * builder ALONE, so those grammars agree with what `browser`'s own `readValue`
+ * / `readNumberOption` calls consume without widening any other command. A
+ * hand-kept subset drifted once already: `browser --tab-id t1 close`
+ * dispatched on "t1" and `browser fill --selector -- --value y` lost its
+ * fenced literal. `cliBrowserGrammar.test.ts` scans the browser plan's own
+ * source for those readers and fails if a flag is missing here, so the two
+ * cannot separate again — and scans the whole file to fail if a name in here
+ * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
+ */
+const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--action",
+  // `collectGenericObjectArgs` is called straight out of the browser plan and
+  // consumes these, so they carry a value here like any other browser flag —
+  // without them `ade browser --arg-json '{}' open` dispatched on the JSON.
+  "--arg",
+  "--arg-json",
+  "--browser-session",
+  "--browser-session-id",
+  "--button",
+  "--caption",
+  "--chat-session",
+  "--chat-session-id",
+  "--click-count",
+  "--count",
+  "--css",
+  "--data-cy",
+  "--data-test-id",
+  "--data-testid",
+  "--delta-x",
+  "--delta-y",
+  "--desc",
+  "--description",
+  "--device",
+  "--device-scale-factor",
+  "--dock",
+  "--dpr",
+  "--dx",
+  "--dy",
+  "--element",
+  "--element-handle",
+  "--element-index",
+  "--element-limit",
+  "--emulate",
+  "--entries",
+  "--factor",
+  "--file",
+  "--filter",
+  "--find",
+  "--for",
+  "--fps",
+  "--frame-rate",
+  "--from-x",
+  "--from-y",
+  "--grep",
+  "--handle",
+  "--height",
+  "--idle-ms",
+  "--index",
+  "--input",
+  "--input-json",
+  "--json-input",
+  "--keep",
+  "--keep-count",
+  "--key",
+  "--label",
+  "--lane",
+  "--lane-id",
+  "--lease-ms",
+  "--lease-ttl-ms",
+  "--level",
+  "--limit",
+  "--load-state",
+  "--match",
+  "--max-elements",
+  "--message",
+  "--mode",
+  "--name",
+  "--network-idle-ms",
+  "--option",
+  "--option-index",
+  "--option-label",
+  "--option-value",
+  "--owner",
+  "--owner-id",
+  "--owner-kind",
+  "--path",
+  "--position",
+  "--preset",
+  "--query",
+  "--reason",
+  "--ref",
+  "--scale",
+  "--selection",
+  "--selector",
+  "--set",
+  "--set-json",
+  "--session",
+  "--session-id",
+  "--settle-ms",
+  "--state",
+  "--steps",
+  "--tab",
+  "--tab-id",
+  "--test-id",
+  "--testid",
+  "--text-match",
+  "--timeout",
+  "--timeout-ms",
+  "--title",
+  "--to-css",
+  "--to-data-testid",
+  "--to-element",
+  "--to-element-index",
+  "--to-handle",
+  "--to-index",
+  "--to-label",
+  "--to-name",
+  "--to-ref",
+  "--to-selector",
+  "--to-test-id",
+  "--to-testid",
+  "--to-text-match",
+  "--to-x",
+  "--to-y",
+  "--ua",
+  "--upload",
+  "--url",
+  "--user-agent",
+  "--value",
+  "--wait-after-ms",
+  "--why",
+  "--width",
+  "--x",
+  "--y",
+  "--zoom",
+];
+
+const BROWSER_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(BROWSER_VALUE_FLAGS);
+
+const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   // Only flags that actually take a following value (readValue / readIntOption
   // callers) belong here. Boolean-only flags consumed via readFlag must be
   // excluded, otherwise the next positional would be swallowed as their value.
+  // `ade browser`'s table is deliberately NOT spread in: it is passed to the
+  // positional readers by the browser builder only. Merging it here once made
+  // `--text` a CLI-wide carrier and `ade session show --text s1` silently read
+  // the ambient session instead of "s1".
   "-b",
   "-m",
   "-q",
@@ -13115,23 +14701,26 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--y",
 ]);
 
-function hasHelpFlag(args: string[]): boolean {
-  const terminatorIndex = args.indexOf("--");
+/**
+ * `carriers` is the command family's value-flag table, not the global one.
+ * `--` after a flag that carries a value is that flag's value, not a
+ * terminator, so scanning `browser upload --selector input --upload -- --help`
+ * with the global set stopped at the `--` and hid a real `--help`.
+ */
+function hasHelpFlag(
+  args: string[],
+  carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
+): boolean {
+  const terminatorIndex = firstTerminatorIndex(args, carriers);
   const searchable =
     terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
-  const valueCarrierFlags = VALUE_CARRIER_FLAGS;
-  for (let i = 0; i < searchable.length; i++) {
-    const token = searchable[i]!;
-    if (token === "--help") {
-      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
-      return true;
-    }
-    if (token === "-h") {
-      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
-      return true;
-    }
-  }
-  return false;
+  // Help wins over any value: this scan does not skip the token after a
+  // value-carrying flag, so `ios-sim launch --device --help` prints help
+  // instead of launching a device literally named "--help". (`readValue`
+  // itself does NOT reject a "-" value — only `readCommandTextValue` does — so
+  // the rule has to live here.) `--flag=--help` and a `--help` fenced past the
+  // terminator are the two ways to pass the literal string.
+  return searchable.some((token) => token === "--help" || token === "-h");
 }
 
 function buildCliPlan(
@@ -13176,6 +14765,8 @@ function buildCliPlan(
     "ade-browser": "browser",
     "built-in-browser": "browser",
     "builtin-browser": "browser",
+    worktools: "work-tools",
+    "tools-pane": "work-tools",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -13197,17 +14788,21 @@ function buildCliPlan(
     logout: "auth",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
+  // The browser grammar carries values the global table does not, and a `--`
+  // that belongs to one of them must not fence `--help` out of the scan.
+  const helpCarriers =
+    primaryHelpKey === "browser" ? BROWSER_VALUE_CARRIER_FLAGS : VALUE_CARRIER_FLAGS;
   // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
   // client. Keep ordinary `ade code --help` on the established top-level help
   // page, but let the remote subcommand render its actual connection guidance.
   if (
     primary === "code"
     && firstStandalonePositional([...args]) === "remote"
-    && hasHelpFlag(args)
+    && hasHelpFlag(args, helpCarriers)
   ) {
     return { kind: "ade-code", rest: args };
   }
-  if (hasHelpFlag(args)) {
+  if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "ios-sim") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
@@ -13510,6 +15105,12 @@ function buildCliPlan(
     primary === "builtin-browser"
   )
     return buildBrowserPlan(args);
+  if (
+    primary === "work-tools" ||
+    primary === "worktools" ||
+    primary === "tools-pane"
+  )
+    return buildWorkToolsPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "storage" || primary === "disk")
@@ -15667,6 +17268,55 @@ function withProjectId(
   };
 }
 
+/**
+ * The desktop socket is not always the legacy single-project server it was
+ * named for. When the machine-runtime branch cannot be used — a build-hash
+ * mismatch, a role the daemon will not serve, a socket that only the fallback
+ * path knows about — we land here talking to a multi-project runtime, which
+ * rejects every project-scoped method with "requires params.projectId".
+ * Resolve the project the same way the runtime branch does so the fallback
+ * carries an identity instead of failing on every `ade/actions/call`.
+ *
+ * Best effort by design: a genuinely legacy desktop socket has no
+ * `projects.add`, and there we must stay a bare pass-through.
+ */
+async function resolveDesktopSocketProjectId(
+  connection: CliConnection,
+  projectRoot: string,
+): Promise<string | null> {
+  try {
+    const registered = await connection.request(
+      "projects.add",
+      automaticProjectRegistrationParams(projectRoot),
+    );
+    return isRecord(registered) ? asString(registered.projectId) : null;
+  } catch (error) {
+    // A genuinely legacy desktop socket has no `projects.add` at all, and
+    // staying a pass-through is correct there. Anything else — a permission
+    // refusal, a stale registry, a disk error — means `activeProjectId` is
+    // silently null and every later `ade/actions/call` fails with the raw
+    // "requires params.projectId" this helper exists to prevent. Say so once
+    // rather than reproducing the unhelpful error with no explanation.
+    // `SocketJsonRpcClient` keeps only the message, not the JSON-RPC code, so
+    // "this socket has never heard of projects.add" can only be recognised by
+    // its text. Both spellings the two socket servers use are matched; anything
+    // else is treated as a real failure and reported.
+    const message = error instanceof Error ? error.message : String(error);
+    const isLegacySocket = /(?:method not found|unexpected method)/i.test(message);
+    if (!isLegacySocket) {
+      try {
+        process.stderr.write(
+          `ade: could not register this project with the desktop (${formatDiagnosticError(error)}). `
+          + "Project-scoped commands may fail until ADE Desktop is restarted.\n",
+        );
+      } catch {
+        // Stderr may be gone; a diagnostic must never break the command.
+      }
+    }
+    return null;
+  }
+}
+
 async function createConnection(
   options: GlobalOptions,
   args: { autoRegisterProject?: boolean; machineRuntimeOnly?: boolean } = {},
@@ -15743,15 +17393,28 @@ async function createConnection(
         legacySocketPath,
         options.timeoutMs,
       );
+      let activeProjectId: string | null = null;
       const connection: CliConnection = {
         mode: "desktop-socket",
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
         socketPath: legacySocketPath,
-        request: (method, params) => socketClient.request(method, params),
+        request: (method, params) =>
+          socketClient.request(
+            method,
+            activeProjectId && !isMachineRuntimeScopedMethod(method)
+              ? withProjectId(params, activeProjectId)
+              : params,
+          ),
         close: () => socketClient.close(),
       };
       await initializeConnection(connection, options);
+      if (autoRegisterProject) {
+        activeProjectId = await resolveDesktopSocketProjectId(
+          connection,
+          roots.projectRoot,
+        );
+      }
       return connection;
     } catch (error) {
       if (options.requireSocket) throw error;
@@ -21052,18 +22715,93 @@ function formatTestsRuns(value: unknown): string {
   );
 }
 
+/**
+ * Owner of one listed artifact, as "lane <id> · chat <id>".
+ *
+ * The drawer is owner-scoped, so "which lane/chat is this row filed under" is
+ * the column that tells an agent whether it is looking at its own proof.
+ */
+function proofArtifactOwnerCell(artifact: JsonObject): string {
+  const links = firstArray(artifact, ["links"]);
+  const ownerId = (kind: string): string | null => {
+    for (const link of links) {
+      if (asString(link.ownerKind) === kind) return asString(link.ownerId);
+    }
+    return null;
+  };
+  const laneId = ownerId("lane") ?? asString(artifact.laneId);
+  const chatSessionId = ownerId("chat_session");
+  const parts: string[] = [];
+  if (laneId) parts.push(`lane ${shortProofOwnerId(laneId)}`);
+  if (chatSessionId) parts.push(`chat ${shortProofOwnerId(chatSessionId)}`);
+  return parts.length ? parts.join(" · ") : "unowned";
+}
+
+/** "Proof for lane … · chat …" header naming the scope that was listed. */
+function proofListScopeLabel(value: unknown, artifactCount: number): string {
+  const scope = firstRecord(value, ["scope"]);
+  const owners = firstArray(scope, ["owners"]);
+  const described = owners
+    .map((owner) => {
+      const id = asString(owner.id);
+      const kind = asString(owner.kind);
+      if (!id || !kind) return null;
+      return `${kind === "chat_session" ? "chat" : kind} ${shortProofOwnerId(id)}`;
+    })
+    .filter((entry): entry is string => Boolean(entry));
+  const target = described.length
+    ? described.join(" · ")
+    : scope?.projectWide === true
+      ? "this project (all owners)"
+      : "the current session";
+  return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
+}
+
 function formatProofList(value: unknown): string {
   const artifacts = firstArray(value, ["artifacts", "items"]);
-  return renderTable(
-    ["kind", "created", "title", "path"],
-    artifacts.map((artifact) => [
-      artifact.kind ?? artifact.type,
-      artifact.createdAt,
-      artifact.title ?? artifact.name,
-      artifact.path ?? artifact.uri,
-    ]),
-    "ADE proof artifacts\n(no artifacts)",
-  );
+  const header = proofListScopeLabel(value, artifacts.length);
+  return [
+    header,
+    renderTable(
+      ["kind", "created", "owner", "title", "path"],
+      artifacts.map((artifact) => [
+        artifact.kind ?? artifact.type,
+        artifact.createdAt,
+        proofArtifactOwnerCell(artifact),
+        artifact.title ?? artifact.name,
+        artifact.path ?? artifact.uri,
+      ]),
+      "(no artifacts)",
+    ),
+  ].join("\n");
+}
+
+/**
+ * Text output of a filing command. The confirmation line is last on purpose:
+ * an agent that reads only the tail of the output still sees whether a record
+ * landed and which lane/chat it landed in.
+ */
+function formatProofFiled(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const artifacts = firstArray(record, ["artifacts"]);
+  const confirmation = asString(record.confirmation) ?? "";
+  return [
+    renderTable(
+      ["artifact", "kind", "title", "path"],
+      artifacts.map((artifact) => [
+        artifact.id,
+        artifact.kind,
+        artifact.title,
+        artifact.uri,
+      ]),
+      "(no artifact rows returned)",
+    ),
+    record.verified === true
+      ? "verified: re-read through ade proof list"
+      : "verified: skipped (--no-verify)",
+    "",
+    confirmation,
+  ].join("\n");
 }
 
 function formatIosSimStatus(value: unknown): string {
@@ -21413,9 +23151,40 @@ function formatAppControlStatus(value: unknown): string {
 
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  // This machine has no desktop attached, so there is no browser here to
+  // report on: the daemon handed the URL to a desktop that has this lane
+  // pinned, which opens it over a tunnel back to this machine's localhost.
+  if (status.status === "forwarded_to_desktop") {
+    const desktop = asString(status.desktopLabel);
+    const reason = asString(status.reason);
+    return renderKeyValues("ADE browser", [
+      ["url", status.url],
+      [
+        "opened",
+        // A first-use tunnel port needs a human "Allow" on the desktop, which
+        // cannot happen inside the 5s ack window. The desktop acks immediately
+        // with `awaitingApproval` instead of leaving the CLI to print a
+        // failure for a request that is very much alive.
+        status.awaitingApproval === true
+          ? `waiting for approval on ${desktop ?? "the attached desktop"} — reaching this port needs a yes in ADE`
+          : status.acknowledged === true
+            ? `on ${desktop ?? "the attached desktop"} via tunnel`
+            : "no desktop is attached to this machine; open ADE Desktop with this lane pinned",
+      ],
+      ["request", status.requestId],
+      ["note", reason],
+    ]);
+  }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
+  // `claimable` marks a tab the human opened that no chat owns. It is visible
+  // so an agent can discover it instead of starting a duplicate tab, but every
+  // action on it still fails until the caller claims it — so the owner column
+  // says exactly that, with the command that fixes it.
   const ownerForTab = (tab: Record<string, unknown>): string => {
+    if (tab.claimable === true) {
+      return `not yours — ade browser claim --tab ${asString(tab.id) ?? "<id>"}`;
+    }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
     return [lane, chat].filter(Boolean).join(" / ");
@@ -21443,6 +23212,96 @@ function formatBrowserStatus(value: unknown): string {
         asString(tab.id) === activeTabId ? "*" : "",
         tab.id,
         ownerForTab(tab),
+        tab.title,
+        tab.url,
+      ]),
+      "Browser tabs\n(no browser tabs)",
+    ),
+  ].join("\n");
+}
+
+/**
+ * Dev servers ADE noticed in its own terminal output. Detection is passive, so
+ * an empty list means "nothing printed a ready line ADE recognised", not
+ * "nothing is listening" — the empty-state line says so rather than leaving an
+ * agent to conclude its server failed to start.
+ */
+function formatBrowserDevServers(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const servers = firstArray(result, ["servers"]);
+  return renderTable(
+    ["port", "url", "lane", "terminal", "detected"],
+    servers.map((server) => {
+      const source = firstRecord(server, ["source"]) ?? {};
+      return [
+        server.port,
+        server.url,
+        source.laneId,
+        source.sessionId,
+        server.detectedAt,
+      ];
+    }),
+    "ADE dev servers\n(no dev servers detected in ADE terminals for this chat)",
+  );
+}
+
+/**
+ * The Work tools pane as the phone and the hosted web client see it.
+ *
+ * A null `browser` is an ordinary state, not a failure, so the reason is
+ * rendered as the browser's value using the same sentences every read-only
+ * client shows. A null `appControl` has no reason code — the daemon reads that
+ * one in-process, so the only way to have none is to have launched nothing.
+ * Observation paths are printed but not fetched: bytes come from
+ * `work_tools.readObservationPreview`, deliberately not from a state read.
+ */
+function formatWorkToolsState(value: unknown): string {
+  const state = isRecord(value) ? value : {};
+  const browser = firstRecord(state, ["browser"]);
+  const appControl = firstRecord(state, ["appControl"]);
+  const browserObservation = browser ? firstRecord(browser, ["latestObservation"]) : null;
+  const appControlObservation = appControl
+    ? firstRecord(appControl, ["latestObservation"])
+    : null;
+  const tabs = browser ? firstArray(browser, ["tabs"]) : [];
+  const activeTabId = browser ? asString(browser.activeTabId) : null;
+  return [
+    renderKeyValues("ADE work tools", [
+      ["lane", state.laneId],
+      ["active tool", state.activeTool ?? "(desktop has published none)"],
+      // The pane is a tab strip; the active tool is only the tab on screen.
+      [
+        "open tools",
+        (Array.isArray(state.openTools) ? state.openTools : [])
+          .map((tool) => asString(tool))
+          .filter((tool): tool is string => Boolean(tool))
+          .join(", "),
+      ],
+      ["active tool updated", state.activeToolUpdatedAt],
+      ["captured", state.capturedAt],
+      [
+        "browser",
+        browser
+          ? `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`
+          : workToolsUnavailableMessage(asString(state.browserUnavailable)),
+      ],
+      ["browser active tab", activeTabId],
+      ["browser observation", browserObservation?.path],
+      ["browser observation captured", browserObservation?.capturedAt],
+      ["app control app", appControl?.appName],
+      ["app control status", appControl?.status],
+      ["app control driver", appControl?.driver],
+      ["app control observation", appControlObservation?.path],
+    ]),
+    "",
+    renderTable(
+      ["active", "tab", "owner chat", "recording", "handoff", "title", "url"],
+      tabs.map((tab) => [
+        tab.active === true || asString(tab.id) === activeTabId ? "*" : "",
+        tab.id,
+        tab.ownerChatSessionId,
+        tab.recording === true ? "yes" : "",
+        tab.handoffReason,
         tab.title,
         tab.url,
       ]),
@@ -22341,6 +24200,8 @@ function formatTextOutput(
       return formatTestsRuns(value);
     case "proof-list":
       return formatProofList(value);
+    case "proof-filed":
+      return formatProofFiled(value);
     case "ios-sim-status":
       return formatIosSimStatus(value);
     case "ios-sim-devices":
@@ -22365,6 +24226,10 @@ function formatTextOutput(
       return formatAppControlSelection(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-dev-servers":
+      return formatBrowserDevServers(value);
+    case "work-tools-state":
+      return formatWorkToolsState(value);
     case "browser-sessions":
       return formatBrowserSessions(value);
     case "browser-observation":
@@ -22512,6 +24377,8 @@ function inferFormatter(
     label === "browser close"
   )
     return "browser-status";
+  if (label === "browser dev servers") return "browser-dev-servers";
+  if (label === "work tools state") return "work-tools-state";
   if (
     label === "browser session start" ||
     label === "browser session end" ||
@@ -22526,7 +24393,11 @@ function inferFormatter(
     label === "browser scroll" ||
     label === "browser fill" ||
     label === "browser clear" ||
-    label === "browser wait"
+    label === "browser wait" ||
+    label === "browser hover" ||
+    label === "browser drag" ||
+    label === "browser select option" ||
+    label === "browser upload"
   )
     return "browser-observation";
   if (label === "browser trace") return "browser-trace";
@@ -22553,6 +24424,109 @@ function inferFormatter(
     return "external-sessions";
   }
   return "action-result";
+}
+
+
+/**
+ * Ids ADE prints for humans. A uuid is unreadable in full and unique in its
+ * first block; a lane id is already a readable slug and is left alone.
+ */
+function shortProofOwnerId(id: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
+}
+
+/**
+ * Turns a filing command's raw ingest payload into the one thing its caller
+ * actually has to read: did a record land, and where.
+ *
+ * Throws instead of returning a failure record, so the CLI exits non-zero and
+ * prints `ade: <command> failed — <reason>`. An agent grepping for "failed"
+ * has to find it; a JSON blob that merely lacks an `artifacts` array is exactly
+ * what went unread when six attaches in a row silently did nothing.
+ */
+function summarizeProofFiling(
+  spec: { command: string; verify: boolean },
+  values: JsonObject,
+): JsonObject {
+  const raw = unwrapActionEnvelope(values.result);
+  const record = isRecord(raw) ? raw : {};
+  const artifacts = firstArray(record, ["artifacts"]);
+  const fail = (reason: string): never => {
+    throw new CliToolError(`${spec.command} failed — ${reason}`, {
+      command: spec.command,
+      result: raw ?? null,
+    });
+  };
+  if (!artifacts.length) {
+    const note = asString(record.note);
+    fail(
+      note
+        ? `the runtime filed no proof record: ${note}`
+        : "the runtime returned no proof record for this call",
+    );
+  }
+  const links = firstArray(record, ["links"]);
+  const ownerId = (kind: string): string | null => {
+    for (const link of links) {
+      if (asString(link.ownerKind) === kind) return asString(link.ownerId);
+    }
+    return null;
+  };
+  const laneId = ownerId("lane")
+    ?? artifacts.map((artifact) => asString(artifact.laneId)).find(Boolean)
+    ?? null;
+  const chatSessionId = ownerId("chat_session");
+  const artifactIds = artifacts
+    .map((artifact) => asString(artifact.id))
+    .filter((id): id is string => Boolean(id));
+
+  let verified: boolean | null = null;
+  if (spec.verify) {
+    const verifyValue = values.verify;
+    const verifyFailure = isRecord(verifyValue) && verifyValue.ok === false
+      ? asString(verifyValue.error) ?? "proof listing was refused"
+      : null;
+    if (verifyFailure) {
+      fail(
+        `filed ${artifactIds.join(", ")} but could not re-read it to confirm: ${verifyFailure}`,
+      );
+    }
+    const listed = new Set(
+      firstArray(unwrapActionEnvelope(verifyValue), ["artifacts"])
+        .map((artifact) => asString(artifact.id))
+        .filter((id): id is string => Boolean(id)),
+    );
+    const missing = artifactIds.filter((id) => !listed.has(id));
+    if (missing.length) {
+      fail(
+        `the runtime reported ${missing.join(", ")} but the proof list does not contain it`,
+      );
+    }
+    verified = true;
+  }
+
+  const title = asString(artifacts[0]?.title) ?? "untitled";
+  const owner = [
+    `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
+    `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
+  ].join(" / ");
+  return {
+    ok: true,
+    command: spec.command,
+    filed: artifacts.length,
+    verified,
+    laneId,
+    chatSessionId,
+    artifacts: artifacts.map((artifact) => ({
+      id: artifact.id,
+      kind: artifact.kind,
+      title: artifact.title,
+      uri: artifact.uri,
+    })),
+    confirmation:
+      `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
+      + `to ${owner} (${title})`,
+  };
 }
 
 function summarizeExecution(args: {
@@ -22608,6 +24582,10 @@ function summarizeExecution(args: {
         ? readiness.auth.note
         : "ADE CLI auth is local project access.",
     };
+  }
+
+  if (plan.proofFiling) {
+    return summarizeProofFiling(plan.proofFiling, values);
   }
 
   if (plan.label === "PR create") {
@@ -23416,6 +25394,18 @@ async function executePlan(
               },
             );
           }
+          if (plan.proofFiling) {
+            // Every way a filing command can fail says "failed" in one line,
+            // whether the runtime refused the path, the roots, or the caller
+            // root. A caller that only greps stderr must not have to know
+            // which layer said no.
+            throw new CliToolError(
+              `${plan.proofFiling.command} failed — ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              { command: plan.proofFiling.command, step: step.key },
+            );
+          }
           throw error;
         }
         values[step.key] = {
@@ -24072,6 +26062,8 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 }
 
 export {
+  BROWSER_VALUE_FLAGS,
+  VALUE_CARRIER_FLAGS,
   buildCliPlan,
   buildAdeCodeArgs,
   parseSnoozeDurationMs,

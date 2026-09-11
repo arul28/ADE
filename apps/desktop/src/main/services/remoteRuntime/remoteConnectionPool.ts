@@ -378,6 +378,9 @@ export class RemoteConnectionPool {
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
+  private readonly portForwardInvalidationListeners = new Set<
+    (targetId: string) => void
+  >();
 
   constructor(
     private readonly registry: RemoteTargetRegistry,
@@ -403,6 +406,35 @@ export class RemoteConnectionPool {
     return () => {
       this.evictionListeners.delete(listener);
     };
+  }
+
+  /**
+   * Every loopback forward this target had is gone.
+   *
+   * Fires on both teardown paths — an explicit `disconnect()` and an eviction
+   * when the transport drops — because a forward's local listener does not
+   * outlive the connection that carried it: the paired client disposes its
+   * listeners on transport close, and SSH forwards are closed here. Anything
+   * that remembers a `localPort` for this machine (the browser's
+   * remote-origin registry, the preload's in-flight forward de-dupe) is stale
+   * the moment this fires, and the OS is free to hand that port number to an
+   * unrelated local server.
+   */
+  onPortForwardsInvalidated(listener: (targetId: string) => void): () => void {
+    this.portForwardInvalidationListeners.add(listener);
+    return () => {
+      this.portForwardInvalidationListeners.delete(listener);
+    };
+  }
+
+  private notifyPortForwardsInvalidated(targetId: string): void {
+    for (const listener of [...this.portForwardInvalidationListeners]) {
+      try {
+        listener(targetId);
+      } catch {
+        // Lifecycle notifications are best-effort.
+      }
+    }
   }
 
   private async connectEntry(
@@ -649,9 +681,20 @@ export class RemoteConnectionPool {
     const key = portForwardKey(targetId, remoteHost, remotePort);
     const existing = this.localPortForwards.get(key);
     if (existing) {
-      const entry = await existing;
-      entry.lastUsedAt = Date.now();
-      return snapshotPortForward(entry);
+      const entry = await existing.catch(() => null);
+      // Validate before reuse rather than trusting the map. The `close`
+      // listener that prunes this entry runs a tick after the server actually
+      // stops accepting, and a rejected in-flight forward can still be sitting
+      // here, so a cache hit is not on its own evidence of a live listener —
+      // handing one out is how a caller ended up loading a port nothing was
+      // bound to any more.
+      if (entry?.server.listening) {
+        entry.lastUsedAt = Date.now();
+        return snapshotPortForward(entry);
+      }
+      if (this.localPortForwards.get(key) === existing) {
+        this.localPortForwards.delete(key);
+      }
     }
 
     const pending = (async (): Promise<LocalPortForwardEntry> => {
@@ -1118,6 +1161,14 @@ export class RemoteConnectionPool {
   }
 
   private async closeLocalPortForwardsForTarget(targetId: string): Promise<void> {
+    // Announce before awaiting the closes: the listeners are already unusable
+    // (the paired forward client disposes with the transport, and the SSH
+    // servers below are closing), so anything caching a local port for this
+    // machine must stop handing it out now rather than after the sockets
+    // finish draining. Both teardown paths — `disconnect()` and `evict()` —
+    // funnel through here, which is why the notification lives here and not at
+    // either call site.
+    this.notifyPortForwardsInvalidated(targetId);
     const closes: Promise<void>[] = [];
     for (const [key, pending] of [...this.localPortForwards.entries()]) {
       if (!key.startsWith(`${targetId}\0`)) continue;
@@ -1414,6 +1465,14 @@ async function subscribeToRuntimeEvents(
       projectId,
       cursor: clampCursor(request.cursor),
       limit: clampLimit(request.limit),
+      // No `includeHighVolumeEvents` here, and that omission is the fix: App
+      // Control screencast frames rode this subscription to a desktop that
+      // cannot render them (App Control reports unavailable for a remote
+      // project), and because runtime RPC is a *required* send over the paired
+      // sync transport the host buffered them to 16 MiB and closed the
+      // connection with 4001 every few seconds. Add the flag here — plumbed
+      // from the request — only once a remote surface can actually paint a
+      // frame, so the bytes are always answering a viewer that asked.
       ...(isRemoteRuntimeEventCategory(request.category)
         ? { category: request.category }
         : {}),

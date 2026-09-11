@@ -30,14 +30,63 @@ ade --socket app-control select --x <x> --y <y> --text
 
 Use Inspect mode or `select` to return screenshot-backed DOM, selector, and source context. When the session is owned by a chat or tracked CLI session, ADE can attach the selection to that active Work surface.
 
-## Act
+## Observe and act
+
+App Control follows the same observe-then-act loop as the [ADE browser skill]
+(`../ade-browser/SKILL.md`): observe, use a current handle, act, and verify.
+Start with an observation, then act on the handles it hands you — never guess
+coordinates. Use the App Control commands below for this surface.
 
 ```bash
-ade --socket app-control click --x <x> --y <y> --text
-ade --socket app-control type --value "text" --text
+ade --socket app-control observe --map --text        # screenshot + numbered element map + handles
+ade --socket app-control click --handle obs-...:e:7 --text
+ade --socket app-control click --text-match "Save" --text
+ade --socket app-control hover --test-id row-3 --text
+ade --socket app-control fill --selector "#name" --value "Ada" --text
+ade --socket app-control clear --selector "#name" --text
+ade --socket app-control type "hello" --text
+ade --socket app-control press --key Enter --text
+ade --socket app-control scroll --x 120 --y 420 --delta-y 600 --text
+ade --socket app-control wait --text-match "Saved" --timeout-ms 8000 --text
+ade --socket app-control trace --limit 20 --text
 ```
 
-Use Control mode for input. Re-snapshot after meaningful UI changes.
+Every act command returns a fresh observation, so you rarely need a separate
+`observe` after acting. Add `--fast` to skip the settle delay or `--no-observe`
+to skip the observation entirely. Targets are `--handle`, `--selector`,
+`--text-match`, `--test-id`, `--element <n>`, or `--x`/`--y`; a disabled target
+is rejected rather than clicked. Handles come from the latest observations only
+— ADE keeps the newest 3 per session, so re-observe if a handle has expired.
+
+Observations also carry console output, failed network requests, and the
+in-flight request count, which is usually the fastest way to see why a click
+did nothing.
+
+Register visual evidence for the Work row with:
+
+```bash
+ade --socket app-control proof --caption "Settings saved" --text
+```
+
+To file a file you produced some other way, use `ade proof attach <path>
+--caption "…" --text`. It imports only from the project root, the lane worktree,
+`.ade/{artifacts,cache,tmp}`, the OS temp dir, `/tmp`, and `~/.agent-browser`
+(`.ade/secrets` is denied), and it ends with a confirmation line naming the lane
+and chat it filed under — read that line before reporting proof. The
+**ade-proof-artifacts** skill has the details.
+
+## Windows and drivers
+
+```bash
+ade --socket app-control windows --text                     # debuggable windows
+ade --socket app-control switch-window --target <id> --text # drive another window
+ade --socket app-control drivers --text                     # cdp | computer_use availability
+```
+
+Switching windows clears the action trace, and handles minted against the
+previous window stop resolving — observe again after a switch. `computer_use`
+is listed but not implemented: it reports `unavailable` everywhere, and on
+Windows/Linux the reason is that native app control is macOS only.
 
 ## Logs and terminal
 

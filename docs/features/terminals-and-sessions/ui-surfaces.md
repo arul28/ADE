@@ -14,7 +14,7 @@ Top-level page for the Work tab. Wraps two panes with `PaneTilingLayout`:
   The view + sidebar share the row via a flex container with a draggable
   column separator; the sidebar width is persisted as
   `workSidebarWidthPct` (clamped 26–55%).
-  The sidebar includes the Terminal tab, which renders the same
+  The pane includes the Terminal tool, which renders the same
   attached-terminal surface for chat sessions and running tracked agent CLI
   sessions.
 
@@ -274,7 +274,12 @@ The full card is one full-bleed row with three lines:
    identity for a singleton lane, spawned-chat lineage, a branch only when it
    differs from the lane's declared branch, and the lane PR for a singleton.
    A foreign singleton gets one fixed-width amber machine glyph in the right
-   status cluster; the card's hover details name the machine. When none of those
+   status cluster; the card's hover details name the machine. The same cluster
+   carries `AgentBrowserPresenceBadge` — a pulsing accent globe while this
+   chat's agent is driving the built-in browser, and nothing at all otherwise.
+   It sits beside the machine glyph because it answers the same question:
+   where is this work happening. Compact rows have no line one, so they carry
+   it next to the provider logo stack instead. When none of those
    apply, session delta or last-activity time is the floor, so the line never
    renders empty. A grouped lane owns machine identity and PR state in its
    header; child rows do not repeat them. Lane identity always uses the lane
@@ -566,7 +571,283 @@ Work session when one is selected). It is rendered next to
 not `grid` — the grid layout owns the full row, so the sidebar is
 suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
 container with a 5 px draggable column separator; the sidebar width is
-persisted as `workSidebarWidthPct` (26–55%).
+persisted as `workSidebarWidthPct`.
+
+### The splitter is clamped in two units
+
+`workSidebarSplitter.ts` owns the whole rule, pure so the arithmetic is
+testable without a layout engine. The percentage clamp
+(`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
+mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
+and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
+234 px the pane's own 36 px header — back button, tool name, activity
+dots, ✕ — has nowhere to go, which is how a drag once left the close
+button off-window. So a drag is clamped in **both** units: never below
+`MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
+column narrower than `MIN_WORK_CONTENT_PANE_PX` (360). The container
+width is the only thing the pane supplies; omit it (as the store does
+when it has no layout to consult) and only the percentage rule applies.
+`WORK_SIDEBAR_SPLITTER_PX` (5) belongs to neither pane, and arrow keys
+move the separator by `WORK_SIDEBAR_KEYBOARD_STEP_PCT` (2).
+
+The splitter also announces itself: `TerminalsPage` dispatches
+`ade:work-sidebar-browser-resize-start` / `-end`
+(`renderer/lib/workSidebarBrowserResize.ts`) so the browser panel's
+`useNativeBrowserViewBounds` can raise its suppression count for the
+length of the drag and keep pushing bounds every frame for 400 ms after
+it ends. Bounds are measured against the pane's **content box**, not the
+frame's own laid-out rect, which lags a pointer-driven resize by a frame
+or two — without that trim the composited page keeps its old width and
+paints over the chat column and the window edge while you drag.
+
+### A tab strip, and a picker page behind it
+
+The pane is a **tab strip plus one page**: one tab per open tool, one of
+them on screen, and the picker page whenever you press the grid button or
+the `+`. There is no multi-instance — a tool is open once. There are six
+tools and no Pull request tool: PRs live on their own tab, and a seventh
+card that opened a read-only summary was the one card in the grid that did
+not take the pane over.
+
+The picker is one **centred 512 px column** (`COLUMN_MAX_PX`) — no title
+and no subline, just a grid of cards in the order Terminal, Browser, Git,
+Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
+`workTools.ts`). The page does not name itself: the strip above it already
+carries the word "Tools", and six labelled cards do not need introducing.
+The column is vertically centred against the **whole pane** rather than
+against the space left under the 36 px header, which is what the extra
+bottom pad buys; it centres with `m-auto` rather than `justify-center`,
+because a centred flex child in an overflow container has its overflowing
+top clipped and unreachable. The grid is `auto-fit` over a
+`CARD_MIN_TRACK_PX` (188) minimum, so it is **two columns or one, never
+three**: with 24 px of padding either side and an 8 px gutter, two tracks
+need 432 px of pane and three would need 628 px, and the column is capped
+below that. 188 rather than 196 because the pane's default width is
+447 px, which missed the old threshold by a single pixel and gave everyone
+one column down a pane wide enough for two. Cards therefore *grow* with
+the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
+count lets the last card span the full row rather than orphaning it.
+
+Behind the grid is the pane's one decorated surface: a slow violet mesh
+(`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
+"Mesh drift"). Nothing in its GLSL names a colour — `backdropThemeFor`
+hands the shader ADE's own tokens as uniforms, `--color-bg` →
+`--color-accent-deep` → `--color-accent` → `--color-accent-bright` in
+dark, and `--color-surface` up the same violet hues at well under half
+the intensity in light, since on a light canvas the same amount of colour
+reads as a stain. The theme comes from the store (`s.theme`), the same
+value `App.tsx` writes to `data-theme`.
+
+Its budget is a hard requirement, because this is decoration on a page you
+land on constantly inside a renderer that is also running a terminal, a
+browser view and a chat stream. It draws at **DPR 1**, never more than
+`BACKDROP_PIXEL_BUDGET` (600 k) pixels — past that the canvas keeps its
+CSS size and the drawing buffer is floored down, which a mesh this soft
+cannot show — and never faster than **30 fps**, gated on the rAF
+timestamp rather than a timer so a 240 Hz panel costs seven cheap no-ops
+instead of seven mesh evaluations. It stops entirely while the window is
+blurred, the document hidden, or the canvas out of the intersection
+observer's view; `prefers-reduced-motion` paints exactly one frame and
+never starts the loop; the cursor swirl is wired only on `(hover: hover)`
+and `(pointer: fine)` devices, since a touchscreen "cursor" is a tap that
+would yank the background sideways. Unmount releases the context through a
+deferred `pendingContextReleases` timer, cancelled if the same canvas
+comes straight back — which it does on every picker ↔ tool crossfade. Every
+path that decides not to use a context releases it through the same
+`releaseContext` helper (lose the context, shrink the drawing buffer to
+1×1), refusals included: on the machines that refuse — SwiftShader, a
+blacklisted Windows driver — a merely abandoned context per crossfade walks
+the browser's context cap until it starts evicting other canvases. A
+`webglcontextlost` on the canvas flips the page to the static backdrop and
+stops the loop; it does **not** `preventDefault`, since asking for a
+restore would mean rebuilding the program on a machine that has just proven
+it is short of GPU. Layout measurement is rAF-coalesced to one
+`getBoundingClientRect` per frame — the listener is capture-phase scroll,
+so a wheel gesture over the picker would otherwise force a dozen synchronous
+reflows a frame — and it is wired only when the cursor effect is enabled.
+With no WebGL there is **no canvas at all**: the same box renders
+`.ade-tool-picker-static`, the same corner light as flat CSS, because a
+software-rendered mesh would be the most expensive thing in the window.
+The canvas is `aria-hidden` and `pointer-events: none` — a decoration that
+swallowed a click meant for a card would be breaking the page it
+decorates. It is pinned to a **non-scrolling wrapper** around the picker's
+scroll container rather than inside it: `inset: 0` inside a scroller
+resolves against the scroll origin, so on a pane too short for the column
+the mesh ended at the fold and the rest of the page scrolled onto bare
+chrome. `resolveBackdropSize` owns the whole size/budget policy and is
+unit-tested without a GPU.
+
+A card is deliberately thin: a monochrome 16 px glyph, the name, and
+exactly one line underneath. No tinted square, no key cap, and **no
+per-card activity dot** — the only mark a card can carry is a red 6 px dot
+when that tool is actually broken (`workToolHasError`), because that is
+the one fact worth interrupting a calm page for. Now that there is
+something behind it the card is glass rather than a flat rectangle
+(`.ade-tool-card`): a measured 82 % translucent fill and one hairline at
+12 % white (a border token in light). The fill carries the mesh through on
+its own — there is deliberately **no `backdrop-filter`**, because six blur
+regions over a 30 fps animating canvas re-blur on every backdrop frame and
+spend back everything the backdrop's own budget saves; 82 % is the point
+where every 12 px line still clears 4:1 over the mesh's brightest
+peak. Nothing is
+highlighted on entry; arrow keys move a highlight and take focus with
+them, so Enter is the browser's own activation, and a pointer move drops
+the keyboard highlight so two cards never look hovered at once.
+
+The line under the name is resolved by `workToolSummary` in one priority:
+the tool's measured status (plus an error-count suffix), else the
+catalogue's short `hint` ("Run a shell here", "Drive a real browser",
+"Commit, push, rebase", "Boot a simulator", "Drive a desktop app"), else
+the availability reason. Git shows the lane's unpublished, dirty-count,
+ahead/behind, or pushed/committed-age state; Files shows the cached tracked-file
+total and unique changed-entry count — entries, so a file with both index
+and worktree changes counts once, and a new untracked directory counts as
+one entry rather than as everything inside it. A legacy or remote lane payload
+that carries no changed-entry count says `dirty` rather than a number: the
+per-side staged/unstaged totals count entries on each side, so no arithmetic
+over them recovers how many files are involved. Status comes only from reads the pane
+already makes — the `builtInBrowser` / `iosSimulator` / `appControl`
+status subscriptions, the terminal panel's published shell count, and the
+lane's cached git summary — so nothing here polls. Lines hold a stepped-shimmer
+skeleton for at most 300 ms while those reads settle
+(`useWorkToolStatuses.ts`). A card's tooltip is `"<Tool> — <line>"` and
+appears **only when the card clipped its text** (`onlyWhenClipped`), so a
+tooltip is the rest of a sentence rather than a repeat of one; the
+catalogue owns the hint string so the card and its tooltip can never
+disagree about how much it says.
+
+A tool that cannot run in this context renders as a **disabled card with
+the reason as its status line** rather than disappearing: "Runs on this
+computer only" (Simulator / App Control on a remote project), "Desktop
+app only" (Simulator in the hosted web client), and "macOS only"
+(Simulator off a Mac). Only those two tools are local-only — the browser
+is hosted by this desktop's main process and a remote lane drives that
+same window, so it stays available on remote lanes. In the hosted web
+client the browser and App Control render **read-only** — the tab list,
+attached app, and latest screenshot, with no way to drive them
+(`isReadOnlyWorkTool`). Availability is decided by
+capability flags in `workToolAvailability`, never by `process.platform` —
+the web client renders this same component. An active tool that becomes
+unavailable falls back to the **picker**, not to another tool.
+
+The pane's one 36 px header (`WorkToolHeader.tsx`) is the strip, and it is
+the same bar on both pages. Left edge is the `⊞ Tools` button back to the
+picker (Escape does the same, bound as `work.tools.picker` with scope
+`work` so it only fires inside the pane), lit while the picker is up.
+Immediately right of it, one tab per OPEN tool in strip order — glyph,
+name, a `×` on hover — with the tool on screen filled; then a `+` that
+opens the picker, dropped while the picker is already showing, because two
+controls opening one page is one too many. Activity dots for tools with
+**no tab** that are usable here and not idle sit to the right of that, and
+the close ✕ keeps its place at the end. There is no centred title: the lit
+tab is the title.
+
+The `×` is a sibling of the tab button, never a child — a button inside a
+button is invalid and the browser resolves it by dropping one of the two
+click targets — and it is `pointer-events: none` until the tab is hovered
+or the `×` itself is focused, because `opacity: 0` alone still hit-tests.
+In the labelled strip it holds reserved space on the tab's right edge, so
+pointing at a strip does not shuffle the tabs under the pointer. On a 24 px
+icon-only tab there is no space to reserve, so it becomes a small badge in
+the tab's **top-right corner** rather than a target over its middle: a
+centred close button on a 24 px tab means the obvious click, dead centre on
+the glyph, closes the tool instead of opening it. The tab's activity dot
+shares that corner and yields it on hover.
+
+The strip is a real `tablist`: only tabs are inside it (the `…` overflow
+button is a menu button and sits outside), the selected tab names its pane
+with `aria-controls` (`workToolPanelId`, per tool because the pane
+crossfades and two panels are briefly in the document at once), and the
+strip carries a **roving tabindex** — one Tab stop, landing on the tool you
+are looking at, with `←`/`→`/`Home`/`End` moving focus between tabs.
+Activation is manual: arrowing past a tool must not attach its terminal or
+show its `WebContentsView`, so Enter and Space are the button's own
+activation and there is no second key handler to disagree with the click
+path.
+
+The header's one fact per tool is a rule on the catalogue
+(`workToolContextLabel`), not an `if` cascade at the header: Git shows the
+branch (the dirty count is already its status line), Files shows the lane
+name, and every other tool shows its own status line. It rides in the
+active tab's tooltip and accessible name (`Browser · example.com`), never
+as a header line — an icon-only tab would otherwise have no name at all,
+and a bar that spelled out what the lit tab already says was saying one
+thing twice in 36 px.
+
+The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
+below **420 px** of header the tabs drop their words and become glyphs, a
+pane too narrow to spell every open tool drops the words rather than
+hiding tabs, and only when even the glyphs do not fit do the extras move
+into a `…` menu (Radix, on the pane's shared `MENU_CONTENT_CLASS`). The
+tool on screen is never the one that overflows, and at least one tab is
+always drawn. Six glyphs fit inside the splitter's 280 px minimum, so the
+menu is genuinely the last resort.
+
+A dot's colour is its **state**, not its tool
+(`workToolDotState` / `workToolDotColor`): red for an error, amber for
+"needs you" (`attention` — a login handoff is the whole reason to look
+away from the tool you are in), the tool's own hue for live, and idle
+tools get no dot at all. Colouring dots by tool made every dot the same
+news ("this tool exists"). An erroring or waiting tool earns a dot even
+when nothing of its is running. The dot's tooltip is that tool's status
+line; clicking it switches, and the dot animates into the header icon
+through a shared `layoutId`.
+
+Motion: picker ↔ tool is a 180 ms crossfade with a 4 px y-shift on
+`cubic-bezier(0.4, 0, 0.2, 1)`; tab → tab is the shorter, flatter version
+of it — 120 ms of opacity and no y-shift, because switching tabs is a
+lateral move inside one surface rather than the pane re-opening; dots
+enter on the overshoot curve
+`cubic-bezier(0.34, 1.56, 0.64, 1)`. A card's hover is the one place the
+page spends colour: a 2 px lift, its hairline to 45 % accent, the glyph
+tinted to accent, and one soft accent glow, over 160 ms ease-out; press
+collapses the lift and takes the card to `scale(0.99)`, so it gives under
+the cursor rather than jumping out from under it. The keyboard highlight
+draws exactly the hover state, so the two can never disagree. The
+last-opened tool carries `aria-current` but **no** fill: the picker is a
+page for choosing, and a card pre-tinted in the colour hover uses reads as
+already-hovered. Under `prefers-reduced-motion` the transitions and the
+lift both go; the fill and hairline still answer the cursor.
+
+Only the ACTIVE tab is mounted. Inactive tools **unmount their view and
+keep their service alive**.
+Terminals, browser tabs, App Control sessions, and iOS simulator streams
+all live in the main process and keep running; only the React views go.
+The browser is the one tool with an explicit obligation, since its
+`WebContentsView` is composited above the renderer: `hideBuiltInBrowserView`
+parks it on every switch away, on close, when the pane goes inactive, on
+unmount, and when the Work route deactivates.
+
+### Which tools are open is per lane
+
+`workSidebarTool` (`WorkSidebarTab | null`, null = picker) and
+`workSidebarOpenTools` (the strip, in order, with the active tool among
+it) are stored per lane in `laneWorkViewByScope` under
+`"<projectKey>::<laneId>"`, read and written through
+`useWorkSidebarTool(laneId)`. Picking a tool appends it, or activates the
+tab it already has without moving it; closing one hands the pane to the
+tab on its **right**, then its left, then the picker
+(`openWorkToolTab` / `closeWorkToolTab`, pure). Going back to the picker
+keeps the strip — the tabs are still open, the pane is just showing the
+page you pick from. Persisted state written before the strip existed
+(`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
+strip, so upgrading lands on the pane you left rather than an empty
+picker. A lane with no stored choice
+falls back to the project-scoped copy of the same fields, which is also
+where a lane-less (projectless / personal) Work surface reads and writes.
+`workSidebarOpen` and `workSidebarWidthPct` stay project-wide: the pane's
+geometry is a workspace preference, its contents are not. Picking any tool
+(including returning to the picker) forces `workSidebarOpen` true, so every
+entry point still acts as a one-click reveal.
+
+Surfaces outside the Work page cannot write this state, because only that
+page resolves the lane the pane is following. They file a request instead
+(`workToolRequests.ts`) and the Work page drains it against the right
+scope — immediately if it is mounted, on mount if the request arrived
+while another tab was open. That is the path used by the app shell's
+`builtInBrowser` open-request handler and by the command palette's
+`Tools: <name>` / `Tools: Show picker` entries
+(`buildWorkToolCommands` in `commandPaletteWork.tsx`).
 
 ### The pane follows the chat's machine
 
@@ -614,10 +895,28 @@ Tabs:
 - `files` — `FilesTab` mounted with `preferredLaneId={laneId}` and
   `embedded={true}`. The `embedded` prop drops the desktop title block,
   the `View lane` button, the editor theme toggle, the `Open In` menu,
-  and the file count, and shrinks the workspace selector so the file
-  tree fits a narrow column.
+  and the file count, shrinks the workspace selector so the file tree fits
+  a narrow column, paints file glyphs monochrome
+  (`MonochromeFileIconsContext`), and replaces the surviving controls with
+  one `workToolChrome` row that carries the breadcrumb. Below
+  `EMBEDDED_SINGLE_SURFACE_PX` (520) the pane goes **single-surface**: a
+  220 px tree beside an editor is two unreadable columns, so one is shown
+  at a time — the tree until a file opens, then the editor with a "Back to
+  files" crumb. The hidden column stays mounted but `inert`, which is why
+  focus-sensitive claims (the code editor's ⌘F) test
+  `host.closest("[inert]")` before answering.
 - `terminal` — `ChatTerminalDrawer` in `panel` variant, attached to the
-  session that owns terminals (see below).
+  session that owns terminals (see below). Its chrome row carries the
+  shell pills plus two ghost controls: **Split**, which stacks a second
+  shell under the active one (held as a tab id, not a boolean, so closing
+  that shell retires the split instead of leaving an empty half; clicking
+  the split shell's own pill makes it active and retires the pane, and the
+  next split simply overwrites the stale id), and **Clear**, which wipes
+  the active shell's scrollback through
+  `clearTerminalRuntimeScrollback(sessionId)`. Only a *different* shell can
+  occupy the second pane — the same runtime cannot fill both. The panel
+  publishes how many shells it is rendering through `workTerminalShells.ts`,
+  which is what the pane header and picker report.
 - `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope),
   driving the simulator on the pinned machine.
 - `app-control` — `ChatAppControlPanel` for the active lane, driving the
@@ -633,7 +932,45 @@ Tabs:
   `window.ade.builtInBrowser.stopInspect()` and zeros the bounds with
   `visible: false` so the underlying `WebContentsView` is detached
   from the layout (otherwise it would float over neighbouring panes
-  because `WebContentsView` paints above DOM siblings).
+  because `WebContentsView` paints above DOM siblings). The pane mounts
+  for a chat pinned to another machine too — the browser is always this
+  window's — but every loopback URL it is asked for is first tunneled to
+  the pinned machine through a port-forward, the URL bar and tab titles
+  keep showing the remote origin behind a machine-name badge, and the
+  first use of a port an agent chose raises an inline "Agent wants to
+  reach port N on <machine>" bar with Allow once / Always for this lane.
+  See `docs/features/remote-runtime/README.md`.
+
+  **Login handoff.** An agent that hits a page it cannot get past — a login
+  form, a CAPTCHA, an HTTP-auth or client-certificate prompt — calls
+  `ade browser handoff --tab <id> --reason "..."`. `startHandoff` in
+  `builtInBrowserService.ts` suspends the tab's agent lease into
+  `handoff.previousOwner`, clears the agent navigation guard so the person is
+  not blocked mid-redirect, marks the tab human-owned, and reveals the pane
+  through the usual `open-request` event. While `tab.handoff` is set every
+  agent-identified call on that tab throws
+  `BuiltInBrowserHandoffActiveError` (`handoff_active`); calls with no agent
+  identity — the pane's own toolbar — pass through untouched. The pane shows
+  an amber bar with the reason and a `Hand back` button, and swaps to
+  "Signed in? / Hand back now / Keep control" once the tab leaves the origin
+  it was handed over on; `Keep control` silences that offer until the next
+  origin change. Hand-back is human-only: `endHandoff` is exposed on IPC and,
+  for locally-pinned chats, on the runtime bridge gated to user clients in
+  `adeRpcServer.ts` — there is no agent path to it. The handoff also ends on
+  tab close and on its own timeout (default 15 minutes), and each ending
+  restores the suspended lease with a fresh TTL and writes a `handoff-end`
+  trace entry carrying `endedBy` and `durationMs` next to the `handoff-start`
+  entry carrying the reason, so a trace or recording explains the gap.
+  `builtInBrowserHandoffSession.ts` is the chat-side half, wired from
+  `main.ts`: it raises the requesting session's hand with the same
+  `requestAttention` state `ade chat ask` produces, clears it on every ending
+  (including ones no CLI is waiting on), and emits a terminal `ade_card`
+  reading "Handed back to the agent". The CLI additionally issues
+  `session.requestSessionAttention` so the phone push goes out through the
+  existing hand-raise path, with `alertTitle: "Sign in for me"` and the reason
+  as the body, then blocks on `waitForHandoff` unless `--no-wait` was passed.
+  iOS surfaces the same state read-only in the Tools sheet via
+  `WorkToolsBrowserTab.handoffReason`.
 
 The sidebar picks a single insertion target per active Work session via
 `WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
@@ -661,14 +998,19 @@ write succeeds the sidebar dispatches
 (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the active
 `TerminalView` can show a brief "context inserted" affordance. When no
 chat, draft, or tracked agent CLI session is open in the active Work
-lane, attachment is disabled with the banner "Open a chat, draft, or
-agent CLI session in this lane before inserting tool context." The
-sidebar also owns its own `AppControlSession` / `IosSimulatorSession`
-subscriptions so it can detect lane mismatches (e.g. App Control was
-launched from a different lane); lane mismatches are surfaced as an
-informational warning banner but no longer block context insertion —
-controls affect the running tool while inserted context goes to the
-current chat, draft, or CLI target.
+lane, the panels simply drop the controls that depend on attachment.
+"This session cannot receive inserted context" is a capability the pane
+does not offer here, not a warning, so it is no longer narrated in a
+banner above controls you can still see.
+
+The one banner that survives is **lane attribution**. The sidebar owns
+its own `AppControlSession` / `IosSimulatorSession` subscriptions so it
+can detect that a tool was launched from a different lane, and says so —
+using the catalogue's own names (`workToolLabel`), because the banner was
+the one place the pane called the simulator something the header and the
+picker did not. It does not block context insertion: controls affect the
+running tool while inserted context goes to the current chat, draft, or
+CLI target.
 
 **Terminal ownership is an identity question, not a permission one.**
 `terminalOwnerSessionId` is derived from the active session directly, not
@@ -694,10 +1036,11 @@ machine would take PTY insertion down with it.
 `WorkSidebar`): claude / codex / cursor-cli / droid / opencode. Shells are
 excluded — they host terminals but are not a context-insertion target.
 
-Toggling and tab selection go through `useWorkSessions` setters
-(`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
-`setWorkSidebarTab` also opens the sidebar so clicking a tab from a
-closed state acts as a one-click reveal. The tools-pane toggle is the
+Open/closed and width go through `useWorkSessions` setters
+(`setWorkSidebarOpen`, `setWorkSidebarWidthPct`); which tool is open goes
+through `useWorkSidebarTool(laneId).setTool`, which also opens the pane so
+choosing a tool from a closed state acts as a one-click reveal. The
+tools-pane toggle is the
 mirrored `SidebarSimple` glyph on the chat/CLI `WorkSurfaceHeader` (solid
 rail on the right), so it matches the sessions-list collapse control on
 the opposite edge.
@@ -707,6 +1050,122 @@ pane is mounted as a Work tile (`SessionSurface`), so the chat header
 no longer shows the iOS / App Control toggles inside Work — those
 drawers now live on the lane-scoped `WorkSidebar`. Proof remains
 chat-scoped and stays on the chat header.
+
+### One chrome vocabulary: `workToolChrome.tsx`
+
+Terminal, Git, Files, the simulator, App Control and the browser each had
+their own answer to the same row — uppercase mono buttons in one, tinted
+`<select>`s in another, three stacked rows in a third. `workToolChrome.tsx`
+is that geometry, spent rather than reinvented:
+
+- **Exactly one chrome row per tool**, 40 px
+  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 36 px. The
+  row carries `ade-pane-chrome` (which makes it `select-none`, so dragging
+  the pane divider no longer leaves half the labels highlighted in accent
+  blue) and the same `ade-tool-pane-rule` hairline the header draws, so
+  the two read as one piece of furniture.
+- **Controls are ghost**: transparent until hover, and hover/press change
+  fill only — never size, never colour temperature — over 120 ms
+  (`WORK_TOOL_CHROME_MOTION`). Focus is an *inset* accent hairline
+  (`WORK_TOOL_CHROME_FOCUS`), because an outset ring on a 28 px square
+  overlaps its neighbours in a flush row.
+- **Icons are 16 px** in buttons, 12 px inside a chip beside text, and
+  nothing in the row is a sentence — what a control does is a tooltip's
+  job.
+- **Content that is its own surface** (a terminal, a diff, an App Control
+  stage) sits inset 8 px with a 10 px radius and a 1 px inset ring, so the
+  pane frames it instead of letting it bleed into the chrome.
+
+The browser composes its own row (it has an overflow-hidden omnibox to
+fit) and App Control draws a bordered variant; both spend the shared
+height and motion constants rather than re-typing them.
+
+### One set of tool feeds, shared
+
+The pane's status lines and activity dots and the floating corner card
+all need the same three answers — what the browser, App Control, and the
+simulator are doing. `useNativeToolSessions.ts` is that subscription set
+(browser status + events, App Control session + events, simulator session
++ events, one capability gate, one definition of "live"), and mounting it
+twice opens two sets of subscriptions. `NativeToolFeedsContext.tsx` is
+the sharing mechanism: `TerminalsPage` mounts the hook once and provides
+it, and the pane and the card both read from the context. Browser error
+badges are a pure fold over pushed `diagnostics` events
+(`workToolErrors.ts`) — the service emits a tally when a tab's count
+moves and resets it to zero on a main-frame navigation, so a reload
+clears the badge and nothing polls.
+
+### The floating live-preview card: `WorkLiveCornerCard.tsx`
+
+The Work tab has exactly one pane for a screen tool, so the moment an
+agent starts driving the browser while you read a diff, the thing you
+most want to see is the thing you just navigated away from. The corner
+card is a live thumbnail of the most recently active screen tool that is
+**not** the one on screen, parked in a corner of the chat column and one
+click away from taking the pane back. Browser and App Control use a fixed
+288×180 landscape rectangle (16:10), smaller than the main pane; every frame
+uses `object-fit: cover` with `object-position: top`, so a portrait page shows
+its top. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
+*device* pixels, so a Retina card is not fed a thumbnail-sized image and
+upscaled into mush, nor a 5K panel a full-width one.
+
+Its chrome follows a mini-player: **nothing but an 8 px status dot at
+rest**, and a 32 px blurred pill — icon, name, last action, ✕ — that takes
+the dot's place on hover and doubles as the drag handle. The picture is
+the whole card, so every pixel of chrome is a pixel of preview you do not
+get. A 2 px scrub strip **overlays** the media's bottom edge rather than
+adding height; the hovered frame is held by trace id, not index, so a new
+action shifting the buffer cannot re-caption the picture the pointer is
+parked on. Browser "activity" is a diff of the parts a human would call
+activity (`browserActivitySignature`), not every status event — closing
+the card stops its preview stream, which itself emits one, and a
+dismissal undone by the event it caused would never stick.
+
+- **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
+  available, live, non-active tool with the newest activity. Only
+  `browser`, `app-control`, and `ios` are previewable
+  (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
+  store also imports so the list cannot fork); Git and Files have nothing
+  to look at.
+- **Dismissal is per tool and per lane.** The ✕ records the activity
+  stamp the card was showing, so the tool comes back only on strictly
+  newer activity — closing it silences the current burst, not the
+  feature, and never another tool. Stamps live in the lane's work-view
+  state; the card's position is project-scoped and stored as fractions of
+  the chat column (`workLiveCardPosition`) so resizing the column keeps it
+  in place instead of stranding it off an edge.
+- **It costs nothing when nobody watches.** It subscribes to feeds that
+  already exist — App Control's screencast, the browser's refcounted
+  preview stream, the simulator's shared window capture via
+  `iosSimulatorPreviewStream.ts`, which takes its own refcounted parking
+  hold and never stops a stream the iOS panel started — paints frames
+  straight onto an `<img>`/`<video>` ref inside one rAF (so a 12 fps feed
+  causes zero React renders), and tears every feed down the moment the
+  Work route is not active.
+- **Parked, not hidden.** A `WebContentsView` that is detached or
+  `setVisible(false)` has no compositor surface, and with no surface every
+  capture path returns an empty image. So a browser tab with a live
+  preview subscriber is *parked* past the union of every display's bounds
+  instead of being detached — see [Chat › the corner card and parked
+  preview views](../chat/README.md#the-corner-card-and-parked-preview-views).
+
+### Tooltips and menus in the pane
+
+`ui/PaneTooltip.tsx` over the pure `ui/tooltipPosition.ts` places the
+pane's tooltips: **flip before shift** (a tooltip that would leave the
+window flips to the opposite side if that side fits, and is only then
+shifted along its cross axis — shifting first is what produced the
+clipped "Clos"), and **never over the trigger**, so a tooltip cannot
+cover the control it describes. `ui/paneMenuTokens.ts` is the one menu
+surface both pane dropdowns paint with: the browser toolbar's Radix
+`DropdownMenu` and App Control's hand-rolled menu, which stays
+hand-rolled because it hosts inline forms a Radix menu's typeahead and
+focus management would fight. The tokens carry paint and width only —
+each menu keeps its own positioning, and App Control's is absolutely
+positioned inside the pane so it cannot escape the stacking context and
+float over another tool's live frame. Max height is viewport-aware
+rather than a fixed 320 px, because on a short window a constant cut the
+last item ("Stop") in half.
 
 ## Terminal renderer: `TerminalView.tsx`
 
@@ -1105,8 +1564,9 @@ avoid scanning sessions while the user can't see them.
 The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
 before the IPC round-trip completes), `refresh`, and the right-sidebar
-setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
-sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
+setters `setWorkSidebarOpen` and `setWorkSidebarWidthPct` (clamped
+26–55%). Which tool the pane shows is not here — it is per lane, and lives
+in `useWorkSidebarTool`.
 `chatSessionEvents.ts` uses that optimistic path for durable chats created by
 headless/batch launch, then schedules a short background refresh.
 

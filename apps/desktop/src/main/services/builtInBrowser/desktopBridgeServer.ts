@@ -14,10 +14,21 @@ import {
 import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
+  BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
+  type BuiltInBrowserRuntimeStatus,
+} from "../../../shared/types/builtInBrowserRuntimeStatus";
 import type { Logger } from "../logging/logger";
-import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
+import {
+  issueBuiltInBrowserActorCapability,
+  resolveBuiltInBrowserActorCapability,
+  revokeBuiltInBrowserActorCapability,
+} from "./builtInBrowserActorCapabilities";
+import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 
@@ -31,6 +42,27 @@ import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runti
  * outside the allowlist returns `methodNotFound` so a daemon bug or
  * out-of-date desktop doesn't accidentally expose private internals.
  */
+
+/**
+ * The bridge methods whose own handlers end the agent's turn at a tab, and so
+ * must NOT be followed by the trailing presence touch every other method gets.
+ *
+ * Derived from the presence router's clear paths rather than from intuition —
+ * these are exactly the dispatchable methods that reach one of them:
+ *
+ * - `closeTab` → the coordinator resolves the closing tab id and calls
+ *   `presenceRouter.noteTabClosed` inside the awaited promise.
+ * - `startHandoff` → emits `handoff-started`, which the router turns into
+ *   `clearForTab` plus `clearForChatSession` for the previous owner.
+ *
+ * The other two clear paths are deliberately absent: `noteWindowTabsClosed`
+ * runs on window teardown, which no bridge method can request, and
+ * `revokeActorCapability` clears presence itself and returns long before this
+ * dispatch. `endSession` reads as turn-ending but is not — it closes a
+ * recorded action session, touches no tab and clears no presence, so an agent
+ * that ends a session and keeps browsing must keep its globe.
+ */
+const TURN_ENDING_BRIDGE_METHODS = new Set<string>(["closeTab", "startHandoff"]);
 
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
@@ -157,6 +189,110 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     if (name === "authenticate") {
       return { authenticated: true };
     }
+    // Capability lifecycle. Electron owns the registry, so the runtime daemon
+    // asks for the per-chat token here rather than minting one in its own
+    // process (where nothing could ever validate it). Bridge auth is the only
+    // gate: the caller is the runtime that already decides which lane, project
+    // and chat an agent belongs to. No actor capability is required — this is
+    // where they come from.
+    if (name === BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD) {
+      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
+      if (!requestedChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Browser actor capabilities require a chat session id.",
+        );
+      }
+      const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
+      const token = issueBuiltInBrowserActorCapability({
+        chatSessionId: requestedChatSessionId,
+        laneId: normalizedString(rawParams.laneId),
+        projectRoot: tabCollection === "personal"
+          ? null
+          : normalizedString(rawParams.projectRoot),
+        tabCollection,
+      });
+      return { token };
+    }
+    if (name === BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD) {
+      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
+      if (!requestedChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Browser actor capabilities require a chat session id.",
+        );
+      }
+      revokeBuiltInBrowserActorCapability(requestedChatSessionId);
+      // The chat is over (or its capability was rotated): it cannot issue
+      // another browser command, so leaving a globe pulsing beside it for the
+      // rest of the expiry window would outlive the only thing that could
+      // refresh it.
+      builtInBrowserAgentPresence.clearForChatSession(requestedChatSessionId);
+      return { revoked: true };
+    }
+    // Read-only Work-tools mirror. Bridge auth only, exactly like the two
+    // capability methods above and for the same reason: the caller is the
+    // runtime daemon itself, which has no chat and therefore can never hold an
+    // actor capability. It gets a deliberately narrow projection (see
+    // `BuiltInBrowserRuntimeStatus`) that carries no cookies, no observation
+    // bytes and no way to act on a tab, so serving it without a capability
+    // grants nothing the daemon could not already infer from its own events.
+    if (name === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD) {
+      // Project-scoped, not frontmost-window-scoped. The daemon asking is bound
+      // to one project; answering out of whichever window is active would hide
+      // its own tabs and leak another project's tab titles and URLs onto a
+      // phone bound to this one.
+      const scopeProjectRoot = normalizedString(rawParams.projectRoot);
+      const status = service.getStatusForProjectScope(scopeProjectRoot);
+      if (!status) {
+        // Two different absences, two different instructions. A window that has
+        // the project open but has never used its Browser pane has no
+        // collection to read — and the read deliberately does not build one —
+        // but that user must not be told to open a project they already have
+        // open. `hasWindowForProjectScope` is the same side-effect-free lookup.
+        const empty: BuiltInBrowserRuntimeStatus = {
+          activeTabId: null,
+          tabs: [],
+          unavailable: service.hasWindowForProjectScope(scopeProjectRoot)
+            ? "browser_pane_not_opened"
+            : "desktop_not_attached_for_project",
+        };
+        return empty;
+      }
+      const runtimeStatus: BuiltInBrowserRuntimeStatus = {
+        unavailable: null,
+        // Project-scoped for the same reason the tab list is: a phone bound to
+        // one project must not learn that a chat in another one is browsing.
+        presence: builtInBrowserAgentPresence
+          .list({ projectRoot: scopeProjectRoot })
+          .map((entry) => ({
+            chatSessionId: entry.chatSessionId,
+            laneId: entry.laneId,
+            tabId: entry.tabId,
+            since: entry.since,
+            lastActivityAt: entry.lastActivityAt,
+          })),
+        activeTabId: status.activeTabId,
+        tabs: status.tabs.map((tab) => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          ownerLaneId: tab.ownerLaneId,
+          ownerChatSessionId: tab.ownerChatSessionId,
+          recording: tab.recording != null,
+          handoff: tab.handoff
+            ? {
+              reason: tab.handoff.reason,
+              previousOwner: {
+                laneId: tab.handoff.previousOwner.laneId,
+                chatSessionId: tab.handoff.previousOwner.chatSessionId,
+              },
+            }
+            : null,
+        })),
+      };
+      return runtimeStatus;
+    }
     if (
       name === "getProfileDiagnostics"
       || name === "listPermissions"
@@ -181,10 +317,22 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     // revocable without sharing the in-memory registry or its authority with
     // the runtime daemon (which runs in a separate process).
     const actor = resolveBuiltInBrowserActorCapability(actorToken);
-    if (!chatSessionId || !actor || actor.chatSessionId !== chatSessionId) {
+    if (!actorToken || !chatSessionId) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        "Built-in browser automation requires an issuer-validated chat capability.",
+        "Built-in browser automation needs a chat capability, and this caller has none. `ade browser` only works from a chat or terminal that ADE launched — open ADE Desktop with this project and start the chat from there.",
+      );
+    }
+    if (!actor) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "This chat's browser capability is no longer valid — it was revoked when the chat ended, or ADE Desktop restarted after issuing it. Relaunch this chat from ADE Desktop.",
+      );
+    }
+    if (actor.chatSessionId !== chatSessionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
       );
     }
     const params = {
@@ -203,9 +351,49 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Desktop bridge cannot dispatch built_in_browser.${name}.`,
       );
     }
+    // Recorded on BOTH edges of the call.
+    //
+    // Before, because a `wait`, a slow navigation or a long `observe` is
+    // exactly the stretch a person is trying to explain, and a globe that lit
+    // only on completion stayed dark for the whole of it — indefinitely, for
+    // back-to-back long calls, since the twenty-second window would not even
+    // start until one returned. After, because that window should be measured
+    // from when the agent finished, not from when it began.
+    //
+    // Every method counts, reads included: `status` and `observe` are how an
+    // agent looks at the page, and a badge that lit only for writes would go
+    // dark while it read.
+    const presenceTouch = {
+      chatSessionId: actor.chatSessionId,
+      laneId: actor.laneId,
+      projectRoot: actor.projectRoot,
+      tabId: normalizedString(rawParams.tabId),
+    };
+    const opened = builtInBrowserAgentPresence.touch(presenceTouch);
     try {
-      return await (callable as (input: unknown) => Promise<unknown>).call(service, params);
+      const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
+      // …except after the two calls that END the agent's turn at the tab. Both
+      // clear presence from inside the dispatch, and a trailing touch would
+      // re-create the record they just removed — with the dead or handed-off
+      // tab id — leaving the badge saying "browsing" for a full expiry window
+      // after the agent closed its last tab, or pulsing beside the very banner
+      // asking a human to sign in.
+      if (!TURN_ENDING_BRIDGE_METHODS.has(name)) {
+        builtInBrowserAgentPresence.touch(presenceTouch);
+      }
+      return result;
     } catch (error) {
+      // The call did nothing to the browser ("No ADE browser window is open for
+      // project…"), so the announcement is taken back — but only when this call
+      // is what made it. A failure inside a stream of commands leaves presence
+      // the earlier ones earned, and the `ifSequence` guard drops the undo if a
+      // concurrent command from the same chat moved the entry meanwhile (or if
+      // a recording took a hold on it while this call was in flight).
+      if (opened.created) {
+        builtInBrowserAgentPresence.clearForChatSession(actor.chatSessionId, {
+          ifSequence: opened.sequence,
+        });
+      }
       if (error instanceof JsonRpcError) throw error;
       throw new JsonRpcError(
         JsonRpcErrorCode.internalError,

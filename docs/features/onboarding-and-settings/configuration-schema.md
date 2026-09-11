@@ -63,6 +63,23 @@ type ProjectConfigFile = {
   laneCleanup?: LaneCleanupConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
+  browser?: ProjectBrowserConfig;
+};
+
+type ProjectBrowserConfig = {
+  /**
+   * Where a link clicked inside ADE opens. `in-app` (default) uses the
+   * built-in browser, which carries the authenticated profile;
+   * `external` hands it to the system browser. Mod+Click always
+   * overrides to external, Shift+Click to in-app.
+   */
+  linkOpenMode?: "in-app" | "external";
+  /**
+   * Open a background tab when a terminal in this project prints a
+   * dev-server ready line. Defaults to `true`. The tab never steals
+   * focus and never opens the pane.
+   */
+  autoOpenDevServer?: boolean;
 };
 
 type ProjectIdentityConfig = {
@@ -83,6 +100,17 @@ tab icon picker (`window.ade.project.chooseIcon` / `removeIcon`)
 writes this field; selecting a file outside the project root copies
 the bytes into `.ade/project-icons/<contentHash>.<ext>` so the icon
 travels with the repo.
+
+`browser` is machine-local by intent — which browser your links open in
+is a property of the machine you are sitting at, not of the repository —
+so ADE only ever writes it to `.ade/local.yaml`. Setting it in the
+committed `ade.yaml` still works: the merge is per key with local
+winning. Both fields are coerced, not passed through: a `linkOpenMode`
+that is neither `in-app` nor `external`, or an `autoOpenDevServer` that
+is not a boolean, is dropped so a hand-edited typo falls back to the
+default instead of silently routing every link to the system browser.
+The Settings › Browser section (`settings/BrowserLinksSection.tsx`)
+writes both fields.
 
 The lenient `Config*` variants allow every field to be optional so
 `ade.yaml` and `local.yaml` can be partial. `projectConfigService`

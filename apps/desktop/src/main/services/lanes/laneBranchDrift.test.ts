@@ -18,6 +18,10 @@ describe("parseWorktreeStatusPorcelainV2", () => {
 
     expect(parseWorktreeStatusPorcelainV2(stdout)).toEqual({
       dirty: false,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
       headBranchRef: "hotfix-auth",
     });
   });
@@ -33,6 +37,10 @@ describe("parseWorktreeStatusPorcelainV2", () => {
 
     expect(parseWorktreeStatusPorcelainV2(stdout)).toEqual({
       dirty: true,
+      changedFileCount: 2,
+      staged: 0,
+      unstaged: 1,
+      untracked: 1,
       headBranchRef: "ade/feature",
     });
   });
@@ -42,6 +50,10 @@ describe("parseWorktreeStatusPorcelainV2", () => {
 
     expect(parseWorktreeStatusPorcelainV2(stdout)).toEqual({
       dirty: false,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
       headBranchRef: null,
     });
   });
@@ -49,13 +61,88 @@ describe("parseWorktreeStatusPorcelainV2", () => {
   it("tolerates CRLF output and a missing branch header", () => {
     expect(parseWorktreeStatusPorcelainV2("# branch.head main\r\n")).toEqual({
       dirty: false,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
       headBranchRef: "main",
     });
     expect(parseWorktreeStatusPorcelainV2("? untracked.txt\n")).toEqual({
       dirty: true,
+      changedFileCount: 1,
+      staged: 0,
+      unstaged: 0,
+      untracked: 1,
       headBranchRef: null,
     });
-    expect(parseWorktreeStatusPorcelainV2("")).toEqual({ dirty: false, headBranchRef: null });
+    expect(parseWorktreeStatusPorcelainV2("")).toEqual({
+      dirty: false,
+      changedFileCount: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      headBranchRef: null,
+    });
+  });
+
+  it("splits staged and unstaged changes while counting a file with both once", () => {
+    const parsed = parseWorktreeStatusPorcelainV2([
+      "1 MM N... 100644 100644 100644 aaa bbb src/both.ts",
+      "1 M. N... 100644 100644 100644 aaa bbb src/staged.ts",
+      "1 .M N... 100644 100644 100644 aaa bbb src/unstaged.ts",
+      "? new.txt",
+    ].join("\n"));
+
+    expect(parsed).toMatchObject({
+      dirty: true,
+      changedFileCount: 4,
+      staged: 2,
+      unstaged: 2,
+      untracked: 1,
+    });
+  });
+
+  it("keeps newlines inside NUL-delimited filenames", () => {
+    const parsed = parseWorktreeStatusPorcelainV2([
+      "# branch.head feature/child",
+      "1 .M N... 100644 100644 100644 aaa bbb src/with\nnewline.ts",
+      "? untracked\npath/",
+    ].join("\0") + "\0");
+
+    expect(parsed).toMatchObject({
+      dirty: true,
+      changedFileCount: 2,
+      staged: 0,
+      unstaged: 1,
+      untracked: 1,
+      headBranchRef: "feature/child",
+    });
+  });
+
+  it("counts a NUL-delimited rename record once and consumes its old path", () => {
+    const parsed = parseWorktreeStatusPorcelainV2([
+      "# branch.head feature/child",
+      "2 R. N... 100644 100644 100644 aaa bbb src/new-name.ts",
+      "src/old\nname.ts",
+    ].join("\0") + "\0");
+
+    expect(parsed).toMatchObject({
+      dirty: true,
+      changedFileCount: 1,
+      staged: 1,
+      unstaged: 0,
+      untracked: 0,
+    });
+  });
+
+  it("counts an untracked directory as one entry", () => {
+    expect(parseWorktreeStatusPorcelainV2("? generated/\0")).toMatchObject({
+      dirty: true,
+      changedFileCount: 1,
+      staged: 0,
+      unstaged: 0,
+      untracked: 1,
+    });
   });
 
   it("keeps slashes in branch names and does not treat them as path separators", () => {

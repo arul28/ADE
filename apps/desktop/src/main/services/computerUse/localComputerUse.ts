@@ -138,12 +138,32 @@ export function getCapabilityForRequirement(
   }
 }
 
+function computerUseFileName(stem: string, extension: string): string {
+  const safeStem = stem.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
+  const safeExt = extension.replace(/^\./, "").trim() || "txt";
+  return `${Date.now()}-${safeStem}-${randomUUID().slice(0, 8)}.${safeExt}`;
+}
+
 export function createComputerUseArtifactPath(projectRoot: string, stem: string, extension: string): string {
   const artifactsDir = path.join(resolveAdeLayout(projectRoot).artifactsDir, "computer-use");
   fs.mkdirSync(artifactsDir, { recursive: true });
-  const safeStem = stem.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
-  const safeExt = extension.replace(/^\./, "").trim() || "txt";
-  return path.join(artifactsDir, `${Date.now()}-${safeStem}-${randomUUID().slice(0, 8)}.${safeExt}`);
+  return path.join(artifactsDir, computerUseFileName(stem, extension));
+}
+
+/**
+ * Where a capture lands when it is NOT being filed as proof.
+ *
+ * Proof is explicit: only a proof-named call creates a drawer record. A bare
+ * `screenshot_environment` (agent vision, an automation run) still has to put
+ * the bytes somewhere the caller can read them and `ade proof attach` can later
+ * promote them from, so they go to the project's cache/tmp scratch root — which
+ * the broker already lists as an allowed import root — instead of the artifact
+ * store the drawer reads.
+ */
+export function createComputerUseScratchPath(projectRoot: string, stem: string, extension: string): string {
+  const scratchDir = path.join(resolveAdeLayout(projectRoot).tmpDir, "computer-use");
+  fs.mkdirSync(scratchDir, { recursive: true });
+  return path.join(scratchDir, computerUseFileName(stem, extension));
 }
 
 export function toProjectArtifactUri(projectRoot: string, absolutePath: string): string {

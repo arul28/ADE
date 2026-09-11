@@ -97,6 +97,7 @@ import { createAiIntegrationService } from "../../desktop/src/main/services/ai/a
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
+import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
@@ -162,16 +163,26 @@ import {
 } from "../../desktop/src/main/services/appControl/appControlService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
+  createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  createRemoteBrowserForwarder,
+  withRemoteBrowserForwarding,
+} from "./services/builtInBrowser/remoteBrowserForwarder";
+import {
+  createWorkToolsStateService,
+  type WorkToolsStateService,
+} from "./services/workTools/workToolsStateService";
+import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
+import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import {
   createAutomationService,
@@ -338,6 +349,8 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  /** Read-only Work tools-pane state for iOS and the hosted web client. */
+  workToolsStateService?: WorkToolsStateService | null;
   configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
@@ -1171,8 +1184,22 @@ export async function createAdeRuntime(args: {
     // pattern as desktop main. Without this bridge, paired phones only ever
     // receive terminal snapshots, never live terminal_data push.
     let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
+    const syncStatusEventPublisher = createSyncStatusEventPublisher<SyncRoleSnapshot>({
+      emit: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+    });
+    teardown.push(() => syncStatusEventPublisher.dispose());
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
+    // The capability registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in
+    // Electron main, not here — a token minted in this process could never be
+    // validated. So the daemon asks the desktop to mint and revoke them over
+    // the authenticated bridge. The bridge client is built further down (it
+    // needs the auth token), hence the late-bound holder.
+    let builtInBrowserBridgeForCapabilities: BuiltInBrowserDesktopBridgeClient | null = null;
+    const browserActorCapabilityIssuer = createBridgeBrowserActorCapabilityIssuer({
+      getBridge: () => builtInBrowserBridgeForCapabilities,
+    });
+
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: paths.transcriptsDir,
@@ -1214,6 +1241,7 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      browserActorCapabilityIssuer,
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -1332,15 +1360,54 @@ export async function createAdeRuntime(args: {
     const builtInBrowserBridgeSocketPath =
       process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveMachineAdeLayout().desktopBridgeSocketPath;
-    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
+    // With no desktop attached HERE, `browser open` is still satisfiable: a
+    // desktop that holds a remote pin on this machine can open the URL in its
+    // own browser and reach this machine's localhost through a port-forward.
+    const remoteBrowserForwarder = chatOnlyRuntime
       ? null
-      : createBuiltInBrowserDesktopBridgeClient({
-        socketPath: builtInBrowserBridgeSocketPath,
-        getAuthToken: () => builtInBrowserBridgeAuthToken,
-        projectRoot,
+      : createRemoteBrowserForwarder({
+        emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
       });
-    teardown.push(() => builtInBrowserBridge?.dispose());
+    if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
+      ? withRemoteBrowserForwarding(
+        createBuiltInBrowserDesktopBridgeClient({
+          socketPath: builtInBrowserBridgeSocketPath,
+          getAuthToken: () => builtInBrowserBridgeAuthToken,
+          projectRoot,
+          logger,
+        }),
+        remoteBrowserForwarder,
+      )
+      : null;
+    builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
+    teardown.push(() => {
+      builtInBrowserBridgeForCapabilities = null;
+      builtInBrowserBridge?.dispose();
+    });
+
+    // Read-only view of the Work tools pane for iOS and the hosted web client.
+    // Built here because it is the first point where BOTH of its sources exist:
+    // the in-process App Control service and the desktop browser bridge.
+    const workToolsStateService = createWorkToolsStateService({
+      projectRoot,
+      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator is
+      // the daemon itself and holds no per-chat actor capability, which every
+      // `BuiltInBrowserService` bridge method requires. `getStatus` here always
+      // failed `policyDenied`, so the Tools pane reported "no desktop attached"
+      // even with ADE Desktop running.
+      getBrowserStatus: builtInBrowserBridge
+        ? () => builtInBrowserBridge.getStatusForRuntime()
+        : null,
+      getAppControlStatus: appControlService
+        ? () => appControlService.getStatus()
+        : null,
+      onStateChanged: (laneId) =>
+        pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
+      logger,
+    });
+    teardown.push(() => workToolsStateService.dispose());
 
     const headlessLinearServices = createHeadlessLinearServices({
       projectRoot,
@@ -1405,6 +1472,7 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         runtimeBudget: chatRuntimeBudget,
+        browserActorCapabilityIssuer,
         getOrchestrationService: () => orchestrationService,
         projectRoot,
         adeDir: paths.adeDir,
@@ -1412,8 +1480,6 @@ export async function createAdeRuntime(args: {
         fileService: headlessLinearServices.fileService,
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,
-        linearClient: headlessLinearServices.linearClient,
-        linearCredentials: headlessLinearServices.linearCredentialService,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
         // Sleep is a machine fact, so every chat in this brain reads the one
@@ -2133,6 +2199,7 @@ export async function createAdeRuntime(args: {
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
+        workToolsStateService,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
@@ -2145,8 +2212,13 @@ export async function createAdeRuntime(args: {
         getModelPickerStore: () => getSharedModelPickerStore(db),
         cloudRelayStore,
         syncTunnelClientService,
+        // Coalesced, not queued. A reconnect storm reports hundreds of status
+        // transitions a second and each one is a full snapshot; pushing them
+        // straight onto the event buffer is what buffered `rpc_data` past the
+        // host's required-send ceiling and closed the paired transport. See
+        // `syncStatusEventPublisher`.
         onStatusChanged: (snapshot) => {
-          pushEvent("runtime", { type: "sync-status", snapshot });
+          syncStatusEventPublisher.publish(snapshot);
         },
       });
       syncServiceForPtyEvents = syncService;
@@ -2294,13 +2366,24 @@ export async function createAdeRuntime(args: {
       iosSimulatorService,
       appControlService,
       builtInBrowserService: builtInBrowserBridge,
+      workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
-        if (!builtInBrowserBridge) return false;
+        if (!builtInBrowserBridge) {
+          logger.warn("built_in_browser_bridge.runtime_auth_no_bridge", {
+            socketPath: builtInBrowserBridgeSocketPath,
+          });
+          return false;
+        }
         const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
           socketPath: builtInBrowserBridgeSocketPath,
           authToken,
         });
         if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
+        logger.info("built_in_browser_bridge.runtime_auth_configured", {
+          socketPath: builtInBrowserBridgeSocketPath,
+          projectRoot,
+          verified,
+        });
         return verified;
       },
       eventBuffer,

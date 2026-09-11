@@ -30,6 +30,7 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
+import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -1173,11 +1174,23 @@ export function createMultiProjectRpcRequestHandler(
     const cursor = readCursor(params.cursor);
     const limit = readLimit(params.limit);
     const replay = params.replay !== false;
+    // Opt-in, and deliberately default-off: a screencast frame is megabytes a
+    // second of base64 JPEG that only a subscriber able to paint it has any use
+    // for. Sent unasked over a paired sync transport it buffered `rpc_data`
+    // past the required-send ceiling and the host closed the whole connection
+    // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
+    const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
-    const shouldForward = (event: BufferedEvent): boolean =>
-      !category || event.category === category;
+    const shouldForward = (event: BufferedEvent): boolean => {
+      if (category && event.category !== category) return false;
+      // Skipped, never queued: the frame after this one is already a better
+      // picture of the same screen, so a dropped frame costs nothing and a
+      // buffered one costs the transport.
+      if (!includeHighVolumeEvents && isHighVolumeRuntimeEvent(event)) return false;
+      return true;
+    };
     const unsubscribe = scope.runtime.eventBuffer.subscribe((event) => {
       if (shouldForward(event))
         emitRuntimeEvent(subscriptionId, projectId, event, eventEpoch);

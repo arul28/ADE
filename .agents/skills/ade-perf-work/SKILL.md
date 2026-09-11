@@ -467,5 +467,20 @@ Do not expose the raw `Error invoking remote method ...` prefix in Work Git hist
   local-runtime-disabled perf pass, around `260ms`. Optimize only after checking
   model/provider availability behavior in Settings and launch surfaces.
 - Browser panel mount creates built-in browser tabs and can cost about `400-500ms` per tab creation in UI probes. Optimize only after checking that tab reuse and hidden WebContentsView bounds behavior remain correct.
-- iOS Simulator status calls are visible costs when those panels mount. Keep them lazy to the active tools tab.
-- Avoid hidden panel polling. App Control, iOS Simulator, and Browser should subscribe or poll only while their tab is active, unless a feature explicitly needs background state.
+- iOS Simulator status calls are visible costs when those panels mount. Keep them lazy to the tools pane being open.
+- Avoid hidden panel polling. App Control, iOS Simulator, and Browser must never
+  poll. Since the tools pane became a picker plus one active tool, their
+  *status* reads (one `getStatus` plus an event subscription each, in
+  `useWorkToolStatuses.ts`) live for as long as the pane is open rather than for
+  as long as one tool is on screen — the picker cards and the header's activity
+  dots report on tools nobody is looking at. Two rules keep that honest and must
+  not be regressed: a tool that is unavailable in this context
+  (`workToolAvailability`) is never read from at all, and no status may be added
+  that needs a new poller — a tool with no cheap read shows what it is for
+  instead of a fabricated line. Attached shells have no status event, so
+  `terminal.list` is taken once when the pane becomes visible, never on a timer.
+- Picker skeleton lines use `steps(6)` shimmer (`.ade-tool-skeleton`) and are
+  capped at 300ms. Keep both: a smooth sweep costs one compositor frame per
+  display refresh, which is very expensive on the 240Hz panel this repo is
+  developed on, and an uncapped skeleton turns a wedged machine into a grid of
+  shimmering placeholders.

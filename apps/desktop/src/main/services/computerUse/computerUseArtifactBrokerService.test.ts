@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
-import { createComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
+import {
+  createComputerUseArtifactBrokerService,
+  resolveTempImportRoots,
+} from "./computerUseArtifactBrokerService";
 
 function createLogger() {
   return {
@@ -161,22 +164,48 @@ describe("computerUseArtifactBrokerService", () => {
 
     const blockedPath = path.join(process.cwd(), `.ade-broker-blocked-${Date.now()}.txt`);
     fs.writeFileSync(blockedPath, "secret", "utf8");
-    try {
-      expect(() =>
-        broker.ingest({
-          backend: {
-            name: "agent-browser",
+    const attempt = () =>
+      broker.ingest({
+        backend: {
+          name: "agent-browser",
+        },
+        callerRoot: path.dirname(blockedPath),
+        inputs: [
+          {
+            kind: "console_logs",
+            title: "Blocked import",
+            path: blockedPath,
           },
-          callerRoot: path.dirname(blockedPath),
-          inputs: [
-            {
-              kind: "console_logs",
-              title: "Blocked import",
-              path: blockedPath,
-            },
-          ],
-        }),
-      ).toThrow(/outside allowed import roots/);
+        ],
+      });
+    try {
+      expect(attempt).toThrow(/outside allowed import roots/);
+
+      // The message has to name the legal roots: an agent that hands us
+      // `/tmp/proof.png` on macOS cannot otherwise tell that the OS temp dir
+      // is `$TMPDIR` under /var/folders and that /tmp is not a root.
+      let message = "";
+      try {
+        attempt();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("Allowed roots:");
+      expect(message).toContain(projectRoot);
+      expect(message).toContain(os.tmpdir());
+      expect(message).toContain(path.join(os.homedir(), ".agent-browser"));
+      // …and it has to name the roots THIS platform actually has. `/tmp` is a
+      // root only off Windows and `$TMPDIR` is not the Windows spelling, so a
+      // Windows agent told to copy its file there retries and fails again.
+      if (process.platform === "win32") {
+        expect(message).toContain("%TEMP%");
+        expect(message).not.toContain("$TMPDIR");
+        expect(message).not.toContain("/tmp");
+      } else {
+        expect(message).toContain("$TMPDIR");
+        expect(message).toContain("/tmp");
+        expect(message).not.toContain("%TEMP%");
+      }
     } finally {
       fs.rmSync(blockedPath, { force: true });
     }
@@ -1064,6 +1093,71 @@ describe("computerUseArtifactBrokerService", () => {
       ).toThrow(/outside allowed import roots/);
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  describe("temp import roots", () => {
+    it("allows both $TMPDIR and the /tmp symlink target on darwin", () => {
+      // macOS os.tmpdir() is a per-user /var/folders path while agents write to
+      // /tmp, which is a symlink to /private/tmp. Both spellings have to be
+      // roots or a real screenshot in a real directory is rejected.
+      const roots = resolveTempImportRoots({
+        platform: "darwin",
+        tmpdir: () => "/var/folders/xy/T",
+        realpath: (candidate) => (candidate === "/tmp" ? "/private/tmp" : candidate),
+      });
+
+      expect(roots).toEqual(["/var/folders/xy/T", "/tmp", "/private/tmp"]);
+    });
+
+    it("keeps the literal /tmp root when it cannot be realpathed", () => {
+      const roots = resolveTempImportRoots({
+        platform: "linux",
+        tmpdir: () => "/tmp",
+        realpath: () => {
+          throw new Error("ENOENT");
+        },
+      });
+
+      // /tmp is os.tmpdir() on Linux, so the set collapses to one entry.
+      expect(roots).toEqual(["/tmp"]);
+    });
+
+    it("adds nothing beyond os.tmpdir() on Windows", () => {
+      // %TEMP%/%TMP% are already os.tmpdir(); there is no /tmp to widen to.
+      const roots = resolveTempImportRoots({
+        platform: "win32",
+        tmpdir: () => "C:\\Users\\dev\\AppData\\Local\\Temp",
+        realpath: (candidate) => candidate,
+      });
+
+      expect(roots).toEqual([path.resolve("C:\\Users\\dev\\AppData\\Local\\Temp")]);
+    });
+  });
+
+  // POSIX-only: the assertion is about the conventional `/tmp` staging root,
+  // which Windows does not have. `skipIf` rather than a bare `return` so the
+  // skip is reported instead of passing green.
+  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+
+    const stagedPath = path.join("/tmp", `ade-proof-roots-${Date.now()}.png`);
+    fs.writeFileSync(stagedPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    try {
+      const ingested = broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [{ kind: "screenshot", title: "Tmp proof", path: stagedPath }],
+      });
+
+      expect(ingested.artifacts[0]).toMatchObject({ kind: "screenshot", title: "Tmp proof" });
+      expect(ingested.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
+    } finally {
+      fs.rmSync(stagedPath, { force: true });
     }
   });
 });

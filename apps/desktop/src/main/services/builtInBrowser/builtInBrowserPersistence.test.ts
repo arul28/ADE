@@ -196,13 +196,84 @@ describe("built-in browser tab persistence", () => {
       activeIndex: 0,
     });
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
-      version: 1,
+      version: 3,
       collections: {
         window: expect.objectContaining({
           tabs: [{ url: "about:blank" }, { url: "https://example.test/" }],
           activeIndex: 0,
         }),
       },
+    });
+  });
+
+  it("drops the old google default when upgrading a v1 state file", () => {
+    const filePath = statePath();
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      collections: {
+        window: {
+          tabs: [
+            { url: "https://www.google.com/" },
+            { url: "https://example.test/" },
+            // A real search the person ran is theirs, not ADE's home page.
+            { url: "https://www.google.com/search?q=vite" },
+          ],
+          activeIndex: 0,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    }), "utf8");
+
+    expect(createBuiltInBrowserStateStore({ filePath }).restore("window")).toEqual({
+      tabs: [{ url: "https://example.test/" }, { url: "https://www.google.com/search?q=vite" }],
+      activeIndex: 0,
+    });
+  });
+
+  it("keeps a google tab that was saved after the migration", () => {
+    const filePath = statePath();
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 3,
+      collections: {
+        window: {
+          tabs: [{ url: "https://www.google.com/" }],
+          activeIndex: 0,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    }), "utf8");
+
+    expect(createBuiltInBrowserStateStore({ filePath }).restore("window")).toEqual({
+      tabs: [{ url: "https://www.google.com/" }],
+      activeIndex: 0,
+    });
+  });
+
+  // v3 re-derives the project collection key from a platform-aware path key, so
+  // a v2 `project-<hash>` entry names a collection nothing will ever read.
+  it("drops project collections when upgrading a v2 state file but keeps window", () => {
+    const filePath = statePath();
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      collections: {
+        "project-0123456789abcdef": {
+          tabs: [{ url: "https://stale.test/" }],
+          activeIndex: 0,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        window: {
+          tabs: [{ url: "https://example.test/" }],
+          activeIndex: 0,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    }), "utf8");
+
+    const store = createBuiltInBrowserStateStore({ filePath });
+    expect(store.restore("project-0123456789abcdef")).toBeNull();
+    expect(store.restore("window")).toEqual({
+      tabs: [{ url: "https://example.test/" }],
+      activeIndex: 0,
     });
   });
 

@@ -246,6 +246,7 @@ import {
   type PushQuietHours,
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
+import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -376,6 +377,12 @@ type SyncRemoteCommandServiceArgs = {
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   externalSessionsService?: ExternalSessionsRemoteService | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
+  /**
+   * Read-only Work tools-pane state. Absent on a runtime that never built one
+   * (chat-only), in which case `workTools.*` is simply not registered and
+   * controllers feature-detect its absence rather than seeing it fail.
+   */
+  workToolsStateService?: WorkToolsStateService | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -5116,6 +5123,28 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
   );
 }
 
+/**
+ * Read-only mirror of the desktop's Work tools pane for iOS and hosted web.
+ *
+ * Project-scoped, because a lane only exists inside a project. Viewer-allowed,
+ * because everything here is strictly observational — there is deliberately no
+ * remote command that changes the active tool or drives a browser tab.
+ * `setActiveTool` is a desktop-only publish and lives on the `work_tools` ADE
+ * action domain instead, where only the local runtime channel can reach it.
+ */
+function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const workToolsStateService = args.workToolsStateService;
+  if (!workToolsStateService) return;
+  register("workTools.getLaneState", { viewerAllowed: true }, async (payload) =>
+    workToolsStateService.getLaneState({
+      laneId: requireString(payload.laneId, "workTools.getLaneState requires laneId."),
+    }));
+  register("workTools.readObservationPreview", { viewerAllowed: true }, async (payload) =>
+    workToolsStateService.readObservationPreview({
+      path: requireString(payload.path, "workTools.readObservationPreview requires path."),
+    }));
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -6010,6 +6039,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
+  registerWorkToolsRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });

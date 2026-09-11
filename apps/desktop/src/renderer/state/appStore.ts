@@ -18,6 +18,12 @@ import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
+  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardPosition,
+  type WorkLiveCardDismissals,
+  type WorkLiveCardPosition,
+} from "./workLiveCardState";
+import {
   EMPTY_WORK_SESSION_FILTERS,
   normalizeWorkSessionFilters,
   type WorkSessionFilters,
@@ -132,7 +138,17 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
   return "default";
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
-export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
+/**
+ * One tool in the Work tools pane. Still named "tab" for the persisted vocabulary
+ * the pane grew up with; the pane itself is now a picker plus one active tool.
+ */
+export type WorkSidebarTab =
+  | "terminal"
+  | "git"
+  | "files"
+  | "ios"
+  | "app-control"
+  | "browser";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -183,8 +199,43 @@ export type WorkProjectViewState = {
   workFocusSessionsHidden: boolean;
   /** Global Work right sidebar state; content follows the active lane/session. */
   workSidebarOpen: boolean;
-  workSidebarTab: WorkSidebarTab;
+  /**
+   * The one tool open in the Work tools pane, or `null` for the picker page.
+   *
+   * Read/written per LANE (`laneWorkViewByScope`) so a lane keeps the tool you
+   * left it on; the project-scoped copy of this field is the fallback for
+   * projectless / lane-less Work surfaces. Openness and width stay project-wide
+   * — the pane's geometry is a workspace preference, its contents are not.
+   */
+  workSidebarTool: WorkSidebarTab | null;
+  /**
+   * Every tool open as a tab in the pane's strip, in strip order, with
+   * `workSidebarTool` among them (the strip's active tab). Lane-scoped for the
+   * same reason the active tool is: the lane you are shipping a UI change in
+   * keeps its Browser and Terminal tabs, the lane you are rebasing keeps Git.
+   *
+   * An empty strip means the picker page with nothing open. Persisted state
+   * written before the strip existed has no such field and normalizes to
+   * `[workSidebarTool]`, so the one tool that build had open becomes its one tab.
+   */
+  workSidebarOpenTools: WorkSidebarTab[];
   workSidebarWidthPct: number;
+  /**
+   * Where the Work tab's floating live-preview card sits, as fractions of the
+   * chat column. Optional because it is only written once somebody drags the
+   * card: an absent value means "bottom-right", which is where it starts.
+   * Fractions rather than pixels so resizing the column keeps it in place
+   * instead of stranding it off the edge.
+   */
+  workLiveCardPosition?: WorkLiveCardPosition | null;
+  /**
+   * Per-tool "×" dismissals of that same card, keyed by tool id, valued with
+   * the activity stamp the card was showing when it was closed. Lane-scoped in
+   * practice (written through `setLaneWorkViewState`): dismissing the browser
+   * preview in one lane says nothing about the next one. Optional for the same
+   * reason as the position — absent means nobody has ever closed it.
+   */
+  workLiveCardDismissed?: WorkLiveCardDismissals | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
@@ -210,6 +261,14 @@ export type WorkProjectViewState = {
   lanesFilter: string;
   lanesPinnedLaneIds: string[];
   lanesExpandedLaneId: string | null;
+  /**
+   * `"<machineId>:<remotePort>"` pairs the human answered "Always for this
+   * lane" to, when a chat pinned to another machine asks the built-in browser
+   * to reach a loopback port over a tunnel. The machine-wide `portForward`
+   * grant is not enough on its own: the agent picks the port, so approving a
+   * dev server on 3000 is not approval for an admin console on 8080.
+   */
+  browserTunnelAlwaysKeys: string[];
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -262,8 +321,11 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workCollapsedSectionIds: ["status:settled"],
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
-    workSidebarTab: "git",
+    workSidebarTool: null,
+    workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
+    workLiveCardPosition: null,
+    workLiveCardDismissed: null,
     laneSessionOrder: {},
     pinnedSessionIds: [],
     workPinnedLaneIds: [],
@@ -275,6 +337,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     lanesFilter: "",
     lanesPinnedLaneIds: [],
     lanesExpandedLaneId: null,
+    browserTunnelAlwaysKeys: [],
   };
 }
 
@@ -295,15 +358,40 @@ function normalizeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeWorkSidebarTab(value: unknown): WorkSidebarTab {
+function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
   if (
     value === "terminal"
+    || value === "git"
     || value === "files"
     || value === "ios"
     || value === "app-control"
     || value === "browser"
   ) return value;
-  return "git";
+  return null;
+}
+
+/**
+ * The persisted tab strip.
+ *
+ * Unknown ids are dropped (a blob written by a newer build, or hand-edited),
+ * duplicates collapse — the strip is an ordered set — and the active tool is
+ * appended when absent, because a tool on screen is open by definition. A blob
+ * with no `workSidebarOpenTools` at all is pre-strip state: its one tool becomes
+ * its one tab, which is exactly the pane that build had.
+ */
+function normalizeWorkSidebarOpenTools(
+  value: unknown,
+  activeTool: WorkSidebarTab | null,
+): WorkSidebarTab[] {
+  if (!Array.isArray(value)) return activeTool ? [activeTool] : [];
+  const open: WorkSidebarTab[] = [];
+  for (const entry of value) {
+    const tool = normalizeWorkSidebarTool(entry);
+    if (!tool || open.includes(tool)) continue;
+    open.push(tool);
+  }
+  if (activeTool && !open.includes(activeTool)) open.push(activeTool);
+  return open;
 }
 
 function normalizeWorkSidebarWidthPct(value: unknown): number {
@@ -316,6 +404,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
     : {};
+  // Resolved before the object literal because the strip is normalized against
+  // it: the active tab has to be in the strip it is the active tab of.
+  const activeWorkSidebarTool = normalizeWorkSidebarTool(candidate.workSidebarTool);
   return {
     openItemIds: normalizeStringArray(candidate.openItemIds),
     activeItemId: normalizeOptionalString(candidate.activeItemId),
@@ -344,8 +435,14 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
-    workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),
+    workSidebarTool: activeWorkSidebarTool,
+    workSidebarOpenTools: normalizeWorkSidebarOpenTools(
+      candidate.workSidebarOpenTools,
+      activeWorkSidebarTool,
+    ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
+    workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
+    workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
     // Deduped: a hand-edited or half-written blob must not be able to render the
@@ -357,6 +454,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
     lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
+    browserTunnelAlwaysKeys: normalizeUniqueStringArray(candidate.browserTunnelAlwaysKeys),
   };
 }
 
@@ -412,8 +510,18 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
  *    `workLaneSortMode`, `workLaneOrder`, `workSessionFilters`). Also purely
  *    additive: a v3 blob normalizes to "created" order with no pins and no
  *    chips, which is exactly the behaviour it had before the bump.
+ * 5: replaces the fixed `workSidebarTab` with a nullable `workSidebarTool`, now
+ *    resolved per lane. A v4 blob's `workSidebarTab` is deliberately NOT
+ *    migrated: the pane opens on its picker once, so the tool grid is the first
+ *    thing everyone meets, and the next choice is remembered per lane from then
+ *    on. `workSidebarOpen` and `workSidebarWidthPct` are untouched, so a pane
+ *    that was open stays open at the width it had.
+ * 6: adds `workSidebarOpenTools`, the pane's tab strip. Purely additive:
+ *    `normalizeWorkSidebarOpenTools` turns a v5 blob's single `workSidebarTool`
+ *    into a one-tab strip, so upgrading lands on the pane the user left rather
+ *    than on an empty picker.
  */
-const WORK_VIEW_STATE_VERSION = 4;
+const WORK_VIEW_STATE_VERSION = 6;
 /** The version whose one-time Settled collapse must not re-run on later bumps. */
 const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
 
@@ -681,11 +789,55 @@ function pickDismissMapForRoots(map: Record<string, true>, roots: readonly (stri
   return next;
 }
 
-function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneId: string | null | undefined): string {
+/**
+ * The one spelling of the `"<project>::<lane>"` key `laneWorkViewByScope` is
+ * stored under.
+ *
+ * Exported because the shape is the store's private storage layout and it was
+ * being rebuilt by hand in two components, with two different trim rules.
+ * Returns "" when either half is missing, which callers read as "no lane scope,
+ * fall back to the project scope".
+ */
+export function laneWorkViewScopeKey(
+  projectRoot: string | null | undefined,
+  laneId: string | null | undefined,
+): string {
   const projectKey = normalizeProjectKey(projectRoot);
   const normalizedLaneId = typeof laneId === "string" ? laneId.trim() : "";
   if (!projectKey || !normalizedLaneId) return "";
   return `${projectKey}::${normalizedLaneId}`;
+}
+
+/** Back-compat alias for the store's internal call sites. */
+const normalizeLaneWorkScopeKey = laneWorkViewScopeKey;
+
+/**
+ * Reactive twins of `getWorkViewState` / `getLaneWorkViewState`.
+ *
+ * The getters are imperative — a component that needs to RE-RENDER when the
+ * pane's stored state changes has to subscribe, which is why two of them were
+ * reaching into `state.workViewByProject[key]` directly and re-normalizing the
+ * result by hand. These run the same key resolution and the same defaults, and
+ * are safe to pass straight to `useAppStore`.
+ */
+export function selectWorkViewState(projectRoot: string | null | undefined) {
+  return (state: AppState): WorkProjectViewState => {
+    const key = resolveProjectStateKey(state, projectRoot);
+    if (!key) return createDefaultWorkProjectViewState();
+    return state.workViewByProject[key] ?? createDefaultWorkProjectViewState();
+  };
+}
+
+export function selectLaneWorkViewState(
+  projectRoot: string | null | undefined,
+  laneId: string | null | undefined,
+) {
+  return (state: AppState): WorkProjectViewState => {
+    const projectKey = resolveProjectStateKey(state, projectRoot);
+    const key = laneWorkViewScopeKey(projectKey, laneId);
+    if (!key) return createDefaultWorkProjectViewState();
+    return state.laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
+  };
 }
 
 function removeWorkViewStateForProject(

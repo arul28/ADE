@@ -1826,6 +1826,34 @@ export type ProjectUiConfig = {
   webhookGatewayPublicUrl?: string;
 };
 
+/** Where a link clicked inside ADE opens by default. */
+export type BrowserLinkOpenMode = "in-app" | "external";
+
+/**
+ * Built-in browser preferences.
+ *
+ * Machine-local by intent: which browser your links open in is a property of
+ * the machine you are sitting at, not of the repository, so it belongs in
+ * `.ade/local.yaml` rather than the committed `ade.yaml`. Writing it to the
+ * shared file still works — the merge below honours it — but nothing in ADE
+ * puts it there.
+ */
+export type ProjectBrowserConfig = {
+  /**
+   * `in-app` (default) opens links in ADE's built-in browser, which carries the
+   * authenticated profile; `external` hands them to the system browser.
+   * Mod+Click always overrides this to external, and Shift+Click to in-app.
+   */
+  linkOpenMode?: BrowserLinkOpenMode;
+  /**
+   * Open a background tab when a terminal in this project prints a dev-server
+   * ready line. Defaults to `true`. The tab never steals focus and never opens
+   * the pane; it is there when you look. Set `false` to keep the Browser tool
+   * strictly manual.
+   */
+  autoOpenDevServer?: boolean;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   project?: ProjectIdentityConfig;
@@ -1872,6 +1900,7 @@ export type ProjectConfigFile = {
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
   ui?: ProjectUiConfig;
+  browser?: ProjectBrowserConfig;
 };
 
 export type ProjectConfigCandidate = {
@@ -1914,6 +1943,7 @@ export type EffectiveProjectConfig = {
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
   ui?: ProjectUiConfig;
+  browser?: ProjectBrowserConfig;
   cto?: {
     companyBudgetMonthlyCents?: number;
     budgetTelemetry?: {
