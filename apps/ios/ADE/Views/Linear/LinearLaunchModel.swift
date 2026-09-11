@@ -44,6 +44,16 @@ struct LinearLaunchConfig: Equatable {
   var kickoff: String
 }
 
+/// Identity for the launch destination's editable draft. SwiftUI can retain
+/// `@State` when a navigation destination is reused, so the issue and launch
+/// mode must both participate in the identity of this screen.
+struct LinearLaunchViewIdentity: Hashable {
+  let issueID: String
+  let laneOnly: Bool
+}
+
+let linearLaunchKickoffAccessibilityIdentifier = "linear-launch-kickoff"
+
 // MARK: - Orchestration
 
 /// Injected side-effects so `runLinearLaunch` is unit-testable without a live

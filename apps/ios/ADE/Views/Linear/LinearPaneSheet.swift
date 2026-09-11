@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// Navigation destination for a Linear launch. The explicit identity is
+/// important because `LinearLaunchScreen` owns editable `@State`; SwiftUI can
+/// otherwise reuse the first issue's draft when a navigation destination is
+/// replaced with another issue.
+struct LinearLaunchDestination: View {
+  let issue: NormalizedLinearIssue
+  let laneOnly: Bool
+
+  var body: some View {
+    LinearLaunchScreen(issue: issue, laneOnly: laneOnly)
+      .id(LinearLaunchViewIdentity(issueID: issue.id, laneOnly: laneOnly))
+  }
+}
+
 /// The global Linear pane: a full-screen sheet hosting a `NavigationStack`
 /// (issue list → detail → launch). Presented from the Work top-bar Linear
 /// button and by `ade://linear-issue/<IDENT>` deep links. Active-project scoped.
@@ -42,7 +56,7 @@ struct LinearPaneSheet: View {
         case let .issue(issue):
           LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
         case let .launch(issue, laneOnly):
-          LinearLaunchScreen(issue: issue, laneOnly: laneOnly)
+          LinearLaunchDestination(issue: issue, laneOnly: laneOnly)
         case .connection:
           LinearConnectionScreen(store: store)
         }

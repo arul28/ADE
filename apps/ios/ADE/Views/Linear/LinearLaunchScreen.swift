@@ -1,5 +1,43 @@
 import SwiftUI
 
+private struct LinearLaunchKickoffAccessibilityMarker: UIViewRepresentable {
+  func makeUIView(context: Context) -> UIView {
+    UIView()
+  }
+
+  func updateUIView(_ marker: UIView, context: Context) {
+    markEditor(near: marker, attemptsRemaining: 4)
+  }
+
+  private func markEditor(near marker: UIView, attemptsRemaining: Int) {
+    var ancestor = marker.superview
+    while let container = ancestor {
+      if let textView = firstTextView(in: container) {
+        textView.accessibilityIdentifier = linearLaunchKickoffAccessibilityIdentifier
+        return
+      }
+      ancestor = container.superview
+    }
+    guard attemptsRemaining > 0 else { return }
+    DispatchQueue.main.async { [weak marker] in
+      guard let marker else { return }
+      markEditor(near: marker, attemptsRemaining: attemptsRemaining - 1)
+    }
+  }
+
+  private func firstTextView(in view: UIView) -> UITextView? {
+    if let textView = view as? UITextView {
+      return textView
+    }
+    for subview in view.subviews {
+      if let textView = firstTextView(in: subview) {
+        return textView
+      }
+    }
+    return nil
+  }
+}
+
 /// Streamlined launch config for a single Linear issue: session type + model +
 /// permission mode + editable kickoff prompt, then create-lane → launch-agent →
 /// navigate to the new session. Model/permission controls reuse the Work
@@ -194,6 +232,8 @@ struct LinearLaunchScreen: View {
         .font(.subheadline)
         .foregroundStyle(ADEColor.textPrimary)
         .adePromptInputTraits()
+        .accessibilityIdentifier(linearLaunchKickoffAccessibilityIdentifier)
+        .background(LinearLaunchKickoffAccessibilityMarker())
         .frame(minHeight: 120)
         .scrollContentBackground(.hidden)
         .padding(10)
