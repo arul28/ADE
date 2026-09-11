@@ -23,6 +23,7 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "../../../shared/types";
+import { usageProviderAccountUrl } from "../../../shared/types";
 import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { formatCost, formatTokens } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -31,11 +32,12 @@ import { type ThemeId, useAppStore } from "../../state/appStore";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
 import { providerColor } from "./providerColors";
-import { UsagePaceBar } from "./UsagePaceBar";
+import { UsageLimitCard } from "./UsageLimitCard";
 import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_BUTTON_CLASS,
   USAGE_CARD_CLASS,
+  USAGE_DIVIDER_COLOR_CLASS,
   USAGE_HAIRLINE_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
@@ -45,18 +47,36 @@ import {
   WEEKDAYS,
   formatUpdatedAge,
 } from "./usageWindowFormat";
+import {
+  type UsageAccountView,
+  buildLimitCards,
+  poolAccounts,
+} from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
 
 const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
-const PROVIDER_META: Record<UsageProvider, { label: string; usageUrl?: string }> = {
-  claude: { label: "Claude", usageUrl: "https://claude.ai/new#settings/usage" },
-  codex: {
-    label: "Codex",
-    usageUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
-  },
+// Display names only. The limits URL is NOT re-listed here: it comes from
+// `usageProviderAccountUrl`, which is also what the host stamps onto
+// `UsageProviderStatus.accountUrl` for iOS and the web client. A second map of
+// the same thing is one edit away from the popover and the heading opening
+// different pages.
+const PROVIDER_META: Record<UsageProvider, { label: string }> = {
+  claude: { label: "Claude" },
+  codex: { label: "Codex" },
   cursor: { label: "Cursor" },
 };
+
+/** 5-hour before Weekly before Monthly; anything else keeps provider order. */
+function orderLimitCards<T extends { label: string }>(cards: T[]): T[] {
+  const rank = (label: string) => {
+    if (/-min$|-hour$/.test(label)) return 0;
+    if (label === "Weekly") return 1;
+    if (label === "Monthly") return 2;
+    return 3;
+  };
+  return [...cards].sort((a, b) => rank(a.label) - rank(b.label));
+}
 
 function providerConnection(
   connections: AiProviderConnections | null,
@@ -360,6 +380,10 @@ export function UsageLimitsBand({
     [snapshot?.extraUsage],
   );
 
+  // Accounts are pooled once for the whole band: the same login reported by two
+  // machines is one account everywhere it appears, not once per provider row.
+  const accounts = useMemo(() => poolAccounts(snapshot?.accounts), [snapshot?.accounts]);
+
   if (bridgeMissing) {
     return (
       <div className={cn("rounded-lg px-3 py-6 text-center text-muted-fg", USAGE_TEXT.detail)}>
@@ -389,6 +413,7 @@ export function UsageLimitsBand({
               provider={provider}
               theme={theme}
               windows={windowsByProvider[provider] ?? []}
+              accounts={accounts}
               connection={providerConnection(providerConnections, provider)}
               status={snapshot?.providerStatus?.[provider] ?? null}
               messages={(snapshot?.providerMessages ?? []).filter((message) => message.provider === provider)}
@@ -478,6 +503,7 @@ function ProviderLimitsRow({
   provider,
   theme,
   windows,
+  accounts,
   connection,
   status,
   messages,
@@ -492,6 +518,7 @@ function ProviderLimitsRow({
   provider: UsageProvider;
   theme: ThemeId;
   windows: UsageWindow[];
+  accounts: UsageAccountView[];
   connection: AiProviderConnectionStatus | null;
   status: UsageProviderStatus | null;
   messages: NonNullable<UsageSnapshot["providerMessages"]>;
@@ -520,7 +547,10 @@ function ProviderLimitsRow({
   // unreachable. Hovering warms the row in the provider's own brand colour.
   const rowClass = cn(
     "group grid grid-cols-1 gap-x-6 gap-y-3 px-4 py-3.5 transition-[background-color] duration-150 motion-reduce:transition-none",
-    divided && "border-t border-separator",
+    // The seam between provider groups, drawn like every other seam on these
+    // surfaces. `border-separator` is the full-strength token: against a
+    // hairline card outline it read as a hard rule stamped across the panel.
+    divided && `border-t ${USAGE_DIVIDER_COLOR_CLASS}`,
   );
   const rowStyle = hovering
     ? { background: `color-mix(in srgb, ${tone} 9%, transparent)` }
@@ -559,18 +589,32 @@ function ProviderLimitsRow({
     )
     : null;
 
+  // `status.accountEmail` is whichever login the host polled last. With one
+  // account that names the numbers below it; with two it contradicts them,
+  // because the cards already carry an initials chip per account. The heading
+  // stays silent in that case rather than picking a side.
+  const providerAccountCount = accounts.filter(
+    (account) => account.provider === provider,
+  ).length;
+  const headingEmail = providerAccountCount > 1 ? null : status?.accountEmail ?? null;
+
   const identity = (
     <div className="flex min-w-0 flex-col gap-1">
       <ProviderHeading
         provider={provider}
         color={tone}
         label={meta.label}
-        usageUrl={meta.usageUrl}
+        usageUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
         dim={windows.length === 0 && (!isAuthed || isUsageUnauthed)}
       />
       <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
         {providerSourceLine(status, nowMs)}
       </span>
+      {headingEmail ? (
+        <span className={cn(USAGE_TEXT.micro, "truncate text-muted-fg")} title={headingEmail}>
+          {headingEmail}
+        </span>
+      ) : null}
     </div>
   );
 
@@ -597,14 +641,11 @@ function ProviderLimitsRow({
     );
   }
 
-  const fiveHourWindow = windows.find((w) => w.windowType === "five_hour");
-  const weeklyWindow = windows.find((w) => w.windowType === "weekly");
-  const monthlyWindow = windows.find((w) => w.windowType === "monthly");
-  const trendWindow = weeklyWindow ?? monthlyWindow;
-  const secondaryWindows = [
-    ...(monthlyWindow && monthlyWindow !== trendWindow ? [monthlyWindow] : []),
-    ...windows.filter((w) => w !== fiveHourWindow && w !== weeklyWindow && w !== monthlyWindow),
-  ];
+  // Short window first, then the long one, then whatever else the provider
+  // reports — the order a reader checks them in.
+  const limitCards = orderLimitCards(buildLimitCards(provider, windows, accounts, nowMs));
+  const trendWindow = windows.find((w) => w.windowType === "weekly")
+    ?? windows.find((w) => w.windowType === "monthly");
   const has7d = !!dailyUsage7d && dailyUsage7d.some((value) => value > 0);
   const modelBreakdown = trendWindow?.modelBreakdown;
 
@@ -652,38 +693,20 @@ function ProviderLimitsRow({
         ))}
 
         {windows.length > 0 ? (
-          /* One window per line, always.
+          /* One card per window, stacked.
            *
-           * This was a `sm:grid-cols-2 xl:grid-cols-3` responsive grid. Those
-           * are *viewport* queries, and the app window behind the 420px popover
-           * satisfies them — which is how two pace bars ended up side by side
-           * in a column too narrow for either. A pace bar is a label, a track,
-           * and a sentence of pacing text; it wants the full width of whatever
-           * it is in. There is no width at which stacking them is wrong, so
-           * there is no breakpoint here to get wrong. */
+           * Each card is headroom ("49% left"), the next restore, and one
+           * segment per account — so a provider with two logins reads as two
+           * chips on one row rather than two copies of the same bar. The stack
+           * is unconditional: this band lives in a 420px popover, and there is
+           * no width at which side-by-side cards would be legible. */
           <div className="grid grid-cols-1 gap-y-4">
-            {fiveHourWindow ? (
-              <UsagePaceBar
-                window={fiveHourWindow}
-                providerColor={tone}
-                nowMs={nowMs}
-                reducedMotion={reducedMotion}
-              />
-            ) : null}
-            {trendWindow ? (
-              <UsagePaceBar
-                window={trendWindow}
-                providerColor={tone}
-                nowMs={nowMs}
-                reducedMotion={reducedMotion}
-                showTrend
-              />
-            ) : null}
-            {secondaryWindows.map((window) => (
-              <UsagePaceBar
-                key={`${provider}-${window.windowType}`}
-                window={window}
-                providerColor={tone}
+            {limitCards.map((card) => (
+              <UsageLimitCard
+                key={card.key}
+                card={card}
+                theme={theme}
+                fallbackAccountUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
                 nowMs={nowMs}
                 reducedMotion={reducedMotion}
               />
@@ -715,7 +738,6 @@ function ProviderHeading({
   dim?: boolean;
 }) {
   const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
-  const providerLabel = PROVIDER_META[provider].label;
   return (
     <div className="flex items-center gap-2">
       {Logo ? (
@@ -732,8 +754,8 @@ function ProviderHeading({
           type="button"
           onClick={() => openExternalUrl(usageUrl)}
           className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
-          aria-label={`Open ${providerLabel} usage in browser`}
-          title={`Open ${providerLabel} usage in browser`}
+          aria-label={`Open ${label} usage in browser`}
+          title={`Open ${label} usage in browser`}
         >
           <ArrowSquareOut size={12} weight="regular" />
         </button>
@@ -784,7 +806,7 @@ function ExtraUsageCard({
           provider={extra.provider}
           color={tone}
           label={`${meta.label} extra usage`}
-          usageUrl={meta.usageUrl}
+          usageUrl={usageProviderAccountUrl(extra.provider)}
         />
         <span className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-fg")}>
           {formatUsd(usedUsd)}

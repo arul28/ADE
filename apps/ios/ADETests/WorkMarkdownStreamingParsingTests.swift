@@ -434,9 +434,6 @@ final class WorkStreamingPreviewPerformanceTests: XCTestCase {
       itemId: "item-1"
     )
     let optimizedCache = WorkAssistantPreviewCache()
-    let characterBudget = workAssistantMessageCharacterBudget(
-      forLineBudget: workAssistantMessageInitialLineBudget
-    )
 
     let optimizedStart = Date()
     for index in 1...deltaCount {
@@ -444,13 +441,7 @@ final class WorkStreamingPreviewPerformanceTests: XCTestCase {
         " Delta \(index): the keeper walked the length of the gallery and counted the lamps again.",
         to: &optimizedMessage
       )
-      _ = optimizedCache.preview(
-        for: optimizedMessage,
-        anchor: .tail,
-        lineBudget: workAssistantMessageInitialLineBudget,
-        characterBudget: characterBudget,
-        classification: nil
-      )
+      _ = optimizedCache.preview(for: optimizedMessage)
     }
     let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
 
@@ -458,12 +449,7 @@ final class WorkStreamingPreviewPerformanceTests: XCTestCase {
     let baselineStart = Date()
     for index in 1...deltaCount {
       baselineText += " Delta \(index): the keeper walked the length of the gallery and counted the lamps again."
-      _ = workAssistantMessagePreview(
-        baselineText,
-        lineBudget: workAssistantMessageInitialLineBudget,
-        characterBudget: characterBudget,
-        anchor: .tail
-      )
+      _ = workAssistantMessagePreview(baselineText)
     }
     let baselineSeconds = Date().timeIntervalSince(baselineStart)
 

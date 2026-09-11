@@ -121,6 +121,70 @@ describe("RightPane usage", () => {
     expect(text).toContain("daemon offline");
   });
 
+  it("names the account with its plan and prints the provider limits URL in full", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      providerStatuses: [{
+        id: "claude",
+        label: "Claude",
+        state: "ok",
+        source: "oauth",
+        updatedAt: new Date().toISOString(),
+        accountEmail: "dev@ade.dev",
+        accountPlan: "Claude Max",
+        accountUrl: "https://claude.ai/new#settings/usage",
+      }],
+      quotaWindows: [{ id: "claude:weekly", label: "Claude weekly", percent: 12, resetAt: null }],
+      session: null,
+    });
+    const text = lastFrame() ?? "";
+    expect(text).toContain("dev@ade.dev · Claude Max");
+    // The URL wraps rather than truncating, so it stays copyable.
+    expect(text).not.toContain("…");
+    expect(text.replace(/\s+/g, "")).toContain("https://claude.ai/new#settings/usage");
+  });
+
+  it("drops the plan rather than truncating the email when the pane is narrow", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      providerStatuses: [{
+        id: "codex",
+        label: "Codex",
+        state: "ok",
+        source: "http",
+        updatedAt: new Date().toISOString(),
+        accountEmail: "someone.with.a.long.name@example.com",
+        accountPlan: "ChatGPT Pro",
+      }],
+      session: null,
+    }, 40);
+    const text = lastFrame() ?? "";
+    expect(text).not.toContain("ChatGPT Pro");
+    expect(text).toContain("someone.with.a.long.name@example.c");
+  });
+
+  it("renders provider rows unchanged when an older host sends no account fields", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      providerStatuses: [{
+        id: "cursor",
+        label: "Cursor",
+        state: "ok",
+        source: "http",
+        updatedAt: new Date().toISOString(),
+      }],
+      quotaWindows: [{ id: "cursor:monthly", label: "Cursor monthly", percent: 8, resetAt: null }],
+      session: null,
+    });
+    const text = lastFrame() ?? "";
+    expect(text).toContain("Cursor");
+    expect(text).toContain("Cursor monthly");
+    expect(text).not.toContain("https://");
+  });
+
   it("renders a near-full window's percent (≥95% danger escalation) with no session", () => {
     const { lastFrame } = renderPane({
       kind: "usage",

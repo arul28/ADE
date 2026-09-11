@@ -323,6 +323,7 @@ import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from ".
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
 import { ExternalSessionPreview } from "./components/ExternalSessionPreview";
+import { usageWindowAccountLabel } from "./components/UsagePane";
 import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
@@ -11024,6 +11025,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             source: status.source,
             updatedAt: status.updatedAt ?? status.lastSuccessAt,
             message: status.message,
+            accountEmail: status.accountEmail,
+            accountPlan: status.accountPlan,
+            accountUrl: status.accountUrl,
           }];
         });
         const quotaWindows = snapshot.windows.map((window, index) => {
@@ -11031,11 +11035,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const label = window.windowType === "five_hour"
             ? "5-hour"
             : window.windowType.replaceAll("_", " ");
+          const account = usageWindowAccountLabel(snapshot.accounts, window);
           return {
-            id: `${window.provider}:${window.windowType}:${index}`,
+            id: `${window.provider}:${window.windowType}:${window.accountId ?? index}`,
             label: `${provider} ${label}`,
             percent: window.percentUsed,
             resetAt: Math.floor(Date.parse(window.resetsAt) / 1000),
+            ...(account ? { account } : {}),
           };
         });
         setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock, spendControlReached: snapshot.spendControlReached === true });

@@ -31,67 +31,24 @@ extension WorkChatSessionView {
     case .assistantMarkdownBlock(let model):
       WorkAssistantMarkdownBlockRow(
         model: model,
-        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) }
+        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
+        onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
     case .assistantMonospaced(let model):
       WorkAssistantMonospacedRow(
         model: model,
-        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) }
-      )
-      .equatable()
-    case .assistantControls(let model):
-      WorkAssistantMessageControlsView(
-        controls: model,
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
-        onShowMore: {
-          expandAssistantMessage(
-            messageId: model.messageId,
-            nextLineBudget: model.nextLineBudget,
-            proxy: proxy,
-            restoreRowId: model.willRemainTruncatedAfterNextStep
-              ? entry.id
-              : entry.sourceEntryId,
-          )
-        },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
     }
   }
 
-  /// One "Show more" step, for both render paths.
-  ///
-  /// Expansion grows the message DOWNWARD from a head anchor, so the reader's
-  /// current view is unchanged and the right thing to do with the scroll offset
-  /// is to leave the row they tapped where it is. It used to re-pin the
-  /// transcript to its bottom, which threw the reader to the end of the chat
-  /// for asking to see more of a message in the middle of it.
-  @MainActor
-  func expandAssistantMessage(
-    messageId: String,
-    nextLineBudget: Int,
-    proxy: ScrollViewProxy,
-    restoreRowId: String
-  ) {
-    assistantLineBudgets[messageId] = nextLineBudget
-    assistantHeadAnchorOverrides.insert(messageId)
-    refreshTimelinePresentation()
-
-    // The expansion changes a tail slice into a head slice. Keep the row the
-    // reader acted on at the same viewport edge instead of allowing SwiftUI to
-    // choose the newly-created first block and teleport to the beginning.
-    DispatchQueue.main.async {
-      var transaction = Transaction()
-      transaction.disablesAnimations = true
-      withTransaction(transaction) {
-        proxy.scrollTo(restoreRowId, anchor: .bottom)
-      }
-    }
-  }
-
-  /// Second rung of the message-level ladder: the whole answer, on its own
-  /// screen, instead of another bounded step through it.
+  /// The whole answer on its own screen, via "Open full response" in the
+  /// assistant message context menu. Assistant messages render whole in the
+  /// transcript, so this is not a "see what was cut" affordance — it is the
+  /// searchable, independently scrollable surface for a very long answer.
   @MainActor
   func openAssistantMessageFullOutput(messageId: String) {
     guard let markdown = assistantMarkdown(messageId: messageId) else { return }
@@ -137,21 +94,7 @@ extension WorkChatSessionView {
         onRunUnprocessed: onRunUnprocessedMessage,
         onEditUnprocessed: onEditUnprocessedMessage,
         onDismissUnprocessed: onDismissUnprocessedMessage,
-        onShowMore: message.role == "assistant"
-          ? {
-            expandAssistantMessage(
-              messageId: message.id,
-              nextLineBudget: workAssistantMessageShowMoreLineBudget(
-                current: assistantLineBudgets[message.id] ?? assistantBudgetFloors[message.id]
-              ),
-              proxy: proxy,
-              restoreRowId: entry.id
-            )
-          }
-          : nil,
-        // Only an explicit tap writes this map, so its presence *is* "already
-        // expanded once".
-        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
+        onOpenFullOutput: { openAssistantMessageFullOutput(messageId: message.id) }
       )
       .equatable()
     case .toolCard(let toolCard):
@@ -528,7 +471,10 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
 struct WorkAssistantMarkdownBlockRow: View, Equatable {
   let model: WorkAssistantMarkdownBlockRenderModel
   let onCopyMessage: () -> Void
+  let onOpenFullOutput: () -> Void
 
+  /// The closures are excluded on purpose: they are rebuilt on every parent
+  /// body pass and never change what is drawn.
   static func == (lhs: WorkAssistantMarkdownBlockRow, rhs: WorkAssistantMarkdownBlockRow) -> Bool {
     lhs.model == rhs.model
   }
@@ -536,15 +482,13 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
   var body: some View {
     WorkMarkdownBlockView(
       block: model.block,
-      isStreamingTail: model.isStreamingTail,
-      codeSource: model.codeSource
+      isStreamingTail: model.isStreamingTail
     )
       .frame(maxWidth: .infinity, alignment: .leading)
-      .contextMenu {
-        Button(action: onCopyMessage) {
-          Label("Copy message", systemImage: "doc.on.doc")
-        }
-      }
+      .workAssistantMessageContextMenu(
+        onCopy: onCopyMessage,
+        onOpenFullOutput: onOpenFullOutput
+      )
       .accessibilityElement(children: .contain)
       .adeInspectable(
         "Work.Chat.MessageBubble.Assistant.Block",
@@ -561,7 +505,10 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
 struct WorkAssistantMonospacedRow: View, Equatable {
   let model: WorkAssistantMonospacedRenderModel
   let onCopyMessage: () -> Void
+  let onOpenFullOutput: () -> Void
 
+  /// The closures are excluded on purpose: they are rebuilt on every parent
+  /// body pass and never change what is drawn.
   static func == (lhs: WorkAssistantMonospacedRow, rhs: WorkAssistantMonospacedRow) -> Bool {
     lhs.model == rhs.model
   }
@@ -569,11 +516,10 @@ struct WorkAssistantMonospacedRow: View, Equatable {
   var body: some View {
     WorkAssistantMonospacedPreview(text: model.text)
       .accessibilityLabel(model.accessibilityLabel)
-      .contextMenu {
-        Button(action: onCopyMessage) {
-          Label("Copy message", systemImage: "doc.on.doc")
-        }
-      }
+      .workAssistantMessageContextMenu(
+        onCopy: onCopyMessage,
+        onOpenFullOutput: onOpenFullOutput
+      )
       .adeInspectable(
         "Work.Chat.MessageBubble.Assistant.Monospace",
         metadata: [
@@ -582,73 +528,6 @@ struct WorkAssistantMonospacedRow: View, Equatable {
           "itemId": model.itemId ?? ""
         ]
       )
-  }
-}
-
-struct WorkAssistantMessageControlsView: View, Equatable {
-  let controls: WorkAssistantMessageControlsModel
-  let onCopyMessage: () -> Void
-  let onShowMore: () -> Void
-  let onOpenFullOutput: () -> Void
-
-  static func == (lhs: WorkAssistantMessageControlsView, rhs: WorkAssistantMessageControlsView) -> Bool {
-    lhs.controls == rhs.controls
-  }
-
-  private var affordance: WorkTruncatedOutputAffordance {
-    workTruncatedOutputAffordance(
-      isTruncated: controls.canShowMore,
-      hasExpandedInPlace: controls.hasExpandedInPlace,
-      isClipped: false
-    )
-  }
-
-  var body: some View {
-    HStack(spacing: 12) {
-      Text(controls.summaryText)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-
-      Spacer(minLength: 0)
-
-      Button(action: onCopyMessage) {
-        Label("Copy full", systemImage: "doc.on.doc")
-          .labelStyle(.titleAndIcon)
-          .font(.caption2.weight(.semibold))
-          .frame(minHeight: 44)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .foregroundStyle(ADEColor.textSecondary)
-
-      switch affordance {
-      case .none:
-        EmptyView()
-      case .showMore:
-        Button(action: onShowMore) {
-          Label("Show more", systemImage: "chevron.down")
-            .labelStyle(.titleAndIcon)
-            .font(.caption2.weight(.semibold))
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(ADEColor.accent)
-      case .openFullOutput:
-        Button(action: onOpenFullOutput) {
-          Label("Open full output", systemImage: "arrow.up.left.and.arrow.down.right")
-            .labelStyle(.titleAndIcon)
-            .font(.caption2.weight(.semibold))
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(ADEColor.accent)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Assistant response preview. \(controls.visibleLineCount) of \(controls.totalLineCount) lines shown.")
   }
 }
 

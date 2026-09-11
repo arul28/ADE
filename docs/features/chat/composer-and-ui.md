@@ -79,7 +79,7 @@ subagents, computer use). The pane derives all visible state from the
 | `useRevealedText.ts` | The rAF binding for `textReveal.ts`. Runs a frame loop only while the row is paced, pacing is enabled, the document is visible, **and** the row intersects the viewport; any of those dropping reveals everything immediately and stops the loop, so background grid tiles, hidden windows, and scrolled-away rows keep paint-on-arrival. Visibility lives in refs (two independent axes, deliberately not folded into one boolean) so a tab switch or a scroll stops the loop without re-rendering. Retargeting happens during render, and a row whose first sight is already complete (history, virtualization remount, backfill) paints in full — only growth observed after mount is paced. |
 | `chatWorkspacePaths.tsx` | Workspace-path parsing/resolution plus the React context that carries the opener. See the chat [README](README.md#source-file-map) source map row for the full contract. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
-| `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns two message-list helpers: `shouldCollapseUserMessageText` (a user message over 600 characters or 8 lines renders collapsed) and `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
+| `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). It also single-sources two pieces of user copy so emitter and renderer cannot drift: `spawnCompletedNoticeMessage(childTitle)` → `Chat "<title>" finished its turn`, and `waitingOnYouDescription(count?)` → `Waiting on your answer.` / `Waiting on your answers.` — the fallback line when a chat is blocked on the user and there is no question text to show. That second one is not local to the chat pane: it becomes the ADE Notch card's subtitle, the phone's push body, and the lock-screen preview, so the old per-provider `"<Provider> needs input before it can continue."` variants (a sentence about the agent where the user wanted a sentence about them) are gone from every runtime path. The `approval_request` event additionally carries an optional `requestKind: PendingInputKind` — see [Approval vs question](#approval-vs-question). |
 | `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
@@ -1001,7 +1001,40 @@ allowing a cross-provider fork.
   sockets (the relay brokers WebSocket frames, not HTTP), and SSH targets
   all fall back to `chat.saveTempAttachment` with the legacy 10 MB
   image-only contract. The capability is purely additive; **iOS stays on
-  the legacy path** and is not offered the upload route.
+  the legacy path for images** and is not offered the upload route.
+- **File-shaped attachments over sync (iOS).** Documents and videos cannot
+  use either of the routes above: `chat.saveTempAttachment` sniffs for an
+  image MIME and rejects them, and the HTTP upload route needs a direct TCP
+  leg the relay does not provide. They ride a chunked base64 contract
+  instead — `chat.beginTempFileAttachment` /
+  `chat.appendTempFileAttachmentChunk` / `chat.finishTempFileAttachment` /
+  `chat.abortTempFileAttachment` (`apps/ade-cli/src/services/fileAttachment.ts`)
+  — at the same 50 MB product ceiling, in 512 KiB slices, landing in a
+  `.part` file that is renamed only on finish. The host owns the ceiling, so
+  a client cannot talk past it by understating the size. The staged ref
+  carries type `File`, so the agent receives a path exactly as it does on
+  desktop. `chat.getAttachmentChunk` is the read mirror, used for in-thread
+  QuickLook and video previews on the phone. The phone gates the two menu
+  items on `chat.beginTempFileAttachment` appearing in the host's advertised
+  command list *before* opening a picker: against an older brain "Attach
+  file…" / "Attach video…" render disabled under "Update ADE on your
+  computer to attach files and videos.", image attach keeps working, and the
+  handshake still succeeds in limited mode. Personal chats hide both items
+  outright — that surface is images-only regardless of host version.
+  `workChatFileAttachmentAvailability` (`WorkComposerAttachmentStaging.swift`)
+  is the single decision; `SyncService.saveChatFileAttachment` re-checks it
+  so a bypassed menu still cannot queue an unroutable action.
+- **iOS composer.** Attachments upload the moment they are staged, so the
+  send button stays live while bytes move (the send awaits the in-flight
+  task) and the persisted draft holds *refs*, not bytes —
+  `WorkComposerDraftStore.Entry` v2 mirrors desktop's
+  `ComposerDraftStorageSnapshot`. When the host is unreachable the bytes go
+  to a purgeable `Caches/ade-composer-drafts/<key>` directory (<=5 files,
+  <=10 MB), purged on send, on clear, and on LRU eviction. The composer also
+  has a collapse control (`keyboard.chevron.compact.down`, top right of the
+  card) that lowers the keyboard, clamps the field to one line, hides the
+  suggestion strip and switches the tray to 24 pt chips; tapping a chip or
+  the field expands it again. Nothing is unstaged by collapsing.
 - Parallel launches reuse this same attachment path after the renderer
   validates the 12-file cap. Every child session receives identical
   attachment refs; provider-specific handling still happens inside
@@ -1020,20 +1053,25 @@ render unwindowed. Key rules:
 - Assistant message cards constrain to `max-w-[78ch]` for readability
   (recent bump from `72ch` to `78ch` on large screens).
 - User messages animate in with a `motion/react` spring transition.
-- A user message over 600 characters or 8 lines renders collapsed
-  (`CollapsibleUserMessageBody`) behind a CSS gradient mask with a
-  **Show full message** / **Show less** toggle. The mask is used instead
-  of `line-clamp` on purpose: `line-clamp` needs a single inline
-  formatting context and mangles markdown, chips, and code. Row keys are
-  unchanged by expanding, so the normal measure → reconcile chain
-  absorbs the height change.
+- User messages render in full, however long. There is no length-based
+  clamp and no **Show full message** toggle: a prompt the reader wrote is
+  never shown in part. The two variants that *do* hide text keep their own
+  disclosure — the hidden-prompt brief and the `displayText` + `<details>`
+  form — because in both cases the hidden part is machine-generated
+  context, not the reader's own words.
 - Code blocks render through `HighlightedCode`.
 - Tables get rounded borders, separated spacing, and a subtle inset
   shadow.
 - System notices render compact inline (no pill badges).
 - Turn dividers (`ChatTurnDivider`) separate turns.
-- Plan approval cards display the plan body as rich markdown inside a
-  scrollable container (capped at `360px`). When a plan-approval event
+- Plan approval cards display the plan body as rich markdown. Inside the
+  transcript the body is uncapped — it scrolls with the transcript like any
+  other row. The pinned `ChatProposedPlanCard` above the composer keeps a
+  generous `min(52vh, 560px)` cap, which is not a clamp on the text (nothing
+  is hidden behind a disclosure) but a guard on the shell: that card sits
+  outside the transcript's scroller, so an unbounded body pushes **Implement**
+  and **Keep planning** out of the viewport with no way to scroll back to
+  them. When a plan-approval event
   carries non-empty body text, it is rendered as a `MarkdownBlock`
   (`chatMarkdownBlock.tsx`) beneath the header.
 - The jump-to-latest pill (shown while scrolled away from the bottom of

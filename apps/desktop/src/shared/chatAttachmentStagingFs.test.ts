@@ -10,6 +10,7 @@ import {
   stageAttachmentBytes,
   stageAttachmentCopy,
   stagedAttachmentDestPath,
+  commitStagedAttachmentPart,
 } from "./chatAttachmentStagingFs";
 
 describe("projectAttachmentsDir", () => {
@@ -217,5 +218,61 @@ describe("stageAttachmentCopy", () => {
   it("rejects a directory handed in as a source", async () => {
     await expect(stageAttachmentCopy({ sourcePath: sourceDir, attachmentsDir }))
       .rejects.toThrow("Attachment source is not a file.");
+  });
+});
+
+describe("commitStagedAttachmentPart", () => {
+  function tempDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "ade-stage-commit-"));
+  }
+
+  it("publishes the .part file at its final name", async () => {
+    const dir = tempDir();
+    const partPath = path.join(dir, "a.pdf.part");
+    const destPath = path.join(dir, "a.pdf");
+    fs.writeFileSync(partPath, "body");
+
+    await commitStagedAttachmentPart(partPath, destPath);
+
+    expect(fs.existsSync(partPath)).toBe(false);
+    expect(fs.readFileSync(destPath, "utf8")).toBe("body");
+  });
+
+  /**
+   * Windows surfaces an AV scanner holding a just-closed `.part` as
+   * EPERM/EACCES/EBUSY (windows-quirks §6). Those clear on their own, so the
+   * commit retries a bounded number of times rather than losing the upload.
+   */
+  it("retries the Windows sharing-violation codes and rethrows anything else", async () => {
+    const dir = tempDir();
+    const partPath = path.join(dir, "b.pdf.part");
+    const destPath = path.join(dir, "b.pdf");
+    fs.writeFileSync(partPath, "body");
+    const platform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const realRename = fs.promises.rename;
+    try {
+      let calls = 0;
+      const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+      // @ts-expect-error test seam
+      fs.promises.rename = async (from: string, to: string) => {
+        calls += 1;
+        if (calls < 3) throw busy;
+        return realRename(from, to);
+      };
+      await commitStagedAttachmentPart(partPath, destPath, { delayMs: 0 });
+      expect(calls).toBe(3);
+      expect(fs.existsSync(destPath)).toBe(true);
+
+      fs.promises.rename = async () => {
+        throw Object.assign(new Error("nope"), { code: "ENOSPC" });
+      };
+      await expect(
+        commitStagedAttachmentPart(partPath, destPath, { delayMs: 0 }),
+      ).rejects.toThrow(/nope/);
+    } finally {
+      fs.promises.rename = realRename;
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    }
   });
 });

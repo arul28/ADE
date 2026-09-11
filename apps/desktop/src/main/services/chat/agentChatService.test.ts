@@ -15238,6 +15238,108 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
+    it("keeps the Agent tool name as `label` and subagent_type as `agentType`", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-label-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-label-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_label_1",
+                name: "Agent",
+                input: {
+                  subagent_type: "general-purpose",
+                  name: "competitor-mobile",
+                  description: "Audit the mobile competitor",
+                  prompt: "Audit it.",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-label-1",
+          parent_tool_use_id: "toolu_label_1",
+          description: "Audit the mobile competitor",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-label-1",
+          parent_tool_use_id: "toolu_label_1",
+          summary: "Reading…",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-label-1",
+          parent_tool_use_id: "toolu_label_1",
+          status: "completed",
+          summary: "Audit complete",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-label-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn a named subagent.",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-label-1",
+      );
+
+      const pick = (type: string) => events.find(
+        (e) => e.event.type === type && (e.event as any).taskId === "task-label-1",
+      )?.event as any;
+
+      for (const type of ["subagent_started", "subagent_progress", "subagent_result"]) {
+        const event = pick(type);
+        expect(event, type).toBeDefined();
+        // `subagent_type` is the agent TYPE; the Agent tool's `name` is the
+        // human-chosen display label and must not overwrite it.
+        expect(event.agentType, type).toBe("general-purpose");
+        expect(event.label, type).toBe("competitor-mobile");
+      }
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
     it.each([
       ["tool input before task_started", false],
       ["task_started before tool input", true],
@@ -15359,7 +15461,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("corrects a lifecycle-first subagent row when later Task input only has name", async () => {
+    it("corrects a lifecycle-first subagent row with the Task `name` as its label", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -15442,14 +15544,20 @@ describe("createAgentChatService", () => {
           e.event.type === "subagent_result" && (e.event as any).taskId === "task-name-1",
       );
 
+      // A Task input carrying only `name` names the spawn; it is NOT an agent
+      // type. It arrives after the lifecycle row, so the correction pass has to
+      // republish subagent_started with the label attached.
       expect(events.some((event) =>
         event.event.type === "subagent_started"
         && (event.event as any).taskId === "task-name-1"
-        && (event.event as any).agentType === "Explore",
+        && (event.event as any).label === "Explore"
+        && (event.event as any).agentType === undefined,
       )).toBe(true);
-      expect((events.find((event) =>
+      const namedResult = events.find((event) =>
         event.event.type === "subagent_result" && (event.event as any).taskId === "task-name-1",
-      )?.event as any)?.agentType).toBe("Explore");
+      )?.event as any;
+      expect(namedResult?.label).toBe("Explore");
+      expect(namedResult?.agentType).toBeUndefined();
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();

@@ -1004,8 +1004,14 @@ export type AiProviderConnectionStatus = {
   blocker: string | null;
   lastCheckedAt: string;
   sources: AiProviderConnectionSource[];
-  /** Cursor OAuth: email from Cursor.auth.status() when the SDK reports logged-in. */
+  /**
+   * The signed-in account, when the provider records one locally: Cursor's
+   * OAuth status, or — for Claude and Codex — the same config the usage poller
+   * reads. Absent when unknown; never guessed.
+   */
   accountEmail?: string;
+  /** Subscription the account is on, e.g. "ChatGPT Pro" / "Claude Max". */
+  accountPlan?: string;
 };
 
 export type AiProviderConnections = {

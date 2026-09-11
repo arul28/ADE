@@ -353,8 +353,15 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `preflightCrossMachineDestination`,
   `fastForwardCrossMachineHandoffLane`, `acceptCrossMachineHandoff`,
   `markCrossMachineHandoff`,
-  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`,
+  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `createAttachmentUpload`,
+  `beginTempFileAttachment`, `appendTempFileAttachmentChunk`,
+  `finishTempFileAttachment`, `abortTempFileAttachment`, `getAttachmentChunk`,
   `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
+
+The five file-attachment actions are the chunked base64 staging contract for
+documents and videos, which fit neither the image-only `saveTempAttachment` leg
+nor the direct-HTTP `createAttachmentUpload` route. See
+[Chunked staging for file-shaped attachments](README.md#chunked-staging-for-file-shaped-attachments).
 
 `chat.getTranscript` supports cursor pagination: responses carry an
 opaque `nextCursor`, and requests can pass `cursor` to page strictly-older

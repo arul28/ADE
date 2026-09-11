@@ -387,8 +387,25 @@ export type RightPaneContent =
         source?: UsageProviderSource;
         updatedAt?: string | null;
         message?: string | null;
+        /** Signed-in account for this provider, when the host could resolve one. */
+        accountEmail?: string | null;
+        /** Subscription the account is on, e.g. "Claude Max". Host-resolved only. */
+        accountPlan?: string | null;
+        /**
+         * Provider-hosted limits page, stamped by the host. The TUI cannot
+         * render a hyperlink every terminal will honour, so the pane prints the
+         * URL as wrapped text for copy/paste where desktop shows a link.
+         */
+        accountUrl?: string | null;
       }>;
-      quotaWindows?: Array<{ id: string; label: string; percent: number; resetAt?: number | null }>;
+      quotaWindows?: Array<{
+        id: string;
+        label: string;
+        percent: number;
+        resetAt?: number | null;
+        /** Account email for a window whose provider has more than one account. */
+        account?: string | null;
+      }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;
       /** Codex account-level spend control tripped — surfaces a terse cap marker. */
       spendControlReached?: boolean;

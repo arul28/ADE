@@ -680,14 +680,6 @@ struct WorkChatSessionView: View {
   @State var latestPinGeneration = 0
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
   @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
-  @State var assistantLineBudgets: [String: Int] = [:]
-  /// Largest budget each assistant message has already rendered under. A budget
-  /// may grow but never shrink, so "Show more" cannot appear on a message the
-  /// reader already read in full.
-  @State var assistantBudgetFloors: [String: Int] = [:]
-  /// Messages the reader expanded. They read from the top from then on, so a
-  /// tap does not swap the visible slice for the other end of the message.
-  @State var assistantHeadAnchorOverrides: Set<String> = []
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
   @StateObject var outputViewer = WorkOutputViewerModel()
@@ -1171,16 +1163,12 @@ struct WorkChatSessionView: View {
       timeline,
       provider: summaryProvider.isEmpty ? session.providerFallback : summaryProvider
     )
-    var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummaryContext,
       transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
-      assistantLineBudgets: assistantLineBudgets,
-      assistantBudgetFloors: &budgetFloors,
-      assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
       streamingAssistantMessageId: streamingAssistantMessageId
     )
     let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
@@ -1202,14 +1190,8 @@ struct WorkChatSessionView: View {
         chatSummary: chatSummaryContext,
         transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
-        assistantLineBudgets: assistantLineBudgets,
-        assistantBudgetFloors: &budgetFloors,
-        assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
         streamingAssistantMessageId: streamingAssistantMessageId
       )
-    }
-    if budgetFloors != assistantBudgetFloors {
-      assistantBudgetFloors = budgetFloors
     }
     guard nextPresentation != timelinePresentation else { return }
     armPrependAnchorIfRowsInsertedAbove(nextPresentation)
@@ -1863,7 +1845,8 @@ struct WorkChatSessionView: View {
               modelLabel: transcriptModelLabel,
               laneId: session.laneId,
               requestedCwd: chatSummaryContext.requestedCwd,
-              isPersonalChat: isPersonalChat
+              isPersonalChat: isPersonalChat,
+              sessionId: session.id
             )
           )
         }
@@ -2231,9 +2214,6 @@ struct WorkChatSessionView: View {
           quotaCardHapticToken = 0
           optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
-          assistantLineBudgets.removeAll()
-          assistantBudgetFloors.removeAll()
-          assistantHeadAnchorOverrides.removeAll()
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
           resetScrollStateForCurrentSession(reason: "session-change")
@@ -2678,9 +2658,6 @@ private func makeWorkTimelinePresentation(
   chatSummary: WorkChatSummaryRenderContext,
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
-  assistantLineBudgets: [String: Int],
-  assistantBudgetFloors: inout [String: Int],
-  assistantHeadAnchorOverrides: Set<String>,
   streamingAssistantMessageId: String?
 ) -> WorkTimelinePresentation {
   let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
@@ -2691,22 +2668,14 @@ private func makeWorkTimelinePresentation(
     modelId: chatSummary.modelId,
     transcript: transcript
   )
-  var resolvedLineBudgets: [String: Int] = [:]
   let visibleEntries = workTimelineEntriesWithAssistantPreviews(
     visibleEntriesWithSeparators,
-    cache: assistantPreviewCache,
-    assistantLineBudgets: assistantLineBudgets,
-    assistantBudgetFloors: &assistantBudgetFloors,
-    assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
-    resolvedLineBudgets: &resolvedLineBudgets,
-    tailAnchoredAssistantMessageId: workLatestAssistantMessageId(in: timeline)
+    cache: assistantPreviewCache
   )
   let renderEntries = workTimelineRenderEntries(
     from: visibleEntries,
     streamingAssistantMessageId: streamingAssistantMessageId,
-    splitAssistantMessageId: workLatestAssistantMessageId(in: timeline),
-    assistantLineBudgets: assistantLineBudgets,
-    resolvedAssistantLineBudgets: resolvedLineBudgets
+    splitAssistantMessageId: workLatestAssistantMessageId(in: timeline)
   )
   let hiddenCount = max(timeline.count - rawVisibleEntries.count, 0)
   return WorkTimelinePresentation(
@@ -2771,15 +2740,11 @@ private func workTimelinePresentationSignature(
         hasher.combine(message.unprocessedResolution?.resolvedAt)
         workTimelineCombineMessageTextSignature(message, into: &hasher)
         if let preview = message.assistantPreview {
-          // A preview is a pure function of (message text, anchor, budget), and
-          // the text is already in this hash. Its shape is enough to separate
-          // two previews of the same message — no need to hash the slice, which
-          // is O(message) on every refresh.
-          hasher.combine(preview.isTruncated)
-          hasher.combine(preview.anchor)
-          hasher.combine(preview.visibleLineCount)
+          // A preview is a pure function of the message text, and the text is
+          // already in this hash. Its shape is enough to separate two previews
+          // of the same message — no need to hash the rendered text, which is
+          // O(message) on every refresh.
           hasher.combine(preview.totalLineCount)
-          hasher.combine(preview.visibleCharacterCount)
           hasher.combine(preview.usesMonospacedRendering)
         }
       }
@@ -2792,7 +2757,6 @@ private func workTimelinePresentationSignature(
       // block, on every presentation refresh.
       hasher.combine(model.block.digest)
       hasher.combine(model.isStreamingTail)
-      hasher.combine(model.codeSource?.markdownIdentity)
     case .assistantMonospaced(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
@@ -2802,15 +2766,6 @@ private func workTimelinePresentationSignature(
       hasher.combine(model.sourceDigest)
       hasher.combine(model.text.utf8.count)
       hasher.combine(model.accessibilityLabel)
-    case .assistantControls(let model):
-      hasher.combine(model.id)
-      hasher.combine(model.messageId)
-      hasher.combine(model.summaryText)
-      hasher.combine(model.visibleLineCount)
-      hasher.combine(model.totalLineCount)
-      hasher.combine(model.canShowMore)
-      hasher.combine(model.nextLineBudget)
-      hasher.combine(model.willRemainTruncatedAfterNextStep)
     }
   }
   return hasher.finalize()
@@ -2842,53 +2797,14 @@ private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage,
   }
 }
 
-/// What a message renders under this pass: how much of it, and from which end.
-struct WorkAssistantRenderBudget: Equatable {
-  let lineBudget: Int
-  let anchor: WorkAssistantMessagePreviewAnchor
-}
-
-/// The budget rule, as one pure decision.
+/// Attach each visible assistant message's preview.
 ///
-/// The contract it enforces is that a budget never shrinks. The newest assistant
-/// message renders tail-anchored under a generous budget so a finishing turn is
-/// readable in place; the moment a newer message arrives it becomes head-
-/// anchored, and *that* used to drop it back to the 48-line budget — so a
-/// message the reader had just read in full grew a "Show more" behind their
-/// back. The budget it already rendered under becomes its floor instead.
-///
-/// - Parameters:
-///   - userLineBudget: what "Show more" has asked for, nil if untouched.
-///   - floorLineBudget: the largest budget this message has already rendered under.
-///   - isTail: this is the newest assistant message in the timeline.
-///   - headAnchorOverride: the reader expanded this message, so it reads from
-///     the top from now on even while it is still the tail.
-///   - tailCanRenderFull: the whole message fits within the tail-full budgets.
-func workAssistantRenderBudget(
-  userLineBudget: Int?,
-  floorLineBudget: Int?,
-  isTail: Bool,
-  headAnchorOverride: Bool,
-  tailCanRenderFull: Bool
-) -> WorkAssistantRenderBudget {
-  var floor = max(floorLineBudget ?? 0, workAssistantMessageInitialLineBudget)
-  if isTail, tailCanRenderFull {
-    floor = max(floor, workAssistantMessageTailFullLineBudget)
-  }
-  return WorkAssistantRenderBudget(
-    lineBudget: max(userLineBudget ?? 0, floor),
-    anchor: (isTail && !headAnchorOverride) ? .tail : .head
-  )
-}
-
+/// Assistant answers render whole, so a preview is a pure function of the
+/// message: there is no budget to resolve, no anchor to pick, and no floor to
+/// carry.
 private func workTimelineEntriesWithAssistantPreviews(
   _ entries: [WorkTimelineEntry],
-  cache: WorkAssistantPreviewCache,
-  assistantLineBudgets: [String: Int],
-  assistantBudgetFloors: inout [String: Int],
-  assistantHeadAnchorOverrides: Set<String>,
-  resolvedLineBudgets: inout [String: Int],
-  tailAnchoredAssistantMessageId: String?
+  cache: WorkAssistantPreviewCache
 ) -> [WorkTimelineEntry] {
   var visibleAssistantMessageIds = Set<String>()
   let hydratedEntries = entries.map { entry -> WorkTimelineEntry in
@@ -2897,39 +2813,7 @@ private func workTimelineEntriesWithAssistantPreviews(
     else { return entry }
 
     visibleAssistantMessageIds.insert(message.id)
-    let isTail = message.id == tailAnchoredAssistantMessageId
-    let headAnchorOverride = assistantHeadAnchorOverrides.contains(message.id)
-    let baselineAnchor: WorkAssistantMessagePreviewAnchor = (isTail && !headAnchorOverride) ? .tail : .head
-    let baselinePreview = cache.preview(for: message, anchor: baselineAnchor)
-    let tailCanRenderFull = baselineAnchor == .tail
-      && !baselinePreview.usesMonospacedRendering
-      && baselinePreview.totalLineCount <= workAssistantMessageTailFullLineBudget
-      && baselinePreview.totalCharacterCount <= workAssistantMessageTailFullCharacterBudget
-    let budget = workAssistantRenderBudget(
-      userLineBudget: assistantLineBudgets[message.id],
-      floorLineBudget: assistantBudgetFloors[message.id],
-      isTail: isTail,
-      headAnchorOverride: headAnchorOverride,
-      tailCanRenderFull: tailCanRenderFull
-    )
-    // Persist the floor so the flip to head-anchoring cannot take back what the
-    // reader could already see.
-    if budget.lineBudget > (assistantBudgetFloors[message.id] ?? 0) {
-      assistantBudgetFloors[message.id] = budget.lineBudget
-    }
-    resolvedLineBudgets[message.id] = budget.lineBudget
-
-    if budget.lineBudget == workAssistantMessageInitialLineBudget, budget.anchor == baselineAnchor {
-      message.assistantPreview = baselinePreview
-    } else {
-      message.assistantPreview = cache.preview(
-        for: message,
-        anchor: budget.anchor,
-        lineBudget: budget.lineBudget,
-        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
-        classification: baselinePreview.usesMonospacedRendering
-      )
-    }
+    message.assistantPreview = cache.preview(for: message)
     return WorkTimelineEntry(
       id: entry.id,
       timestamp: entry.timestamp,
@@ -2938,10 +2822,6 @@ private func workTimelineEntriesWithAssistantPreviews(
     )
   }
   cache.prune(keeping: visibleAssistantMessageIds)
-  // Floors are deliberately NOT pruned with the preview cache. A message that
-  // leaves the paged window and is revealed again by scroll-back must come back
-  // rendered the way the reader last saw it. The map holds one small entry per
-  // assistant message seen in this session and is dropped on session change.
   return hydratedEntries
 }
 
@@ -2958,12 +2838,7 @@ private func workLatestAssistantMessageId(in timeline: [WorkTimelineEntry]) -> S
 func workTimelineRenderEntries(
   from entries: [WorkTimelineEntry],
   streamingAssistantMessageId: String?,
-  splitAssistantMessageId: String? = nil,
-  assistantLineBudgets: [String: Int] = [:],
-  /// Budget each message actually rendered under, after floors were applied.
-  /// "Show more" has to step from this, not from the raw request, or the first
-  /// tap on a message held at a floor would step backwards.
-  resolvedAssistantLineBudgets: [String: Int] = [:]
+  splitAssistantMessageId: String? = nil
 ) -> [WorkTimelineRenderEntry] {
   var rendered: [WorkTimelineRenderEntry] = []
   rendered.reserveCapacity(entries.count)
@@ -2981,7 +2856,7 @@ func workTimelineRenderEntries(
       continue
     }
 
-    let preview = message.assistantPreview ?? workInitialAssistantMessagePreview(message.markdown)
+    let preview = message.assistantPreview ?? workAssistantMessagePreview(message.markdown)
     let shouldSplitAssistantMessage = (
       message.id == streamingAssistantMessageId
       || message.id == splitAssistantMessageId
@@ -2996,14 +2871,6 @@ func workTimelineRenderEntries(
       continue
     }
 
-    let requestedLineBudget = max(
-      resolvedAssistantLineBudgets[message.id] ?? 0,
-      assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
-    )
-    // One bounded step per tap, with no ceiling. A 1000-line answer is reached
-    // by tapping "Show more" until it is all here; the reader is never left
-    // with a truncated message and no way to see the rest.
-    let nextLineBudget = requestedLineBudget + workAssistantMessageLineBudgetStep
     let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
 
     // A truncated tail can start inside a fenced tree and omit the opening
@@ -3035,13 +2902,8 @@ func workTimelineRenderEntries(
           appendOnly: true
         )
         : parseMarkdownBlocks(preview.text)
-      rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
+      rendered.reserveCapacity(rendered.count + blocks.count)
       let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
-      // Only a bounded slice needs resolving; a whole message already holds its
-      // own blocks, and numbering them would be work for nothing.
-      let codeOrdinals = preview.isTruncated
-        ? workCodeBlockOrdinals(blocks, countsFromEnd: preview.anchor == .tail)
-        : [:]
       for block in blocks {
         let model = WorkAssistantMarkdownBlockRenderModel(
           id: block.id == blocks.first?.id ? entry.id : "\(entry.id)-\(block.id)",
@@ -3049,15 +2911,7 @@ func workTimelineRenderEntries(
           turnId: message.turnId,
           itemId: message.itemId,
           block: block,
-          isStreamingTail: block.id == streamingTailBlockId,
-          codeSource: codeOrdinals[block.id].map { ordinal in
-            WorkCodeBlockSource(
-              markdown: message.markdown,
-              ordinal: ordinal,
-              countsFromEnd: preview.anchor == .tail,
-              markdownIdentity: "\(message.markdownDigest ?? workStableDigest(message.markdown)):\(message.markdownRevision)"
-            )
-          }
+          isStreamingTail: block.id == streamingTailBlockId
         )
         rendered.append(WorkTimelineRenderEntry(
           id: model.id,
@@ -3066,34 +2920,6 @@ func workTimelineRenderEntries(
           payload: .assistantMarkdownBlock(model)
         ))
       }
-    }
-
-    if preview.isTruncated {
-      let controls = WorkAssistantMessageControlsModel(
-        id: "\(entry.id)-assistant-controls",
-        messageId: message.id,
-        summaryText: workAssistantMessagePreviewSummaryText(preview),
-        visibleLineCount: preview.visibleLineCount,
-        totalLineCount: preview.totalLineCount,
-        // Truncated means there is more to show, and there is always a next
-        // step that shows it — the control only disappears once the whole
-        // message is rendered and this branch stops running.
-        canShowMore: true,
-        nextLineBudget: nextLineBudget,
-        willRemainTruncatedAfterNextStep: workAssistantMessageWillRemainTruncated(
-          preview,
-          nextLineBudget: nextLineBudget
-        ),
-        // Only an explicit tap writes this map, so its presence *is* "the
-        // reader already expanded this message once".
-        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
-      )
-      rendered.append(WorkTimelineRenderEntry(
-        id: controls.id,
-        sourceEntryId: entry.id,
-        timestamp: entry.timestamp,
-        payload: .assistantControls(controls)
-      ))
     }
   }
 
@@ -3227,7 +3053,15 @@ private struct WorkChatComposerDraftInput: View {
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
-  @State private var attachmentPickerPresented = false
+  @State private var presentedPicker: WorkComposerPicker?
+  /// Collapsed composer: the keyboard is down, the field is one line, the
+  /// suggestion strip is hidden and the tray is chips. A view mode only —
+  /// nothing is unstaged, and `@State` is deliberate so a fresh open of the
+  /// chat always shows the normal composer.
+  @State private var composerCollapsed = false
+  /// Refs restored from the persisted draft are adopted once, not on every
+  /// re-render of the same key.
+  @State private var restoredDraftKey = ""
   @State private var stopMode: AgentChatStopMode = .stopAndClear
   @State private var stopOptionsPresented = false
   @State private var stopHapticToken = 0
@@ -3306,13 +3140,73 @@ private struct WorkChatComposerDraftInput: View {
     !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
   }
 
+  /// The collapse affordance lives in the composer card, not in a
+  /// `ToolbarItemGroup(placement: .keyboard)`. Keyboard toolbars are scoped to
+  /// the view that mounts them, so one mounted here could not dismiss the main
+  /// composer's `UITextView` — and a toolbar button also disappears with the
+  /// keyboard, which is exactly when the user needs the control to get back.
+  private var collapseControlVisible: Bool {
+    draftState.isFocused || !inputAttachments.isEmpty
+  }
+
+  @ViewBuilder
+  private var composerHeaderRow: some View {
+    if collapseControlVisible {
+      HStack(spacing: 0) {
+        Spacer(minLength: 0)
+        Button {
+          draftState.isFocused = false
+          composerCollapsed = true
+        } label: {
+          Image(systemName: "keyboard.chevron.compact.down")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.surfaceBackground.opacity(0.38), in: Circle())
+            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+            // 28pt reads right next to a one-line field but is under the 44pt
+            // minimum; the hit area grows, the drawn circle does not — the same
+            // split the composer's overflow control uses.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse composer")
+        .accessibilityHint("Lowers the keyboard and shrinks the composer")
+        .accessibilityIdentifier("Work.Chat.Composer.Collapse")
+      }
+    }
+  }
+
+  private var attachmentTray: some View {
+    WorkChatInputAttachmentTray(
+      attachments: $inputAttachments,
+      compact: composerCollapsed,
+      onExpand: {
+        composerCollapsed = false
+        if canCompose { draftState.isFocused = true }
+      },
+      chatSessionId: sessionId.isEmpty ? nil : sessionId
+    )
+  }
+
+  /// Text lines the field may grow to. Collapsed clamps to one, which is the
+  /// same `compact` clamp the small composer already uses.
+  private var composerMaxLines: Int {
+    composerCollapsed ? 1 : 6
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      if compact {
-        WorkComposerSuggestionStrip(controller: suggestionController)
-          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+      composerHeaderRow
 
-        WorkChatInputAttachmentTray(attachments: $inputAttachments)
+      if compact {
+        if !composerCollapsed {
+          WorkComposerSuggestionStrip(controller: suggestionController)
+            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        }
+
+        attachmentTray
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
@@ -3338,10 +3232,12 @@ private struct WorkChatComposerDraftInput: View {
           }
         }
       } else {
-        WorkComposerSuggestionStrip(controller: suggestionController)
-          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        if !composerCollapsed {
+          WorkComposerSuggestionStrip(controller: suggestionController)
+            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+        }
 
-        WorkChatInputAttachmentTray(attachments: $inputAttachments)
+        attachmentTray
 
         WorkChatComposerTextField(
           draftState: draftState,
@@ -3351,7 +3247,8 @@ private struct WorkChatComposerDraftInput: View {
           acceptsPastedImages: canCompose && attachmentsAvailable,
           onPasteImages: { images in
             workChatInputPasteImages(images, into: $inputAttachments)
-          }
+          },
+          maxLines: composerMaxLines
         )
 
         if showInterrupt && hasSendableDraftOrAttachment {
@@ -3425,17 +3322,123 @@ private struct WorkChatComposerDraftInput: View {
     }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
     .workChatAttachmentPicker(
-      isPresented: $attachmentPickerPresented,
+      isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $inputAttachments,
       onDismiss: {
         if canCompose { draftState.isFocused = true }
       }
     )
+    .workChatFileAttachmentPickers(
+      presentedPicker: $presentedPicker,
+      attachments: $inputAttachments,
+      onDismiss: {
+        if canCompose { draftState.isFocused = true }
+      }
+    )
+    // Typing is the escape from the collapsed state, so it is never a mode the
+    // user has to work out how to leave.
+    .onChange(of: draftState.isFocused) { _, focused in
+      if focused { composerCollapsed = false }
+    }
+    // Stage every ready attachment on the host the moment it lands, then persist
+    // the refs. Uploading on attach is what makes the draft persistable (refs,
+    // not bytes) and what lets the send button stay live while bytes are still
+    // moving.
+    .task(id: attachmentSignature) {
+      beginAttachmentUploads()
+      for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
+        _ = await WorkComposerAttachmentUploads.shared.resolve(attachment.id)
+      }
+      guard !Task.isCancelled else { return }
+      persistDraftAttachments(for: draftPersistenceKey)
+    }
+    .task(id: draftPersistenceKey) {
+      await restoreDraftAttachments()
+    }
+    // A navigation pop beats the upload wait above; write what is known now so
+    // backing out mid-upload still keeps the attachment.
+    .onDisappear { persistDraftAttachments(for: draftPersistenceKey) }
+  }
+
+  /// Changes when an attachment is added, removed, or finishes preparing —
+  /// the three moments an upload or a re-persist is owed.
+  private var attachmentSignature: String { workChatAttachmentSignature(inputAttachments) }
+
+  private var composerChatSessionId: String? {
+    sessionId.isEmpty ? nil : sessionId
+  }
+
+  @MainActor
+  private func beginAttachmentUploads() {
+    guard canUploadAttachments else { return }
+    for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
+      WorkComposerAttachmentUploads.shared.begin(
+        attachment,
+        syncService: syncService,
+        chatSessionId: composerChatSessionId,
+        projectId: nil,
+        projectRootPath: nil
+      )
+    }
+  }
+
+  /// Writes refs for everything the host already holds, and bytes (to the
+  /// purgeable cache) only for what it does not — the offline leg.
+  @MainActor
+  private func persistDraftAttachments(for key: String) {
+    guard !key.isEmpty else { return }
+    let uploads = WorkComposerAttachmentUploads.shared
+    var refs: [AgentChatFileRef] = []
+    var unsaved: [WorkChatInputAttachment] = []
+    for attachment in inputAttachments where attachment.isReady {
+      if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
+        refs.append(ref)
+      } else {
+        unsaved.append(attachment)
+      }
+    }
+    let localFiles = WorkComposerDraftAttachmentCache.write(unsaved, for: key)
+    WorkComposerDraftStore.saveAttachments(refs, owner: nil, localFiles: localFiles, for: key)
+  }
+
+  /// Restores the staged attachments for this chat. Refs first (the host still
+  /// holds those bytes); the cache only when no ref resolves, which is the
+  /// offline case.
+  @MainActor
+  private func restoreDraftAttachments() async {
+    let key = draftPersistenceKey
+    guard restoredDraftKey != key else { return }
+    let previousKey = restoredDraftKey
+    restoredDraftKey = key
+    if !previousKey.isEmpty, previousKey != key {
+      // The visible attachments belong to the chat we just left. Flush them
+      // under that key and clear, exactly as `bind` does for the text.
+      persistDraftAttachments(for: previousKey)
+      WorkComposerAttachmentUploads.shared.release(inputAttachments.map(\.id))
+      inputAttachments = []
+    }
+    guard !key.isEmpty, inputAttachments.isEmpty,
+          let entry = WorkComposerDraftStore.loadEntry(key) else { return }
+    var restored: [WorkChatInputAttachment] = []
+    if !entry.attachments.isEmpty {
+      restored = (try? await workChatInputAttachments(
+        from: entry.attachments,
+        syncService: syncService,
+        chatSessionId: composerChatSessionId,
+        projectId: entry.attachmentOwner?.projectId,
+        projectRootPath: entry.attachmentOwner?.rootPath
+      )) ?? []
+    }
+    if restored.isEmpty {
+      restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: key)
+    }
+    guard !restored.isEmpty, inputAttachments.isEmpty, draftPersistenceKey == key else { return }
+    inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))
   }
 
   private var composerOverflowMenu: some View {
     WorkComposerOverflowButton(
-      attachmentPickerPresented: $attachmentPickerPresented,
+      presentedPicker: $presentedPicker,
       draft: $draftState.text,
       attachments: $inputAttachments,
       canCompose: canCompose && !settingsMutationInFlight,
@@ -4119,6 +4122,9 @@ private struct WorkChatComposerSendButton: View {
       Task { @MainActor in
         let sent = await onSend(text, outgoingAttachments)
         if sent {
+          // The refs were consumed by the send; drop the upload tracking so a
+          // later attachment can never reuse a sent message's ref.
+          WorkComposerAttachmentUploads.shared.release(restoredAttachments.map(\.id))
           onSent()
         } else {
           attachments = restoredAttachments

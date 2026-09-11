@@ -1809,6 +1809,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   declares no `Content-Length`. The destination name comes from the shared
   `stagedAttachmentDestPath`, so this route and the local copy path cannot
   disagree about where a file just landed.
+- `apps/ade-cli/src/services/fileAttachment.ts` — the chunked base64 staging
+  registry for file-shaped attachments, plus `readAttachmentChunk`, the bounded
+  read mirror behind in-thread document and video previews. This is the route
+  for clients that have a WebSocket and nothing else; see
+  [Chunked staging for file-shaped attachments](#chunked-staging-for-file-shaped-attachments).
 - `syncListenerPortInspect.ts` — platform port-holder diagnosis used by
   zombie reap and `ade doctor` (`inspectSyncListenerPort`). Extracted from
   `sharedSyncListener` so the probe path can stay small and the listener
@@ -3363,8 +3368,53 @@ errors: a host predating the capability, a **relay-routed** connection (the
 relay brokers WebSocket frames and cannot forward an HTTP POST to the host's own
 listener — `hello_ok.connectionTransport` is the host's own statement of which
 it is), and an SSH target, which is not a paired sync transport at all. **iOS
-stays on the legacy path** and is not offered the route; `workChatInputAttachmentMaxBytes`
-in `WorkChatAttachmentTray.swift` mirrors the legacy constant for that reason.
+stays on the legacy path for images** and is not offered the route;
+`workChatInputAttachmentMaxBytes` in `WorkChatAttachmentTray.swift` mirrors the
+legacy constant for that reason.
+
+### Chunked staging for file-shaped attachments
+
+Documents and videos fit neither route above. `chat.saveTempAttachment` sniffs
+the bytes for an image MIME and rejects anything else, and the HTTP upload needs
+a direct TCP leg to the host's listener — which is exactly what a phone on the
+cloud relay does not have. So there is a third contract, over the command
+channel every client already has:
+`chat.beginTempFileAttachment` → `chat.appendTempFileAttachmentChunk` (×N) →
+`chat.finishTempFileAttachment`, with `chat.abortTempFileAttachment` for a
+cancelled send. `apps/ade-cli/src/services/fileAttachment.ts` owns it and
+`syncRemoteCommandService.ts` holds one registry per host, so every chunk of one
+upload lands in the same session map.
+
+Its rules:
+
+- Same 50 MB product ceiling (`MAX_CHAT_ATTACHMENT_BYTES`) as the HTTP route,
+  reached in 512 KiB raw slices (~683 KiB once base64-inflated) so every chunk
+  is its own payload well under the transport's 25 MiB envelope cap.
+- The running total is enforced **server-side**. A client that understates the
+  size in `begin` still hits the ceiling on append; the declared size is a hint,
+  not the bound.
+- Bytes land in a `.part` file that is renamed to its UUID destination only on
+  `finish` (through `commitStagedAttachmentPart`, so the Windows
+  sharing-violation retry applies), so a torn upload never leaves a half file
+  where the chat can pick it up.
+- Sessions live in memory only, keyed by a `randomUUID` returned only to their
+  creator, TTL-bounded (5 minutes idle) and count-bounded, pruned on every call.
+  They are deliberately *not* bound to the peer that created them: the command
+  channel is already authenticated and peer-scoped, and the execution context
+  carries no peer identity to bind to — the same model as the HTTP route's
+  tickets.
+- `begin` also sweeps `.part` files older than the session TTL that the map can
+  no longer account for. Those are the bytes a host restart or an abandoned
+  `begin` leaves behind; without the sweep they sit in the project's attachments
+  directory, visible in the Files tab, with nothing in memory that names them.
+- The staged ref carries type `File`, so the agent receives a path exactly as it
+  does on desktop.
+
+`chat.getAttachmentChunk` is the read mirror — same chunk size, same
+server-owned bound — so a client can pull a staged PDF or video back for an
+in-thread preview without a 50 MB payload. Unlike `chat.getImageDataUrl` it does
+**not** sniff for an image MIME, which is the point, so the caller must have
+already constrained the path to the project root.
 
 ### Transport readiness and path truth
 

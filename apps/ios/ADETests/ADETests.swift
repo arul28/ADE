@@ -15633,7 +15633,168 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first?.status, .stopped)
     XCTAssertEqual(snapshots.first?.latestSummary, "Parent turn completed before ADE received a final subagent status")
     XCTAssertEqual(workSubagentRunningCount(snapshots), 0)
-    XCTAssertEqual(snapshots.first.map(workSubagentMeaningfulName), "Sagan")
+    // The row title prefers the spawn label, then the description (what the
+    // agent was asked to do), and only then the humanized agent type — desktop
+    // titles its card by description for the same reason.
+    XCTAssertEqual(
+      snapshots.first.map(workSubagentMeaningfulName),
+      "Throwaway ADE mobile subagent UI test"
+    )
+  }
+
+  func testWorkSubagentMeaningfulNamePrefersLabelThenDescriptionThenHumanizedType() {
+    let labelled = """
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"t-1","agentId":"a-1","agentType":"general-purpose","label":"competitor-mobile","description":"Audit the mobile competitor","turnId":"turn-1"}}
+    """
+    XCTAssertEqual(
+      buildWorkSubagentSnapshots(from: parseWorkChatTranscript(labelled)).first.map(workSubagentMeaningfulName),
+      "competitor-mobile"
+    )
+
+    let unlabelled = """
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"t-2","agentId":"a-2","agentType":"general-purpose","description":"Audit the mobile competitor","turnId":"turn-1"}}
+    """
+    XCTAssertEqual(
+      buildWorkSubagentSnapshots(from: parseWorkChatTranscript(unlabelled)).first.map(workSubagentMeaningfulName),
+      "Audit the mobile competitor"
+    )
+
+    let typeOnly = """
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"t-3","agentId":"a-3","agentType":"/ROOT/SHIP_POLL_927","description":"","turnId":"turn-1"}}
+    """
+    XCTAssertEqual(
+      buildWorkSubagentSnapshots(from: parseWorkChatTranscript(typeOnly)).first.map(workSubagentMeaningfulName),
+      "Ship poll"
+    )
+  }
+
+  func testWorkHumanizedAgentTypeMirrorsDesktopIdentity() {
+    XCTAssertEqual(workHumanizedAgentType("code-reviewer"), "Code reviewer")
+    XCTAssertEqual(workHumanizedAgentType("/ROOT/SHIP_POLL_927"), "Ship poll")
+    XCTAssertNil(workHumanizedAgentType("background"))
+    XCTAssertNil(workHumanizedAgentType("subagent"))
+    XCTAssertNil(workHumanizedAgentType("/root"))
+    XCTAssertNil(workHumanizedAgentType(nil))
+    XCTAssertNil(workHumanizedAgentType("   "))
+  }
+
+  /// The idle prune used to be a plain tail cut, which ate the tiny
+  /// `subagent_*` lifecycle envelopes; the reopen rebuild only back-fills text,
+  /// so a reopened thread rendered complete with every subagent card missing.
+  func testPrunedIdleChatEventHistoryKeepsStructuralEnvelopes() throws {
+    var lines: [String] = []
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.000Z","sequence":0,"event":{"type":"subagent_started","taskId":"task-old","agentId":"agent-old","agentType":"general-purpose","description":"Old subagent","turnId":"turn-1"}}
+    """)
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.100Z","sequence":1,"event":{"type":"scheduled_work_update","id":"sched-1","kind":"cron","status":"running","title":"Nightly"}}
+    """)
+    for index in 2..<120 {
+      lines.append("""
+      {"sessionId":"chat-1","timestamp":"2026-09-10T00:0\(index % 6):\(String(format: "%02d", index % 60)).000Z","sequence":\(index),"event":{"type":"text","text":"heavy body \(index)","turnId":"turn-1"}}
+      """)
+    }
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:09:00.000Z","sequence":120,"event":{"type":"subagent_result","taskId":"task-old","agentId":"agent-old","status":"completed","summary":"done","turnId":"turn-1"}}
+    """)
+
+    let decoder = JSONDecoder()
+    let events = try lines.map { line in
+      try decoder.decode(AgentChatEventEnvelope.self, from: Data(line.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+    XCTAssertEqual(events.count, 121)
+
+    let pruned = workPrunedIdleChatEventHistory(events, keepingHeavyTail: 48)
+
+    // Every structural envelope survives, including the very first one.
+    // Sequences 0 (subagent_started), 1 (scheduled_work_update) and 120
+    // (subagent_result) are the structural ones; 0 and 1 sit far outside any
+    // 48-event tail.
+    let structural = pruned.filter { workChatEventIsStructuralEnvelope($0.event) }
+    XCTAssertEqual(structural.compactMap(\.sequence), [0, 1, 120])
+
+    // The 48-event budget now applies to heavy content only, and keeps its tail.
+    let heavy = pruned.filter { !workChatEventIsStructuralEnvelope($0.event) }
+    XCTAssertEqual(heavy.count, 48)
+    XCTAssertEqual(heavy.last?.sequence, 119)
+    XCTAssertEqual(heavy.first?.sequence, 72)
+
+    // Original order is preserved: the old spawn still precedes the heavy tail.
+    XCTAssertEqual(pruned.first?.sequence, 0)
+    XCTAssertEqual(pruned.last?.sequence, 120)
+
+    // An already-small window is returned untouched.
+    let small = Array(events.prefix(10))
+    XCTAssertEqual(workPrunedIdleChatEventHistory(small, keepingHeavyTail: 48).count, 10)
+  }
+
+  func testStructuralEnvelopesStayBoundedByTheirOwnCap() throws {
+    let decoder = JSONDecoder()
+    let events = try (0..<20).map { index in
+      try decoder.decode(AgentChatEventEnvelope.self, from: Data("""
+      {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.000Z","sequence":\(index),"event":{"type":"subagent_progress","taskId":"task-1","summary":"tick \(index)","turnId":"turn-1"}}
+      """.utf8))
+    }
+    let pruned = workPrunedIdleChatEventHistory(events, keepingHeavyTail: 0, structuralCap: 5)
+    XCTAssertEqual(pruned.count, 5)
+    XCTAssertEqual(pruned.first?.sequence, 15)
+    XCTAssertEqual(pruned.last?.sequence, 19)
+  }
+
+  /// A resolution receipt is the *outcome* stamped on an approval / question
+  /// card, and nothing regenerates it: the text backfill carries only user and
+  /// assistant prose, so a pruned receipt leaves an answered gate rendering as
+  /// though it were still waiting.
+  func testPrunedIdleChatEventHistoryKeepsPendingInputResolutions() throws {
+    var lines: [String] = []
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.000Z","sequence":0,"event":{"type":"approval_request","itemId":"approval-1","kind":"tool_call","requestKind":"tool_call","description":"Run tests","turnId":"turn-1"}}
+    """)
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.100Z","sequence":1,"event":{"type":"pending_input_resolved","itemId":"approval-1","resolution":"accepted","turnId":"turn-1"}}
+    """)
+    for index in 2..<80 {
+      lines.append("""
+      {"sessionId":"chat-1","timestamp":"2026-09-10T00:0\(index % 6):\(String(format: "%02d", index % 60)).000Z","sequence":\(index),"event":{"type":"text","text":"heavy body \(index)","turnId":"turn-1"}}
+      """)
+    }
+
+    let decoder = JSONDecoder()
+    let events = try lines.map { line in
+      try decoder.decode(AgentChatEventEnvelope.self, from: Data(line.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
+    let pruned = workPrunedIdleChatEventHistory(events, keepingHeavyTail: 8)
+
+    XCTAssertTrue(pruned.contains { envelope in
+      if case .pendingInputResolved(let itemId, let resolution, _) = envelope.event {
+        return itemId == "approval-1" && resolution == "accepted"
+      }
+      return false
+    })
+    // The heavy budget is untouched by the exemption.
+    XCTAssertEqual(pruned.filter { !workChatEventIsStructuralEnvelope($0.event) }.count, 8)
+  }
+
+  func testOlderHistoryHeadSlotAppearsWhenTheLiveEventWindowWasTruncated() {
+    // No cursors and nothing pruned: the thread really is whole.
+    XCTAssertFalse(workChatHasOlderTranscriptHistory(
+      chatEventCursor: nil,
+      canonicalTranscriptCursor: nil,
+      allowsCanonicalFallback: true
+    ))
+    // Same cursors, but the local window was cut — the reader must be told.
+    XCTAssertTrue(workChatHasOlderTranscriptHistory(
+      chatEventCursor: nil,
+      canonicalTranscriptCursor: nil,
+      allowsCanonicalFallback: true,
+      liveEventWindowTruncated: true
+    ))
+    XCTAssertTrue(workChatHasOlderTranscriptHistory(
+      chatEventCursor: 4096,
+      canonicalTranscriptCursor: nil,
+      allowsCanonicalFallback: false
+    ))
   }
 
   func testWorkSubagentResultAfterParentDoneStillSettlesRunningSnapshot() {
@@ -20588,7 +20749,7 @@ final class ADETests: XCTestCase {
       turnId: "turn-1",
       itemId: "item-1"
     )
-    message.assistantPreview = workInitialAssistantMessagePreview(markdown)
+    message.assistantPreview = workAssistantMessagePreview(markdown)
     let entry = WorkTimelineEntry(
       id: "message-assistant-1",
       timestamp: message.timestamp,
@@ -20640,7 +20801,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(renderedEntry, entry)
   }
 
-  func testWorkTimelineRenderEntriesPreserveControlsForTruncatedAssistantMessages() {
+  /// A 5000-line assistant answer renders as markdown block rows covering the
+  /// whole message, with no truncation and no "Show more" controls row.
+  func testWorkTimelineRenderEntriesNeverTruncateAssistantMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     var message = WorkChatMessage(
       id: "assistant-long",
@@ -20650,7 +20813,10 @@ final class ADETests: XCTestCase {
       turnId: "turn-1",
       itemId: "item-1"
     )
-    message.assistantPreview = workInitialAssistantMessagePreview(markdown)
+    let preview = workAssistantMessagePreview(markdown)
+    XCTAssertEqual(preview.totalLineCount, 5000)
+    XCTAssertEqual(preview.text, markdown)
+    message.assistantPreview = preview
     let entry = WorkTimelineEntry(
       id: "message-assistant-long",
       timestamp: message.timestamp,
@@ -20663,118 +20829,50 @@ final class ADETests: XCTestCase {
       streamingAssistantMessageId: nil,
       splitAssistantMessageId: message.id
     )
-    guard case .assistantControls(let controls) = rendered.last?.payload else {
-      return XCTFail("Expected a controls row after the truncated assistant preview.")
+
+    XCTAssertFalse(rendered.isEmpty)
+    // Every row is a markdown block of the message itself: no controls row,
+    // because the rendered rows ARE the full source.
+    for row in rendered {
+      guard case .assistantMarkdownBlock(let block) = row.payload else {
+        return XCTFail("Expected only assistant markdown block rows.")
+      }
+      XCTAssertEqual(block.messageId, "assistant-long")
     }
-
-    XCTAssertEqual(controls.messageId, "assistant-long")
-    XCTAssertEqual(controls.visibleLineCount, workAssistantMessageInitialLineBudget)
-    XCTAssertEqual(controls.totalLineCount, 5000)
-    XCTAssertTrue(controls.canShowMore)
-    XCTAssertEqual(controls.nextLineBudget, workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep)
+    // Reconstruct the source from the rendered blocks themselves. The numbered
+    // answer parses as ordered-list blocks, so the marker ("5000. ") lives in
+    // the block's `start` + item offset and never in the item text; asserting
+    // on `cacheKey` would only ever prove the item text, not the whole answer.
+    var reconstructedLines: [String] = []
+    for row in rendered {
+      guard case .assistantMarkdownBlock(let block) = row.payload else { continue }
+      switch block.block.kind {
+      case .orderedList(let start, let items):
+        for (offset, item) in items.enumerated() {
+          reconstructedLines.append("\(start + offset). \(item)")
+        }
+      case .paragraph(let text):
+        reconstructedLines.append(contentsOf: text.components(separatedBy: "\n"))
+      default:
+        return XCTFail("Unexpected block kind in a numbered assistant answer: \(block.block.kind)")
+      }
+    }
+    XCTAssertEqual(reconstructedLines.count, 5000)
+    XCTAssertEqual(reconstructedLines.first, "1. Line 1")
+    XCTAssertEqual(reconstructedLines.last, "5000. Line 5000")
+    XCTAssertEqual(reconstructedLines.joined(separator: "\n"), markdown)
   }
 
-  func testAssistantMessagePreviewBoundsHugeResponses() {
-    let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
-
-    let firstPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
-    )
-
-    XCTAssertTrue(firstPage.isTruncated)
-    XCTAssertEqual(firstPage.visibleLineCount, 48)
-    XCTAssertEqual(firstPage.totalLineCount, 5000)
-    XCTAssertTrue(firstPage.text.contains("48. Line 48"))
-    XCTAssertFalse(firstPage.text.contains("49. Line 49"))
-
-    let secondPageBudget = workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
-    let secondPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: secondPageBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: secondPageBudget)
-    )
-
-    XCTAssertEqual(secondPage.visibleLineCount, 96)
-    XCTAssertTrue(secondPage.text.contains("96. Line 96"))
-    XCTAssertFalse(secondPage.text.contains("97. Line 97"))
-  }
-
-  func testTailAssistantMessagePreviewRendersSmallLatestAnswerFully() {
-    let lineCount = 110
-    let markdown = (1...lineCount).map { index in
-      "Line \(index): " + String(repeating: "latest transcript answer prose ", count: 2)
-    }.joined(separator: "\n")
-    XCTAssertGreaterThan(markdown.count, workAssistantMessageSmallFullCharacterBudget)
-    XCTAssertLessThan(markdown.count, workAssistantMessageTailFullCharacterBudget)
-
-    let preview = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageTailFullLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(
-        forLineBudget: workAssistantMessageTailFullLineBudget,
-        tailCanRenderFull: true
-      ),
-      anchor: .tail
-    )
-
-    XCTAssertFalse(preview.isTruncated)
-    XCTAssertEqual(preview.visibleLineCount, lineCount)
-    XCTAssertEqual(preview.totalLineCount, lineCount)
-    XCTAssertEqual(preview.text, markdown)
-
-    var message = WorkChatMessage(
-      id: "assistant-tail-small",
-      role: "assistant",
-      markdown: markdown,
-      timestamp: "2026-03-25T00:00:01.000Z",
-      turnId: "turn-1",
-      itemId: "item-1"
-    )
-    message.assistantPreview = preview
-    let entry = WorkTimelineEntry(
-      id: "message-assistant-tail-small",
-      timestamp: message.timestamp,
-      rank: 0,
-      payload: .message(message)
-    )
-
-    let rendered = workTimelineRenderEntries(
-      from: [entry],
-      streamingAssistantMessageId: nil,
-      splitAssistantMessageId: message.id
-    )
-    XCTAssertFalse(rendered.contains { renderEntry in
-      if case .assistantControls = renderEntry.payload { return true }
-      return false
-    })
-  }
-
-  func testAssistantMessagePreviewCapsWireframesBeforeTheyCanOverloadLayout() {
+  func testAssistantMessagePreviewRendersWireframesWhole() {
     let markdown = (1...120).map { index in
       "│ \(String(repeating: "─", count: 72)) │ row \(index)"
     }.joined(separator: "\n")
 
-    let firstPage = workAssistantMessagePreview(
-      markdown,
-      lineBudget: workAssistantMessageInitialLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
-    )
+    let preview = workAssistantMessagePreview(markdown)
 
-    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(firstPage.text))
-    XCTAssertTrue(firstPage.isTruncated)
-    XCTAssertEqual(firstPage.visibleLineCount, workAssistantMessageWideInitialLineBudget)
-    XCTAssertEqual(firstPage.totalLineCount, 120)
-    XCTAssertTrue(firstPage.text.contains("row 24"))
-    XCTAssertFalse(firstPage.text.contains("row 25"))
-    XCTAssertEqual(
-      workAssistantMessageEffectiveLineBudget(
-        requestedLineBudget: workAssistantMessageInitialLineBudget,
-        usesMonospacedPreview: workAssistantMessageUsesMonospacedPreview(firstPage.text)
-      ),
-      workAssistantMessageWideInitialLineBudget
-    )
+    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(preview.text))
+    XCTAssertEqual(preview.totalLineCount, 120)
+    XCTAssertTrue(preview.text.contains("row 120"))
   }
 
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {
@@ -20792,8 +20890,6 @@ final class ADETests: XCTestCase {
     let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
 
     XCTAssertNil(message?.assistantPreview)
-    XCTAssertTrue(preview?.isTruncated == true)
-    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
     XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
@@ -20820,8 +20916,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
     XCTAssertNil(message?.assistantPreview)
-    XCTAssertTrue(preview?.isTruncated == true)
-    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
     XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
@@ -20865,10 +20959,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(message.markdownHasCarriageReturn, false)
     XCTAssertEqual(message.markdownContainsFence, false)
 
-    let preview = WorkAssistantPreviewCache().preview(for: message, anchor: .tail)
+    let preview = WorkAssistantPreviewCache().preview(for: message)
     XCTAssertEqual(preview.totalCharacterCount, message.markdown.count)
     XCTAssertEqual(preview.totalLineCount, 3)
-    XCTAssertFalse(preview.isTruncated)
   }
 
   func testStreamingPreviewMetadataKeepsGraphemeCountAcrossDeltaBoundary() {
@@ -24922,6 +25015,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(text, long)
     XCTAssertFalse(didTruncate)
   }
+
+
 
   func testWorkToolResultByteLabelFormatsSmallAndLargeCounts() {
     XCTAssertEqual(workToolResultByteLabel(String(repeating: "a", count: 450)), "450 chars")

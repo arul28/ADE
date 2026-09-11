@@ -5,6 +5,10 @@ import {
   readClaudeCredentials,
   readCodexCredentials,
 } from "./providerCredentialSources";
+import {
+  resolveProviderAccounts,
+  type ProviderAccountIdentity,
+} from "../usage/providerAccountIdentity";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
@@ -48,9 +52,13 @@ export async function buildProviderConnections(
   const checkedAt = nowIso();
   const claudeCli = cliStatuses.find((entry) => entry.cli === "claude") ?? null;
   const codexCli = cliStatuses.find((entry) => entry.cli === "codex") ?? null;
-  const [claudeLocalCreds, codexLocalCreds] = await Promise.all([
+  const [claudeLocalCreds, codexLocalCreds, accountIdentities] = await Promise.all([
     readClaudeCredentials(),
     readCodexCredentials(),
+    // The same reader the usage poller uses, so Settings > Providers and the
+    // Limits cards can never name two different accounts for one provider. It
+    // is total by construction, so there is no catch here.
+    resolveProviderAccounts(),
   ]);
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
@@ -164,6 +172,16 @@ export async function buildProviderConnections(
       },
     ];
     status.blocker = resolveBlocker(args.label, args.loginHint, args.flags, args.extraBlocker);
+    // Plain read: `resolveProviderAccounts` already carries the last-known
+    // account across a config that exists but could not be read, and already
+    // clears it on a real sign-out, so Settings > Providers and the Limits
+    // cards cannot name different accounts for one provider.
+    const account: ProviderAccountIdentity | undefined =
+      args.provider === "claude" || args.provider === "codex"
+        ? accountIdentities.identities[args.provider]
+        : undefined;
+    if (account?.email) status.accountEmail = account.email;
+    if (account?.plan) status.accountPlan = account.plan;
     applyRuntimeHealth(status, args.health);
     return status;
   }

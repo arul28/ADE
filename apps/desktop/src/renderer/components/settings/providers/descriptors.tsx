@@ -14,7 +14,7 @@ import {
   buildClaudeAvailabilityMessage,
   buildCliMessage,
   cliTool,
-  describeCredentialSource,
+  describeProviderCredentialLine,
   shortCredentialSource,
 } from "./cliTools";
 import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/CliAuthActions";
@@ -48,7 +48,7 @@ function pathFacts(path: string | null | undefined, label = "Path"): ProviderFac
 
 function credentialFacts(ctx: ProvidersViewContext, cli: "claude" | "codex" | "cursor" | "droid"): ProviderFact[] {
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
-  const description = describeCredentialSource(connection);
+  const description = describeProviderCredentialLine(connection);
   if (!description || connection?.runtimeAvailable || ctx.isInitialCheckInFlight) return [];
   return [{ label: "Credentials", value: description }];
 }

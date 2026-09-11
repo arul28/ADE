@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiProviderConnections } from "../../../shared/types";
 import type { PiInstallation, PiProfileInventory } from "./piInstallation";
 import type { CliAuthStatus } from "./authDetector";
+import type * as ProviderAccountIdentityModule from "../usage/providerAccountIdentity";
 
 const mockState = vi.hoisted(() => ({
   readClaudeCredentials: vi.fn(),
@@ -11,6 +12,7 @@ const mockState = vi.hoisted(() => ({
   resolvePiInstallation: vi.fn(),
   probePiProfileInventory: vi.fn(),
   getCursorSdkAuthSnapshot: vi.fn(),
+  resolveProviderAccounts: vi.fn(),
 }));
 
 vi.mock("./providerCredentialSources", () => ({
@@ -30,6 +32,13 @@ vi.mock("./piInstallation", () => ({
 
 vi.mock("./cursorSdkAuth", () => ({
   getCursorSdkAuthSnapshot: (...args: unknown[]) => mockState.getCursorSdkAuthSnapshot(...args),
+}));
+
+// Only the resolver is stubbed; the rest of the module (plan formatters, JWT
+// claim decoding) stays real so this mock cannot hide a removed export.
+vi.mock("../usage/providerAccountIdentity", async (importOriginal) => ({
+  ...(await importOriginal<typeof ProviderAccountIdentityModule>()),
+  resolveProviderAccounts: (...args: unknown[]) => mockState.resolveProviderAccounts(...args),
 }));
 
 let buildProviderConnections: (
@@ -60,6 +69,8 @@ beforeEach(async () => {
   mockState.resolvePiInstallation.mockReset();
   mockState.probePiProfileInventory.mockReset();
   mockState.getCursorSdkAuthSnapshot.mockReset();
+  mockState.resolveProviderAccounts.mockReset();
+  mockState.resolveProviderAccounts.mockResolvedValue({ identities: {}, unreadable: {} });
 
   mockState.readClaudeCredentials.mockResolvedValue(null);
   mockState.readCodexCredentials.mockResolvedValue(null);
@@ -625,6 +636,55 @@ describe("buildProviderConnections", () => {
       expect(result.claude.runtimeAvailable).toBe(true);
       expect(result.codex.runtimeAvailable).toBe(true);
       expect(result.droid.runtimeAvailable).toBe(true);
+    });
+  });
+  // The carry rule itself lives in `resolveProviderAccounts` (see
+  // providerAccountIdentity.test.ts); all this surface owes is stamping what
+  // the resolver reports, and clearing when it reports nothing.
+  describe("account identity", () => {
+    const signedInClaudeCli = (): CliAuthStatus[] =>
+      mergeCliStatuses([
+        { cli: "claude", installed: true, path: "/bin/claude", authenticated: true, verified: true },
+      ]);
+
+    it("shows the account the resolver could read", async () => {
+      mockState.resolveProviderAccounts.mockResolvedValue({
+        identities: { claude: { email: "arul@example.com", plan: "max" } },
+        unreadable: {},
+      });
+
+      const result = await buildProviderConnections(signedInClaudeCli());
+
+      expect(result.claude.accountEmail).toBe("arul@example.com");
+      expect(result.claude.accountPlan).toBe("max");
+    });
+
+    it("still shows an identity the resolver carried across an unreadable config", async () => {
+      mockState.resolveProviderAccounts.mockResolvedValue({
+        identities: { claude: { email: "arul@example.com", plan: "max" } },
+        unreadable: { claude: true },
+      });
+
+      const result = await buildProviderConnections(signedInClaudeCli());
+
+      expect(result.claude.accountEmail).toBe("arul@example.com");
+      expect(result.claude.accountPlan).toBe("max");
+    });
+
+    it("clears the account when the resolver reports none, with no state of its own", async () => {
+      mockState.resolveProviderAccounts.mockResolvedValue({
+        identities: { claude: { email: "arul@example.com", plan: "max" } },
+        unreadable: {},
+      });
+      await buildProviderConnections(signedInClaudeCli());
+
+      // A sign-out is the resolver's authoritative answer; this module must not
+      // keep a last-known copy that outlives it.
+      mockState.resolveProviderAccounts.mockResolvedValue({ identities: {}, unreadable: {} });
+      const result = await buildProviderConnections(signedInClaudeCli());
+
+      expect(result.claude.accountEmail).toBeUndefined();
+      expect(result.claude.accountPlan).toBeUndefined();
     });
   });
 });

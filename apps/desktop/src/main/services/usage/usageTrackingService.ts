@@ -33,12 +33,18 @@ import type {
   UsageProviderSource,
   UsageProviderStatus,
   UsageProviderStatusMap,
+  UsageAccount,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
   UsageSnapshot,
 } from "../../../shared/types";
-import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import {
+  ADE_USAGE_RANGE_PRESETS,
+  isAdeUsageRangePreset,
+  isAdeUsageScope,
+  usageProviderAccountUrl,
+} from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
   decodeOpenCodeRegistryId,
@@ -47,6 +53,7 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { resolveProviderAccounts } from "./providerAccountIdentity";
 import {
   cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
@@ -224,11 +231,21 @@ async function writeCachedUsageSnapshot(snapshot: UsageSnapshot, logger: Logger)
   const tempPath = `${USAGE_SNAPSHOT_CACHE_PATH}.${process.pid}.${sequence}.tmp`;
   const write = usageSnapshotCacheWriteTail.then(async () => {
     try {
-      await fs.promises.mkdir(path.dirname(USAGE_SNAPSHOT_CACHE_PATH), { recursive: true });
+      const cacheDir = path.dirname(USAGE_SNAPSHOT_CACHE_PATH);
+      // Owner-only: the snapshot carries the signed-in account email and this
+      // machine's quota. On a shared *nix box the inherited umask would
+      // otherwise leave both world-readable. `chmod` is best-effort everywhere
+      // (and effectively a no-op on Windows) so a failure never blocks the write.
+      await fs.promises.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+      await fs.promises.chmod(cacheDir, 0o700).catch(() => {});
       await fs.promises.writeFile(
         tempPath,
         JSON.stringify({ version: USAGE_SNAPSHOT_CACHE_VERSION, snapshot }),
+        { mode: 0o600 },
       );
+      // `writeFile` only applies `mode` when it CREATES the file; a leftover
+      // temp from an earlier run keeps its old permissions.
+      await fs.promises.chmod(tempPath, 0o600).catch(() => {});
       await fs.promises.rename(tempPath, USAGE_SNAPSHOT_CACHE_PATH);
     } catch (error) {
       await fs.promises.rm(tempPath, { force: true }).catch(() => {});
@@ -2134,6 +2151,58 @@ function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: str
  * `unauthed`/`error` when there is no fallback). Returns the windows to render
  * plus the per-provider status and the timestamp of the last real success.
  */
+/**
+ * Stamp account identity onto each provider status and pool it into the
+ * snapshot's account directory.
+ *
+ * `resolveProviderAccounts` owns the carry rule (a transiently unreadable
+ * config keeps the last identity it read; a config that is simply gone means
+ * the user signed out and reports nothing), so this is a plain read of what it
+ * returns. The limits URL is a constant, so it is always rewritten.
+ *
+ * Accounts are keyed by email, which is what makes the same login seen from two
+ * machines one account with two `machines` entries. Today only this machine
+ * polls quota — the fan-out in `accountUsageLiveRefresh` carries history
+ * rollups, not live windows — so a directory normally has one machine per
+ * account. Nothing here assumes that.
+ */
+async function stampProviderAccounts(
+  providerStatus: UsageProviderStatusMap,
+  machineLabel: string,
+): Promise<UsageAccount[]> {
+  // `resolveProviderAccounts` never rejects — it is total by construction.
+  const { identities } = await resolveProviderAccounts();
+  const accounts: UsageAccount[] = [];
+  for (const key of Object.keys(providerStatus) as UsageProvider[]) {
+    const status = providerStatus[key];
+    if (!status) continue;
+    const email = identities[key]?.email;
+    const plan = identities[key]?.plan;
+    const url = usageProviderAccountUrl(key);
+    providerStatus[key] = {
+      ...status,
+      ...(email ? { accountEmail: email } : {}),
+      ...(plan ? { accountPlan: plan } : {}),
+      ...(url ? { accountUrl: url } : {}),
+    };
+    const checkedAt = status.updatedAt ?? status.lastSuccessAt ?? undefined;
+    accounts.push({
+      id: accountIdFor(key, email),
+      provider: key,
+      ...(email ? { email } : {}),
+      ...(plan ? { plan } : {}),
+      machines: [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }],
+      ...(url ? { url } : {}),
+    });
+  }
+  return accounts;
+}
+
+/** Stable per snapshot: the email when known, else "this machine's <provider>". */
+function accountIdFor(provider: UsageProvider, email: string | undefined): string {
+  return email ? `${provider}:${email.toLowerCase()}` : `${provider}:local`;
+}
+
 function buildProviderWindows(
   provider: UsageProvider,
   freshWindows: UsageWindow[],
@@ -3524,9 +3593,25 @@ export function createUsageTrackingService({
           spendControlReached = lastSnapshot.spendControlReached;
         }
         const costResult = cachedCostResult();
+        // Identity of the account these windows describe, plus the provider's
+        // own limits page. Stamped here so every client renders the same two
+        // facts from one source instead of each keeping its own copy.
+        const accounts = await stampProviderAccounts(
+          providerStatus,
+          readLocalMachineIdentity()?.label ?? os.hostname(),
+        );
+        // Every window carries the account it describes, so a client can group
+        // one card per window with one segment per account without re-deriving
+        // the mapping from provider names.
+        const accountIdByProvider = new Map(accounts.map((account) => [account.provider, account.id]));
+        allWindows = allWindows.map((window) => {
+          const accountId = accountIdByProvider.get(window.provider);
+          return accountId ? { ...window, accountId } : window;
+        });
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
+          ...(accounts.length ? { accounts } : {}),
           ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
           pacing,
           pacingByProvider,

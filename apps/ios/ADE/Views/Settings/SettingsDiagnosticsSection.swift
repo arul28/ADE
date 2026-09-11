@@ -13,6 +13,7 @@ struct SettingsDiagnosticsSection: View {
 
   let snapshot: SettingsDiagnosticsSnapshot
   var content: Content = .all
+  @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
@@ -55,6 +56,8 @@ struct SettingsDiagnosticsSection: View {
               value: Self.appVersionString
             )
 
+            SettingsAppUpdateRow(advisor: appUpdateAdvisor)
+
             if let identity = snapshot.pairedMachineIdentity {
               SettingsDetailRow(
                 symbol: "desktopcomputer.and.arrow.down",
@@ -89,6 +92,73 @@ struct SettingsDiagnosticsSection: View {
     let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "–"
     let build = info?["CFBundleVersion"] as? String ?? "–"
     return settingsVersionLabel(marketingVersion: shortVersion, build: build)
+  }
+}
+
+private struct SettingsAppUpdateRow: View {
+  @ObservedObject var advisor: AppUpdateAdvisor
+
+  private var status: String {
+    if advisor.isChecking { return "Checking…" }
+    if let version = advisor.availableVersion { return "ADE \(version) available" }
+    return advisor.hasChecked ? "Up to date" : "Not checked yet"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 12) {
+        Image(systemName: "arrow.down.circle")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+          .frame(width: 28, height: 28)
+          .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+              .fill(ADEColor.purpleAccent.opacity(0.14))
+          )
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text("App updates")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(status)
+            .font(.caption.monospaced())
+            .foregroundStyle(
+              advisor.availableVersion == nil ? ADEColor.textSecondary : ADEColor.purpleAccent
+            )
+            .lineLimit(1)
+        }
+
+        Spacer(minLength: 8)
+      }
+
+      Button {
+        Task { await advisor.checkForUpdates(force: true) }
+      } label: {
+        Label("Check for updates", systemImage: "arrow.clockwise")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .background(ADEColor.purpleAccent.opacity(0.10), in: Capsule())
+          .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .disabled(advisor.isChecking)
+      .opacity(advisor.isChecking ? 0.55 : 1)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.06))
+    )
+    .glassEffect(in: .rect(cornerRadius: 14))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.6)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("App updates: \(status)")
   }
 }
 

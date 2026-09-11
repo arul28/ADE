@@ -23,6 +23,7 @@ import {
   formatChatStatus,
   formatDiagnosticError,
   formatOutput,
+  formatUsageSnapshot,
   graphWaitState,
   inferFormatter,
   includeHostProjectInCatalog,
@@ -1594,6 +1595,85 @@ describe("ADE CLI", () => {
       checkedAt: "2026-08-20T12:00:00.000Z",
       error: null,
     })).toContain("ADE renews this credential on its own");
+  });
+
+  it("prints the account line and the provider limits link for a quota snapshot", () => {
+    // Parity with the desktop Limits cards and the iOS limits module: a
+    // terminal reader must be able to see WHICH account the numbers belong to
+    // and where to open the provider's own limits page, not just percentages.
+    const future = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    const text = formatUsageSnapshot({
+      windows: [
+        {
+          provider: "claude",
+          windowType: "five_hour",
+          accountId: "dev@example.com",
+          percentUsed: 82,
+          resetsAt: future,
+          resetsInMs: 3 * 60 * 60 * 1000,
+        },
+      ],
+      accounts: [
+        {
+          id: "dev@example.com",
+          provider: "claude",
+          email: "dev@example.com",
+          plan: "Claude Max",
+          url: "https://claude.ai/new#settings/usage",
+          machines: [{ label: "MacBook", checkedAt: new Date().toISOString() }],
+        },
+      ],
+      providerStatus: { claude: { state: "ok", lastSuccessAt: null } },
+      lastPolledAt: "2026-09-11T12:00:00.000Z",
+      errors: [],
+    });
+    expect(text).toContain("dev@example.com");
+    expect(text).toContain("Claude Max");
+    expect(text).toContain("https://claude.ai/new#settings/usage");
+    expect(text).toContain("MacBook");
+    // Headroom first, the way the cards read it, and a window past its reset
+    // must not keep reporting its last-known fill.
+    expect(text).toContain("18.0%");
+    expect(text).toContain("82.0%");
+    const expired = formatUsageSnapshot({
+      windows: [
+        {
+          provider: "codex",
+          windowType: "weekly",
+          percentUsed: 97,
+          resetsAt: "2026-01-01T00:00:00.000Z",
+          resetsInMs: 0,
+        },
+      ],
+      lastPolledAt: "2026-09-11T12:00:00.000Z",
+      errors: [],
+    });
+    expect(expired).toContain("100.0%");
+    expect(expired).not.toContain("97.0%");
+  });
+
+  it("falls back to provider status for the account when the host sends no accounts", () => {
+    // Hosts that predate `UsageSnapshot.accounts` still stamp the identity on
+    // `providerStatus`; the CLI must read that rather than print nothing.
+    const text = formatUsageSnapshot({
+      windows: [],
+      providerStatus: {
+        codex: {
+          state: "stale",
+          lastSuccessAt: "2026-09-11T11:00:00.000Z",
+          accountEmail: "dev@example.com",
+          accountPlan: "ChatGPT Pro",
+          accountUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+          message: "Couldn't reach Codex",
+        },
+      },
+      lastPolledAt: "2026-09-11T12:00:00.000Z",
+      errors: [],
+    });
+    expect(text).toContain("ChatGPT Pro");
+    expect(text).toContain("https://chatgpt.com/codex/cloud/settings/analytics#usage");
+    expect(text).toContain("Couldn't reach Codex");
+    expect(text).toContain("No quota windows were reported.");
   });
 
   it("skips the brain-starting probe inside supervisor and handover probe children", () => {

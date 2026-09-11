@@ -46,7 +46,13 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         </span>
       </div>
 
-      <div className="mb-3 max-h-[min(34vh,360px)] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] leading-relaxed text-fg/75">
+      {/* Not a clamp: the plan text is whole and nothing is hidden behind a
+          disclosure. This card is pinned above the composer, outside the
+          transcript’s scroller, so an unbounded body grows the composer shell
+          until Implement / Keep planning leave the viewport with no way to
+          scroll to them. The cap is generous — ordinary plans never reach it —
+          and a long one scrolls in place instead of evicting its own buttons. */}
+      <div className="mb-3 max-h-[min(52vh,560px)] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] leading-relaxed text-fg/75">
         <ChatMarkdown tone="neutral">{bodyText}</ChatMarkdown>
       </div>
 

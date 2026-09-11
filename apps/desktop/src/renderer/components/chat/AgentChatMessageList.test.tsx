@@ -2428,32 +2428,17 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
   });
 
-  it("clamps a long user prompt and remembers the expansion across a remount", () => {
+  it("renders a long user prompt in full with no expand affordance", () => {
+    // The owner's rule: conversation text is never hidden behind "Show full
+    // message". A 900-character, many-line paste renders whole.
     const longPrompt = `Migration checklist ${"detail ".repeat(120)}`;
     const events = userMessageEvents([longPrompt], "collapse-session");
-    const view = renderMessageList(events, { sessionId: "collapse-session" });
-
-    const body = () => screen.getByTestId("user-message-collapsible-body");
-    expect(body().getAttribute("data-collapsed")).toBe("true");
-    // A CSS mask, not line-clamp — markdown/code inside must still render.
-    expect(body().className).toContain("max-h-44");
-    expect(body().className).not.toContain("line-clamp");
-
-    const toggle = screen.getByRole("button", { name: "Show full message" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(toggle);
-
-    expect(body().getAttribute("data-collapsed")).toBe("false");
-    expect(body().className).not.toContain("max-h-44");
-    expect(body().textContent).toContain(longPrompt);
-    expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
-
-    // Virtualization unmounts and remounts rows mid-scroll; the row key is
-    // unchanged, so the expansion must survive.
-    view.unmount();
     renderMessageList(events, { sessionId: "collapse-session" });
-    expect(screen.getByTestId("user-message-collapsible-body").getAttribute("data-collapsed")).toBe("false");
-    expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
+
+    expect(screen.queryByTestId("user-message-collapsible-body")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show less" })).toBeNull();
+    expect(screen.getByText(longPrompt.trim())).toBeTruthy();
   });
 
   it("isolates nested transcript collapse caches from the real session cache", () => {
@@ -2514,6 +2499,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     renderMessageList(userMessageEvents(["Ship it"], "short-session"), { sessionId: "short-session" });
     expect(screen.queryByTestId("user-message-collapsible-body")).toBeNull();
     expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
+    expect(screen.getByText("Ship it")).toBeTruthy();
   });
 
   it("returns a pinned chat to the live tail after a remount", async () => {

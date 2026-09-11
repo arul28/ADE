@@ -6195,14 +6195,40 @@ extension MobileAdeUsageStats {
 // MARK: - Live provider quota
 
 struct MobileUsageQuotaWindow: Codable, Equatable, Identifiable {
-  var id: String { "\(provider):\(windowType):\(resetsAt):\(percentUsed)" }
+  var id: String { "\(provider):\(windowType):\(accountId ?? ""):\(resetsAt):\(percentUsed)" }
   var clampedPercentUsed: Double { max(0, min(100, percentUsed)) }
+  // Headroom deliberately does NOT live here: it depends on the current clock
+  // (a window past `resetsAt` has refilled), and a decoded model has no clock.
+  // Use `adeUsageDisplayPercentLeft(_:now:)` in ADEUsageDesign, which mirrors
+  // the desktop's `displayPercent`.
   var provider: String
   var windowType: String
   var percentUsed: Double
   var resetsAt: String
   var resetsInMs: Double
   var windowDurationMs: Double?
+  /// Which account this reading belongs to. Older hosts omit it.
+  var accountId: String?
+}
+
+struct MobileUsageAccountMachine: Codable, Equatable, Identifiable {
+  var id: String { label }
+  var machineKey: String?
+  var label: String
+  var checkedAt: String?
+}
+
+/// One provider account the host has readings for, pooled by email.
+struct MobileUsageAccount: Codable, Equatable, Identifiable {
+  var id: String
+  var provider: String
+  var email: String?
+  var plan: String?
+  var machines: [MobileUsageAccountMachine]
+  /// Provider-hosted limits page. Unprefixed on a type already called
+  /// `MobileUsageAccount`; `MobileUsageProviderStatus` keeps `accountUrl`,
+  /// where the prefix distinguishes it from the status's own fields.
+  var url: String?
 }
 
 struct MobileUsageProviderStatus: Codable, Equatable {
@@ -6214,10 +6240,20 @@ struct MobileUsageProviderStatus: Codable, Equatable {
   var errorKind: String?
   var nextRetryAt: String?
   var message: String?
+  /// Email of the signed-in account these windows belong to. Older hosts omit it.
+  var accountEmail: String?
+  /// Subscription the account is on, e.g. "ChatGPT Pro". Older hosts omit it.
+  var accountPlan: String?
+  /// Provider-hosted limits page for this account, supplied by the host so the
+  /// URL lives in exactly one place. Older hosts omit it and the link hides.
+  var accountUrl: String?
 }
 
 struct MobileUsageQuotaSnapshot: Codable, Equatable {
   var windows: [MobileUsageQuotaWindow]
+  /// Accounts the windows belong to. Older hosts omit it and the cards fall
+  /// back to one unnamed account per provider.
+  var accounts: [MobileUsageAccount]?
   var providerStatus: [String: MobileUsageProviderStatus]?
   var lastPolledAt: String
   var errors: [String]

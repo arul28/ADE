@@ -478,6 +478,12 @@ export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth
 export type UsageWindow = {
   provider: UsageProvider;
   windowType: UsageWindowType;
+  /**
+   * Which account's quota this reading is. Matches a `UsageAccount.id` in the
+   * same snapshot. Omitted by hosts that predate account attribution, which the
+   * clients read as "the one account this provider has here".
+   */
+  accountId?: string;
   modelBreakdown?: Record<string, number>;
   percentUsed: number;
   resetsAt: string;
@@ -557,6 +563,19 @@ export type UsageProviderStatus = {
   nextRetryAt?: string | null;
   /** Friendly, log-free reason for a non-ok state (e.g. "Couldn't reach Claude"). */
   message?: string;
+  /**
+   * Email of the account these windows belong to, when the provider records one
+   * locally (Codex `auth.json` id_token, Claude `.claude.json` oauthAccount).
+   * Absent when unknown — clients must not guess.
+   */
+  accountEmail?: string;
+  /** Subscription the account is on, e.g. "ChatGPT Pro" or "Claude Max". */
+  accountPlan?: string;
+  /**
+   * Provider-hosted limits page for this account, stamped by the host so every
+   * client (desktop, iOS, web) opens the same URL from one source.
+   */
+  accountUrl?: string;
 };
 
 export type UsageProviderStatusMap = Partial<Record<UsageProvider, UsageProviderStatus>>;
@@ -607,8 +626,48 @@ export type UsageProviderMessage = {
   createdAt?: string | null;
 };
 
+/**
+ * One provider account the snapshot has readings for.
+ *
+ * Accounts are pooled by email so the same login seen from two machines is one
+ * account with two `machines` entries, not two columns of the same numbers.
+ * Today a machine has exactly one account per provider (Codex and Claude each
+ * resolve a single `CODEX_HOME`/`CLAUDE_CONFIG_DIR` per process) and quota is
+ * polled locally, so a snapshot normally carries one account per provider with
+ * one machine. The shape is the pooled one regardless, so a fan-out can fill it
+ * without moving the clients.
+ */
+export type UsageAccountMachine = {
+  /** Account-directory machine key, when the reading came from the directory. */
+  machineKey?: string;
+  /** Human label for the machine that polled this account. */
+  label: string;
+  /** ISO timestamp of that machine's most recent successful reading. */
+  checkedAt?: string;
+};
+
+export type UsageAccount = {
+  /** Stable within a snapshot: the email when known, else `<provider>:local`. */
+  id: string;
+  provider: UsageProvider;
+  email?: string;
+  plan?: string;
+  /** Every machine reporting this account, freshest first. */
+  machines: UsageAccountMachine[];
+  /**
+   * Provider-hosted limits page, from the shared URL source.
+   *
+   * Unprefixed: on a type already called `UsageAccount`, `accountUrl` repeats
+   * the noun — and it repeated it on only one of three fields, which is what
+   * made `email`/`plan`/`accountUrl` read as three different provenances.
+   */
+  url?: string;
+};
+
 export type UsageSnapshot = {
   windows: UsageWindow[];
+  /** Accounts the windows belong to, pooled by email. Omitted by older hosts. */
+  accounts?: UsageAccount[];
   /** Codex account-level spend control state. Omitted when the server does not report it. */
   spendControlReached?: boolean;
   pacing: UsagePacing;
@@ -710,3 +769,23 @@ export type BudgetCapConfig = {
   alertAtWeeklyPercent?: number;
   preset?: BudgetPreset;
 };
+
+// ---------------------------------------------------------------------------
+// Provider-hosted limits pages
+// ---------------------------------------------------------------------------
+
+/**
+ * The single source for "open my limits on the provider's site".
+ *
+ * Desktop reads it directly; iOS and the web client receive it on
+ * `UsageProviderStatus.accountUrl` rather than keeping a second copy, so a URL
+ * change lands everywhere at once. Cursor has no per-account limits page.
+ */
+export const USAGE_PROVIDER_ACCOUNT_URLS: Partial<Record<UsageProvider, string>> = {
+  claude: "https://claude.ai/new#settings/usage",
+  codex: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+};
+
+export function usageProviderAccountUrl(provider: UsageProvider): string | undefined {
+  return USAGE_PROVIDER_ACCOUNT_URLS[provider];
+}

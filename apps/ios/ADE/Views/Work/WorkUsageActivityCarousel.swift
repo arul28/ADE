@@ -239,8 +239,10 @@ struct WorkUsageActivityCarousel: View {
       header
 
       ZStack(alignment: .top) {
+        // Limits needs more room than a chart: it is one card per provider
+        // account with a row per window, not a single plot.
         chartArea
-          .frame(height: 84)
+          .frame(height: tab == .limits ? 148 : 84, alignment: .top)
         if let selection {
           WorkUsageTooltip(detail: selection)
             .padding(.top, -6)
@@ -483,67 +485,6 @@ private struct WorkUsageTooltip: View {
   }
 }
 
-private struct WorkUsageQuotaCompact: View {
-  let snapshot: MobileUsageQuotaSnapshot?
-
-  var body: some View {
-    VStack(spacing: 8) {
-      if let snapshot {
-        ForEach(["claude", "codex"], id: \.self) { provider in
-          let windows = snapshot.windows.filter { $0.provider == provider }
-          let fiveHour = windows.first { $0.windowType == "five_hour" }
-          let weekly = windows.first { $0.windowType == "weekly" || $0.windowType == "monthly" }
-          let status = snapshot.providerStatus?[provider]
-          HStack(spacing: 8) {
-            if let assetName = providerAssetName(provider) {
-              Image(assetName)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 15, height: 15)
-                .accessibilityHidden(true)
-            }
-            Text(providerLabel(provider))
-              .font(ADEUsageType.detailFont(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .frame(width: 48, alignment: .leading)
-            // Reserved widths: these tick while the module is on screen, and
-            // without a fixed advance every poll shuffles the neighbouring
-            // figures sideways.
-            Text(fiveHour.map { "5h \(Int($0.clampedPercentUsed.rounded()))%" } ?? "5h —")
-              .frame(width: 62, alignment: .leading)
-            Text(weekly.map {
-              let label = $0.windowType == "monthly" ? "month" : "week"
-              return "\(label) \(Int($0.clampedPercentUsed.rounded()))%"
-            } ?? "week —")
-              .frame(width: 78, alignment: .leading)
-            Spacer(minLength: 0)
-            Text(mobileUsageStatusLabel(status))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          .font(ADEUsageType.microFont().monospacedDigit())
-          if provider == "codex", snapshot.spendControlReached == true {
-            Text("Spending cap reached")
-              .font(ADEUsageType.detailFont(.semibold))
-              .foregroundStyle(ADEColor.warning)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-        }
-      } else {
-        Text("Connect to a machine to load live limits.")
-          .font(ADEUsageType.microFont())
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
-  }
-}
-
-private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> String {
-  guard let status else { return "WAITING" }
-  let source = status.source?.uppercased() ?? "UNKNOWN"
-  return status.state == "ok" ? source : "\(status.state.uppercased()) · \(source)"
-}
 private struct WorkUsageHeatmap: View {
   /// Increase Contrast gets a hairline on every tile so the steps stay crisp
   /// when the system flattens the fills.

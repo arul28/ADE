@@ -83,7 +83,7 @@ struct HubInlineComposer: View {
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
   @State private var destinationPickerPresented = false
-  @State private var attachmentPickerPresented = false
+  @State private var presentedPicker: WorkComposerPicker?
   @State private var isDictating = false
   @State private var controlsWidth: CGFloat = 0
   // Global top edge of the destination control, so the picker popover can size
@@ -137,7 +137,7 @@ struct HubInlineComposer: View {
   /// (not derived from focus) so every change happens inside a spring
   /// transaction instead of snapping with the focus flip.
   private var isExpanded: Bool {
-    expanded || isDictating || modelPickerPresented || destinationPickerPresented || attachmentPickerPresented
+    expanded || isDictating || modelPickerPresented || destinationPickerPresented || presentedPicker != nil
   }
 
   /// Collapses the panel, keeping the draft text and all settings.
@@ -259,7 +259,7 @@ struct HubInlineComposer: View {
     .padding(.top, isExpanded ? 12 : 0)
     .padding(.bottom, 8)
     .workChatAttachmentPicker(
-      isPresented: $attachmentPickerPresented,
+      isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $attachments,
       onDismiss: { composerFocused = true }
     )
@@ -275,6 +275,12 @@ struct HubInlineComposer: View {
     )
     .onAppear { onAppearSetup() }
     .workPersistedDraft($draft, key: WorkComposerDraftStore.hubNewChatKey)
+    .workPersistedDraftAttachments($attachments, key: WorkComposerDraftStore.hubNewChatKey)
+    .workChatFileAttachmentPickers(
+      presentedPicker: $presentedPicker,
+      attachments: $attachments,
+      onDismiss: { composerFocused = true }
+    )
     .onChange(of: composerFocused) { _, focused in
       if focused { withAnimation(hubComposerSpring) { expanded = true } }
     }
@@ -291,7 +297,7 @@ struct HubInlineComposer: View {
       guard expanded,
             !modelPickerPresented,
             !destinationPickerPresented,
-            !attachmentPickerPresented,
+            presentedPicker == nil,
             !isDictating else { return }
       collapse()
     }
@@ -644,7 +650,7 @@ struct HubInlineComposer: View {
           HStack(alignment: .center, spacing: 8) {
             if !isDictating {
               WorkComposerOverflowButton(
-                attachmentPickerPresented: $attachmentPickerPresented,
+                presentedPicker: $presentedPicker,
                 draft: $draft,
                 attachments: $attachments,
                 canCompose: !busy,

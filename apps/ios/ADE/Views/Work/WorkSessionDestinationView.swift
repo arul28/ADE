@@ -620,10 +620,15 @@ func workChatOlderTranscriptPageAdvances(
 func workChatHasOlderTranscriptHistory(
   chatEventCursor: Int?,
   canonicalTranscriptCursor: Int?,
-  allowsCanonicalFallback: Bool
+  allowsCanonicalFallback: Bool,
+  liveEventWindowTruncated: Bool = false
 ) -> Bool {
   if (chatEventCursor ?? 0) > 0 { return true }
-  return allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0
+  if allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0 { return true }
+  // The local live-event window was cut while this chat sat idle. What is on
+  // screen is a tail, not the whole conversation, even though the text reads as
+  // continuous — offer the head slot rather than fake a complete thread.
+  return liveEventWindowTruncated
 }
 
 struct WorkSessionDestinationView: View {
@@ -777,6 +782,10 @@ struct WorkSessionDestinationView: View {
   // walking arbitrarily old transcript history.
   @State var olderChatEventHistoryCursor: Int?
   @State var olderTranscriptLoading = false
+  /// True once the idle prune has actually dropped heavy content events from
+  /// this session's local window. Drives the "load earlier" head slot so a
+  /// text-back-filled thread does not render as if nothing were missing.
+  @State var liveEventWindowTruncated = false
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var artifactsRenderSignature = 0
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
@@ -2384,7 +2393,11 @@ struct WorkSessionDestinationView: View {
     }
     reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()
-    pruneIdleLiveChatEventHistoryIfNeeded(transcriptStatus: transcriptStatus, eventTranscript: eventTranscript)
+    // No prune here. This runs at the end of every transcript refresh — i.e.
+    // immediately after hydration has just fetched up to 1 000 events — and cut
+    // that freshly-built window straight back down to the idle tail. The live
+    // event path (`syncTranscriptFromLiveEvents`) still prunes while idle, so
+    // the memory guard is intact without throwing away what we just asked for.
     if forceRemote {
       lastTranscriptRemoteRefreshAt = Date()
     }
@@ -2399,10 +2412,16 @@ struct WorkSessionDestinationView: View {
           liveTurnActiveHint != true,
           !workTranscriptIndicatesActiveTurn(eventTranscript)
     else { return }
-    let compactedEvents = syncService.pruneChatEventHistory(
-      sessionId: sessionId,
-      keepingTail: workChatIdleLiveEventTailLimit
-    )
+    let eventsBefore = syncService.chatEventHistory(sessionId: sessionId).count
+    let compactedEvents = syncService.pruneChatEventHistory(sessionId: sessionId) { events in
+      workPrunedIdleChatEventHistory(events, keepingHeavyTail: workChatIdleLiveEventTailLimit)
+    }
+    if compactedEvents.count < eventsBefore {
+      // Heavy content was dropped. Text comes back from the canonical
+      // transcript on reopen, so the thread would otherwise render as if it
+      // were whole — arm the "load earlier" head slot and say so instead.
+      liveEventWindowTruncated = true
+    }
     liveTranscriptCache.compact(sessionId: sessionId, events: compactedEvents)
   }
 
@@ -2510,8 +2529,28 @@ struct WorkSessionDestinationView: View {
     workChatHasOlderTranscriptHistory(
       chatEventCursor: olderChatEventHistoryCursor,
       canonicalTranscriptCursor: olderTranscriptCursor,
-      allowsCanonicalFallback: !isCrossProject
+      allowsCanonicalFallback: !isCrossProject,
+      liveEventWindowTruncated: liveEventWindowTruncated
     )
+  }
+
+  /// Retire the idle-prune latch.
+  ///
+  /// `liveEventWindowTruncated` arms the "load earlier" head slot when the idle
+  /// prune drops heavy content: what is on screen is a tail, so offering the
+  /// slot is honest at that moment. It is NOT honest forever. Once a load has
+  /// run to a non-failure conclusion, the real cursors
+  /// (`olderChatEventHistoryCursor` / `olderTranscriptCursor`) know whether
+  /// anything older exists — and when they say no, a latch that never clears
+  /// leaves a permanently armed control whose every tap is a no-op.
+  ///
+  /// Chosen over "re-hydrate from the canonical transcript on tap": the tap
+  /// already does exactly that when a cursor exists, and when none does there
+  /// is nothing to re-hydrate from, so the only truthful move is to stop
+  /// offering the slot. A transient `.failed` deliberately does not clear it.
+  @MainActor
+  private func retireLiveEventWindowTruncationLatch() {
+    liveEventWindowTruncated = false
   }
 
   /// Fetch the next strictly-older transcript page from the host and prepend
@@ -2525,6 +2564,9 @@ struct WorkSessionDestinationView: View {
     defer { olderTranscriptLoading = false }
     switch await loadOlderChatEventHistoryPageIfPossible() {
     case .loaded(let addedTimelineEntries):
+      // The event-page cursor is authoritative from here; the prune latch has
+      // nothing left to say.
+      retireLiveEventWindowTruncationLatch()
       return .loaded(
         hasMoreHistory: hasOlderTranscriptHistory,
         addedTimelineEntries: addedTimelineEntries
@@ -2540,6 +2582,10 @@ struct WorkSessionDestinationView: View {
     // path as soon as its ack arrives.
     guard !isCrossProject else { return .failed }
     guard let cursor = olderTranscriptCursor, cursor > 0 else {
+      // No event page, no canonical cursor: there is provably nothing older to
+      // fetch, so the head slot retires instead of staying armed on a tap that
+      // can only ever be a no-op.
+      retireLiveEventWindowTruncationLatch()
       return .loaded(hasMoreHistory: false, addedTimelineEntries: false)
     }
     var loadedPage: SyncService.AgentChatTranscriptPage?
@@ -2579,6 +2625,8 @@ struct WorkSessionDestinationView: View {
     if transcriptChanged {
       setTranscript(merged)
     }
+    // A canonical page landed; `olderTranscriptCursor` owns the answer now.
+    retireLiveEventWindowTruncationLatch()
     return .loaded(
       hasMoreHistory: hasOlderTranscriptHistory,
       addedTimelineEntries: fallbackChanged || transcriptChanged

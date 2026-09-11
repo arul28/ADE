@@ -154,6 +154,19 @@ func workChatAttachmentIsImage(_ ref: AgentChatFileRef) -> Bool {
   return type == "image" || type == "image-url"
 }
 
+/// The ref as the HOST will accept it.
+///
+/// `parseAgentChatFileRefs` matches the exact literals `image` and `file` and
+/// silently drops every other spelling, so a ref that says `File` — including
+/// one restored from a draft written by a build that spelled it that way —
+/// vanishes from `chat.send` with no error anywhere. Normalizing on the way out
+/// is the one place that cannot be forgotten by a new call site.
+func workChatNormalizedOutboundRef(_ ref: AgentChatFileRef) -> AgentChatFileRef {
+  var normalized = ref
+  normalized.type = workChatAttachmentIsImage(ref) ? "image" : "file"
+  return normalized
+}
+
 func workChatAttachmentDisplayName(_ ref: AgentChatFileRef) -> String {
   if ref.type == "image-url", let url = ref.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
     if let host = URL(string: url)?.host, !host.isEmpty {
@@ -185,6 +198,13 @@ struct WorkChatInputAttachment: Identifiable {
   var uploadData: Data?
   var filename: String
   var mimeType: String
+  /// Decides the chip, the preview, and which host staging route runs.
+  var kind: WorkChatInputAttachmentKind
+  /// Set when the host already holds these bytes — either the upload-on-attach
+  /// task finished, or this attachment was restored from a persisted draft ref.
+  /// A send reuses it instead of uploading the same bytes twice, and it is what
+  /// lets a ref-restored attachment be sendable with no local bytes at all.
+  var hostRef: AgentChatFileRef?
   var state: WorkChatInputAttachmentState
 
   init(
@@ -193,6 +213,8 @@ struct WorkChatInputAttachment: Identifiable {
     uploadData: Data? = nil,
     filename: String,
     mimeType: String = "image/jpeg",
+    kind: WorkChatInputAttachmentKind = .image,
+    hostRef: AgentChatFileRef? = nil,
     state: WorkChatInputAttachmentState
   ) {
     self.id = id
@@ -200,11 +222,13 @@ struct WorkChatInputAttachment: Identifiable {
     self.uploadData = uploadData
     self.filename = filename
     self.mimeType = mimeType
+    self.kind = kind
+    self.hostRef = hostRef
     self.state = state
   }
 
   var isReady: Bool {
-    if case .ready = state { return uploadData != nil }
+    if case .ready = state { return uploadData != nil || hostRef != nil }
     return false
   }
 
@@ -258,6 +282,14 @@ func workChatInputHasFailedAttachments(_ attachments: [WorkChatInputAttachment])
   attachments.contains { $0.errorMessage != nil }
 }
 
+/// Note what is deliberately absent: an "is uploading" term.
+///
+/// Attachments upload the moment they are staged (see
+/// `WorkComposerAttachmentUploads`), so an in-flight upload is background work,
+/// not a reason to grey out send. The send awaits the in-flight task instead —
+/// disabling the button here would make attaching a 40 MB video block the
+/// composer for seconds with no explanation. `.loading` still blocks, because
+/// that is the *local* decode: those attachments have no bytes yet.
 func workChatInputCanSend(
   text: String,
   attachments: [WorkChatInputAttachment],
@@ -333,6 +365,32 @@ func workChatSaveInputAttachments(
 ) async throws -> [AgentChatFileRef] {
   var refs: [AgentChatFileRef] = []
   for attachment in workChatInputReadyAttachments(attachments) {
+    // Already on the host: the upload-on-attach task finished, or this came
+    // back from a persisted draft. Re-uploading would duplicate the bytes and,
+    // for a ref-restored attachment, there are no local bytes to send.
+    if let hostRef = attachment.hostRef {
+      refs.append(workChatNormalizedOutboundRef(hostRef))
+      continue
+    }
+    // The upload started when the attachment was staged; wait for it rather
+    // than racing a second upload of the same bytes.
+    if let resolved = await WorkComposerAttachmentUploads.shared.resolve(attachment.id) {
+      refs.append(workChatNormalizedOutboundRef(resolved))
+      continue
+    }
+    if attachment.kind != .image {
+      let saved = try await syncService.saveChatFileAttachment(
+        data: attachment.uploadData ?? Data(),
+        filename: attachment.filename,
+        chatSessionId: chatSessionId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      // Lowercase: the host ref parser drops any `type` that is not exactly
+      // `image` or `file`.
+      refs.append(AgentChatFileRef(path: saved.path, type: "file"))
+      continue
+    }
     guard let dataUrl = workChatInputAttachmentDataURL(attachment) else { continue }
     let saved: SavedChatTempAttachment
     if let chatSessionId, !chatSessionId.isEmpty {
@@ -382,7 +440,20 @@ func workChatInputAttachments(
       restored.append(attachment)
       continue
     }
-    guard ref.type == "image" else { continue }
+    guard ref.type == "image" else {
+      // A document or a video: the host already holds it, so the composer only
+      // needs a chip. Preview pulls the bytes on demand
+      // (`WorkChatAttachmentPreviewSheet`) rather than eagerly downloading a
+      // 40 MB video into a draft restore.
+      restored.append(WorkChatInputAttachment(
+        filename: workChatAttachmentDisplayName(ref),
+        mimeType: "application/octet-stream",
+        kind: workChatAttachmentRefKind(ref),
+        hostRef: ref,
+        state: .ready
+      ))
+      continue
+    }
     let dataUrl: String
     if let chatSessionId, !chatSessionId.isEmpty {
       dataUrl = try await syncService.chatImageDataUrlForChat(sessionId: chatSessionId, path: ref.path)
@@ -400,12 +471,13 @@ func workChatInputAttachments(
             maxPixelSize: 2400,
             maxBytes: workChatInputAttachmentMaxBytes
           ),
-          let attachment = workChatInputAttachment(
+          var attachment = workChatInputAttachment(
             from: image,
             filename: workChatAttachmentDisplayName(ref)
           ) else {
       throw workChatStashImageRestoreError
     }
+    attachment.hostRef = ref
     restored.append(attachment)
   }
   return restored
@@ -550,23 +622,74 @@ extension View {
 
 struct WorkChatInputAttachmentTray: View {
   @Binding var attachments: [WorkChatInputAttachment]
-  @State private var expandedAttachment: WorkChatInputAttachment?
+  /// Collapsed composer mode: 24 pt chips in one row, no header, no remove
+  /// badge. Nothing is unstaged — this is a view mode over the same array.
+  var compact = false
+  /// Tapping a compact chip asks the composer to expand again, so the collapsed
+  /// state is never something the user has to work out how to escape.
+  var onExpand: (() -> Void)?
+  /// Routes a preview's byte fetch to the right project scope. Nil on the
+  /// projectless "new chat" composers, which fall back to the active project.
+  var chatSessionId: String?
+  /// ONE presentation state, not two. Two `.sheet(item:)` modifiers on the same
+  /// view are not a supported SwiftUI arrangement — whichever one loses can
+  /// silently never present — and the two states are mutually exclusive anyway:
+  /// a tap opens either the image sheet or the file/video sheet.
+  @State private var preview: WorkChatInputTrayPreview?
 
   private var attachmentCountLabel: String {
     let readyCount = attachments.filter(\.isReady).count
     let loadingCount = attachments.filter(\.isLoading).count
     if loadingCount > 0 {
-      return loadingCount == 1 ? "Loading image" : "Loading \(loadingCount) images"
+      return loadingCount == 1 ? "Loading attachment" : "Loading \(loadingCount) attachments"
     }
-    if readyCount == 1 { return "1 image attached" }
-    return "\(readyCount) images attached"
+    if readyCount == 1 { return "1 attachment" }
+    return "\(readyCount) attachments"
+  }
+
+  private var trayGlyph: String {
+    let kinds = Set(attachments.map(\.kind))
+    if kinds == [.image] { return "photo.on.rectangle" }
+    if kinds == [.video] { return "film" }
+    return "paperclip"
   }
 
   var body: some View {
+    if attachments.isEmpty {
+      EmptyView()
+    } else if compact {
+      // One control, not one per chip: every chip did the same thing (expand),
+      // and a 24pt chip is far under the 44pt minimum. The row carries the hit
+      // area and the spoken summary; the chips are decoration inside it. The
+      // tap stays a gesture rather than a Button so the row still scrolls.
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(attachments) { attachment in
+            WorkChatCompactAttachmentChip(attachment: attachment)
+          }
+        }
+        .padding(.horizontal, 2)
+        .frame(minHeight: 44)
+      }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+      .onTapGesture { onExpand?() }
+      .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isButton)
+      .accessibilityLabel(attachmentCountLabel)
+      .accessibilityHint("Expands the composer")
+      .accessibilityAction { onExpand?() }
+    } else {
+      expandedTray
+    }
+  }
+
+  @ViewBuilder
+  private var expandedTray: some View {
     if !attachments.isEmpty {
       VStack(alignment: .leading, spacing: 7) {
         HStack(spacing: 6) {
-          Image(systemName: "photo.on.rectangle")
+          Image(systemName: trayGlyph)
             .font(.system(size: 11, weight: .semibold))
           Text(attachmentCountLabel)
             .font(.caption2.weight(.semibold))
@@ -578,7 +701,7 @@ struct WorkChatInputAttachmentTray: View {
           HStack(spacing: 8) {
             ForEach(attachments) { attachment in
               WorkChatInputAttachmentThumb(attachment: attachment) {
-                expandedAttachment = attachment
+                open(attachment)
               } onRemove: {
                 attachments.removeAll { $0.id == attachment.id }
               }
@@ -587,16 +710,88 @@ struct WorkChatInputAttachmentTray: View {
         }
       }
       .padding(.horizontal, 2)
-      .sheet(item: $expandedAttachment) { attachment in
-        WorkChatInputAttachmentPreview(
-          attachment: attachment,
-          onRemove: {
-            attachments.removeAll { $0.id == attachment.id }
-            expandedAttachment = nil
-          }
-        )
+      .sheet(item: $preview) { item in
+        switch item {
+        case let .image(attachment):
+          WorkChatInputAttachmentPreview(
+            attachment: attachment,
+            onRemove: {
+              attachments.removeAll { $0.id == attachment.id }
+              preview = nil
+            }
+          )
+        case let .file(request):
+          WorkChatAttachmentPreviewSheet(request: request)
+        }
       }
     }
+  }
+
+  /// Images keep the existing full-screen image sheet; documents and videos get
+  /// QuickLook / `VideoPlayer` without leaving the thread.
+  private func open(_ attachment: WorkChatInputAttachment) {
+    guard attachment.kind != .image else {
+      preview = .image(attachment)
+      return
+    }
+    let source: WorkChatAttachmentPreviewSource
+    if let data = attachment.uploadData, !data.isEmpty {
+      source = .localBytes(data)
+    } else if let hostRef = attachment.hostRef {
+      source = .hostPath(hostRef.path)
+    } else {
+      return
+    }
+    preview = .file(WorkChatAttachmentPreviewRequest(
+      filename: attachment.filename,
+      kind: attachment.kind,
+      source: source,
+      chatSessionId: chatSessionId
+    ))
+  }
+}
+
+/// The one thing an input tray can have open: the image sheet or the
+/// file/video sheet.
+private enum WorkChatInputTrayPreview: Identifiable {
+  case image(WorkChatInputAttachment)
+  case file(WorkChatAttachmentPreviewRequest)
+
+  var id: String {
+    switch self {
+    case let .image(attachment): return "image:\(attachment.id.uuidString)"
+    case let .file(request): return "file:\(request.id.uuidString)"
+    }
+  }
+}
+
+/// 24 pt chip for the collapsed composer. No remove badge on purpose: collapsing
+/// must not put a destructive control under the user's thumb.
+struct WorkChatCompactAttachmentChip: View {
+  let attachment: WorkChatInputAttachment
+
+  var body: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.42))
+        .frame(width: 24, height: 24)
+        .overlay(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.34), lineWidth: 0.7)
+        )
+      if let image = attachment.image {
+        Image(uiImage: image)
+          .resizable()
+          .scaledToFill()
+          .frame(width: 24, height: 24)
+          .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      } else {
+        Image(systemName: attachment.errorMessage == nil ? attachment.kind.glyph : "exclamationmark.triangle")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(attachment.errorMessage == nil ? ADEColor.textSecondary : ADEColor.warning)
+      }
+    }
+    .accessibilityLabel("Attachment \(attachment.filename)")
   }
 }
 
@@ -623,6 +818,8 @@ private struct WorkChatInputAttachmentThumb: View {
               .scaledToFill()
               .frame(width: 72, height: 72)
               .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+          } else if attachment.kind != .image, attachment.errorMessage == nil, !attachment.isLoading {
+            documentFace
           } else {
             placeholder
           }
@@ -640,8 +837,27 @@ private struct WorkChatInputAttachmentThumb: View {
       }
       .buttonStyle(.plain)
       .padding(4)
-      .accessibilityLabel("Remove image")
+      // The tray now stages videos and documents too, so the label follows the
+      // chip's kind rather than always saying "image".
+      .accessibilityLabel("Remove \(attachment.kind.rawValue)")
     }
+  }
+
+  /// Non-image chips carry a glyph and their name — a video or a PDF has no
+  /// thumbnail the composer can render without decoding the whole file.
+  private var documentFace: some View {
+    VStack(spacing: 5) {
+      Image(systemName: attachment.kind.glyph)
+        .font(.system(size: 20, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Text(attachment.filename)
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .padding(.horizontal, 4)
+    }
+    .frame(width: 72, height: 72)
   }
 
   @ViewBuilder
@@ -828,10 +1044,12 @@ private struct WorkChatAttachmentChip: View {
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
   @Environment(\.workChatIsPersonal) private var isPersonalChat
+  @Environment(\.workChatSessionId) private var chatSessionId
   @Environment(\.displayScale) private var displayScale
 
   @State private var previewImage: UIImage?
   @State private var loadFailed = false
+  @State private var filePreview: WorkChatAttachmentPreviewRequest?
 
   private var isUploading: Bool {
     workAttachmentIsPendingUpload(attachment)
@@ -894,8 +1112,28 @@ private struct WorkChatAttachmentChip: View {
   }
 
   private var fileChip: some View {
+    Button {
+      filePreview = WorkChatAttachmentPreviewRequest(
+        filename: workChatAttachmentDisplayName(attachment),
+        kind: workChatAttachmentRefKind(attachment),
+        source: .hostPath(attachment.path),
+        // Without the owning session the host resolves this path against
+        // whichever project is active, so a file from another project's chat
+        // fails to load.
+        chatSessionId: chatSessionId
+      )
+    } label: {
+      fileChipFace
+    }
+    .buttonStyle(.plain)
+    .sheet(item: $filePreview) { request in
+      WorkChatAttachmentPreviewSheet(request: request)
+    }
+  }
+
+  private var fileChipFace: some View {
     HStack(spacing: 6) {
-      Image(systemName: "paperclip")
+      Image(systemName: workChatAttachmentRefKind(attachment).glyph)
         .font(.system(size: 11, weight: .bold))
       Text(workChatAttachmentDisplayName(attachment))
         .font(.caption2.weight(.semibold))
@@ -1036,6 +1274,10 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
   let laneId: String
   let requestedCwd: String?
   let isPersonalChat: Bool
+  /// The session these messages belong to. Attachment reads are routed by it,
+  /// so a chat from another project resolves against ITS project rather than
+  /// whichever one happens to be active on the host.
+  let sessionId: String?
 
   func body(content: Content) -> some View {
     content
@@ -1045,6 +1287,7 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
       .environment(\.workChatLaneId, laneId)
       .environment(\.workChatRequestedCwd, requestedCwd)
       .environment(\.workChatIsPersonal, isPersonalChat)
+      .environment(\.workChatSessionId, sessionId)
   }
 }
 
@@ -1058,6 +1301,10 @@ private struct WorkChatRequestedCwdEnvironmentKey: EnvironmentKey {
 
 private struct WorkChatIsPersonalEnvironmentKey: EnvironmentKey {
   static let defaultValue = false
+}
+
+private struct WorkChatSessionIdEnvironmentKey: EnvironmentKey {
+  static let defaultValue: String? = nil
 }
 
 extension EnvironmentValues {
@@ -1075,6 +1322,11 @@ extension EnvironmentValues {
   var workChatIsPersonal: Bool {
     get { self[WorkChatIsPersonalEnvironmentKey.self] }
     set { self[WorkChatIsPersonalEnvironmentKey.self] = newValue }
+  }
+
+  var workChatSessionId: String? {
+    get { self[WorkChatSessionIdEnvironmentKey.self] }
+    set { self[WorkChatSessionIdEnvironmentKey.self] = newValue }
   }
 }
 

@@ -182,11 +182,57 @@ func adeUsageFormatDay(_ date: String) -> String {
   return adeUsageDayDisplay.string(from: parsed)
 }
 
+/// Hoisted: `ISO8601DateFormatter()` is expensive to build, and these are used
+/// per render and inside sort comparators.
+private let adeUsageFractionalISOParser: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+private let adeUsagePlainISOParser = ISO8601DateFormatter()
+
 func adeUsageParseISODate(_ iso: String?) -> Date? {
   guard let iso, !iso.isEmpty else { return nil }
-  let fractional = ISO8601DateFormatter()
-  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  return fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+  return adeUsageFractionalISOParser.date(from: iso) ?? adeUsagePlainISOParser.date(from: iso)
+}
+
+/// Milliseconds until a window resets, measured against the CURRENT clock.
+///
+/// `resetsInMs` is frozen at the instant the host polled. A cached snapshot
+/// stays on screen while the phone is offline or a refresh fails, so rendering
+/// that frozen number counts down to a reset that may already have happened —
+/// the card keeps promising headroom "in 12m" indefinitely. `resetsAt` is the
+/// durable fact (desktop and the CLI derive their countdowns from it); the
+/// polled delta is only the fallback for a host that sent an unparsable one.
+func adeUsageResetsInMs(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  guard let resetsAt = adeUsageParseISODate(window.resetsAt) else { return max(0, window.resetsInMs) }
+  return max(0, resetsAt.timeIntervalSince(now) * 1000)
+}
+
+/// Consumption as a window should READ right now, mirroring the desktop/CLI
+/// `displayPercent` in `shared/usageWindowPresentation`.
+///
+/// A snapshot outlives the window it describes: the phone can hold a cached
+/// reading well past `resetsAt`, and printing the frozen fill claims the quota
+/// is still spent when the provider has already refilled it. Once the parsed
+/// `resetsAt` is behind `now`, usage reads 0 and headroom 100.
+///
+/// Only a PARSED `resetsAt` can retire a window. An unparsable one leaves the
+/// last known fill in place — `adeUsageResetsInMs` falls back to the frozen
+/// `resetsInMs` there, which says nothing about the current clock, so zeroing
+/// on it would invent headroom rather than report it.
+/// Divergence from desktop `displayPercent`: an empty or unparsable `resetsAt`
+/// reads as refilled on desktop (its `computeResetsInMs` returns 0) but keeps
+/// the last known fill here, because the polled `resetsInMs` fallback is frozen
+/// at poll time and says nothing about the current clock.
+func adeUsageDisplayPercentUsed(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  if let resetsAt = adeUsageParseISODate(window.resetsAt), resetsAt <= now { return 0 }
+  return window.clampedPercentUsed
+}
+
+/// Headroom, as the cards and pace read it. See `adeUsageDisplayPercentUsed`.
+func adeUsageDisplayPercentLeft(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  max(0, 100 - adeUsageDisplayPercentUsed(window, now: now))
 }
 
 func adeUsageRelativeTime(_ iso: String?) -> String {
@@ -253,15 +299,22 @@ private func adeUsageNominalWindowMs(_ windowType: String) -> Double? {
   }
 }
 
-func adeUsageWindowPace(_ window: MobileUsageQuotaWindow) -> ADEUsageWindowPace? {
+/// `now` is threaded in for the same reason `adeUsageResetsInMs` takes it: the
+/// pace is measured against the CURRENT clock, and a caller that already fixed
+/// an instant (a card builder, a test) must get one consistent answer rather
+/// than a fresh `Date()` read per helper.
+func adeUsageWindowPace(
+  _ window: MobileUsageQuotaWindow,
+  now: Date = Date()
+) -> ADEUsageWindowPace? {
   var resolvedDuration = window.windowDurationMs ?? 0
   if resolvedDuration <= 0 { resolvedDuration = adeUsageNominalWindowMs(window.windowType) ?? 0 }
   let duration = resolvedDuration
   guard duration > 0 else { return nil }
-  let resetsInMs = max(0, min(window.resetsInMs, duration))
+  let resetsInMs = max(0, min(adeUsageResetsInMs(window, now: now), duration))
   let elapsedMs = max(0, duration - resetsInMs)
   let elapsedFraction = min(1, elapsedMs / duration)
-  let percent = window.clampedPercentUsed
+  let percent = adeUsageDisplayPercentUsed(window, now: now)
   let expected = elapsedFraction * 100
   let remaining = max(0, 100 - percent)
 
@@ -282,6 +335,18 @@ func adeUsageWindowPace(_ window: MobileUsageQuotaWindow) -> ADEUsageWindowPace?
     dryInMs: dryInMs,
     resetsInMs: resetsInMs
   )
+}
+
+/// "email · plan" for a provider status, or nil when the host reported neither.
+///
+/// Both the Settings page and the Work limits module print this line; they had
+/// two spellings of it, one of which carried a one-use `String.nilIfEmpty`
+/// extension.
+func adeUsageAccountSubtitle(_ status: MobileUsageProviderStatus?) -> String? {
+  let parts = [status?.accountEmail, status?.accountPlan]
+    .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+    .filter { !$0.isEmpty }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 func adeUsageWindowLabel(_ window: MobileUsageQuotaWindow) -> String {
@@ -618,4 +683,190 @@ func adeUsageSeriesAreaPath(values: [Double], yMax: Double, in rect: CGRect) -> 
   path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
   path.closeSubpath()
   return path
+}
+
+// MARK: - Limit cards
+
+/// The phone's half of `usageLimitModel.ts`.
+///
+/// A limit card is one window of one provider read as headroom: how much is
+/// left, when more arrives, and which account is spending it. The arithmetic is
+/// duplicated rather than shared because the two clients have no common
+/// language — so it is kept small, pure, and clock-injected, and the desktop
+/// tests and `ADETests` assert the same numbers.
+struct ADEUsageAccountView: Identifiable, Equatable {
+  var id: String
+  var provider: String
+  var email: String?
+  var plan: String?
+  var machines: [MobileUsageAccountMachine]
+  var url: String?
+  var initials: String
+}
+
+/// `first.last@host` → FL, `dev@host` → DE, machine label → its first two.
+func adeUsageAccountInitials(email: String?, fallback: String = "") -> String {
+  let local = (email ?? "").split(separator: "@").first.map(String.init) ?? ""
+  let parts = local.split(whereSeparator: { "._+-".contains($0) }).filter { !$0.isEmpty }
+  if parts.count >= 2, let a = parts[0].first, let b = parts[1].first {
+    return "\(a)\(b)".uppercased()
+  }
+  let source = parts.first.map(String.init) ?? fallback.trimmingCharacters(in: .whitespaces)
+  if source.isEmpty { return "··" }
+  return String(source.prefix(2)).uppercased()
+}
+
+/// Merge the snapshot's accounts by identity: one login seen from two machines
+/// is one account with two `machines` entries, freshest first.
+func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccountView] {
+  var order: [String] = []
+  var pooled: [String: ADEUsageAccountView] = [:]
+  for account in accounts ?? [] {
+    let key = account.email.map { "\(account.provider):\($0.lowercased())" } ?? account.id
+    if var existing = pooled[key] {
+      for machine in account.machines where !existing.machines.contains(where: { $0.label == machine.label }) {
+        existing.machines.append(machine)
+      }
+      if existing.plan == nil { existing.plan = account.plan }
+      pooled[key] = existing
+      continue
+    }
+    order.append(key)
+    pooled[key] = ADEUsageAccountView(
+      id: account.id,
+      provider: account.provider,
+      email: account.email,
+      plan: account.plan,
+      machines: account.machines,
+      url: account.url,
+      initials: adeUsageAccountInitials(email: account.email, fallback: account.machines.first?.label ?? "")
+    )
+  }
+  let freshness: (MobileUsageAccountMachine) -> Double = { machine in
+    guard let checkedAt = machine.checkedAt,
+          let date = adeUsageParseISODate(checkedAt) else { return 0 }
+    return date.timeIntervalSince1970
+  }
+  return order.compactMap { key in
+    guard var account = pooled[key] else { return nil }
+    account.machines.sort { freshness($0) > freshness($1) }
+    return account
+  }
+}
+
+struct ADEUsageLimitSegment: Identifiable, Equatable {
+  var id: String
+  var account: ADEUsageAccountView?
+  var window: MobileUsageQuotaWindow
+  var percentLeft: Double
+  var restoresPercentOfPool: Double
+  var resetsInMs: Double
+}
+
+struct ADEUsageLimitCard: Identifiable, Equatable {
+  var id: String
+  var provider: String
+  var label: String
+  var segments: [ADEUsageLimitSegment]
+  /// Pooled headroom across the accounts — the number the card shows.
+  var percentLeft: Double
+  /// Pooled consumption, for the pressure colour.
+  var percentUsed: Double
+  /// The next reset that actually returns something, as (+percent, in ms).
+  var forecast: (percent: Double, resetsInMs: Double)?
+
+  static func == (lhs: ADEUsageLimitCard, rhs: ADEUsageLimitCard) -> Bool {
+    lhs.id == rhs.id
+      && lhs.segments == rhs.segments
+      && lhs.percentLeft == rhs.percentLeft
+      && lhs.forecast?.percent == rhs.forecast?.percent
+      && lhs.forecast?.resetsInMs == rhs.forecast?.resetsInMs
+  }
+}
+
+/// One card per window label, ordered short window first.
+func adeUsageLimitCards(
+  provider: String,
+  windows: [MobileUsageQuotaWindow],
+  accounts: [ADEUsageAccountView],
+  now: Date = Date()
+) -> [ADEUsageLimitCard] {
+  let providerAccounts = accounts.filter { $0.provider == provider }
+  var order: [String] = []
+  var grouped: [String: [ADEUsageLimitSegment]] = [:]
+  for window in windows where window.provider == provider {
+    let label = adeUsageWindowLabel(window)
+    let account = providerAccounts.first { $0.id == window.accountId }
+      ?? (providerAccounts.count == 1 ? providerAccounts[0] : nil)
+    if grouped[label] == nil {
+      grouped[label] = []
+      order.append(label)
+    }
+    let fallbackIndex = grouped[label]?.count ?? 0
+    grouped[label]?.append(
+      ADEUsageLimitSegment(
+        id: "\(provider):\(label):\(account?.id ?? String(fallbackIndex))",
+        account: account,
+        window: window,
+        percentLeft: adeUsageDisplayPercentLeft(window, now: now),
+        restoresPercentOfPool: 0,
+        resetsInMs: adeUsageResetsInMs(window, now: now)
+      )
+    )
+  }
+
+  let rank: (String) -> Int = { label in
+    if label.hasSuffix("-hour") || label.hasSuffix("-min") { return 0 }
+    if label == "Weekly" { return 1 }
+    if label == "Monthly" { return 2 }
+    return 3
+  }
+
+  return order.compactMap { label -> ADEUsageLimitCard? in
+    guard var segments = grouped[label], !segments.isEmpty else { return nil }
+    let count = Double(segments.count)
+    for index in segments.indices {
+      segments[index].restoresPercentOfPool = (100 - segments[index].percentLeft) / count
+    }
+    let left = segments.reduce(0) { $0 + $1.percentLeft } / count
+    // A window already at full headroom restores nothing, so "+0% in 5m" is
+    // noise: skip to the first reset that moves the pooled number.
+    let restoring = segments.filter { $0.restoresPercentOfPool >= 0.5 }
+    var forecast: (percent: Double, resetsInMs: Double)?
+    if let soonest = restoring.map(\.resetsInMs).min() {
+      let together = restoring.filter { abs($0.resetsInMs - soonest) < 60_000 }
+      forecast = (together.reduce(0) { $0 + $1.restoresPercentOfPool }, soonest)
+    }
+    return ADEUsageLimitCard(
+      id: "\(provider):\(label)",
+      provider: provider,
+      label: label,
+      segments: segments,
+      percentLeft: left,
+      percentUsed: 100 - left,
+      forecast: forecast
+    )
+  }
+  .sorted { rank($0.label) < rank($1.label) }
+}
+
+/// A stable accent for an account chip, drawn from the existing provider
+/// fallback palette rather than a second colour system.
+/// Hoisted: `adeUsageAccountAccent` is called twice per account chip per render
+/// by the Work limits rows, and this array was rebuilt on every one of them.
+private let adeUsageAccountAccentPalette: [Color] = [
+  ADEColor.providerBrand(for: "codex"),
+  ADEColor.providerBrand(for: "claude"),
+  ADEColor.providerBrand(for: "gemini"),
+  ADEColor.providerBrand(for: "opencode"),
+  ADEColor.providerBrand(for: "droid"),
+  ADEColor.providerBrand(for: "cursor"),
+]
+
+func adeUsageAccountAccent(_ accountId: String) -> Color {
+  var hash: UInt32 = 0
+  for byte in accountId.lowercased().unicodeScalars {
+    hash = hash &* 31 &+ byte.value
+  }
+  return adeUsageAccountAccentPalette[Int(hash % UInt32(adeUsageAccountAccentPalette.count))]
 }

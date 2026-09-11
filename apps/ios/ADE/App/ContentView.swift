@@ -58,6 +58,7 @@ private enum RootTab: String, Hashable, CaseIterable, Identifiable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var accountService: AccountService
+  @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
   @State private var selectedTab: RootTab = {
     let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
@@ -65,6 +66,32 @@ struct ContentView: View {
   @State private var analyticsConsentPresented = false
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// One spring for the top banner stack (connect toast + update banner), so
+  /// the two cannot slide at different speeds when they overlap. Reduce Motion
+  /// keeps the mount/unmount but drops the spring.
+  private var topBannerAnimation: Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.35, dampingFraction: 0.86)
+  }
+
+  /// Everything that can mount, swap, or dismiss a banner in the top stack,
+  /// as one comparable value. Both banners carry a move+fade transition, so
+  /// every one of these has to be animated — keying only the toast left the
+  /// update banner to pop in and out with no transition at all.
+  private struct TopBannerKey: Equatable {
+    let connectLabel: String?
+    let updateVersion: String?
+    let updateDismissed: Bool
+  }
+
+  private var topBannerKey: TopBannerKey {
+    TopBannerKey(
+      connectLabel: syncService.accountConnectSuccessLabel,
+      updateVersion: appUpdateAdvisor.availableVersion,
+      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed
+    )
+  }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
@@ -121,6 +148,7 @@ struct ContentView: View {
     observedRootContent
       .sheet(isPresented: $syncService.settingsPresented) {
         ConnectionSettingsView(syncService: syncService)
+          .environmentObject(appUpdateAdvisor)
       }
       .sheet(isPresented: $syncService.attentionDrawerPresented) {
         ActivityDrawerSheet()
@@ -202,14 +230,31 @@ struct ContentView: View {
       .adeNavigationGlass()
       .adeInspectorHost()
       .overlay(alignment: .top) {
-        if let label = syncService.accountConnectSuccessLabel {
-          AccountConnectStatusToast(label: label)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+        VStack(spacing: 8) {
+          if let label = syncService.accountConnectSuccessLabel {
+            AccountConnectStatusToast(label: label)
+              .transition(.move(edge: .top).combined(with: .opacity))
+          }
+
+          if let version = appUpdateAdvisor.availableVersion,
+             !appUpdateAdvisor.isAvailableUpdateDismissed {
+            AppUpdateBanner(
+              version: version,
+              canUpdate: appUpdateAdvisor.updateURL != nil,
+              onUpdate: openAppUpdate,
+              onLater: appUpdateAdvisor.dismissAvailableUpdate
+            )
             .transition(.move(edge: .top).combined(with: .opacity))
+          }
         }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        // One key, on the banner container rather than the root: every value
+        // that mounts either banner is folded into `topBannerKey`, so both
+        // transitions still run, and a banner appearing no longer drags an
+        // unrelated root change (a tab switch, a sheet) into the same spring.
+        .animation(topBannerAnimation, value: topBannerKey)
       }
-      .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
@@ -260,6 +305,11 @@ struct ContentView: View {
     ProductAnalytics.shared.captureScreen(
       syncService.shouldShowProjectHub ? .hub : selectedTab.analyticsScreen
     )
+  }
+
+  private func openAppUpdate() {
+    guard let url = appUpdateAdvisor.updateURL else { return }
+    UIApplication.shared.open(url)
   }
 
   private var rootTabs: some View {
@@ -400,6 +450,62 @@ struct AccountConnectStatusToast: View {
     .overlay(Capsule().stroke(ADEColor.success.opacity(0.3), lineWidth: 0.75))
     .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
     .accessibilityElement(children: .combine)
+  }
+}
+
+private struct AppUpdateBanner: View {
+  let version: String
+  let canUpdate: Bool
+  let onUpdate: () -> Void
+  let onLater: () -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "arrow.down.circle.fill")
+        .foregroundStyle(ADEColor.purpleAccent)
+
+      Text("ADE \(version) is available")
+        .font(.system(.footnote, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        // Two lines rather than one: at accessibility text sizes a single
+        // scaled line drops the version number the banner exists to state.
+        .lineLimit(2)
+        .minimumScaleFactor(0.8)
+
+      Spacer(minLength: 0)
+
+      // Both actions carry a 44pt hit area. "Later" draws nothing but text, so
+      // without an explicit frame its target was the glyph box alone.
+      Button("Later", action: onLater)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+
+      Button("Update", action: onUpdate)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.purpleAccent, in: Capsule())
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .disabled(!canUpdate)
+        .opacity(canUpdate ? 1 : 0.45)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(ADEColor.cardBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect()
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
+    )
+    .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("ADE \(version) is available")
   }
 }
 

@@ -91,6 +91,70 @@ export function stagedAttachmentDestPath(attachmentsDir: string, extension: stri
   return destPath;
 }
 
+/**
+ * Delete a staging file when it may legitimately not exist.
+ *
+ * Every staging route has an abort path that runs before a single byte was
+ * written, so ENOENT here is the normal case rather than a failure worth
+ * surfacing. Shared so the chunked and the streamed registries cannot drift on
+ * what "clean up the `.part`" means.
+ */
+export async function unlinkStagedAttachmentQuietly(filePath: string): Promise<void> {
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {
+    // A torn or aborted upload may never have created the file.
+  }
+}
+
+/**
+ * Windows reports a momentarily-held file as a sharing violation, not as a
+ * clean failure.
+ *
+ * An AV scanner or the search indexer opening a just-closed `.part` makes
+ * `rename` fail with EPERM, EACCES or EBUSY for a few tens of milliseconds —
+ * the class `windows-quirks.md` §6 documents, and the same code set
+ * `isLockContention()` in
+ * `apps/ade-cli/src/services/credentials/credentialFileIo.ts` accepts. That
+ * helper lives behind a package boundary this shared module must not import,
+ * so the predicate is restated here rather than reached for.
+ */
+function isWindowsSharingViolation(error: unknown): boolean {
+  if (process.platform !== "win32") return false;
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+/**
+ * Publish a fully-written `.part` file at its final name.
+ *
+ * The rename is the commit point for every staged attachment: nothing at the
+ * destination path is ever half a file. On Windows it is retried a bounded
+ * number of times for the sharing-violation class above, because those clear on
+ * their own in milliseconds and a hard failure there costs the user the whole
+ * upload. Anything else — and an exhausted retry budget — is rethrown.
+ */
+export async function commitStagedAttachmentPart(
+  partPath: string,
+  destPath: string,
+  options?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> },
+): Promise<void> {
+  const attempts = Math.max(1, options?.attempts ?? 3);
+  const delayMs = Math.max(0, options?.delayMs ?? 100);
+  const sleep = options?.sleep
+    ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.promises.rename(partPath, destPath);
+      return;
+    } catch (error) {
+      if (attempt >= attempts || !isWindowsSharingViolation(error)) throw error;
+      await sleep(delayMs);
+    }
+  }
+}
+
 type StageAttachmentCopyArgs = {
   /** Absolute path to a file that already exists on THIS machine's disk. */
   sourcePath: string;

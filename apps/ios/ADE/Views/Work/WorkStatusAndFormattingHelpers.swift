@@ -141,19 +141,44 @@ func workSubagentRunningCount(_ snapshots: [WorkSubagentSnapshot]) -> Int {
   snapshots.filter { $0.status == .running }.count
 }
 
+/// Desktop's `humanizeAgentIdentity` (chatCardPrimitives.tsx): an agent type is
+/// a role, not a path or an id. Keep the last path segment, drop a trailing
+/// issue/PR number, and sentence-case the words — `/ROOT/SHIP_POLL_927` reads as
+/// "Ship poll", never as a shouted file path.
+func workHumanizedAgentType(_ value: String?) -> String? {
+  let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !raw.isEmpty else { return nil }
+  // `background` is a flag the roster row renders as its own chip.
+  let generic: Set<String> = ["subagent", "opencode-subagent", "background"]
+  guard !generic.contains(raw.lowercased()) else { return nil }
+  let segments = raw.split(whereSeparator: { $0 == "/" || $0 == "\\" }).map(String.init)
+  var tail = segments.last ?? raw
+  if segments.count == 1, tail.lowercased() == "root" { return nil }
+  if let match = tail.range(of: "[_\\-\\s][0-9]{2,}$", options: .regularExpression) {
+    tail = String(tail[tail.startIndex..<match.lowerBound])
+  }
+  let words = tail.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == " " }).map(String.init)
+  guard !words.isEmpty else { return nil }
+  let joined = words.joined(separator: " ").lowercased()
+  return joined.prefix(1).uppercased() + joined.dropFirst()
+}
+
+/// The row title, in the order a reader actually wants it: the human-chosen
+/// spawn `label` (Agent tool `name`), else what the agent was asked to do, else
+/// its humanized type. Type last so the title never just repeats the type chip
+/// the roster row already prints next to it — desktop titles by description for
+/// the same reason.
 func workSubagentMeaningfulName(_ snapshot: WorkSubagentSnapshot) -> String {
   if let label = snapshot.label?.trimmingCharacters(in: .whitespacesAndNewlines),
      !label.isEmpty {
     return label
   }
-  let genericAgentTypes: Set<String> = ["opencode-subagent", "subagent"]
-  let agentType = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if !agentType.isEmpty, !genericAgentTypes.contains(agentType.lowercased()) {
-    return agentType
-  }
   let description = snapshot.description.trimmingCharacters(in: .whitespacesAndNewlines)
   if !description.isEmpty, description.lowercased() != "subagent" {
     return description
+  }
+  if let humanized = workHumanizedAgentType(snapshot.agentType) {
+    return humanized
   }
   if let agentId = snapshot.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
      !agentId.isEmpty {

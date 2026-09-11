@@ -83,7 +83,12 @@ import {
 import {
   parseUsageLimitResume,
   usageLimitResumeAttemptsLabel,
+  usageLimitResumeProviderLabel,
 } from "../../desktop/src/shared/usageLimitResumePresentation";
+import {
+  displayPercent as usageWindowDisplayPercent,
+  windowLabel as usageWindowDisplayLabel,
+} from "../../desktop/src/shared/usageWindowPresentation";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import {
   isAgentChatStopMode,
@@ -400,6 +405,7 @@ type FormatterId =
   | "sync-web"
   | "sync-pin"
   | "sync-devices"
+  | "usage-snapshot"
   | "update-status";
 
 type ChatWaitTarget =
@@ -21503,6 +21509,196 @@ function relativeTime(value: string): string {
   });
 }
 
+/** Provider display name, shared with the GUI so `codex` cannot read two ways. */
+function usageProviderTextLabel(provider: unknown): string {
+  const id = asString(provider);
+  if (!id) return "unknown";
+  return usageLimitResumeProviderLabel(id);
+}
+
+type UsageAccountTextLine = {
+  provider: string;
+  id: string | null;
+  email: string | null;
+  plan: string | null;
+  url: string | null;
+  machines: string;
+};
+
+/**
+ * `ade usage snapshot --text` (and the two refresh verbs, which return the same
+ * snapshot) — the quota half of the desktop Limits band.
+ *
+ * Prints headroom per window the way the cards read it, plus the account the
+ * numbers belong to and the provider-hosted limits page, because those are the
+ * two things a terminal reader otherwise has to go to the GUI for. Accounts
+ * come from the snapshot's pooled `accounts`; a host that predates account
+ * attribution sends none, so `providerStatus.accountEmail/accountPlan/
+ * accountUrl` is the fallback rather than a second source of truth.
+ */
+export function formatUsageSnapshot(value: unknown): string {
+  const snapshot = isRecord(value) ? value : {};
+  const nowMs = Date.now();
+  const windows = Array.isArray(snapshot.windows)
+    ? snapshot.windows.filter(isRecord)
+    : [];
+  const accounts = Array.isArray(snapshot.accounts)
+    ? snapshot.accounts.filter(isRecord)
+    : [];
+  const providerStatus = isRecord(snapshot.providerStatus)
+    ? snapshot.providerStatus
+    : {};
+  const errors = Array.isArray(snapshot.errors)
+    ? snapshot.errors
+        .map((entry) => asString(entry))
+        .filter((entry): entry is string => Boolean(entry))
+    : [];
+
+  const accountLines: UsageAccountTextLine[] = accounts.map((account) => {
+    const machines = Array.isArray(account.machines)
+      ? account.machines.filter(isRecord)
+      : [];
+    return {
+      provider: asString(account.provider) ?? "",
+      id: asString(account.id),
+      email: asString(account.email),
+      plan: asString(account.plan),
+      url: asString(account.url),
+      machines: machines
+        .map((machine) => {
+          const label = asString(machine.label) ?? asString(machine.machineKey);
+          if (!label) return "";
+          const checkedAt = asString(machine.checkedAt);
+          return checkedAt ? `${label} (${relativeTime(checkedAt)})` : label;
+        })
+        .filter(Boolean)
+        .join(", "),
+    };
+  });
+  for (const [provider, status] of Object.entries(providerStatus)) {
+    if (!isRecord(status)) continue;
+    const email = asString(status.accountEmail);
+    const plan = asString(status.accountPlan);
+    const url = asString(status.accountUrl);
+    const existing = accountLines.find((line) => line.provider === provider);
+    if (existing) {
+      // Fill, never overwrite: the pooled account is the richer record, and a
+      // status field only fills a gap it left (commonly the limits URL).
+      existing.email ??= email;
+      existing.plan ??= plan;
+      existing.url ??= url;
+      continue;
+    }
+    if (!email && !plan && !url) continue;
+    accountLines.push({ provider, id: null, email, plan, url, machines: "" });
+  }
+
+  const accountLabelById = new Map<string, string>();
+  for (const line of accountLines) {
+    if (line.id) accountLabelById.set(line.id, line.email ?? line.id);
+  }
+  // One account per provider is the normal case and naming it on every row is
+  // noise; more than one and the row has to say which. Same rule the TUI's
+  // `usageWindowAccountLabel` and the desktop's `buildLimitCards` apply.
+  const windowRows = windows.map((window) => {
+    const provider = asString(window.provider) ?? "";
+    // The snapshot arrives as loose JSON over the socket; name the fields the
+    // shared presentation needs and let it do the phrasing, so a "5-hour" card
+    // cannot read as `five_hour` here and "5-hour" in the app.
+    const durationMs = window.windowDurationMs;
+    const percentUsed = window.percentUsed;
+    const used = usageWindowDisplayPercent(
+      {
+        resetsAt: asString(window.resetsAt) ?? "",
+        percentUsed:
+          typeof percentUsed === "number" && Number.isFinite(percentUsed) ? percentUsed : 0,
+      },
+      nowMs,
+    );
+    const windowName = usageWindowDisplayLabel({
+      windowType: asString(window.windowType) ?? "",
+      windowDurationMs:
+        typeof durationMs === "number" && Number.isFinite(durationMs) ? durationMs : null,
+    });
+    const resetsAt = asString(window.resetsAt);
+    const accountId = asString(window.accountId);
+    const multipleAccounts =
+      accountLines.filter((line) => line.provider === provider).length > 1;
+    return [
+      usageProviderTextLabel(provider),
+      windowName || "window",
+      `${(100 - used).toFixed(1)}%`,
+      `${used.toFixed(1)}%`,
+      resetsAt ? relativeTime(resetsAt) : "",
+      multipleAccounts && accountId
+        ? accountLabelById.get(accountId) ?? accountId
+        : "",
+    ];
+  });
+
+  const unhealthy = Object.entries(providerStatus)
+    .filter(([, status]) => isRecord(status) && status.state !== "ok")
+    .map(([provider, status]) => {
+      const record = isRecord(status) ? status : {};
+      return [
+        usageProviderTextLabel(provider),
+        asString(record.state) ?? "unknown",
+        asString(record.source) ?? "",
+        asString(record.updatedAt) ?? asString(record.lastSuccessAt) ?? "",
+        asString(record.message) ?? asString(record.errorKind) ?? "",
+      ];
+    });
+
+  const sections = [
+    renderKeyValues("ADE usage quota", [
+      ["updated", snapshot.lastPolledAt],
+      ["costs updated", snapshot.costsLastPolledAt],
+      [
+        "spend control",
+        snapshot.spendControlReached === true ? "reached" : null,
+      ],
+    ]),
+    "",
+    renderTable(
+      ["provider", "window", "left", "used", "resets", "account"],
+      windowRows,
+      "No quota windows were reported.",
+    ),
+  ];
+  if (accountLines.length) {
+    sections.push(
+      "",
+      "Accounts",
+      renderTable(
+        ["provider", "account", "plan", "machines", "limits"],
+        accountLines.map((line) => [
+          usageProviderTextLabel(line.provider),
+          line.email ?? "",
+          line.plan ?? "",
+          line.machines,
+          line.url ?? "",
+        ]),
+        "No provider accounts were reported.",
+      ),
+    );
+  }
+  if (unhealthy.length) {
+    sections.push(
+      "",
+      "Provider status",
+      renderTable(
+        ["provider", "state", "source", "updated", "detail"],
+        unhealthy,
+        "",
+      ),
+    );
+  }
+  if (errors.length) {
+    sections.push("", "Errors", ...errors.map((entry) => `- ${entry}`));
+  }
+  return sections.join("\n");
+}
+
 function formatSyncStatus(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const routeHealth = isRecord(snapshot.routeHealth) ? snapshot.routeHealth : {};
@@ -24424,6 +24620,8 @@ function formatTextOutput(
       return formatStorageCompression(value);
     case "storage-maintenance":
       return formatStorageMaintenance(value);
+    case "usage-snapshot":
+      return formatUsageSnapshot(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":
@@ -24554,6 +24752,14 @@ function inferFormatter(
   if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
   if (label === "update status") return "update-status";
+  // All three verbs return the same `UsageSnapshot`; `usage stats` does not
+  // (it is the spend half) and keeps the generic renderer.
+  if (
+    label === "usage snapshot"
+    || label === "usage refresh"
+    || label === "usage history refresh"
+  )
+    return "usage-snapshot";
   if (label.endsWith("actions")) return "actions-list";
   const firstStep = plan.steps[0];
   const params = typeof firstStep?.params === "object" && firstStep.params != null
