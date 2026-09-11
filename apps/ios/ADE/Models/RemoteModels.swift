@@ -6197,8 +6197,10 @@ extension MobileAdeUsageStats {
 struct MobileUsageQuotaWindow: Codable, Equatable, Identifiable {
   var id: String { "\(provider):\(windowType):\(accountId ?? ""):\(resetsAt):\(percentUsed)" }
   var clampedPercentUsed: Double { max(0, min(100, percentUsed)) }
-  /// Headroom, which is how the limit cards read a window.
-  var percentLeft: Double { max(0, 100 - clampedPercentUsed) }
+  // Headroom deliberately does NOT live here: it depends on the current clock
+  // (a window past `resetsAt` has refilled), and a decoded model has no clock.
+  // Use `adeUsageDisplayPercentLeft(_:now:)` in ADEUsageDesign, which mirrors
+  // the desktop's `displayPercent`.
   var provider: String
   var windowType: String
   var percentUsed: Double

@@ -146,6 +146,29 @@ describe("provider account email files", () => {
     expect(afterSignOut.identities.codex).toBeUndefined();
   });
 
+  it("treats a directory on the config path as unreadable, not as a sign-out", async () => {
+    const codexHome = path.join(home, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    const authPath = path.join(codexHome, "auth.json");
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({ tokens: { id_token: jwt({ email: "codex-user@example.com" }) } }),
+    );
+
+    clearProviderAccountCache();
+    const read = await resolveProviderAccounts(1_000);
+    expect(read.identities.codex).toEqual({ email: "codex-user@example.com" });
+
+    // A directory where the file belongs reads as EISDIR. That is "something is
+    // there we cannot read", not "nobody is signed in", so the line must carry.
+    fs.rmSync(authPath);
+    fs.mkdirSync(authPath, { recursive: true });
+    const blocked = await resolveProviderAccounts(1_000 + 6 * 60_000);
+    expect(blocked.unreadable.codex).toBe(true);
+    expect(blocked.identities.codex).toEqual({ email: "codex-user@example.com" });
+  });
+
   it("reads the Claude email from .claude.json oauthAccount", async () => {
     fs.writeFileSync(
       path.join(home, ".claude.json"),

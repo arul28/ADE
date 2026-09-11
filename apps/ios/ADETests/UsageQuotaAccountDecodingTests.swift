@@ -151,9 +151,72 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
       windowDurationMs: nil,
       accountId: nil
     )
-    let cards = adeUsageLimitCards(provider: "claude", windows: [window], accounts: [account])
+    // Pinned: headroom is read against the clock, so an implicit `Date()` would
+    // turn this into a test that changes its answer once the window resets.
+    let now = adeUsageParseISODate("2026-09-10T12:00:00.000Z") ?? Date()
+    let cards = adeUsageLimitCards(
+      provider: "claude",
+      windows: [window],
+      accounts: [account],
+      now: now
+    )
     XCTAssertEqual(cards.first?.segments.first?.account?.email, "solo@example.com")
     XCTAssertEqual(Int((cards.first?.percentLeft ?? 0).rounded()), 60)
+  }
+
+  /// A cached snapshot can outlive the window it describes. Desktop and the CLI
+  /// zero such a window (`displayPercent`); the phone has to agree, or the same
+  /// account reads "3% left" on iOS and "100% left" on the Mac.
+  func testWindowPastItsResetReadsAsRefilled() throws {
+    let now = try XCTUnwrap(adeUsageParseISODate("2026-09-10T12:00:00.000Z"))
+    let expired = MobileUsageQuotaWindow(
+      provider: "codex",
+      windowType: "five_hour",
+      percentUsed: 97,
+      // Ten minutes in the past: the provider has already refilled this one.
+      resetsAt: "2026-09-10T11:50:00.000Z",
+      resetsInMs: 600_000,
+      windowDurationMs: 18_000_000,
+      accountId: nil
+    )
+
+    XCTAssertEqual(adeUsageDisplayPercentUsed(expired, now: now), 0)
+    XCTAssertEqual(adeUsageDisplayPercentLeft(expired, now: now), 100)
+
+    let cards = adeUsageLimitCards(provider: "codex", windows: [expired], accounts: [], now: now)
+    XCTAssertEqual(Int((cards.first?.percentLeft ?? 0).rounded()), 100)
+    XCTAssertEqual(Int((cards.first?.percentUsed ?? 0).rounded()), 0)
+    XCTAssertEqual(cards.first?.segments.map { Int($0.percentLeft.rounded()) }, [100])
+
+    let pace = try XCTUnwrap(adeUsageWindowPace(expired, now: now))
+    XCTAssertEqual(pace.paceDelta, -100, accuracy: 0.0001)
+    XCTAssertNil(pace.dryInMs)
+
+    // Still inside the window, the reported fill is untouched.
+    let live = MobileUsageQuotaWindow(
+      provider: "codex",
+      windowType: "five_hour",
+      percentUsed: 97,
+      resetsAt: "2026-09-10T12:10:00.000Z",
+      resetsInMs: 600_000,
+      windowDurationMs: 18_000_000,
+      accountId: nil
+    )
+    XCTAssertEqual(adeUsageDisplayPercentUsed(live, now: now), 97)
+    XCTAssertEqual(adeUsageDisplayPercentLeft(live, now: now), 3)
+
+    // An unparsable `resetsAt` says nothing about the current clock, so the
+    // last known fill stands rather than inventing a refill.
+    let unparsable = MobileUsageQuotaWindow(
+      provider: "codex",
+      windowType: "five_hour",
+      percentUsed: 97,
+      resetsAt: "not-a-date",
+      resetsInMs: 0,
+      windowDurationMs: 18_000_000,
+      accountId: nil
+    )
+    XCTAssertEqual(adeUsageDisplayPercentUsed(unparsable, now: now), 97)
   }
 
   /// Pace is a rate read against the CURRENT clock, so it takes the same `now`

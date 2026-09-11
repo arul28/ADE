@@ -154,9 +154,12 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
     raw = await fs.promises.readFile(filePath, "utf8");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    // ENOENT/ENOTDIR/EISDIR are all "no config here" on every platform;
-    // anything else (EACCES, EBUSY, EIO) is a read we cannot trust.
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return null;
+    // ENOENT/ENOTDIR are "no config here" on every platform. EISDIR is NOT:
+    // a directory sitting on the config path means something exists there we
+    // cannot read, and reporting it as absent would clear a correct account
+    // line (it reads as a sign-out). Anything else (EACCES, EBUSY, EIO) is
+    // likewise a read we cannot trust.
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
     throw new ProviderAccountUnreadableError(filePath);
   }
   // `null` fallback, not `{}`: an empty object is a legitimate config, so a

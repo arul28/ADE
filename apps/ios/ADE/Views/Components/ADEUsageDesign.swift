@@ -209,6 +209,32 @@ func adeUsageResetsInMs(_ window: MobileUsageQuotaWindow, now: Date = Date()) ->
   return max(0, resetsAt.timeIntervalSince(now) * 1000)
 }
 
+/// Consumption as a window should READ right now, mirroring the desktop/CLI
+/// `displayPercent` in `shared/usageWindowPresentation`.
+///
+/// A snapshot outlives the window it describes: the phone can hold a cached
+/// reading well past `resetsAt`, and printing the frozen fill claims the quota
+/// is still spent when the provider has already refilled it. Once the parsed
+/// `resetsAt` is behind `now`, usage reads 0 and headroom 100.
+///
+/// Only a PARSED `resetsAt` can retire a window. An unparsable one leaves the
+/// last known fill in place — `adeUsageResetsInMs` falls back to the frozen
+/// `resetsInMs` there, which says nothing about the current clock, so zeroing
+/// on it would invent headroom rather than report it.
+/// Divergence from desktop `displayPercent`: an empty or unparsable `resetsAt`
+/// reads as refilled on desktop (its `computeResetsInMs` returns 0) but keeps
+/// the last known fill here, because the polled `resetsInMs` fallback is frozen
+/// at poll time and says nothing about the current clock.
+func adeUsageDisplayPercentUsed(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  if let resetsAt = adeUsageParseISODate(window.resetsAt), resetsAt <= now { return 0 }
+  return window.clampedPercentUsed
+}
+
+/// Headroom, as the cards and pace read it. See `adeUsageDisplayPercentUsed`.
+func adeUsageDisplayPercentLeft(_ window: MobileUsageQuotaWindow, now: Date = Date()) -> Double {
+  max(0, 100 - adeUsageDisplayPercentUsed(window, now: now))
+}
+
 func adeUsageRelativeTime(_ iso: String?) -> String {
   guard let date = adeUsageParseISODate(iso) else { return "not yet" }
   let seconds = max(0, Int(Date().timeIntervalSince(date)))
@@ -288,7 +314,7 @@ func adeUsageWindowPace(
   let resetsInMs = max(0, min(adeUsageResetsInMs(window, now: now), duration))
   let elapsedMs = max(0, duration - resetsInMs)
   let elapsedFraction = min(1, elapsedMs / duration)
-  let percent = window.clampedPercentUsed
+  let percent = adeUsageDisplayPercentUsed(window, now: now)
   let expected = elapsedFraction * 100
   let remaining = max(0, 100 - percent)
 
@@ -782,7 +808,7 @@ func adeUsageLimitCards(
         id: "\(provider):\(label):\(account?.id ?? String(fallbackIndex))",
         account: account,
         window: window,
-        percentLeft: window.percentLeft,
+        percentLeft: adeUsageDisplayPercentLeft(window, now: now),
         restoresPercentOfPool: 0,
         resetsInMs: adeUsageResetsInMs(window, now: now)
       )
