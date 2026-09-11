@@ -1135,8 +1135,10 @@ describe("computerUseArtifactBrokerService", () => {
     });
   });
 
-  it("imports proof staged in the conventional /tmp directory", () => {
-    if (process.platform === "win32") return;
+  // POSIX-only: the assertion is about the conventional `/tmp` staging root,
+  // which Windows does not have. `skipIf` rather than a bare `return` so the
+  // skip is reported instead of passing green.
+  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",

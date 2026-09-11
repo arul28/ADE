@@ -664,6 +664,13 @@ describe("createSyncService host wiring", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-host-args-"));
     cleanupRoots.push(projectRoot);
     const db: AdeDb = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    // The host is only constructed when the CRDT extension is loaded, and
+    // cr-sqlite ships for macOS and Linux only — on Windows the real answer is
+    // `false`, so the service would correctly build no host and this test would
+    // assert against `null` for a reason that has nothing to do with wiring.
+    // The contract under test is which arguments reach the host, so declare the
+    // extension present the way the sibling tests above do.
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => true;
     const workToolsStateService = { getLaneState: vi.fn(async () => null) };
     const service = createSyncService({
       db,
