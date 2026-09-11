@@ -192,6 +192,21 @@ describe("provider account email files", () => {
     await expect(readClaudeAccount(home)).resolves.toEqual({ email: "scoped@example.com" });
   });
 
+  // A scoped install with no account block is signed out *for that install*.
+  // Falling through to the home file stamped a different account's email on the
+  // scoped usage rows.
+  it("never falls back to the home file when CLAUDE_CONFIG_DIR is set", async () => {
+    const configDir = path.join(home, "custom-config");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, ".claude.json"), JSON.stringify({}));
+    fs.writeFileSync(
+      path.join(home, ".claude.json"),
+      JSON.stringify({ oauthAccount: { emailAddress: "home@example.com", subscriptionType: "max" } }),
+    );
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    await expect(readClaudeAccount(home)).resolves.toEqual({});
+  });
+
   it("falls back to the credential file tier when the config has no account block", async () => {
     fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
     fs.writeFileSync(
@@ -252,6 +267,10 @@ describe("plan names", () => {
 
   it("reads the Claude plan from oauthAccount", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-plan-"));
+    // The suite-wide setup points CLAUDE_CONFIG_DIR at a sandbox, and a set
+    // override is now exclusive — this case is about the home-file path.
+    const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
     try {
       fs.writeFileSync(
         path.join(home, ".claude.json"),
@@ -265,6 +284,8 @@ describe("plan names", () => {
       });
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+      if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
     }
   });
 });

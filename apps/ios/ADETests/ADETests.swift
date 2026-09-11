@@ -15741,6 +15741,41 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(pruned.last?.sequence, 19)
   }
 
+  /// A resolution receipt is the *outcome* stamped on an approval / question
+  /// card, and nothing regenerates it: the text backfill carries only user and
+  /// assistant prose, so a pruned receipt leaves an answered gate rendering as
+  /// though it were still waiting.
+  func testPrunedIdleChatEventHistoryKeepsPendingInputResolutions() throws {
+    var lines: [String] = []
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.000Z","sequence":0,"event":{"type":"approval_request","itemId":"approval-1","kind":"tool_call","requestKind":"tool_call","description":"Run tests","turnId":"turn-1"}}
+    """)
+    lines.append("""
+    {"sessionId":"chat-1","timestamp":"2026-09-10T00:00:00.100Z","sequence":1,"event":{"type":"pending_input_resolved","itemId":"approval-1","resolution":"accepted","turnId":"turn-1"}}
+    """)
+    for index in 2..<80 {
+      lines.append("""
+      {"sessionId":"chat-1","timestamp":"2026-09-10T00:0\(index % 6):\(String(format: "%02d", index % 60)).000Z","sequence":\(index),"event":{"type":"text","text":"heavy body \(index)","turnId":"turn-1"}}
+      """)
+    }
+
+    let decoder = JSONDecoder()
+    let events = try lines.map { line in
+      try decoder.decode(AgentChatEventEnvelope.self, from: Data(line.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
+    let pruned = workPrunedIdleChatEventHistory(events, keepingHeavyTail: 8)
+
+    XCTAssertTrue(pruned.contains { envelope in
+      if case .pendingInputResolved(let itemId, let resolution, _) = envelope.event {
+        return itemId == "approval-1" && resolution == "accepted"
+      }
+      return false
+    })
+    // The heavy budget is untouched by the exemption.
+    XCTAssertEqual(pruned.filter { !workChatEventIsStructuralEnvelope($0.event) }.count, 8)
+  }
+
   func testOlderHistoryHeadSlotAppearsWhenTheLiveEventWindowWasTruncated() {
     // No cursors and nothing pruned: the thread really is whole.
     XCTAssertFalse(workChatHasOlderTranscriptHistory(

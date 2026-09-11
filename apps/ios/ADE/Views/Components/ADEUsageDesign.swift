@@ -744,7 +744,7 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
   }
   let freshness: (MobileUsageAccountMachine) -> Double = { machine in
     guard let checkedAt = machine.checkedAt,
-          let date = adeUsagePlainISOParser.date(from: checkedAt) else { return 0 }
+          let date = adeUsageParseISODate(checkedAt) else { return 0 }
     return date.timeIntervalSince1970
   }
   return order.compactMap { key in

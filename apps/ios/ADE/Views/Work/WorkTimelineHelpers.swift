@@ -4439,6 +4439,13 @@ func workChatEventIsStructuralEnvelope(_ event: AgentChatEvent) -> Bool {
     return true
   case .userMessageResolution:
     return true
+  // The resolution receipt for an approval / question / plan card. It is not a
+  // row of its own once folded inline — it is the card's *outcome*. Dropping it
+  // while the card itself is restored (an older history page re-fetches the
+  // request, but nothing re-fetches the pruned band after it) leaves an
+  // answered gate rendering as if it were still waiting.
+  case .pendingInputResolved:
+    return true
   case .contextCompact, .codexContextCompaction:
     return true
   case .claudeGoalUpdated, .claudeGoalCleared:

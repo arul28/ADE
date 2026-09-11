@@ -193,16 +193,17 @@ export async function readCodexAccount(home: string = os.homedir()): Promise<Pro
  * Claude's signed-in account, from the CLI's own config.
  *
  * `.claude.json` normally sits beside the home directory; a `CLAUDE_CONFIG_DIR`
- * install keeps it inside that directory instead, so both are checked in the
- * order the CLI itself resolves them.
+ * install keeps it inside that directory instead, and then it is the *only*
+ * file consulted — the home copy describes a different install's account.
  */
 export async function readClaudeAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
   const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
-  const candidates = [
-    ...(configDir ? [path.join(configDir, ".claude.json")] : []),
-    path.join(home, ".claude.json"),
-    path.join(home, ".claude", ".claude.json"),
-  ];
+  // A scoped install is a *different* account, not a fallback chain: if its
+  // `.claude.json` carries no account block, the home copy's email belongs to
+  // someone else's session and must never be stamped on this one's usage.
+  const candidates = configDir
+    ? [path.join(configDir, ".claude.json")]
+    : [path.join(home, ".claude.json"), path.join(home, ".claude", ".claude.json")];
   for (const candidate of candidates) {
     const parsed = await readJsonFile(candidate);
     if (!parsed) continue;

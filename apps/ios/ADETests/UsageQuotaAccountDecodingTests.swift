@@ -261,6 +261,7 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
           nextRetryAt: nil,
           message: nil,
           accountEmail: "dev@example.com",
+          accountPlan: "Claude Max",
           accountUrl: "https://claude.ai/new#settings/usage"
         ),
       ],
@@ -273,5 +274,30 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
     let restored = try JSONDecoder().decode(MobileUsageQuotaSnapshot.self, from: data)
     XCTAssertEqual(restored, original)
     XCTAssertEqual(restored.providerStatus?["claude"]?.accountEmail, "dev@example.com")
+    XCTAssertEqual(restored.providerStatus?["claude"]?.accountPlan, "Claude Max")
+  }
+
+  /// Host timestamps arrive in both ISO shapes. Parsing `checkedAt` with the
+  /// plain formatter alone returned `nil` for fractional seconds, collapsing
+  /// freshness to 0 so the pooled machine list stopped sorting by recency.
+  func testPooledMachinesSortByRecencyAcrossBothISOShapes() throws {
+    let accounts = [
+      MobileUsageAccount(
+        id: "claude:dev@example.com",
+        provider: "claude",
+        email: "dev@example.com",
+        plan: "Claude Max",
+        machines: [
+          MobileUsageAccountMachine(machineKey: "a", label: "Mac mini", checkedAt: "2026-09-10T10:00:00Z"),
+          MobileUsageAccountMachine(machineKey: "b", label: "MacBook", checkedAt: "2026-09-10T12:00:00.250Z"),
+          MobileUsageAccountMachine(machineKey: "c", label: "Studio", checkedAt: nil),
+        ],
+        url: nil
+      ),
+    ]
+
+    let pooled = adeUsagePoolAccounts(accounts)
+    XCTAssertEqual(pooled.count, 1)
+    XCTAssertEqual(pooled.first?.machines.map(\.label), ["MacBook", "Mac mini", "Studio"])
   }
 }
