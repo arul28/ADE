@@ -22551,7 +22551,7 @@ final class ADETests: XCTestCase {
       [chatSession, terminalSession],
       chatSummaries: ["chat-1": chatSummary],
       archivedSessionIds: [],
-      selectedStatus: .running,
+      selectedStatus: .working,
       selectedLaneId: "lane-2",
       searchText: "deploy terminal"
     )
@@ -22576,7 +22576,7 @@ final class ADETests: XCTestCase {
       [terminalSession],
       chatSummaries: [:],
       archivedSessionIds: [],
-      selectedStatus: .running,
+      selectedStatus: .working,
       selectedLaneId: "all",
       searchText: "mobile_ok",
       outputSearchBySessionId: outputSearch
