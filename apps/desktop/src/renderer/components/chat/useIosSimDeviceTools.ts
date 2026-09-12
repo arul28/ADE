@@ -455,13 +455,24 @@ export function useIosSimDeviceTools({
     // log follows is restored on a refusal for the same reason.
     const followed = logDeviceRef.current;
     logDeviceRef.current = null;
+    // Reopening the column starts a new log, and the stop from the close before
+    // it can still be in flight. Its completion must not turn that new log off,
+    // and its failure must not put the old device back over the new one.
+    let superseded = false;
     void window.ade.iosSimulator
       .stopEventLog(logOwnerArgsRef.current, runtimePinRef.current)
-      .then(() => setLogRunning(false))
+      .then(() => {
+        if (superseded) return;
+        setLogRunning(false);
+      })
       .catch((error: unknown) => {
+        if (superseded) return;
         logDeviceRef.current = followed;
         onError(error instanceof Error ? error.message : String(error));
       });
+    return () => {
+      superseded = true;
+    };
   }, [logRunning, onError, requested, runtimePinRef]);
 
   /**

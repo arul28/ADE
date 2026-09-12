@@ -131,6 +131,8 @@ function createHarness(options: {
   elements?: IosScreenElement[];
   now?: () => Date;
   appSessionOwner?: string | null;
+  /** The device the app session runs on, when a test sets an app owner. */
+  appSessionDeviceUdid?: string | null;
 } = {}): Harness {
   const runs: RecordedRun[] = [];
   let logLineHandler: ((line: string) => void) | null = null;
@@ -158,6 +160,7 @@ function createHarness(options: {
 
   const deps: IosDeviceHubDeps = {
     getAppSessionOwner: () => appSessionOwner,
+    getAppSessionDeviceUdid: () => options.appSessionDeviceUdid ?? null,
     run: async (file, args, runOptions) => {
       runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
       // A booted device reports itself booted on the next read. Without that
@@ -480,6 +483,39 @@ describe("iosDeviceHub device sessions", () => {
       chatSessionId: "chat-other",
       force: true,
     })).resolves.toMatchObject({ running: true });
+  });
+
+  it("leaves a simulator running when another chat runs an app on it", async () => {
+    // The two sessions can name the same simulator and belong to different
+    // chats. A chat that goes away releases its own claim; shutting the device
+    // down would hand the app-session chat a dead device and a session that
+    // still says it is running.
+    const harness = createHarness({
+      appSessionOwner: "chat-app",
+      appSessionDeviceUdid: UDID,
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-device" });
+
+    const released = await harness.hub.releaseDeviceIfOwnedBy("chat-device");
+
+    expect(released.released).toBe(true);
+    expect(released.shutdown).toBe(false);
+    expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
+  });
+
+  it("still shuts down its own simulator when the app session is elsewhere", async () => {
+    // The guard above must not keep every simulator alive. An app session on
+    // ANOTHER device is no reason to leave this one booted.
+    const harness = createHarness({
+      appSessionOwner: "chat-app",
+      appSessionDeviceUdid: OTHER_UDID,
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-device" });
+
+    const released = await harness.hub.releaseDeviceIfOwnedBy("chat-device");
+
+    expect(released.shutdown).toBe(true);
+    expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
   });
 
   it("leaves another device's rows out of a proof bundle", async () => {
@@ -906,6 +942,7 @@ describe("captureProofBundle containment", () => {
     typeText: async () => {},
     resolveBuildRoot: async () => buildRoot,
     getAppSessionOwner: () => null,
+    getAppSessionDeviceUdid: () => null,
     emit: () => {},
     logger: { info: () => {}, debug: () => {} },
   });

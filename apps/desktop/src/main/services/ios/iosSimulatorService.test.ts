@@ -8,6 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   __testSetIosSimulatorCompanionRegistryPath,
   __testSetIosSimulatorProcessHooks,
+  clampStreamFps,
   createIosSimulatorService,
   IDB_COMPANION_REGISTRY_PATH,
   IosSimulatorOwnedBySessionError,
@@ -125,6 +126,22 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
     expect(resolveIosSimulatorStreamBackend("auto")).toBe("simulator-window-capture");
     expect(resolveIosSimulatorStreamBackend("simulator-window-capture")).toBe("simulator-window-capture");
+  });
+
+  it("answers a usable frame rate for every input", () => {
+    expect(clampStreamFps(undefined)).toBe(60);
+    expect(clampStreamFps(null)).toBe(60);
+    expect(clampStreamFps(30)).toBe(30);
+    expect(clampStreamFps(30.4)).toBe(30);
+    // Out of range clamps to the ends rather than reaching `idb`.
+    expect(clampStreamFps(0)).toBe(1);
+    expect(clampStreamFps(-5)).toBe(1);
+    expect(clampStreamFps(1000)).toBe(60);
+    // The reason this exists: every clamp keeps NaN, so `--fps NaN` used to
+    // reach the encoder and the stream only failed when a viewer connected.
+    expect(clampStreamFps(Number.NaN)).toBe(60);
+    expect(clampStreamFps(Number.POSITIVE_INFINITY)).toBe(60);
+    expect(clampStreamFps(Number.NEGATIVE_INFINITY)).toBe(60);
   });
 });
 

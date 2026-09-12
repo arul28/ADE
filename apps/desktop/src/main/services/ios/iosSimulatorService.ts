@@ -510,6 +510,19 @@ export function clampStreamRatio(value: number | null | undefined): number | nul
   return Math.round(ratio * 100) / 100;
 }
 
+/**
+ * The frame rate the stream asks the encoder for.
+ *
+ * `Math.round(NaN)` is NaN and every clamp around it keeps it, so a caller that
+ * passed NaN or infinity used to reach `idb` as `--fps NaN`. The stream then
+ * reported itself running and only failed when a viewer connected.
+ */
+export function clampStreamFps(value: number | null | undefined): number {
+  const fps = Number(value ?? 60);
+  if (!Number.isFinite(fps)) return 60;
+  return Math.max(1, Math.min(60, Math.round(fps)));
+}
+
 export function resolveIosSimulatorStreamBackend(
   requestedBackend: "auto" | IosSimulatorStreamBackend,
 ): IosSimulatorStreamBackend {
@@ -2182,6 +2195,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         typeText: (textArgs) => typeText(textArgs),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope),
         getAppSessionOwner: () => activeSession?.chatSessionId ?? null,
+        getAppSessionDeviceUdid: () => activeSession?.deviceUdid ?? null,
         emit,
         logger: args.logger,
       });
@@ -4745,7 +4759,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       throw new Error("stream backend must be `auto`, `simulator-window-capture` or `idb-h264`.");
     }
     const requestedBackend = resolveIosSimulatorStreamBackend(rawBackend);
-    const requestedFps = Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? 60))));
+    const requestedFps = clampStreamFps(streamArgs.fps);
     streamRequestContext = {
       requestedBackend,
       fallbackReason: null,

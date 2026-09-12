@@ -2671,6 +2671,45 @@ describe("ChatIosSimulatorPanel", () => {
     expect(within(reopened).getByRole("button", { name: "Stop" })).toBeTruthy();
   });
 
+  it("does not let a slow stop turn off the log the reopened column started", async () => {
+    // Closing the column stops the log, reopening starts a new one. The stop
+    // from the close can still be in flight, and its completion used to clear
+    // the running state of the log that had just started — leaving the drawer
+    // offering "Start" while `log stream` ran with nothing to stop it.
+    const { api } = installIosSimulatorApi();
+    let releaseStop: (() => void) | null = null;
+    api.stopEventLog.mockImplementation(() => new Promise((resolve) => {
+      releaseStop = () => resolve({ ...defaultEventLogPage, running: false, rows: [] });
+    }));
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsToggle = await screen.findByTestId("ios-pane-tools");
+    fireEvent.click(toolsToggle);
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+
+    fireEvent.click(toolsToggle);
+    fireEvent.click(toolsToggle);
+    const reopened = await screen.findByTestId("ios-tools-column");
+    await within(reopened).findByRole("button", { name: "Stop" });
+
+    // The stop from the close lands now, after the reopen.
+    await act(async () => {
+      releaseStop?.();
+      await Promise.resolve();
+    });
+
+    expect(within(reopened).getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
   it("passes the lane-scoped ownership bypass to the event log", async () => {
     // The lane surface drives a simulator it does not own on purpose, and
     // `shutdown` already takes the same bypass. Without it the event log was

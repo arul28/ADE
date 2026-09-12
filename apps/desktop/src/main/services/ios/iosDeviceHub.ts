@@ -103,6 +103,14 @@ export type IosDeviceHubDeps = {
    * at all.
    */
   getAppSessionOwner: () => string | null;
+  /**
+   * The device the APP session runs on, when there is one.
+   *
+   * The two sessions can name the same simulator and belong to different
+   * chats, so releasing the device half has to know whether shutting the
+   * simulator down would take another chat's app session with it.
+   */
+  getAppSessionDeviceUdid: () => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
@@ -380,7 +388,19 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           return { released: false, shutdown: false, previousDeviceSession: null };
         }
         deviceSession = null;
-        const shutdown = await releaseTrackedDevice(previous, previous.bootedByAde);
+        // A chat that goes away releases its own claim, not another chat's
+        // work. When a different chat runs an app on this simulator, shutting
+        // it down would leave that chat with a dead device and a session that
+        // still says it is running, so the claim drops and the device stays up.
+        const appOwner = deps.getAppSessionOwner();
+        const appDevice = deps.getAppSessionDeviceUdid();
+        const appSessionOnThisDevice = appOwner !== null
+          && appOwner !== chatSessionId
+          && appDevice === previous.deviceUdid;
+        const shutdown = await releaseTrackedDevice(
+          previous,
+          previous.bootedByAde && !appSessionOnThisDevice,
+        );
         return { released: true, shutdown, previousDeviceSession: previous };
       });
     },
