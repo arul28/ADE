@@ -16,6 +16,7 @@ import {
   getModelById,
   listModelDescriptorsForProvider,
   resolveChatProviderForDescriptor,
+  resolveModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { AGENT_CHAT_PERMISSION_MODE_VALUES, providerSupportsLiveRedirect } from "../../../shared/types/chat";
@@ -381,11 +382,23 @@ function resolvePreferredChatProvider(raw: Record<string, unknown>): string {
 }
 
 /**
- * A stored preference is kept only when it names a provider that can redirect a
- * live turn. Anything else — an incomplete record, or a model on a queue-only
- * provider that predates the rule — normalizes to null, which is what puts the
- * CTO surface on its picker card instead of starting a thread that would stall
- * on every child report.
+ * A stored preference is kept only when it names something the CTO can actually
+ * be seated on. Anything else — an incomplete record, a model on a queue-only
+ * provider that predates the rule, or a `modelId` that no longer resolves to a
+ * model — normalizes to null, which is what puts the CTO surface on its picker
+ * card instead of starting a thread that would stall on every child report or
+ * die on an id nothing can launch.
+ *
+ * The model check is scoped to `modelId` because that is the field the runtime
+ * launches from (`ensureIdentitySession` reads `prefs.modelId`), and because
+ * `resolveModelDescriptor` is not a catalog lookup: every dynamic provider —
+ * OpenCode, Pi, local, Cursor, Droid, ACP — SYNTHESIZES a descriptor from the
+ * shape of its id, so a model this build has never listed still resolves and is
+ * still kept. Only an id no rule can make sense of clears the pick. A
+ * preference written before `modelId` was stored has nothing to check and keeps
+ * the family fold above as its only gate, exactly as before — its `model` is a
+ * provider-side name, not a registry id, and failing it here would clear picks
+ * that work.
  */
 function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["modelPreferences"] {
   const provider = typeof raw.provider === "string" ? raw.provider.trim() : "";
@@ -393,6 +406,7 @@ function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["m
   if (!provider.length || !model.length) return null;
   if (!providerSupportsLiveRedirect(resolvePreferredChatProvider(raw))) return null;
   const modelId = typeof raw.modelId === "string" ? raw.modelId.trim() : "";
+  if (modelId.length && !resolveModelDescriptor(modelId)) return null;
   return {
     provider,
     model,
@@ -542,6 +556,18 @@ const LIVE_STATE_MAX_APPROVALS = 10;
 const LIVE_STATE_MAX_SCHEDULED = 10;
 const LIVE_STATE_MAX_AUTOMATION_RUNS = 8;
 
+/**
+ * How wide a window the automation-run TOTAL is counted over.
+ *
+ * The sibling sections each count what their source hands back whole — every
+ * lane, every active chat, every open PR — and slice only for display.
+ * `listRuns` has no count API and caps its own window at 500, so "count them
+ * all" is not on offer here. This asks for that hard cap: a project with fewer
+ * runs than this gets a real total, and one with more gets a floor the block
+ * renders as "500+" rather than a precise number it cannot know.
+ */
+const LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW = 500;
+
 export type CtoLiveStateSnapshot = {
   capturedAt: string;
   lanes: Array<{ id: string; name: string; dirty: boolean; ahead: number; behind: number }>;
@@ -570,13 +596,25 @@ export type CtoLiveStateSnapshot = {
   scheduledWorkTotal: number;
   automationRuns: Array<{ name: string; status: string; at: string }>;
   automationRunsTotal: number;
+  /**
+   * True when `automationRunsTotal` is a FLOOR, not a count: the counting
+   * window came back full, so there are at least that many runs and possibly
+   * more. Every other section counts its source whole and has no such doubt.
+   */
+  automationRunsTotalIsFloor: boolean;
   /** Sources that threw while the snapshot was captured, by name. */
   unavailable: string[];
 };
 
-function liveStateOverflowLine(shown: number, total: number, noun: string): string[] {
+function liveStateOverflowLine(
+  shown: number,
+  total: number,
+  noun: string,
+  totalIsFloor = false,
+): string[] {
   if (total <= shown) return [];
-  return [`- …and ${total - shown} more ${noun}.`];
+  const remainder = total - shown;
+  return [`- …and ${totalIsFloor ? "at least " : ""}${remainder} more ${noun}.`];
 }
 
 /**
@@ -635,7 +673,10 @@ export function renderCtoLiveStateBlock(
   }
   lines.push(...liveStateOverflowLine(snapshot.scheduledWork.length, snapshot.scheduledWorkTotal, "schedules"));
 
-  lines.push("", `Recent automation runs (${snapshot.automationRunsTotal})`);
+  const runsTotal = snapshot.automationRunsTotalIsFloor
+    ? `${snapshot.automationRunsTotal}+`
+    : `${snapshot.automationRunsTotal}`;
+  lines.push("", `Recent automation runs (${runsTotal})`);
   if (!snapshot.automationRuns.length) lines.push("- none");
   for (const run of snapshot.automationRuns) {
     lines.push(`- ${clipText(run.name, 60)} — ${run.status} at ${run.at}`);
@@ -644,6 +685,7 @@ export function renderCtoLiveStateBlock(
     snapshot.automationRuns.length,
     snapshot.automationRunsTotal,
     "runs",
+    snapshot.automationRunsTotalIsFloor,
   ));
 
   if (snapshot.unavailable.length) {
@@ -975,6 +1017,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       scheduledWorkTotal: 0,
       automationRuns: [],
       automationRunsTotal: 0,
+      automationRunsTotalIsFloor: false,
       unavailable,
     };
 
@@ -1053,8 +1096,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     if (sources.automationService) {
       try {
         const ruleNames = new Map(sources.automationService.list().map((rule) => [rule.id, rule.name]));
-        const runs = sources.automationService.listRuns({ limit: LIVE_STATE_MAX_AUTOMATION_RUNS });
+        // Fetched over the counting window, not the display cap: a fetch
+        // limited to the eight rows shown can only ever report a total of
+        // eight, so the overflow line never fired and the CTO was told there
+        // are 8 runs however many there are.
+        const runs = sources.automationService.listRuns({
+          limit: LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW,
+        });
         snapshot.automationRunsTotal = runs.length;
+        snapshot.automationRunsTotalIsFloor = runs.length >= LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW;
         snapshot.automationRuns = runs.slice(0, LIVE_STATE_MAX_AUTOMATION_RUNS).map((run) => ({
           name: ruleNames.get(run.automationId) ?? run.automationId,
           status: run.status,

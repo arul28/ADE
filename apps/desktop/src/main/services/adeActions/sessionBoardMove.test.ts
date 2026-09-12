@@ -56,14 +56,18 @@ function makeSessionService(initial: Row) {
         current = { ...current, settleOverride: override };
         return true;
       },
-      snoozeSession: (_id: string, untilIso: string) => {
+      snoozeSession: (_id: string, untilIso: string, opts?: { snoozedAt?: string }) => {
         calls.push(`snooze:${untilIso}`);
-        current = { ...current, snoozedUntil: untilIso };
+        current = {
+          ...current,
+          snoozedUntil: untilIso,
+          snoozedAt: opts?.snoozedAt ?? "2026-09-11T10:30:00.000Z",
+        };
         return true;
       },
       wakeSession: (_id: string) => {
         calls.push("wake");
-        current = { ...current, snoozedUntil: null };
+        current = { ...current, snoozedUntil: null, snoozedAt: null };
         return true;
       },
       requestAttention: (_id: string, message: string | null, source?: string) => {
@@ -73,6 +77,11 @@ function makeSessionService(initial: Row) {
           attentionRequestedAt: "2026-09-11T11:00:00.000Z",
           attentionMessage: message,
           attentionSource: (source ?? "agent_explicit") as Row["attentionSource"],
+          // Mirrors the real service: `requestAttention` calls
+          // `wakeSnoozedRow(id, "needs_you")`, so a hand-raise is also an early
+          // wake. A fake that skipped it would hide an undo clearing a snooze.
+          snoozedUntil: null,
+          snoozedAt: null,
         };
         return true;
       },
@@ -572,6 +581,45 @@ describe("a project that closes with a move still staged", () => {
     await vi.advanceTimersByTimeAsync(BOARD_MOVE_STAGE_MS * 2);
     expect(messageB).not.toHaveBeenCalled();
   });
+
+  /**
+   * The undo arrives on a different action call than the move, and the actions
+   * are built per project over that project's session service. So the undo must
+   * restore through the service the move was STAGED over — the caller's is
+   * whichever project happens to be open when the user hits undo, and restoring
+   * against that one cancels the right message while leaving the moved card
+   * exactly where it was.
+   */
+  it("restores through the service the move was staged over, not the caller's", async () => {
+    vi.useFakeTimers();
+    const projectA = makeSessionService(row({ id: "chat-1", settledAt: "2026-09-11T09:00:00.000Z" }));
+    const projectB = makeSessionService(row({ id: "chat-1", settledAt: "2026-09-11T09:00:00.000Z" }));
+    const actionsA = createSessionBoardMoveActions({
+      sessionService: projectA.service,
+      agentChatService: { messageSession: vi.fn(async (_args: unknown) => ({ ok: true })) },
+      logger: silentLogger,
+    });
+    const actionsB = createSessionBoardMoveActions({
+      sessionService: projectB.service,
+      agentChatService: { messageSession: vi.fn(async (_args: unknown) => ({ ok: true })) },
+      logger: silentLogger,
+    });
+
+    const moved = await actionsA.moveOnBoard({ sessionId: "chat-1", to: "working" }) as {
+      moveId: string;
+    };
+    expect(deriveWorkBoardColumn(projectA.current)).toBe("working");
+
+    // The user switches projects and then hits undo, so the call lands on B.
+    expect(await actionsB.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))
+      .toMatchObject({ ok: true, reversed: true });
+
+    // A's card went back to Done...
+    expect(deriveWorkBoardColumn(projectA.current)).toBe("done");
+    // ...and B's identically-named row was never written to at all.
+    expect(projectB.calls).toEqual([]);
+    expect(deriveWorkBoardColumn(projectB.current)).toBe("done");
+  });
 });
 
 describe("an undo whose row moved on inside the window", () => {
@@ -605,6 +653,48 @@ describe("an undo whose row moved on inside the window", () => {
     // ...while the halves the row still carried from the move are reversed.
     expect(sessions.current.settledAt).toBeNull();
     expect(sessions.current.snoozedUntil).toBe(snoozedUntil);
+  });
+
+  /**
+   * The protection has to survive the restore that follows it. `requestAttention`
+   * wakes a snoozed row, so putting back the hand the move cleared used to clear
+   * the user's snooze on the way past — the undo reporting it left the newer
+   * snooze alone and taking it away in the same call.
+   */
+  it("keeps a snooze set inside the window when it restores the hand the move cleared", async () => {
+    vi.useFakeTimers();
+    const sessions = makeSessionService(row({
+      attentionRequestedAt: "2026-09-11T09:00:00.000Z",
+      attentionMessage: "Which database?",
+      attentionSource: "agent_explicit",
+    }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      agentChatService: { messageSession: vi.fn(async (_args: unknown) => ({ ok: true })) },
+      logger: silentLogger,
+    });
+    const moved = await actions.moveOnBoard({ sessionId: "chat-1", to: "working" }) as {
+      moveId: string;
+    };
+    expect(sessions.current.attentionRequestedAt).toBeNull();
+
+    // Inside the window the user parks the row until tomorrow. That snooze is
+    // newer than anything the move wrote.
+    const snoozedUntil = new Date(Date.now() + 3_600_000).toISOString();
+    sessions.service.snoozeSession("chat-1", snoozedUntil, { snoozedAt: "2026-09-11T10:30:00.000Z" });
+
+    expect(await actions.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))
+      .toMatchObject({ ok: true, reversed: true });
+    // The hand is back...
+    expect(sessions.current.attentionMessage).toBe("Which database?");
+    // ...and the snooze the undo promised not to touch is still standing, with
+    // the deadline and the `snoozed_at` baseline the user's own write set.
+    expect(sessions.current.snoozedUntil).toBe(snoozedUntil);
+    expect(sessions.current.snoozedAt).toBe("2026-09-11T10:30:00.000Z");
+    // The card reads Needs you rather than Waiting — `isSessionFiledAsSnoozed`
+    // lets the hand outrank the snooze for FILING — but the snooze is still on
+    // the row, so it files back into Waiting the moment the hand is answered.
+    expect(deriveWorkBoardColumn(sessions.current)).toBe("needs_you");
   });
 
   it("refuses with `session_advanced` when nothing it wrote is left to take back", async () => {

@@ -436,6 +436,16 @@ function restoredSomething(outcome: BoardMoveRestoreOutcome): boolean {
  * `settleSessions`), so attention is restored last and wins when a snapshot
  * somehow carries both. That is also the canonical precedence — needs_you
  * outranks settled — so the restored row reads the way the original one did.
+ *
+ * One restore reaches past its own group and has to be put back by hand:
+ * `requestAttention` wakes a snoozed row (`wakeSnoozedRow(id, "needs_you")` in
+ * `sessionService`). So restoring an earlier hand over a snooze the user set
+ * INSIDE the undo window would clear the very snooze the group above just
+ * refused to touch — an undo that says it protected the newer fact and takes it
+ * away in the same breath. `snoozeSession` can express both halves of that
+ * write (the deadline and the `snoozed_at` baseline the early-wake error rule
+ * compares against), so it is re-applied rather than the attention restore
+ * being skipped: the user snoozed AND asked for the move back, and both hold.
  */
 async function restoreBoardMoveSnapshot(
   sessionService: BoardMoveSessionService,
@@ -444,7 +454,8 @@ async function restoreBoardMoveSnapshot(
   after: BoardMoveLifecycleIdentity | null,
   nowMs: number = Date.now(),
 ): Promise<BoardMoveRestoreOutcome> {
-  const live = captureLifecycleIdentity(sessionService.get(sessionId));
+  const liveRow = sessionService.get(sessionId);
+  const live = captureLifecycleIdentity(liveRow);
   // A row that vanished has nothing to restore; a move with no `after` has
   // nothing to compare, so every group is still "mine".
   if (after && !live) return RESTORED_NOTHING;
@@ -479,6 +490,12 @@ async function restoreBoardMoveSnapshot(
       sessionService.unsettleSession(sessionId);
     }
   }
+  // A snooze that is NOT this move's — the group above declined to touch it —
+  // standing on the row the attention restore is about to wake. Captured before
+  // the write so it can be put back exactly as the user left it.
+  const snoozeToKeep = !outcome.snooze && liveRow?.snoozedUntil
+    ? { until: liveRow.snoozedUntil, snoozedAt: liveRow.snoozedAt ?? null }
+    : null;
   if (outcome.attention) {
     if (before.attentionRequestedAt) {
       sessionService.requestAttention(
@@ -486,6 +503,13 @@ async function restoreBoardMoveSnapshot(
         before.attentionMessage,
         before.attentionSource ?? "agent_explicit",
       );
+      if (snoozeToKeep) {
+        sessionService.snoozeSession(
+          sessionId,
+          snoozeToKeep.until,
+          snoozeToKeep.snoozedAt ? { snoozedAt: snoozeToKeep.snoozedAt } : {},
+        );
+      }
     } else {
       sessionService.clearAttentionRequest(sessionId);
     }
@@ -746,8 +770,16 @@ export function createSessionBoardMoveActions(deps: {
       }
       stagedBoardMoves.delete(moveId);
       if (staged.timer) clearTimeout(staged.timer);
+      // `staged.sessionService`, never the one this action instance closes
+      // over. The staging map is module-level while the actions are built per
+      // project, so an undo that arrives after a project switch — the phone
+      // and the web client both reach these actions through whichever context
+      // is current — would otherwise cancel the right message and restore the
+      // snapshot against a DIFFERENT project's session service, leaving the
+      // moved card exactly where it was. The staged entry is the only handle on
+      // which project the move was written through.
       const restored = await restoreBoardMoveSnapshot(
-        sessionService,
+        staged.sessionService,
         sessionId,
         staged.before,
         staged.after,

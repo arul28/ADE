@@ -83,6 +83,37 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
+  /**
+   * The provider check alone let a pick through whose model no longer exists,
+   * and the surface only found out when `ensureIdentitySession` threw on it.
+   * An unusable stored pick has exactly one honest outcome on this branch —
+   * null, which is what shows the picker.
+   */
+  it("nulls a stored model preference whose model id no longer resolves", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    // The provider steers live turns, so the old check kept this. The model is
+    // gone from the registry, so nothing can launch it.
+    service.updateIdentity({
+      modelPreferences: { provider: "anthropic", model: "sonnet-from-a-retired-build", modelId: "claude-retired-9" },
+    });
+    expect(service.getIdentity().modelPreferences).toBeNull();
+
+    // A real id on the same provider is still kept — the check rejects
+    // unresolvable ids, not stored ids.
+    service.updateIdentity({
+      modelPreferences: { provider: "anthropic", model: "sonnet", modelId: "anthropic/claude-sonnet-5" },
+    });
+    expect(service.getIdentity().modelPreferences).toMatchObject({ modelId: "anthropic/claude-sonnet-5" });
+
+    fixture.db.close();
+  });
+
   it("recreates files from DB-only state", async () => {
     const fixture = await createStateFixture();
     const identityPayload = {
@@ -439,7 +470,15 @@ describe("ctoStateService", () => {
       prService: { listAll: () => prs } as unknown as CtoLiveStateSources["prService"],
       automationService: {
         list: () => Array.from({ length: 4 }, (_, index) => ({ id: `automation-${index}`, name: `Nightly automation ${index}` })),
-        listRuns: () => runs,
+        // Honours `limit` exactly as the real `listRuns` does, including its
+        // own hard cap of 500. A fake that returned everything would hide a
+        // caller that asks for eight rows and then calls eight the total.
+        listRuns: (listArgs?: { limit?: number }) => runs.slice(
+          0,
+          typeof listArgs?.limit === "number"
+            ? Math.max(1, Math.min(500, Math.floor(listArgs.limit)))
+            : 100,
+        ),
       } as unknown as CtoLiveStateSources["automationService"],
       listChats: (async () => chats) as unknown as CtoLiveStateSources["listChats"],
     };
@@ -537,6 +576,57 @@ describe("ctoStateService", () => {
   });
 
   /**
+   * Automation runs are the one section whose source cannot be counted whole —
+   * `listRuns` takes a limit and has no count API — so the total used to be
+   * fetched at the display cap, which made it structurally impossible for the
+   * count to exceed 8 or for the overflow line to fire.
+   */
+  it("counts automation runs past the rows it shows, and says `at least` when it cannot count them all", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => createFakeLiveStateSources({
+        lanes: 1,
+        chats: 1,
+        prs: 1,
+        automationRuns: 40,
+      }),
+    });
+
+    const snapshot = await service.refreshLiveState();
+    expect(snapshot!.automationRunsTotal).toBe(40);
+    expect(snapshot!.automationRunsTotalIsFloor).toBe(false);
+    expect(snapshot!.automationRuns).toHaveLength(8);
+    const block = renderCtoLiveStateBlock(snapshot!, Number.MAX_SAFE_INTEGER);
+    expect(block).toContain("Recent automation runs (40)");
+    expect(block).toContain("and 32 more runs.");
+
+    // Past the counting window the count is a floor, and the block says so
+    // rather than naming a precise number it cannot know.
+    const busy = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => createFakeLiveStateSources({
+        lanes: 1,
+        chats: 1,
+        prs: 1,
+        automationRuns: 900,
+      }),
+    });
+    const busySnapshot = await busy.refreshLiveState();
+    expect(busySnapshot!.automationRunsTotal).toBe(500);
+    expect(busySnapshot!.automationRunsTotalIsFloor).toBe(true);
+    const busyBlock = renderCtoLiveStateBlock(busySnapshot!, Number.MAX_SAFE_INTEGER);
+    expect(busyBlock).toContain("Recent automation runs (500+)");
+    expect(busyBlock).toContain("and at least 492 more runs.");
+
+    fixture.db.close();
+  });
+
+  /**
    * The cap is measured, not guessed, and this test is the measurement: it
    * fails if a future section pushes the realistic or worst-case size past what
    * `CTO_LIVE_STATE_MAX_CHARS` was chosen for, forcing a re-measure rather than
@@ -601,6 +691,7 @@ describe("ctoStateService", () => {
         name: "n".repeat(60), status: "succeeded", at: "2026-09-11T00:00:00.000Z",
       })),
       automationRunsTotal: 999,
+      automationRunsTotalIsFloor: false,
       unavailable: [],
     };
     const worstRaw = renderCtoLiveStateBlock(worst, Number.MAX_SAFE_INTEGER);
