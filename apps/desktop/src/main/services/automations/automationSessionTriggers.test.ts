@@ -195,6 +195,8 @@ function makeProjectConfigHarness(rules: AutomationRuleInput[], sharedRules: Aut
 
 /** Lanes the service asked laneService to create, newest last. Reset per service. */
 const lanesCreated: Array<{ id: string; name: string; branchRef: string }> = [];
+/** Lanes the service asked laneService to delete, newest last. Reset per service. */
+const lanesDeleted: string[] = [];
 
 function createService(args: {
   rules: AutomationRuleInput[];
@@ -207,6 +209,7 @@ function createService(args: {
   const projectConfig = makeProjectConfigHarness(args.rules, args.sharedRules ?? []);
   const events: Array<Record<string, unknown>> = [];
   lanesCreated.length = 0;
+  lanesDeleted.length = 0;
   const service = createAutomationService({
     db: store.db as any,
     logger: createLogger(),
@@ -224,6 +227,9 @@ function createService(args: {
         };
         lanesCreated.push(lane);
         return lane;
+      },
+      delete: async ({ laneId }: { laneId: string }) => {
+        lanesDeleted.push(laneId);
       },
     } as any,
     projectConfigService: projectConfig.service,
@@ -587,6 +593,43 @@ describe("handoff action", () => {
         targetLaneMode: "new",
         createdLaneName: "Fix the flaky test",
       });
+    });
+
+    service.dispose();
+  });
+
+  it("removes the lane it made for a handoff that then failed", async () => {
+    // The lane is created FOR the handoff. If the handoff never happens the
+    // lane is an empty artefact of a failure — and a rule with a retry budget
+    // would otherwise leave one behind per attempt.
+    const agentChatService = agentChatStub();
+    agentChatService.handoffSession.mockRejectedValue(new Error("provider unavailable"));
+    const rule = handoffRule({
+      id: "handoff-new-lane-fails",
+      scope: { sessionId: "chat-123", sessionTitle: "Fix the flaky test" },
+      execution: {
+        kind: "built-in",
+        builtIn: { actions: [{ ...handoffAction, targetLaneMode: "new" }] },
+      },
+    });
+    const { service, store } = createService({ rules: [rule], agentChatService });
+
+    service.onSessionSignal(limitSignal);
+
+    await vi.waitFor(() => {
+      expect(agentChatService.handoffSession).toHaveBeenCalledTimes(1);
+    });
+    expect(lanesCreated).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(lanesDeleted).toEqual(["lane-new-1"]);
+    });
+    // The handoff error is still what the run reports; the cleanup is silent.
+    await vi.waitFor(() => {
+      const rows = store.db.all<{ status: string; output: string }>(
+        "select status, output from automation_action_results",
+      );
+      expect(rows[0]?.status).toBe("failed");
+      expect(rows[0]?.output).toContain("provider unavailable");
     });
 
     service.dispose();

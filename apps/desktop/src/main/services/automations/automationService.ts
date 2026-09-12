@@ -3156,6 +3156,9 @@ export function createAutomationService({
       const handoffNote = typeof rendered === "string" ? rendered.trim() : "";
       let targetLaneId: string | null = null;
       let createdLaneName: string | null = null;
+      // Only set when THIS branch created the lane, so the compensating delete
+      // below can never touch a lane the user chose.
+      let createdLaneId: string | null = null;
       if (mode === "fork") {
         // A fork's provider transcript is keyed to the source lane worktree, so
         // main never steers it — `handoffSession` resolves the source lane and
@@ -3178,6 +3181,7 @@ export function createAutomationService({
           });
           targetLaneId = created.laneId;
           createdLaneName = created.laneName;
+          createdLaneId = created.laneId;
         } catch (error) {
           return {
             status: "failed",
@@ -3225,6 +3229,26 @@ export function createAutomationService({
           }),
         };
       } catch (error) {
+        // The lane above was created FOR this handoff. If the handoff never
+        // happened, the lane is an empty artefact of a failure — and a rule
+        // with a retry budget would leave one behind per attempt. Compensate:
+        // lane creation and the handoff are one operation, so unwind the half
+        // that landed. Only the lane this branch just made is ever removed;
+        // an "explicit" or "same" target is the user's lane and is left alone.
+        if (createdLaneId) {
+          try {
+            await laneService.delete({ laneId: createdLaneId });
+          } catch (cleanupError) {
+            // A failed cleanup must not replace the real failure below: the
+            // handoff error is what the user needs to see. Record the orphan
+            // so it is findable rather than silent.
+            logger.warn("automations.handoff.orphan_lane_kept", {
+              automationId: rule.id,
+              laneId: createdLaneId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          }
+        }
         return { status: "failed", output: error instanceof Error ? error.message : String(error) };
       }
     }
