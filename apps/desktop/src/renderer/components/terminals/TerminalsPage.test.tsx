@@ -109,6 +109,7 @@ const workMocks = vi.hoisted(() => {
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
     setWorkViewState: vi.fn(),
     setLaneWorkViewState: vi.fn(),
+    setWorkViewMode: vi.fn(),
   };
 
   const baseWork = {
@@ -138,6 +139,11 @@ const workMocks = vi.hoisted(() => {
     filterLaneId: "all",
     q: "",
     sessionListOrganization: "by-lane",
+    workViewMode: "list",
+    workBoardBuckets: {
+      needs_you: [], working: [], waiting: [], done: [],
+    },
+    workBoardWaitingReasons: new Map(),
     workCollapsedLaneIds: [],
     workCollapsedSectionIds: [],
     workFocusSessionsHidden: false,
@@ -553,6 +559,116 @@ describe("TerminalsPage chat session activation", () => {
     forgetWorkPtyLaunchPin({ sessionId: "shell-foreign", ptyId: "pty-shell-foreign" });
     forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
     vi.clearAllMocks();
+  });
+
+  /* ────────────────────────────────────────────────────────────────────────
+     BOARD MODE OWNS THE WHOLE TAB.
+
+     Four columns inside the ~390px sessions pane is not a board: at a normal
+     window width two of them are off-screen behind the board's own horizontal
+     scrollbar while the chat pane sits idle. So board mode must not render the
+     split at all — and must not get there by driving the splitter, because
+     `workSidebarWidthPct` is the user's LIST-mode layout and has to survive the
+     round trip untouched.
+     ──────────────────────────────────────────────────────────────────────── */
+
+  it("renders the board full width and does not mount the split layout", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    expect(await screen.findByTestId("work-board-surface")).toBeTruthy();
+    // The whole point: no split, so no narrow sessions pane and no idle chat
+    // pane beside it.
+    expect(screen.queryByTestId("pane-tiling-layout")).toBeNull();
+    expect(screen.queryByTestId("pane:sessions")).toBeNull();
+    expect(screen.queryByTestId("pane:view")).toBeNull();
+    // Same roster element either way, so the toolbar — and the List/Board
+    // toggle in it — does not move under the cursor between modes.
+    expect(screen.getByTestId("session-list-pane")).toBeTruthy();
+    // The stored list-mode width is never written on the way in.
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
+  });
+
+  it("keeps the split layout in list mode", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    expect(await screen.findByTestId("pane-tiling-layout")).toBeTruthy();
+    expect(screen.getByTestId("pane:sessions")).toBeTruthy();
+    expect(screen.getByTestId("pane:view")).toBeTruthy();
+    expect(screen.queryByTestId("work-board-surface")).toBeNull();
+  });
+
+  it("opening a card from the board selects the session and returns to list mode", async () => {
+    const session = workMocks.makeTerminalSession("chat-on-board", "lane-primary", "codex-chat");
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workViewMode: "board",
+      runningFiltered: [session],
+      sessions: [session],
+      visibleSessions: [session],
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-on-board" }));
+
+    // The board is the overview; clicking a card dives in. Without the mode
+    // flip the chat has nowhere to render — the split is not mounted — and the
+    // card would highlight and appear to do nothing.
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-on-board");
+    expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-on-board");
+    expect(workMocks.fns.setWorkViewMode).toHaveBeenCalledWith("list");
+  });
+
+  it("does not leave board mode on a multi-select click", async () => {
+    const session = workMocks.makeTerminalSession("chat-on-board", "lane-primary", "codex-chat");
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workViewMode: "board",
+      runningFiltered: [session],
+      sessions: [session],
+      visibleSessions: [session],
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    // Multi-select is something you do WHILE staying on the board — picking
+    // several cards to settle in one go. Only a plain open dives out.
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-on-board" }), { metaKey: true });
+    expect(workMocks.fns.setWorkViewMode).not.toHaveBeenCalled();
+  });
+
+  it("never writes the list-mode split width while the board is up", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board", workSidebarWidthPct: 42 };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("work-board-surface");
+
+    // Stretching the splitter to full width would have meant writing this, and
+    // the user's list layout would not survive the round trip.
+    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
   });
 
   it("tracks background-created chats without stealing Work focus", async () => {

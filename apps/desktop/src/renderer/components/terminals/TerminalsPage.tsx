@@ -335,6 +335,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
       work.openSessionTab(id);
+      /* The board is an OVERVIEW, and opening a chat is diving out of it.
+         In board mode the chat has nowhere to render — the split is not
+         mounted — so selecting without leaving would look like a dead click on
+         a card that highlights and does nothing.
+
+         Only on a plain open: the range and toggle branches above return
+         early, because multi-select is a thing you do while staying on the
+         board. The toggle in the toolbar is the way back. */
+      if (work.workViewMode === "board") work.setWorkViewMode("list");
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
@@ -1630,14 +1639,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ],
   );
 
-  const paneConfigs: Record<string, PaneConfig> = useMemo(
-    () => ({
-      sessions: {
-        title: "",
-        minimizable: false,
-        // Stable automation anchor for the whole sessions pane.
-        children: (
-          <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
+  /**
+   * The session roster, hoisted out of `paneConfigs` because it is rendered in
+   * TWO layouts now: as the narrow left pane of the split (list mode), and as
+   * the entire Work content area (board mode).
+   *
+   * One element, not two call sites: the toolbar it owns — search, the
+   * List/Board toggle, filters, new chat — must be the same control in the same
+   * place in both modes, so the toggle does not move under the cursor when it
+   * is used.
+   */
+  const sessionListPane = useMemo(
+    () => (
+      <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
           {/* Active-binding inventory only: this pane reads and filters foreign
               rows from its own cross-machine union subscription. */}
           <SessionListPane
@@ -1674,6 +1688,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
+            workViewMode={work.workViewMode}
+            setWorkViewMode={work.setWorkViewMode}
+            workBoardBuckets={work.workBoardBuckets}
+            workBoardWaitingReasons={work.workBoardWaitingReasons}
             workCollapsedLaneIds={work.workCollapsedLaneIds}
             toggleWorkLaneCollapsed={work.toggleWorkLaneCollapsed}
             workCollapsedSectionIds={work.workCollapsedSectionIds}
@@ -1691,21 +1709,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             crossMachineSyncActive={active}
             onToggleSessionsPane={toggleSessionsPane}
           />
-          </div>
-        ),
-      },
-
-      view: {
-        title: "",
-        bodyClassName: "overflow-hidden",
-        // Stable automation anchor for the whole view area.
-        children: (
-          <div className="h-full min-h-0" data-tour="work.viewArea">
-            {workViewWithSidebar}
-          </div>
-        ),
-      },
-    }),
+      </div>
+    ),
     [
       work,
       active,
@@ -1721,8 +1726,29 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handoffLaunchJobs,
       sessionsPaneRefCb,
       toggleSessionsPane,
-      workViewWithSidebar,
     ],
+  );
+
+  const paneConfigs: Record<string, PaneConfig> = useMemo(
+    () => ({
+      sessions: {
+        title: "",
+        minimizable: false,
+        children: sessionListPane,
+      },
+
+      view: {
+        title: "",
+        bodyClassName: "overflow-hidden",
+        // Stable automation anchor for the whole view area.
+        children: (
+          <div className="h-full min-h-0" data-tour="work.viewArea">
+            {workViewWithSidebar}
+          </div>
+        ),
+      },
+    }),
+    [sessionListPane, workViewWithSidebar],
   );
 
   return (
@@ -1736,7 +1762,29 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           {sessionActionError}
         </div>
       ) : null}
-      {work.workFocusSessionsHidden ? (
+      {work.workViewMode === "board" ? (
+        /* BOARD MODE OWNS THE WHOLE TAB.
+           Four columns inside the ~390px sessions pane is not a board — at a
+           normal window width only "Needs you" and a sliver of "Working" are
+           reachable, behind the board's own horizontal scrollbar, while the
+           chat pane sits idle beside it.
+
+           So the split is not rendered at all here, rather than being stretched
+           to full width. Driving the splitter would mean writing
+           `workSidebarWidthPct`, and that value is the user's LIST-mode layout:
+           it has to survive the round trip untouched, or coming back from the
+           board leaves the chat pane the wrong size. Not rendering the split
+           also means the chat surfaces unmount cleanly instead of living on at
+           zero width.
+
+           `sessionListPane` is the same element the split uses, so the toolbar
+           — and the List/Board toggle in it — is in the same place in both
+           modes. Clicking a card selects the session and flips back to list
+           (see `handleSelectSession`), which is the way out of here. */
+        <div className="min-h-0 flex-1 overflow-hidden" data-testid="work-board-surface">
+          {sessionListPane}
+        </div>
+      ) : work.workFocusSessionsHidden ? (
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <div
             className="flex w-8 shrink-0 flex-col items-center border-r border-white/[0.06] pt-1.5"

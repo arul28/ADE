@@ -380,6 +380,68 @@ afterEach(() => {
   }
 });
 
+describe("AgentChatMessageList board moves", () => {
+  it("renders a board move as a divider with the sent text under it, not as a user bubble", () => {
+    // The user dragged a card; they did not type this sentence. Rendering it as
+    // a user bubble would put ADE's words in their mouth, and the transcript
+    // would read as if they had asked for something they never asked for.
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "You moved this chat from Done to Working. Continue the work, or ask me what you need if the next step is unclear.",
+          deliveryState: "delivered",
+          metadata: {
+            boardMove: {
+              from: "done",
+              to: "working",
+              at: "2026-03-17T10:00:00.000Z",
+              moveId: "move-1",
+            },
+          },
+        },
+      },
+    ]);
+
+    const divider = document.querySelector('[data-board-move-to="working"]');
+    expect(divider).toBeTruthy();
+    expect(divider?.textContent).toContain("Moved on the board");
+    expect(divider?.textContent).toContain("Done");
+    expect(divider?.textContent).toContain("Working");
+    // The exact text the agent received is folded under it, so the transcript
+    // shows what the agent was actually told.
+    expect(divider?.textContent).toContain("Continue the work, or ask me what you need");
+    // And it is NOT a user bubble.
+    expect(document.querySelector(".ade-chat-message-card-user")).toBeNull();
+  });
+
+  it("labels a move into Needs you with the column the user sees", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "The user parked this for their input. Stop, summarize where you are, and list what you need from them.",
+          deliveryState: "delivered",
+          metadata: {
+            boardMove: {
+              from: "working",
+              to: "needs_you",
+              at: "2026-03-17T10:00:00.000Z",
+              moveId: "move-2",
+            },
+          },
+        },
+      },
+    ]);
+    const divider = document.querySelector('[data-board-move-to="needs_you"]');
+    expect(divider?.textContent).toContain("Working → Needs you");
+  });
+});
+
 describe("AgentChatMessageList operator navigation suggestions", () => {
   it("renders Work suggestions from tool results and navigates by deeplink", () => {
     renderMessageList([

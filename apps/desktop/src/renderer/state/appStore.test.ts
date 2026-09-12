@@ -1230,6 +1230,54 @@ describe("appStore", () => {
       });
     });
 
+    it("defaults a stored state with no workViewMode to the list, with no version bump", async () => {
+      // The additive-default claim in `normalizeWorkProjectViewState`: a blob
+      // written before the Kanban board existed carries no `workViewMode` at
+      // all, and must come back as the list — the exact shape it already had.
+      // The version deliberately stays at 4; an additive default is not a
+      // migration, and bumping would re-run the one-time Settled collapse.
+      mockStorage.set("ade.workViewState.v1", JSON.stringify({
+        version: 4,
+        workViewByProject: {
+          "/project/no-view-mode": { search: "still here", sessionListOrganization: "by-time" },
+          "/project/board": { workViewMode: "board" },
+          "/project/garbage": { workViewMode: "kanban" },
+        },
+        laneWorkViewByScope: {},
+      }));
+
+      vi.resetModules();
+      const mod = await import("./appStore");
+      const state = mod.useAppStore.getState();
+
+      const legacy = state.getWorkViewState("/project/no-view-mode");
+      expect(legacy.workViewMode).toBe("list");
+      // Grouping is orthogonal and survives untouched.
+      expect(legacy.sessionListOrganization).toBe("by-time");
+      expect(legacy.search).toBe("still here");
+
+      expect(state.getWorkViewState("/project/board").workViewMode).toBe("board");
+      // An unknown value is not a third mode; it falls back to the default.
+      expect(state.getWorkViewState("/project/garbage").workViewMode).toBe("list");
+      // A project that has never been seen at all gets the same default.
+      expect(state.getWorkViewState("/project/unknown").workViewMode).toBe("list");
+      expect(mod.createDefaultWorkProjectViewState().workViewMode).toBe("list");
+    });
+
+    it("keeps the board mode independent of the grouping mode", () => {
+      useAppStore.getState().setWorkViewState("/proj-board", {
+        workViewMode: "board",
+        sessionListOrganization: "by-time",
+      });
+      useAppStore.getState().setWorkViewState("/proj-board", { workViewMode: "list" });
+
+      // Flipping back to the list must land in the grouping the user left,
+      // not reset it — that is the whole reason the two are separate fields.
+      const restored = useAppStore.getState().getWorkViewState("/proj-board");
+      expect(restored.workViewMode).toBe("list");
+      expect(restored.sessionListOrganization).toBe("by-time");
+    });
+
     it("drops duplicate and unknown persisted ordering values", async () => {
       mockStorage.set("ade.workViewState.v1", JSON.stringify({
         version: 4,

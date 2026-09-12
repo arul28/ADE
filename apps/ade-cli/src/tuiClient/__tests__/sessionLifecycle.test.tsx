@@ -8,9 +8,11 @@ import { buildWorkListModel, type WorkListShelfKind } from "../workListModel";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "../commands";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
+  boardColumnLabel,
   clearWokeMarkerOnVisit,
   isSessionFiledAsSnoozed,
   isSessionSnoozed,
+  resolveBoardMoveTarget,
   resolveSessionTarget,
   resolveSnoozeChoice,
   resolveSnoozeChoices,
@@ -89,6 +91,7 @@ describe("/session slash commands", () => {
       "/session keep-active",
       "/session demote",
       "/session promote",
+      "/session move",
     ]) {
       const spec = BUILTIN_COMMANDS.find((command) => command.name === name);
       expect(spec, name).toBeDefined();
@@ -107,6 +110,8 @@ describe("/session slash commands", () => {
     expect(parseCommand("/session demote")?.name).toBe("/session demote");
     expect(parseCommand("/session promote chat-9")?.name).toBe("/session promote");
     expect(parseCommand("/session promote chat-9")?.args).toBe("chat-9");
+    expect(parseCommand("/session move done")?.name).toBe("/session move");
+    expect(parseCommand("/session move done")?.args).toBe("done");
 
     expect(paletteCommands("/session sn")).toContainEqual(expect.objectContaining({
       name: "/session snooze",
@@ -128,6 +133,53 @@ describe("/session slash commands", () => {
     // They are NOT routed through the /session dispatcher.
     expect(sessionLifecycleCommandFor("/chat settle")).toBeNull();
     expect(sessionLifecycleCommandFor("/chat unsettle")).toBeNull();
+  });
+});
+
+describe("/session move column argument", () => {
+  it("accepts the on-screen spelling and the wire spelling for the same column", () => {
+    for (const input of ["needs-you", "needs_you", "Needs-You", "  NEEDS_YOU  "]) {
+      expect(resolveBoardMoveTarget(input), input).toEqual({ ok: true, to: "needs_you" });
+    }
+    expect(resolveBoardMoveTarget("working")).toEqual({ ok: true, to: "working" });
+    expect(resolveBoardMoveTarget("done")).toEqual({ ok: true, to: "done" });
+  });
+
+  it("refuses Waiting as a target and says WHY, because the column is real but derived", () => {
+    const refusal = resolveBoardMoveTarget("waiting");
+    expect(refusal.ok).toBe(false);
+    expect(refusal.ok === false && refusal.message).toContain("derived");
+    // Not folded into the generic "unknown column" message: a user can SEE a
+    // Waiting column, so "that is not a column" would be a lie.
+    expect(refusal.ok === false && refusal.message).not.toContain("is not a board column");
+  });
+
+  it("reports an unknown column and an empty argument differently", () => {
+    const unknown = resolveBoardMoveTarget("blocked");
+    expect(unknown.ok).toBe(false);
+    expect(unknown.ok === false && unknown.message).toContain("'blocked'");
+    const empty = resolveBoardMoveTarget("   ");
+    expect(empty.ok).toBe(false);
+    expect(empty.ok === false && empty.message).toContain("Usage:");
+  });
+
+  it("spells columns from the shared label map, never from a local ternary", () => {
+    expect(boardColumnLabel("needs_you")).toBe("Needs you");
+    expect(boardColumnLabel("waiting")).toBe("Waiting");
+    expect(boardColumnLabel("done")).toBe("Done");
+  });
+
+  it("reads a column name as a column, never as a session id", () => {
+    // The same rule snooze durations get: a leading token only becomes an id
+    // when it actually names a session the client knows about.
+    const resolved = resolveSessionTarget({
+      input: "done",
+      activeSessionId: "sess-alpha-1111",
+      knownSessionIds: ["sess-alpha-1111"],
+      strictLeadingToken: false,
+    });
+    expect(resolved.ok && resolved.sessionId).toBe("sess-alpha-1111");
+    expect(resolved.ok && resolved.rest).toBe("done");
   });
 });
 

@@ -14,7 +14,8 @@ import { cn } from "../ui/cn";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { CtoOnboardingCard } from "./CtoOnboardingCard";
 import { getPersonalityTheme } from "./personalityTheme";
-import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
+import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { shellBodyCls } from "./shared/designTokens";
 import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
@@ -60,12 +61,16 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const theme = getPersonalityTheme(personality);
 
   const currentModelId = session?.modelId
-    ?? ctoIdentity?.modelPreferences.modelId
+    ?? ctoIdentity?.modelPreferences?.modelId
     ?? "";
   const currentReasoningEffort = session?.reasoningEffort
-    ?? ctoIdentity?.modelPreferences.reasoningEffort
+    ?? ctoIdentity?.modelPreferences?.reasoningEffort
     ?? null;
   const currentFastMode = session?.fastMode === true;
+  // Null preferences mean nobody has picked a model the CTO can actually run
+  // on. The picker takes the thread's place until one is chosen — the session
+  // itself is untouched, so a pick resumes the same thread rather than a new one.
+  const needsModelPick = Boolean(ctoIdentity) && !ctoIdentity?.modelPreferences;
 
   /* ── Data loading ── */
 
@@ -110,7 +115,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
     if (!active || !window.ade?.cto) return;
-    if (!onboardingState || onboardingVisible || !primaryLaneId) return;
+    if (!onboardingState || onboardingVisible || !primaryLaneId || needsModelPick) return;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,7 +147,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, onboardingState, onboardingVisible, primaryLaneId, wakeAttempt]);
+  }, [active, needsModelPick, onboardingState, onboardingVisible, primaryLaneId, wakeAttempt]);
 
   /* ── Callbacks ── */
 
@@ -361,6 +366,16 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {bridgeMissing ? (
           <WakingState theme={theme} title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
+        ) : needsModelPick ? (
+          <ModelPickCard
+            theme={theme}
+            availableModelIds={availableModelIds}
+            loadingModels={loadingModels}
+            switchingModel={switchingModel}
+            error={error}
+            onPick={(modelId) => void handleModelChange(modelId, currentReasoningEffort)}
+            onOpenProviderSettings={openProviderSettings}
+          />
         ) : sessionReady && lockedSessionSummary && primaryLaneId ? (
           <AgentChatPane
             laneId={primaryLaneId}
@@ -392,8 +407,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         ) : (
           <WakingState
             theme={theme}
-            title="Waking the CTO"
-            subtitle="Restoring identity, memory, and recent context."
+            title="Opening the CTO"
             pulsing
           />
         )}
@@ -446,6 +460,76 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   );
 }
 
+/**
+ * Shown in place of the thread while the CTO has no model preference — either a
+ * fresh identity or one whose stored model was on a provider that cannot steer
+ * a live turn. The session is deliberately untouched: picking here moves the
+ * existing thread rather than starting a second one.
+ */
+function ModelPickCard({
+  theme,
+  availableModelIds,
+  loadingModels,
+  switchingModel,
+  error,
+  onPick,
+  onOpenProviderSettings,
+}: {
+  theme: ReturnType<typeof getPersonalityTheme>;
+  availableModelIds: string[];
+  loadingModels: boolean;
+  switchingModel: boolean;
+  error: string | null;
+  onPick: (modelId: string) => void;
+  onOpenProviderSettings: () => void;
+}) {
+  const Icon = theme.icon;
+  return (
+    <div className="flex h-full items-center justify-center p-6" data-testid="cto-model-pick">
+      <div className="flex w-full max-w-[420px] flex-col items-center text-center">
+        <div
+          className="flex h-12 w-12 items-center justify-center rounded-2xl"
+          style={{
+            background: `rgba(${theme.rgb}, 0.12)`,
+            border: `1px solid rgba(${theme.rgb}, 0.28)`,
+          }}
+        >
+          <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
+        </div>
+        <div className="mt-4 text-[14px] font-semibold text-fg">Pick a model that can steer live turns</div>
+        <div className="mt-1 text-[12.5px] leading-5 text-muted-fg/50">
+          The CTO is interrupted constantly — by the chats it starts, by its own wake-ups. It can only run on a
+          model that accepts a message into a turn already underway.
+        </div>
+        <div className="mt-5">
+          <ModelPicker
+            value=""
+            availableModelIds={availableModelIds}
+            filter={ctoModelSupportsLiveRedirect}
+            surfaceKey="cto-model-pick"
+            disabled={switchingModel}
+            onChange={onPick}
+            onOpenSignIn={onOpenProviderSettings}
+          />
+        </div>
+        {loadingModels ? (
+          <div className="mt-3 text-[11px] text-muted-fg/40">Checking configured models…</div>
+        ) : availableModelIds.length === 0 ? (
+          <div className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] leading-4 text-amber-200/90">
+            No model the CTO can run on is configured yet. Sign in to Claude, Codex, or Cursor under Settings → AI →
+            Providers.
+          </div>
+        ) : switchingModel ? (
+          <div className="mt-3 text-[11px] text-muted-fg/45">Moving the thread to the new model…</div>
+        ) : null}
+        {error ? (
+          <TechnicalDetailsFold text={error} className="mt-4 w-full text-left" />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function WakingState({
   theme,
   title,
@@ -456,7 +540,7 @@ function WakingState({
 }: {
   theme: ReturnType<typeof getPersonalityTheme>;
   title: string;
-  subtitle: string;
+  subtitle?: string;
   /** Raw failure text. Never on the main line — it goes in the fold. */
   detail?: string | null;
   pulsing?: boolean;
@@ -480,17 +564,18 @@ function WakingState({
           <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
         </div>
         <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
-        {/* A failure sentence is longer than "Restoring identity, memory, and
-            recent context." — `max-w-xs` broke it into four ragged centred
-            lines. */}
-        <div
-          className={cn(
-            "mt-1 text-[12.5px] leading-5 text-muted-fg/50",
-            detail || action ? "max-w-[360px]" : "max-w-xs",
-          )}
-        >
-          {subtitle}
-        </div>
+        {/* A failure sentence is long — `max-w-xs` broke it into four ragged
+            centred lines. */}
+        {subtitle ? (
+          <div
+            className={cn(
+              "mt-1 text-[12.5px] leading-5 text-muted-fg/50",
+              detail || action ? "max-w-[360px]" : "max-w-xs",
+            )}
+          >
+            {subtitle}
+          </div>
+        ) : null}
         {action ? (
           <button
             type="button"

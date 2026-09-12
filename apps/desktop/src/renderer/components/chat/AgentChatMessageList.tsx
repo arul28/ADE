@@ -55,7 +55,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { spawnCompletedNoticeMessage } from "../../../shared/types/chat";
+import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -2467,6 +2467,32 @@ function renderEvent(
           <span className="min-w-0 truncate">{summary || `"${event.childTitle}" finished`}</span>
           <span className="inline-flex shrink-0 items-center gap-0.5 text-violet-200/70">open<CaretRight size={10} weight="bold" aria-hidden /></span>
         </button>
+      </div>
+    );
+  }
+
+  /* ── Board move ──
+     A board move is not a message the user typed, so it must not read as one.
+     It is a state change the user made to the row, and the sentence ADE sent on
+     their behalf is the consequence — so it renders as a divider (the same
+     hairline-and-cutout language as every other "something happened here" rule)
+     with the exact text the agent received folded underneath it, quiet and
+     centred. Rendering it as a user bubble would put words in the user's mouth
+     that they never wrote. */
+  if (event.type === "user_message" && event.metadata?.boardMove) {
+    const boardMove = event.metadata.boardMove;
+    return (
+      <div className="my-3 flex flex-col gap-1" data-board-move-to={boardMove.to}>
+        <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
+          <span className="h-px flex-1 bg-fg/[0.08]" />
+          <span className="shrink-0">
+            Moved on the board · {WORK_BOARD_COLUMN_LABEL[boardMove.from]} → {WORK_BOARD_COLUMN_LABEL[boardMove.to]}
+          </span>
+          <span className="h-px flex-1 bg-fg/[0.08]" />
+        </div>
+        <p className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
+          {event.displayText?.trim() || event.text}
+        </p>
       </div>
     );
   }

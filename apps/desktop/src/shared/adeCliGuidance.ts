@@ -23,7 +23,15 @@ export const adeBundledAgentSkills = [
  * list when the user settles them or when their PR merges. Keep this guidance
  * pointed at note/ask; do not re-add settle instructions.
  */
+export const ADE_BOARD_STATUS_GUIDANCE =
+  "Your status on the Work board is derived from your turn state and your note. "
+  + "Keep the note current with `ade chat note`, and use `ade chat ask` when you are blocked.";
+
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
+  // The framing line first, because it is the one that stops an agent hunting
+  // for a "set my column" action that does not exist: the board position is
+  // DERIVED, and the two inputs it does own are the note and the ask.
+  ADE_BOARD_STATUS_GUIDANCE,
   "ADE control protocol for truthful Work status:",
   `- Working: \`ade chat note "testing desktop auth fallback"\`; aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer — a guideline, not a hard limit. Notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters, so a long note still beats no note.`,
   '- Blocked on input: call `ade chat note "<what and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',

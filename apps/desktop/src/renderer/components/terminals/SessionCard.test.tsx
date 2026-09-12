@@ -447,6 +447,151 @@ describe("SessionCard lineage", () => {
     expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Spawned");
   });
 
+  it("moves the status word into the hover card when the row face suppresses it", async () => {
+    vi.useFakeTimers();
+    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
+    // "Failed" and "Ended" both file under the board's Done column, so the word
+    // is NOT pure duplication — suppressing it on the face must not lose it.
+    const failed = makeSession({
+      status: "completed",
+      runtimeState: "exited",
+      exitCode: 1,
+      lastTurnFailedAt: "2026-05-23T10:05:00.000Z",
+    });
+    const { container } = render(<SessionCard {...props} suppressStatusLabel session={failed} />);
+
+    expect(container.querySelector("[data-session-status]")).toBeNull();
+
+    fireEvent.mouseEnter(container.querySelector("[data-session-row]") as HTMLElement);
+    act(() => { vi.advanceTimersByTime(SESSION_HOVER_CARD_DELAY_MS + 10); });
+
+    const statusRow = screen.getByTestId("session-hover-status");
+    // Rendered by `SessionStatusLabel`, not a re-derived string: one hue and
+    // one glyph per state, resolved in exactly one place.
+    expect(statusRow.querySelector("[data-session-status]")).toBeTruthy();
+  });
+
+  it("keeps the status word on the row face by default", () => {
+    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
+    const { container } = render(<SessionCard {...props} session={makeSession()} />);
+    // Suppression is opt-in. A list row has no column asserting its status, so
+    // the word is the only place the state is named.
+    expect(container.querySelector("[data-session-status]")).toBeTruthy();
+    expect(screen.queryByTestId("session-hover-status")).toBeNull();
+  });
+
+  it("names the model with the registry's short label, never the raw id", () => {
+    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
+    const { rerender } = render(
+      <SessionCard {...props} session={makeSession({ modelId: "claude-opus-5" })} />,
+    );
+    // `claude-opus-5` is an id, not something a human should have to read. The
+    // shared `formatSubagentModelLabel` resolves it through the model registry,
+    // so the row, the Chat Info header and the subagent roster agree.
+    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
+    expect(screen.queryByText("claude-opus-5")).toBeNull();
+
+    // The provider's own raw string is the fallback when no canonical id landed.
+    rerender(<SessionCard {...props} session={makeSession({ model: "claude-sonnet-5" })} />);
+    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Sonnet 5");
+
+    // A ref the registry has never heard of is shown as-is rather than dropped:
+    // a real answer nobody recognises still beats no answer.
+    rerender(<SessionCard {...props} session={makeSession({ model: "some-private-model" })} />);
+    expect(screen.getByTestId("session-model-label").textContent).toBe("some-private-model");
+  });
+
+  it("renders no model chip at all when the session has no model", () => {
+    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
+    const { rerender } = render(<SessionCard {...props} session={makeSession()} />);
+    // A CLI or shell row has no model; an empty or whitespace one is the same
+    // "we do not know", and a chip reading nothing is worse than no chip.
+    expect(screen.queryByTestId("session-model-label")).toBeNull();
+
+    rerender(<SessionCard {...props} session={makeSession({ model: "" })} />);
+    expect(screen.queryByTestId("session-model-label")).toBeNull();
+
+    rerender(<SessionCard {...props} session={makeSession({ model: "   ", modelId: undefined })} />);
+    expect(screen.queryByTestId("session-model-label")).toBeNull();
+  });
+
+  it("replaces the lineage badge with a CTO chip when the parent is the CTO identity", () => {
+    const props = {
+      lane,
+      isSelected: false,
+      onSelect: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+    const { rerender } = render(
+      <SessionCard
+        {...props}
+        session={makeSession({
+          orchestrationParentSessionId: "cto-session",
+          spawnKind: "subagent",
+          parentIdentityKey: "cto",
+          goal: "Audit the release pipeline",
+        })}
+      />,
+    );
+
+    const chip = screen.getByTestId("session-cto-lineage");
+    expect(chip.textContent).toContain("CTO");
+    // Strictly more specific than "Subagent", so it REPLACES that pill rather
+    // than sitting beside it — two chips for one fact on the busiest line.
+    expect(screen.queryByTestId("session-spawn-lineage")).toBeNull();
+    // Hover carries an excerpt of what the child was asked.
+    expect(chip.getAttribute("title")).toContain("Audit the release pipeline");
+
+    // The chip is the CTO PAGE, not the parent thread: the CTO is an identity
+    // session and is filtered out of every roster, so there is no row to open.
+    fireEvent.click(chip);
+    expect(navigateMock).toHaveBeenCalledWith("/cto");
+
+    // The condition is the identity key, not merely having a parent.
+    rerender(
+      <SessionCard
+        {...props}
+        session={makeSession({
+          orchestrationParentSessionId: "parent-1",
+          spawnKind: "subagent",
+        })}
+      />,
+    );
+    expect(screen.queryByTestId("session-cto-lineage")).toBeNull();
+    expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Subagent");
+
+    // And a CTO key with no parent at all is not lineage at all — the chip is
+    // a statement about a PARENT, and the projection only ever stamps the key
+    // alongside one.
+    rerender(
+      <SessionCard
+        {...props}
+        session={makeSession({ parentIdentityKey: "cto" })}
+      />,
+    );
+    expect(screen.queryByTestId("session-cto-lineage")).toBeNull();
+    expect(screen.queryByTestId("session-spawn-lineage")).toBeNull();
+  });
+
+  it("renders the CTO chip on a compact row too", () => {
+    render(
+      <SessionCard
+        compact
+        session={makeSession({
+          orchestrationParentSessionId: "cto-session",
+          parentIdentityKey: "cto",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    // Compact rows have no line 1, so the glyph is their only seat for lineage.
+    expect(screen.getByTestId("session-cto-lineage")).toBeTruthy();
+    expect(screen.queryByTestId("session-spawn-lineage")).toBeNull();
+  });
+
   it("never says 'another chat' and exposes parent navigation to the keyboard", () => {
     const onSelect = vi.fn();
     const dispatched: CustomEvent[] = [];

@@ -4,7 +4,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
-import { createCtoStateService } from "./ctoStateService";
+import {
+  CTO_LIVE_STATE_MAX_CHARS,
+  createCtoStateService,
+  renderCtoLiveStateBlock,
+  type CtoLiveStateSnapshot,
+  type CtoLiveStateSources,
+} from "./ctoStateService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
 
 function createLogger() {
@@ -44,6 +50,35 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
     expect(buildAdeGitignore()).not.toContain("!cto/identity.yaml");
     expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
+
+    fixture.db.close();
+  });
+
+  it("nulls a stored model preference whose provider cannot steer a live turn", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    // OpenCode stages every mid-turn message, so a CTO seated there would hold
+    // every child report until the current turn ended. The write normalizes
+    // away rather than sticking, which is what puts the surface on its picker.
+    service.updateIdentity({
+      modelPreferences: { provider: "opencode", model: "gpt-5.2", modelId: "opencode/openai/gpt-5.2" },
+    });
+    expect(service.getIdentity().modelPreferences).toBeNull();
+
+    // Cursor qualifies through interrupt-and-resend, so it is kept.
+    service.updateIdentity({
+      modelPreferences: { provider: "cursor", model: "composer-1", reasoningEffort: null },
+    });
+    expect(service.getIdentity().modelPreferences).toMatchObject({ provider: "cursor", model: "composer-1" });
+
+    // An explicit null clears the pick outright.
+    service.updateIdentity({ modelPreferences: null });
+    expect(service.getIdentity().modelPreferences).toBeNull();
 
     fixture.db.close();
   });
@@ -331,5 +366,262 @@ describe("ctoStateService", () => {
     expect(manifest).not.toContain("spawnChat —");
     expect(manifest).not.toContain("createLane —");
     expect(manifest).toContain("# Operating Rules");
+  });
+
+  /* ── Live project state ── */
+
+  /**
+   * Fake live-state sources shaped exactly like the `Pick` the service takes,
+   * so the builder is exercised through the real dependency surface rather
+   * than a parallel one.
+   */
+  function createFakeLiveStateSources(options: {
+    lanes: number;
+    chats: number;
+    prs: number;
+    automationRuns: number;
+    schedulesPerChat?: number;
+    awaitingEveryNthChat?: number;
+  }): CtoLiveStateSources {
+    const lanes = Array.from({ length: options.lanes }, (_, index) => ({
+      id: `lane-${index}`,
+      name: `feature/some-reasonably-long-lane-name-${index}`,
+      status: { dirty: index % 2 === 0, ahead: index, behind: index % 3, remoteBehind: 0, rebaseInProgress: false },
+    }));
+    const chats = Array.from({ length: options.chats }, (_, index) => ({
+      sessionId: `session-0000-${String(index).padStart(4, "0")}`,
+      laneId: `lane-${index % Math.max(1, options.lanes)}`,
+      provider: "claude",
+      model: "sonnet",
+      status: "idle",
+      startedAt: "2026-09-11T00:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-09-11T00:00:00.000Z",
+      lastOutputPreview: null,
+      summary: `Working through the ${index}th slice of the extraction program and reporting back.`,
+      title: `Extraction slice ${index} — a fairly long chat title as they go`,
+      nextWakeAt: null,
+      ...(options.awaitingEveryNthChat && index % options.awaitingEveryNthChat === 0
+        ? { awaitingInput: true }
+        : {}),
+      ...(index % 2 === 1 ? { orchestrationParentSessionId: "session-cto", spawnKind: "subagent" as const } : {}),
+      scheduledWork: Array.from({ length: options.schedulesPerChat ?? 0 }, (_, slot) => ({
+        id: `sched-${index}-${slot}`,
+        sessionId: `session-${index}`,
+        kind: "cron" as const,
+        status: "scheduled" as const,
+        title: `Nightly job ${slot} for chat ${index}`,
+        prompt: "do the thing",
+        createdAt: "2026-09-11T00:00:00.000Z",
+        durable: true,
+        cancellable: true,
+        nextRunAt: "2026-09-12T03:30:00.000Z",
+      })),
+    }));
+    const prs = Array.from({ length: options.prs }, (_, index) => ({
+      id: `pr-${index}`,
+      laneId: `lane-${index % Math.max(1, options.lanes)}`,
+      githubPrNumber: 1200 + index,
+      title: `feat(chat): a realistically long pull request title number ${index}`,
+      state: "open",
+      checksStatus: "pending",
+      reviewStatus: "changes_requested",
+    }));
+    const runs = Array.from({ length: options.automationRuns }, (_, index) => ({
+      id: `run-${index}`,
+      automationId: `automation-${index % 4}`,
+      status: "succeeded",
+      startedAt: "2026-09-11T00:00:00.000Z",
+      endedAt: "2026-09-11T00:01:00.000Z",
+    }));
+    return {
+      laneService: { list: async () => lanes } as unknown as CtoLiveStateSources["laneService"],
+      prService: { listAll: () => prs } as unknown as CtoLiveStateSources["prService"],
+      automationService: {
+        list: () => Array.from({ length: 4 }, (_, index) => ({ id: `automation-${index}`, name: `Nightly automation ${index}` })),
+        listRuns: () => runs,
+      } as unknown as CtoLiveStateSources["automationService"],
+      listChats: (async () => chats) as unknown as CtoLiveStateSources["listChats"],
+    };
+  }
+
+  it("builds the live state block from the operator tools' own dependency shapes", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => createFakeLiveStateSources({
+        lanes: 2,
+        chats: 2,
+        prs: 1,
+        automationRuns: 1,
+        schedulesPerChat: 1,
+        awaitingEveryNthChat: 2,
+      }),
+    });
+
+    // Nothing is injected until a turn asks for a refresh: the block is
+    // per-turn state, not boot state.
+    expect(service.buildReconstructionContext(8)).not.toContain("Live project state");
+
+    await service.refreshLiveState();
+    const context = service.buildReconstructionContext(8);
+
+    expect(context).toContain("Live project state (captured");
+    expect(context).toContain("feature/some-reasonably-long-lane-name-0");
+    expect(context).toContain("clean, 1 ahead, 1 behind");
+    expect(context).toContain("#1200");
+    expect(context).toContain("checks pending, review changes_requested");
+    expect(context).toContain("subagent of session-cto");
+    expect(context).toContain("Waiting on you (1)");
+    // Most urgent first: the cap eats the automation-run tail, never approvals.
+    expect(context.indexOf("Waiting on you")).toBeLessThan(context.indexOf("Recent automation runs"));
+    expect(context).toContain("Nightly job 0 for chat 0");
+    expect(context).toContain("Nightly automation 0");
+    // The block is LAST, because the turn-context prefix truncates by keeping
+    // the tail — the freshest section must be the one a budget cannot cut.
+    expect(context.indexOf("Live project state")).toBeGreaterThan(context.indexOf("CTO Identity"));
+
+    fixture.db.close();
+  });
+
+  it("degrades to a named note when one source throws instead of blanking the block", async () => {
+    const fixture = await createStateFixture();
+    const sources = createFakeLiveStateSources({ lanes: 1, chats: 1, prs: 1, automationRuns: 1 });
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => ({
+        ...sources,
+        laneService: {
+          list: async () => { throw new Error("lane service down"); },
+        } as unknown as CtoLiveStateSources["laneService"],
+      }),
+    });
+
+    await service.refreshLiveState();
+    const context = service.buildReconstructionContext(8);
+    expect(context).toContain("Unavailable this turn: lanes.");
+    // The rest of the block still rendered.
+    expect(context).toContain("Open PRs (1)");
+
+    fixture.db.close();
+  });
+
+  it("reports overflow counts instead of rendering every row", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => createFakeLiveStateSources({
+        lanes: 40,
+        chats: 40,
+        prs: 40,
+        automationRuns: 40,
+      }),
+    });
+
+    const snapshot = await service.refreshLiveState();
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.lanesTotal).toBe(40);
+    expect(snapshot!.lanes).toHaveLength(12);
+    const block = renderCtoLiveStateBlock(snapshot!, Number.MAX_SAFE_INTEGER);
+    expect(block).toContain("and 28 more lanes.");
+    expect(block).toContain("and 25 more chats.");
+    expect(block).toContain("and 28 more PRs.");
+
+    fixture.db.close();
+  });
+
+  /**
+   * The cap is measured, not guessed, and this test is the measurement: it
+   * fails if a future section pushes the realistic or worst-case size past what
+   * `CTO_LIVE_STATE_MAX_CHARS` was chosen for, forcing a re-measure rather than
+   * letting the block quietly start truncating itself in production.
+   */
+  it("stays inside its measured cap at this project's real size and at the worst case", async () => {
+    const fixture = await createStateFixture();
+
+    // This project as measured on 2026-09-11: 11 lanes (6 active), 7 chat
+    // sessions, 16 open PRs, 37 recorded automation runs.
+    const realistic = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      getLiveStateSources: () => createFakeLiveStateSources({
+        lanes: 6,
+        chats: 7,
+        prs: 16,
+        automationRuns: 37,
+        schedulesPerChat: 1,
+      }),
+    });
+    const realisticSnapshot = await realistic.refreshLiveState();
+    const realisticBlock = renderCtoLiveStateBlock(realisticSnapshot!);
+    // Measured 2026-09-11: 4591 characters.
+    expect(realisticBlock.length).toBeGreaterThan(4_300);
+    expect(realisticBlock.length).toBeLessThan(4_900);
+    // Nothing this project can currently produce is truncated.
+    expect(realisticBlock).not.toContain("(live state truncated)");
+
+    // The worst case the per-section row caps allow, with every string at its
+    // own clip limit.
+    const worst: CtoLiveStateSnapshot = {
+      capturedAt: "2026-09-11T00:00:00.000Z",
+      lanes: Array.from({ length: 12 }, (_, i) => ({
+        id: "l".repeat(40), name: "n".repeat(60), dirty: true, ahead: i, behind: i,
+      })),
+      lanesTotal: 999,
+      chats: Array.from({ length: 15 }, () => ({
+        sessionId: "s".repeat(40),
+        title: "t".repeat(60),
+        laneId: "l".repeat(40),
+        status: "active",
+        note: "x".repeat(120),
+        parentSessionId: "p".repeat(40),
+        spawnKind: "subagent",
+      })),
+      chatsTotal: 999,
+      pullRequests: Array.from({ length: 12 }, (_, i) => ({
+        number: 10000 + i, title: "t".repeat(70), laneId: "l".repeat(40),
+        checks: "changes_requested", review: "changes_requested",
+      })),
+      pullRequestsTotal: 999,
+      approvals: Array.from({ length: 10 }, () => ({ sessionId: "s".repeat(40), title: "t".repeat(70) })),
+      approvalsTotal: 999,
+      scheduledWork: Array.from({ length: 10 }, () => ({
+        sessionId: "s".repeat(40), title: "t".repeat(60), status: "scheduled",
+        nextRunAt: "2026-09-12T03:30:00.000Z",
+      })),
+      scheduledWorkTotal: 999,
+      automationRuns: Array.from({ length: 8 }, () => ({
+        name: "n".repeat(60), status: "succeeded", at: "2026-09-11T00:00:00.000Z",
+      })),
+      automationRunsTotal: 999,
+      unavailable: [],
+    };
+    const worstRaw = renderCtoLiveStateBlock(worst, Number.MAX_SAFE_INTEGER);
+    // Measured 2026-09-11: 12578 characters — every row present with every
+    // string at its clip limit. A new section that moves this number has to
+    // move the cap with it.
+    expect(worstRaw.length).toBeGreaterThan(12_000);
+    expect(worstRaw.length).toBeLessThan(13_500);
+    expect(worstRaw.length).toBeGreaterThan(CTO_LIVE_STATE_MAX_CHARS);
+
+    // ...and the cap holds it, line-aligned, with an explicit marker.
+    const capped = renderCtoLiveStateBlock(worst);
+    expect(capped.length).toBeLessThanOrEqual(CTO_LIVE_STATE_MAX_CHARS + 32);
+    expect(capped.endsWith("(live state truncated)")).toBe(true);
+    // Every surviving row is whole: the worst-case rows are built from repeated
+    // characters, so a cut row would show a short run.
+    const rows = capped.split("\n").filter((line) => line.startsWith("- ") && line.includes("l".repeat(40)));
+    for (const row of rows) {
+      expect(row).toContain("l".repeat(40));
+    }
+
+    fixture.db.close();
   });
 });

@@ -228,12 +228,23 @@ struct WorkFiltersSection: View {
     }
   }
 
+  /// The chip accents, mapped one-for-one onto the desktop board's column
+  /// accents (`WorkKanbanBoard.tsx`): amber for Needs you — your move and
+  /// nothing else, blue for Working — something is happening and nothing is
+  /// asked, a plain foreground neutral for Waiting — true, but not actionable,
+  /// and emerald for Done. Every value is an existing text or semantic token,
+  /// so both appearances are already covered; no chip carries a literal colour.
+  ///
+  /// Archived moves off amber, which it used to share with Needs you: with the
+  /// chips now reading as the board's columns, a second amber would claim
+  /// attention for a shelf nobody is being asked to look at.
   private func statusFilterTint(_ status: WorkSessionStatusFilter) -> Color {
     switch status {
-    case .needsInput: return ADEColor.warning
-    case .running: return ADEColor.success
-    case .ended: return ADEColor.textMuted
-    case .archived: return ADEColor.warning
+    case .needsYou: return ADEColor.warning
+    case .working: return ADEColor.info
+    case .waiting: return ADEColor.textMuted
+    case .done: return ADEColor.success
+    case .archived: return ADEColor.textSecondary
     case .all: return ADEColor.accent
     }
   }

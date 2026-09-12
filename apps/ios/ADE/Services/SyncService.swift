@@ -4186,6 +4186,23 @@ final class SyncService: ObservableObject {
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
   private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
+  /// Host-stamped `parentIdentityKey`, kept out of the database on purpose.
+  ///
+  /// The field is a PROJECTION on the desktop (`chatSessionProjection` resolves
+  /// it from the parent chat at read time) and has no column on either side, so
+  /// it arrives on the `work.listSessions` wire and would be dropped the moment
+  /// the payload is written into `terminal_sessions`. Holding it here keeps the
+  /// phone's copy exactly as durable as the host's — which is to say, not — and
+  /// avoids inventing an iOS-only column that the replicated schema does not
+  /// have.
+  ///
+  /// Consequence, deliberately accepted: a row that reached the phone through
+  /// the changeset stream alone carries no key until the next Work refresh
+  /// names it. The chip is identity, not state, so appearing a refresh late is
+  /// a missing decoration rather than a wrong one — and the alternative
+  /// (guessing from a parent the phone cannot see) is how the desktop's own
+  /// comment says NOT to derive it.
+  private(set) var sessionParentIdentityKeys: [String: String] = [:]
   private struct ChatModelsCacheEntry {
     var models: [AgentChatModelInfo]
     var fetchedAt: Date
@@ -5711,6 +5728,7 @@ final class SyncService: ObservableObject {
     if scopeChanged {
       resetCtoAttentionForProjectScopeChange()
       resetPendingSessionSettleStates()
+      resetPendingAttentionClearStates()
       cancelAllTerminalSnapshotRecovery()
       terminalSnapshotRequestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
@@ -6099,7 +6117,7 @@ final class SyncService: ObservableObject {
     roamTask?.cancel()
     reconnectStabilityTask?.cancel()
     pendingOperationFlushTask?.cancel()
-    pendingSessionSettleBackstopTask?.cancel()
+    for task in sessionOverlayBackstopTasks.values { task.cancel() }
     outboundCursorPersistTask?.cancel()
     remoteCursorProfilePersistTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
@@ -9233,6 +9251,7 @@ final class SyncService: ObservableObject {
       saveRemoteCommandDescriptors([])
       clearPendingChatCreations()
       resetPendingSessionSettleStates()
+      resetPendingAttentionClearStates()
       resetChatEventState(clearHistory: true)
       resetTerminalSubscriptionState(clearHistory: true)
       activeHostProfile = nil
@@ -9537,6 +9556,12 @@ final class SyncService: ObservableObject {
       )
       try requireCurrentHydrationProjectScope(scope)
       let sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+      // Captured from the wire, not from the database: `replaceTerminalSessions`
+      // below writes only the columns `terminal_sessions` has, and this is not
+      // one of them. A full list is authoritative for the rows it names, so a
+      // key that disappeared is dropped rather than left behind — a reparented
+      // chat must stop claiming the CTO.
+      ingestSessionParentIdentityKeys(from: sessions)
       let knownLaneIds = Set(database.fetchLanes(includeArchived: true).map(\.id))
       if !syncMissingWorkSessionLaneIds(sessions: sessions, knownLaneIds: knownLaneIds).isEmpty {
         // Fetch only the cheap lane identity/status projection needed to
@@ -10077,32 +10102,89 @@ final class SyncService: ObservableObject {
   /// Safe from a render path — the bump is debounced, and the pass it triggers
   /// re-prunes, finds nothing, and stops.
   private func localSessions() -> [TerminalSessionSummary] {
-    let sessions = database.fetchSessions()
-    guard !pendingSessionSettleStates.isEmpty else { return sessions }
-    prunePendingSessionSettleStates(against: sessions)
-    return pendingSessionSettleStates.apply(to: sessions)
+    // Restored FIRST, and separately from the two pending overlays below: those
+    // are local guesses about lifecycle columns, while this is host state the
+    // database round-trip dropped. Keeping it ahead of the early return is what
+    // makes the chip survive a quiet phone with no overlays in flight.
+    let sessions = applySessionParentIdentityKeys(to: database.fetchSessions())
+    guard !pendingSessionOverlaysAreEmpty else { return sessions }
+    prunePendingSessionOverlays(against: sessions)
+    // Settle first, attention second. The two write disjoint column sets, and
+    // the attention overlay keys off columns the settle overlay never rewrites,
+    // so neither can read the other's guess as host state.
+    return pendingAttentionClearStates.apply(to: pendingSessionSettleStates.apply(to: sessions))
   }
 
   private func localSession(id sessionId: String) -> TerminalSessionSummary? {
-    guard let session = database.fetchSession(id: sessionId) else { return nil }
-    guard !pendingSessionSettleStates.isEmpty else { return session }
-    prunePendingSessionSettleStates(against: [session])
-    return pendingSessionSettleStates.apply(to: session)
+    guard let row = database.fetchSession(id: sessionId) else { return nil }
+    let session = applySessionParentIdentityKey(to: row)
+    guard !pendingSessionOverlaysAreEmpty else { return session }
+    prunePendingSessionOverlays(against: [session])
+    return pendingAttentionClearStates.apply(to: pendingSessionSettleStates.apply(to: session))
   }
 
-  /// Retire confirmed or expired intents, and repaint if any went away. An
-  /// expiry is the one resolution with no accompanying database write, so
-  /// without this nudge it would only become visible on the next unrelated
-  /// read — which against a quiet host may be a long time.
-  private func prunePendingSessionSettleStates(against sessions: [TerminalSessionSummary]) {
+  private var pendingSessionOverlaysAreEmpty: Bool {
+    pendingSessionSettleStates.isEmpty && pendingAttentionClearStates.isEmpty
+  }
+
+  /// Replace the projection with what a full `work.listSessions` answer says.
+  ///
+  /// Non-private so a test can pin the replace-not-merge rule: a merge would
+  /// leave a chat that was reparented away from the CTO wearing the chip until
+  /// the app was relaunched, and "identity, but stale" is the one failure a
+  /// lineage chip must not have.
+  func ingestSessionParentIdentityKeys(from sessions: [TerminalSessionSummary]) {
+    var next: [String: String] = [:]
+    next.reserveCapacity(sessions.count)
+    for session in sessions {
+      guard let key = session.parentIdentityKey?
+        .trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else { continue }
+      next[session.id] = key
+    }
+    guard next != sessionParentIdentityKeys else { return }
+    sessionParentIdentityKeys = next
+  }
+
+  /// Stamp the remembered key back onto a row read from the database.
+  ///
+  /// A row that already carries one is left alone: the only way that happens is
+  /// a caller handing over an un-round-tripped wire row, and the host's own
+  /// answer must always outrank the remembered copy.
+  func applySessionParentIdentityKey(to session: TerminalSessionSummary) -> TerminalSessionSummary {
+    guard session.parentIdentityKey == nil,
+          let key = sessionParentIdentityKeys[session.id] else { return session }
+    var next = session
+    next.parentIdentityKey = key
+    return next
+  }
+
+  func applySessionParentIdentityKeys(to sessions: [TerminalSessionSummary]) -> [TerminalSessionSummary] {
+    guard !sessionParentIdentityKeys.isEmpty else { return sessions }
+    return sessions.map(applySessionParentIdentityKey(to:))
+  }
+
+  /// Retire confirmed or expired intents from BOTH session overlays, and repaint
+  /// if any went away. An expiry is the one resolution with no accompanying
+  /// database write, so without this nudge it would only become visible on the
+  /// next unrelated read — which against a quiet host may be a long time.
+  private func prunePendingSessionOverlays(against sessions: [TerminalSessionSummary]) {
     let uptime = ProcessInfo.processInfo.systemUptime
     // Hold first, then measure: after a hold every deadline is `uptime`, so the
     // backstop cannot fire against a command that is merely waiting for the
     // connection to come back.
+    //
+    // Deliberately NOT extended to the attention overlay. That one hides an ask
+    // rather than shows a disposition, and an unreachable host is exactly when a
+    // suppression must lapse rather than persist — holding it would keep a row
+    // looking calm for as long as the phone stayed offline.
     if !canSendLiveRequests() {
       pendingSessionSettleStates.holdBackstop(uptime: uptime)
     }
-    guard pendingSessionSettleStates.prune(against: sessions, uptime: uptime) else { return }
+    var repaint = pendingSessionSettleStates.prune(against: sessions, uptime: uptime)
+    if pendingAttentionClearStates.prune(against: sessions, uptime: uptime) {
+      repaint = true
+    }
+    guard repaint else { return }
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
@@ -10220,9 +10302,49 @@ final class SyncService: ObservableObject {
   /// In-flight settle intents, applied over session reads so a settle feels
   /// immediate without a replicating write. Never persisted.
   private var pendingSessionSettleStates = PendingSessionSettleStates()
-  /// Timer that guarantees the overlay's staleness backstop fires even when no
-  /// read is coming. See `schedulePendingSessionSettleBackstopSweep`.
-  private var pendingSessionSettleBackstopTask: Task<Void, Never>?
+
+  /// The local session overlays that promise a staleness deadline, and so need a
+  /// timer to keep that promise. Two today; the sweeper below is written once
+  /// for both rather than transcribed per overlay, which is how the two copies
+  /// it replaces came to differ in whether a reset cancelled its own timer.
+  private enum SessionOverlayKind: CaseIterable {
+    case settle
+    case attentionClear
+
+    /// Stable name for the DEBUG seams at the bottom of this file, which cannot
+    /// take a private type in their signatures.
+    var debugName: String {
+      switch self {
+      case .settle: return "settle"
+      case .attentionClear: return "attentionClear"
+      }
+    }
+
+    /// The overlay's own staleness window. The two are deliberately very
+    /// different — 20s for a settle, 8s for an attention clear — so the sweeper
+    /// reads it off the kind rather than assuming one number.
+    var staleAfter: TimeInterval {
+      switch self {
+      case .settle: return PendingSessionSettleStates.staleAfter
+      case .attentionClear: return PendingAttentionClearStates.staleAfter
+      }
+    }
+  }
+
+  /// Slack past the deadline before the sweep runs, so the timer always fires
+  /// on the expired side of `staleAfter` rather than racing it.
+  private static let sessionOverlayBackstopSlackNanoseconds: UInt64 = 250_000_000
+
+  /// How long the sweeper waits for one overlay: that overlay's OWN window plus
+  /// the slack. Factored out of the sweep so it can be asserted without a test
+  /// standing around for 8 and 20 real seconds.
+  private static func sessionOverlayBackstopDelayNanoseconds(_ kind: SessionOverlayKind) -> UInt64 {
+    UInt64(kind.staleAfter * 1_000_000_000) + sessionOverlayBackstopSlackNanoseconds
+  }
+
+  /// Timers that guarantee each overlay's staleness backstop fires even when no
+  /// read is coming. See `scheduleSessionOverlayBackstopSweep(_:)`.
+  private var sessionOverlayBackstopTasks: [SessionOverlayKind: Task<Void, Never>] = [:]
 
   /// Record an in-flight settle intent and nudge the projections, mirroring the
   /// re-render the optimistic DB write used to trigger through
@@ -10239,7 +10361,7 @@ final class SyncService: ObservableObject {
       baseline: database.fetchSession(id: sessionId)
     )
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
-    schedulePendingSessionSettleBackstopSweep()
+    scheduleSessionOverlayBackstopSweep(.settle)
     return token
   }
 
@@ -10259,7 +10381,7 @@ final class SyncService: ObservableObject {
   /// sessions that are no longer on screen, and on unpair the host is
   /// permanently unreachable, so `holdBackstop` would otherwise keep the overlay
   /// painting for the rest of the app's life.
-  /// Guarantee the staleness backstop actually fires.
+  /// Guarantee an overlay's staleness backstop actually fires.
   ///
   /// `prune` only runs from a session read, and reads are driven by database
   /// changes. A command whose confirming changeset never arrives produces no
@@ -10268,29 +10390,156 @@ final class SyncService: ObservableObject {
   /// a promise the code does not keep. This is the timer that keeps it.
   ///
   /// Re-arms while any intent is still in flight (an offline hold keeps
-  /// re-stamping deadlines, so one shot is not enough) and stops as soon as the
-  /// map empties.
-  private func schedulePendingSessionSettleBackstopSweep() {
-    pendingSessionSettleBackstopTask?.cancel()
-    guard !pendingSessionSettleStates.isEmpty else {
-      pendingSessionSettleBackstopTask = nil
+  /// re-stamping deadlines, so one shot is not enough) and stops as soon as that
+  /// overlay's map empties. One timer per kind: the two windows differ by more
+  /// than a factor of two, so a shared tick would either miss the short one or
+  /// wake pointlessly for the long one.
+  private func scheduleSessionOverlayBackstopSweep(_ kind: SessionOverlayKind) {
+    sessionOverlayBackstopTasks[kind]?.cancel()
+    guard !sessionOverlayIsEmpty(kind) else {
+      sessionOverlayBackstopTasks[kind] = nil
       return
     }
-    pendingSessionSettleBackstopTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: UInt64(PendingSessionSettleStates.staleAfter * 1_000_000_000) + 250_000_000)
+    sessionOverlayBackstopTasks[kind] = Task { @MainActor [weak self] in
+      try? await Task.sleep(
+        nanoseconds: SyncService.sessionOverlayBackstopDelayNanoseconds(kind)
+      )
       guard let self, !Task.isCancelled else { return }
-      self.pendingSessionSettleBackstopTask = nil
+      self.sessionOverlayBackstopTasks[kind] = nil
       // Reading through the chokepoint prunes and repaints if anything expired.
       _ = self.localSessions()
-      self.schedulePendingSessionSettleBackstopSweep()
+      self.scheduleSessionOverlayBackstopSweep(kind)
+    }
+  }
+
+  /// Stand a sweeper down. Called from both resets, which previously disagreed
+  /// about whether to — see `resetPendingSessionSettleStates`.
+  private func cancelSessionOverlayBackstopSweep(_ kind: SessionOverlayKind) {
+    sessionOverlayBackstopTasks.removeValue(forKey: kind)?.cancel()
+  }
+
+  private func sessionOverlayIsEmpty(_ kind: SessionOverlayKind) -> Bool {
+    switch kind {
+    case .settle: return pendingSessionSettleStates.isEmpty
+    case .attentionClear: return pendingAttentionClearStates.isEmpty
     }
   }
 
   private func resetPendingSessionSettleStates() {
+    // Cancelling here is the deliberate half of unifying the two resets: the
+    // attention-clear reset always did, this one did not, and "did not" was the
+    // wrong side. A reset empties the map, so the armed timer can only wake,
+    // take a `localSessions()` read nobody asked for, find nothing, and stand
+    // down. On the unpair path that read happens against a host that is gone.
+    cancelSessionOverlayBackstopSweep(.settle)
     guard !pendingSessionSettleStates.isEmpty else { return }
     pendingSessionSettleStates.removeAll()
     // The project-switch caller reloads everything anyway; the unpair caller
     // does not, so repaint here rather than relying on the caller.
+    scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
+  }
+
+  // MARK: - Attention-clear overlay (the phone half of a stale "Needs you")
+  //
+  // The host clears `pending_input_item_id` / `attention_requested_at` /
+  // `attention_source` when a card settles, but that clear rides the CRDT
+  // changeset, which lands well after the `pending_input_resolved` /
+  // `user_message` chat event that already told the phone the user answered.
+  // In that window the Work row keeps saying "Needs you" for a question the
+  // user has already dealt with. These bridge it — see
+  // `PendingAttentionClearIntent` (`PendingAttentionClearStates.swift`, which
+  // carries the full argument) for why the bridge is keyed rather than timed.
+
+  /// In-flight local attention clears, applied over session reads so an answer
+  /// feels immediate without a replicating write. Never persisted.
+  /// Its staleness backstop is the shared
+  /// `scheduleSessionOverlayBackstopSweep(.attentionClear)`, for the same reason
+  /// the settle overlay needs one: `prune` runs only from a session read, and
+  /// reads are driven by database changes.
+  private var pendingAttentionClearStates = PendingAttentionClearStates()
+
+  /// Metadata keys the host stamps on a `user_message` it authored itself.
+  ///
+  /// A child's completion report, a scheduled wake, a parent's dispatch, a
+  /// sibling's relay and a host continuation prompt all arrive on the wire as
+  /// `user_message`, and none of them is a human answering a question. Reading
+  /// one as an answer would clear a genuine "Needs you" nobody has seen.
+  /// `boardMove` belongs here too: the host writes it when a card is dragged
+  /// between columns, and it explicitly REFUSES to clear attention for a move
+  /// into "Needs you" — so reading it as an answer would hide the very row the
+  /// user just parked. The other direction is safe because the host already
+  /// cleared the attention columns itself; the phone only forgoes a redundant
+  /// optimistic clear.
+  /// Mirrors `HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS` in
+  /// `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts` and
+  /// `AgentChatEventMetadata` in `apps/desktop/src/shared/types/chat.ts`.
+  private static let hostAuthoredChatMessageMetadataKeys: Set<String> = [
+    "scheduledWake",
+    "spawnCompletion",
+    "spawnDispatch",
+    "agentRelay",
+    "hostContinuation",
+    "boardMove",
+  ]
+
+  /// Whether a raw `chat_event` payload carries a message the host delivered on
+  /// the agent's behalf.
+  ///
+  /// Read off the RAW dictionary rather than the decoded event: `AgentChatEvent`
+  /// keeps only the fields it renders, so the metadata marker survives nowhere
+  /// else. Non-private so unit tests can pin the exclusion directly.
+  func isHostAuthoredChatMessagePayload(_ rawPayload: [String: Any]) -> Bool {
+    guard let eventDict = rawPayload["event"] as? [String: Any],
+          let metadata = eventDict["metadata"] as? [String: Any]
+    else { return false }
+    return metadata.keys.contains { SyncService.hostAuthoredChatMessageMetadataKeys.contains($0) }
+  }
+
+  /// Clear the cached summary's attention flags for a session whose pending ask
+  /// the user has just answered.
+  ///
+  /// `workCanonicalSessionState` prefers the cached summary's `awaitingInput` /
+  /// `pendingInputItemId` over the session row's, so a stale cached summary on
+  /// its own is enough to hold a row on "Needs you" even once the row is clean.
+  @discardableResult
+  private func clearCachedChatSummaryAttention(sessionId: String) -> Bool {
+    guard var summary = chatSummaryCache[sessionId] else { return false }
+    // Only when there is something to clear. Flipping a nil `awaitingInput` to
+    // `false` would change the summary without changing what the row shows, and
+    // every such write costs a projection recompute.
+    let pendingItemId = summary.pendingInputItemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard summary.awaitingInput == true || !pendingItemId.isEmpty else { return false }
+    summary.awaitingInput = false
+    summary.pendingInputItemId = nil
+    chatSummaryCache[sessionId] = summary
+    return true
+  }
+
+  /// Record an in-flight attention clear and nudge the projections, mirroring
+  /// `beginPendingSessionSettle`. Returns whether an overlay was actually
+  /// recorded — a calm row records nothing.
+  @discardableResult
+  private func beginPendingAttentionClear(for sessionId: String) -> Bool {
+    // The RAW row is the baseline, exactly as in `beginPendingSessionSettle`:
+    // what the host actually has, not what another overlay is already painting.
+    let token = pendingAttentionClearStates.begin(
+      for: sessionId,
+      baseline: database.fetchSession(id: sessionId),
+      uptime: ProcessInfo.processInfo.systemUptime
+    )
+    guard token != 0 else { return false }
+    scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
+    scheduleSessionOverlayBackstopSweep(.attentionClear)
+    return true
+  }
+
+  private func resetPendingAttentionClearStates() {
+    cancelSessionOverlayBackstopSweep(.attentionClear)
+    guard !pendingAttentionClearStates.isEmpty else { return }
+    pendingAttentionClearStates.removeAll()
+    // Same reasoning as `resetPendingSessionSettleStates`: the project-switch
+    // caller reloads anyway, the unpair caller does not.
     scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: ["terminal_sessions"])
   }
 
@@ -10417,7 +10666,7 @@ final class SyncService: ObservableObject {
       token: token,
       uptime: ProcessInfo.processInfo.systemUptime
     )
-    schedulePendingSessionSettleBackstopSweep()
+    scheduleSessionOverlayBackstopSweep(.settle)
   }
 
   /// Snooze-family command: writes the snooze overlay columns optimistically and
@@ -17648,6 +17897,38 @@ final class SyncService: ObservableObject {
     beginPendingSessionSettle(intent, for: sessionId)
   }
 
+  /// Seed a local attention clear without a paired host, so the read chokepoint
+  /// and the surfaces that depend on it can be tested directly. Returns whether
+  /// an overlay was recorded — a calm row records none.
+  @discardableResult
+  func beginPendingAttentionClearForTesting(for sessionId: String) -> Bool {
+    beginPendingAttentionClear(for: sessionId)
+  }
+
+  /// Which overlays currently hold an armed staleness backstop, by
+  /// `SessionOverlayKind.debugName`. One sweeper serves both kinds, so the facts
+  /// worth pinning are that the kinds stay separate and that each reset stands
+  /// its OWN timer down — the two hand-copied sweepers this replaced had already
+  /// drifted apart on exactly that second point.
+  var armedSessionOverlayBackstopKindsForTesting: Set<String> {
+    Set(sessionOverlayBackstopTasks.keys.map(\.debugName))
+  }
+
+  /// The sweep delay for one overlay kind. Keyed by name because the kind enum
+  /// is private to the sweeper; `nil` for a name that is not a kind.
+  static func sessionOverlayBackstopDelayNanosecondsForTesting(_ name: String) -> UInt64? {
+    SessionOverlayKind.allCases
+      .first { $0.debugName == name }
+      .map { sessionOverlayBackstopDelayNanoseconds($0) }
+  }
+
+  /// Both overlay resets, in the order the project-switch and unpair paths run
+  /// them.
+  func resetSessionOverlaysForTesting() {
+    resetPendingSessionSettleStates()
+    resetPendingAttentionClearStates()
+  }
+
   /// Drives the two halves of one attempt's copy — the target and the stage
   /// label — so a test can prove they move together across a handoff.
   func publishAccountConnectStageForTesting(_ label: String) {
@@ -19081,6 +19362,11 @@ final class SyncService: ObservableObject {
         // refetch. Decodes to `.unknown` for transcript purposes (older switches
         // stay valid); the mode payload is read from the raw event dict here.
         applyChatSessionMetaModeUpdateIfNeeded(envelope: envelope, rawPayload: dict)
+        // A `pending_input_resolved` receipt or a human `user_message` means the
+        // ask this row is flagged for has been answered. Clear the local
+        // attention state now rather than waiting for the host's changeset, so
+        // the Work row leaves "Needs you" with the answer instead of behind it.
+        applyChatAttentionResolutionIfNeeded(envelope: envelope, rawPayload: dict)
         syncChatLog.debug(
           "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public) history=\(self.chatEventEnvelopesBySession[envelope.sessionId]?.count ?? 0, privacy: .public) revision=\(self.chatEventRevisionsBySession[envelope.sessionId] ?? 0, privacy: .public)"
         )
@@ -20224,7 +20510,7 @@ final class SyncService: ObservableObject {
           uptime: ProcessInfo.processInfo.systemUptime
         )
         pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
-        schedulePendingSessionSettleBackstopSweep()
+        scheduleSessionOverlayBackstopSweep(.settle)
         // A drained chat creation produced a real session; drop the optimistic
         // "Pending sync" snapshot so the synced row takes over.
         if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
@@ -20908,6 +21194,9 @@ final class SyncService: ObservableObject {
       // session), which means a full reset must clear it explicitly — otherwise
       // another project's / a stale connection's summaries would linger.
       chatSummaryCache.removeAll()
+      // Project-scoped for the same reason the summary cache is: a session id
+      // from another project must never lend its lineage to a row here.
+      sessionParentIdentityKeys.removeAll()
     } else {
       pruneChatEventHistoryCacheIfNeeded()
     }
@@ -20946,7 +21235,7 @@ final class SyncService: ObservableObject {
     // reconnecting and replaying it. Rebase the deadlines here, at the earliest
     // point the connection is usable, and re-arm the sweep that enforces them.
     pendingSessionSettleStates.holdBackstop(uptime: ProcessInfo.processInfo.systemUptime)
-    schedulePendingSessionSettleBackstopSweep()
+    scheduleSessionOverlayBackstopSweep(.settle)
 
     if activeProjectId == nil {
       refreshProjectCatalog()
@@ -21470,6 +21759,41 @@ extension SyncService {
     }
     guard summary != chatSummaryCache[envelope.sessionId] else { return }
     chatSummaryCache[envelope.sessionId] = summary
+    refreshActiveSessionsAndSnapshot()
+  }
+
+  /// Fold a `pending_input_resolved` receipt or a human `user_message` into the
+  /// local attention state for its session, so a Work row stops saying "Needs
+  /// you" the moment the answer is known rather than one changeset later.
+  ///
+  /// Two halves, because the needs-you tier reads two sources: the cached chat
+  /// summary (`awaitingInput` / `pendingInputItemId`), which is ours to patch,
+  /// and the session row's attention columns, which are host-authoritative and
+  /// get the keyed `PendingAttentionClearStates` overlay instead of a write.
+  ///
+  /// Non-private so unit tests can drive the fold directly with a seeded cache.
+  func applyChatAttentionResolutionIfNeeded(
+    envelope: AgentChatEventEnvelope,
+    rawPayload: [String: Any]
+  ) {
+    switch envelope.event {
+    case .pendingInputResolved:
+      // A receipt for the gate itself: the host has settled the card, whoever
+      // answered it and from whichever surface.
+      break
+    case .userMessage:
+      // A host-authored message is the agent's own machinery talking — a child
+      // reporting in, a scheduled wake, a relay — not a human answering. Reading
+      // one as an answer would mask a genuine "Needs you".
+      guard !isHostAuthoredChatMessagePayload(rawPayload) else { return }
+    default:
+      return
+    }
+    var changed = clearCachedChatSummaryAttention(sessionId: envelope.sessionId)
+    if beginPendingAttentionClear(for: envelope.sessionId) {
+      changed = true
+    }
+    guard changed else { return }
     refreshActiveSessionsAndSnapshot()
   }
 

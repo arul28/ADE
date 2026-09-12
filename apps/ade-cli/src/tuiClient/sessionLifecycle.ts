@@ -10,6 +10,13 @@ import {
   isSessionFiledAsSnoozed,
   isSessionSnoozed,
 } from "../../../desktop/src/shared/sessionCanonicalState";
+import {
+  WORK_BOARD_COLUMN_LABEL,
+  WORK_BOARD_MOVE_TARGETS,
+  isWorkBoardMoveTarget,
+  type WorkBoardColumn,
+  type WorkBoardMoveTarget,
+} from "../../../desktop/src/shared/types/chat";
 import { parseSnoozeDuration } from "../sessionSnoozeDuration";
 import type { TuiSessionLifecycleFields } from "./adeApi";
 
@@ -38,7 +45,8 @@ export type SessionLifecycleCommand =
   | "unsettle"
   | "keep-active"
   | "demote"
-  | "promote";
+  | "promote"
+  | "move";
 
 /** Slash names this module owns, mapped to their verb. `/chat settle` and
  *  `/chat unsettle` keep their own (active-only) dispatch in app.tsx. */
@@ -50,6 +58,7 @@ export const SESSION_LIFECYCLE_COMMAND_BY_NAME: Readonly<Record<string, SessionL
   "/session keep-active": "keep-active",
   "/session demote": "demote",
   "/session promote": "promote",
+  "/session move": "move",
 };
 
 export function sessionLifecycleCommandFor(name: string): SessionLifecycleCommand | null {
@@ -131,6 +140,56 @@ export function resolveSessionTarget(args: {
     };
   }
   return { ok: true, sessionId: args.activeSessionId, explicit: false, rest: trimmed };
+}
+
+// ---------------------------------------------------------------------------
+// Board columns
+// ---------------------------------------------------------------------------
+
+export type BoardMoveResolution =
+  | { ok: true; to: WorkBoardMoveTarget }
+  | { ok: false; message: string };
+
+/**
+ * Resolve the column argument of `/session move`.
+ *
+ * The vocabulary is imported, never restated: the targets come from
+ * `WORK_BOARD_MOVE_TARGETS` and the labels from `WORK_BOARD_COLUMN_LABEL`, so a
+ * fifth column added to the shared type cannot leave this surface behind.
+ *
+ * Both spellings are accepted for the same reason `ade session move` accepts
+ * both: the column is written `Needs you` on screen and `needs_you` on the
+ * wire, and nobody should have to remember which side of the seam a terminal
+ * is on. `waiting` gets its own refusal because it is a real column the user
+ * can see — it is simply derived, so "unknown column" would be a lie.
+ */
+export function resolveBoardMoveTarget(input: string): BoardMoveResolution {
+  const raw = input.trim().split(/\s+/)[0] ?? "";
+  const normalized = raw.toLowerCase().replace(/-/g, "_");
+  if (!normalized) {
+    return {
+      ok: false,
+      message: `Usage: /session move [session-id] <${WORK_BOARD_MOVE_TARGETS.join("|").replace(/_/g, "-")}>`,
+    };
+  }
+  if (normalized === "waiting") {
+    return {
+      ok: false,
+      message: "Waiting is derived — a row sits there because it is snoozed or its PR is mid-CI — so it is not a move target. Use needs-you, working, or done.",
+    };
+  }
+  if (!isWorkBoardMoveTarget(normalized)) {
+    return {
+      ok: false,
+      message: `'${raw}' is not a board column. Use ${WORK_BOARD_MOVE_TARGETS.join(", ").replace(/_/g, "-")}.`,
+    };
+  }
+  return { ok: true, to: normalized };
+}
+
+/** How a column is written when the TUI confirms a move. */
+export function boardColumnLabel(column: WorkBoardColumn): string {
+  return WORK_BOARD_COLUMN_LABEL[column];
 }
 
 // ---------------------------------------------------------------------------

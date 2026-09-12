@@ -179,9 +179,36 @@ function TriggerFilters({
     );
   }
   if (source === "session") {
-    return <p className="text-[11px] text-muted-fg/70">Runs after any agent session ends.</p>;
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] text-muted-fg/70">{sessionTriggerHint(trigger.type)}</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <SmallField
+            label="Chat id (optional)"
+            value={trigger.sessionId ?? ""}
+            placeholder="Any chat in this project"
+            mono
+            onChange={(v) => onPatch({ sessionId: v.trim() })}
+          />
+          <SmallField
+            label="Providers (comma-separated)"
+            value={(trigger.providers ?? []).join(", ")}
+            placeholder="claude, codex"
+            onChange={(v) => onPatch({ providers: v.split(",").map((p) => p.trim()).filter(Boolean) })}
+          />
+        </div>
+      </div>
+    );
   }
   return <p className="text-[11px] text-muted-fg/70">Runs only when you press Run now.</p>;
+}
+
+/** One plain line per chat-session event, shown above the filters. */
+function sessionTriggerHint(type: string): string {
+  if (type === "session.limit_reached") return "Runs when the provider reports a usage limit for the chat.";
+  if (type === "session.failed") return "Runs when the provider or its API fails the chat.";
+  if (type === "session.ended_without_pr") return "Runs when a chat ends and its lane has no open PR.";
+  return "Runs after an agent session ends.";
 }
 
 export function TriggerCard({

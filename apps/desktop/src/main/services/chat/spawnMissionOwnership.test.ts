@@ -7,6 +7,7 @@ import {
   formatHumanChildMessageAnnotation,
   isHumanChildMessage,
   HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS,
+  messageClearsAttentionMarkers,
   stripHostAuthoredMessageProvenance,
 } from "./spawnMissionOwnership";
 
@@ -132,5 +133,40 @@ describe("stripHostAuthoredMessageProvenance", () => {
     for (const key of HOST_ONLY_CHAT_METADATA_KEYS) {
       expect(HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS).toContain(key);
     }
+  });
+});
+
+describe("messageClearsAttentionMarkers", () => {
+  it("treats a plain message as the user engaging", () => {
+    expect(messageClearsAttentionMarkers(undefined)).toBe(true);
+    expect(messageClearsAttentionMarkers(null)).toBe(true);
+    expect(messageClearsAttentionMarkers({})).toBe(true);
+  });
+
+  it("refuses every host-authored delivery", () => {
+    // The reported bug in one assertion: a child reporting in must not be able
+    // to clear the parent's raised hand. Nor may a scheduler, nor a
+    // continuation prompt ADE wrote itself.
+    expect(messageClearsAttentionMarkers({
+      spawnCompletion: { childSessionId: "c", childTitle: "t", summary: "s" },
+    } as never)).toBe(false);
+    expect(messageClearsAttentionMarkers({
+      hostContinuation: { reason: "plan_followup" },
+    } as never)).toBe(false);
+    expect(messageClearsAttentionMarkers({
+      scheduledWake: { scheduleId: "s", kind: "cron", firedAt: "now", reason: "tick" },
+    } as never)).toBe(false);
+  });
+
+  it("lets a board move clear, because a drag is a person acting", () => {
+    expect(messageClearsAttentionMarkers({
+      boardMove: { from: "done", to: "working", at: "2026-09-11T00:00:00.000Z", moveId: "m" },
+    } as never)).toBe(true);
+  });
+
+  it("does not let a move INTO Needs you erase the hand it just raised", () => {
+    expect(messageClearsAttentionMarkers({
+      boardMove: { from: "working", to: "needs_you", at: "2026-09-11T00:00:00.000Z", moveId: "m" },
+    } as never)).toBe(false);
   });
 });

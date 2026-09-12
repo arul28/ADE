@@ -457,7 +457,20 @@ Shared types and IPC:
   (expiry is derived from it everywhere, so no scheduler is involved) and offers
   a five-second undo toast; failures surface as error toasts rather than silent
   no-ops. Exports `snoozeSessionForDuration`, `wakeSessionNow`,
-  `setSessionSettleOverride`, and `clearSessionWokeMarker`.
+  `setSessionSettleOverride`, and `clearSessionWokeMarker`. It also holds the
+  auto-handoff rule writes the chat menu makes through the automations surface:
+  `automationRulesReadable`, `listAutomationRules`, `saveAutoHandoffRules`
+  (writes first, then deletes, so a partial write leaves an extra rule rather
+  than removing one the user kept), `deleteAutomationRules` (which treats "not
+  found" as success, because a one-shot rule can retire itself between the read
+  and the delete), and the toasting wrapper `removeAutomationRules` — split from
+  the core rather than gated by a `silent` flag.
+- `apps/desktop/src/main/services/adeActions/sessionBoardMove.ts` —
+  the host half of a board drag: `createSessionBoardMoveActions` returns
+  `moveOnBoard` / `undoBoardMove`, and `flushStagedBoardMoves` is the drain the
+  desktop shutdown sequence awaits. It owns `BOARD_MOVE_STAGE_MS`, the two
+  message texts, the `deriveWorkBoardColumn` the host stamps `from` with, and
+  the module-level staging map. See [The Work board](#the-work-board).
 - `apps/desktop/src/renderer/components/terminals/SessionSnoozeControl.tsx` —
   snooze affordance mounted in `SessionStatusSlot`'s action cluster. The hot
   Work list pays only for a single always-mounted button plus menu state that
@@ -857,6 +870,39 @@ Renderer surfaces:
   cross-machine) next to the first, keep a quiet sibling in the inbox when the
   cluster still has live work, and emit consecutive runs so the pane can wrap
   two-or-more groups in a dashed hairline.
+- `apps/desktop/src/renderer/components/terminals/WorkKanbanBoard.tsx` —
+  the board view of the same roster. Owns `WORK_BOARD_COLUMNS` (the per-column
+  spec: label from the shared `WORK_BOARD_COLUMN_LABEL`, empty hint, accent,
+  droppability), the drag/drop wiring, and `canAcceptDrop`. Column accents are
+  CSS-variable reads from `laneDesignTokens` rather than Tailwind hue classes,
+  so they survive `[data-theme="light"]`, and each accent is spent only on a
+  header dot, a 7% header wash, and the drop highlight. It renders no card of
+  its own: `SessionListPane` hands it a `renderBoardCard` that calls the list's
+  own `renderCardCore`, so click, context menu, hover card, PR pill, provider
+  glyph, and lineage chip are literally the same component in both views.
+- `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
+  the chat menu's front door to the automation platform: it arms rules that hand
+  a chat to another model when it dies. Pure layer first
+  (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
+  `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
+  `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
+  `autoHandoffFormIsValid`), then the dialog. It writes **one rule per
+  condition**, because both the draft normalizer and the runtime normalizer
+  collapse a rule to a single trigger; rule ids are deterministic so a second
+  Save upserts instead of appending `-2`. Its default target model is the first
+  configured model that is *not* the session's own — handing a chat back to the
+  model that just hit its own limit is the one choice that cannot help. It adds
+  no IPC: everything rides the existing automations surface through
+  `sessionLifecycleActions`. See [Automations › Rule provenance](../automations/triggers-and-actions.md#rule-provenance).
+- `apps/desktop/src/renderer/components/ui/dialogFocus.ts` —
+  `DIALOG_FOCUSABLE_SELECTOR` and `getFocusableElements(root)`, extracted from
+  `HeaderSheet.tsx` so the sheet's hook-shaped trap and `AutoHandoffModal`'s
+  window-level `FocusTrapDialog` compute focusability identically. It filters
+  out anything inside `[hidden]` / `[aria-hidden="true"]`, anything inside a
+  closed `<details>` except that element's own `> summary`, anything disabled,
+  and anything with a negative tab index. Kept as a plain module rather than a
+  hook because the two trap shapes differ; its own doc names the dialogs not yet
+  converged onto it.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
@@ -870,7 +916,18 @@ Renderer surfaces:
   tail stay reachable through those sections; there is no separate Tiers/Show
   settled filter because Status grouping already exposes the full lifecycle.
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
-  enter a bulk action accidentally. Group headers carry an explicit
+  enter a bulk action accidentally.
+  It also hosts the list/board toggle and, in board mode, swaps its own body for
+  `WorkKanbanBoard` — rebuilding `renderedSessionIds` in board reading order
+  (columns left to right, cards top to bottom) so keyboard range selection still
+  follows what the eye sees, and switching the outer container to
+  `overflow-hidden` so each column scrolls independently. Board affordances are
+  gated on the board data actually being wired, so a persisted `"board"` on a
+  pane without it falls back to the list. `handleBoardMove` owns the drag's
+  client half: the toast, the 5-second **Undo** action, the "Already waiting"
+  explanation for a no-op, and `boardMovePulses` — a per-session marker that
+  pulses a moved card until its first newer `lastActivityAt`, titled "Moved. The
+  agent is being told — this clears on its next reply." Group headers carry an explicit
   `role="heading"` with a `"<label> (<count>)"` accessible name so a screen
   reader can navigate to a group rather than inferring it from a bare toggle.
   In lane organization, a lane whose complete unfiltered roster is snoozed or
@@ -1052,6 +1109,17 @@ Renderer surfaces:
   the line-one status cluster; grouped lane headers own repeated machine/PR
   identity. A lane with exactly one session has no redundant header and promotes
   the lane identity and PR navigation onto the card.
+  A chat the CTO started carries a CTO lineage chip in place of the
+  Subagent/Peer pill — the same neutral pill plus a `Brain` glyph, because
+  lineage is identity and never spends a status hue. It reads
+  `session.parentIdentityKey === "cto"` (host-stamped; see
+  [Identity lineage on a row](#identity-lineage-on-a-row)) and navigates to
+  `/cto` rather than firing the `ade:work:select-session` event every other
+  lineage chip uses, because the CTO is filtered out of every roster and there
+  is no parent row to open. Its title quotes the child's goal. The row also
+  renders the chat's model label beside the provider glyph when the provider
+  actually reported one, resolved through `formatSubagentModelLabel` rather than
+  printing a registry id.
   After one second `SessionHoverCard` carries the lower-frequency metadata
   removed from the row (including clickable PR and parent-thread facts). The
   Lane labels on singleton rows and hover details show the shared animated
@@ -1280,7 +1348,9 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`. Lane/status deeplinks layer a transient
+  `ade.workViewState.v1`. It also owns the board's renderer-side derivation:
+  `buildWorkBoardModel` and the PR half `lanePrWaitingReason`, exposed as
+  `workBoardBuckets` and `workBoardWaitingReasons`. Lane/status deeplinks layer a transient
   `deeplinkViewOverride` over the saved project state instead of rewriting
   grouping and collapsed sections; an explicit filter, organization, or
   section change clears the framing. Invalidates the shared session-list cache
@@ -1758,9 +1828,165 @@ Fields that feed UI and downstream systems:
   target ID, launch config, and optional `orchestrationParentSessionId` /
   `spawnKind` for tracked agent CLI lineage)
 - spawn lineage: optional `orchestrationParentSessionId` and `spawnKind`,
-  projected from a chat record or tracked agent CLI `resumeMetadata`
+  projected from a chat record or tracked agent CLI `resumeMetadata`, plus
+  `parentIdentityKey` when the parent is an identity session
+- model: optional `model` / `modelId`, projected from the chat summary so a row
+  can name what it is running without opening it
 
 See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
+
+### Identity lineage on a row
+
+`parentIdentityKey` names the parent's identity when the parent is an **identity
+session** rather than an ordinary chat — today the only one is the CTO, whose
+key is `"cto"`. It is **absent**, not null, for the overwhelmingly common case
+of no parent or an ordinary parent, so absent is the single no-op value.
+
+It has to be stamped host-side: identity rows are filtered out of every session
+roster, so a renderer cannot see the parent to ask it.
+`chatSessionProjection` does it two ways. `projectChatSummariesOntoSessions`
+builds an id→identity index in the same loop that already collects the identity
+rows it is about to drop, so there is no extra fetch and no renderer cache; the
+single-session `getSessionWithChatProjection` has no roster and reads the parent
+summary directly. Either way the key is stamped only when the chat actually has
+an `orchestrationParentSessionId`.
+
+The same projection carries the chat's `model` / `modelId` onto the row, with
+blank treated as absent — "we don't know" and "no model" are the same value, and
+a CLI or shell row has no model at all.
+
+## The Work board
+
+The Work tab has a second view of the same roster: a four-column Kanban board,
+toggled beside the organization control. The view mode is its own
+`WorkProjectViewState` field (`workViewMode`, default `"list"`), deliberately
+**not** a fourth `sessionListOrganization` value, so the grouping you left is
+the grouping you come back to. It is additive, so no view-state version bump.
+Opening a row from the board flips back to the list.
+
+### The columns
+
+The vocabulary is declared once in `shared/types/chat.ts` — `WorkBoardColumn`,
+`WorkBoardMoveTarget`, `WORK_BOARD_MOVE_TARGETS`, `WORK_BOARD_COLUMN_LABEL` —
+and everything else imports it: this file, the action registry that writes
+moves, the renderer that buckets cards, and `ade session move`. Values are
+snake_case everywhere including the renderer's bucket keys and the board's
+`data-testid`s; the renderer's copy had already drifted to `needs-you` with a
+hand translation at the drop handler.
+
+| Column | Membership | Drop target |
+| --- | --- | --- |
+| **Needs you** | the awaiting-input partition | yes |
+| **Working** | what is left of the running partition after Waiting takes its share | yes |
+| **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
+| **Done** | ended rows, then settled rows (settled is the quieter tier, so it sinks) | yes |
+
+Waiting is not droppable because a row sits there for a reason a drag cannot
+assert — it is snoozed, or its PR is waiting on someone else. `canAcceptDrop`
+refuses it by type and at runtime, and because only a `preventDefault`'d
+`dragover` makes an element a drop target, the column shows the browser's own
+"no drop" cursor with no affordance to suppress.
+
+`buildWorkBoardModel` builds the buckets from the **already filtered** list
+partitions rather than re-deriving from the raw roster, and assembles Waiting
+*first* so the four are a partition by construction rather than by four
+predicates that have to agree. The PR half is `lanePrWaitingReason`: only
+`open`/`draft` PRs count, a pending checks status is `"ci"`, a requested review
+is `"review"`, and `none`/`not_run` deliberately are not a wait (nobody has
+looked yet) while `failing` is the agent's problem rather than a wait. The lane's
+PRs are read from the **bound** machine's set, so a foreign lane's CI cannot
+park a local row in Waiting. The reason surfaces as the card's chip.
+
+The host keeps its own, deliberately narrower derivation in
+`deriveWorkBoardColumn`: snooze alone puts a row in Waiting there, because the
+host has no reason to consult PR state to answer "which column was this card in
+when the drop landed". The two disagreeing is expected and handled — a card the
+user sees in Waiting for CI derives as `working` on the host, so dragging it to
+Working is a legitimate no-op, and the no-op toast says so ("The PR is what is
+waiting, not the chat.").
+
+### What a move does
+
+A drag is two writes that must never come apart: the lifecycle columns that
+decide the column, and a message telling the agent what the user just did. A
+status write with no message is a card that moved while the agent kept doing
+what it was doing; a message with no status write is a nudge about a move that
+did not happen. So both are staged together and both land together.
+
+Every target first wakes the row (a snooze keeps filing a row in Waiting even
+once settled), then:
+
+| Target | Lifecycle write | Message |
+| --- | --- | --- |
+| **Done** | clear the attention request, clear the settle override, settle with source `user` | none — a move to Done would start a turn on a chat the user just quieted |
+| **Working** | unsettle, clear the attention request, pin the override to `"active"` so it cannot fall back to Done on the next idle tick | only when moving *from* Done: "You moved this chat from Done to Working. …" |
+| **Needs you** | unsettle, clear the override, raise attention with source **`user`** and the message "Parked for your input." | "The user parked this for their input. Stop, summarize where you are, and list what you need from them." |
+
+No target writes a snooze. The attention source is `user`, never
+`agent_explicit`: the source is auditable and must not claim the agent asked for
+something.
+
+The message is dispatched as a normal chat message carrying
+`metadata.boardMove` (`from`, `to`, `at`, `moveId`). That metadata is
+host-stamped only — `from` is host-derived, and `boardMove` is one of the
+`HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS` the host strips from any caller-supplied
+metadata, so neither a rule nor an agent can forge "the user moved this card".
+The chat transcript renders it as a divider (`Moved on the board · <from> →
+<to>`) with the exact text the agent received underneath, never as a user
+bubble: the user dragged a card, they did not type that sentence.
+
+### Undo, and the honest bound on it
+
+The message waits `BOARD_MOVE_STAGE_MS` (5 seconds) before it is sent. Within
+that window `undoBoardMove` cancels the message and restores the snapshot the
+move captured; after it, the message goes out and the move is final. If the
+dispatch itself fails, the status write is reversed with it.
+
+Restore order matters: override, then re-settle or unsettle, then attention
+**last** — settling clears the attention columns, and needs-you outranks settled
+in canonical precedence. A snooze whose deadline has already passed is not
+restored, and a re-settle is stamped now rather than backdated, because no write
+path backdates.
+
+A refusal says which kind it is. `already_dispatched` means the agent has been
+told; `unknown_move` means ADE no longer holds the move at all. They are
+different facts and the toast says different things, so they are not collapsed
+into one boolean. The dispatched-id memory is a capped FIFO, and an id that ages
+out answers `unknown_move` — the truthful fallback.
+
+At most one move per session is in flight: staging a second one drains the
+first, so an undo can only ever reverse the most recent. A duplicate drop on the
+column a card is already in is a pure no-op, checked *before* the drain, so it
+cannot cut a real move's undo window short.
+
+The bound, stated plainly: the staging map is in-process, and the drain is
+guaranteed on exactly one path — a graceful shutdown, where the desktop host
+awaits `flushStagedBoardMoves` first in its sequence, before the services the
+dispatch needs are torn down. Every other exit only *attempts* it: the immediate
+cleanup path fires the drain without awaiting it, so the send starts against a
+live service but can be cut off by `process.exit`, a signal-driven fast kill, the
+shutdown force timer, or Electron's `will-quit`. When that happens the status
+write survives without its message — nothing in a single process can prevent
+that — and `undoBoardMove` answers `unknown_move` for the orphan rather than
+claiming it dispatched. The fast-kill prelude deliberately skips the drain,
+because claiming moves synchronously there would empty the map and turn the
+awaited drain into a no-op.
+
+### Who may move a card
+
+`session.moveOnBoard` and `session.undoBoardMove` are in the action allowlist
+and are **CTO-only**. A board move writes the same lifecycle columns a settle
+does and then tells the agent the user moved it; both halves are the user's, so
+a session-bound agent authenticating as `agent` or `orchestrator` cannot move
+its own card and then congratulate itself on being told to. Unattended
+automations cannot call them either, since the automation predicate is
+"allowlisted and not CTO-only".
+
+Agents are told this directly. `ADE_BOARD_STATUS_GUIDANCE` — "Your status on the
+Work board is derived from your turn state and your note. Keep the note current
+with `ade chat note`, and use `ade chat ask` when you are blocked." — opens the
+session status protocol, and the `ade-cli-control-plane` skill says outright that
+there is no command that moves your own row.
 
 The lifecycle columns are `settle_override`, `snoozed_until`, `snoozed_at`,
 `woke_at`, and `woke_reason` on `terminal_sessions`. All five are nullable text
@@ -2080,6 +2306,8 @@ Sessions:
 | `ade.sessions.setSettleOverride` | tri-state settle pin: `"settled"` behaves like a declared settle, `"active"` suppresses a declared settle, `null` hands the row back to declared lifecycle state |
 | `ade.sessions.snooze` / `.snoozeMany` | set `snoozed_until` (+ `snoozed_at`) and clear any stale woke marker. Snooze is a **visibility overlay**, not a lifecycle phase — `canonicalSessionState()` never reads it. Bulk returns the ids it changed. |
 | `ade.sessions.wake` / `.wakeMany` | clear the snooze now and record `woke_reason` (`timer \| needs_you \| error \| turn_complete \| manual`, default `manual`). Bulk returns the ids that were actually snoozed. |
+| `ade.sessions.moveOnBoard` | a Work-board drag: the lifecycle write for the target column plus the host-authored message staged for 5 s. Returns `SessionBoardMoveResult`; `changed: false` means the card was already there and nothing was written. |
+| `ade.sessions.undoBoardMove` | reverse a staged move by `moveId` while it is still staged. Returns `SessionBoardMoveUndoResult`, whose refusal names `already_dispatched` or `unknown_move`. |
 | `ade.sessions.clearWokeMarker` | drop `woke_at`/`woke_reason` once the user has visited the row |
 | `ade.sessions.delete` | remove a row outright; emits `terminalSessionChanged` with `reason: "deleted"` |
 | `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
@@ -2231,6 +2459,26 @@ degrades to "no ADE prompt" rather than a failed launch.
   always allows dismissing a `provider_structured` needs-you. The real fix is a
   heuristic-waiting tier in the canonical layer, which is a shared-contract
   change across all five surfaces.
+- **Never stamp `provider_structured` without an item id.** Because
+  `canonicalSessionState` treats that source as a needs-you trigger in its own
+  right, independent of the item id, stamping it alongside a null
+  `pendingInputItemId` manufactures a "Needs you" that names no card: there is
+  nothing to answer, and answering the card that just settled does not clear it,
+  because the next projection re-stamps the source. `chatSessionProjection`
+  therefore stamps it **only** when it can name the card, and otherwise clears a
+  stale structured claim while leaving any other declared source alone. That is
+  the fix for a row that stayed in "Needs you" after its card settled;
+  `chatSessionProjection.test.ts` pins it.
+- **Settling a card is not the whole answer.** Clearing `pending_input_item_id`
+  leaves `attention_requested_at`, `attention_message`, `attention_source`, and
+  `last_turn_failed_at` behind, which is the other half of "I answered it and it
+  still says Needs you". `respondToInput` now clears the turn-start markers once,
+  after delivery actually succeeded, rather than at a dozen early returns; the
+  paths that empty a provider's pending-approval map while the session survives
+  emit a `pending_input_resolved` receipt per item instead of clearing bare, so
+  the event scan stops naming an unanswerable card; and an answered plan
+  approval whose followup is still staged is suppressed by item id (never by
+  downgrading `awaitingInput`) until its real receipt is written.
 - **Process exit is not settlement.** A clean exit-0 row remains ended until an
   agent/user declaration or the enabled PR-merge policy settles it. New
   lifecycle surfaces must not infer task completion from process mechanics.

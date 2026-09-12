@@ -26,6 +26,7 @@ import type {
   AgentChatCopyTempAttachmentArgs,
   ChatAttachmentStagingMode,
   ConvertImageToJpegResult,
+  WorkBoardMoveTarget,
 } from "../shared/types/chat";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
@@ -681,6 +682,8 @@ import type {
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionBoardMoveResult,
+  SessionBoardMoveUndoResult,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionChangedEvent,
@@ -6405,6 +6408,41 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.sessionsSetSettleOverride, args),
       );
       return sessionLifecycleApplied(result);
+    },
+    /**
+     * Move a chat between Work-board columns. Resolves with the move id and the
+     * instant the undo window closes, or `changed: false` when the card was
+     * already in that column.
+     */
+    moveOnBoard: async (
+      sessionId: string,
+      to: WorkBoardMoveTarget,
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionBoardMoveResult> => {
+      const args = { sessionId, to };
+      const result = await callPinnedOrBoundRuntimeActionOr<SessionBoardMoveResult>(
+        pin,
+        "session",
+        "moveOnBoard",
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsMoveOnBoard, args),
+      );
+      return result;
+    },
+    undoBoardMove: async (
+      sessionId: string,
+      moveId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionBoardMoveUndoResult> => {
+      const args = { sessionId, moveId };
+      const result = await callPinnedOrBoundRuntimeActionOr<SessionBoardMoveUndoResult>(
+        pin,
+        "session",
+        "undoBoardMove",
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsUndoBoardMove, args),
+      );
+      return result;
     },
     clearWokeMarker: async (
       sessionId: string,

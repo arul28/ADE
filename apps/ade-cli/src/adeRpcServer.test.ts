@@ -623,7 +623,7 @@ function createRuntime() {
     } as any,
     fileService: null,
     ctoMemoryService: {
-      appendMemoryFact: vi.fn((fact: string) => ({ saved: true, fact })),
+      appendMemoryFact: vi.fn((fact: string, _tags?: unknown) => ({ saved: true, fact })),
       searchMemory: vi.fn(() => [{ file: "MEMORY.md", date: null, line: 1, snippet: "a fact" }]),
       getSnapshot: vi.fn(() => ({
         memory: "# CTO Durable Memory\n\n## Facts\n\n- a fact",
@@ -1906,7 +1906,12 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "cto-1", role: "cto" });
 
     const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
-    expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith("Prefer sentence case.");
+    // `appendMemoryFact` takes optional tags; an untagged save passes an
+    // explicit null rather than omitting the argument.
+    expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith(
+      "Prefer sentence case.",
+      null,
+    );
     expect(saved.structuredContent).toEqual(
       expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),
     );

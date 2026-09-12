@@ -191,7 +191,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  // `force` does not cover ENOTEMPTY: under full-suite load the host can still
+  // be finishing a write into this directory when teardown runs, and the
+  // removal then races the writer. Retrying is Node's own remedy; without it
+  // this file fails its shard and the sharded runner stops before the rest.
+  fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   vi.restoreAllMocks();
 });
 

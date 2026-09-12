@@ -4437,6 +4437,83 @@ describe("ADE CLI", () => {
       ).toThrow(/--until-asked or a --for\/--until deadline, not both/);
     });
 
+    it("plans ade session move onto the board action", () => {
+      const plan = expectExecutePlan(buildCliPlan(["session", "move", "session-x", "--to", "working"]));
+      const params = plan.steps[0]?.params as {
+        arguments: { domain: string; action: string; args: Record<string, unknown> };
+      };
+      expect(params.arguments.domain).toBe("session");
+      expect(params.arguments.action).toBe("moveOnBoard");
+      expect(params.arguments.args).toMatchObject({ sessionId: "session-x", to: "working" });
+    });
+
+    it("accepts the on-screen column spelling and the action's", () => {
+      for (const spelling of ["needs-you", "needs_you"]) {
+        const plan = expectExecutePlan(buildCliPlan(["session", "move", "session-x", "--to", spelling]));
+        const params = plan.steps[0]?.params as { arguments: { args: Record<string, unknown> } };
+        expect(params.arguments.args.to).toBe("needs_you");
+      }
+      // And the column may be a bare positional after the session id.
+      const positional = expectExecutePlan(buildCliPlan(["session", "move", "session-x", "done"]));
+      expect((positional.steps[0]?.params as { arguments: { args: Record<string, unknown> } })
+        .arguments.args.to).toBe("done");
+    });
+
+    it("prints the move ack: which columns, whether anything changed, and the undo handle", () => {
+      const text = formatOutput(
+        {
+          ok: true,
+          sessionId: "session-x",
+          from: "needs_you",
+          to: "done",
+          changed: true,
+          moveId: "move-1",
+          message: "Filed under Done.",
+          undoExpiresAt: "2026-07-26T12:00:05.000Z",
+        },
+        { text: true } as never,
+        "session-lifecycle",
+      );
+      // Columns are spelled the way the board header spells them, not as the
+      // wire ids — `needs_you` on screen is the drift the shared label map exists
+      // to prevent.
+      expect(text).toContain("Needs you -> Done");
+      expect(text).not.toContain("needs_you");
+      // The undo handle and the exact sentence the agent got: neither is
+      // reconstructable by a scripted caller.
+      expect(text).toContain("move-1");
+      expect(text).toContain("Filed under Done.");
+      expect(text).toContain("2026-07-26T12:00:05.000Z");
+    });
+
+    it("says a no-op move changed nothing rather than reading as a move", () => {
+      const text = formatOutput(
+        { ok: true, sessionId: "session-x", from: "done", to: "done", changed: false, moveId: null },
+        { text: true } as never,
+        "session-lifecycle",
+      );
+      expect(text).toContain("no (already there)");
+      // A null moveId is nothing to undo, so it must not print as a handle.
+      expect(text).not.toContain("move id");
+    });
+
+    it("leaves the board rows out of every other session command's output", () => {
+      const text = formatOutput(
+        { sessionId: "session-x", snoozedAt: "2026-07-26T11:00:00.000Z" },
+        { text: true } as never,
+        "session-lifecycle",
+      );
+      expect(text).not.toContain("moved");
+      expect(text).not.toContain("changed");
+    });
+
+    it("refuses Waiting, which is derived rather than assertable", () => {
+      expect(() => buildCliPlan(["session", "move", "session-x", "--to", "waiting"]))
+        .toThrow(/Waiting is derived/);
+      expect(() => buildCliPlan(["session", "move", "session-x", "--to", "elsewhere"]))
+        .toThrow(/needs-you\|working\|done/);
+    });
+
     it("plans ade session snooze --until-asked", () => {
       const plan = expectExecutePlan(buildCliPlan(["session", "snooze", "session-x", "--until-asked"]));
       const params = plan.steps[0]?.params as {
@@ -4541,13 +4618,18 @@ describe("ADE CLI", () => {
         expect(help.text).toContain("ade session snooze <id> --for 1h");
         expect(help.text).toContain("ade session wake <id>");
         expect(help.text).toContain("--until-asked");
+        // The board move is a session lifecycle verb, so it is documented with
+        // the rest of the family — including the role it needs, which is the
+        // difference between a working command and a scope denial.
+        expect(help.text).toContain("session move <id> --to done");
+        expect(help.text).toContain("--role cto");
         // Settle is gone from this family and the help says why.
         expect(help.text).not.toContain("ade session settle");
         expect(help.text).toContain("'settle' and 'unsettle' were removed");
       }
       const top = buildCliPlan([]);
       if (top.kind === "help") {
-        expect(top.text).toContain("ade session show | snooze | wake | clear-woke");
+        expect(top.text).toContain("ade session show | move | snooze | wake | clear-woke");
         expect(top.text).not.toContain("ade session snooze | wake | settle | unsettle");
       }
     });

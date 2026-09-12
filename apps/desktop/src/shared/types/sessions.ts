@@ -13,7 +13,10 @@ import type {
   AgentChatModelHandoff,
   AgentChatSpawnKind,
   AgentChatUsageLimitResume,
+  WorkBoardColumn,
+  WorkBoardMoveTarget,
 } from "./chat";
+import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -235,6 +238,19 @@ export type TerminalSessionSummary = {
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /**
+   * The model this chat is currently running, projected from
+   * `AgentChatSessionSummary` so a session ROW can name it without opening the
+   * chat. `modelId` is the canonical registry id when the provider's answer
+   * resolved to one; `model` is the provider's own raw string and is always the
+   * fallback. Both optional: a CLI/shell row has no model at all, and a chat
+   * whose provider reported nothing must render nothing rather than a guess.
+   *
+   * Display sites resolve these through `formatSubagentModelLabel`, never by
+   * printing the id — a raw `claude-opus-5` is not what a human should read.
+   */
+  model?: string | null;
+  modelId?: ModelId;
   title: string;
   status: TerminalSessionStatus;
   startedAt: string;
@@ -365,11 +381,66 @@ export type TerminalSessionSummary = {
    */
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /**
+   * Identity key of the orchestration parent, when the parent is an IDENTITY
+   * session rather than an ordinary chat (today the only one is the CTO, whose
+   * key is `"cto"`). Stamped host-side by `chatSessionProjection`, never derived
+   * in a renderer: identity rows are filtered out of every session roster, so a
+   * renderer cannot see the parent to ask it.
+   *
+   * Absent — not null — for the overwhelmingly common case of a chat with no
+   * parent or an ordinary chat parent, so "absent" is the single no-op value.
+   */
+  parentIdentityKey?: string | null;
   /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
   cursorCloudAgentId?: string | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
+
+/**
+ * Result of a Work-board drag.
+ *
+ * `changed: false` means the card was already in that column and nothing was
+ * written — no message, and nothing to undo. Otherwise `moveId` addresses the
+ * staged move until `undoExpiresAt`, after which the message is dispatched and
+ * the move is final. `message` is the exact text the agent will receive, or
+ * null for the moves that are a status write only.
+ */
+export type SessionBoardMoveResult = {
+  ok: boolean;
+  sessionId: string;
+  from: WorkBoardColumn;
+  to: WorkBoardMoveTarget;
+  changed: boolean;
+  moveId: string | null;
+  message?: string | null;
+  undoExpiresAt: string | null;
+};
+
+/**
+ * Result of reversing a Work-board drag, discriminated on `ok`.
+ *
+ * A refusal carries WHY — the message already went out, or the host no longer
+ * knows about the move at all (it restarted between the drag and the undo).
+ * Those are different facts and the caller says different things about them,
+ * so they are not collapsed into one boolean.
+ */
+export type SessionBoardMoveUndoResult =
+  | {
+    ok: false;
+    sessionId: string;
+    moveId: string;
+    reason: "already_dispatched" | "unknown_move";
+  }
+  | {
+    ok: true;
+    sessionId: string;
+    moveId: string;
+    from: WorkBoardColumn;
+    to: WorkBoardMoveTarget;
+    reversed: true;
+  };
 export type SessionSettleSource = "agent_explicit" | "user" | "pr_merge" | "operator";
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

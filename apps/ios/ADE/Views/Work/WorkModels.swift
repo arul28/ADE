@@ -464,9 +464,11 @@ enum WorkActiveSendMode: String, Equatable {
 /// `src/shared/types/chat.ts` — iOS cannot import the TS table, so the two are
 /// kept in step by hand. Modes are in menu order; the first is the default.
 ///
-/// Claude folds a message into the live query, so it has all three. Cursor's
-/// SDK has no mid-run message API: its interrupt cancels the run and resends on
-/// the same agent thread, so it has no "send during turn" and its button says
+/// Claude folds a message into the live query, so it has all three. Codex takes
+/// the app-server's `turn/steer` request into the running turn, so it has "send
+/// during turn" — but no cancel-and-resend, so it stops there. Cursor's SDK has
+/// no mid-run message API: its interrupt cancels the run and resends on the
+/// same agent thread, so it has no "send during turn" and its button says
 /// "continue". Everything else is queue-only, which leaves nothing to pick
 /// between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
@@ -488,6 +490,8 @@ struct WorkActiveSendCapability: Equatable {
     switch providerFamilyKey(provider) {
     case "claude":
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
+    case "codex":
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
     case "cursor":
       return WorkActiveSendCapability(modes: [.interrupt, .queue], agentLabel: "Cursor", interruptContinues: true)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
@@ -506,6 +510,44 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }
   }
+}
+
+/// Work-board columns, as they are written on screen.
+///
+/// Hand mirror of `WORK_BOARD_COLUMN_LABEL` in
+/// `apps/desktop/src/shared/types/chat.ts` (Swift cannot import the TS union).
+/// The phone has no board — three columns of cards do not fit a phone — but it
+/// still renders the CHAT-side consequence of a drag, and that divider has to
+/// read the same words the board header used.
+///
+/// An unrecognized column falls back to its raw id rather than to a guess: a
+/// newer host naming a fifth column should still be legible here.
+let workBoardColumnLabels: [String: String] = [
+  "needs_you": "Needs you",
+  "working": "Working",
+  "waiting": "Waiting",
+  "done": "Done",
+]
+
+func workBoardColumnLabel(_ column: String) -> String {
+  let key = column.trimmingCharacters(in: .whitespacesAndNewlines)
+  return workBoardColumnLabels[key] ?? key
+}
+
+/// Hand mirror of desktop `CTO_LIVE_REDIRECT_PROVIDERS` in
+/// `src/shared/types/chat.ts`: the providers a CTO thread may run on, because
+/// they can redirect a turn that is already running.
+///
+/// Deliberately separate from `WorkActiveSendCapability` above, exactly as it is
+/// on the desktop. That table governs the composer's staged-message menu; this
+/// is the CTO's own eligibility contract, and Cursor qualifies here through
+/// interrupt-and-resend despite having no inline channel at all.
+let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor"]
+
+/// True when `provider` can redirect a turn already in flight, so it is allowed
+/// to be the CTO.
+func providerSupportsLiveRedirect(_ provider: String) -> Bool {
+  ctoLiveRedirectProviders.contains(providerFamilyKey(provider))
 }
 
 /// Hand mirror of desktop `chatStopModes.ts`. iOS cannot import the TS table,

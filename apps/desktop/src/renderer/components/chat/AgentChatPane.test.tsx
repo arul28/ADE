@@ -3489,10 +3489,19 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
-    const activeSession = buildSession("session-1", { status: "active" });
+    // Queue-only provider, so the single "Send steer message" affordance is the
+    // one on screen. Codex now has an inline channel and renders the split
+    // button instead.
+    const activeSession = buildSession("session-1", {
+      status: "active",
+      provider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+    });
     const idleSession = buildSession("session-1", {
       status: "idle",
       currentTurnStartedAt: null,
+      provider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
     });
     const { list, steer } = installAdeMocks({
       sessions: [activeSession],
@@ -3668,8 +3677,13 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
-    const session = buildSession("session-1");
+    // Queue-only provider: the plain steer button, not Codex's split send.
+    const session = buildSession("session-1", {
+      provider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+    });
     const { steer } = installAdeMocks({
+      sessions: [session],
       transcript: buildStatusStartedTranscript(session.sessionId),
       listError: new Error("refresh failed"),
     });
@@ -4638,8 +4652,13 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("falls back to a normal send when the active-turn marker is stale", async () => {
-    const session = buildSession("session-1");
+    // Queue-only provider: the plain steer button, not Codex's split send.
+    const session = buildSession("session-1", {
+      provider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+    });
     const { send, steer } = installAdeMocks({
+      sessions: [session],
       transcript: buildStatusStartedTranscript(session.sessionId),
       steerError: new Error("No active turn to steer."),
     });

@@ -5,7 +5,7 @@
 import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
-import type { ModelConfig } from "./models";
+import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 
@@ -576,6 +576,12 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "github.issue_labeled",
   "github.issue_commented",
   "file.change",
+  // Chat-session lifecycle. `session-end` fires for every ended session; the
+  // three below are the narrower failure/limit signals the host emits from the
+  // chat runtime (see `AutomationSessionSignal`).
+  "session.limit_reached",
+  "session.failed",
+  "session.ended_without_pr",
   "lane.created",
   "lane.archived",
   "lane.merged",
@@ -609,6 +615,7 @@ export type AutomationActionType =
   | "run-tests"
   | "run-command"
   | "ade-action"
+  | "handoff"
   // Synthetic kind written into automation_action_results when execution.laneMode
   // is "create"; never authored by the user, but surfaced in run history.
   | "lane-setup";
@@ -703,6 +710,16 @@ export type AutomationTrigger = {
   secretRef?: string;
   /** For `github.*` triggers: restrict to a specific repository. */
   repo?: string;
+  /**
+   * For `session.*` triggers: scope the rule to a single chat session. A rule
+   * created from one chat's menu sets this so it never fires for other chats.
+   */
+  sessionId?: string;
+  /**
+   * For `session.*` triggers: restrict to these chat providers (`claude`,
+   * `codex`, `cursor`, ...). Empty or absent matches any provider.
+   */
+  providers?: string[];
   activeHours?: AutomationActiveHours;
 };
 
@@ -749,6 +766,30 @@ export type AutomationAction = {
    */
   prompt?: string;
   sessionTitle?: string;
+  /**
+   * How a `handoff` action seeds the new chat. `fork` replays the source
+   * transcript into the target (same lane only); `brief` hands over a summary
+   * and may target another lane. Defaults to `brief`.
+   */
+  handoffMode?: "fork" | "brief";
+  /** Registry model id the `handoff` action hands the session to. */
+  targetModelId?: string;
+  /**
+   * Which lane a `handoff` action hands off into. `"same"` (the default, and
+   * what an absent value means) keeps the source chat's lane; `"new"` creates
+   * one for the handoff; `"explicit"` uses `targetLaneId`, which is then
+   * required. Only `"same"` is valid with `handoffMode: "fork"` — provider
+   * transcripts are keyed to the lane worktree, so a fork cannot move.
+   */
+  targetLaneMode?: "same" | "new" | "explicit";
+  /**
+   * Note appended to the handoff prompt by a `handoff` action. Supports
+   * `{{trigger.session.*}}` placeholders (`sessionId`, `provider`, `modelId`,
+   * `laneId`, `resetAt`).
+   */
+  promptTemplate?: string;
+  /** Reasoning tier for the handed-off session. Omitted inherits the source. */
+  reasoningEffort?: ThinkingLevel | null;
 };
 
 export type AutomationExecutionKind = "agent-session" | "built-in";
@@ -842,10 +883,40 @@ export type AutomationVerification = {
   mode?: "intervention" | "dry-run";
 };
 
+/** Who created an automation rule. Absent in older configs, which read as `"user"`. */
+export type AutomationRuleOrigin = "user" | "cto" | "chat-menu";
+
+/**
+ * The chat a rule was created from. `sessionTitle` is stored on the rule (not
+ * looked up) so a rule created from a chat that was later deleted still has a
+ * readable label.
+ */
+export type AutomationRuleScope = {
+  sessionId: string;
+  sessionTitle: string;
+};
+
 export type AutomationRule = {
   id: string;
   name: string;
   description?: string;
+  /** Defaults to `"user"` when a config omits it. */
+  origin: AutomationRuleOrigin;
+  scope?: AutomationRuleScope;
+  /** The sentence that created this rule, kept verbatim for the rule's detail view. */
+  originRequest?: string;
+  /**
+   * Retire the rule once it has done its job: it is deleted after its first
+   * SUCCESSFUL run, or once `runCount` reaches `maxRuns`, whichever comes
+   * first. A failed run keeps the rule so the work can still happen.
+   */
+  oneShot?: boolean;
+  /**
+   * Cap on how many times a rule may run before it retires. Absent means
+   * unlimited; a one-shot rule with no value is capped at
+   * `ONE_SHOT_DEFAULT_MAX_RUNS` so a repeating trigger cannot loop forever.
+   */
+  maxRuns?: number;
   mode: AutomationMode;
   triggers: AutomationTrigger[];
   /** @deprecated Use `triggers[0]` or `legacy?.trigger`. */
@@ -881,6 +952,11 @@ export type ConfigAutomationRule = {
   id: string;
   name?: string;
   description?: string;
+  origin?: AutomationRuleOrigin;
+  scope?: AutomationRuleScope;
+  originRequest?: string;
+  oneShot?: boolean;
+  maxRuns?: number;
   mode?: AutomationMode;
   triggers?: AutomationTrigger[];
   execution?: AutomationExecution;

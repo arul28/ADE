@@ -3,6 +3,7 @@ import {
   Alarm,
   ArrowCounterClockwise,
   ArrowDown,
+  ArrowsLeftRight,
   ArrowUp,
   CheckCircle,
   ClockCountdown,
@@ -26,6 +27,7 @@ import {
 } from "@phosphor-icons/react";
 import type {
   AgentChatSessionMetadataField,
+  AutomationRuleSummary,
   LaneSummary,
   LaneType,
   OpenProjectBinding,
@@ -47,12 +49,19 @@ import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import type { OpenInTarget } from "../../../shared/editorTargets";
 import {
+  automationRulesReadable,
+  listAutomationRules,
+  removeAutomationRules,
   setSessionSettleOverride,
   setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
   wakeSessionNow,
 } from "./sessionLifecycleActions";
+import {
+  AutoHandoffModal,
+  selectAutoHandoffRulesForSession,
+} from "./AutoHandoffModal";
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
@@ -205,6 +214,13 @@ export function SessionContextMenu(props: SessionContextMenuProps) {
     lane?: LaneSummary;
     binding?: OpenProjectBinding | null;
   } | null>(null);
+  // Hosted here for the same reason the lane dialog is: opening it closes the
+  // menu, so a modal mounted inside the panel would unmount in the same tick.
+  const [autoHandoff, setAutoHandoff] = useState<{
+    session: TerminalSessionSummary;
+    binding?: OpenProjectBinding | null;
+    existingRules: AutomationRuleSummary[];
+  } | null>(null);
 
   return (
     <>
@@ -213,6 +229,15 @@ export function SessionContextMenu(props: SessionContextMenuProps) {
           {...props}
           menu={props.menu}
           onManageLane={(laneId, extras) => setManagedLane({ laneId, ...extras })}
+          onOpenAutoHandoff={(args) => setAutoHandoff(args)}
+        />
+      ) : null}
+      {autoHandoff ? (
+        <AutoHandoffModal
+          session={autoHandoff.session}
+          binding={autoHandoff.binding}
+          existingRules={autoHandoff.existingRules}
+          onClose={() => setAutoHandoff(null)}
         />
       ) : null}
       {managedLane ? (
@@ -248,12 +273,18 @@ function SessionContextMenuPanel({
   gridSessionIds,
   onRemoveFromGrid,
   onManageLane,
+  onOpenAutoHandoff,
 }: Omit<SessionContextMenuProps, "menu"> & {
   menu: NonNullable<SessionContextMenuState>;
   onManageLane: (
     laneId: string,
     extras?: { lane?: LaneSummary; binding?: OpenProjectBinding | null },
   ) => void;
+  onOpenAutoHandoff: (args: {
+    session: TerminalSessionSummary;
+    binding?: OpenProjectBinding | null;
+    existingRules: AutomationRuleSummary[];
+  }) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [tagging, setTagging] = useState(false);
@@ -262,6 +293,13 @@ function SessionContextMenuPanel({
   // the 17:00 boundary happened to pass while the menu was open.
   const [snoozePresets, setSnoozePresets] = useState(() => resolveSnoozePresets());
   const [draft, setDraft] = useState("");
+  /**
+   * Auto-handoff rules already scoped to this chat. `null` means "not answered
+   * yet": the menu paints immediately and the row settles from "Auto handoff…"
+   * to "Edit auto handoff…" when the list comes back, because a context menu
+   * that waits on IPC before it appears is a broken context menu.
+   */
+  const [scopedHandoffRules, setScopedHandoffRules] = useState<AutomationRuleSummary[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
@@ -300,6 +338,21 @@ function SessionContextMenuPanel({
   const canRename = !cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
+  useEffect(() => {
+    // Bail before the await when there is no automations surface at all, so a
+    // window without it never schedules a state write it cannot answer.
+    if (!isChat || !automationRulesReadable()) {
+      setScopedHandoffRules(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setScopedHandoffRules(null);
+    void listAutomationRules().then((rules) => {
+      if (cancelled) return;
+      setScopedHandoffRules(selectAutoHandoffRulesForSession(rules, session.id));
+    });
+    return () => { cancelled = true; };
+  }, [isChat, session.id]);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
@@ -625,6 +678,39 @@ function SessionContextMenuPanel({
         )}
 
         {settleRow}
+
+        {/* Auto handoff. A chat that hits its provider's limit, fails, or ends
+            with nothing to show is the moment a handoff is worth automating, so
+            the offer lives here rather than three tabs away. The rules are
+            ordinary automations — removal never needs the Automations tab. */}
+        {isChat ? (
+          <button
+            type="button"
+            data-testid="session-menu-auto-handoff"
+            className={MENU_ITEM_CLASS}
+            onClick={() => {
+              onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules ?? [] });
+              onClose();
+            }}
+          >
+            <MenuRowIcon icon={ArrowsLeftRight} />
+            {scopedHandoffRules?.length ? "Edit auto handoff…" : "Auto handoff…"}
+          </button>
+        ) : null}
+        {isChat && scopedHandoffRules?.length ? (
+          <button
+            type="button"
+            data-testid="session-menu-remove-auto-handoff"
+            className={MENU_ITEM_CLASS}
+            onClick={() => {
+              void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id));
+              onClose();
+            }}
+          >
+            <MenuRowIcon icon={Prohibit} />
+            Remove auto handoff
+          </button>
+        ) : null}
 
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button

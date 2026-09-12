@@ -25,6 +25,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "session.snoozeSession",
   "session.wakeSession",
   "session.clearWokeMarker",
+  // Work-board drags. Optional so a phone on an older build simply has no
+  // board drag against a newer brain, and an older brain omits the actions
+  // instead of flipping a newer phone into "limited".
+  "session.moveOnBoard",
+  "session.undoBoardMove",
   // Subagent takeover. The phone hides Take over / Keep reporting / Demote /
   // Promote unless `chat.setSpawnKind` is advertised. Optional so an older
   // phone against a newer host does not go limited, and an older host simply

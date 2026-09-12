@@ -276,6 +276,12 @@ func buildWorkRootSessionPresentation(
     pullRequests: pullRequests,
     githubPrs: githubPrs
   )
+  // Feeds the Waiting chip. Derived from the PRs already in hand for the lane
+  // tags above — no extra read, and no network call, for a filter.
+  let laneWaitingReasonByLaneId = workLaneWaitingReasonByLaneId(
+    lanes: orderedLanes,
+    pullRequests: pullRequests
+  )
   let mergedSessions = (sessions + draftValues)
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
 
@@ -286,7 +292,9 @@ func buildWorkRootSessionPresentation(
     selectedStatus: selectedStatus,
     selectedLaneId: selectedLaneId,
     searchText: searchText,
-    outputSearchBySessionId: outputSearchBySessionId
+    outputSearchBySessionId: outputSearchBySessionId,
+    laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+    now: now
   )
   let displaySessionIds = Set(displaySessions.map(\.id))
   let childGroupsByParentId = workSessionChildGroupsByParentId(sessions: displaySessions)
@@ -326,6 +334,7 @@ func buildWorkRootSessionPresentation(
     orderedLanes: workOrderedLanes,
     deletingLaneIds: deletingLaneIds,
     headerlessLaneIds: headerlessLaneIds,
+    laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
     now: now
   )
 
@@ -347,6 +356,7 @@ func buildWorkRootSessionPresentation(
       sessionGroups: sessionGroups,
       workOrderedLanes: workOrderedLanes,
       lanePrTagsByLaneId: lanePrTagsByLaneId,
+      laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
       chatSummaries: chatSummaries
     )
   )
@@ -360,6 +370,7 @@ private func workRootSessionPresentationRenderSignature(
   sessionGroups: [WorkSessionGroup],
   workOrderedLanes: [LaneSummary],
   lanePrTagsByLaneId: [String: LanePrTag],
+  laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason],
   chatSummaries: [String: AgentChatSessionSummary]
 ) -> Int {
   var hasher = Hasher()
@@ -434,6 +445,14 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(key)
     hasher.combine(tag.githubPrNumber)
     hasher.combine(lanePrStateLabel(tag.state))
+  }
+  // A CI or review flip changes nothing else in this signature — the PR tag
+  // hashes only number and state — so without this a lane whose checks went
+  // pending would keep rendering its rows under Working until some unrelated
+  // change rebuilt the presentation.
+  for key in laneWaitingReasonByLaneId.keys.sorted() {
+    hasher.combine(key)
+    hasher.combine(laneWaitingReasonByLaneId[key])
   }
   return hasher.finalize()
 }
@@ -590,6 +609,10 @@ func workSessionGroups(
   orderedLanes: [LaneSummary],
   deletingLaneIds: Set<String> = [],
   headerlessLaneIds: Set<String> = [],
+  /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Only
+  /// by-status reads it — it is what its Waiting section is, and it is the same
+  /// map the Waiting chip filters with.
+  laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
   // The quiet zone is a shelf pair, and only by-status and by-time build it.
@@ -630,6 +653,7 @@ func workSessionGroups(
       sessions: awake,
       chatSummaries: chatSummaries,
       archivedSessionIds: archivedSessionIds,
+      laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
       now: now
     )
   case .byLane:
@@ -738,17 +762,58 @@ func workLaneSessionsAreQuiet(
   }
 }
 
+/// Stable id for the Waiting section, in the `status:` family the other
+/// by-status sections use so its collapse state persists the same way.
+let workWaitingSectionId = "status:waiting"
+
+/// Whether a pinned row in the Done section is lifted onto the Pinned section.
+///
+/// It is for the phases that always were — the run actually finished or broke —
+/// and is not for the resting ones. `.ready`/`.idle`/`.settled` have never had a
+/// Pinned lift, and granting them one now would move rows around for a reason
+/// that has nothing to do with merging the Done and Ended headers.
+private func workStatusSectionLiftsPinned(phase: CanonicalSessionPhase) -> Bool {
+  switch phase {
+  case .failed, .stopped, .ended: return true
+  case .ready, .idle, .settled, .needsYou, .starting, .running, .stale: return false
+  }
+}
+
+/// The by-status sections, which are the status CHIPS — same four buckets, same
+/// four words, one derivation (`workStatusFilterPartition`) shared with
+/// `workFilteredSessions`.
+///
+/// Every label is read from `WorkSessionStatusFilter.title`, which in turn reads
+/// `ActivityBand.title`, so nothing here spells a column name of its own. The
+/// header a row lands under is therefore always the chip that selected it: a
+/// "Done" chip can no longer scatter its rows across headers called "Done" and
+/// "Ended".
+///
+/// Two lifts cut across the four and are NOT chips — they are the same kind of
+/// overlay as the Snoozed/Settled shelves `workSessionGroups` adds:
+///
+/// - **Pinned**, which pulls a pinned row out of Working or Done. Deliberately
+///   the same phases it always pulled, so a pinned row does not change section
+///   because of this reshuffle: resting `.ready`/`.idle`/`.settled` rows and a
+///   raised hand have never been lifted, and still are not.
+/// - **Archived**, checked before anything else so an archived row keeps its own
+///   shelf whatever phase it preserved.
 func workSessionGroupsByStatus(
   sessions: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
   archivedSessionIds: Set<String>,
+  /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
+  /// valid input (no PRs loaded yet): the Waiting section is then snoozed-only,
+  /// which on the normal path means empty, because `workSessionGroups` has
+  /// already lifted snoozed rows onto their own shelf.
+  laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
-  var needsInput: [TerminalSessionSummary] = []
+  var needsYou: [TerminalSessionSummary] = []
+  var working: [TerminalSessionSummary] = []
+  var waiting: [TerminalSessionSummary] = []
   var done: [TerminalSessionSummary] = []
   var pinned: [TerminalSessionSummary] = []
-  var running: [TerminalSessionSummary] = []
-  var ended: [TerminalSessionSummary] = []
   var archived: [TerminalSessionSummary] = []
 
   for session in sessions {
@@ -764,57 +829,78 @@ func workSessionGroupsByStatus(
       summary: chatSummaries[session.id],
       now: now
     )
+    // Waiting is resolved FIRST and the other three sections then exclude it —
+    // the same assembly order, for the same reason, as `workFilteredSessions`.
+    // A pinned row waiting on CI therefore files under Waiting rather than
+    // Pinned, because the alternative is a Waiting header that does not hold
+    // what the Waiting chip selects.
+    //
+    // In practice only `.ci` and `.review` reach here: `workSessionGroups` has
+    // already lifted `.snoozed` rows onto the quiet shelf, ahead of every
+    // organization.
+    if workSessionWaitingReason(
+      session: session,
+      phase: canonical.phase,
+      laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+      now: now
+    ) != nil {
+      waiting.append(session)
+      continue
+    }
     // Switch on the CANONICAL phase, never on `workActivityPhase`: the activity
     // vocabulary folds `.ready`/`.idle` into `.completed` for badge purposes,
     // and filing rows by that collapsed view would lose the distinction between
-    // "finished, unseen" and "the runtime stopped".
-    switch canonical.phase {
+    // "finished, unseen" and "the runtime stopped" that `.settled` needs.
+    //
+    // `.settled` only reaches here on a direct call: `workSessionGroups` lifts
+    // settled rows onto the trailing quiet shelf first.
+    switch workStatusFilterPartition(phase: canonical.phase) {
     case .needsYou:
-      needsInput.append(session)
-    case .ready, .idle, .settled:
-      // Finished cleanly and not yet acknowledged. These used to sit under
-      // "Your move", which is exactly the confusion the shared vocabulary
-      // exists to kill: amber is reserved for a session actually blocked on the
-      // user, and a run that completed is emerald "Done".
-      //
-      // `.settled` only reaches here on a direct call: `workSessionGroups`
-      // lifts settled rows onto the trailing quiet shelf first. Filing it with
-      // the other finished phases matches `workSessionBadgeKind(for:)`, which
-      // already maps all three to `.done`.
+      needsYou.append(session)
+    case .working:
+      if session.pinned {
+        pinned.append(session)
+      } else {
+        working.append(session)
+      }
+    case .done:
+      if session.pinned, workStatusSectionLiftsPinned(phase: canonical.phase) {
+        pinned.append(session)
+      } else {
+        done.append(session)
+      }
+    // `workStatusFilterPartition` only ever answers with the three phase-derived
+    // chips; Waiting was handled above and the other two are not phases at all.
+    // Loud in debug, and quietly filed with the outcomes in release rather than
+    // dropped, because a row missing from every section is invisible.
+    case .all, .waiting, .archived:
+      assertionFailure("workStatusFilterPartition returned a non-phase chip")
       done.append(session)
-    case .starting, .running, .stale:
-      if session.pinned {
-        pinned.append(session)
-      } else {
-        running.append(session)
-      }
-    case .failed, .stopped, .ended:
-      if session.pinned {
-        pinned.append(session)
-      } else {
-        ended.append(session)
-      }
     }
   }
 
   var groups: [WorkSessionGroup] = []
-  if !needsInput.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:awaiting", label: "Your move", icon: .statusDot, tint: ADEColor.warning, sessions: needsInput))
-  }
-  if !done.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:done", label: "Done", icon: .statusDot, tint: ADEColor.success, sessions: done))
+  // Section ids are persisted collapse keys, so the three that survive keep the
+  // ids they had. `status:ended` is retired into `status:done` — a saved entry
+  // for it simply stops matching anything, which is inert rather than wrong,
+  // the same trade `workSettledSectionId` documents.
+  if !needsYou.isEmpty {
+    groups.append(WorkSessionGroup(id: "status:awaiting", label: WorkSessionStatusFilter.needsYou.title, icon: .statusDot, tint: ADEColor.warning, sessions: needsYou))
   }
   if !pinned.isEmpty {
     groups.append(WorkSessionGroup(id: "status:pinned", label: "Pinned", icon: .statusDot, tint: ADEColor.accent, sessions: pinned))
   }
-  if !running.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:running", label: "Working", icon: .statusDot, tint: ADEColor.info, sessions: running))
+  if !working.isEmpty {
+    groups.append(WorkSessionGroup(id: "status:running", label: WorkSessionStatusFilter.working.title, icon: .statusDot, tint: ADEColor.info, sessions: working))
   }
-  if !ended.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:ended", label: "Ended", icon: .statusDot, tint: ADEColor.textMuted, sessions: ended))
+  if !waiting.isEmpty {
+    groups.append(WorkSessionGroup(id: workWaitingSectionId, label: WorkSessionStatusFilter.waiting.title, icon: .statusDot, tint: ADEColor.textMuted, sessions: waiting))
+  }
+  if !done.isEmpty {
+    groups.append(WorkSessionGroup(id: "status:done", label: WorkSessionStatusFilter.done.title, icon: .statusDot, tint: ADEColor.success, sessions: done))
   }
   if !archived.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:archived", label: "Archived", icon: .statusDot, tint: ADEColor.warning, sessions: archived))
+    groups.append(WorkSessionGroup(id: "status:archived", label: WorkSessionStatusFilter.archived.title, icon: .statusDot, tint: ADEColor.warning, sessions: archived))
   }
   return groups
 }

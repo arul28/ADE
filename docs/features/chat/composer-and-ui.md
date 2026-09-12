@@ -785,24 +785,27 @@ that could not work without it.
   SDK message with `priority: "next"` and `shouldQuery: true`. Claude's
   **Interrupt & send** calls `dispatchSteer({ mode: "interrupt" })`, which uses
   SDK priority `now` to redirect the current model step without tearing down the
-  Claude query. Cursor sessions get the interrupt action only, labelled
+  Claude query. Codex sessions get the **send during turn** action only: the
+  app-server folds a `turn/steer` request into the turn already running, but has
+  no interrupt-and-resend, so `"interrupt"` is rejected. Cursor sessions get the
+  interrupt action only, labelled
   **Interrupt & continue** — `dispatchSteer({ mode: "interrupt" })` there
   promotes the staged row to the cancel-and-resend redirect, and `"inline"` is
   rejected. The tooltips and the hint above the staged list follow the same
   table and name the real provider (`stagedSteerHint`), so a Cursor session
   reads "Interrupt with this message, edit or remove." rather than promising an
-  inline send. Both buttons are hidden for the remaining providers (Codex,
-  OpenCode, Droid, Pi), which only support post-turn delivery — and for those
-  the hint says so outright ("Codex cannot take a message mid-turn, so this one
-  waits for the turn to end."). That sentence keys off `capability.modes`, not
-  the wired handlers, so a Claude chat whose dispatch handler is merely unwired
-  never claims Claude is queue-only.
+  inline send. Both buttons are hidden for the remaining providers (OpenCode,
+  Droid, Pi, the ACP providers), which only support post-turn delivery — and for
+  those the hint says so outright ("Droid cannot take a message mid-turn, so
+  this one waits for the turn to end."). That sentence keys off
+  `capability.modes`, not the wired handlers, so a Claude or Codex chat whose
+  dispatch handler is merely unwired never claims the provider is queue-only.
 - **A cancel that fails is reported.** `onCancelSteer` catches the rejection and
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent
   still sent the message.
-- **Mid-turn split Send button.** While a Claude or Cursor turn is active, the
-  composer's primary send control is a split button
+- **Mid-turn split Send button.** While a Claude, Codex, or Cursor turn is
+  active, the composer's primary send control is a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
   mode without sending; the primary click and Enter execute the selected mode,
   and the icon, tooltip, and accessible label follow it. Which modes appear is
@@ -813,26 +816,45 @@ that could not work without it.
   pane, the main service's steer/dispatch guards, the `ade code` TUI and the
   iOS `WorkActiveSendCapability` mirror all read the same table):
   Claude offers **Send during turn** / **Send after turn** / **Interrupt &
-  send** and defaults to *Send during turn*; Cursor offers **Interrupt &
-  continue** / **Send after turn** and defaults to *Interrupt & continue*.
+  send** and defaults to *Send during turn*; Codex offers **Send during turn** /
+  **Send after turn** and defaults to *Send during turn*; Cursor offers
+  **Interrupt & continue** / **Send after turn** and defaults to *Interrupt &
+  continue*.
   Cursor has no *Send during turn* because its SDK exposes no mid-run message
   API — the redirect cancels the run and resends on the same agent thread, so
   the label says "continue" (that per-provider fact is
   `activeTurnInterruptContinues`, beside the table, which the composer, the TUI
-  and the iOS mirror all read). Mode descriptions name the actual provider
+  and the iOS mirror all read). Codex is the mirror case: its app-server takes a
+  mid-turn `turn/steer` but offers no interrupt-and-resend, so it has *Send
+  during turn* and no interrupt affordance. Mode descriptions name the actual
+  provider
   ("Stop and redirect Cursor now."). The selection is held for the session and
   re-normalized when the provider changes, so a mode the new provider cannot
   honor can never stay selected. A mode this pane has no wired handler for —
   reachable while a model for another provider is picked mid-turn, since the
   menu follows the picked provider and the handlers follow the live session —
-  downgrades to queueing rather than dead-ending, so Enter and the primary
-  button always deliver the draft somewhere. Immediate modes are a single atomic
+  falls through to the next *offered* mode the pane can actually dispatch, in
+  menu order, and only then to queueing, so Enter and the primary
+  button always deliver the draft somewhere and the primary button never labels
+  itself with a mode the caret does not show. Immediate modes are a single
+  atomic
   `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
   action disables on an empty draft, while the caret remains available so the
   user can inspect or change the delivery mode. Providers with no atomic
-  active-turn dispatch (Codex, OpenCode, Droid, Pi) keep the single
+  active-turn dispatch (OpenCode, Droid, Pi, the ACP providers) keep the single
   queue-on-send affordance, and a queued Cursor message still gets the plain
   "Message queued — will be sent when the current turn completes." notice.
+- **The CTO composer never offers *Send after turn*.** `AgentChatPane` passes
+  its `surfaceProfile` into the composer, and `surfaceProfile ===
+  "persistent_identity"` (the CTO thread) sets
+  `activeTurnSendModesForProvider(provider, { liveRedirectOnly: true })`, which
+  filters `queue` out of the menu and re-points the default at the provider's
+  first remaining mode. This is presentation catching up with the host: the CTO
+  session's steer queue cap is zero, so a delivery that would have queued is
+  rewritten into a live redirect anyway, and offering the wait would promise
+  something the backend never honors. The filter is a fallback-safe narrowing —
+  if a queue-only provider ever reached this path it would keep its real menu
+  rather than render nothing. `ACTIVE_TURN_DISPATCH_MODES` itself is untouched.
 - **Queue-aware Stop button.** In an active Claude chat, Stop becomes a compact
   split control whose menu is the four-mode matrix in
   `apps/desktop/src/shared/chatStopModes.ts`: **Turn only** (`stop_only`),

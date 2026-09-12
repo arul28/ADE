@@ -287,10 +287,15 @@ describe("createCtoOperatorTools", () => {
       // Handoff targeted "a different agent identity" — a subsystem that was
       // removed; AgentChatIdentityKey is now just "cto". Advertising it was
       // advertising a capability that could not exist.
+      //
+      // `handoffChatToModel` is a DIFFERENT thing and deliberately does not
+      // reuse this name: it hands a chat to another MODEL through the live
+      // `handoffSession` path, which does exist.
       const tools = createCtoOperatorTools(buildDeps());
 
       expect(Object.keys(tools)).not.toContain("handoffChat");
       expect(Object.keys(tools)).toContain("spawnChat");
+      expect(Object.keys(tools)).toContain("handoffChatToModel");
     });
   });
 
@@ -382,6 +387,41 @@ describe("createCtoOperatorTools", () => {
       expect(deps.createChat).toHaveBeenCalledWith(
         expect.not.objectContaining({ permissionMode: expect.anything() }),
       );
+    });
+
+    it("stamps spawn lineage so a chat the CTO started reports back to it", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.spawnChat as any).execute({ title: "Implementation worker" });
+
+      // Without the parent id the child finishes in silence and the CTO is left
+      // polling transcripts to find out. `subagent` is the default because the
+      // CTO almost always needs the result.
+      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
+        orchestrationParentSessionId: "cto-current",
+        spawnKind: "subagent",
+      }));
+    });
+
+    it("honors an explicit peer spawn for fire-and-forget work", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.spawnChat as any).execute({ title: "Background sweep", spawnKind: "peer" });
+
+      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
+        orchestrationParentSessionId: "cto-current",
+        spawnKind: "peer",
+      }));
+    });
+
+    it("accepts only the two spawn kinds at the schema layer, defaulting to subagent", () => {
+      const tools = createCtoOperatorTools(buildDeps());
+
+      expect((tools.spawnChat as any).inputSchema.safeParse({}).data.spawnKind).toBe("subagent");
+      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "peer" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "none" }).success).toBe(false);
     });
 
     it("exposes the complete ADE permission contract at the schema layer", () => {

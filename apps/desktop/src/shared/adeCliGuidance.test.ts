@@ -93,3 +93,25 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
   });
 });
+
+describe("Work board status guidance", () => {
+  it("states the derived board rule exactly once, and names both inputs", () => {
+    const guidance = buildAdeBootstrapGuidance([]);
+    expect(guidance).toContain(
+      "Your status on the Work board is derived from your turn state and your note. "
+      + "Keep the note current with `ade chat note`, and use `ade chat ask` when you are blocked.",
+    );
+    // One line, not a paragraph repeated per section: a duplicated rule in a
+    // prompt is one an agent has to decide between.
+    expect(guidance.split("Your status on the Work board is derived")).toHaveLength(2);
+  });
+
+  it("never tells an agent it can set its own board column", () => {
+    // Settling is the user's call (or the PR-merge policy's), and there is no
+    // "move my card" action. Guidance that implied otherwise would send the
+    // agent hunting for one.
+    const guidance = buildAdeBootstrapGuidance([]);
+    expect(guidance).not.toContain("moveOnBoard");
+    expect(guidance).toContain("You cannot settle or unsettle a session");
+  });
+});

@@ -250,6 +250,30 @@ describe("automation ingress enable gating", () => {
     return { service, projectConfig };
   }
 
+  // `agentChatService.buildCtoOperatorToolDeps` reads these member names off
+  // the real automation service to decide whether the CTO's automation-rule
+  // tools are available. It previously probed `get` and `toggleRule` — names
+  // this service has never had — so the dep resolved to null and every one of
+  // those tools answered "not available" on a fully wired desktop, silently
+  // disabling the automation control the CTO exists to offer. A rename here
+  // must fail loudly rather than turn those tools off again.
+  it("exposes the member names the CTO tool wiring probes", () => {
+    const { service } = createServiceForRule({
+      id: "rule-1",
+      name: "Rule",
+      trigger: { type: "manual" },
+      enabled: true,
+    });
+    const members = service as unknown as Record<string, unknown>;
+
+    expect(typeof members.toggle).toBe("function");
+    expect(typeof members.deleteRule).toBe("function");
+    // Not an oversight: there is no by-id read here. Both the action registry
+    // and the CTO wiring read a rule out of the project config instead.
+    expect(members.get).toBeUndefined();
+    expect(members.toggleRule).toBeUndefined();
+  });
+
   it("allows manually running a disabled automation", async () => {
     const rule = normalizeRuntimeRule({
       id: "manual-disabled",

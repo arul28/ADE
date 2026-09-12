@@ -253,6 +253,41 @@ They are two separate signals on the row the user is looking at:
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
 
+#### Board and status
+
+The Work tab has a board view with four columns. Your row sits in exactly one of
+them. The host derives the column; you never write it directly.
+
+| Column | How the host derives it |
+| --- | --- |
+| **Needs you** | Your row has a raised hand or an unanswered approval card. |
+| **Working** | A turn is running and nothing waits on the user. |
+| **Waiting** | The row is snoozed, or its lane PR has CI pending or a review requested. |
+| **Done** | The session ended or the user settled it. |
+
+Two rules follow from that:
+
+- **The column is derived, so keep the inputs true.** Call `ade chat note` when
+  the state changes, and call `ade chat ask` the moment you are actually blocked
+  on the user. A stale note makes a correct column read as the wrong work.
+- **Never claim a column.** There is no command that moves your own row. Do not
+  say a row is Done; end the turn and leave a note.
+
+**The user can drag your card.** A drag writes the status and then delivers one
+message to you. It arrives as a normal message with a board-move marker and a
+fixed sentence. React to it, do not ignore it:
+
+- **Done to Working.** The user reopened work you thought was finished. Re-read
+  the recent transcript, continue the work, and if the next step is genuinely
+  unclear, ask rather than guess.
+- **Any column to Needs you.** The user parked the work for their input. Stop
+  what you are doing, summarise where you are in one short message, and list
+  exactly what you need from them.
+- **Working to Done.** The user filed the row. No message reaches you.
+
+If your provider cannot take a message mid-turn, the board move still applies
+and the message arrives at the next turn boundary. Handle it then.
+
 Snooze is the lifecycle verb you *do* own. The typed family takes the session id
 as a positional, also accepts `--session`, and falls back to
 `ADE_CHAT_SESSION_ID` when you omit it.

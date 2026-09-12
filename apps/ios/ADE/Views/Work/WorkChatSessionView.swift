@@ -769,6 +769,12 @@ struct WorkChatSessionView: View {
   /// the chat renders output with no stop button or working indicator.
   var liveTurnActiveHint: Bool? = nil
   var compactComposer = false
+  /// The CTO identity session, which may never queue: the host rewrites a
+  /// queued delivery on that session into the provider's first live-redirect
+  /// mode, so a "send after turn" entry in the composer menu would promise a
+  /// wait the brain never honors. Deliberately its own flag rather than a
+  /// second meaning for `showsLaneActions`, which only governs lane/PR chrome.
+  var liveRedirectOnlySends = false
   var isPersonalChat: Bool = false
   var attachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
@@ -1768,6 +1774,7 @@ struct WorkChatSessionView: View {
         composerDraftRestore: composerDraftRestore,
         draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
         compact: compactComposer,
+        liveRedirectOnlySends: liveRedirectOnlySends,
         // Show Stop while a live turn has current transcript activity. The
         // broader live hint can lag after `done`; this stricter gate keeps the
         // composer from showing Stop after the completed-turn separator appears.
@@ -2941,6 +2948,32 @@ func mergeWorkPendingSteers(
   return result
 }
 
+/// The send-mode capability a composer renders, with the CTO's no-queue rule
+/// applied. Hand mirror of the desktop's `activeTurnSendModesForProvider` in
+/// `AgentChatComposer.tsx`: the per-provider table stays untouched and the
+/// filter is presentation only.
+///
+/// `liveRedirectOnly` is the CTO identity session. Every CTO-eligible provider
+/// (see `ctoLiveRedirectProviders`) has at least one live-redirect mode, so the
+/// filtered list is never empty there; if some other caller ever reaches this
+/// path queue-only, keep its real menu rather than render an empty one. Mode
+/// order is preserved, and `defaultMode` is `modes.first`, so dropping queue
+/// also moves the default onto the first remaining mode.
+func workChatActiveSendCapability(
+  provider: String,
+  liveRedirectOnly: Bool
+) -> WorkActiveSendCapability {
+  let capability = WorkActiveSendCapability.forProvider(provider)
+  guard liveRedirectOnly else { return capability }
+  let liveRedirectModes = capability.modes.filter { $0 != .queue }
+  guard !liveRedirectModes.isEmpty else { return capability }
+  return WorkActiveSendCapability(
+    modes: liveRedirectModes,
+    agentLabel: capability.agentLabel,
+    interruptContinues: capability.interruptContinues
+  )
+}
+
 private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   let sessionId: String
@@ -2959,6 +2992,7 @@ private struct WorkChatComposerCard: View {
   let composerDraftRestore: WorkChatComposerDraftRestore?
   let draftPersistenceKey: String
   let compact: Bool
+  let liveRedirectOnlySends: Bool
   /// True while the assistant is streaming a response. Swaps the Send button
   /// Desktop parity: red bordered stop control in the composer while a turn is
   /// active (`border-red-500/25 bg-red-500/[0.08] text-red-400/80`).
@@ -2992,6 +3026,7 @@ private struct WorkChatComposerCard: View {
       composerDraftRestore: composerDraftRestore,
       draftPersistenceKey: draftPersistenceKey,
       compact: compact,
+      liveRedirectOnlySends: liveRedirectOnlySends,
       showInterrupt: showInterrupt,
       activeSendModesAvailable: activeSendModesAvailable,
       queueAwareStopAvailable: queueAwareStopAvailable,
@@ -3037,6 +3072,9 @@ private struct WorkChatComposerDraftInput: View {
   /// restores it (matching desktop). Empty disables persistence.
   let draftPersistenceKey: String
   let compact: Bool
+  /// CTO session: the queue mode is filtered out of this composer's menu. See
+  /// `workChatActiveSendCapability`.
+  let liveRedirectOnlySends: Bool
   let showInterrupt: Bool
   let activeSendModesAvailable: Bool
   let queueAwareStopAvailable: Bool
@@ -3073,9 +3111,13 @@ private struct WorkChatComposerDraftInput: View {
   }
 
   /// One capability lookup for the whole active-turn send affordance. See
-  /// `WorkActiveSendCapability` for the table it mirrors.
+  /// `WorkActiveSendCapability` for the table it mirrors, and
+  /// `workChatActiveSendCapability` for the CTO's no-queue filter.
   private var activeSendCapability: WorkActiveSendCapability {
-    WorkActiveSendCapability.forProvider(chatSummary.provider)
+    workChatActiveSendCapability(
+      provider: chatSummary.provider,
+      liveRedirectOnly: liveRedirectOnlySends
+    )
   }
 
   /// Derived rather than stored, so switching providers can never leave a mode

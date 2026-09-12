@@ -232,6 +232,16 @@ export function StepCard({
           </p>
         ) : null}
 
+        {step.kind === "handoff" ? (
+          <p className="text-[11px] leading-relaxed text-muted-fg/70">
+            Continues the chat that triggered this rule on{" "}
+            {step.targetModelId ? <span className="font-mono">{step.targetModelId}</span> : "another model"}
+            {step.handoffMode === "fork" ? " by forking it" : " with a summary"}
+            {step.targetLaneMode === "new" ? " in a new lane" : step.targetLaneMode === "explicit" ? " in a chosen lane" : " in the same lane"}. Edit
+            it from the chat that created it.
+          </p>
+        ) : null}
+
         {step.kind === "delete-lane" ? (
           <DeleteLaneFields step={step} onChange={onChange} idBase={idBase} />
         ) : null}

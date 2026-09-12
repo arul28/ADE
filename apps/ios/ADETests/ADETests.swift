@@ -13959,9 +13959,17 @@ final class ADETests: XCTestCase {
     )
     XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes))
 
-    // Codex has neither, and an empty list is also what a host that predates
-    // `chat.dispatchSteer` resolves to — the gate the composer and the staged
-    // strip share. Either way the steer goes out plain.
+    // Codex is the mirror of Cursor: it has inline and no interrupt.
+    let codexModes = WorkActiveSendCapability.forProvider("codex").atomicDispatchModes
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: codexModes),
+      "inline"
+    )
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: codexModes))
+
+    // An empty list is what a host that predates `chat.dispatchSteer` resolves
+    // to — the gate the composer and the staged strip share. The steer goes out
+    // plain either way.
     XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: []))
     XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: []))
   }
@@ -14009,11 +14017,35 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkActiveSendCapability.forProvider("anthropic").modes, [.inline, .queue, .interrupt])
     XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.interrupt, .queue])
 
-    for provider in ["codex", "droid", "opencode", "pi", ""] {
+    // Codex accepts `turn/steer` into the running turn, so it has inline — and
+    // no cancel-and-resend, so it must not offer interrupt.
+    let codex = WorkActiveSendCapability.forProvider("codex")
+    XCTAssertEqual(codex.modes, [.inline, .queue])
+    XCTAssertEqual(codex.defaultMode, .inline)
+    XCTAssertFalse(codex.interruptContinues)
+    XCTAssertEqual(codex.agentLabel, "Codex")
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
+
+    for provider in ["droid", "opencode", "pi", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
     }
+  }
+
+  /// Guards the hand mirror of the desktop's `CTO_LIVE_REDIRECT_PROVIDERS`. It
+  /// is a separate list from the dispatch table above on purpose: Cursor has no
+  /// inline channel and is still eligible, through interrupt-and-resend.
+  func testCtoLiveRedirectProvidersMirrorDesktopContract() {
+    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor"])
+    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent"] {
+      XCTAssertTrue(providerSupportsLiveRedirect(provider), "expected \(provider) to be CTO-eligible")
+    }
+    for provider in ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
+      XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
+    }
+    XCTAssertFalse(WorkActiveSendCapability.forProvider("cursor").modes.contains(.inline))
+    XCTAssertTrue(providerSupportsLiveRedirect("cursor"))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
@@ -19370,6 +19402,83 @@ final class ADETests: XCTestCase {
     // Completed → unlocked too.
     let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
     XCTAssertFalse(identity(complete).isOnboardingBlocking)
+  }
+
+  /// The host writes `modelPreferences: null` whenever the stored pick is on a
+  /// provider that cannot steer a live turn, so the decoder has to survive both
+  /// a missing key and an explicit null — a force-unwrap here would crash the
+  /// CTO tab on exactly the installs that need its picker.
+  func testCtoIdentityDecodesNullModelPreferences() throws {
+    let explicitNull = try JSONSerialization.data(withJSONObject: [
+      "name": "CTO",
+      "modelPreferences": NSNull(),
+    ])
+    let decodedNull = try JSONDecoder().decode(CtoIdentity.self, from: explicitNull)
+    XCTAssertNil(decodedNull.modelPreferences)
+    XCTAssertNil(decodedNull.provider)
+    XCTAssertNil(decodedNull.model)
+    XCTAssertNil(decodedNull.reasoningEffort)
+    XCTAssertTrue(decodedNull.needsModelPick)
+
+    let omitted = try JSONSerialization.data(withJSONObject: ["name": "CTO"])
+    XCTAssertTrue(try JSONDecoder().decode(CtoIdentity.self, from: omitted).needsModelPick)
+
+    let picked = try JSONSerialization.data(withJSONObject: [
+      "name": "CTO",
+      "modelPreferences": ["provider": "codex", "model": "gpt-5.5"],
+    ])
+    let decodedPicked = try JSONDecoder().decode(CtoIdentity.self, from: picked)
+    XCTAssertFalse(decodedPicked.needsModelPick)
+    XCTAssertEqual(decodedPicked.provider, "codex")
+    XCTAssertEqual(decodedPicked.model, "gpt-5.5")
+  }
+
+  /// The CTO tab must show its picker — not the thread — while no model that
+  /// can steer a live turn has been chosen. Rendering the thread would run
+  /// `CtoSessionDestinationView`'s ensure and stand a session up on whatever
+  /// the host defaults to, which is exactly what the null preference exists to
+  /// prevent. Mirrors desktop `CtoPage`'s `needsModelPick` branch.
+  func testCtoRootShowsModelPickerOnlyWhileNoModelIsPicked() {
+    let setUp = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
+    func identity(_ preferences: CtoModelPreferences?) -> CtoIdentity {
+      CtoIdentity(name: "CTO", onboardingState: setUp, modelPreferences: preferences)
+    }
+
+    let unpicked = identity(nil)
+    XCTAssertTrue(unpicked.needsModelPick)
+    XCTAssertEqual(
+      ctoRootContent(identity: unpicked, loadError: nil, hostUnreachable: false),
+      .modelPick
+    )
+    // A load error never outranks the picker once the identity is in hand.
+    XCTAssertEqual(
+      ctoRootContent(identity: unpicked, loadError: "boom", hostUnreachable: false),
+      .modelPick
+    )
+
+    let picked = identity(CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil))
+    XCTAssertFalse(picked.needsModelPick)
+    XCTAssertEqual(
+      ctoRootContent(identity: picked, loadError: nil, hostUnreachable: false),
+      .thread
+    )
+
+    // Setup still comes first: an unpicked model behind blocking onboarding
+    // shows the setup card, not the picker.
+    let needsSetup = CtoIdentity(name: "CTO", onboardingState: nil, modelPreferences: nil)
+    XCTAssertEqual(
+      ctoRootContent(identity: needsSetup, loadError: nil, hostUnreachable: false),
+      .onboarding
+    )
+
+    // No identity yet: the offline case stays on the spinner (the top bar owns
+    // the connection dot); a reachable host surfaces the failure.
+    XCTAssertEqual(ctoRootContent(identity: nil, loadError: nil, hostUnreachable: false), .loading)
+    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .loading)
+    XCTAssertEqual(
+      ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: false),
+      .loadError("boom")
+    )
   }
 
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndKeepsAssistantItemsStable() {
@@ -26139,9 +26248,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cursor.defaultMode, .interrupt)
 
     let codex = WorkActiveSendCapability.forProvider("codex")
-    XCTAssertEqual(codex.modes, [.queue])
+    XCTAssertEqual(codex.modes, [.inline, .queue])
     XCTAssertFalse(codex.modes.contains(.interrupt))
-    XCTAssertEqual(codex.defaultMode, .queue)
+    XCTAssertEqual(codex.defaultMode, .inline)
 
     // And the wire value for an unhonorable mode is always nil, so nothing the
     // fallback misses can still reach the host.
@@ -27560,6 +27669,76 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(session.orchestrationRunId, "run-xyz")
     XCTAssertEqual(session.orchestrationRole, "validator")
     XCTAssertEqual(session.orchestrationTag, "test-coverage")
+  }
+
+  // MARK: - CTO lineage on a Work row
+
+  /// `parentIdentityKey` is the host's answer to "who spawned this", and the
+  /// phone cannot compute it: the CTO parent it names is an identity session,
+  /// filtered out of every roster the phone holds. So it has to survive the
+  /// wire, and the row has to read it rather than infer one.
+  func testTerminalSessionSummaryDecodesParentIdentityKey() throws {
+    let json = """
+    {
+      "id": "term-cto-child",
+      "laneId": "lane-1",
+      "laneName": "Feature",
+      "tracked": true,
+      "pinned": false,
+      "title": "Investigate the flake",
+      "status": "running",
+      "startedAt": "2026-09-12T00:00:00.000Z",
+      "transcriptPath": "/tmp/transcript.jsonl",
+      "runtimeState": "running",
+      "parentIdentityKey": "cto"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
+    XCTAssertEqual(session.parentIdentityKey, "cto")
+    XCTAssertTrue(session.isCtoChild)
+  }
+
+  /// Absent is the no-op value, and it is by far the common case: an older host
+  /// omits the field, and so does every chat with no parent or an ordinary chat
+  /// parent. None of them may wear the chip.
+  func testTerminalSessionSummaryWithoutParentIdentityKeyIsNotACtoChild() throws {
+    let json = """
+    {
+      "id": "term-plain",
+      "laneId": "lane-1",
+      "laneName": "Feature",
+      "tracked": true,
+      "pinned": false,
+      "title": "Ordinary chat",
+      "status": "running",
+      "startedAt": "2026-09-12T00:00:00.000Z",
+      "transcriptPath": "/tmp/transcript.jsonl",
+      "runtimeState": "running",
+      "orchestrationRunId": "run-xyz",
+      "orchestrationRole": "worker"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
+    XCTAssertNil(session.parentIdentityKey)
+    XCTAssertFalse(session.isCtoChild)
+  }
+
+  /// A future identity that is not the CTO must not borrow the CTO's chip.
+  func testOtherParentIdentityKeysAreNotTreatedAsTheCto() {
+    var session = TerminalSessionSummary(
+      id: "term-other",
+      laneId: "lane-1",
+      laneName: "Feature",
+      tracked: true,
+      pinned: false,
+      title: "Child",
+      status: "running",
+      startedAt: "2026-09-12T00:00:00.000Z",
+      transcriptPath: "/tmp/transcript.jsonl",
+      runtimeState: "running"
+    )
+    session.parentIdentityKey = "reviewer"
+    XCTAssertFalse(session.isCtoChild)
   }
 
   func testAgentChatSessionDecodesOrchestrationFields() throws {

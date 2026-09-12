@@ -75,6 +75,11 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   // chat caller. Any orchestration origin is excluded from the human-message
   // count above.
   "orchestrationOrigin",
+  // Stamped by `session.moveOnBoard` from the column the row was actually in
+  // and the one it was dropped on. A caller-supplied `boardMove` would let a
+  // rule (or an agent) forge "the user moved this card", which the renderer
+  // renders as a user act and which clears the attention markers.
+  "boardMove",
   ...NON_DIRECTIVE_METADATA_KEYS,
   // Host-only dispatch markers are host-authored provenance too, and they are
   // the load-bearing kind: each one exempts its message from the auto-resume
@@ -88,4 +93,42 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
 
 export const stripHostAuthoredMessageProvenance = (metadata: Record<string, unknown>): void => {
   for (const key of HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS) delete metadata[key];
+};
+
+/**
+ * Metadata that marks a message as one the HOST wrote on the agent's behalf,
+ * rather than one a person sent.
+ *
+ * Only a person engaging with a chat may clear its lifecycle markers (the
+ * settle / attention / turn-failure columns). A host-authored delivery must
+ * not: a subagent reporting in (`spawnCompletion`), a continuation or repair
+ * prompt ADE composed itself (`hostContinuation`), or a durable scheduler
+ * firing (`scheduledWake`) would otherwise wipe a real "Needs you" the user
+ * has not seen — the child's report masks the parent's raised hand, and the
+ * row goes quiet with a question still open.
+ */
+const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
+  "scheduledWake",
+  "spawnCompletion",
+  "hostContinuation",
+] as const;
+
+/**
+ * Whether delivering this message counts as the user engaging with the chat,
+ * and so may clear the attention/settle markers.
+ *
+ * A board move is host-authored in provenance (ADE writes the text, and
+ * `stripHostAuthoredMessageProvenance` refuses the marker from a caller) but
+ * it is a human ACT: the user dragged the card. So it clears — except a move
+ * INTO Needs you, whose entire point is the attention write it would
+ * otherwise erase in the same breath.
+ */
+export const messageClearsAttentionMarkers = (
+  metadata: AgentChatEventMetadata | null | undefined,
+): boolean => {
+  if (!metadata) return true;
+  // A board move into Needs you is the user parking the chat for their input,
+  // so it must not count as agent activity. Every other target does.
+  if (metadata.boardMove) return metadata.boardMove.to !== "needs_you";
+  return !HOST_AUTHORED_NON_USER_ACTIVITY_KEYS.some((key) => metadata[key]);
 };

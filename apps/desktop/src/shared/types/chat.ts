@@ -255,7 +255,8 @@ export function isAgentChatDroidPermissionMode(value: unknown): value is AgentCh
 }
 
 export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
-export type AgentChatSpawnKind = "subagent" | "peer";
+export const AGENT_CHAT_SPAWN_KIND_VALUES = ["subagent", "peer"] as const;
+export type AgentChatSpawnKind = (typeof AGENT_CHAT_SPAWN_KIND_VALUES)[number];
 
 /**
  * Terminal outcome of a spawned child chat, delivered to the spawner. Rides the
@@ -722,6 +723,56 @@ export type AgentChatUnprocessedMessageResolutionMetadata = {
   replacementMessageId?: string;
 };
 
+/* ──────────────────────────────────────────────────────────────────────────
+   THE WORK-BOARD COLUMN VOCABULARY, declared once.
+
+   Four layers name these columns — this file, the action registry that writes
+   them, the renderer that buckets them, and the `ade session move` CLI — and
+   every one of them used to spell the union out again. Four copies is four
+   chances to add a fifth column to three of them, and the renderer's copy had
+   already drifted to `needs-you` with a hand translation at the seam.
+
+   So: the values are snake_case everywhere, including the renderer's bucket
+   keys and the board's `data-testid`s. Screen labels come from
+   `WORK_BOARD_COLUMN_LABEL` rather than from a ternary per surface.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** Work-board columns a card can be DROPPED on. Waiting is derived (a row sits
+ *  there because it is snoozed or its PR is mid-CI) and is never a target. */
+export type WorkBoardMoveTarget = "needs_you" | "working" | "done";
+
+/** Every column a card can currently BE in, including the derived one. */
+export type WorkBoardColumn = WorkBoardMoveTarget | "waiting";
+
+/** The three columns a card can be dropped on, in board order. */
+export const WORK_BOARD_MOVE_TARGETS = ["needs_you", "working", "done"] as const;
+
+export function isWorkBoardMoveTarget(value: unknown): value is WorkBoardMoveTarget {
+  return typeof value === "string"
+    && (WORK_BOARD_MOVE_TARGETS as readonly string[]).includes(value);
+}
+
+/** How each column is written on screen — board header, toast title, chat divider. */
+export const WORK_BOARD_COLUMN_LABEL: Record<WorkBoardColumn, string> = {
+  needs_you: "Needs you",
+  working: "Working",
+  waiting: "Waiting",
+  done: "Done",
+};
+
+/**
+ * Provenance for a message ADE authored because the user dragged the chat's
+ * card between Work-board columns. Host-stamped only: `from` is the column the
+ * row was actually in when the drop landed, never what the caller claimed.
+ */
+export type AgentChatBoardMoveMetadata = {
+  from: WorkBoardColumn;
+  to: WorkBoardMoveTarget;
+  at: string;
+  /** Correlates the message with the status write, so an undo can reverse both. */
+  moveId: string;
+};
+
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
@@ -749,6 +800,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
    * failed send into an unrecoverable one.
    */
   usageLimitResume?: "manual";
+  /** Marks the host-authored nudge that accompanies a Work-board drag. */
+  boardMove?: AgentChatBoardMoveMetadata;
 };
 
 export type AgentChatScheduledWorkKind =
@@ -2118,6 +2171,12 @@ export type AgentChatSessionSummary = {
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
   identityKey?: AgentChatIdentityKey;
+  /**
+   * The spawning chat's identity, when it had one — `"cto"` for work the CTO
+   * started. Lets a roster badge a chat's origin without resolving the parent
+   * summary first.
+   */
+  parentIdentityKey?: string | null;
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
@@ -3361,9 +3420,11 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * dispatch wiring, the main service's steer/dispatch guards, and the `ade code`
  * TUI. iOS mirrors it by hand (it cannot import TS) — keep the two in step.
  *
- * Claude folds a message into the live query, so it has all three. Cursor's SDK
- * has no mid-run message API: its interrupt cancels the run and resends on the
- * same agent thread, so it has no "inline". Everything else is queue-only.
+ * Claude folds a message into the live query, so it has all three. Codex takes
+ * the app-server's `turn/steer` request into the running turn, so it has
+ * "inline" — but no interrupt-and-resend, so it stops there. Cursor's SDK has
+ * no mid-run message API: its interrupt cancels the run and resends on the same
+ * agent thread, so it has no "inline". Everything else is queue-only.
  *
  * The ACP providers are stated rather than left to the fallback. ACP has no
  * mid-turn message method at all — `session/prompt` is one request per turn —
@@ -3371,6 +3432,7 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  */
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
+  codex: ["inline", "queue"],
   cursor: ["interrupt", "queue"],
   qwen: ["queue"],
   kimi: ["queue"],
@@ -3429,6 +3491,30 @@ export function unsupportedActiveTurnDispatchModeMessage(
   return `${name} sessions support only the ${
     accepted.map((entry) => `"${entry}"`).join(" and ")
   } active-turn dispatch mode${accepted.length > 1 ? "s" : ""}.`;
+}
+
+/**
+ * Providers a CTO thread may run on: the ones that can redirect a turn that is
+ * already running. The CTO is interrupted constantly — by child reports,
+ * scheduled wakes and peer notes — and a provider that can only stage the next
+ * turn would hold every one of them until the current turn ends.
+ *
+ * Deliberately NOT derived from `ACTIVE_TURN_DISPATCH_MODES`. That table
+ * governs the composer's staged-message promotion menu; this is the CTO's own
+ * eligibility contract. Reading one off the other would let a composer-menu
+ * change silently decide who is allowed to be the CTO.
+ *
+ * Cursor qualifies through interrupt-and-resend: the live run is cancelled and
+ * the message continues on the same agent thread, which is still a redirect of
+ * work in flight rather than a wait for the turn boundary.
+ */
+export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor"] as const;
+
+/** True when `provider` can redirect a turn that is already running. */
+export function providerSupportsLiveRedirect(provider: string): boolean {
+  return (CTO_LIVE_REDIRECT_PROVIDERS as readonly string[]).includes(
+    provider.trim().toLowerCase(),
+  );
 }
 
 export type AgentChatSteerArgs = {

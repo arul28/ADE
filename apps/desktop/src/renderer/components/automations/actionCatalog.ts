@@ -5,6 +5,7 @@
  */
 
 import {
+  ArrowsLeftRight,
   Code,
   Lightning,
   TerminalWindow,
@@ -21,7 +22,8 @@ export type StepKind =
   | "run-tests"
   | "run-command"
   | "predict-conflicts"
-  | "delete-lane";
+  | "delete-lane"
+  | "handoff";
 
 export type StepDef = {
   kind: StepKind;
@@ -74,9 +76,21 @@ export const STEP_DEFS: Record<StepKind, StepDef> = {
     accent: "#E06C75",
     description: "Clean up the run's lane, optionally after a delay.",
   },
+  handoff: {
+    kind: "handoff",
+    label: "Hand off the chat",
+    icon: ArrowsLeftRight,
+    accent: "#58A6FF",
+    description: "Continue the chat that triggered this rule on another model.",
+  },
 };
 
-/** The steps offered in the "+ add step" menu, in order. */
+/**
+ * The steps offered in the "+ add step" menu, in order. `handoff` is absent on
+ * purpose: it is written by the chat menu, which already knows the chat and the
+ * target model, and it has no editor here yet. It still round-trips through the
+ * builder so opening such a rule cannot drop the step.
+ */
 export const ADD_STEP_ORDER: readonly StepKind[] = [
   "agent-session",
   "ade-action",

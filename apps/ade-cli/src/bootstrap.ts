@@ -1280,6 +1280,19 @@ export async function createAdeRuntime(args: {
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
+      // Resolved on every refresh, not captured here: the chat and automation
+      // services are constructed further down, so the live block must read
+      // them through a thunk rather than pin whatever was null at this point.
+      getLiveStateSources: () => {
+        const chat = agentChatService;
+        if (!chat) return null;
+        return {
+          laneService,
+          prService: headlessLinearServices.prService,
+          automationService: automationServiceRef,
+          listChats: chat.listSessions,
+        };
+      },
     });
     const adeProjectService = createAdeProjectService({
       projectRoot,

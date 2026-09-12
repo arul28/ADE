@@ -74,7 +74,7 @@ ADE action domain + RPC scoping:
 - `apps/desktop/src/main/services/adeActions/registry.ts` — registers the
   `search` domain (`ADE_ACTION_DOMAIN_NAMES`), its allowlist
   (`query`, `indexStatus`, `rebuildIndex`), the CTO-only gate on
-  `rebuildIndex` (`ADE_ACTION_CTO_ONLY`), and `buildSearchDomainService`
+  `rebuildIndex` (`ADE_ACTION_CTO_ONLY`, in `actionPolicy.ts`), and `buildSearchDomainService`
   (returns `null` when the runtime has no `searchService`).
 - `apps/ade-cli/src/adeRpcServer.ts` — `scopeSearchAdeActionArgs` removes any
   caller-supplied `callerScope`, so session-bound agents and unbound shells see

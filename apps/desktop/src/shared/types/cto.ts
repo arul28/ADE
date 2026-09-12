@@ -26,13 +26,21 @@ export type CtoIdentity = {
   constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
-  modelPreferences: {
-    provider: string;
-    model: string;
-    modelId?: ModelId;
-    reasoningEffort?: string | null;
-  };
+  /**
+   * Null until the user has picked a model the CTO can actually run on. A
+   * stored preference on a provider that cannot redirect a live turn is
+   * normalized back to null rather than silently kept, so the picker card is
+   * the only way out and no CTO thread ever starts on a queue-only provider.
+   */
+  modelPreferences: CtoModelPreferences | null;
   updatedAt: string;
+};
+
+export type CtoModelPreferences = {
+  provider: string;
+  model: string;
+  modelId?: ModelId;
+  reasoningEffort?: string | null;
 };
 
 export type CtoSessionLogEntry = {

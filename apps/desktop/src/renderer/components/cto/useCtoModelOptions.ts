@@ -1,8 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
+import {
+  getModelById,
+  modelSupportsFastMode,
+  resolveChatProviderForDescriptor,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
+import { providerSupportsLiveRedirect } from "../../../shared/types/chat";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { settingsRouteFor } from "../settings/settingsManifest";
+
+/**
+ * The CTO may only run on a model whose provider can redirect a turn that is
+ * already running — child reports, wakes and peer notes arrive constantly and
+ * must not wait for a turn boundary.
+ *
+ * Resolved through the provider the model would actually launch on, never its
+ * registry family: an OpenAI model that is not CLI-wrapped runs under OpenCode,
+ * which stages everything.
+ */
+export function ctoModelSupportsLiveRedirect(descriptor: ModelDescriptor): boolean {
+  return providerSupportsLiveRedirect(resolveChatProviderForDescriptor(descriptor).provider);
+}
 
 export type CtoModelSelection = {
   provider: string;
@@ -50,7 +69,12 @@ export function useCtoModelOptions(): {
       try {
         const status = await window.ade.ai.getStatus();
         if (cancelled) return;
-        setAvailableModelIds(deriveConfiguredModelIds(status));
+        // Narrowed here as well as in the picker's filter, so the panel's
+        // "no models configured" state counts only models the CTO can use.
+        setAvailableModelIds(deriveConfiguredModelIds(status).filter((modelId) => {
+          const descriptor = getModelById(modelId);
+          return descriptor ? ctoModelSupportsLiveRedirect(descriptor) : false;
+        }));
       } catch {
         if (!cancelled) setAvailableModelIds([]);
       } finally {

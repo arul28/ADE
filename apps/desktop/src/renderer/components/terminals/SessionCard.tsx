@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Alarm,
+  Brain,
   CircleNotch,
   Clock,
   CloudArrowUp,
@@ -39,6 +40,7 @@ import {
   primarySessionLabel,
   preferredSessionLabel,
   providerFromChatToolType,
+  sessionActivityInstant,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
@@ -64,13 +66,19 @@ import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
+import { formatSubagentModelLabel } from "../../../shared/chatSubagents";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
+import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
-import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
+import {
+  SESSION_TONE_DOT_CLASS,
+  formatFutureDuration,
+  sessionElapsedAnchor,
+} from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -388,6 +396,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrForeign = false,
   machineMarker = null,
   suppressMachineChip = false,
+  suppressStatusLabel = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -452,6 +461,20 @@ export const SessionCard = React.memo(function SessionCard({
    * whose header renders a machine marker.
    */
   suppressMachineChip?: boolean;
+  /**
+   * Drop the status WORD from the row face, keeping the slot's hover actions.
+   *
+   * Set by the Kanban board, where the column header already states the status
+   * and states it authoritatively — a card in "Needs you" rendering a green
+   * check and the word "Done" does not merely repeat the column, it contradicts
+   * it, and the column is the one that is right.
+   *
+   * The label is not simply deleted: it distinguishes things the four columns
+   * cannot ("Failed" and "Ended" both file under Done; "Stale 4h" and
+   * "Working 14s" both under Working), so it moves into the hover card instead
+   * of being lost. See the `status` row below.
+   */
+  suppressStatusLabel?: boolean;
 }) {
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
@@ -461,7 +484,8 @@ export const SessionCard = React.memo(function SessionCard({
   // during the one-second wait — see `resolveTriggerElement`.
   const hoverCard = useSessionHoverCard({ rowId: session.id });
   const sessionAttentionInput = canonicalInputFromSummary(session);
-  const canonicalPhase = sessionCanonicalUiState(sessionAttentionInput).phase;
+  const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
+  const canonicalPhase = canonicalUiState.phase;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(
     session.id,
@@ -531,6 +555,43 @@ export const SessionCard = React.memo(function SessionCard({
   const orchestrationLabel = session.orchestrationRole
     ? orchestrationRoleA11yLabel(session.orchestrationRole, session.orchestrationTag ?? null)
     : null;
+  /**
+   * Spawned BY the CTO. `parentIdentityKey` is stamped host-side (see
+   * `chatSessionProjection`) — the renderer never infers it, because the CTO
+   * thread is hidden from every roster and so is not here to be inspected.
+   */
+  const isCtoChild = Boolean(
+    session.orchestrationParentSessionId && session.parentIdentityKey === "cto",
+  );
+  /**
+   * The model, as a human reads it.
+   *
+   * `formatSubagentModelLabel` is the codebase's existing short-label helper
+   * (`shared/chatSubagents`), which resolves a ref through the model registry
+   * and falls back to the raw ref only when the registry has never heard of it.
+   * Reused rather than re-derived so the row, the Chat Info header and the
+   * subagent roster cannot end up calling the same model three different names.
+   *
+   * The canonical id is preferred over the provider's raw string because the
+   * registry is keyed on it; the raw string is the fallback for a provider
+   * whose answer never resolved. Null when there is nothing to say — a CLI or
+   * shell row has no model, and a chip reading "unknown" is worse than no chip.
+   */
+  const modelLabel = formatSubagentModelLabel(session.modelId ?? session.model);
+  /**
+   * What the CTO chip says on hover: an excerpt of what this child was ASKED,
+   * which is the one thing the row does not otherwise show. The first user
+   * message is the session's goal — it is what `chat.send` seeds the goal from
+   * — so `goal` is read first and the summary is the fallback for a child whose
+   * goal was never recorded. Trimmed with the same inline sanitizer the preview
+   * line uses, so a multi-line prompt cannot smuggle newlines into a tooltip.
+   */
+  const ctoTaskExcerpt = isCtoChild
+    ? sanitizeTerminalInlineText(session.goal ?? session.summary, 160)
+    : "";
+  const ctoChipTitle = ctoTaskExcerpt
+    ? `Spawned by the CTO — "${ctoTaskExcerpt}". Click to open the CTO.`
+    : "Spawned by the CTO — click to open the CTO.";
 
   /* ── The adaptive "where" slot (line 1, left) ──────────────────────────
      Identity, never status. Filled in this priority order and joined by `·`;
@@ -693,7 +754,39 @@ export const SessionCard = React.memo(function SessionCard({
      The chip is also the keyboard path to the parent thread. The hover card
      repeats that action for pointer users, but a hover-only action would make
      lineage navigation undiscoverable to keyboard and assistive-tech users. */
-  if (session.orchestrationParentSessionId) {
+  if (isCtoChild) {
+    /* A CTO child REPLACES the Subagent/Peer chip rather than sitting beside
+       it. Both answer "who spawned this", and the CTO answer is strictly more
+       specific — "Subagent · CTO" spends two chips on one fact, on the line
+       that is already the most crowded in the card.
+
+       It navigates to the CTO PAGE, not to the parent thread, because there is
+       no parent thread to open: the CTO is an identity session and is filtered
+       out of every session roster (`projectChatSummariesOntoSessions`), so the
+       `ade:work:select-session` event every other lineage chip fires would
+       resolve to nothing. */
+    whereParts.push(
+      <button
+        type="button"
+        key="lineage"
+        data-testid="session-cto-lineage"
+        data-session-parent-identity="cto"
+        aria-label="Open the CTO"
+        title={ctoChipTitle}
+        // Same neutral pill as the Subagent/Peer chip below — lineage is
+        // identity, and identity never spends a status hue.
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          navigate("/cto");
+        }}
+      >
+        <Brain size={10} weight="duotone" aria-hidden />
+        <span className="truncate">CTO</span>
+      </button>,
+    );
+  } else if (session.orchestrationParentSessionId) {
     const lineageLabel =
       session.spawnKind === "subagent"
         ? "Subagent"
@@ -768,7 +861,7 @@ export const SessionCard = React.memo(function SessionCard({
           data-session-last-activity=""
           className="flex-1 truncate tabular-nums text-[11px] text-muted-fg/55"
         >
-          {relativeTimeCompact(session.lastActivityAt ?? session.startedAt)}
+          {relativeTimeCompact(sessionActivityInstant(session))}
         </span>
       ),
     );
@@ -785,6 +878,33 @@ export const SessionCard = React.memo(function SessionCard({
      (PR state, red for a broken exit). */
   const lanePrList = lanePr ? (lanePrs.length > 0 ? lanePrs : [lanePr]) : [];
   const hoverRows: SessionHoverCardRow[] = [];
+  /* Board rows only. The row face gave the status word up to its column (see
+     `suppressStatusLabel`), and that word is not pure duplication: the column
+     files "Failed" and "Ended" together under Done, and "Stale 4h" next to
+     "Working 14s" under Working. Rather than lose the distinction, it lands
+     here — first, because "what is this actually doing" is the question the
+     card is opened to answer.
+
+     `SessionStatusLabel` renders it, not a re-derived string: one hue and one
+     glyph per state, resolved in exactly one place. */
+  if (suppressStatusLabel && presentation) {
+    hoverRows.push({
+      id: "status",
+      icon: (
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", SESSION_TONE_DOT_CLASS[presentation.tone])} />
+      ),
+      value: (
+        <SessionStatusLabel
+          presentation={presentation}
+          elapsedSince={sessionElapsedAnchor(session, canonicalPhase, canonicalUiState.liveness)}
+          futureAt={session.nextWakeAt}
+          timestampLabel=""
+          compact={false}
+        />
+      ),
+      testId: "session-hover-status",
+    });
+  }
   hoverRows.push({
     id: "lane",
     icon: <LaneIcon size={13} style={laneAccent ? { color: laneAccent } : undefined} />,
@@ -842,7 +962,25 @@ export const SessionCard = React.memo(function SessionCard({
       testId: "session-hover-pr",
     });
   }
-  if (session.orchestrationParentSessionId) {
+  if (isCtoChild) {
+    // The detail card is where the excerpt gets room to breathe: the chip's
+    // native title is a fallback for a pointer that never rests, this is the
+    // readable version. Same row id as the ordinary lineage row it replaces, so
+    // the card's row order does not shift between the two shapes.
+    hoverRows.push({
+      id: "parent-thread",
+      icon: <Brain size={13} weight="duotone" className="text-muted-fg/60" />,
+      value: (
+        <span>
+          Spawned by the <span className="text-fg/90">CTO</span>
+          {ctoTaskExcerpt ? <span className="text-muted-fg/50">{` — “${ctoTaskExcerpt}”`}</span> : null}
+        </span>
+      ),
+      onActivate: () => navigate("/cto"),
+      activateLabel: "Open the CTO",
+      testId: "session-hover-cto",
+    });
+  } else if (session.orchestrationParentSessionId) {
     // The lineage affordance the old tooltip only DESCRIBED ("click the glyph").
     // The card can be hovered into, so the row itself is the affordance now.
     hoverRows.push({
@@ -873,7 +1011,10 @@ export const SessionCard = React.memo(function SessionCard({
       value: orchestrationLabel,
     });
   }
-  if (session.spawnKind) {
+  // A CTO child's spawn kind is suppressed for the same reason its chip
+  // replaces the Subagent/Peer pill: "Spawned by the CTO" already said it, more
+  // specifically, one row above.
+  if (session.spawnKind && !isCtoChild) {
     hoverRows.push({
       id: "spawn",
       icon: <TreeStructure size={13} className="text-muted-fg/60" />,
@@ -943,8 +1084,15 @@ export const SessionCard = React.memo(function SessionCard({
   const statusSlot = (
     <SessionStatusSlot
       session={session}
-      presentation={presentation}
-      timestampLabel={relativeTimeCompact(session.endedAt ?? session.startedAt)}
+      /* `null` + an empty timestamp is the slot's own "nothing to say" state
+         (it is what a settled row already uses), so suppression needs no new
+         branch inside the slot — and the hover action cluster, which is a
+         separate layer, keeps working exactly as it does on a list row. */
+      presentation={suppressStatusLabel ? null : presentation}
+      /* Deliberately not `sessionActivityInstant`: the slot's stamp answers
+         "when did this finish", so a still-running row shows how long it has
+         been going rather than how long since its last token. */
+      timestampLabel={suppressStatusLabel ? "" : relativeTimeCompact(session.endedAt ?? session.startedAt)}
       snoozed={snoozed}
       settled={settled}
       actionsEnabled={!disabledReason}
@@ -1003,7 +1151,23 @@ export const SessionCard = React.memo(function SessionCard({
      Compact rows have no line 1 at all — dropping the glyph there would delete
      the affordance rather than move it — so the single-glyph form survives
      here, and only here. */
-  const compactLineageGlyph = session.orchestrationParentSessionId ? (
+  const compactLineageGlyph = isCtoChild ? (
+    <button
+      type="button"
+      data-testid="session-cto-lineage"
+      data-session-parent-identity="cto"
+      className="inline-flex shrink-0 cursor-pointer items-center text-muted-fg/70 transition-colors hover:text-fg"
+      title={ctoChipTitle}
+      aria-label="Open the CTO"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        navigate("/cto");
+      }}
+    >
+      <Brain size={11} weight="duotone" />
+    </button>
+  ) : session.orchestrationParentSessionId ? (
     <button
       type="button"
       data-testid="session-spawn-lineage"
@@ -1193,7 +1357,23 @@ export const SessionCard = React.memo(function SessionCard({
             ) : null}
             {/* The provider mark is the least informative thing in the row —
                 most rows share a provider — so it sits in the least prominent
-                slot rather than leading the card. */}
+                slot rather than leading the card.
+
+                The model sits immediately before it, as text: the glyph says
+                WHOSE model and the label says WHICH, and the two read as one
+                unit. Muted and truncating — it is an attribute of the row, not
+                a thing to scan for — and rendered only when the provider
+                actually reported one. */}
+            {modelLabel ? (
+              <span
+                data-testid="session-model-label"
+                data-session-model={modelLabel}
+                className="min-w-0 max-w-[7.5rem] shrink truncate text-[10px] font-medium leading-none text-muted-fg/50"
+                title={modelLabel}
+              >
+                {modelLabel}
+              </span>
+            ) : null}
             {cursorCloudLink}
             <SessionProviderLogoStack session={session} size={20} />
           </div>

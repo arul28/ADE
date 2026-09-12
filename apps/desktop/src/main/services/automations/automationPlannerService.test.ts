@@ -102,6 +102,55 @@ describe("automationPlannerService.validateDraft", () => {
     expect(res.normalized?.actions[0]?.suiteId).toBe("unit");
   });
 
+  it("saves a handoff step and defaults its lane target to the same lane", () => {
+    const { planner } = getPlanner({ suites: [] });
+
+    const res = planner.validateDraft({
+      draft: createDraft({
+        name: "Hand off on limit",
+        actions: [{ type: "handoff", targetModelId: "openai/gpt-5.6-sol" }],
+      }),
+      confirmations: [],
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.actions[0]).toMatchObject({
+      type: "handoff",
+      handoffMode: "brief",
+      targetLaneMode: "same",
+      targetModelId: "openai/gpt-5.6-sol",
+    });
+  });
+
+  it("rejects a handoff whose lane target is incoherent", () => {
+    const { planner } = getPlanner({ suites: [] });
+
+    const missingLane = planner.validateDraft({
+      draft: createDraft({
+        name: "Hand off",
+        actions: [{ type: "handoff", targetModelId: "openai/gpt-5.6-sol", targetLaneMode: "explicit" }],
+      }),
+      confirmations: [],
+    });
+    expect(missingLane.ok).toBe(false);
+    expect(missingLane.issues.some((issue) => issue.message.includes("requires targetLaneId"))).toBe(true);
+
+    const movingFork = planner.validateDraft({
+      draft: createDraft({
+        name: "Fork elsewhere",
+        actions: [{
+          type: "handoff",
+          targetModelId: "openai/gpt-5.6-sol",
+          handoffMode: "fork",
+          targetLaneMode: "new",
+        }],
+      }),
+      confirmations: [],
+    });
+    expect(movingFork.ok).toBe(false);
+    expect(movingFork.issues.some((issue) => issue.message.includes("must stay in its source lane"))).toBe(true);
+  });
+
   it("requires explicit confirmation for run-command", () => {
     const { planner } = getPlanner({ suites: [] });
 

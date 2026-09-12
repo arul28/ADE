@@ -2,34 +2,7 @@ import React, { useCallback, useEffect } from "react";
 import { X } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
-
-const DIALOG_FOCUSABLE_SELECTOR = [
-  "a[href]",
-  "button:not([disabled])",
-  "summary",
-  "textarea:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  '[tabindex]:not([tabindex="-1"])',
-].join(",");
-
-export function getFocusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR),
-  ).filter((element) => {
-    const closedDetails = element.closest<HTMLDetailsElement>(
-      "details:not([open])",
-    );
-    const isClosedDetailsSummary =
-      closedDetails?.querySelector(":scope > summary") === element;
-    return (
-      !element.closest('[hidden], [aria-hidden="true"]') &&
-      (!closedDetails || isClosedDetailsSummary) &&
-      !element.hasAttribute("disabled") &&
-      element.tabIndex >= 0
-    );
-  });
-}
+import { getFocusableElements } from "../ui/dialogFocus";
 
 export function useDialogFocusTrap(
   panelRef: React.RefObject<HTMLDivElement>,

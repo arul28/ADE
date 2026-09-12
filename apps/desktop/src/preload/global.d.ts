@@ -560,6 +560,8 @@ import type {
   SessionLifecycleSettings,
   SessionGitHubIssueLink,
   SessionLinearIssueLink,
+  SessionBoardMoveResult,
+  SessionBoardMoveUndoResult,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionChangedEvent,
@@ -820,6 +822,7 @@ import type {
   AgentChatCopyTempAttachmentArgs,
   ChatAttachmentStagingMode,
   ConvertImageToJpegResult,
+  WorkBoardMoveTarget,
 } from "../shared/types/chat";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
@@ -1874,6 +1877,16 @@ declare global {
           override: SessionSettleOverride | null,
           pin?: OpenProjectBinding | null,
         ) => Promise<boolean>;
+        moveOnBoard: (
+          sessionId: string,
+          to: WorkBoardMoveTarget,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SessionBoardMoveResult>;
+        undoBoardMove: (
+          sessionId: string,
+          moveId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SessionBoardMoveUndoResult>;
         clearWokeMarker: (
           sessionId: string,
           pin?: OpenProjectBinding | null,

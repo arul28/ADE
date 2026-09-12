@@ -8,6 +8,7 @@ import { CtoPromptPreview } from "./CtoPromptPreview";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
 
 function Section({
   title,
@@ -69,11 +70,12 @@ export function CtoSettingsPanel({
         )}
       </Section>
 
-      <Section title="Model" subtitle="Switch any time — the thread and memory carry over.">
+      <Section title="Model" subtitle="Only models that can steer a live turn — the CTO is interrupted constantly.">
         <div className="flex flex-wrap items-center gap-2">
           <ModelPicker
             value={currentModelId}
             availableModelIds={availableModelIds}
+            filter={ctoModelSupportsLiveRedirect}
             surfaceKey="cto-settings"
             disabled={switchingModel}
             fastModeActive={currentFastMode}
@@ -93,7 +95,7 @@ export function CtoSettingsPanel({
           <div className="mt-2 text-[11px] text-muted-fg/40">Checking configured models…</div>
         ) : availableModelIds.length === 0 ? (
           <div className="mt-2 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] leading-4 text-amber-200/90">
-            No models configured yet. Add API keys or sign in to a CLI under Settings → AI → Providers.
+            No model the CTO can run on is configured yet. Sign in to Claude, Codex, or Cursor under Settings → AI → Providers.
           </div>
         ) : switchingModel ? (
           <div className="mt-2 text-[11px] text-muted-fg/45">Moving the thread to the new model…</div>

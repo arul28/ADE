@@ -151,7 +151,14 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 // ---------------------------------------------------------------------------
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
-import { buildWorkTabGroupModel, reorderLaneSessionIdsForDisplay, useWorkSessions } from "./useWorkSessions";
+import {
+  buildWorkBoardModel,
+  buildWorkTabGroupModel,
+  lanePrWaitingReason,
+  reorderLaneSessionIdsForDisplay,
+  useWorkSessions,
+} from "./useWorkSessions";
+import { WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
 import { forgetWorkPtyLaunchPin, workPtyLaunchPinFor } from "./cliLaunch";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
@@ -3439,5 +3446,147 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     ) => Record<string, unknown>;
     const next = updater({ workLaneSortMode: "manual", workLaneOrder: ["deleted", "lane-a", "lane-b"] });
     expect(next.workLaneOrder).toEqual(["lane-b", "lane-a"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kanban board bucketing (U7)
+// ---------------------------------------------------------------------------
+describe("buildWorkBoardModel", () => {
+  const noPrWait = () => null;
+
+  it("files every filtered session into exactly one column", () => {
+    const needsYou = makeSession("s-needs", "lane-a");
+    const running = makeSession("s-running", "lane-a");
+    const ended = makeSession("s-ended", "lane-b", { status: "completed", runtimeState: "exited" });
+    const settled = makeSession("s-settled", "lane-b", { settledAt: "2026-04-01T13:00:00.000Z" });
+    const snoozed = makeSession("s-snoozed", "lane-c", { snoozedUntil: "2099-01-01T00:00:00.000Z" });
+
+    const { buckets } = buildWorkBoardModel({
+      runningFiltered: [running],
+      awaitingInputFiltered: [needsYou],
+      endedFiltered: [ended],
+      settledFiltered: [settled],
+      snoozedFiltered: [snoozed],
+      laneWaitingReason: noPrWait,
+    });
+
+    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs"]);
+    expect(buckets.working.map((s) => s.id)).toEqual(["s-running"]);
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-snoozed"]);
+    // Ended above settled: settled is the quieter tier and sinks, exactly as
+    // the list's status grouping orders them.
+    expect(buckets.done.map((s) => s.id)).toEqual(["s-ended", "s-settled"]);
+
+    // The partition claim, asserted rather than assumed: no id appears twice,
+    // and every input row is placed.
+    const placed = WORK_BOARD_COLUMNS.flatMap((column) => buckets[column.key].map((s) => s.id));
+    expect(placed).toHaveLength(new Set(placed).size);
+    expect(new Set(placed)).toEqual(
+      new Set(["s-needs", "s-running", "s-ended", "s-settled", "s-snoozed"]),
+    );
+  });
+
+  it("moves a running chat whose lane PR has CI pending into Waiting, not Working", () => {
+    const ciRunning = makeSession("s-ci", "lane-ci");
+    const plain = makeSession("s-plain", "lane-quiet");
+
+    const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
+      runningFiltered: [ciRunning, plain],
+      awaitingInputFiltered: [],
+      endedFiltered: [],
+      settledFiltered: [],
+      snoozedFiltered: [],
+      laneWaitingReason: (laneId) => (laneId === "lane-ci" ? "ci" : null),
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-ci"]);
+    // Working is what is LEFT of running, which is what makes the partition
+    // true by construction rather than by two predicates agreeing.
+    expect(buckets.working.map((s) => s.id)).toEqual(["s-plain"]);
+    expect(waitingReasonBySessionId.get("s-ci")).toBe("ci");
+    expect(waitingReasonBySessionId.has("s-plain")).toBe(false);
+  });
+
+  it("moves a running chat whose lane PR has a review requested into Waiting", () => {
+    const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
+      runningFiltered: [makeSession("s-review", "lane-review")],
+      awaitingInputFiltered: [],
+      endedFiltered: [],
+      settledFiltered: [],
+      snoozedFiltered: [],
+      laneWaitingReason: () => "review",
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-review"]);
+    expect(buckets.working).toEqual([]);
+    expect(waitingReasonBySessionId.get("s-review")).toBe("review");
+  });
+
+  it("labels a snoozed row's wait as the snooze, never as a PR", () => {
+    const { waitingReasonBySessionId } = buildWorkBoardModel({
+      runningFiltered: [],
+      awaitingInputFiltered: [],
+      endedFiltered: [],
+      settledFiltered: [],
+      snoozedFiltered: [makeSession("s-snoozed", "lane-ci")],
+      laneWaitingReason: () => "ci",
+    });
+
+    expect(waitingReasonBySessionId.get("s-snoozed")).toBe("snoozed");
+  });
+
+  it("leaves a needs-you row in Needs you even when its lane PR is mid-CI", () => {
+    // A raised hand outranks every other filing rule (see the snooze precedence
+    // in `sessionStatusPresentation`); the board must not bury one behind CI.
+    const { buckets } = buildWorkBoardModel({
+      runningFiltered: [],
+      awaitingInputFiltered: [makeSession("s-needs", "lane-ci")],
+      endedFiltered: [],
+      settledFiltered: [],
+      snoozedFiltered: [],
+      laneWaitingReason: () => "ci",
+    });
+
+    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs"]);
+    expect(buckets.waiting).toEqual([]);
+  });
+});
+
+describe("lanePrWaitingReason", () => {
+  const pr = (overrides: Record<string, unknown>) => ({
+    id: "pr", laneId: "lane", projectId: "p", repoOwner: "o", repoName: "r",
+    githubPrNumber: 1, githubUrl: "", githubNodeId: null, title: "",
+    state: "open", baseBranch: "main", headBranch: "x",
+    checksStatus: "none", reviewStatus: "none",
+    additions: 0, deletions: 0, lastSyncedAt: null,
+    createdAt: "", updatedAt: "", stack: null,
+    ...overrides,
+  }) as Parameters<typeof lanePrWaitingReason>[0][number];
+
+  it("answers null for a lane with no PRs at all", () => {
+    expect(lanePrWaitingReason([])).toBeNull();
+  });
+
+  it("prefers CI over a review request", () => {
+    expect(lanePrWaitingReason([pr({ checksStatus: "pending", reviewStatus: "requested" })])).toBe("ci");
+  });
+
+  it("ignores a merged or closed PR's last check state", () => {
+    // History, not a wait: a lane whose PR landed is not waiting on anything.
+    expect(lanePrWaitingReason([pr({ state: "merged", checksStatus: "pending" })])).toBeNull();
+    expect(lanePrWaitingReason([pr({ state: "closed", reviewStatus: "requested" })])).toBeNull();
+  });
+
+  it("does not treat absent or failing checks as a wait", () => {
+    // ADE-135: `none`/`not_run` mean nobody looked; `failing` is the agent's
+    // problem, not something the board should park.
+    expect(lanePrWaitingReason([pr({ checksStatus: "none" })])).toBeNull();
+    expect(lanePrWaitingReason([pr({ checksStatus: "not_run" })])).toBeNull();
+    expect(lanePrWaitingReason([pr({ checksStatus: "failing" })])).toBeNull();
+  });
+
+  it("reads a draft PR's pending CI as a wait", () => {
+    expect(lanePrWaitingReason([pr({ state: "draft", checksStatus: "pending" })])).toBe("ci");
   });
 });

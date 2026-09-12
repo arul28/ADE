@@ -631,6 +631,26 @@ func workChatHasOlderTranscriptHistory(
   return liveEventWindowTruncated
 }
 
+/// Whether a mounted chat destination owns a lane pull request at all.
+///
+/// The CTO chat (and any other caller passing `showsLaneActions: false`) reuses
+/// this destination with a *synthetic* lane id, so resolving that lane would
+/// hand back the project's primary-lane PR and render it as this chat's badge.
+/// `showsLaneActions` only hides the header menu's PR items, so the lookup and
+/// the composer badge read this policy instead.
+struct WorkChatLanePrPolicy {
+  var showsLaneActions: Bool
+  var viewingSubagent = false
+
+  /// Gate for every lane→PR lookup. False means no network or IPC work runs and
+  /// the badge state stays empty.
+  var resolvesLanePr: Bool { showsLaneActions }
+
+  /// Gate for the PR badge handed to `WorkChatSessionView` above the composer.
+  /// Subagent transcripts never carry one either.
+  var rendersPrBadge: Bool { resolvesLanePr && !viewingSubagent }
+}
+
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
@@ -673,6 +693,11 @@ struct WorkSessionDestinationView: View {
   /// CTO uses the Work transcript pipeline with a single-line voice/send
   /// composer. Model, reasoning, fast mode, and identity live in CTO settings.
   var compactComposer = false
+  /// CTO again: that session may never queue a message, because the host turns
+  /// a queued delivery on it into a live redirect. Kept separate from
+  /// `showsLaneActions` and `compactComposer` so none of the three drifts into
+  /// standing for the others.
+  var liveRedirectOnlySends = false
 
   @MainActor
   init(
@@ -693,7 +718,8 @@ struct WorkSessionDestinationView: View {
     lanes: [LaneSummary] = [],
     crossProjectContext: WorkChatCrossProjectContext? = nil,
     personalChat: Bool = false,
-    compactComposer: Bool = false
+    compactComposer: Bool = false,
+    liveRedirectOnlySends: Bool = false
   ) {
     self.sessionId = sessionId
     self.initialOpeningPrompt = initialOpeningPrompt
@@ -714,6 +740,7 @@ struct WorkSessionDestinationView: View {
     self.crossProjectContext = crossProjectContext
     self.personalChat = personalChat
     self.compactComposer = compactComposer
+    self.liveRedirectOnlySends = liveRedirectOnlySends
 
     let providedTranscript = initialTranscript ?? []
     let cachedPresentation = forceFreshTranscriptOnOpen || !providedTranscript.isEmpty
@@ -752,6 +779,10 @@ struct WorkSessionDestinationView: View {
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
   var isCrossProject: Bool { crossProjectContext != nil }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
+  /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
+  var resolvesLanePr: Bool {
+    WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).resolvesLanePr
+  }
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
@@ -1536,6 +1567,9 @@ struct WorkSessionDestinationView: View {
         // PR + lane presence lookups read the active project's caches; skip
         // them for a cross-project quick look (the header hides lane/PR actions).
         guard !isRemoteOnlyChat else { return }
+        // A chat with no lane PR of its own (CTO) never resolves one — the
+        // create-PR capabilities probe backs the same hidden header items.
+        guard resolvesLanePr else { return }
         await resolveLaneOpenPr(for: headerMenuLaneId)
         await loadPrCreateCapabilitiesIfNeeded()
       }
@@ -1676,10 +1710,14 @@ struct WorkSessionDestinationView: View {
     let localEchoMessagesForView: [WorkLocalEchoMessage] = viewingSubagent ? [] : localEchoMessages
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
-    let chatPrBadge: WorkChatPrBadgeModel? = viewingSubagent
-      ? nil
-      : workChatPrBadgeModel(tag: lanePrTag, pr: laneOpenPr, summary: lanePrSummary)
-    let openPrDetails: (() -> Void)? = viewingSubagent ? nil : { presentChatPrDetails() }
+    let prPolicy = WorkChatLanePrPolicy(
+      showsLaneActions: showsLaneActions,
+      viewingSubagent: viewingSubagent
+    )
+    let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
+      ? workChatPrBadgeModel(tag: lanePrTag, pr: laneOpenPr, summary: lanePrSummary)
+      : nil
+    let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
     let inputLockMessage: String? = viewingSubagent
       ? "Viewing subagent transcript. Return to main chat to send."
       : nil
@@ -1879,6 +1917,7 @@ struct WorkSessionDestinationView: View {
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,
       compactComposer: compactComposer,
+      liveRedirectOnlySends: liveRedirectOnlySends,
       isPersonalChat: personalChat,
       attachmentsAvailable: personalChat
         ? syncService.supportsViewerRemoteAction("personalChats.saveTempAttachment")
@@ -3409,10 +3448,15 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.isLive == rhs.isLive
       && lhs.navigationChrome == rhs.navigationChrome
       && lhs.showsLaneActions == rhs.showsLaneActions
+      // `compactComposer` is passed down to the composer like the other two
+      // surface flags, so leaving it out let the render gate swallow a change
+      // to it.
+      && lhs.compactComposer == rhs.compactComposer
       && lhs.navigationTitleOverride == rhs.navigationTitleOverride
       && lhs.lanesRenderSignature == rhs.lanesRenderSignature
       && lhs.crossProjectContext == rhs.crossProjectContext
       && lhs.personalChat == rhs.personalChat
+      && lhs.liveRedirectOnlySends == rhs.liveRedirectOnlySends
   }
 }
 

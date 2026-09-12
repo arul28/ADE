@@ -65,6 +65,17 @@ export type AskUserToolResult = {
 
 export type TodoToolItem = Extract<AgentChatEvent, { type: "todo_update" }>["items"][number];
 
+/** Mirrors the `cto_memory` tag vocabulary; see ctoMemoryService. */
+export type RecordDiscoveryToolInput = {
+  fact: string;
+  tags?: {
+    lane?: string;
+    pr?: string | number;
+    path?: string;
+    topic?: string;
+  };
+};
+
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
   /** Callback invoked when askUser tool is called; must return the user's response */
@@ -72,6 +83,12 @@ export interface UniversalToolSetOptions {
   /** Optional callback for TodoWrite/TodoRead session state in interactive chat sessions. */
   onTodoUpdate?: (items: TodoToolItem[]) => void;
   getTodoItems?: () => TodoToolItem[];
+  /**
+   * Optional sink for `recordDiscovery`. Absent when the worker has no project
+   * behind it (bare tool-set construction, tests), in which case the tool tells
+   * the model so rather than silently swallowing the finding.
+   */
+  onRecordDiscovery?: (input: RecordDiscoveryToolInput) => { saved: boolean; fact: string };
   /** Optional callback for ADE-managed tool approvals in interactive chat sessions. */
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
@@ -2597,6 +2614,38 @@ function createTodoWriteTool(args: {
   });
 }
 
+/**
+ * The worker half of the discovery channel. Append-only by construction: there
+ * is no read tool here, so a worker can hand a finding up to the project's CTO
+ * without gaining any view of what the CTO already knows.
+ */
+function createRecordDiscoveryTool(
+  onRecordDiscovery?: (input: RecordDiscoveryToolInput) => { saved: boolean; fact: string },
+) {
+  return tool({
+    description:
+      "Record one durable finding for the project's CTO — a convention, a trap, or a decision the next agent "
+      + "should not have to rediscover. Not a progress update and not a summary: use it when you learn something "
+      + "that outlives this task. Tag it so it can be found later.",
+    inputSchema: z.object({
+      fact: z.string().trim().min(1).describe("One crisp sentence. What did you learn?"),
+      tags: z.object({
+        lane: z.string().trim().min(1).optional(),
+        pr: z.union([z.string().trim().min(1), z.number().int().positive()]).optional(),
+        path: z.string().trim().min(1).optional(),
+        topic: z.string().trim().min(1).optional(),
+      }).optional().describe("What the finding is about (lane, PR number, repo path, topic slug)."),
+    }),
+    execute: async ({ fact, tags }) => {
+      if (!onRecordDiscovery) {
+        return { recorded: false, error: "No project memory is attached to this session." };
+      }
+      const result = onRecordDiscovery({ fact, ...(tags ? { tags } : {}) });
+      return { recorded: result.saved, fact: result.fact };
+    },
+  });
+}
+
 function createTodoReadTool(args: {
   getItems?: () => TodoToolItem[];
 }) {
@@ -2743,6 +2792,7 @@ export function createUniversalToolSet(
     // Planning/task state
     TodoWrite: createTodoWriteTool({ getItems: getTodoItems, onUpdate: onTodoUpdate }),
     TodoRead: createTodoReadTool({ getItems: getTodoItems }),
+    recordDiscovery: createRecordDiscoveryTool(opts.onRecordDiscovery),
 
     // Interactive
     askUser: createAskUserTool(onAskUser),

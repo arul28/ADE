@@ -202,6 +202,51 @@ private enum WorkPreviewData {
     sessionFixture(id: "preview-ios-sim-4", lane: iosSimLane, title: "Files tab navigation", startedAt: twoDaysAgo),
     sessionFixture(id: "preview-ios-sim-5", lane: iosSimLane, title: "GitHub logo asset", startedAt: twoDaysAgo),
     sessionFixture(id: "preview-ios-sim-6", lane: iosSimLane, title: "Socket controls", startedAt: twoDaysAgo),
+    sessionFixture(
+      id: "preview-snoozed-session",
+      lane: lane,
+      title: "Rename the lane picker",
+      status: "running",
+      runtimeState: "active",
+      startedAt: threeHoursAgo,
+      preview: "Deferred until tomorrow morning.",
+      snoozedUntil: "2099-01-01T00:00:00.000Z"
+    ),
+  ]
+
+  /// A live PR whose checks are still running, on `iosSimLane`'s branch: the
+  /// second half of the Waiting chip, and the reason those rows read as blocked
+  /// on CI rather than as working.
+  static let rootPullRequests: [PullRequestListItem] = [
+    PullRequestListItem(
+      id: "preview-pr-1",
+      laneId: iosSimLane.id,
+      laneName: iosSimLane.name,
+      projectId: "preview-project",
+      repoOwner: "arul",
+      repoName: "ade",
+      githubPrNumber: 1240,
+      githubUrl: "https://github.com/arul/ade/pull/1240",
+      title: "iOS sim editor polish",
+      state: "open",
+      baseBranch: iosSimLane.baseRef,
+      headBranch: iosSimLane.branchRef,
+      checksStatus: "pending",
+      reviewStatus: "none",
+      additions: 128,
+      deletions: 24,
+      lastSyncedAt: nil,
+      createdAt: twoDaysAgo,
+      updatedAt: timestamp,
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
   ]
 
   static let rootChatSummaries: [String: AgentChatSessionSummary] = [
@@ -381,9 +426,14 @@ private enum WorkPreviewData {
     startedAt: String,
     endedAt: String? = nil,
     preview: String? = nil,
-    summary: String? = nil
+    summary: String? = nil,
+    /// Set to park the row in the Waiting chip / Snoozed shelf. Applied after
+    /// construction because the snooze columns are a later overlay on the model
+    /// and the memberwise init would have to be spelled out in full to reach
+    /// them from here.
+    snoozedUntil: String? = nil
   ) -> TerminalSessionSummary {
-    TerminalSessionSummary(
+    var session = TerminalSessionSummary(
       id: id,
       laneId: lane.id,
       laneName: lane.name,
@@ -408,6 +458,9 @@ private enum WorkPreviewData {
       resumeMetadata: nil,
       chatIdleSinceAt: status == "ended" ? endedAt : nil
     )
+    session.snoozedUntil = snoozedUntil
+    session.snoozedAt = snoozedUntil == nil ? nil : startedAt
+    return session
   }
 }
 
@@ -761,7 +814,8 @@ private struct WorkRootPreviewHarness: View {
       selectedLaneId: selectedLaneId,
       searchText: searchText,
       organization: organization,
-      orderedLanes: WorkPreviewData.rootLanes
+      orderedLanes: WorkPreviewData.rootLanes,
+      pullRequests: WorkPreviewData.rootPullRequests
     )
   }
 

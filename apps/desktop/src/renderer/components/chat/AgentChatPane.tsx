@@ -13217,6 +13217,9 @@ export function AgentChatPane({
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
+            // The CTO identity surface is steer-only: the composer reads this
+            // to drop "queue" from the active-turn send options.
+            surfaceProfile={surfaceProfile}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
             isActive={isTileActive}

@@ -6335,6 +6335,8 @@ describe("CTO-gated Linear sync commands", () => {
         "session.snoozeSession",
         "session.wakeSession",
         "session.clearWokeMarker",
+        "session.moveOnBoard",
+        "session.undoBoardMove",
         "chat.setSpawnKind",
         "chat.dismissSubagentTakeoverPrompt",
         "chat.regenerateSessionMetadata",

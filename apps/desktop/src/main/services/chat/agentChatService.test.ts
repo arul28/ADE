@@ -681,12 +681,21 @@ vi.mock("../ai/tools/ctoOperatorTools", async () => {
   const { z } = await import("zod");
   // Returns one real ExecutableTool so tests can assert the CTO tool surface is
   // actually registered on a live session, not just enumerated for the prompt.
+  // `applyCtoToolPackVisibility` is the REAL implementation: it is a pure
+  // function over the map, and stubbing it out would hide a defect where the
+  // advertised surface drops a tool the session can still call.
+  const actual = await vi.importActual<typeof import("../ai/tools/ctoOperatorTools")>(
+    "../ai/tools/ctoOperatorTools",
+  );
   return {
+    ...actual,
     createCtoOperatorTools: vi.fn(() => ({
       spawnChat: {
         description: "Create a native ADE work chat session.",
         inputSchema: z.object({ laneId: z.string().optional() }),
         execute: async () => ({ success: true }),
+        pack: "core" as const,
+        alwaysLoad: true,
       },
     })),
   };
@@ -1007,7 +1016,7 @@ import { runGit } from "../git/git";
 import { deriveScheduledWorkSnapshots } from "../../../shared/chatScheduledWork";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
-import { mapPermissionToCodex } from "./permissionMapping";
+import { mapPermissionToClaude, mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import {
   CODEX_REPLAY_MAX_CHARS,
@@ -9702,6 +9711,16 @@ describe("createAgentChatService", () => {
 
   describe("ensureIdentitySession", () => {
     it("hosts canonical identity sessions on the primary lane", async () => {
+      // With no stored preference the CTO now starts on Claude rather than on
+      // OpenCode, which it could never steer mid-turn. The file-wide
+      // mapPermissionToClaude mock collapses every mode to "plan", so map it
+      // properly here or the pinned full-auto is unobservable.
+      vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
+        if (mode === "full-auto") return "bypassPermissions";
+        if (mode === "edit") return "acceptEdits";
+        if (mode === "default") return "default";
+        return "plan";
+      });
       const { service } = createService();
 
       const session = await service.ensureIdentitySession({
@@ -9710,6 +9729,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(session.laneId).toBe("lane-1");
+      expect(session.provider).toBe("claude");
       expect(session.permissionMode).toBe("full-auto");
     });
 
@@ -9885,12 +9905,35 @@ describe("createAgentChatService", () => {
 
       await service.updateSession({
         sessionId: session.id,
-        modelId: "opencode/openai/gpt-5.2",
+        modelId: "openai/gpt-5.5",
       });
 
       const prefs = ctoStateService.getIdentity().modelPreferences;
-      expect(prefs.modelId).toBe("opencode/openai/gpt-5.2");
-      expect(prefs.provider).toBe("opencode");
+      expect(prefs?.modelId).toBe("openai/gpt-5.5");
+      expect(prefs?.provider).toBe("codex");
+
+      db.close();
+    });
+
+    it("clears the stored preference when the CTO lands on a provider that cannot steer a live turn", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      // OpenCode stages every mid-turn message, which is the one thing a CTO
+      // thread cannot live with. The write is normalized away rather than kept,
+      // so the surface falls back to its picker instead of silently running on
+      // a model that would hold every child report until the turn ends.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "opencode/openai/gpt-5.2",
+      });
+
+      expect(ctoStateService.getIdentity().modelPreferences).toBeNull();
 
       db.close();
     });
@@ -9917,7 +9960,7 @@ describe("createAgentChatService", () => {
         expect(updated.permissionMode).toBe("full-auto");
         expect(updated.codexApprovalPolicy).toBe("never");
         expect(updated.codexSandbox).toBe("danger-full-access");
-        expect(ctoStateService.getIdentity().modelPreferences.modelId).toBe("openai/gpt-5.5");
+        expect(ctoStateService.getIdentity().modelPreferences?.modelId).toBe("openai/gpt-5.5");
       } finally {
         db.close();
       }
@@ -9990,6 +10033,131 @@ describe("createAgentChatService", () => {
         (entry) => entry.role === "user" && entry.text.includes("Introduce yourself"),
       );
       expect(introTurns).toHaveLength(1);
+
+      db.close();
+    });
+
+    /**
+     * A scheduler stand-in that actually stores rows, so "was a second job
+     * created?" is answerable from state rather than from a call count alone.
+     */
+    function createRecordingScheduler() {
+      const rows: Array<Record<string, unknown>> = [];
+      return {
+        rows,
+        start: vi.fn(async () => undefined),
+        dispose: vi.fn(),
+        upsert: vi.fn(async (row: Record<string, unknown>) => {
+          rows.push(row);
+          return { ...row, status: "scheduled", pausedFlag: false, lateFlag: false };
+        }),
+        cancel: vi.fn(async (id: string) => {
+          const index = rows.findIndex((row) => row.id === id);
+          return index === -1 ? null : rows.splice(index, 1)[0];
+        }),
+        setSchedulePaused: vi.fn(async (id: string, paused: boolean) => {
+          const row = rows.find((entry) => entry.id === id);
+          if (!row) return null;
+          row.status = paused ? "paused" : "scheduled";
+          row.pausedFlag = paused;
+          return row;
+        }),
+        setSessionPaused: vi.fn(async () => undefined),
+        refreshGlobalPause: vi.fn(async () => undefined),
+        list: vi.fn(() => rows),
+        isSessionPaused: vi.fn(() => false),
+        nextWakeAt: vi.fn(() => null),
+        claimNativeFire: vi.fn(() => null),
+        recordTurnStarted: vi.fn(async () => undefined),
+        recordTurnFinished: vi.fn(async () => undefined),
+      };
+    }
+
+    it("arms one nightly memory gardener on first CTO use and announces it", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const scheduler = createRecordingScheduler();
+      const { service } = createService({
+        ctoStateService,
+        ctoMemoryService,
+        createScheduledWorkScheduler: () => scheduler,
+      });
+
+      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
+      expect(scheduler.rows[0]).toMatchObject({
+        sessionId: session.id,
+        kind: "cron",
+        cron: "30 3 * * *",
+        reason: "Nightly memory gardening",
+        durable: true,
+      });
+      // No TTL: a job that cancelled itself after a week would be worse than
+      // no job at all.
+      expect(scheduler.rows[0].expiresAt).toBeUndefined();
+      expect(String(scheduler.rows[0].prompt)).toContain("Nightly memory gardening");
+
+      // It is pausable from Chat Info, which reads the same scheduler rows.
+      const state = await service.getScheduledWorkState({ sessionId: session.id });
+      expect(state.items.map((item) => item.title)).toContain("Nightly memory gardening");
+
+      // One system line naming the job, in the CTO thread.
+      const history = await service.getChatEventHistory(session.id, { maxEvents: 50 });
+      const notices = history.events.filter((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.message.includes("Nightly memory gardening"));
+      expect(notices).toHaveLength(1);
+
+      db.close();
+    });
+
+    it("never arms a second gardener when the CTO thread is reopened", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const scheduler = createRecordingScheduler();
+      const { service } = createService({
+        ctoStateService,
+        ctoMemoryService,
+        createScheduledWorkScheduler: () => scheduler,
+      });
+
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      const reused = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-2" });
+
+      expect(reused.id).toBe(first.id);
+      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
+      expect(scheduler.rows).toHaveLength(1);
+
+      db.close();
+    });
+
+    // The whole reason the marker is the idempotency key rather than the row's
+    // presence: a presence check would quietly overrule the user.
+    it("respects a paused or deleted gardener instead of silently re-arming it", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const scheduler = createRecordingScheduler();
+      const { service } = createService({
+        ctoStateService,
+        ctoMemoryService,
+        createScheduledWorkScheduler: () => scheduler,
+      });
+
+      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      const scheduleId = String(scheduler.rows[0].id);
+
+      // The user pauses it from Chat Info.
+      await scheduler.setSchedulePaused(scheduleId, true);
+      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
+      expect(scheduler.rows[0].status).toBe("paused");
+
+      // The user deletes it outright.
+      await scheduler.cancel(scheduleId);
+      expect(scheduler.rows).toHaveLength(0);
+      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
+      expect(scheduler.rows).toHaveLength(0);
+      expect(session.identityKey).toBe("cto");
 
       db.close();
     });
@@ -14519,6 +14687,80 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("reports a child completion into the CTO thread as one line, never a transcript dump", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-cto-spawn", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-cto-child",
+            content: [{
+              type: "text",
+              text: "Landed the retry fix, rewrote the flaky helper, and opened https://github.com/ade/ade/pull/1234 with regression tests.",
+            }],
+            usage: { input_tokens: 1, output_tokens: 8 },
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cto-spawn",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const cto = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Retry fix",
+        orchestrationParentSessionId: cto.id,
+        spawnKind: "subagent",
+      });
+
+      await service.messageSession({ sessionId: child.id, text: "Finish the task." });
+
+      const notice = await vi.waitFor(() => {
+        const found = events.find((event) =>
+          event.sessionId === cto.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed");
+        expect(found).toBeTruthy();
+        return found!.event as Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }>;
+      });
+
+      // Title, provider, outcome, PR number — and nothing else. The child's
+      // closing paragraph is what a coordinator thread cannot afford to carry.
+      expect(notice.message).toBe('"Retry fix" · Claude · finished · PR #1234');
+      expect(notice.message).not.toContain("rewrote the flaky helper");
+
+      // The subagent_result card restates the whole summary, so the CTO thread
+      // does not get one.
+      expect(events.some((event) =>
+        event.sessionId === cto.id && event.event.type === "subagent_result")).toBe(false);
+
+      // The model is still told, with the same single line.
+      const wake = await vi.waitFor(() => {
+        const found = events.find((event) =>
+          event.sessionId === cto.id
+          && event.event.type === "user_message"
+          && event.event.text === notice.message);
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      expect((wake.event as any).metadata?.spawnCompletion).toBeUndefined();
+    });
+
     it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
@@ -16386,6 +16628,154 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "real user reply" });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+    });
+
+    it("writes a receipt for every Claude approval it settles, not just a cleared map", async () => {
+      // Resolving the waiter unblocks the SDK; it does NOT tell the transcript.
+      // Without a `pending_input_resolved` per item the summary's restart
+      // fallback keeps naming a card nothing can answer, and the row stays
+      // stuck on "Needs you" with no way out.
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(async function* () { return; }),
+        close: vi.fn(),
+        sessionId: "sdk-session-settle-receipts",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        canUseTool?: (
+          tool: string,
+          input: Record<string, unknown>,
+          options: Record<string, unknown>,
+        ) => Promise<Record<string, unknown>>;
+      } | undefined;
+      expect(opts?.canUseTool).toBeDefined();
+
+      const firstWaiter = opts!.canUseTool!(
+        "Bash",
+        { command: "echo one" },
+        { signal: new AbortController().signal, toolUseID: "tool-settle-1" },
+      );
+      const secondWaiter = opts!.canUseTool!(
+        "Bash",
+        { command: "echo two" },
+        { signal: new AbortController().signal, toolUseID: "tool-settle-2" },
+      );
+      await vi.waitFor(() => {
+        expect(events.filter((event) => event.event.type === "approval_request").length)
+          .toBeGreaterThanOrEqual(2);
+      });
+      const raisedItemIds = events
+        .filter((event) => event.event.type === "approval_request")
+        .map((event) => (event.event as { itemId: string }).itemId);
+
+      await service.interrupt({ sessionId: session.id });
+      await Promise.all([firstWaiter, secondWaiter]);
+
+      // One receipt per card, and both cards named.
+      const resolvedItemIds = events
+        .filter((event) => event.event.type === "pending_input_resolved")
+        .map((event) => (event.event as { itemId: string }).itemId);
+      for (const itemId of raisedItemIds) {
+        expect(resolvedItemIds.filter((candidate) => candidate === itemId)).toHaveLength(1);
+      }
+    });
+
+    it("clears the attention markers once an input card settles", async () => {
+      // The reported bug: "you answer a question but then it stays as needs
+      // you". Settling the card clears `pending_input_item_id`, but the
+      // attention columns are a needs-you trigger in their OWN right — so
+      // answering has to clear them too, including on the already-settled
+      // branch, which is the one a double-click or a post-restart card takes.
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      sessionService.clearTurnStartMarkers.mockClear();
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "item-nobody-owns",
+        decision: "accept",
+      });
+
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      // And a receipt was written, so the card cannot be redrawn either.
+      const history = await service.getChatEventHistory(session.id);
+      expect(history.events.some((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && (envelope.event as { itemId: string }).itemId === "item-nobody-owns")).toBe(true);
+    });
+
+    it("never lets a host-authored delivery clear a raised hand", async () => {
+      // The reported bug, from the other end: a child reporting in, or a
+      // continuation ADE composed itself, used to clear the parent's attention
+      // columns — so a real "Needs you" went quiet without anyone answering it.
+      // Only a person may clear them.
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-host-authored", slash_commands: [] };
+          warmupComplete = true;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-host-authored", setPermissionMode,
+      } as any);
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      for (const metadata of [
+        { spawnCompletion: { childSessionId: "chat-child", childTitle: "Child", summary: "done" } },
+        { hostContinuation: { reason: "plan_followup" } },
+      ]) {
+        sessionService.clearTurnStartMarkers.mockClear();
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "host-authored delivery",
+          metadata: metadata as never,
+        });
+        expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      }
+
+      // A board move is host-authored provenance but a HUMAN act, so it does
+      // clear — except a move INTO Needs you, which exists to raise the hand
+      // the clear would wipe in the same breath.
+      sessionService.clearTurnStartMarkers.mockClear();
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "You moved this chat from Done to Working.",
+        metadata: {
+          boardMove: { from: "done", to: "working", at: new Date().toISOString(), moveId: "move-1" },
+        } as never,
+      });
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "The user parked this for their input.",
+        metadata: {
+          boardMove: { from: "working", to: "needs_you", at: new Date().toISOString(), moveId: "move-2" },
+        } as never,
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -34174,6 +34564,113 @@ describe("createAgentChatService", () => {
       return { service, session, events, approvalEvent };
     };
 
+    it("delivers the Work-board status guidance to a project chat", async () => {
+      // The board position is derived, so an agent cannot set it — but it owns
+      // both inputs, and telling it so is the point of the line. It rides the
+      // shared ADE guidance block, which is why every provider gets it rather
+      // than only the ones that take the lane-directive path.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
+      const first = JSON.stringify(mockState.droidPromptCalls[0]);
+      expect(first).toContain("Your status on the Work board is derived from your turn state and your note.");
+      expect(first).toContain("ade chat note");
+      expect(first).toContain("ade chat ask");
+    });
+
+    it("keeps a durable marker for a plan card the user already answered", async () => {
+      // Answering a plan approval stages the follow-up and DELIBERATELY withholds
+      // the `pending_input_resolved` receipt until the planning turn idles, so
+      // the user watches it finish before the implementation turn starts. A
+      // crash inside that window used to leave the transcript saying the card
+      // was never answered — and the runtime that could answer it is gone, so
+      // the restarted chat read "Needs you" with no way to clear it. This marker
+      // is what stands in for the receipt until the receipt exists.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, laneService, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-approval",
+            type: "plan",
+            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+
+      // Answer it while the planning turn is STILL running, so the follow-up
+      // stays staged and no receipt is written.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+      expect(events.filter((event) => event.event.type === "pending_input_resolved")).toHaveLength(0);
+      // The row is still persisted as blocked — which is exactly why the marker
+      // has to exist: nothing else on disk says the user already decided.
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      expect(readPersistedChatState(session.id).answeredPlanApprovalItemIds)
+        .toContain(approvalEvent.event.itemId);
+
+      // A second service over the same persisted state is the restart: it must
+      // rehydrate the marker rather than drop it on its first write.
+      const restarted = createService({ laneService, sessionService });
+      await restarted.service.updateSession({ sessionId: session.id, title: "Renamed after restart" });
+      expect(readPersistedChatState(session.id).answeredPlanApprovalItemIds)
+        .toContain(approvalEvent.event.itemId);
+      await restarted.service.disposeAll();
+
+      // Once the planning turn idles the follow-up drains, the REAL receipt is
+      // written, and the stand-in must go — leaving it would suppress a later
+      // card that happened to reuse the id.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "pending_input_resolved"
+          && (event.event as { itemId: string }).itemId === approvalEvent.event.itemId)).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(session.id).answeredPlanApprovalItemIds ?? [])
+          .not.toContain(approvalEvent.event.itemId);
+      });
+    });
+
     it("includes runtime Codex approvals in getTurnStatus ask fields", async () => {
       const { service, session } = await stageCompletedCodexPlanApproval();
       const status = await service.getTurnStatus(session.id);
@@ -42445,6 +42942,50 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Check PR CI"));
     });
 
+    it("never queues a scheduled wake on the CTO thread — its steer queue cap is zero", async () => {
+      const { service } = createService({ onEvent: () => {} });
+      const cto = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        identityKey: "cto",
+      });
+      await service.sendMessage({
+        sessionId: cto.id,
+        text: "Finish the foreground work.",
+      }, { awaitDispatch: true });
+
+      // The same wake on any other chat stages for the turn boundary. On the
+      // CTO it is redirected into the live turn, because a coordinator that
+      // parks its inputs stops coordinating until the turn ends.
+      const result = await service.messageSession({
+        sessionId: cto.id,
+        text: "Check PR CI after the current turn.",
+        kind: "wake",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "cto-wake-1",
+            kind: "wakeup",
+            firedAt: "2026-07-09T09:00:00.000Z",
+            reason: "Check PR CI",
+          },
+        },
+      });
+
+      expect(result).toMatchObject({ routedAction: "steer", delivery: "delivered", queued: false });
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "turn/steer",
+          params: expect.objectContaining({
+            input: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining("Check PR CI after the current turn.") }),
+            ]),
+          }),
+        }),
+      ]));
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+    });
+
     it("defers scheduled Codex wakes but steers subagent completions into the active turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -43357,15 +43898,66 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(sessionId).pendingSteers).toBeUndefined();
     });
 
-    it("dispatchSteer rejects on Codex sessions", async () => {
+    it("dispatchSteer rejects interrupt on Codex sessions but accepts inline", async () => {
       const { service } = createService({ onEvent: () => {} });
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5-codex" });
 
-      // Rejection now comes from the canonical per-provider table, so the copy
-      // names the provider and the mode instead of the method.
+      // Rejection comes from the canonical per-provider table, so the copy
+      // names the provider and the mode instead of the method. Codex has no
+      // cancel-and-resend, so "interrupt" is the one it refuses.
+      await expect(
+        service.dispatchSteer({ sessionId: session.id, steerId: "any", mode: "interrupt" }),
+      ).rejects.toThrow(/Codex sessions support only the "inline" active-turn dispatch mode/i);
+
+      // Inline is accepted and no-ops when there is nothing staged under that id.
       await expect(
         service.dispatchSteer({ sessionId: session.id, steerId: "any", mode: "inline" }),
-      ).rejects.toThrow(/Codex sessions don't support the "inline" active-turn dispatch mode/i);
+      ).resolves.toEqual({ dispatchedAt: null });
+    });
+
+    it("promotes a staged Codex steer into the live turn through dispatchSteer", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "status" && event.event.turnStatus === "started")).toBe(true);
+      });
+
+      // A wake stages rather than steering — this is the row the composer's
+      // "send now" promotes.
+      await service.messageSession({
+        sessionId: session.id,
+        kind: "wake",
+        text: "Check the other repro too.",
+      });
+      const staged = await vi.waitFor(() => {
+        const queued = events.find((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued");
+        expect(queued).toBeTruthy();
+        return queued!.event as Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      });
+
+      mockState.codexRequestPayloads = [];
+      const result = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId: staged.steerId!,
+        mode: "inline",
+      });
+
+      expect(result.dispatchedAt).not.toBeNull();
+      const steerRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/steer");
+      expect(steerRequest).toBeTruthy();
+      expect(JSON.stringify(steerRequest?.params ?? {})).toContain("Check the other repro too.");
+      // The staged chip has to be resolved, or it stays parked in the composer.
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.steerId === staged.steerId
+        && event.event.message.includes("Delivering"))).toBe(true);
     });
 
     it("cancelDispatchedSteer cancels an SDK-queued Claude steer by its command UUID", async () => {

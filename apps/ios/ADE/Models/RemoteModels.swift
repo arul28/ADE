@@ -1536,15 +1536,22 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var constraints: [String]?
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
-  var modelPreferences: CtoModelPreferences
+  /// Null until a model the CTO can steer live has been picked. The host
+  /// normalizes a preference on any other provider back to null, so this is a
+  /// real state on a healthy install, not just a decoding tolerance.
+  var modelPreferences: CtoModelPreferences?
   var updatedAt: String?
 
   /// Flat accessor used by UI code.
-  var provider: String { modelPreferences.provider }
+  var provider: String? { modelPreferences?.provider }
   /// Flat accessor used by UI code.
-  var model: String { modelPreferences.model }
+  var model: String? { modelPreferences?.model }
   /// Flat accessor used by UI code.
-  var reasoningEffort: String? { modelPreferences.reasoningEffort }
+  var reasoningEffort: String? { modelPreferences?.reasoningEffort }
+
+  /// True while no model has been picked — the CTO surface shows its picker
+  /// instead of the thread.
+  var needsModelPick: Bool { modelPreferences == nil }
 
   /// True once the CTO has been set up. Mirrors desktop: onboarding is complete
   /// when the required `"identity"` step has landed (or `completedAt` is set).
@@ -4532,6 +4539,23 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
   var orchestrationTag: String? = nil
+  /// Identity key of the orchestration parent, when the parent is an IDENTITY
+  /// session rather than an ordinary chat — today only the CTO, whose key is
+  /// `"cto"`. Stamped host-side by `chatSessionProjection` and NEVER derived
+  /// here: identity sessions are filtered out of every roster the phone
+  /// receives, so the parent is not present to be asked.
+  ///
+  /// Absent on an older host, and absent for the overwhelmingly common case of
+  /// a chat with no parent or an ordinary chat parent. Mirrors
+  /// `TerminalSessionSummary.parentIdentityKey` in
+  /// `apps/desktop/src/shared/types/sessions.ts`.
+  var parentIdentityKey: String? = nil
+
+  /// True when this row is a chat the CTO spawned. The host only stamps
+  /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
+  /// the whole test — nothing here re-checks for a parent id the phone may not
+  /// have been sent.
+  var isCtoChild: Bool { parentIdentityKey == "cto" }
 
   static func == (lhs: TerminalSessionSummary, rhs: TerminalSessionSummary) -> Bool {
     lhs.id == rhs.id
@@ -4582,6 +4606,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationTag == rhs.orchestrationTag
+      && lhs.parentIdentityKey == rhs.parentIdentityKey
   }
 }
 
@@ -4630,6 +4655,7 @@ extension TerminalSessionSummary {
     case orchestrationRunId
     case orchestrationRole
     case orchestrationTag
+    case parentIdentityKey
   }
 
   init(from decoder: Decoder) throws {
@@ -4677,6 +4703,7 @@ extension TerminalSessionSummary {
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
+    parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
   }
 }
 
