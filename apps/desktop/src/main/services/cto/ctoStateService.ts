@@ -706,6 +706,15 @@ export function renderCtoLiveStateBlock(
   return `${kept.join("\n")}\n…(live state truncated)`;
 }
 
+/**
+ * The seed leaves `modelPreferences` null on purpose. This value is what a
+ * brand-new project reconciles to, and it never passes through
+ * `normalizeModelPreferences` (only file and DB reads do), so a hard-coded
+ * provider here cannot be validated away — it simply becomes the user's pick
+ * without the user picking. A null seed is what puts `ModelPickCard` (desktop)
+ * and `.modelPick` (iOS) in front of the thread, which is the documented
+ * contract in [Only providers that can redirect a live turn].
+ */
 function makeDefaultIdentity(): CtoIdentity {
   const timestamp = nowIso();
   return {
@@ -713,11 +722,7 @@ function makeDefaultIdentity(): CtoIdentity {
     version: 1,
     persona: "Persistent project CTO for this ADE workspace.",
     personality: "strategic",
-    modelPreferences: {
-      provider: "claude",
-      model: "sonnet",
-      reasoningEffort: "high",
-    },
+    modelPreferences: null,
     updatedAt: timestamp,
   };
 }

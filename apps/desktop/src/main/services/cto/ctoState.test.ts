@@ -54,6 +54,29 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
+  /**
+   * The seed never passes through `normalizeModelPreferences` — only file and
+   * DB reads do — so a hard-coded provider in `makeDefaultIdentity` could not
+   * be validated away, and a fresh project silently opened on it. A null seed
+   * is the only value that puts the model picker in front of the thread.
+   */
+  it("seeds a fresh identity with no model pick", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(service.getIdentity().modelPreferences).toBeNull();
+    // The reconciled seed is written to both stores, so re-reading it must not
+    // resurrect a pick the user never made.
+    expect(service.getSnapshot().identity.modelPreferences).toBeNull();
+    expect(service.buildReconstructionContext()).toContain("- Preferred model: not picked yet");
+
+    fixture.db.close();
+  });
+
   it("nulls a stored model preference whose provider cannot steer a live turn", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({

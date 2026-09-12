@@ -148,6 +148,8 @@ Caps are layered: per-section row caps with an explicit `…and N more` overflow
 
 The list is deliberately **not** derived from `ACTIVE_TURN_DISPATCH_MODES`. That table governs the composer's staged-message promotion menu; this is the CTO's own eligibility contract, and reading one off the other would let a composer-menu change silently decide who is allowed to be the CTO.
 
+`makeDefaultIdentity` — the seed a project with no identity file and no DB row reconciles to — carries `modelPreferences: null`. That is load-bearing rather than incidental: the seed is the one identity path that never passes through `normalizeModelPreferences`, so a provider hard-coded there could not be validated away and would become the user's pick without the user picking.
+
 `normalizeModelPreferences` keeps a stored preference only when it is complete *and* its resolved chat provider supports live redirect; otherwise it is set to null. The provider is resolved from `modelId` through the model registry, with a family fold (`anthropic`/`claude*` → `claude`, `openai`/`codex*` → `codex`, `cursor*` → `cursor`) only for records written before `modelId` existed. `updateIdentity` treats an explicit `null` as "clear the pick" and an absent key as "leave alone", and the reconstruction context prints `- Preferred model: not picked yet`.
 
 Both clients then put a picker in front of the thread rather than starting one: desktop's `ModelPickCard` and iOS's `.modelPick` content state, each gating session creation so nothing materializes a CTO session on an ineligible provider. Both model pickers narrow their catalog by the same predicate, and the "nothing configured" copy names Claude, Codex, and Cursor specifically.
