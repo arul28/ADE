@@ -648,7 +648,8 @@ ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --ind
 ade --socket ios-sim actions --text                               # full ios_simulator action inventory
 # Device hub: a booted simulator with no app of its own. `status` also reports the device session.
 ade --socket ios-sim open-device --text                           # boot a device; --no-window keeps it headless
-ade --socket ios-sim close-device --text                          # release it; --shutdown powers the device down
+ade --socket ios-sim device-session --text                        # who owns the device session, and did ADE boot it (alias: session)
+ade --socket ios-sim close-device --text                          # release it; --shutdown powers the device down, but never under another chat's app unless --force
 ade --socket ios-sim settings --text                              # read appearance, Dynamic Type, accessibility
 ade --socket ios-sim appearance dark --text                       # also: content-size, accessibility <option> on|off
 ade --socket ios-sim location 37.7749 -122.4194 --text            # --clear drops the simulated location
@@ -660,8 +661,8 @@ ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear dro
 ade --socket ios-sim live-start --fps 60 --text                    # aliases: window-start, stream-start
 ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
 # Device event log: the app's own log rows interleaved with what ADE did.
-ade --socket ios-sim log-start --bundle-id com.example.app --text
-ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture
+ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it
+ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture; --force takes a log another chat started
 # Semantic actions: name an element instead of guessing a pixel. Read refs from `snapshot` first.
 ade --socket ios-sim snapshot --text
 ade --socket ios-sim find-element --label Continue --text

@@ -138,7 +138,9 @@ The resolved root comes back on the launch result and on the session as
 | `apps/desktop/src/main/services/ios/iosVideoStreamServer.ts` | The token-guarded loopback HTTP endpoint that serves `idb-h264` access units. |
 | `apps/desktop/src/main/services/ios/h264AnnexB.ts` | Pure Annex-B framing. It turns pipe chunks into whole access units and reads the SPS to build the decoder's codec string. It does no I/O. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | IPC handlers for the simulator domain, including one channel per device-hub action. Window capture and parking are delegated to `simulatorWindowCapture.ts`. |
-| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Work drawer UI: setup checklist, device/target pickers, launch progress, the live view for either backend, interact/inspect modes, the tools column, Preview Lab, and context attachment. Takes `runtimePin` and drives the simulator on that machine — every status read, list, launch/shutdown/capture call, and the `onEvent` subscription carry it. |
+| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Work drawer UI: setup checklist, device/target pickers, launch progress, interact/inspect modes, the tools column, Preview Lab, and context attachment. It renders whichever live visual the hook produced and maps a pointer on it to a device point, but owns none of the live view's state and does not know that H.264 exists. Takes `runtimePin` and drives the simulator on that machine — every status read, list, launch/shutdown/capture call, and the `onEvent` subscription carry it. |
+| `apps/desktop/src/renderer/components/chat/useIosSimLiveView.ts` | Both live-view backends behind one `liveVisual`: the start prelude, the capture token, the parking holds, the reconnect budgets, the blocker the overlay renders, and the SSH-forwarded read address for `idb-h264`. Effect declaration order is load-bearing and documented in the file — the h264 retry effect before the main live effect, the teardown after it. |
+| `apps/desktop/src/renderer/components/chat/iosSimWindowGeometry.ts` | Where the device screen sits inside a captured Simulator window: capture-source ranking, the bezel offset tables, and the screenshot-against-frame calibration with its confidence cutoff. It samples pixels but touches no React, so a test exercises it with a stub image surface instead of a mounted panel. |
 | `apps/desktop/src/renderer/components/chat/IosSimToolsColumn.tsx` | The side column of device controls: appearance, text size, accessibility options, location, permissions, push, status bar, app state, and the event log. |
 | `apps/desktop/src/renderer/components/chat/useIosSimDeviceTools.ts` | State and polling for that column. It re-reads app state every 4 s and pulls event-log pages every 1.5 s, and it keeps a started log running while the video is expanded. |
 | `apps/desktop/src/renderer/components/chat/IosSimH264Video.tsx` | Decodes the `idb-h264` stream with WebCodecs and draws it to a canvas. The canvas holds the device screen and no window chrome, so a click maps straight to a device point. |
@@ -154,6 +156,19 @@ The resolved root comes back on the launch result and on the session as
 1. **Status.** `getStatus()` checks macOS support plus `xcrun`,
    `xcodebuild`, `idb`, and `idb_companion` readiness. The returned tool list
    drives the drawer checklist.
+
+   One status read answers "what is going on". Alongside `activeSession` it
+   carries `deviceSession` and a redacted `stream` summary — `running`,
+   `backend`, `deviceUdid`, `fps`, `bitrateKbps`, `lastError` — so an agent
+   polling `status` does not also have to call `getStreamStatus` and join the
+   two. That summary is assembled from named fields and never from a spread of
+   the stream status: `getStatus` is on the action allowlist, and the stream
+   status holds the stream address and its token. Both additions are in-memory
+   reads, so the cache that spares the `simctl` device list refreshes them
+   rather than reporting a stream that started a second ago as stopped.
+   `status --text` prints both. `activeDevice` resolves in the same order:
+   the app session's device, then the device session's, and only then the
+   best-ranked booted iPhone.
 
 2. **Device and target discovery.** `listDevices()` parses
    `xcrun simctl list -j devices`. `listLaunchTargets()` combines Xcode
@@ -250,11 +265,28 @@ streamable. It records whether ADE did the boot in `bootedByAde`. `openWindow`
 defaults to true and opens Simulator.app; pass `false` for a headless device.
 `force` takes a device session another chat owns.
 
-`closeDevice` releases the session. **ADE never shuts down a device it did not
-boot.** A user starts a simulator for their own work, and ADE closing it is a
-loss the user cannot undo. Pass `shutdownDevice: true` to shut one down anyway.
-`force` and `ignoreOwnership` stand the ownership check down, exactly as they do
-for `shutdown`.
+`closeDevice` releases the session. Naming a device that is not the open one is
+a no-op, which is the honest answer to closing a device that is not open.
+**ADE never shuts down a device it did not boot.** A user starts a simulator for
+their own work, and ADE closing it is a loss the user cannot undo. Pass
+`shutdownDevice: true` to shut one down anyway. Releasing a device also stops an
+event log that was following it.
+
+A second rule sits next to that one: ADE does not shut a device down while
+another chat runs an app on it, even when ADE booted it. The guard lives in the
+one release path all three callers share — `closeDevice`, `openDevice` taking
+over a different device, and the cleanup after an owning chat goes away — because
+a guard on one of them protects nothing on the other two. An app session on a
+*different* device is no reason to leave this one booted.
+
+`force` and `ignoreOwnership` are different claims, and `closeDevice` is where
+that matters. `force` says "take this from another chat": it stands the
+ownership check down and passes through the app-session guard as well, because
+this is the only place in ADE that runs `simctl shutdown` and an absolute guard
+would leave a simulator no ADE command could shut down — `close-device --force`
+already tells the user it closes one anyway. `ignoreOwnership` says only "step
+around the device-session guard in my own name", which is the lane-scoped
+drawer's intent, and asks for nothing else: it will not end another chat's app.
 
 The CLI entry points are `ade ios-sim open-device` and
 `ade ios-sim close-device`.
@@ -312,6 +344,12 @@ apply to `idb-h264` only.
 ## Device tools
 
 Every device tool is one typed action over one `simctl` call.
+
+A tool called with no device resolves one in the order the claims were made:
+the app session's device, then the device session's, then the device the live
+view is streaming, and only then the best-ranked simulator on the host. That
+last rank is a guess — the first booted iPhone — and reaching it before the
+claimed device is how a tool lands on a simulator the chat never opened.
 
 | Action | `simctl` call |
 |---|---|
@@ -433,7 +471,8 @@ not say which machine, which simulator, which build root, or what the agent had
 just done, and those are the first questions a reviewer asks. The bundle writes:
 
 - `screen.png` — the screenshot,
-- `metadata.json` — machine, device, build root, caption, capture time,
+- `metadata.json` — machine, device, build root, caption, capture time, and
+  `logOmittedReason` when `log.json` was left out,
 - `elements.json` — every element on screen with its ref, unless
   `includeElements` is false,
 - `log.json` — the most recent event log rows, up to `logRowLimit`.
@@ -483,7 +522,7 @@ SwiftUI screen from stale code.
 | `settings` (`device-settings`) | `getDeviceSettings` | `--device` |
 | `appearance` | `setAppearance` | positional `light\|dark` or `--appearance`, `--device` |
 | `content-size` (`text-size`) | `setContentSize` | positional size or `--content-size`, `--device` |
-| `accessibility` (`a11y`) | `setAccessibilityOption` | positional `<option> <on\|off>` or `--option` with `--enabled`/`--disabled`, `--device` |
+| `accessibility` (`a11y`) | `setAccessibilityOption` | positional `<option> <on\|off>` or `--option` with `--on`/`--off`, `--device` |
 | `location` | `setLocation`, or `clearLocation` with `--clear` | positionals `<lat> <lon>` or `--latitude`/`--longitude`, `--clear`, `--device` |
 | `permission` (`privacy`) | `setPermission` | positional `<grant\|revoke\|reset> <service>`, `--bundle-id`, `--device` |
 | `push` | `sendPushNotification` | `--bundle-id`, `--title`, `--body`, `--payload`, `--device` |

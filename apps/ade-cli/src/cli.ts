@@ -1361,15 +1361,37 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   The simulator keeps running unless ADE booted it. Pass --shutdown to shut
   down a device ADE did not boot.
 
+  A shutdown is skipped while another chat runs an app on that device, even
+  with --shutdown. Only --force goes through. --ignore-ownership does not:
+  it steps around the device-session guard in your own name and nothing else.
+
     $ ade --socket ios-sim close-device --text
     $ ade --socket ios-sim close-device --shutdown --text
 
   Flags:
     --device, --udid <id>  Simulator device.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
-    --force, -f            Release a session another chat owns.
-    --ignore-ownership     Same bypass without the hard reset.
+    --force, -f            Release a session another chat owns, and shut the
+                           device down even when another chat runs an app there.
+    --ignore-ownership     Skip the device-session owner check in your own name.
+                           Never shuts down a device another chat is using.
     --shutdown             Shut the device down even when ADE did not boot it.
+`,
+  "device-session": `${ADE_BANNER}
+  iOS Simulator: device-session
+
+  Reports the device session ADE holds: which simulator, which chat owns it,
+  which lane it is bound to, when it opened, and whether ADE booted the device.
+  Alias: session.
+
+  Answers null when no device session is open. "status" reports the same record
+  alongside the app session and the live view; this reads it on its own.
+
+    $ ade --socket ios-sim device-session --text
+
+  Flags:
+    --text                 Compact human-readable record.
+    --json                 Full device session record.
 `,
   settings: `${ADE_BANNER}
   iOS Simulator: settings
@@ -1586,23 +1608,32 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   The log follows one app. "log stream" reads the whole device, so a run with
   no bundle id returns every other app's rows and the system's besides.
 
+  There is one log process per host, so this is refused for a chat that owns
+  neither half of the simulator, and refused again for a chat that did not
+  start the log already running — a stake in the simulator is not a stake in
+  the log. A log nobody started is free to take.
+
   Flags:
     --device, --udid <id>  Simulator device.
     --bundle-id <id>       Required. Keep only rows from this app.
-    --force                Take the log from the chat that owns the device.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --force, -f            Start it anyway: skips both checks and takes over a
+                           log another chat started.
 `,
   "log-stop": `${ADE_BANNER}
   iOS Simulator: log-stop
 
   Stops the device event log and returns the final page. Alias: logs-stop.
 
-  There is one log process per host, so a chat that does not own the device
-  session is refused rather than allowed to stop another chat's log.
+  There is one log process per host, so the chat that started the running log
+  is the only one that can stop it. Owning the device session or the app
+  session is not enough on its own.
 
     $ ade --socket ios-sim log-stop --text
 
   Flags:
-    --force  Stop a log the chat that owns the device started.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --force, -f            Stop a log another chat started.
 `,
   log: `${ADE_BANNER}
   iOS Simulator: log
@@ -1706,6 +1737,10 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   the machine, the device, the build root, the elements on screen, and the
   recent event log rows. A bare PNG answers none of that.
 
+  The bundle leaves "log.json" out when the event log follows a different
+  device from the one captured, and records the reason in the metadata rather
+  than pairing one device's shot with another device's rows.
+
     $ ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text
     $ ade --socket ios-sim proof-bundle --out .ade/tmp/proof --log-rows 200 --text
 
@@ -1772,11 +1807,13 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "open-sim": "open-device",
   boot: "open-device",
   "close-sim": "close-device",
+  session: "device-session",
   "device-settings": "settings",
   "text-size": "content-size",
   a11y: "accessibility",
   privacy: "permission",
   "kill-app": "terminate",
+  "restart-app": "relaunch",
   "logs-start": "log-start",
   "logs-stop": "log-stop",
   logs: "log",
@@ -2945,6 +2982,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Device sessions:
     $ ade --socket ios-sim open-device --text      Boot a simulator with no app
     $ ade --socket ios-sim open-device --no-window Keep the device headless
+    $ ade --socket ios-sim device-session --text   Report the tracked device session
     $ ade --socket ios-sim settings --text         Read appearance, text size, a11y
     $ ade --socket ios-sim close-device --text     Release the device session
 
@@ -2982,6 +3020,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim log-start --bundle-id <id>       Start the device event log
     $ ade ios-sim log --since <cursor> --text      Read new rows
     $ ade ios-sim log-stop --text                  Stop the log
+
+  --bundle-id is required: "log stream" reads the whole device. There is one
+  log process per host, so the chat that started the running log is the only
+  one that can stop it; --force takes it.
 
   Semantic actions:
     $ ade ios-sim snapshot --text                  Read the refs on screen first
@@ -11237,6 +11279,12 @@ function buildIosSimulatorPlan(
       ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
       ...(shutdownDevice ? { shutdownDevice: true } : {}),
     });
+  }
+  if (sub === "device-session" || sub === "session") {
+    // `getDeviceSession` takes no arguments: it reports the one tracked device
+    // session, so a `--device` filter here would invent a contract the service
+    // does not have.
+    return iosAction("iOS simulator device session", "getDeviceSession");
   }
   if (sub === "settings" || sub === "device-settings") {
     return iosAction("iOS simulator device settings", "getDeviceSettings", {

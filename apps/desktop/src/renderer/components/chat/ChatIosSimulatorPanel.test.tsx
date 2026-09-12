@@ -4,12 +4,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { selectLaunchSteps } from "./IosSimLaunchStepper";
 import type {
   IosSimulatorDevice,
   IosSimulatorDeviceSettings,
   IosSimulatorEventLogArgs,
   IosSimulatorEventLogPage,
   IosSimulatorEventPayload,
+  IosSimulatorLaunchProgress,
   IosSimulatorLaunchTarget,
   IosSimulatorLogRow,
   IosSimulatorPreviewCapability,
@@ -3202,5 +3204,40 @@ describe("ChatIosSimulatorPanel", () => {
     expect(await screen.findByText(/The runtime refused the port forward\./)).toBeTruthy();
     expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
   });
+});
 
+/**
+ * The launch stepper's one pure helper.
+ *
+ * It lives here rather than in its own file because it has exactly one caller —
+ * this panel — and a whole test file for one helper of one parent is how a
+ * feature ends up with more test files than contracts.
+ */
+describe("selectLaunchSteps", () => {
+  function progressRow(
+    overrides: Partial<IosSimulatorLaunchProgress>
+      & Pick<IosSimulatorLaunchProgress, "launchId" | "step" | "status">,
+  ): IosSimulatorLaunchProgress {
+    return {
+      message: overrides.status,
+      updatedAt: "2026-08-25T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("returns the latest row when a step receives multiple updates", () => {
+    // `find` returns the FIRST match, so a step that went running → failed kept
+    // its stale running row and the stepper hid the failure and its Close
+    // action.
+    const steps = selectLaunchSteps([
+      progressRow({ launchId: "launch-1", step: "build-app", status: "running" }),
+      progressRow({ launchId: "launch-1", step: "install-app", status: "pending" }),
+      progressRow({ launchId: "launch-1", step: "build-app", status: "failed", message: "xcodebuild failed" }),
+    ]);
+
+    expect(steps.map((item) => ({ step: item.step, status: item.status, message: item.message }))).toEqual([
+      { step: "build-app", status: "failed", message: "xcodebuild failed" },
+      { step: "install-app", status: "pending", message: "pending" },
+    ]);
+  });
 });

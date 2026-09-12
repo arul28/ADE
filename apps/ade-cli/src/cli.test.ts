@@ -11708,6 +11708,8 @@ describe("ADE CLI", () => {
   it("ios-sim device tool subcommands map to their device hub actions", () => {
     const cases: Array<[string[], string]> = [
       [["close-device"], "closeDevice"],
+      [["device-session"], "getDeviceSession"],
+      [["session"], "getDeviceSession"],
       [["settings"], "getDeviceSettings"],
       [["content-size", "large"], "setContentSize"],
       [["accessibility", "reduce-motion", "on"], "setAccessibilityOption"],
@@ -11775,6 +11777,18 @@ describe("ADE CLI", () => {
       "--force",
     ]);
     expect(closed.args).toMatchObject({ shutdownDevice: true, force: true });
+
+    // `getDeviceSession` reports the one tracked session and takes no
+    // arguments, so a forwarded `--device` would invent a filter the service
+    // does not honour.
+    const deviceSession = iosSimActionArgs([
+      "ios-sim",
+      "device-session",
+      "--device",
+      "AAA-BBB",
+    ]);
+    expect(deviceSession.action).toBe("getDeviceSession");
+    expect(deviceSession.args).not.toHaveProperty("deviceUdid");
   });
 
   it("ios-sim inspect requires both coordinates and forwards them", () => {
