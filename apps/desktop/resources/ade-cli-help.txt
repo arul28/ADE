@@ -33,6 +33,9 @@ _    ____  _____
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -65,6 +68,7 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -175,6 +179,9 @@ _    ____  _____
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -207,6 +214,7 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -563,14 +571,25 @@ _    ____  _____
 
   Pull requests
 
-  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, or full PR URLs.
-  Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
+  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, full PR URLs, or
+  the 'gh:owner/repo#<n>' form that 'prs list-open' prints for a PR ADE has no row
+  for — quote that one, since most shells treat '#' as a comment.
+  Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
+  branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
+  The exceptions need one: create and link take a lane by definition, and threads,
+  deployments and ai-review-summary still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
+    $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
-    $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
+    $ ade prs land <pr> --method squash             Merge; keeps the remote branch
+    $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
+    $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
+    $ ade prs reopen <pr>                           Reopen a closed PR
+    $ ade prs cleanup-branch <pr> --delete-remote-branch
+                                                    Delete a merged/closed PR's branch (local too, unless --keep-local)
+    $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs comment-edit <pr> --comment <id> --body "..."
@@ -666,15 +685,34 @@ _    ____  _____
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
+                                                    Inject caller-owned MCP servers into one chat. There is no typed
+                                                    --mcp-server flag: the config is nested JSON, which --arg-json
+                                                    already carries. Add --arg strictMcpConfig=false to also load the
+                                                    user's own MCP config (personal chats withhold it by default), or
+                                                    --arg strictMcpConfig=true to withhold it on a project chat.
+                                                    Read mcpCapability on the created session (ade chat show
+                                                    <session> --personal --json) for what the provider could honor:
+                                                    only level "enforced" means the caller's servers are the whole
+                                                    surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat show <session>                       Session summary (title, provider, model)
+    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
+                                                    Exit 0 running, 1 idle, 2 blocked. Use --text.
+                                                    Adds a 'resume' line while a usage limit is live.
+    $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
+                                                    Exit 1 when the host reports no live usage limit.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for 6 words or fewer; truncated past 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+    $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
+                                                    Also: ade chat update --title, ade lanes rename.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
@@ -730,17 +768,21 @@ _    ____  _____
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
+    $ ade chat interrupt <session> --stop-background
+                                                    Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+    $ ade chat stop-task <session> <taskId>         Stop one Claude background task; siblings keep running
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
-    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -777,7 +819,8 @@ _    ____  _____
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
     Cursor has no fork surface, so ADE forks it by replaying this conversation
     into a fresh Cursor agent instead of copying a provider thread; the oldest
-    turns drop if the transcript exceeds the target model's context window.
+    turns drop if the transcript exceeds the target model's context window or
+    provider input limit.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -848,6 +891,9 @@ _    ____  _____
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -880,6 +926,7 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -1053,6 +1100,9 @@ _    ____  _____
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -1085,6 +1135,7 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
@@ -1190,7 +1241,7 @@ _    ____  _____
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
-    $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -1198,7 +1249,35 @@ _    ____  _____
     $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
+
+  Where proof files may live
+
+  Attach/ingest only import from these roots: the project root, the lane
+  worktree, .ade/artifacts, .ade/cache, .ade/tmp, the OS temp directory
+  (`$TMPDIR` on macOS/Linux — under /var/folders on macOS; `%TEMP%` on
+  Windows), the conventional `/tmp` (`/private/tmp` on macOS; not a root on
+  Windows), and ~/.agent-browser.
+
+  `.ade/secrets` is denied even though it sits under the project root, and the
+  check resolves symlinks on both sides — a link pointing into it is refused
+  too. Anywhere else (~/Desktop, ~/Downloads) is rejected: copy the file into
+  one of the roots above and retry.
+
+  Which directory the call claims
+
+  `ADE_WORKSPACE_ROOT` (the lane worktree) wins over the shell cwd, and with
+  only `ADE_LANE_ID` set the runtime resolves the lane's worktree itself — so
+  a command spawned from outside the worktree still authorizes correctly. A
+  rejection names the path used, where it came from, and the authorized root.
+
+  Confirming a capture landed
+
+  `attach`, `capture`, `ingest`, and `record` re-read the record they just
+  filed and, with --text, end with a line like
+  `Attached 1 artifact to lane <id> / chat <id> (<title>)`. Anything else is a
+  failure: they exit non-zero and print `ade: proof attach failed — <reason>`.
+  Pass --no-verify to skip the re-read.
 
 ## ade ios-sim --help
 _    ____  _____
@@ -1256,11 +1335,56 @@ _    ____  _____
     $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
+  Device sessions:
+    $ ade --socket ios-sim open-device --text      Boot a simulator with no app
+    $ ade --socket ios-sim open-device --no-window Keep the device headless
+    $ ade --socket ios-sim settings --text         Read appearance, text size, a11y
+    $ ade --socket ios-sim close-device --text     Release the device session
+
+  An app session names a bundle id, a build root, and a lane. A device session
+  is a booted simulator with no app. ADE never shuts down a device it did not
+  boot unless you pass "close-device --shutdown".
+
   Live view:
     $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
     $ ade ios-sim window-start --fps 60            Same live view, explicit alias
+    $ ade ios-sim stream-start --backend idb-h264  Encode on the simulator's own machine
     $ ade ios-sim stream-status --text             Show live view and input state
     $ ade ios-sim stream-stop                      Stop the live view
+
+  Use simulator-window-capture for a local simulator. Use idb-h264 when the
+  simulator runs on another machine, or when Screen Recording is not granted.
+
+  Device tools:
+    $ ade ios-sim appearance dark --text           Switch to dark mode
+    $ ade ios-sim content-size accessibility-large Set Dynamic Type size
+    $ ade ios-sim accessibility reduce-motion on   Set one accessibility option
+    $ ade ios-sim location 37.7749 -122.4194       Set the simulated location
+    $ ade ios-sim location --clear                 Clear the simulated location
+    $ ade ios-sim permission grant photos --bundle-id <id>
+    $ ade ios-sim push --bundle-id <id> --title Hi --body "You have mail"
+    $ ade ios-sim open-url myapp://settings        Open a deeplink
+    $ ade ios-sim relaunch --bundle-id <id>        Restart without rebuilding
+    $ ade ios-sim terminate --bundle-id <id>       Stop a running app
+    $ ade ios-sim uninstall --bundle-id <id>       Remove an app and its container
+    $ ade ios-sim status-bar --time 9:41 --wifi-bars 3
+    $ ade ios-sim status-bar --clear               Drop the status bar override
+    $ ade ios-sim app-state --bundle-id <id>       Report running state and pid
+
+  Event log:
+    $ ade ios-sim log-start --bundle-id <id>       Start the device event log
+    $ ade ios-sim log --since <cursor> --text      Read new rows
+    $ ade ios-sim log-stop --text                  Stop the log
+
+  Semantic actions:
+    $ ade ios-sim snapshot --text                  Read the refs on screen first
+    $ ade ios-sim find-element --label Continue    Find one element by query
+    $ ade ios-sim tap-element --label Continue     Tap the element, not a pixel
+    $ ade ios-sim fill-element --identifier email --value ada@example.com
+    $ ade ios-sim wait-for-element --label Welcome --timeout-ms 8000
+    $ ade ios-sim wait-for-element --label Spinner --gone
+    $ ade ios-sim assert-visible --label "Order confirmed"
+    $ ade ios-sim proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
     $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
@@ -1268,6 +1392,9 @@ _    ____  _____
     $ ade ios-sim drag 120 700 120 250             Drag in the simulator
     $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
     $ ade ios-sim type "hello" --text              Type into the launched app
+
+  A coordinate tap is a guess that the layout did not move. Prefer
+  tap-element and fill-element; fall back to tap when no query matches.
 
 ## ade app-control --help
 _    ____  _____
@@ -1322,12 +1449,31 @@ _    ____  _____
     $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
     $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
 
-  Input:
-    $ ade app-control click 120 420                Click screenshot coordinates
+  Observe and act (agent loop, same shape as "ade browser"):
+    $ ade app-control observe --map --text         Screenshot + numbered element map + handles
+    $ ade app-control observe --no-dom --text      Screenshot only, no element list
+    $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
+    $ ade app-control click --text-match "Save"    Click by visible label
     $ ade app-control click 120 420 --coords viewport
+    $ ade app-control hover --test-id row-3
+    $ ade app-control fill --selector "#name" --value "Ada"
+    $ ade app-control clear --selector "#name"
+    $ ade app-control type "hello" --text          Type into the focused element
+    $ ade app-control press --key Enter            Alias: key
     $ ade app-control scroll --x 120 --y 420 --delta-y 600
-    $ ade app-control key --key Enter
-    $ ade app-control type "hello" --text          Type text into the focused element
+    $ ade app-control wait --text-match "Saved" --timeout-ms 8000
+    $ ade app-control wait --load-state network-idle
+    $ ade app-control trace --limit 20 --text      Recent actions for this session
+    $ ade app-control proof --caption "Settings saved"  Observe and register a proof artifact
+
+  Windows and drivers:
+    $ ade app-control windows --text               Debuggable windows for the active session
+    $ ade app-control switch-window --target <id>  Drive a different window
+    $ ade app-control drivers --text               Driver availability (cdp, computer_use)
+
+  Every act command answers with a post-action observation. Add --no-observe to
+  skip it, or --fast to skip the settle delay. --session <id> guards a command
+  against a session that is no longer active.
 
 ## ade browser --help
 _    ____  _____
@@ -1371,7 +1517,36 @@ _    ____  _____
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
+    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
     $ ade --socket browser actions --text          List built_in_browser actions
+
+  "dev-servers" reports what ADE passively noticed in its own terminal output
+  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
+  lane. An empty list means nothing printed a line ADE recognised, not that
+  nothing is listening — start the server in an ADE shell, or just open the URL.
+
+  No desktop on this machine
+
+  When this machine has no ADE window, "open"/"new-tab"/"panel" are forwarded to
+  a desktop that has this lane pinned, which reaches this machine's localhost
+  over a TCP port-forward. The result prints "opened: on <desktop> via tunnel",
+  or "waiting for approval on <desktop> — reaching this port needs a yes in ADE"
+  the first time you name a port the human has not allowed, or "no desktop is
+  attached to this machine…" when nobody answered inside 5 seconds. All three
+  exit 0: the approval one means "asked, not yet loaded" — the page opens when
+  they click Allow, so do not re-issue the open to retry it. Page actions
+  (observe/click/fill/screenshot) are not forwarded and still fail here.
+
+  Login handoff (you cannot sign in; a person must):
+    $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
+    $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+    $ ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+  Trailing words are the reason without --reason. A dashed word is read as a
+  flag, so fence the sentence: handoff -- fix the -2fa prompt
+  Blocks until the person presses Hand back (default 15m), so your next step
+  naturally waits. It raises the Work row's hand and pushes to their phone.
+  While the handoff is open every agent action on that tab fails with
+  handoff_active — do not retry, wait. You never hand the tab back yourself.
 
   Agent sessions:
     $ ade --socket browser session start --tab <tab-id> --text
@@ -1401,7 +1576,28 @@ _    ____  _____
     $ ade --socket browser type --tab <tab-id> "hello"
     $ ade --socket browser key --tab <tab-id> Enter
     $ ade --socket browser scroll --tab <tab-id> --dy 700
+    $ ade --socket browser hover --tab <tab-id> --selector ".menu"
+    $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
+    $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
+    $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
+    $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
+    $ ade --socket browser emulate --tab <tab-id> --off
+    $ ade --socket browser open localhost:5173 --device ipad
+    $ ade --socket browser zoom --tab <tab-id> --factor 1.25
+    $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser find --tab <tab-id> "checkout"
+    $ ade --socket browser find-stop --tab <tab-id>
+    $ ade --socket browser devtools --tab <tab-id> --mode bottom
+    $ ade --socket browser devtools --tab <tab-id> --close
+    $ ade --socket browser network on --tab <tab-id>
+    $ ade --socket browser network --tab <tab-id> --failed --limit 20 --text
+    $ ade --socket browser network off --tab <tab-id>
+    $ ade --socket browser har --tab <tab-id>
+    $ ade --socket browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
+    $ ade --socket browser record stop --tab <tab-id>
     $ ade --socket browser proof --tab <tab-id> --caption "Verified"
+    $ ade --socket browser proof --tab <tab-id> --har --caption "Checkout 500s"
     $ ade --socket browser reload --tab <tab-id>
     $ ade --socket browser back --tab <tab-id>
     $ ade --socket browser forward --tab <tab-id>
@@ -1416,6 +1612,10 @@ _    ____  _____
     $ ade --socket browser clear-selection
 
   Flags:
+    --                   Everything after it is a literal value, never a flag —
+                         for a URL, key, fill/type text or option that starts
+                         with a dash: "browser open -- --weird-url",
+                         "browser key -- --", "browser fill --selector x -- --literal".
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
     --new-tab           Always open navigation in a new tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
@@ -1439,7 +1639,31 @@ _    ____  _____
     --diagnostics, --no-diagnostics
                          Include or skip console/network diagnostics in observations.
     --max-elements <n>   Cap DOM elements captured per observation (default 80).
-    --limit <n>          Trace entries to show for browser trace (default 20).
+    --limit <n>          Trace/network entries to show for browser trace or network (default 20/50).
+    --device <preset>    Emulation preset for browser emulate/open: desktop, iphone-17,
+                         iphone-17-pro, iphone-17-pro-max, ipad, pixel, responsive.
+    --width/--height <n> Custom emulation viewport for browser emulate.
+    --scale <n>          Device scale factor for browser emulate.
+    --factor <n>         Zoom factor for browser zoom (clamped 0.25-5).
+    --query, --find <text>
+                         Search text for browser find; the trailing positional
+                         works too ("browser find --tab <id> checkout").
+    --match-case         Case-sensitive browser find; alias: --case-sensitive.
+    --backward           Search upwards for browser find; aliases: --previous, --prev.
+    --next               Advance to the next hit of the current browser find
+                         instead of starting a new search; alias: --find-next.
+    --mode <dock>        DevTools dock mode for browser devtools: right, bottom, detach.
+    --filter <text>      Substring filter for browser network/har entries.
+    --failed             Only failed/4xx-5xx entries for browser network/har.
+    --har                Also export the tab's HAR with browser proof and file it as a
+                         browser_trace artifact beside the screenshot. Requires network
+                         logging on for that tab.
+    --to-selector, --to-text-match, --to-test-id, --to-element, --to-handle, --to-x, --to-y
+                         Drag destination for browser drag.
+    --option-value/--option-label/--option-index
+                         Option to pick for browser select-option.
+    --file <path>        Repeatable file path for browser upload.
+    --fps <30|60>        Frame rate for browser record start.
     --include-ended, --all
                          Include ended browser sessions in browser sessions output.
     --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
@@ -1488,6 +1712,9 @@ _    ____  _____
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -1520,6 +1747,7 @@ _    ____  _____
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents

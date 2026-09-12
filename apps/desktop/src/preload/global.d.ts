@@ -666,6 +666,35 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorAppLifecycleArgs,
+  IosSimulatorAppState,
+  IosSimulatorAssertVisibleArgs,
+  IosSimulatorCloseDeviceArgs,
+  IosSimulatorCloseDeviceResult,
+  IosSimulatorDeviceArgs,
+  IosSimulatorDeviceSession,
+  IosSimulatorDeviceSettings,
+  IosSimulatorElementActionResult,
+  IosSimulatorEventLogArgs,
+  IosSimulatorEventLogPage,
+  IosSimulatorFillElementArgs,
+  IosSimulatorFindElementArgs,
+  IosSimulatorOpenDeviceArgs,
+  IosSimulatorOpenUrlArgs,
+  IosSimulatorProofBundle,
+  IosSimulatorProofBundleArgs,
+  IosSimulatorPushArgs,
+  IosSimulatorSetAccessibilityArgs,
+  IosSimulatorSetAppearanceArgs,
+  IosSimulatorSetContentSizeArgs,
+  IosSimulatorSetLocationArgs,
+  IosSimulatorSetPermissionArgs,
+  IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
+  IosSimulatorStatusBarArgs,
+  IosSimulatorTapElementArgs,
+  IosSimulatorUninstallAppArgs,
+  IosSimulatorWaitForElementArgs,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
   IosSimulatorWindowState,
@@ -2331,6 +2360,120 @@ declare global {
           },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorSelectResult>;
+        // Device hub: a booted device, its typed settings, its log, and
+        // element-named actions. Every one takes the same pin as the calls
+        // above, because the simulator lives on the machine that owns the lane.
+        openDevice: (
+          args?: IosSimulatorOpenDeviceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSession>;
+        closeDevice: (
+          args?: IosSimulatorCloseDeviceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorCloseDeviceResult>;
+        getDeviceSettings: (
+          args?: IosSimulatorDeviceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        setAppearance: (
+          args: IosSimulatorSetAppearanceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        setContentSize: (
+          args: IosSimulatorSetContentSizeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        setAccessibilityOption: (
+          args: IosSimulatorSetAccessibilityArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        setLocation: (
+          args: IosSimulatorSetLocationArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        clearLocation: (
+          args?: IosSimulatorDeviceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDeviceSettings>;
+        setPermission: (
+          args: IosSimulatorSetPermissionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        sendPushNotification: (
+          args: IosSimulatorPushArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        openUrl: (
+          args: IosSimulatorOpenUrlArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        relaunchApp: (
+          args: IosSimulatorAppLifecycleArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorAppState>;
+        terminateApp: (
+          args: IosSimulatorAppLifecycleArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        uninstallApp: (
+          args: IosSimulatorUninstallAppArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        setStatusBar: (
+          args: IosSimulatorStatusBarArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        clearStatusBar: (
+          args?: IosSimulatorDeviceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        getAppState: (
+          args: IosSimulatorAppLifecycleArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorAppState>;
+        startEventLog: (
+          args: IosSimulatorStartEventLogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorEventLogPage>;
+        stopEventLog: (
+          args?: IosSimulatorStopEventLogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorEventLogPage>;
+        getEventLog: (
+          args?: IosSimulatorEventLogArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorEventLogPage>;
+        findElement: (
+          args: IosSimulatorFindElementArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorElementActionResult>;
+        tapElement: (
+          args: IosSimulatorTapElementArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorElementActionResult>;
+        fillElement: (
+          args: IosSimulatorFillElementArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorElementActionResult>;
+        waitForElement: (
+          args: IosSimulatorWaitForElementArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorElementActionResult>;
+        assertVisible: (
+          args: IosSimulatorAssertVisibleArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorElementActionResult>;
+        captureProofBundle: (
+          args?: IosSimulatorProofBundleArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorProofBundle>;
+        // The stream URL names loopback on the simulator's own machine, so a
+        // remote binding has to tunnel it before a player can open it. Resolves
+        // to a message instead of rejecting: the caller renders it in a card.
+        resolveStreamUrl: (
+          streamUrl: string | null,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
         onEvent: (
           cb: (ev: IosSimulatorEventPayload) => void,
           pin?: OpenProjectBinding | null,

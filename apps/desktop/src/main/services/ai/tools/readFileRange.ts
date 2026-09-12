@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   getErrorMessage,
+  isPathEscapeError,
   readAgentAccessibleFileBytes,
   resolvePathWithinRoot,
   type DirtyFileTextLookup,
@@ -43,7 +44,7 @@ export function createReadFileRangeTool(cwd: string, options: ReadFileRangeToolO
           if (message.startsWith("Path does not exist:")) {
             return { content: "", totalLines: 0, error: `File not found: ${file_path}` };
           }
-          if (message === "Path escapes root") {
+          if (isPathEscapeError(error)) {
             return { content: "", totalLines: 0, error: `Read path is outside the repo root: ${file_path}` };
           }
           return { content: "", totalLines: 0, error: `Error reading file: ${message}` };

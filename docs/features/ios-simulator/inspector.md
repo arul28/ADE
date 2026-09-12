@@ -13,8 +13,10 @@ Snapshot reads happen inside whichever ADE runtime owns the active
 simulator session. Because the simulator is macOS-only, that runtime
 is always a Mac (local or remote-Mac); the renderer is purely a viewer
 over the resulting elements. Inspect, select, screenshot, and input all
-work against a remote-Mac runtime. The drawer's live view does not — it
-is a local desktop-window capture and cannot render for a remote runtime.
+work against a remote-Mac runtime. The drawer's live view works there
+only on the `idb-h264` backend; the default window capture reads a
+window on this desktop. See
+[README.md](./README.md#live-view-backends).
 
 The kit is **DEBUG-only**: under `#if DEBUG` the modifiers attach
 preference values and the snapshot host emits JSON; under release
@@ -29,6 +31,7 @@ not carry inspector overhead or expose component metadata.
 | `apps/ios/ADE/App/ContentView.swift` | Calls `.adeInspectorHost()` on the root view so every screen below it can publish anchors. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | `getAppContainerPath()` resolves the active bundle's data dir via `xcrun simctl get_app_container <udid> <bundleId> data`; `readInspectorSnapshot()` reads `Documents/ade-inspector-elements.json` and normalises it into `IosInspectorSnapshot` (`schemaVersion: 1`, `screen { width, height, scale }`, `elements: IosInspectableElement[]`). |
 | `apps/desktop/src/shared/types/iosSimulator.ts` | `IosInspectorSnapshot`, `IosInspectableElement`, `IosInspectableFrame`, `IosScreenElement` (the unified app + accessibility row), `IosScreenSnapshot.providers[]` (which sources contributed), `IosElementContextItem` (what the chat composer ends up with). |
+| `apps/desktop/src/main/services/ios/iosSemanticActions.ts` | The second reader of this metadata. `buildElementRef` turns a matched `componentId` into a `component:` ref, the tier an agent uses to name an element instead of a pixel. See [README.md](./README.md#semantic-actions). |
 
 ## Annotating views
 

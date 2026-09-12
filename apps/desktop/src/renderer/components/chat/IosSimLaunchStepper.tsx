@@ -53,6 +53,8 @@ type IosSimLaunchStepperProps = {
    * failed: a running launch has nothing to dismiss, while a failed one used to
    * sit over every other mode — including the toggle that leaves it.
    */
+  /** How long the last build of this root took, in ms. Null when unknown. */
+  lastBuildMs?: number | null;
   onDismiss?: () => void;
 };
 
@@ -61,7 +63,7 @@ type IosSimLaunchStepperProps = {
  * carries the tail of its output root because "built the wrong checkout" is the
  * failure mode that otherwise looks identical to a slow build.
  */
-export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now, onDismiss }: IosSimLaunchStepperProps) {
+export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now, lastBuildMs, onDismiss }: IosSimLaunchStepperProps) {
   const anyFailed = steps.some((step) => step.status === "failed");
   return (
     <div className="flex h-full min-h-[300px] flex-col justify-center gap-2 px-5 py-4">
@@ -123,6 +125,14 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
                   </span>
                   {elapsed ? (
                     <span className="font-sans text-[10px] tabular-nums text-cyan-100/70">{elapsed}</span>
+                  ) : null}
+                  {/* A cold Xcode build has no progress bar and no ceiling a
+                      reader can see, so the only honest reassurance is what the
+                      same build root cost last time. */}
+                  {running && step.step === "build-app" && lastBuildMs ? (
+                    <span className="font-sans text-[10px] tabular-nums text-muted-fg/50">
+                      ~{formatElapsed(lastBuildMs)} last time
+                    </span>
                   ) : null}
                   {buildRootTail ? (
                     <code

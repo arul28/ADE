@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowsClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CaretDown, CheckCircle, CursorClick, DeviceMobile, FileCode, ImageSquare, Lightning, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowsClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CaretDown, CheckCircle, CursorClick, DeviceMobile, FileCode, ImageSquare, Lightning, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SlidersHorizontal, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   IosElementContextItem,
@@ -13,15 +13,14 @@ import type {
   IosSimulatorLaunchProgress,
   IosSimulatorLaunchTarget,
   IosSimulatorDrawerMode,
-  IosSimulatorPrivacyPane,
-  IosSimulatorStreamStatus,
   IosSimulatorStatus,
-  IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   OpenProjectBinding,
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { IosSimH264Video } from "./IosSimH264Video";
+import { IosSimToolsColumn } from "./IosSimToolsColumn";
+import { IosSimWatchRibbon } from "./IosSimWatchRibbon";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import {
   WORK_TOOL_CHROME_CHIP,
@@ -32,21 +31,17 @@ import {
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { useIosSimBuildDuration } from "./useIosSimBuildDuration";
+import { useIosSimDeviceTools } from "./useIosSimDeviceTools";
+import { useIosSimLiveView } from "./useIosSimLiveView";
 import { buildIosSimToolChips, IosSimToolChips, IosSimUnsupportedCard } from "./IosSimToolChips";
 import { IosSimLaunchStepper, selectLaunchSteps } from "./IosSimLaunchStepper";
 import { IosSimOwnershipCard } from "./IosSimOwnershipCard";
-import {
-  IosSimVideoOverlay,
-  resolveIosSimBlocker,
-  type IosSimBlockerAction,
-} from "./IosSimVideoOverlay";
+import { IosSimVideoOverlay } from "./IosSimVideoOverlay";
 import {
   EMPTY_LAUNCH_EXTRAS,
   formatAge,
-  listWindowSourcesForSession,
-  openIosSimSettingsPane,
   readLaunchExtras,
-  revealSimulator,
   type IosSimLaunchExtras,
 } from "./iosSimContracts";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
@@ -139,15 +134,6 @@ type RenderedMediaBounds = {
   scaleY: number;
 };
 
-type WindowScreenRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  confidence: number;
-  source: "matched" | "heuristic";
-};
-
 type DragStart = {
   x: number;
   y: number;
@@ -173,39 +159,9 @@ type PreviewCaptureSelection = {
   bounds: RenderedMediaBounds;
 };
 
-type LiveVisual =
-  {
-    kind: "window";
-    status: "starting" | "reconnecting" | "active" | "error";
-    sourceId: string | null;
-    sourceName: string | null;
-    width: number | null;
-    height: number | null;
-    error: string | null;
-  };
-
-type VideoFrameMetadata = {
-  presentationTime?: number;
-  expectedDisplayTime?: number;
-  width?: number;
-  height?: number;
-};
-
-type VideoFrameRequestElement = HTMLVideoElement & {
-  requestVideoFrameCallback?: (callback: (now: number, metadata: VideoFrameMetadata) => void) => number;
-  cancelVideoFrameCallback?: (handle: number) => void;
-};
-
 const MEDIA_ZOOM_MIN = 1;
 const MEDIA_ZOOM_MAX = 2;
 const MEDIA_ZOOM_STEP = 0.25;
-
-/** Stream reports active but no new frame landed inside this window. */
-const FRAME_STALL_MS = 3_000;
-/** Window-state poll cadence: fast while the state is moving, slow once settled. */
-const WINDOW_POLL_FAST_MS = 2_000;
-const WINDOW_POLL_SLOW_MS = 10_000;
-const WINDOW_POLL_STABLE_THRESHOLD = 3;
 
 function trimmedOrNull(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -225,46 +181,6 @@ function deviceLabel(device: IosSimulatorDevice | null | undefined): string {
 function targetLabel(target: IosSimulatorLaunchTarget | null | undefined): string {
   if (!target) return "Choose app";
   return `${target.name}${target.bundleId ? ` - ${target.bundleId}` : ""}`;
-}
-
-function pickSimulatorWindowSource(
-  sources: IosSimulatorWindowSource[],
-  device: { name: string } | null,
-): IosSimulatorWindowSource | null {
-  if (!sources.length) return null;
-  const deviceName = device?.name.toLowerCase() ?? "";
-  return [...sources]
-    .filter((source) => !/developer tools|devtools|ade/i.test(source.name))
-    .map((source) => {
-      const name = source.name.toLowerCase();
-      let score = 0;
-      if (deviceName && name.includes(deviceName)) score += 80;
-      if (name.includes("simulator")) score += 50;
-      if (/\biphone\b|\bipad\b|\bios\b/.test(name)) score += 30;
-      if (name.includes("apple tv") || name.includes("watch")) score -= 20;
-      return { source, score };
-    })
-    .filter(({ source, score }) => {
-      const name = source.name.toLowerCase();
-      if (deviceName) return name.includes(deviceName) || name.includes("simulator");
-      return score >= 50;
-    })
-    .sort((a, b) => b.score - a.score || a.source.name.localeCompare(b.source.name))[0]?.source ?? null;
-}
-
-function buildDesktopCaptureConstraints(sourceId: string, maxFrameRate: number): MediaStreamConstraints {
-  return {
-    audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: "desktop",
-        chromeMediaSourceId: sourceId,
-        minFrameRate: Math.min(30, maxFrameRate),
-        maxFrameRate,
-      },
-      optional: [{ cursor: "never" }],
-    },
-  } as unknown as MediaStreamConstraints;
 }
 
 function elementLabel(element: IosScreenElement | null): string {
@@ -536,126 +452,6 @@ function pointerToClampedMediaPoint(
   };
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Unable to load iOS snapshot for window calibration."));
-    image.src = src;
-  });
-}
-
-function heuristicWindowScreenRect(
-  videoWidth: number,
-  videoHeight: number,
-  screenWidth: number | null | undefined,
-  screenHeight: number | null | undefined,
-): WindowScreenRect | null {
-  if (videoWidth <= 0 || videoHeight <= 0 || !screenWidth || !screenHeight) return null;
-  const aspect = screenWidth / screenHeight;
-  if (!Number.isFinite(aspect) || aspect <= 0) return null;
-  const widthLimited = videoWidth * 0.91;
-  const heightLimited = videoHeight * 0.9 * aspect;
-  const width = Math.min(widthLimited, heightLimited);
-  const height = width / aspect;
-  const residualX = Math.max(0, videoWidth - width);
-  const residualY = Math.max(0, videoHeight - height);
-  return {
-    x: residualX / 2,
-    y: Math.min(residualY, Math.max(videoHeight * 0.065, residualY * 0.82)),
-    width,
-    height,
-    confidence: 0.45,
-    source: "heuristic",
-  };
-}
-
-function luminanceAt(data: Uint8ClampedArray, index: number): number {
-  return (data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114);
-}
-
-async function calibrateWindowScreenRect(
-  video: HTMLVideoElement,
-  snapshot: IosScreenSnapshot,
-): Promise<WindowScreenRect | null> {
-  const videoWidth = video.videoWidth;
-  const videoHeight = video.videoHeight;
-  const screenWidth = snapshot.screenshot.width;
-  const screenHeight = snapshot.screenshot.height;
-  const fallback = heuristicWindowScreenRect(videoWidth, videoHeight, screenWidth, screenHeight);
-  if (!fallback || !snapshot.screenshot.dataUrl || video.readyState < video.HAVE_CURRENT_DATA) return fallback;
-
-  try {
-    const image = await loadImage(snapshot.screenshot.dataUrl);
-    const aspect = screenWidth && screenHeight ? screenWidth / screenHeight : image.naturalWidth / image.naturalHeight;
-    const sampleWidth = 28;
-    const sampleHeight = Math.max(40, Math.round(sampleWidth / aspect));
-
-    const referenceCanvas = document.createElement("canvas");
-    referenceCanvas.width = sampleWidth;
-    referenceCanvas.height = sampleHeight;
-    const referenceCtx = referenceCanvas.getContext("2d", { willReadFrequently: true });
-    if (!referenceCtx) return fallback;
-    referenceCtx.drawImage(image, 0, 0, sampleWidth, sampleHeight);
-    const reference = referenceCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
-
-    const videoCanvas = document.createElement("canvas");
-    videoCanvas.width = videoWidth;
-    videoCanvas.height = videoHeight;
-    const videoCtx = videoCanvas.getContext("2d");
-    if (!videoCtx) return fallback;
-    videoCtx.drawImage(video, 0, 0, videoWidth, videoHeight);
-
-    const candidateCanvas = document.createElement("canvas");
-    candidateCanvas.width = sampleWidth;
-    candidateCanvas.height = sampleHeight;
-    const candidateCtx = candidateCanvas.getContext("2d", { willReadFrequently: true });
-    if (!candidateCtx) return fallback;
-
-    let bestRect: WindowScreenRect = fallback;
-    let bestScore = Number.POSITIVE_INFINITY;
-    const heightScales = [0.96, 0.98, 1, 1.02, 1.04];
-    const xOffsets = [-0.04, -0.025, -0.01, 0, 0.01, 0.025, 0.04];
-    const yOffsets = [-0.06, -0.04, -0.02, 0, 0.02, 0.04, 0.06];
-
-    for (const heightScale of heightScales) {
-      const height = fallback.height * heightScale;
-      const width = height * aspect;
-      if (width <= 0 || height <= 0 || width > videoWidth || height > videoHeight) continue;
-      const baseX = fallback.x + ((fallback.width - width) / 2);
-      const baseY = fallback.y + ((fallback.height - height) / 2);
-      for (const xOffset of xOffsets) {
-        for (const yOffset of yOffsets) {
-          const x = Math.max(0, Math.min(videoWidth - width, baseX + (videoWidth * xOffset)));
-          const y = Math.max(0, Math.min(videoHeight - height, baseY + (videoHeight * yOffset)));
-          candidateCtx.clearRect(0, 0, sampleWidth, sampleHeight);
-          candidateCtx.drawImage(videoCanvas, x, y, width, height, 0, 0, sampleWidth, sampleHeight);
-          const candidate = candidateCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
-          let score = 0;
-          for (let index = 0; index < reference.length; index += 4) {
-            score += Math.abs(luminanceAt(reference, index) - luminanceAt(candidate, index));
-          }
-          score /= reference.length / 4;
-          if (score < bestScore) {
-            bestScore = score;
-            bestRect = {
-              x,
-              y,
-              width,
-              height,
-              confidence: Math.max(0, Math.min(1, 1 - (score / 255))),
-              source: "matched",
-            };
-          }
-        }
-      }
-    }
-    return bestRect.confidence > 0.55 ? bestRect : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function stripDataUrlPrefix(dataUrl: string): string {
   const comma = dataUrl.indexOf(",");
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
@@ -785,10 +581,14 @@ export function ChatIosSimulatorPanel({
   const [previewCaptureSelection, setPreviewCaptureSelection] = useState<PreviewCaptureSelection | null>(null);
   const [simulatorCaptureActive, setSimulatorCaptureActive] = useState(false);
   const [simulatorCaptureSelection, setSimulatorCaptureSelection] = useState<PreviewCaptureSelection | null>(null);
-  const [liveVisual, setLiveVisual] = useState<LiveVisual | null>(null);
-  const [windowScreenRect, setWindowScreenRect] = useState<WindowScreenRect | null>(null);
-  const [simulatorWindowState, setSimulatorWindowState] = useState<IosSimulatorWindowState | null>(null);
-  const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
+  /**
+   * Device hub state.
+   *
+   * The tools column and the event log are opt-in: reading device settings
+   * costs nine `simctl` calls and the log costs a process, so neither runs
+   * until the human opens the column.
+   */
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [launchProgress, setLaunchProgress] = useState<IosSimulatorLaunchProgress[]>([]);
   /** The launch whose stepper the user closed. Nothing else can dismiss a failure. */
   const [dismissedLaunchId, setDismissedLaunchId] = useState<string | null>(null);
@@ -800,10 +600,6 @@ export function ChatIosSimulatorPanel({
     sessionId: string | null;
     extras: IosSimLaunchExtras;
   }>({ sessionId: null, extras: EMPTY_LAUNCH_EXTRAS });
-  const [frameStalled, setFrameStalled] = useState(false);
-  const [revealError, setRevealError] = useState<string | null>(null);
-  const [windowPollNonce, setWindowPollNonce] = useState(0);
-  const [videoSizeNonce, setVideoSizeNonce] = useState(0);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [hoveredElement, setHoveredElement] = useState<IosScreenElement | null>(null);
   const [selectedElement, setSelectedElement] = useState<IosScreenElement | null>(null);
@@ -817,53 +613,6 @@ export function ChatIosSimulatorPanel({
   const [mediaExpanded, setMediaExpanded] = useState(false);
   const [mediaZoom, setMediaZoom] = useState(MEDIA_ZOOM_MIN);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const liveStreamRef = useRef<MediaStream | null>(null);
-  const videoFrameCallbackRef = useRef<number | null>(null);
-  const windowScreenRectRef = useRef<WindowScreenRect | null>(null);
-  const liveFrameCountRef = useRef(0);
-  const liveFrameWindowStartRef = useRef(0);
-  const windowCaptureRecoveryTimerRef = useRef<number | null>(null);
-  const windowCaptureRecoveryAttemptedAtRef = useRef(0);
-  const lastWindowFrameAtRef = useRef(0);
-  const liveActiveSinceRef = useRef(0);
-  // Two obligations to the host, tracked apart. One ref carrying both meant the
-  // give-up path — which returns the parking hold but deliberately keeps the
-  // stream flagged so unmount still reaches `stopStream` — left a later release
-  // site free to return the same hold twice. With a second drawer open in this
-  // window that second release decrements a holder this panel does not own,
-  // tearing down the other drawer's follow.
-  const streamStartedByPanelRef = useRef(false);
-  // A token for the hold rather than a boolean: a start that was cancelled has
-  // to hand back the holder *it* took and must never hand back a newer one that
-  // the restart replacing it has since taken.
-  const parkingHoldRef = useRef<symbol | null>(null);
-  /**
-   * The one cancellation fact for window-capture starts. Three states:
-   *
-   * - `null` — no start is wanted. The drawer left Interact, lost its session,
-   *   or unmounted. A start that reads this on entry does not begin, and a start
-   *   already in flight learns two things at once: it has been cancelled, and
-   *   nobody has taken over the host stream it brought up, so stopping that
-   *   stream is its own job.
-   * - an arm symbol — a caller wants a start and is about to make one. A start
-   *   in flight reading this has been superseded, and must *not* stop the host
-   *   stream: its replacement stops the old stream itself, and a stop issued
-   *   from here could land on top of the new one.
-   * - a start symbol — the start that currently owns the live view.
-   *
-   * Arm symbols are unique per run, and every caller passes the value it armed
-   * or read before its own prelude. That is what stops a cancelled prelude from
-   * waking up, reading a *later* run's token, and claiming after its successor.
-   *
-   * This replaced three per-call-site cancellation predicates, two of which only
-   * asked whether the panel had unmounted. A start superseded by a mode switch
-   * or a released session therefore kept running: it took a fresh parking hold,
-   * opened a getUserMedia stream nothing would tear down, and — because the host
-   * relaunches Simulator.app to capture it — left a live stream on record for a
-   * session that was already gone.
-   */
-  const captureStartRef = useRef<symbol | null>(null);
   const suppressNextSelectionEventRef = useRef(false);
   const dragStartRef = useRef<DragStart | null>(null);
   const snapshotRefreshInFlightRef = useRef(false);
@@ -874,6 +623,32 @@ export function ChatIosSimulatorPanel({
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
   const activeSession = status?.activeSession ?? null;
+  /**
+   * A booted simulator this chat opened with no app of its own.
+   *
+   * The live view keys off a session, and a device session is a session for
+   * that purpose: there is a booted device to watch. Without this, "Open
+   * <device> without an app" claimed the device and then showed the same empty
+   * state it started from.
+   */
+  const deviceSession = status?.deviceSession ?? null;
+  /**
+   * Whether a booted device stands behind the drawer at all.
+   *
+   * Declared here, beside the two sessions it reads, because everything that
+   * needs a device — the live view, the screen snapshot, the recovery restart —
+   * needs exactly this and not an app session. Asking for `activeSession`
+   * instead is what left "Open <device> without an app" with an unscaled tap.
+   */
+  const hasActiveSession = Boolean(activeSession || deviceSession);
+  /** The device those sessions name, whichever kind of session it is. */
+  const activeSessionDeviceUdid = activeSession?.deviceUdid ?? deviceSession?.deviceUdid ?? null;
+  const activeDeviceUdid = activeDevice?.udid ?? null;
+  const activeDeviceName = activeDevice?.name ?? null;
+  // A device session has no session id of its own, so its device udid stands in
+  // as the identity the live-view effect restarts on.
+  const activeSessionId = activeSession?.id ?? (deviceSession ? `device:${deviceSession.deviceUdid}` : null);
+  const statusSupported = status?.supported ?? null;
   /**
    * Which tree every scoped iOS Simulator call means.
    *
@@ -888,6 +663,34 @@ export function ChatIosSimulatorPanel({
     (): { laneId: string } | { projectRoot: string | null } => (laneId ? { laneId } : { projectRoot }),
     [laneId, projectRoot],
   );
+  const refreshSnapshot = useCallback(async (options: { silent?: boolean; priority?: boolean } = {}) => {
+    const deviceUdid = selectedDeviceUdid ?? activeDevice?.udid ?? undefined;
+    if (snapshotRefreshInFlightRef.current && options.silent && !options.priority) return;
+    const sequence = snapshotRefreshSequenceRef.current + 1;
+    snapshotRefreshSequenceRef.current = sequence;
+    snapshotRefreshInFlightRef.current = true;
+    if (!options.silent) setBusy(true);
+    setSnapshotRefreshing(true);
+    try {
+      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, ...rootScope }, runtimePinRef.current);
+      if (sequence !== snapshotRefreshSequenceRef.current) return;
+      setSnapshot(next);
+      setHoveredElement(null);
+      setSelectedElement(next.hitElement);
+      if (!options.silent) setMessage(`Snapshot captured with ${next.elements.length} selectable elements.`);
+    } catch (error) {
+      if (sequence === snapshotRefreshSequenceRef.current && !options.silent) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (sequence === snapshotRefreshSequenceRef.current) {
+        snapshotRefreshInFlightRef.current = false;
+        setSnapshotRefreshing(false);
+        if (!options.silent) setBusy(false);
+      }
+    }
+  }, [activeDevice?.udid, rootScope, selectedDeviceUdid]);
+
   const controlsDisabled = Boolean(controlDisabledReason);
   const controlsDisabledMessage = controlDisabledReason ?? "Read-only from this lane.";
 
@@ -916,12 +719,6 @@ export function ChatIosSimulatorPanel({
         alt: "iOS Simulator snapshot",
       }
     : null;
-  const liveWidth = liveVisual?.width ?? videoRef.current?.videoWidth ?? imageRef.current?.naturalWidth ?? null;
-  const liveHeight = liveVisual?.height ?? videoRef.current?.videoHeight ?? imageRef.current?.naturalHeight ?? null;
-  const liveVisualKind = liveVisual?.kind ?? null;
-  const liveWindowSourceId = liveVisual?.kind === "window" ? liveVisual.sourceId : null;
-  const liveWindowHeight = liveVisual?.kind === "window" ? liveVisual.height : null;
-  const liveWindowWidth = liveVisual?.kind === "window" ? liveVisual.width : null;
   const previewImage = useMemo(() => (
     previewResult?.dataUrl
       ? {
@@ -932,34 +729,6 @@ export function ChatIosSimulatorPanel({
       }
       : null
   ), [previewResult?.dataUrl, previewResult?.height, previewResult?.width]);
-  const liveVisualUsesSimulatorWindow = mode === "interact" && liveVisualKind === "window";
-  let mediaWidth: number;
-  let mediaHeight: number;
-  if (mode === "interact") {
-    if (liveVisualUsesSimulatorWindow) {
-      mediaWidth = liveWidth ?? snapshot?.screenshot.width ?? snapshot?.screen.width ?? 0;
-      mediaHeight = liveHeight ?? snapshot?.screenshot.height ?? snapshot?.screen.height ?? 0;
-    } else {
-      mediaWidth = snapshot?.screenshot.width ?? liveWidth ?? snapshot?.screen.width ?? 0;
-      mediaHeight = snapshot?.screenshot.height ?? liveHeight ?? snapshot?.screen.height ?? 0;
-    }
-  } else if (mode === "preview") {
-    mediaWidth = previewImage?.width ?? previewResult?.width ?? 0;
-    mediaHeight = previewImage?.height ?? previewResult?.height ?? 0;
-  } else {
-    mediaWidth = snapshotImage?.width ?? snapshot?.screen.width ?? 0;
-    mediaHeight = snapshotImage?.height ?? snapshot?.screen.height ?? 0;
-  }
-  const activePreviewCaptureFrame = useMemo(() => (
-    previewCaptureSelection && mediaWidth && mediaHeight
-      ? previewCaptureFrame(previewCaptureSelection, mediaWidth, mediaHeight)
-      : null
-  ), [mediaHeight, mediaWidth, previewCaptureSelection]);
-  const activeSimulatorCaptureFrame = useMemo(() => (
-    simulatorCaptureSelection && mediaWidth && mediaHeight
-      ? previewCaptureFrame(simulatorCaptureSelection, mediaWidth, mediaHeight)
-      : null
-  ), [mediaHeight, mediaWidth, simulatorCaptureSelection]);
   const mediaZoomStyle: CSSProperties | undefined = mediaZoom > MEDIA_ZOOM_MIN
     ? {
         width: `${Math.round(mediaZoom * 100)}%`,
@@ -1048,11 +817,14 @@ export function ChatIosSimulatorPanel({
 
   const otherChatSessionId = useMemo(() => {
     if (ignoreChatOwnership) return null;
-    const owner = activeSession?.chatSessionId ?? null;
+    // An app session's owner wins, because it is the more specific claim. A
+    // device session owner still blocks: a chat that opened a simulator owns
+    // what happens to it just as much as a chat that launched an app into one.
+    const owner = activeSession?.chatSessionId ?? deviceSession?.chatSessionId ?? null;
     if (!owner) return null;
     if (!sessionId) return owner;
     return owner !== sessionId ? owner : null;
-  }, [activeSession?.chatSessionId, ignoreChatOwnership, sessionId]);
+  }, [activeSession?.chatSessionId, deviceSession?.chatSessionId, ignoreChatOwnership, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
   const contextControlsBlocked = controlsDisabled;
   const simulatorMutationBlocked = ownedByOtherChat || controlsDisabled;
@@ -1083,10 +855,90 @@ export function ChatIosSimulatorPanel({
     setMode(drawerModeRequest.mode);
   }, [drawerModeRequest]);
 
-  const syncExistingStreamStatus = useCallback((nextStreamStatus: IosSimulatorStreamStatus | null) => {
-    if (!nextStreamStatus) return;
-    setStreamStatus(nextStreamStatus);
-  }, []);
+  /* ------------------------------------------------------------------ *
+   * Live view
+   *
+   * Both backends — the renderer's window capture and the host-encoded H.264
+   * stream — live in `useIosSimLiveView`, together with the capture-cancel
+   * token, the parking hold, the reconnect retry and the bezel calibration the
+   * pointer mapping is measured against. The drawer keeps only what it shares
+   * with Inspect and Preview Lab.
+   *
+   * Declared after `runtimePinRef.current = runtimePin` above, which is a
+   * render-time assignment the hook's calls read through.
+   * ------------------------------------------------------------------ */
+  const {
+    liveVisual,
+    liveVisualKind,
+    liveWidth,
+    liveHeight,
+    liveChip,
+    liveBlocker,
+    handleBlockerAction,
+    h264ReconnectNonce,
+    handleH264Status,
+    handleH264Dimensions,
+    setVideoNode,
+    videoRef,
+    mapLivePointToSimulatorPixel,
+    armWindowCaptureRecoveryAfterInput,
+    syncExistingStreamStatus,
+    handleStreamEvent,
+  } = useIosSimLiveView({
+    mode,
+    activeDeviceUdid,
+    activeDeviceName,
+    activeSessionDeviceUdid,
+    activeSessionId,
+    statusSupported,
+    hasActiveSession,
+    snapshot,
+    chatIsRemote: chatScope.isRemote,
+    chatMachineName: chatScope.machineName,
+    refreshSnapshot,
+    runtimePinRef,
+    launchRef,
+    onError: setMessage,
+  });
+
+  /**
+   * The canvas the host-encoded player draws to.
+   *
+   * The panel renders it, measures it, and maps pointers against it. The hook
+   * never reads it, so it lives with its only user rather than one layer up.
+   */
+  const [h264Canvas, setH264Canvas] = useState<HTMLCanvasElement | null>(null);
+
+  let mediaWidth: number;
+  let mediaHeight: number;
+  if (mode === "interact") {
+    // Any live backend measures in its own frames: the window capture's video
+    // and the host encoder's canvas both carry the intrinsic size the pointer
+    // math needs. Only a still snapshot falls back to the screenshot's size.
+    if (liveVisualKind !== null) {
+      mediaWidth = liveWidth ?? snapshot?.screenshot.width ?? snapshot?.screen.width ?? 0;
+      mediaHeight = liveHeight ?? snapshot?.screenshot.height ?? snapshot?.screen.height ?? 0;
+    } else {
+      mediaWidth = snapshot?.screenshot.width ?? liveWidth ?? snapshot?.screen.width ?? 0;
+      mediaHeight = snapshot?.screenshot.height ?? liveHeight ?? snapshot?.screen.height ?? 0;
+    }
+  } else if (mode === "preview") {
+    mediaWidth = previewImage?.width ?? previewResult?.width ?? 0;
+    mediaHeight = previewImage?.height ?? previewResult?.height ?? 0;
+  } else {
+    mediaWidth = snapshotImage?.width ?? snapshot?.screen.width ?? 0;
+    mediaHeight = snapshotImage?.height ?? snapshot?.screen.height ?? 0;
+  }
+  const activePreviewCaptureFrame = useMemo(() => (
+    previewCaptureSelection && mediaWidth && mediaHeight
+      ? previewCaptureFrame(previewCaptureSelection, mediaWidth, mediaHeight)
+      : null
+  ), [mediaHeight, mediaWidth, previewCaptureSelection]);
+  const activeSimulatorCaptureFrame = useMemo(() => (
+    simulatorCaptureSelection && mediaWidth && mediaHeight
+      ? previewCaptureFrame(simulatorCaptureSelection, mediaWidth, mediaHeight)
+      : null
+  ), [mediaHeight, mediaWidth, simulatorCaptureSelection]);
 
   const refreshStatus = useCallback(async () => {
     const [nextStatus, nextDevices, nextStreamStatus] = await Promise.all([
@@ -1268,394 +1120,6 @@ export function ChatIosSimulatorPanel({
     };
   }, [previewMatch, rootScope, selectedElement]);
 
-  /**
-   * Hands the host parking holder this panel took back, at most once.
-   *
-   * Every teardown path goes through here so the rule lives in one place: only
-   * a hold this panel still owns is returned, because a release for a hold it
-   * already gave back decrements *another* drawer's holder in this same window
-   * — a chat pane and the Work sidebar's iOS tab can both be open at once.
-   *
-   * `hold` narrows that to one specific holder, for callers that took their own
-   * and may be racing a newer start: passing the token makes the release a
-   * no-op once something else has replaced the hold on record.
-   *
-   * Never rejects: every caller is a teardown path.
-   */
-  const releaseParkingHold = useCallback(async (hold?: symbol): Promise<void> => {
-    const held = parkingHoldRef.current;
-    if (!held || (hold !== undefined && hold !== held)) return;
-    parkingHoldRef.current = null;
-    try {
-      await window.ade.iosSimulator.releaseWindowParking();
-    } catch {
-      /* teardown is best-effort; the preload swallows its own failures too */
-    }
-  }, []);
-
-  const stopRendererLiveVisual = useCallback((options: { preserveVisual?: boolean } = {}) => {
-    const preserveVisual = options.preserveVisual === true;
-    if (windowCaptureRecoveryTimerRef.current != null) {
-      window.clearTimeout(windowCaptureRecoveryTimerRef.current);
-      windowCaptureRecoveryTimerRef.current = null;
-    }
-    const video = videoRef.current as VideoFrameRequestElement | null;
-    if (video && videoFrameCallbackRef.current != null && video.cancelVideoFrameCallback) {
-      video.cancelVideoFrameCallback(videoFrameCallbackRef.current);
-    }
-    videoFrameCallbackRef.current = null;
-    liveStreamRef.current?.getTracks().forEach((track) => track.stop());
-    liveStreamRef.current = null;
-    if (video) video.srcObject = null;
-    liveFrameCountRef.current = 0;
-    liveFrameWindowStartRef.current = 0;
-    lastWindowFrameAtRef.current = 0;
-    liveActiveSinceRef.current = 0;
-    setFrameStalled(false);
-    if (preserveVisual) {
-      setLiveVisual((current) => current ? { ...current, status: "reconnecting", error: null } : current);
-      return;
-    }
-    windowScreenRectRef.current = null;
-    setWindowScreenRect(null);
-    setLiveVisual(null);
-  }, []);
-
-  const trackWindowVideoFrames = useCallback((video: HTMLVideoElement) => {
-    const frameVideo = video as VideoFrameRequestElement;
-    if (!frameVideo.requestVideoFrameCallback) return;
-    liveFrameCountRef.current = 0;
-    liveFrameWindowStartRef.current = performance.now();
-    const onFrame = (now: number, metadata: VideoFrameMetadata) => {
-      lastWindowFrameAtRef.current = Date.now();
-      liveFrameCountRef.current += 1;
-      const elapsedMs = Math.max(1, now - liveFrameWindowStartRef.current);
-      if (elapsedMs >= 1_000) {
-        liveFrameCountRef.current = 0;
-        liveFrameWindowStartRef.current = now;
-      }
-      if (metadata.width || metadata.height) {
-        setLiveVisual((current) => current?.kind === "window"
-          ? {
-              ...current,
-              status: "active",
-              width: metadata.width ?? current.width,
-              height: metadata.height ?? current.height,
-            }
-          : current);
-      }
-      videoFrameCallbackRef.current = frameVideo.requestVideoFrameCallback?.(onFrame) ?? null;
-    };
-    videoFrameCallbackRef.current = frameVideo.requestVideoFrameCallback(onFrame);
-  }, []);
-
-  /**
-   * `captureStartRef` is checked on entry and after every await in here, and
-   * both awaits are long: `startStream` is a daemon round-trip, and discovery
-   * runs for up to one host budget (~12s). Leaving Interact, losing the
-   * session, or closing the drawer
-   * while it says "Starting the live view" therefore lands React's cleanups
-   * *before* this resumes — they see no stream and no hold, and then this took
-   * both for a live view nobody is watching, permanently pinning the parking
-   * follow so every later ADE window move re-parked (and reopened)
-   * Simulator.app with no drawer open. Anything taken past that point is given
-   * back here instead, including the host stream when nothing replaced it.
-   *
-   * The entry check is what covers the callers that `await stopStream()` right
-   * before calling in: the drawer can already be gone by the time this body
-   * runs, and starting anyway spawns Simulator.app for a panel that no longer
-   * exists.
-   */
-  const startWindowCaptureVisual = useCallback(async (
-    device: { udid: string; name: string },
-    expected: symbol | null,
-  ) => {
-    // `expected` is the token the caller armed, or read, before its own
-    // prelude. Comparing against it — rather than merely against null — is what
-    // stops a cancelled prelude from waking up, reading a token the NEXT run
-    // armed, and claiming after its own successor.
-    if (expected === null || captureStartRef.current !== expected) return;
-    const myStart = Symbol("ios-simulator-capture-start");
-    captureStartRef.current = myStart;
-    const superseded = (): boolean => captureStartRef.current !== myStart;
-    let holdTakenByThisStart: symbol | null = null;
-    const abandonStart = async (): Promise<void> => {
-      if (holdTakenByThisStart) await releaseParkingHold(holdTakenByThisStart);
-      // `null` means nothing took this start's place — the effect stopped the
-      // live view and returned, or the panel unmounted — so the host stream this
-      // start brought up is nobody else's to stop, and leaving it running would
-      // report a live capture (and a relaunched Simulator.app) to every other
-      // drawer and to the CLI. A successor start owns the token instead: it
-      // stops the old stream itself, and a stop issued from here could land on
-      // top of the replacement.
-      if (captureStartRef.current === null && streamStartedByPanelRef.current) {
-        streamStartedByPanelRef.current = false;
-        await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      }
-    };
-
-    try {
-      const status = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 }, runtimePinRef.current);
-      streamStartedByPanelRef.current = true;
-      if (superseded()) {
-        await abandonStart();
-        return;
-      }
-      setStreamStatus(status);
-      setLiveVisual({
-        kind: "window",
-        status: "starting",
-        sourceId: null,
-        sourceName: null,
-        width: null,
-        height: null,
-        error: null,
-      });
-      // One sweep, and one only. The host's own discovery already settles and
-      // re-attaches inside its 12s budget
-      // (`SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS`, sized above the ~10.5s of
-      // AppleScript ceilings a cold Simulator costs), so the transient a
-      // renderer-side retry loop existed for — "the Simulator window is
-      // sometimes a beat behind the app" — is handled before this call ever
-      // returns. Retrying on top of that only ever added spinner.
-      //
-      // Worst case is therefore one host budget: ~12s to a source or to a
-      // terminal message.
-      const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
-      // Take the parking hold here, and not where the stream starts. Discovery
-      // is what arms the host's claim, and a holder only counts against a claim
-      // that already exists — while `startStream` itself is answered by the
-      // brain daemon whenever a project is bound (which window capture
-      // requires), so it never reaches the Electron-main code that owns parking
-      // at all. Held even when discovery comes back empty, so the give-up path
-      // below has something to give back.
-      if (!parkingHoldRef.current) {
-        // The host answers with whether it actually counted the holder — a
-        // window that lost the claim race is silently not counted — and the
-        // panel records the hold only then. Believing otherwise would make
-        // every later release decrement a holder this panel never took, which
-        // is another drawer's. A `false` is not retried: it means another ADE
-        // window owns the parking claim, which stays true for the life of that
-        // claim, so this drawer simply captures without a hold until the claim
-        // is gone. It records nothing and therefore releases nothing.
-        const held = await window.ade.iosSimulator.retainWindowParking();
-        if (held) {
-          holdTakenByThisStart = Symbol("ios-simulator-parking-hold");
-          parkingHoldRef.current = holdTakenByThisStart;
-        }
-      }
-      if (superseded()) {
-        await abandonStart();
-        return;
-      }
-      // The session passed above only tells the host whether to park and settle
-      // at all. Choosing among the windows it found is this call, right here,
-      // so a device switch re-picks instead of parking on the previous window.
-      const source = pickSimulatorWindowSource(result.sources, device);
-      if (result.windowState) setSimulatorWindowState(result.windowState);
-      if (!source) {
-        // The host answers with a `message` only when it has reached a verdict —
-        // a permission blocker, no session, its own budget exhausted — and that
-        // verdict is the specific, actionable one, so it is passed through
-        // verbatim. Without one, discovery simply found no window: say that,
-        // rather than claiming a timeout that did not happen.
-        throw new Error(result.message ?? `ADE could not find the ${device.name} window. Make sure the simulator is running and its window is open, then try again.`);
-      }
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("ADE cannot show the simulator in this window.");
-      const stream = await navigator.mediaDevices.getUserMedia(buildDesktopCaptureConstraints(source.id, 60));
-      if (superseded()) {
-        // `stopRendererLiveVisual` only ever stops the tracks it can see, and it
-        // ran before this stream existed.
-        stream.getTracks().forEach((track) => track.stop());
-        await abandonStart();
-        return;
-      }
-      liveStreamRef.current = stream;
-      liveActiveSinceRef.current = Date.now();
-      setFrameStalled(false);
-      setLiveVisual({
-        kind: "window",
-        status: "active",
-        sourceId: source.id,
-        sourceName: source.name,
-        width: null,
-        height: null,
-        error: null,
-      });
-    } catch (error) {
-      // A superseded start's failure is not this drawer's failure: the caller's
-      // catch would paint an error over a live view that has since moved on, and
-      // hand back a parking hold that now belongs to the start which replaced
-      // this one. Giving back only what this start took is `abandonStart`'s job.
-      if (!superseded()) throw error;
-      await abandonStart();
-    }
-  }, [releaseParkingHold]);
-
-  /**
-   * `liveStreamRef` is only ever populated by window capture, so its presence is
-   * the whole precondition. Stable identity matters: React re-runs a callback
-   * ref whose identity changed, and a churning ref would detach a playing video.
-   */
-  const attachLiveStream = useCallback((video: HTMLVideoElement | null) => {
-    const stream = liveStreamRef.current;
-    if (!video || !stream || video.srcObject === stream) return;
-    video.srcObject = stream;
-    void video.play().then(() => {
-      liveActiveSinceRef.current = Date.now();
-      setLiveVisual((current) => current?.kind === "window"
-        ? {
-            ...current,
-            status: "active",
-            width: video.videoWidth || current.width,
-            height: video.videoHeight || current.height,
-          }
-        : current);
-      trackWindowVideoFrames(video);
-    }).catch((error) => {
-      setLiveVisual((current) => current?.kind === "window"
-        ? { ...current, status: "error", error: error instanceof Error ? error.message : String(error) }
-        : current);
-    });
-  }, [trackWindowVideoFrames]);
-
-  /**
-   * A callback ref, not an effect keyed on the visual: the <video> is a sibling
-   * branch of the launch stepper, so toggling the stepper remounts the element
-   * without changing the visual. An effect would not re-run and the new element
-   * would have no `srcObject`; attaching on mount cannot miss it.
-   */
-  const setVideoNode = useCallback((video: HTMLVideoElement | null) => {
-    videoRef.current = video;
-    attachLiveStream(video);
-  }, [attachLiveStream]);
-
-  // The element can outlive a stream swap (a device switch re-picks the capture
-  // source), which the callback ref alone would not see.
-  useEffect(() => {
-    attachLiveStream(videoRef.current);
-  }, [attachLiveStream, liveVisualKind, liveWindowSourceId]);
-
-  useEffect(() => {
-    windowScreenRectRef.current = windowScreenRect;
-  }, [windowScreenRect]);
-
-  const refreshSnapshot = useCallback(async (options: { silent?: boolean; priority?: boolean } = {}) => {
-    const deviceUdid = selectedDeviceUdid ?? activeDevice?.udid ?? undefined;
-    if (snapshotRefreshInFlightRef.current && options.silent && !options.priority) return;
-    const sequence = snapshotRefreshSequenceRef.current + 1;
-    snapshotRefreshSequenceRef.current = sequence;
-    snapshotRefreshInFlightRef.current = true;
-    if (!options.silent) setBusy(true);
-    setSnapshotRefreshing(true);
-    try {
-      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, ...rootScope }, runtimePinRef.current);
-      if (sequence !== snapshotRefreshSequenceRef.current) return;
-      setSnapshot(next);
-      setHoveredElement(null);
-      setSelectedElement(next.hitElement);
-      if (!options.silent) setMessage(`Snapshot captured with ${next.elements.length} selectable elements.`);
-    } catch (error) {
-      if (sequence === snapshotRefreshSequenceRef.current && !options.silent) {
-        setMessage(error instanceof Error ? error.message : String(error));
-      }
-    } finally {
-      if (sequence === snapshotRefreshSequenceRef.current) {
-        snapshotRefreshInFlightRef.current = false;
-        setSnapshotRefreshing(false);
-        if (!options.silent) setBusy(false);
-      }
-    }
-  }, [activeDevice?.udid, rootScope, selectedDeviceUdid]);
-
-  const scheduleWindowCaptureRecovery = useCallback((reason: string) => {
-    if (
-      mode !== "interact"
-      || !activeDevice
-      || !activeSession
-      || activeSession.deviceUdid !== activeDevice.udid
-      || liveVisualKind !== "window"
-    ) {
-      return;
-    }
-    if (windowCaptureRecoveryTimerRef.current != null) return;
-    const now = Date.now();
-    if (now - windowCaptureRecoveryAttemptedAtRef.current < 2_500) return;
-    windowCaptureRecoveryAttemptedAtRef.current = now;
-    setMessage(`${reason} Restoring the live view...`);
-    windowCaptureRecoveryTimerRef.current = window.setTimeout(() => {
-      windowCaptureRecoveryTimerRef.current = null;
-      // Read the token before the prelude below: if anything replaces or
-      // cancels this run while it stops the old stream, the start declines.
-      const armedForRecovery = captureStartRef.current;
-      void (async () => {
-        try {
-          stopRendererLiveVisual();
-          await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-          // A recovery restart outlives the drawer just as easily as the first
-          // start does, and it takes the same parking hold. It answers to the
-          // same cancellation token, so a drawer that closed or switched out of
-          // Interact during the stop above stops this run before it starts
-          // anything.
-          await startWindowCaptureVisual(activeDevice, armedForRecovery);
-          void refreshSnapshot({ silent: true, priority: true });
-        } catch (windowError) {
-          // Same dead end as the effect's give-up path: nothing retries a
-          // recovery that failed, the deps did not change so the effect will not
-          // re-run, and the hold this start took would otherwise keep the host
-          // re-parking Simulator.app while the drawer says the live view failed.
-          void releaseParkingHold();
-          const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
-          setLiveVisual({
-            kind: "window",
-            status: "error",
-            sourceId: null,
-            sourceName: null,
-            width: null,
-            height: null,
-            error: `Could not restore the live view. ${windowMessage}`,
-          });
-          setMessage(`Could not restore the live view. ${windowMessage}`);
-        }
-      })().catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setLiveVisual({
-          kind: "window",
-          status: "error",
-          sourceId: null,
-          sourceName: null,
-          width: null,
-          height: null,
-          error: `Live view failed. ${message}`,
-        });
-        setMessage(`Live view failed. ${message}`);
-      });
-    }, 250);
-  }, [
-    activeDevice,
-    activeSession,
-    liveVisualKind,
-    mode,
-    refreshSnapshot,
-    releaseParkingHold,
-    startWindowCaptureVisual,
-    stopRendererLiveVisual,
-  ]);
-
-  const armWindowCaptureRecoveryAfterInput = useCallback(() => {
-    if (mode !== "interact" || liveVisualKind !== "window") return;
-    const previousFrameAt = lastWindowFrameAtRef.current;
-    if (windowCaptureRecoveryTimerRef.current != null) {
-      window.clearTimeout(windowCaptureRecoveryTimerRef.current);
-      windowCaptureRecoveryTimerRef.current = null;
-    }
-    windowCaptureRecoveryTimerRef.current = window.setTimeout(() => {
-      windowCaptureRecoveryTimerRef.current = null;
-      if (lastWindowFrameAtRef.current <= previousFrameAt) {
-        scheduleWindowCaptureRecovery("The simulator view did not update after input.");
-      }
-    }, 1_500);
-  }, [liveVisualKind, mode, scheduleWindowCaptureRecovery]);
 
   useEffect(() => {
     void refreshStatus().catch((error) => {
@@ -1701,12 +1165,8 @@ export function ChatIosSimulatorPanel({
         return;
       }
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
-        setStreamStatus(event.status);
-        if (event.type === "stream-error") {
-          const errorMessage = event.status.lastError ?? null;
-          setLiveVisual((current) => current ? { ...current, status: "error", error: errorMessage ?? current.error } : current);
-          if (errorMessage) setMessage(errorMessage);
-        }
+        const errorMessage = handleStreamEvent(event.type, event.status);
+        if (errorMessage) setMessage(errorMessage);
         return;
       }
       if (event.type === "session-released") {
@@ -1726,7 +1186,7 @@ export function ChatIosSimulatorPanel({
     return () => {
       unsubscribe();
     };
-  }, [ignoreChatOwnership, laneId, onAddContext, refreshStatus, sessionId]);
+  }, [handleStreamEvent, ignoreChatOwnership, laneId, onAddContext, refreshStatus, sessionId]);
 
   useEffect(() => {
     void refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined).catch((error) => {
@@ -1750,19 +1210,87 @@ export function ChatIosSimulatorPanel({
     }
   }, [mode]);
 
+  // Same rule as the live view: the snapshot comes off a booted device, so a
+  // device session qualifies. Inspect showed an empty frame for one otherwise.
   useEffect(() => {
     if (mode !== "inspect" || !activeDevice || !status?.supported) return;
-    if (!activeSession) return;
+    if (!hasActiveSession) return;
     void refreshSnapshot({ priority: true }).catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
     });
-  }, [activeDevice, activeSession, mode, refreshSnapshot, status?.supported]);
+  }, [activeDevice, hasActiveSession, mode, refreshSnapshot, status?.supported]);
 
-  const activeDeviceUdid = activeDevice?.udid ?? null;
-  const activeDeviceName = activeDevice?.name ?? null;
-  const activeSessionId = activeSession?.id ?? null;
-  const activeSessionDeviceUdid = activeSession?.deviceUdid ?? null;
-  const statusSupported = status?.supported ?? null;
+  const ownerLabel = activeSession?.laneId ?? deviceSession?.laneId ?? shortChatId(otherChatSessionId ?? "");
+  const ownerAgeLabel = formatAge(
+    activeSession?.claimedAt ?? activeSession?.startedAt ?? deviceSession?.openedAt,
+    nowTick,
+  );
+  /**
+   * The ribbon replaces the card wherever there is a live view under it.
+   *
+   * The card costs a row of height above the video and repeats what the ribbon
+   * says in the place the eye already is. Preview mode keeps the card: it shows
+   * a rendered SwiftUI preview, not the session, so a ribbon over it would name
+   * an owner of something the user is not looking at.
+   */
+  const showWatchRibbon = !mediaExpanded && ownedByOtherChat && mode !== "preview" && !setupBlocked;
+  /**
+   * The tools act on a device, so they only show once there is one.
+   *
+   * Preview Lab is excluded for the same reason its chrome hides the toggle:
+   * the surface renders a SwiftUI preview, not the device. Without the mode
+   * check the column stayed beside the preview with no button left to close it,
+   * and kept polling the device behind it.
+   */
+  const toolsVisible = toolsOpen
+    && mode !== "preview"
+    && !mediaExpanded
+    && !setupBlocked
+    && Boolean(activeDeviceUdid);
+
+  /* ------------------------------------------------------------------ *
+   * Device tools
+   *
+   * The device half of the drawer — settings, app lifecycle, and the event
+   * log — lives in `useIosSimDeviceTools`. It shares no state with the live
+   * view, the launch, or the inspector, and it is the only part here that
+   * leaves a process running on the host.
+   * ------------------------------------------------------------------ */
+
+  const toolsBundleId = activeSession?.bundleId ?? null;
+
+  const deviceTools = useIosSimDeviceTools({
+    activeDeviceUdid,
+    bundleId: toolsBundleId,
+    chatSessionId: sessionId ?? null,
+    ignoreOwnership: ignoreChatOwnership,
+    visible: toolsVisible,
+    requested: toolsOpen && Boolean(activeDeviceUdid),
+    runtimePinRef,
+    onError: setMessage,
+  });
+
+  /**
+   * Boots the selected device and claims it, with no build and no app.
+   *
+   * The only other way into the drawer is a launch, which rebuilds the lane.
+   * That is the wrong price for "show me the app that is already installed".
+   */
+  const openDeviceOnly = useCallback(async () => {
+    try {
+      await window.ade.iosSimulator.openDevice({
+        deviceUdid: selectedDeviceUdid ?? activeDevice?.udid ?? null,
+        chatSessionId: sessionId ?? null,
+        laneId: laneId ?? null,
+      }, runtimePinRef.current);
+      await refreshStatus();
+      setMessage(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }, [activeDevice?.udid, laneId, refreshStatus, selectedDeviceUdid, sessionId]);
+
+
   // The drawer is not always the thing that launched. An agent launches, the
   // user opens the drawer afterwards, and the session is then the only place
   // the build root and the prebuilt flag exist — without this fallback the
@@ -1784,253 +1312,15 @@ export function ChatIosSimulatorPanel({
     return readLaunchExtras(activeSession);
   }, [activeSession, launchBusy, panelLaunchExtras]);
 
-  useEffect(() => {
-    // Keyed on primitives, not object identity, so a plain status refresh no
-    // longer tears the stream down — while a real device switch still does,
-    // which is what re-picks the capture source instead of parking on the old
-    // simulator window.
-    if (mode !== "interact" || statusSupported === null) {
-      stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      void releaseParkingHold();
-      streamStartedByPanelRef.current = false;
-      return;
-    }
-    if (
-      !activeDeviceUdid
-      || !statusSupported
-      || !activeSessionId
-      || activeSessionDeviceUdid !== activeDeviceUdid
-    ) {
-      stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      void releaseParkingHold();
-      streamStartedByPanelRef.current = false;
-      return;
-    }
-    // Everything else here routes to the chat's machine, but the live view does
-    // not: it captures the Simulator window through this window's own screen
-    // capture. Say that instead of failing the stream.
-    if (chatScope.isRemote) {
-      stopRendererLiveVisual();
-      setLiveVisual({
-        kind: "window",
-        status: "error",
-        sourceId: null,
-        sourceName: null,
-        width: null,
-        height: null,
-        error: `The live view shows the Simulator window on this computer. This chat runs on ${chatScope.machineName}.`,
-      });
-      streamStartedByPanelRef.current = false;
-      return;
-    }
-    // Arm before the prelude below, not after it, so a start still in flight
-    // from a previous run reads a non-null token and knows its replacement
-    // stops the stream. The armed value is unique per run: a cancelled prelude
-    // that wakes up later compares against the value IT armed, so it declines
-    // instead of claiming on top of the run that replaced it.
-    const myArm = Symbol("ios-simulator-capture-arm");
-    captureStartRef.current = myArm;
-    const device = { udid: activeDeviceUdid, name: activeDeviceName ?? "" };
-    void (async () => {
-      try {
-        stopRendererLiveVisual();
-        await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-        // Starting the live view takes one parking hold on the host, so a
-        // restart (a device switch) must drop the previous one first. Otherwise
-        // this panel holds two and its single release on unmount never reaches
-        // zero.
-        await releaseParkingHold();
-        streamStartedByPanelRef.current = false;
-        await startWindowCaptureVisual(device, myArm);
-      } catch (streamError) {
-        // No cancellation check here: a start that was superseded or torn down
-        // returns quietly and cleans up after itself, so reaching this catch
-        // means this run's own start failed while it still owned the live view.
-        //
-        // Giving up here is terminal: nothing retries a stream that never
-        // produced a frame. The panel took a parking hold on its first
-        // discovery sweep, so without this release the host keeps re-parking
-        // Simulator.app on every ADE window move while the drawer says the live
-        // view failed. `streamStartedByPanelRef` deliberately stays set — the
-        // stream itself did start, so unmount still has to reach `stopStream` —
-        // but the hold is given back here and only here, so no later release
-        // site returns it a second time. A failure before the first sweep took
-        // no hold, so it releases nothing.
-        void releaseParkingHold();
-        const message = streamError instanceof Error ? streamError.message : String(streamError);
-        setLiveVisual({
-          kind: "window",
-          status: "error",
-          sourceId: null,
-          sourceName: null,
-          width: null,
-          height: null,
-          error: `Could not start the live view. ${message}`,
-        });
-      }
-    })();
-    return () => {
-      // Runs before every successor shape: the run that restarts the stream, the
-      // two early returns above that stop it and start nothing, and unmount. The
-      // successor that does start again re-arms above; the ones that do not
-      // leave this `null`, which is what tells a start still in flight that the
-      // host stream it brought up is its own to stop.
-      captureStartRef.current = null;
-      stopRendererLiveVisual();
-    };
-  }, [
-    activeDeviceName,
-    activeDeviceUdid,
-    activeSessionDeviceUdid,
-    activeSessionId,
-    chatScope.isRemote,
-    chatScope.machineName,
-    mode,
-    releaseParkingHold,
-    startWindowCaptureVisual,
-    statusSupported,
-    stopRendererLiveVisual,
-  ]);
+  // How long the last build of this root took, remembered per machine. The
+  // stepper shows it because a cold Xcode build has no other ceiling a reader
+  // can see. See `useIosSimBuildDuration`.
+  const lastBuildMs = useIosSimBuildDuration({
+    launchProgress,
+    buildRoot: launchExtras.buildRoot,
+    projectRoot,
+  });
 
-  // The renderer-side teardown above never reached the host, so a closed drawer
-  // left the capture helper running. Stop it once, on real unmount only — and
-  // drop the window-parking follow with it, or every later ADE window move keeps
-  // nudging (and reopening) Simulator.app for a drawer that no longer exists.
-  //
-  // `releaseParkingHold` is a stable callback, so this stays a mount/unmount
-  // effect despite the dependency.
-  useEffect(() => () => {
-    // Read by a start that is still in flight: the cleanups cannot clean up what
-    // it has not taken yet, so it has to finish the job itself. The live-view
-    // effect's own cleanup clears this too, but only when its last committed run
-    // was the one that starts a stream — a drawer sitting in Inspect registered
-    // no cleanup at all.
-    captureStartRef.current = null;
-    if (streamStartedByPanelRef.current) {
-      streamStartedByPanelRef.current = false;
-      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-    }
-    void releaseParkingHold();
-  }, [releaseParkingHold]);
-
-  useEffect(() => {
-    if (mode !== "interact" || liveVisualKind !== "window" || !activeSessionId) {
-      setSimulatorWindowState(null);
-      return;
-    }
-    let cancelled = false;
-    let timer: number | null = null;
-    let stableCount = 0;
-    let lastSignature: string | null = null;
-    const poll = async () => {
-      let signature = "error";
-      try {
-        const next = await window.ade.iosSimulator.getSimulatorWindowState();
-        if (cancelled) return;
-        setSimulatorWindowState(next);
-        signature = `${next.issue ?? "ok"}:${next.capturable}:${next.visible}:${next.windowCount}`;
-      } catch {
-        if (cancelled) return;
-        setSimulatorWindowState(null);
-      }
-      // Back off once the window state stops moving; any change resets it.
-      stableCount = signature === lastSignature ? stableCount + 1 : 0;
-      lastSignature = signature;
-      const delay = stableCount >= WINDOW_POLL_STABLE_THRESHOLD ? WINDOW_POLL_SLOW_MS : WINDOW_POLL_FAST_MS;
-      timer = window.setTimeout(() => void poll(), delay);
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [activeSessionId, liveVisualKind, mode, windowPollNonce]);
-
-  // A refused Reveal is explained by the next window state (usually
-  // automation-denied, which carries its own Open Settings action).
-  useEffect(() => {
-    setRevealError(null);
-  }, [simulatorWindowState?.issue]);
-
-  // A window-capture stream reports "active" the moment video.play() resolves,
-  // even when every frame is black. Watch actual frame delivery instead.
-  useEffect(() => {
-    if (mode !== "interact" || liveVisual?.status !== "active") {
-      setFrameStalled(false);
-      return;
-    }
-    const video = videoRef.current as VideoFrameRequestElement | null;
-    if (typeof video?.requestVideoFrameCallback !== "function") {
-      setFrameStalled(false);
-      return;
-    }
-    const timer = window.setInterval(() => {
-      const last = lastWindowFrameAtRef.current || liveActiveSinceRef.current;
-      if (!last) return;
-      setFrameStalled(Date.now() - last > FRAME_STALL_MS);
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [liveVisual?.status, mode]);
-
-  // Tap mapping is calibrated against the captured window; a resize invalidates
-  // it, so recalibrate rather than drift.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || typeof ResizeObserver === "undefined") return;
-    let frame: number | null = null;
-    const observer = new ResizeObserver(() => {
-      if (frame != null) window.clearTimeout(frame);
-      frame = window.setTimeout(() => setVideoSizeNonce((current) => current + 1), 250);
-    });
-    observer.observe(video);
-    return () => {
-      if (frame != null) window.clearTimeout(frame);
-      observer.disconnect();
-    };
-  }, [liveVisualKind, liveWindowSourceId]);
-
-  useEffect(() => {
-    if (mode !== "interact" || liveVisualKind !== "window" || !activeSession || snapshot) return;
-    void refreshSnapshot({ silent: true, priority: true });
-  }, [activeSession, liveVisualKind, mode, refreshSnapshot, snapshot]);
-
-  useEffect(() => {
-    if (mode !== "interact" || liveVisualKind !== "window" || !snapshot) return;
-    const video = videoRef.current;
-    if (!video || !video.videoWidth || !video.videoHeight) return;
-    const fallback = heuristicWindowScreenRect(
-      video.videoWidth,
-      video.videoHeight,
-      snapshot.screenshot.width,
-      snapshot.screenshot.height,
-    );
-    if (fallback) {
-      windowScreenRectRef.current = fallback;
-      setWindowScreenRect(fallback);
-    }
-    let cancelled = false;
-    void calibrateWindowScreenRect(video, snapshot).then((rect) => {
-      if (cancelled || !rect) return;
-      windowScreenRectRef.current = rect;
-      setWindowScreenRect(rect);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    liveVisualKind,
-    liveWindowHeight,
-    liveWindowWidth,
-    mode,
-    snapshot,
-    snapshot?.capturedAt,
-    snapshot?.screenshot.dataUrl,
-    snapshot?.screenshot.height,
-    snapshot?.screenshot.width,
-    videoSizeNonce,
-  ]);
 
   const launch = useCallback(async (options: { previewTarget?: IosSimulatorPreviewTarget | null } = {}) => {
     if (simulatorMutationBlocked) {
@@ -2692,38 +1982,16 @@ export function ChatIosSimulatorPanel({
     void selectElementAt(selectX, selectY, element);
   }, [mediaHeight, mediaWidth, selectElementAt, selectedElement, simulatorCaptureActive, snapshot]);
 
-  const mapLivePointToSimulatorPixel = useCallback((point: { x: number; y: number }): { x: number; y: number } | null => {
-    if (liveVisualKind !== "window") return point;
-    if (!snapshot || !snapshot.screenshot.width || !snapshot.screenshot.height) return null;
-    const rect = windowScreenRectRef.current
-      ?? heuristicWindowScreenRect(
-        liveWidth ?? 0,
-        liveHeight ?? 0,
-        snapshot.screenshot.width,
-        snapshot.screenshot.height,
-      );
-    if (!rect) return null;
-    if (
-      point.x < rect.x
-      || point.y < rect.y
-      || point.x > rect.x + rect.width
-      || point.y > rect.y + rect.height
-    ) {
-      return null;
-    }
-    return {
-      x: ((point.x - rect.x) / rect.width) * snapshot.screenshot.width,
-      y: ((point.y - rect.y) / rect.height) * snapshot.screenshot.height,
-    };
-  }, [liveHeight, liveVisualKind, liveWidth, snapshot]);
-
   const liveSimulatorPointFromPointer = useCallback((event: PointerEvent<HTMLDivElement>): { x: number; y: number } | null => {
-    const media = videoRef.current;
+    // The host-encoded backend draws to a canvas, not a video element, and both
+    // are laid out with the same `object-contain` rule, so the same measurement
+    // works once it is handed the right node.
+    const media: HTMLElement | null = liveVisualKind === "h264" ? h264Canvas : videoRef.current;
     if (!media || !mediaWidth || !mediaHeight) return null;
     const point = pointerToMediaPoint(event, media, mediaWidth, mediaHeight);
     if (!point) return null;
     return mapLivePointToSimulatorPixel(point);
-  }, [mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
+  }, [h264Canvas, liveVisualKind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth, videoRef]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (liveInputBlocked) {
@@ -2863,95 +2131,7 @@ export function ChatIosSimulatorPanel({
 
   const canShowLiveVisual = mode === "interact" && liveVisual;
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
-  const hasActiveSession = Boolean(activeSession);
   const interactionDisabled = simulatorMutationBlocked || setupBlocked;
-  const liveBlocker = useMemo(() => (
-    mode === "interact" && liveVisual
-      ? resolveIosSimBlocker({
-          windowState: simulatorWindowState,
-          liveStatus: liveVisual.status,
-          liveError: liveVisual.error,
-          frameStalled,
-          degradationReason: streamStatus?.degradationReason ?? streamStatus?.fallbackReason ?? null,
-          revealError,
-        })
-      : null
-  ), [frameStalled, liveVisual, mode, revealError, simulatorWindowState, streamStatus?.degradationReason, streamStatus?.fallbackReason]);
-
-  const restartLiveView = useCallback(async () => {
-    const device = activeDevice;
-    if (!device) return;
-    // Same as the recovery path: the token is read before the prelude, so a
-    // drawer that moves on during the stop below cancels this restart.
-    const armedForRestart = captureStartRef.current;
-    // A remote chat never arms a capture token. Stopping the visual first
-    // would replace the remote-machine error with an empty live view.
-    if (armedForRestart == null) return;
-    try {
-      stopRendererLiveVisual();
-      await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      await startWindowCaptureVisual({ udid: device.udid, name: device.name }, armedForRestart);
-      void refreshSnapshot({ silent: true, priority: true });
-    } catch (error) {
-      // The same terminal give-up as the effect's catch: nothing retries a
-      // manual restart that failed, and the hold this start took has to go back
-      // or the host keeps re-parking Simulator.app behind a failed live view.
-      void releaseParkingHold();
-      const detail = error instanceof Error ? error.message : String(error);
-      setLiveVisual({
-        kind: "window",
-        status: "error",
-        sourceId: null,
-        sourceName: null,
-        width: null,
-        height: null,
-        error: detail,
-      });
-    }
-  }, [activeDevice, refreshSnapshot, releaseParkingHold, startWindowCaptureVisual, stopRendererLiveVisual]);
-
-  const handleBlockerAction = useCallback((action: IosSimBlockerAction) => {
-    // A remote-bound project refuses this call outright. Swallowing that left
-    // the button looking like it worked and the pane never opening, so say so
-    // the same way a refused Reveal does.
-    const openSettingsPane = (pane: IosSimulatorPrivacyPane) => {
-      void openIosSimSettingsPane(pane).catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : String(error));
-      });
-    };
-    if (action === "open-screen-recording") {
-      openSettingsPane("screen-recording");
-      return;
-    }
-    if (action === "open-automation") {
-      openSettingsPane("automation");
-      return;
-    }
-    if (action === "relaunch") {
-      void launch();
-      return;
-    }
-    if (action === "reveal") {
-      void (async () => {
-        const result = await revealSimulator().catch((error: unknown) => ({
-          ok: false,
-          message: error instanceof Error ? error.message : String(error),
-        }));
-        if (!result.ok) {
-          // Never report a refused reveal as done. Say why on the overlay, and
-          // re-read the window state so the real blocker — usually a denied
-          // Automation grant — replaces this card with its own Open Settings.
-          setRevealError(result.message ?? "Could not reveal Simulator.");
-          setWindowPollNonce((current) => current + 1);
-          return;
-        }
-        setRevealError(null);
-        await restartLiveView();
-      })();
-      return;
-    }
-    void restartLiveView();
-  }, [launch, restartLiveView]);
   const activeInspectFrame = useMemo(() => {
     if (!snapshot || !activeInspectElement) return null;
     return clampFrame(
@@ -3110,6 +2290,28 @@ export function ChatIosSimulatorPanel({
                 </span>
               </PaneTooltip>
 
+              {/* Which machine you are actually watching, and what it costs.
+                  A remote live view looks identical to a local one, so without
+                  this the only clue that the pixels crossed a network is that
+                  they are late. */}
+              {liveChip ? (
+                <PaneTooltip label={liveChip.detail} side="bottom">
+                  <span className={cn(WORK_TOOL_CHROME_META, "inline-flex min-w-0 items-center gap-1")} data-testid="ios-live-chip">
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        liveChip.tone === "active"
+                          ? "bg-emerald-400/85"
+                          : liveChip.tone === "error"
+                            ? "bg-rose-400/85"
+                            : "bg-amber-300/80",
+                      )}
+                    />
+                    <span className="min-w-0 truncate">{liveChip.label}</span>
+                  </span>
+                </PaneTooltip>
+              ) : null}
+
               {/* Two build facts that change what you are looking at, as one
                   muted word each rather than an amber pill each. */}
               {launchExtras.usedInstalledBinary ? (
@@ -3176,6 +2378,16 @@ export function ChatIosSimulatorPanel({
                   <ArrowsClockwise size={16} />
                 </WorkToolChromeButton>
               </>
+            ) : null}
+            {mode !== "preview" ? (
+              <WorkToolChromeButton
+                label={toolsOpen ? "Hide device tools" : "Device tools"}
+                onClick={() => setToolsOpen((open) => !open)}
+                active={toolsOpen}
+                testId="ios-pane-tools"
+              >
+                <SlidersHorizontal size={16} />
+              </WorkToolChromeButton>
             ) : null}
             <WorkToolChromeButton
               label={activeSurface === "preview" ? "Live simulator" : "Previews"}
@@ -3289,10 +2501,15 @@ export function ChatIosSimulatorPanel({
         ) : null}
       </div>
 
-      {!mediaExpanded && ownedByOtherChat ? (
+      {/*
+        The card only renders where the ribbon cannot: the ribbon floats over
+        the live view, so a drawer with no live view to float over would say
+        nothing about who owns the session.
+      */}
+      {!mediaExpanded && ownedByOtherChat && !showWatchRibbon ? (
         <IosSimOwnershipCard
-          ownerLabel={activeSession?.laneId ?? shortChatId(otherChatSessionId ?? "")}
-          ageLabel={formatAge(activeSession?.claimedAt ?? activeSession?.startedAt, nowTick)}
+          ownerLabel={ownerLabel}
+          ageLabel={ownerAgeLabel}
           onAttach={attachToSession}
           onTakeOver={() => void takeOver()}
           busy={busy}
@@ -3309,7 +2526,17 @@ export function ChatIosSimulatorPanel({
         <IosSimToolChips chips={toolChips} onCopy={(text) => void copyInstallHint(text)} className="shrink-0 px-0.5" />
       ) : null}
 
+      <div className="flex min-h-0 flex-1 gap-1.5">
       <div className="relative min-h-0 flex-1 overflow-hidden rounded border border-white/[0.08] bg-white/[0.02]">
+        {showWatchRibbon ? (
+          <IosSimWatchRibbon
+            ownerLabel={ownerLabel}
+            ageLabel={ownerAgeLabel}
+            onAttach={attachToSession}
+            onTakeOver={() => void takeOver()}
+            busy={busy}
+          />
+        ) : null}
         {setupBlocked && mode !== "preview" ? (
           <IosSimUnsupportedCard chips={toolChips} onCopy={(text) => void copyInstallHint(text)} />
         ) : mode === "preview" ? (
@@ -3506,6 +2733,7 @@ export function ChatIosSimulatorPanel({
             buildRoot={launchExtras.buildRoot}
             usedInstalledBinary={launchExtras.usedInstalledBinary}
             now={nowTick}
+            lastBuildMs={lastBuildMs}
             onDismiss={() => setDismissedLaunchId(visibleLaunchId)}
           />
         ) : canShowLiveVisual ? (
@@ -3567,7 +2795,23 @@ export function ChatIosSimulatorPanel({
               {previewBridgeAction === "create" ? <Lightning size={11} /> : <BracketsCurly size={11} />}
               {previewBridgeButtonLabel}
             </button>
-            {liveVisual.sourceId ? (
+            {liveVisual?.kind === "h264" ? (
+              liveVisual.url ? (
+                <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
+                  <div className="relative h-full w-full" style={mediaZoomStyle}>
+                    <IosSimH264Video
+                      url={liveVisual.url}
+                      reconnectNonce={h264ReconnectNonce}
+                      onCanvas={setH264Canvas}
+                      onStatus={handleH264Status}
+                      onDimensions={handleH264Dimensions}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full min-h-[300px]" />
+              )
+            ) : liveVisual?.kind === "window" && liveVisual.sourceId ? (
               <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
                 <div className="relative h-full w-full" style={mediaZoomStyle}>
                   <video
@@ -3760,8 +3004,34 @@ export function ChatIosSimulatorPanel({
               <Play size={14} weight="fill" />
               <span>Launch</span>
             </button>
+            {/*
+              Opening a device is not the same ask as launching an app, and it
+              is the only one available when the thing to look at is already
+              installed. Naming the device makes it a single click rather than a
+              trip through the picker.
+            */}
+            {activeDevice ? (
+              <button
+                type="button"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 font-sans text-[11px] font-medium text-fg/78 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={busy || !status?.supported || interactionDisabled}
+                onClick={() => void openDeviceOnly()}
+                data-testid="ios-empty-open-device"
+              >
+                <DeviceMobile size={13} />
+                <span>Open {activeDevice.name} without an app</span>
+              </button>
+            ) : null}
           </div>
         )}
+      </div>
+      {toolsVisible ? (
+        <IosSimToolsColumn
+          {...deviceTools}
+          busy={busy}
+          disabled={simulatorMutationBlocked}
+        />
+      ) : null}
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-1">

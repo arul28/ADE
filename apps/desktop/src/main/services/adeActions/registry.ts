@@ -144,7 +144,7 @@ import { runGit } from "../git/git";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
-import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
@@ -887,7 +887,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "recoverArtifact",
     "updateArtifactReview",
   ],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
+  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint", "openDevice", "closeDevice", "getDeviceSession", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation", "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp", "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "startEventLog", "stopEventLog", "getEventLog", "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
   // served by the runtime daemon itself, so a desktop that took a forwarded
@@ -1582,7 +1582,7 @@ function resolveAgentChatImagePath(projectRoot: string, rawPath: unknown): strin
   try {
     return resolvePathWithinRoot(projectRoot, value);
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       throw new Error("Image path must be inside the project.");
     }
     throw error;

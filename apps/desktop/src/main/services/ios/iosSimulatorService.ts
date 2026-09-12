@@ -52,7 +52,30 @@ import type {
   IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
+  IosSimulatorAppLifecycleArgs,
+  IosSimulatorAssertVisibleArgs,
+  IosSimulatorCloseDeviceArgs,
+  IosSimulatorDeviceArgs,
+  IosSimulatorEventLogArgs,
+  IosSimulatorFillElementArgs,
+  IosSimulatorFindElementArgs,
+  IosSimulatorOpenDeviceArgs,
+  IosSimulatorOpenUrlArgs,
+  IosSimulatorProofBundleArgs,
+  IosSimulatorPushArgs,
+  IosSimulatorSetAccessibilityArgs,
+  IosSimulatorSetAppearanceArgs,
+  IosSimulatorSetContentSizeArgs,
+  IosSimulatorSetLocationArgs,
+  IosSimulatorSetPermissionArgs,
+  IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
   IosSimulatorStatus,
+  IosSimulatorStatusStream,
+  IosSimulatorStatusBarArgs,
+  IosSimulatorTapElementArgs,
+  IosSimulatorUninstallAppArgs,
+  IosSimulatorWaitForElementArgs,
 } from "../../../shared/types";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
@@ -67,7 +90,9 @@ import { commandExists } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
-import { isRecord } from "../shared/utils";
+import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
+import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
+import { createIosVideoStreamServer, type IosVideoStreamServer } from "./iosVideoStreamServer";
 
 const execFile = promisify(execFileCallback);
 
@@ -468,6 +493,34 @@ export function __testSetIosSimulatorProcessHooks(hooks: {
 
 export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: boolean | null): boolean {
   return keepSimulatorInBackground !== true;
+}
+
+/**
+ * Keeps a caller's scale or quality ratio inside what `idb` accepts.
+ *
+ * `idb video-stream` takes both as a fraction between 0 and 1 and rejects
+ * anything else, so an out-of-range value is treated as "not asked for" rather
+ * than passed through to fail the whole stream.
+ */
+export function clampStreamRatio(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const ratio = Number(value);
+  if (!Number.isFinite(ratio)) return null;
+  if (ratio <= 0 || ratio > 1) return null;
+  return Math.round(ratio * 100) / 100;
+}
+
+/**
+ * The frame rate the stream asks the encoder for.
+ *
+ * `Math.round(NaN)` is NaN and every clamp around it keeps it, so a caller that
+ * passed NaN or infinity used to reach `idb` as `--fps NaN`. The stream then
+ * reported itself running and only failed when a viewer connected.
+ */
+export function clampStreamFps(value: number | null | undefined): number {
+  const fps = Number(value ?? 60);
+  if (!Number.isFinite(fps)) return 60;
+  return Math.max(1, Math.min(60, Math.round(fps)));
 }
 
 export function resolveIosSimulatorStreamBackend(
@@ -2117,6 +2170,161 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
+   * The device half of the surface: device sessions, device settings, the
+   * event log, semantic actions and proof bundles.
+   *
+   * Every dependency is a lambda rather than a direct reference. The functions
+   * it needs are declared below this line, and the module-level `run` and
+   * `spawnProcess` are swapped by the test hooks, so capturing either one by
+   * value here would freeze the wrong implementation.
+   */
+  let deviceHub: IosDeviceHub | null = null;
+  const hub = (): IosDeviceHub => {
+    if (!deviceHub) {
+      deviceHub = createIosDeviceHub({
+        run: (file, commandArgs, options) => run(file, commandArgs, options),
+        spawnLogStream: (deviceUdid, predicate) => spawnLogStreamProcess(deviceUdid, predicate),
+        openSimulatorApp: () => {
+          spawnProcess("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
+        },
+        resolveDevice: (deviceUdid) => resolveDevice(deviceUdid),
+        resolveControlDeviceUdid: (deviceUdid) => resolveControlDeviceUdid(deviceUdid),
+        getScreenSnapshot: (snapshotArgs) => getScreenSnapshot(snapshotArgs),
+        screenshot: (shotArgs) => screenshot(shotArgs),
+        tap: (tapArgs) => tap(tapArgs),
+        typeText: (textArgs) => typeText(textArgs),
+        resolveBuildRoot: (scope) => resolveScopedRootForSession(scope),
+        getAppSessionOwner: () => activeSession?.chatSessionId ?? null,
+        getAppSessionDeviceUdid: () => activeSession?.deviceUdid ?? null,
+        emit,
+        logger: args.logger,
+      });
+    }
+    return deviceHub;
+  };
+
+  let videoServer: IosVideoStreamServer | null = null;
+
+  /**
+   * Runs `idb video-stream` and exposes it as line-free byte events.
+   *
+   * `idb` hands back Annex-B H.264 on stdout, encoded in hardware by
+   * `idb_companion`. A quiet iPhone screen costs about half a megabit per
+   * second, so the whole live view fits comfortably inside one SSH channel.
+   */
+  const startVideoEncoder = async (options: {
+    deviceUdid: string;
+    fps: number;
+    scaleFactor: number | null;
+    compressionQuality: number | null;
+  }) => {
+    if (!cachedCommandExists("idb")) {
+      throw new Error(`idb is required for the host-encoded live view. ${INSTALL_HINT_IDB}`);
+    }
+    const [idbBinary, companion] = await Promise.all([
+      resolveToolBinary("idb"),
+      ensureCompanion(options.deviceUdid),
+    ]);
+    const argv = [
+      "--companion",
+      companion,
+      "video-stream",
+      "--udid",
+      options.deviceUdid,
+      "--format",
+      "h264",
+      "--fps",
+      String(options.fps),
+    ];
+    if (options.scaleFactor != null) argv.push("--scale-factor", String(options.scaleFactor));
+    if (options.compressionQuality != null) {
+      argv.push("--compression-quality", String(options.compressionQuality));
+    }
+    // `detached` makes the child its own process-group leader, which is the only
+    // thing that makes the group signal in `signalChildProcessTree` land on the
+    // helpers `idb` forks. It is deliberately not `unref`ed: ADE keeps the
+    // handle and kills the group itself.
+    const child = spawnProcess(idbBinary, argv, { stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-4000);
+    });
+    return {
+      pid: typeof child.pid === "number" ? child.pid : null,
+      onData: (handler: (chunk: Uint8Array) => void) => {
+        child.stdout?.on("data", (chunk: Buffer) => handler(new Uint8Array(chunk)));
+      },
+      onError: (handler: (error: Error) => void) => {
+        child.on("error", handler);
+      },
+      onExit: (handler: (code: number | null, signal: string | null) => void) => {
+        child.on("exit", (code, signal) => {
+          if (stderr.trim()) {
+            args.logger.debug("ios_simulator.video_encoder_stderr", { stderr: stderr.trim().slice(-500) });
+          }
+          handler(code ?? null, signal ?? null);
+        });
+      },
+      kill: () => {
+        // `idb` forks a helper that holds the encode session, so signalling only
+        // the leader leaves the encoder running with nobody holding its handle.
+        void signalChildProcessTree(child, "SIGINT");
+      },
+    };
+  };
+
+  /** The host encoder's own counters, when that backend is the running one. */
+  const liveStreamMetrics = () => (
+    streamStatus.backend === "idb-h264" && videoServer ? videoServer.metrics() : null
+  );
+
+  const ensureVideoServer = (): IosVideoStreamServer => {
+    if (!videoServer) {
+      videoServer = createIosVideoStreamServer({
+        startEncoder: startVideoEncoder,
+        logger: args.logger,
+      });
+    }
+    return videoServer;
+  };
+
+  /** Spawns `log stream` on a device and turns its stdout into whole lines. */
+  const spawnLogStreamProcess = (deviceUdid: string, predicate: string | null) => {
+    const argv = ["simctl", "spawn", deviceUdid, "log", "stream", "--style", "compact", "--level", "info"];
+    if (predicate) argv.push("--predicate", predicate);
+    // Same reason as the encoder: `simctl spawn` runs the real `log` process as
+    // a child, so only a group signal stops both.
+    const child = spawnProcess("xcrun", argv, { stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let buffer = "";
+    return {
+      onLine: (handler: (line: string) => void) => {
+        child.stdout?.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf8");
+          // A log line can arrive split across reads. Keep the tail until its
+          // newline shows up, or every split record becomes two broken rows.
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            const trimmed = line.trimEnd();
+            if (trimmed) handler(trimmed);
+          }
+        });
+      },
+      onError: (handler: (error: Error) => void) => {
+        child.on("error", handler);
+      },
+      onExit: (handler: (code: number | null) => void) => {
+        child.on("exit", (code) => handler(code ?? null));
+      },
+      kill: () => {
+        // `xcrun simctl spawn` runs the real `log` process as a child of a
+        // helper, so the leader alone is not the thing that holds the device.
+        void signalChildProcessTree(child, "SIGTERM");
+      },
+    };
+  };
+
+  /**
    * Ask the desktop shell to reveal the iOS drawer.
    *
    * This lives in the service, not in an Electron-main wrapper: production
@@ -2237,8 +2445,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }, timeoutMs, `Xcode MCP ${toolName}`);
   };
 
+  /**
+   * Which simulator an implicit device tool acts on.
+   *
+   * The precedence matches `computeStatus`: the app session is the most
+   * specific claim, then the device session. Without the device session here, a
+   * chat that opened a non-default simulator and never launched an app had
+   * every `appearance`, `location` or `log` call fall through to "the first
+   * booted iPhone", which is another device as soon as two are up.
+   */
   const resolveControlDeviceUdid = async (deviceUdid?: string | null): Promise<string> => {
-    const udid = deviceUdid?.trim() || activeSession?.deviceUdid || streamStatus.deviceUdid;
+    const udid = deviceUdid?.trim()
+      || activeSession?.deviceUdid
+      || deviceHub?.getDeviceSession()?.deviceUdid
+      || streamStatus.deviceUdid;
     if (udid) return udid;
     return (await resolveDevice(null)).udid;
   };
@@ -2799,13 +3019,43 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     ];
   };
 
+  /**
+   * The live view, as a status read reports it.
+   *
+   * Built from named fields rather than a spread of `streamStatus`: that object
+   * carries the stream's address and token, and `getStatus` is on the action
+   * allowlist, so a spread here would put a live token in every agent's poll.
+   *
+   * Read on the cached path too. It is in-memory and free, and a status whose
+   * whole job is answering "what is going on right now" must not report a
+   * stream that started a second ago as stopped.
+   */
+  const currentStatusStream = (): IosSimulatorStatusStream => {
+    const metrics = liveStreamMetrics();
+    return {
+      running: streamStatus.running,
+      backend: streamStatus.backend,
+      deviceUdid: streamStatus.deviceUdid,
+      fps: metrics?.fps ?? streamStatus.fps,
+      bitrateKbps: metrics?.bitrateKbps ?? streamStatus.bitrateKbps ?? null,
+      lastError: metrics?.lastError ?? streamStatus.lastError,
+    };
+  };
+
   const computeStatus = async (): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
     const tools = buildToolStatuses();
     const devices = isDarwin ? await listDevices().catch(() => []) : [];
+    // An open device session names the device as surely as an app session does,
+    // and it comes second only because an app session is the more specific
+    // claim. Without it, opening a device and watching it fell back to "the
+    // first booted iPhone", which is a different device as soon as two are up.
+    const deviceSession = hub().getDeviceSession();
     const activeDevice = activeSession
       ? devices.find((device) => device.udid === activeSession?.deviceUdid) ?? null
-      : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
+      : deviceSession
+        ? devices.find((device) => device.udid === deviceSession.deviceUdid) ?? null
+        : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
     const xcrunAvailable = tools.find((tool) => tool.name === "xcrun")?.available ?? false;
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
     return {
@@ -2814,6 +3064,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       tools,
       activeDevice,
       activeSession,
+      deviceSession,
+      // The same redaction rule as `getStreamStatus`: the shape, never the
+      // address or the token.
+      stream: currentStatusStream(),
     };
   };
 
@@ -2824,6 +3078,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       return {
         ...cachedStatus.value,
         activeSession,
+        // Both of these are in-memory reads, so the throttle exists to spare
+        // the `simctl` device list, not these. Serving them from the cache
+        // would report a session or a stream that changed since it was built.
+        deviceSession: hub().getDeviceSession(),
+        stream: currentStatusStream(),
       };
     }
     const inflight = computeStatus()
@@ -3864,6 +4123,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!isPathInside(filePath, root)) {
       throw new IosSimulatorOutPathOutsideRootError(filePath, root);
     }
+    // The lexical check above cannot see a symlink: every segment can sit under
+    // the root while the link resolves outside it and the PNG lands there. The
+    // real-path check runs only when the root is on disk, because a root that
+    // does not exist holds no link to escape through.
+    if (fs.existsSync(root)) {
+      try {
+        resolvePathWithinRoot(root, filePath, { allowMissing: true });
+      } catch (error) {
+        // Only a containment failure is a containment failure. The resolver
+        // also throws for a dangling symlink, a permission error and a link
+        // loop, and reporting those as "outside the build root" tells the
+        // caller to fix a path that was never the problem.
+        if (isPathEscapeError(error)) throw new IosSimulatorOutPathOutsideRootError(filePath, root);
+        throw error;
+      }
+    }
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", filePath], { timeoutMs: 30_000 });
     const buffer = await fs.promises.readFile(filePath);
@@ -4237,9 +4512,45 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
-  const getStreamStatus = (): IosSimulatorStreamStatus => streamStatus;
+  /**
+   * The window-capture backend counts nothing service-side, because the
+   * renderer owns those frames. The host-encoded backend does own them, so its
+   * numbers are read back here instead of being reported as null.
+   */
+  const getStreamStatus = (): IosSimulatorStreamStatus => {
+    if (streamStatus.backend !== "idb-h264" || !videoServer) return streamStatus;
+    const metrics = videoServer.metrics();
+    return {
+      ...streamStatus,
+      fps: metrics.fps,
+      frameCount: metrics.frames,
+      bitrateKbps: metrics.bitrateKbps,
+      lastFrameAt: metrics.lastFrameAtMs ? new Date(metrics.lastFrameAtMs).toISOString() : streamStatus.lastFrameAt,
+      lastError: metrics.lastError ?? streamStatus.lastError,
+      // `streamUrl` carries the same token in its query string, so redacting
+      // only `transport` would have left the secret in the field right next to
+      // it. Both go.
+      streamUrl: null,
+      // `getStreamStatus` is on the action allowlist with no ownership guard, so
+      // `ade actions run ios_simulator.getStreamStatus --json` prints whatever
+      // it returns into a durable agent transcript. The shape is useful there;
+      // the token is the stream's only authorization and must not be. Only
+      // `startStream` — the call that mints it — hands it out.
+      transport: streamStatus.transport
+        ? {
+          ...streamStatus.transport,
+          url: null,
+          token: null,
+          codec: metrics.codec,
+          width: metrics.width,
+          height: metrics.height,
+        }
+        : streamStatus.transport,
+    };
+  };
 
   const stopStream = async (): Promise<IosSimulatorStreamStatus> => {
+    videoServer?.stop();
     stopCompanion();
     const next = setStreamStopped(null);
     emit({ type: "stream-stopped", status: next });
@@ -4305,6 +4616,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const releaseIfOwnedBy = async (chatSessionId: string | null | undefined): Promise<IosSimulatorShutdownResult> => {
     const owner = activeSession?.chatSessionId ?? null;
     const trimmed = chatSessionId?.trim() || null;
+    // A chat can hold a device session without holding an app session, so the
+    // device half is released on its own terms. Without this a closed chat left
+    // its simulator claimed and no other chat could open one.
+    if (trimmed) {
+      await hub().releaseDeviceIfOwnedBy(trimmed).catch((error: unknown) => {
+        args.logger.debug("ios_simulator.device_release_failed", {
+          chatSessionId: trimmed,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
     if (!owner || !trimmed || owner !== trimmed) {
       return { released: false, previousSession: null };
     }
@@ -4376,6 +4698,56 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return streamStatus;
   };
 
+  /**
+   * The hub, behind the same platform gate the rest of the surface uses.
+   *
+   * Every device-hub method shells out to `xcrun`. Without this a Windows or
+   * Linux caller got `spawn xcrun ENOENT` from the action surface instead of
+   * the one sentence that says why, which reads as a broken install rather
+   * than an unsupported platform.
+   */
+  const darwinHub = (): IosDeviceHub => {
+    assertDarwin();
+    return hub();
+  };
+
+  /**
+   * Encodes the device screen on this machine and serves it over loopback.
+   *
+   * The window-capture backend has the renderer capture the real Simulator.app
+   * window, so it only works when the simulator and the ADE window are on the
+   * same Mac. This backend moves the encode to the machine that owns the
+   * simulator. The desktop reads the URL below directly when that machine is
+   * this one, and through an SSH port forward when it is not.
+   */
+  const startH264Stream = async (
+    device: IosSimulatorDevice,
+    fps: number,
+    scaleFactor: number | null,
+    compressionQuality: number | null,
+  ): Promise<IosSimulatorStreamStatus> => {
+    if (!cachedCommandExists("idb") || !cachedCommandExists("idb_companion")) {
+      throw new Error(`The host-encoded live view needs idb and idb_companion. ${INSTALL_HINT_IDB}`);
+    }
+    await stopStream();
+    const server = ensureVideoServer();
+    const transport = await server.start({
+      deviceUdid: device.udid,
+      fps,
+      scaleFactor,
+      compressionQuality,
+    });
+    streamStatus = {
+      ...startedStreamStatus(device, fps),
+      backend: "idb-h264",
+      streamUrl: transport.url,
+      transport,
+      inputBackend: "idb",
+    };
+    emit({ type: "stream-started", status: streamStatus });
+    return streamStatus;
+  };
+
   const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
     // Ahead of resolveDevice: on Windows/Linux the device lookup fails first
     // and reported "No available iOS Simulator devices were found", which reads
@@ -4383,16 +4755,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     const device = await resolveDevice(streamArgs.deviceUdid ?? activeSession?.deviceUdid);
     const rawBackend = streamArgs.backend ?? "simulator-window-capture";
-    if (rawBackend !== "auto" && rawBackend !== "simulator-window-capture") {
-      throw new Error("stream backend must be `auto` or `simulator-window-capture`.");
+    if (rawBackend !== "auto" && rawBackend !== "simulator-window-capture" && rawBackend !== "idb-h264") {
+      throw new Error("stream backend must be `auto`, `simulator-window-capture` or `idb-h264`.");
     }
     const requestedBackend = resolveIosSimulatorStreamBackend(rawBackend);
-    const requestedFps = Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? 60))));
+    const requestedFps = clampStreamFps(streamArgs.fps);
     streamRequestContext = {
       requestedBackend,
       fallbackReason: null,
       degradationReason: null,
     };
+    if (requestedBackend === "idb-h264") {
+      return startH264Stream(
+        device,
+        requestedFps,
+        clampStreamRatio(streamArgs.scaleFactor),
+        clampStreamRatio(streamArgs.compressionQuality),
+      );
+    }
     return startWindowCaptureStream(device, requestedFps);
   };
 
@@ -4559,10 +4939,52 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     drag,
     swipe: drag,
     selectPoint,
+
+    /* Device hub: a booted simulator with no app of its own. */
+    openDevice: async (deviceArgs: IosSimulatorOpenDeviceArgs = {}) => darwinHub().openDevice(deviceArgs),
+    closeDevice: async (deviceArgs: IosSimulatorCloseDeviceArgs = {}) => darwinHub().closeDevice(deviceArgs),
+    getDeviceSession: async () => darwinHub().getDeviceSession(),
+
+    /* Device hub: typed device state, in place of a human clicking Settings. */
+    getDeviceSettings: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().getDeviceSettings(toolArgs),
+    setAppearance: async (toolArgs: IosSimulatorSetAppearanceArgs) => darwinHub().setAppearance(toolArgs),
+    setContentSize: async (toolArgs: IosSimulatorSetContentSizeArgs) => darwinHub().setContentSize(toolArgs),
+    setAccessibilityOption: async (toolArgs: IosSimulatorSetAccessibilityArgs) => darwinHub().setAccessibilityOption(toolArgs),
+    setLocation: async (toolArgs: IosSimulatorSetLocationArgs) => darwinHub().setLocation(toolArgs),
+    clearLocation: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().clearLocation(toolArgs),
+    setPermission: async (toolArgs: IosSimulatorSetPermissionArgs) => darwinHub().setPermission(toolArgs),
+    sendPushNotification: async (toolArgs: IosSimulatorPushArgs) => darwinHub().sendPushNotification(toolArgs),
+    openUrl: async (toolArgs: IosSimulatorOpenUrlArgs) => darwinHub().openUrl(toolArgs),
+    relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().relaunchApp(toolArgs),
+    terminateApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().terminateApp(toolArgs),
+    uninstallApp: async (toolArgs: IosSimulatorUninstallAppArgs) => darwinHub().uninstallApp(toolArgs),
+    setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub().setStatusBar(toolArgs),
+    clearStatusBar: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().clearStatusBar(toolArgs),
+    getAppState: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().getAppState(toolArgs),
+
+    /* Device hub: the app's own log, interleaved with what ADE did. */
+    startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub().startEventLog(logArgs),
+    stopEventLog: async (logArgs: IosSimulatorStopEventLogArgs = {}) => darwinHub().stopEventLog(logArgs),
+    getEventLog: async (logArgs: IosSimulatorEventLogArgs = {}) => darwinHub().getEventLog(logArgs),
+
+    /* Device hub: name an element instead of guessing a pixel. */
+    findElement: async (elementArgs: IosSimulatorFindElementArgs) => darwinHub().findElement(elementArgs),
+    tapElement: async (elementArgs: IosSimulatorTapElementArgs) => darwinHub().tapElement(elementArgs),
+    fillElement: async (elementArgs: IosSimulatorFillElementArgs) => darwinHub().fillElement(elementArgs),
+    waitForElement: async (elementArgs: IosSimulatorWaitForElementArgs) => darwinHub().waitForElement(elementArgs),
+    assertVisible: async (elementArgs: IosSimulatorAssertVisibleArgs) => darwinHub().assertVisible(elementArgs),
+
+    /* Device hub: a screenshot a reviewer can believe. */
+    captureProofBundle: async (proofArgs: IosSimulatorProofBundleArgs = {}) => darwinHub().captureProofBundle(proofArgs),
+
     getLastSelectedItem: () => lastSelectedItem,
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      videoServer?.dispose();
+      videoServer = null;
+      deviceHub?.dispose();
+      deviceHub = null;
       stopCompanion();
       setStreamStopped(null);
       activeSession = null;

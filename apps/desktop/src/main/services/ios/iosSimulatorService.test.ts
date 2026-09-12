@@ -8,6 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   __testSetIosSimulatorCompanionRegistryPath,
   __testSetIosSimulatorProcessHooks,
+  clampStreamFps,
   createIosSimulatorService,
   IDB_COMPANION_REGISTRY_PATH,
   IosSimulatorOwnedBySessionError,
@@ -125,6 +126,22 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
     expect(resolveIosSimulatorStreamBackend("auto")).toBe("simulator-window-capture");
     expect(resolveIosSimulatorStreamBackend("simulator-window-capture")).toBe("simulator-window-capture");
+  });
+
+  it("answers a usable frame rate for every input", () => {
+    expect(clampStreamFps(undefined)).toBe(60);
+    expect(clampStreamFps(null)).toBe(60);
+    expect(clampStreamFps(30)).toBe(30);
+    expect(clampStreamFps(30.4)).toBe(30);
+    // Out of range clamps to the ends rather than reaching `idb`.
+    expect(clampStreamFps(0)).toBe(1);
+    expect(clampStreamFps(-5)).toBe(1);
+    expect(clampStreamFps(1000)).toBe(60);
+    // The reason this exists: every clamp keeps NaN, so `--fps NaN` used to
+    // reach the encoder and the stream only failed when a viewer connected.
+    expect(clampStreamFps(Number.NaN)).toBe(60);
+    expect(clampStreamFps(Number.POSITIVE_INFINITY)).toBe(60);
+    expect(clampStreamFps(Number.NEGATIVE_INFINITY)).toBe(60);
   });
 });
 
@@ -720,6 +737,95 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("reports the live view on getStatus, fresh and without the address", async () => {
+    // One poll has to answer "what is going on". The throttle exists to spare
+    // the `simctl` device list, so a cached status must still report a stream
+    // that started after it was built — and must never carry the token.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      const before = await service.getStatus();
+      expect(before.stream?.running).toBe(false);
+
+      const started = await service.startStream({ deviceUdid: "device-1", backend: "idb-h264" });
+      // Immediately after, well inside the throttle window: the cached status
+      // must not still say the stream is stopped.
+      const after = await service.getStatus();
+      expect(after.stream?.running).toBe(true);
+      expect(after.stream?.backend).toBe("idb-h264");
+      expect(after.stream?.deviceUdid).toBe("device-1");
+
+      const serialized = JSON.stringify(after.stream);
+      expect(serialized).not.toContain(started.transport?.token ?? "never");
+      expect(serialized).not.toContain("token=");
+      expect(after.stream).not.toHaveProperty("transport");
+      expect(after.stream).not.toHaveProperty("streamUrl");
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("hands the stream address out on start and redacts it from every status read", async () => {
+    // `getStreamStatus` is on the action allowlist with no ownership guard, so
+    // `ade actions run ios_simulator.getStreamStatus --json` prints whatever it
+    // returns into a durable agent transcript. The shape is useful there; the
+    // token is the stream's only authorization and must not be.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      const started = await service.startStream({ deviceUdid: "device-1", backend: "idb-h264" });
+      expect(started.backend).toBe("idb-h264");
+      // The call that creates the stream is the one caller that needs to read
+      // it, so it gets the whole address.
+      expect(started.transport?.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(started.transport?.url).toContain(started.transport?.token ?? "never");
+      expect(started.streamUrl).toBe(started.transport?.url);
+
+      const read = service.getStreamStatus();
+      expect(read.backend).toBe("idb-h264");
+      expect(read.transport?.token).toBeNull();
+      expect(read.transport?.url).toBeNull();
+      // The same secret rides in `streamUrl`'s query string, so redacting only
+      // `transport` would leave it in the field right next to it.
+      expect(read.streamUrl).toBeNull();
+      expect(JSON.stringify(read)).not.toContain(started.transport?.token ?? "never");
+      // The shape a reader actually wants survives.
+      expect(read.transport?.port).toBe(started.transport?.port);
+    } finally {
+      service.dispose();
       restoreHooks();
       platformSpy.mockRestore();
     }
@@ -1624,6 +1730,44 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("refuses an --out that reaches outside the build root through a symlink", async () => {
+    // The lexical containment check cannot see this: every segment sits under
+    // the root, and the write still lands wherever the link points.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const parent = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-out-symlink-`);
+    const projectRoot = path.join(parent, "repo");
+    const outside = path.join(parent, "outside");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, path.join(projectRoot, "escape"));
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await expect(service.screenshot({ projectRoot, outPath: "escape/shot.png" }))
+        .rejects.toThrow(new RegExp(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE));
+      expect(fs.existsSync(path.join(outside, "shot.png"))).toBe(false);
+
+      // A build root that is itself reached through a symlink still works. This
+      // is the normal case on macOS, where `/tmp` is a link to `/private/tmp`.
+      const linkedRoot = path.join(parent, "linked-repo");
+      fs.symlinkSync(projectRoot, linkedRoot);
+      const linkedService = createIosSimulatorService({ projectRoot: linkedRoot, logger: noopLogger });
+      try {
+        const shot = await linkedService.screenshot({ projectRoot: linkedRoot, outPath: "proof/shot.png" });
+        expect(fs.existsSync(shot.filePath)).toBe(true);
+      } finally {
+        linkedService.dispose();
+      }
+    } finally {
+      service.dispose();
+      fs.rmSync(parent, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("keeps --out inside the build root", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const parent = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-out-containment-`);
@@ -1747,6 +1891,37 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("fails every device-hub call on non-darwin with the macOS-only error", async () => {
+    // Each of these shells out to `xcrun`. Ungated, a Windows or Linux caller
+    // got `spawn xcrun ENOENT` from the action surface, which reads as a broken
+    // install rather than an unsupported platform.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await expect(service.openDevice()).rejects.toThrow(/only available on macOS/);
+      await expect(service.closeDevice()).rejects.toThrow(/only available on macOS/);
+      await expect(service.getDeviceSettings()).rejects.toThrow(/only available on macOS/);
+      await expect(service.setAppearance({ appearance: "dark" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.startEventLog({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.relaunchApp({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.uninstallApp({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.tapElement({ query: { label: "Continue" } })).rejects.toThrow(/only available on macOS/);
+      await expect(service.captureProofBundle()).rejects.toThrow(/only available on macOS/);
+
+      // The two reads that must keep working everywhere: a status read is how a
+      // non-Mac desktop learns it cannot run a simulator, and the chat-close
+      // cleanup runs on every platform.
+      const status = await service.getStatus();
+      expect(status.supported).toBe(false);
+      expect(status.deviceSession ?? null).toBeNull();
+      expect(await service.releaseIfOwnedBy("chat-a")).toEqual({ released: false, previousSession: null });
+    } finally {
+      service.dispose();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("fails screenshot, tap, and typeText on non-darwin with the macOS-only error", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
@@ -1768,6 +1943,53 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       await expect(service.getInspectorSnapshot()).rejects.toThrow(/only available on macOS/);
     } finally {
       service.dispose();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
+describe("iosSimulatorService device tool targeting", () => {
+  const twoBootedIphonesJson = JSON.stringify({
+    devices: {
+      "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [
+        { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true },
+        { name: "iPhone Air", udid: "device-2", state: "Booted", isAvailable: true },
+      ],
+    },
+  });
+
+  it("sends an implicit device tool to the open device session, not the first booted iPhone", async () => {
+    // A chat that opens a device and never launches an app holds a device
+    // session and no app session. Without the device session in the precedence
+    // every appearance, location and log call fell through to "the first booted
+    // iPhone", which is another simulator as soon as two are up.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: twoBootedIphonesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await service.openDevice({ deviceUdid: "device-2", chatSessionId: "chat-a", openWindow: false });
+      await service.setAppearance({ appearance: "dark" });
+
+      const simctlUiCalls = runMock.mock.calls
+        .map(([, commandArgs]) => commandArgs)
+        .filter((commandArgs) => commandArgs[0] === "simctl" && commandArgs[1] === "ui");
+      expect(simctlUiCalls.length).toBeGreaterThan(0);
+      expect(simctlUiCalls.every((commandArgs) => commandArgs[2] === "device-2")).toBe(true);
+      expect(simctlUiCalls).toContainEqual(["simctl", "ui", "device-2", "appearance", "dark"]);
+
+      // The same precedence a status read reports, so the drawer and the tools
+      // never name different simulators.
+      expect((await service.getStatus()).activeDevice?.udid).toBe("device-2");
+    } finally {
+      service.dispose();
+      restoreHooks();
       platformSpy.mockRestore();
     }
   });

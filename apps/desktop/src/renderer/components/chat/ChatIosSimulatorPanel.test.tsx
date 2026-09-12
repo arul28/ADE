@@ -1,22 +1,66 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { selectLaunchSteps } from "./IosSimLaunchStepper";
 import type {
   IosSimulatorDevice,
+  IosSimulatorDeviceSettings,
+  IosSimulatorEventLogArgs,
+  IosSimulatorEventLogPage,
   IosSimulatorEventPayload,
+  IosSimulatorLaunchProgress,
   IosSimulatorLaunchTarget,
+  IosSimulatorLogRow,
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosScreenElement,
+  IosSimulatorSetAccessibilityArgs,
+  IosSimulatorSetAppearanceArgs,
+  IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
 } from "../../../shared/types";
+import type { ChatRuntimeScope } from "./ChatRuntimeScope";
+
+/**
+ * The chat's machine, as the panel sees it.
+ *
+ * `useChatRuntimeScopeForPin` reads the cross-machine lane store, which no test
+ * here populates, so the remote live view would be unreachable without this
+ * seam. Every other export of the module stays real.
+ */
+const LOCAL_SCOPE: ChatRuntimeScope = {
+  pin: null,
+  binding: null,
+  laneId: null,
+  lane: null,
+  laneWorktreePath: null,
+  rootPath: null,
+  isRemote: false,
+  machineName: "This computer",
+  online: true,
+};
+
+let chatScopeOverride: Partial<ChatRuntimeScope> | null = null;
+
+vi.mock("./ChatRuntimeScope", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("./ChatRuntimeScope");
+  return {
+    ...actual,
+    useChatRuntimeScopeForPin: (pin: ChatRuntimeScope["pin"], laneId: string | null): ChatRuntimeScope => ({
+      ...LOCAL_SCOPE,
+      pin,
+      laneId,
+      ...chatScopeOverride,
+    }),
+  };
+});
 
 const device: IosSimulatorDevice = {
   udid: "device-1",
@@ -52,6 +96,26 @@ const activeStatus: IosSimulatorStatus = {
     bridgeUrl: null,
     startedAt: "2026-04-29T00:00:00.000Z",
     claimedAt: "2026-04-29T00:00:01.000Z",
+  },
+};
+
+/**
+ * "Open <device> without an app": a claimed, booted device and no app session.
+ *
+ * This is the shape the device hub added, and it is the one every live-view
+ * consumer has to accept. A guard that asks for `activeSession` sees nothing
+ * here, which is how the screen scale went missing and every tap landed short.
+ */
+const deviceSessionStatus: IosSimulatorStatus = {
+  ...activeStatus,
+  activeSession: null,
+  deviceSession: {
+    deviceUdid: device.udid,
+    deviceName: device.name,
+    chatSessionId: "chat-1",
+    laneId: "lane-1",
+    openedAt: "2026-04-29T00:00:00.000Z",
+    bootedByAde: false,
   },
 };
 
@@ -182,6 +246,71 @@ const simulatorWindowSource: IosSimulatorWindowSource = {
   thumbnailDataUrl: null,
 };
 
+/**
+ * The host-encoded stream's two addresses.
+ *
+ * The encoder answers on loopback on the machine that owns the simulator. A
+ * desktop bound to a remote Mac reads it through a port forward, so the port it
+ * opens is not the port the host reported — which is the whole reason
+ * `resolveStreamUrl` exists. The two differ here so an assertion can tell them
+ * apart.
+ */
+const H264_HOST_URL = "http://127.0.0.1:45301/stream?token=stream-token";
+const H264_FORWARDED_URL = "http://127.0.0.1:59102/stream?token=stream-token";
+
+const defaultDeviceSettings: IosSimulatorDeviceSettings = {
+  deviceUdid: device.udid,
+  appearance: "dark",
+  contentSize: "large",
+  accessibility: {
+    "increase-contrast": false,
+    "reduce-motion": true,
+    "reduce-transparency": false,
+    "bold-text": false,
+    "invert-colors": false,
+    grayscale: false,
+    // The device answered nothing for this one, which the column shows as "n/a"
+    // rather than guessing "off".
+    "voice-over": null,
+  },
+  location: null,
+  statusBarOverridden: false,
+  readAt: "2026-04-29T00:00:00.000Z",
+};
+
+const defaultLogRows: IosSimulatorLogRow[] = [
+  {
+    id: 1,
+    at: "2026-04-29T00:00:01.000Z",
+    source: "ade",
+    level: "action",
+    process: null,
+    subsystem: null,
+    category: null,
+    message: "Set the appearance to dark.",
+    command: "ade ios-sim ui appearance dark",
+  },
+  {
+    id: 2,
+    at: "2026-04-29T00:00:02.000Z",
+    source: "device",
+    level: "error",
+    process: "Example",
+    subsystem: "com.example.app",
+    category: "default",
+    message: "Could not load the profile.",
+  },
+];
+
+const defaultEventLogPage: IosSimulatorEventLogPage = {
+  deviceUdid: device.udid,
+  running: true,
+  rows: defaultLogRows,
+  cursor: 2,
+  dropped: 0,
+  lastError: null,
+};
+
 function installIosSimulatorApi(options: {
   status?: IosSimulatorStatus;
   streamStatus?: IosSimulatorStreamStatus;
@@ -195,6 +324,9 @@ function installIosSimulatorApi(options: {
   screenElements?: IosScreenElement[];
   hitElement?: IosScreenElement | null;
   revealResult?: { ok: boolean; message: string | null };
+  deviceSettings?: IosSimulatorDeviceSettings;
+  eventLog?: IosSimulatorEventLogPage;
+  resolveStreamUrl?: { url: string | null; forwarded: boolean; error: string | null };
 } = {}) {
   let eventListener: ((event: IosSimulatorEventPayload) => void) | null = null;
   const getUserMedia = vi.fn(options.getUserMedia ?? (() => Promise.resolve({
@@ -237,15 +369,36 @@ function installIosSimulatorApi(options: {
     capability: options.previewCapability ?? previewCapability,
     error: null,
   };
+  const effectiveDeviceSettings = options.deviceSettings ?? defaultDeviceSettings;
+  const effectiveEventLog = options.eventLog ?? defaultEventLogPage;
   const api = {
     getStatus: vi.fn().mockResolvedValue(options.status ?? activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
     listLaunchTargets: vi.fn().mockResolvedValue(options.launchTargets ?? [launchTarget]),
-    startStream: vi.fn((args: { backend?: string | null; fps?: number | null } = {}) => Promise.resolve(streamStatus({
-      backend: "simulator-window-capture",
-      targetFps: args.fps ?? 60,
-      streamUrl: null,
-    }))),
+    // The host answers with the backend it actually started, and only the
+    // host-encoded one carries a transport — window capture has a window id,
+    // not an address.
+    startStream: vi.fn((args: IosSimulatorStartStreamArgs = {}) => Promise.resolve(
+      args.backend === "idb-h264"
+        ? streamStatus({
+          backend: "idb-h264",
+          targetFps: args.fps ?? 30,
+          streamUrl: H264_HOST_URL,
+          transport: {
+            url: H264_HOST_URL,
+            port: 45301,
+            token: "stream-token",
+            codec: "avc1.640032",
+            width: 393,
+            height: 852,
+          },
+        })
+        : streamStatus({
+          backend: "simulator-window-capture",
+          targetFps: args.fps ?? 60,
+          streamUrl: null,
+        }),
+    )),
     stopStream: vi.fn().mockResolvedValue(streamStatus({ running: false, backend: null, streamUrl: null })),
     getStreamStatus: vi.fn().mockResolvedValue(options.streamStatus ?? streamStatus({
       deviceUdid: null,
@@ -342,15 +495,120 @@ function installIosSimulatorApi(options: {
       },
       source: "ade-inspector",
     }),
+    // Device hub. The panel reads every one of these off `window.ade`, so a
+    // method missing here is a TypeError inside a render, not a failed
+    // assertion — which is why they all exist even where no test calls them.
+    openDevice: vi.fn().mockResolvedValue({
+      deviceUdid: device.udid,
+      deviceName: device.name,
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      openedAt: "2026-04-29T00:00:00.000Z",
+      bootedByAde: false,
+    }),
+    closeDevice: vi.fn().mockResolvedValue({
+      released: true,
+      shutdown: false,
+      previousDeviceSession: null,
+    }),
+    getDeviceSettings: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    // The panel re-reads the device from the write's own result instead of
+    // assuming it landed, so these answer with the value they were asked for.
+    setAppearance: vi.fn((args: IosSimulatorSetAppearanceArgs) => Promise.resolve({
+      ...effectiveDeviceSettings,
+      appearance: args.appearance,
+    })),
+    setContentSize: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    setAccessibilityOption: vi.fn((args: IosSimulatorSetAccessibilityArgs) => Promise.resolve({
+      ...effectiveDeviceSettings,
+      accessibility: { ...effectiveDeviceSettings.accessibility, [args.option]: args.enabled },
+    })),
+    setLocation: vi.fn().mockResolvedValue(effectiveDeviceSettings),
+    clearLocation: vi.fn().mockResolvedValue({ ...effectiveDeviceSettings, location: null }),
+    setPermission: vi.fn().mockResolvedValue({ ok: true }),
+    sendPushNotification: vi.fn().mockResolvedValue({ ok: true }),
+    openUrl: vi.fn().mockResolvedValue({ ok: true }),
+    terminateApp: vi.fn().mockResolvedValue({ ok: true }),
+    uninstallApp: vi.fn().mockResolvedValue({ ok: true }),
+    setStatusBar: vi.fn().mockResolvedValue({ ok: true }),
+    clearStatusBar: vi.fn().mockResolvedValue({ ok: true }),
+    getAppState: vi.fn().mockResolvedValue({
+      bundleId: activeStatus.activeSession?.bundleId ?? "com.example.app",
+      running: true,
+      pid: 4242,
+      checkedAt: "2026-04-29T00:00:00.000Z",
+    }),
+    startEventLog: vi.fn().mockResolvedValue(effectiveEventLog),
+    stopEventLog: vi.fn().mockResolvedValue({ ...effectiveEventLog, running: false, rows: [] }),
+    // Rows arrive by cursor. Answering with the same page on every poll would
+    // append duplicates the real host never sends.
+    getEventLog: vi.fn((args: IosSimulatorEventLogArgs = {}) => Promise.resolve(
+      (args.sinceId ?? 0) >= effectiveEventLog.cursor
+        ? { ...effectiveEventLog, rows: [] }
+        : effectiveEventLog,
+    )),
+    findElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "tap",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    tapElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "tap",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    fillElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "fill",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    waitForElement: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "wait",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: 120,
+    }),
+    assertVisible: vi.fn().mockResolvedValue({
+      ok: true,
+      action: "assert",
+      match: null,
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+    }),
+    captureProofBundle: vi.fn().mockResolvedValue({
+      dir: ".ade/artifacts/ios-proof",
+      screenshotPath: ".ade/artifacts/ios-proof/screen.png",
+      metadataPath: ".ade/artifacts/ios-proof/metadata.json",
+      elementsPath: null,
+      logPath: null,
+      caption: null,
+      capturedAt: "2026-04-29T00:00:00.000Z",
+    }),
+    resolveStreamUrl: vi.fn().mockResolvedValue(
+      options.resolveStreamUrl ?? { url: H264_FORWARDED_URL, forwarded: true, error: null },
+    ),
+  };
+  const app = {
+    writeClipboardText: vi.fn(),
+    openExternal: vi.fn(),
   };
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
       iosSimulator: api,
-      app: {
-        writeClipboardText: vi.fn(),
-        openExternal: vi.fn(),
-      },
+      app,
       agentChat: {
         saveTempAttachment: vi.fn().mockResolvedValue({ path: ".ade/artifacts/ios-simulator-screen.png" }),
       },
@@ -358,18 +616,61 @@ function installIosSimulatorApi(options: {
   });
   return {
     api,
+    app,
     getUserMedia,
     emit: (event: IosSimulatorEventPayload) => eventListener?.(event),
   };
 }
 
+/** Radix opens menus on pointerdown, and jsdom has none of the pointer plumbing. */
+function installRadixDomShims(): void {
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.hasPointerCapture = vi.fn(() => false);
+  proto.setPointerCapture = vi.fn();
+  proto.releasePointerCapture = vi.fn();
+}
+
+/** Radix's popper measures its content, and jsdom ships no ResizeObserver. */
+class MockMenuResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+/**
+ * Open a device-tool value menu by its trigger's accessible name.
+ *
+ * Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
+ * `button === 0` guard on pointerdown never passes there.
+ */
+async function openToolMenu(label: string): Promise<void> {
+  fireEvent.keyDown(await screen.findByLabelText(label), { key: "Enter" });
+}
+
+/**
+ * Advance a fake clock and let everything it woke settle.
+ *
+ * The panel's timers all sit behind a promise chain, so a bare
+ * `advanceTimersByTime` moves the clock and stops before the work lands. The
+ * async form flushes microtasks between timers, and `act` commits what React
+ * queued from them.
+ */
+async function settleFakeTimers(ms = 0): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
 describe("ChatIosSimulatorPanel", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    chatScopeOverride = null;
+    installRadixDomShims();
   });
 
   afterEach(() => {
     cleanup();
+    chatScopeOverride = null;
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -903,7 +1204,9 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
     fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
 
-    expect(await screen.findByText(/In use by/)).toBeTruthy();
+    // Ownership now reads as a ribbon over the live view; the card only
+    // renders where there is no live view to float over.
+    expect(await screen.findByTestId("ios-watch-ribbon")).toBeTruthy();
     expect(api.typeText).not.toHaveBeenCalled();
     expect(api.tap).not.toHaveBeenCalled();
     expect(api.drag).not.toHaveBeenCalled();
@@ -938,7 +1241,9 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    expect(await screen.findByText(/In use by/)).toBeTruthy();
+    // Ownership now reads as a ribbon over the live view; the card only
+    // renders where there is no live view to float over.
+    expect(await screen.findByTestId("ios-watch-ribbon")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
     const imageRect = {
@@ -2219,5 +2524,720 @@ describe("ChatIosSimulatorPanel", () => {
     expect(api.retainWindowParking).toHaveBeenCalledTimes(1);
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
+  });
+  /* ------------------------------------------------------------------ *
+   * Device hub: the tools column
+   * ------------------------------------------------------------------ */
+
+  // Preview Lab renders a SwiftUI preview, not the device, so device state has
+  // nothing there to act on.
+  it("offers the device tools on the simulator surface and not in Preview Lab", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("ios-pane-tools")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+
+    await waitFor(() => expect(screen.queryByTestId("ios-pane-tools")).toBeNull());
+  });
+
+  it("opens and closes the device tools column from the chrome", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsButton = await screen.findByTestId("ios-pane-tools");
+    expect(screen.queryByTestId("ios-tools-column")).toBeNull();
+
+    fireEvent.click(toolsButton);
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
+
+    fireEvent.click(toolsButton);
+    await waitFor(() => expect(screen.queryByTestId("ios-tools-column")).toBeNull());
+  });
+
+  // Reading the device costs nine `simctl` calls, so the read is bound to the
+  // column opening rather than to the status poll.
+  it("reads the device settings when the column opens and shows what came back", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    await screen.findByTestId("ios-tools-column");
+
+    const appearance = await screen.findByLabelText("Appearance");
+    await waitFor(() => expect(appearance.textContent).toContain("Dark"));
+    expect(screen.getByRole("switch", { name: "Reduce motion" }).getAttribute("aria-checked")).toBe("true");
+    expect(api.getDeviceSettings).toHaveBeenCalledTimes(1);
+    expect(api.getDeviceSettings).toHaveBeenCalledWith({ deviceUdid: device.udid }, null);
+  });
+
+  it("writes the chosen appearance to the active device", async () => {
+    vi.stubGlobal("ResizeObserver", MockMenuResizeObserver);
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const appearance = await screen.findByLabelText("Appearance");
+    await waitFor(() => expect(appearance.textContent).toContain("Dark"));
+
+    await openToolMenu("Appearance");
+    fireEvent.click(await screen.findByText("Light"));
+
+    await waitFor(() => expect(api.setAppearance).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      appearance: "light",
+    }, null));
+  });
+
+  it("locks every device tool while another chat owns the session", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    await screen.findByTestId("ios-tools-column");
+
+    expect((await screen.findByLabelText("Appearance") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Text size") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Location") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("switch", { name: "Reduce motion" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // The leak this hook's extraction was written to close: switching Work tabs
+  // or closing the chat left `xcrun simctl spawn log stream` running on the
+  // host, one orphan per open.
+  it("stops the event log when the drawer unmounts", async () => {
+    const { api } = installIosSimulatorApi();
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+    const callsBeforeUnmount = api.stopEventLog.mock.calls.length;
+
+    view.unmount();
+
+    await waitFor(() => expect(api.stopEventLog.mock.calls.length)
+      .toBeGreaterThan(callsBeforeUnmount));
+  });
+
+  it("keeps the event log running when closing the column fails to stop it", async () => {
+    // Closing the column stops the log on the host. The host checks ownership
+    // first, so that call can be refused — and clearing the running state
+    // anyway left the drawer offering "Start" for a `log stream` that was
+    // still running, with no control left that could stop it.
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsToggle = await screen.findByTestId("ios-pane-tools");
+    fireEvent.click(toolsToggle);
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+
+    api.stopEventLog.mockRejectedValue(new Error("Another chat owns the simulator."));
+    fireEvent.click(toolsToggle);
+
+    expect(await screen.findByText("Another chat owns the simulator.")).toBeTruthy();
+    fireEvent.click(toolsToggle);
+    const reopened = await screen.findByTestId("ios-tools-column");
+    expect(within(reopened).getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("does not let a slow stop turn off the log the reopened column started", async () => {
+    // Closing the column stops the log, reopening starts a new one. The stop
+    // from the close can still be in flight, and its completion used to clear
+    // the running state of the log that had just started — leaving the drawer
+    // offering "Start" while `log stream` ran with nothing to stop it.
+    const { api } = installIosSimulatorApi();
+    let releaseStop: (() => void) | null = null;
+    api.stopEventLog.mockImplementation(() => new Promise((resolve) => {
+      releaseStop = () => resolve({ ...defaultEventLogPage, running: false, rows: [] });
+    }));
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsToggle = await screen.findByTestId("ios-pane-tools");
+    fireEvent.click(toolsToggle);
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+
+    fireEvent.click(toolsToggle);
+    fireEvent.click(toolsToggle);
+    const reopened = await screen.findByTestId("ios-tools-column");
+    await within(reopened).findByRole("button", { name: "Stop" });
+
+    // The stop from the close lands now, after the reopen.
+    await act(async () => {
+      releaseStop?.();
+      await Promise.resolve();
+    });
+
+    expect(within(reopened).getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("passes the lane-scoped ownership bypass to the event log", async () => {
+    // The lane surface drives a simulator it does not own on purpose, and
+    // `shutdown` already takes the same bypass. Without it the event log was
+    // the one control there that the host refused.
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        ignoreChatOwnership
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(api.startEventLog).toHaveBeenCalledWith(
+      expect.objectContaining({ force: true }),
+      null,
+    ));
+  });
+
+  // An `ade` row carries the command that reproduces what ADE did, which is the
+  // whole reason the log interleaves ADE's own actions with the device's.
+  it("starts the event log and copies an ade row's command", async () => {
+    const { api, app } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+
+    // The chat names itself, because the host refuses an event-log start from a
+    // chat that does not own the device session.
+    await waitFor(() => expect(api.startEventLog).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      bundleId: "com.example.app",
+      chatSessionId: expect.any(String),
+    }, null));
+    expect(await screen.findByText("Event log (2)")).toBeTruthy();
+
+    // Starting the log is a request to read it, so the rows unfold themselves.
+    const log = await screen.findByTestId("ios-event-log");
+    expect(log.textContent).toContain("Could not load the profile.");
+
+    fireEvent.click(screen.getByTitle("Copy: ade ios-sim ui appearance dark"));
+
+    expect(app.writeClipboardText).toHaveBeenCalledWith("ade ios-sim ui appearance dark");
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the watch ribbon
+   * ------------------------------------------------------------------ */
+
+  // The card sits between the chrome and the video and pushes the video down to
+  // repeat a sentence the ribbon already says where the eye is.
+  it("names the owner on a ribbon over the live view instead of a card above it", async () => {
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+    api.shutdown.mockResolvedValue({ ok: true });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const ribbon = await screen.findByTestId("ios-watch-ribbon");
+    expect(ribbon.textContent).toContain("owned by");
+    expect(screen.queryByText(/In use by/)).toBeNull();
+
+    // Take over is the card's own path: force the session down, then relaunch
+    // here.
+    fireEvent.click(within(ribbon).getByRole("button", { name: "Take over" }));
+
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      force: true,
+    }, null));
+  });
+
+  it("keeps the watch ribbon off Preview Lab", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByTestId("ios-watch-ribbon");
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+
+    await waitFor(() => expect(screen.queryByTestId("ios-watch-ribbon")).toBeNull());
+    // A preview is not the session, so the ribbon has nothing to float over and
+    // the card says who owns the simulator instead.
+    expect(await screen.findByText(/In use by/)).toBeTruthy();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the remote live view
+   * ------------------------------------------------------------------ */
+
+  // Window capture reads a Simulator window on THIS computer. A chat pinned to
+  // another Mac has none, so it had a live view it could never show.
+  it("encodes the live view on the host when the chat runs on another machine", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      backend: "idb-h264",
+      fps: 30,
+    }, null));
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Simulator window on this computer/)).toBeNull();
+  });
+
+  // The encoder answers on loopback on the simulator's own machine. The desktop
+  // reads it through a port forward, so the port it opens is not the port the
+  // host reported.
+  it("plays the address resolveStreamUrl returned, not the host's own", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi();
+    // The canvas only reaches for the stream when the platform decoder exists,
+    // and jsdom has none. The smallest possible pair stands in; the assertion is
+    // the address it opens, never a decoded frame.
+    vi.stubGlobal("VideoDecoder", class {});
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.resolveStreamUrl).toHaveBeenCalledWith(H264_HOST_URL, null));
+    expect(await screen.findByTestId("ios-h264-canvas")).toBeTruthy();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(H264_FORWARDED_URL);
+  });
+
+  it("names the remote machine on the live chip", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const chip = await screen.findByTestId("ios-live-chip");
+    await waitFor(() => expect(chip.textContent).toContain("MacBook Pro (97)"));
+  });
+
+  // Local stays on window capture: it hands the compositor's own frames to a
+  // video element, which no encode beats.
+  it("keeps window capture and the video element for a local chat", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+
+    expect(api.startStream).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      backend: "simulator-window-capture",
+      fps: 60,
+    }, null);
+    expect(api.resolveStreamUrl).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: a device session is a session
+   * ------------------------------------------------------------------ */
+
+  // The snapshot is fetched for exactly one number — `screen.scale` — and a tap
+  // is divided by it. Without one, every tap on a 3x device lands at a third of
+  // where the user clicked.
+  it("reads the screen scale for a device session that has no app session", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    await waitFor(() => expect(api.getScreenSnapshot).toHaveBeenCalled());
+  });
+
+  it("captures an inspect snapshot for a device session that has no app session", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        drawerModeRequest={{ mode: "inspect", nonce: 1 }}
+      />,
+    );
+
+    await waitFor(() => expect(api.getScreenSnapshot).toHaveBeenCalled());
+  });
+
+  // Input that produces no frame is what arms recovery: 1.5s to notice the frame
+  // never landed, then the 250ms the restart is scheduled behind. Real timers,
+  // because faking them here would also fake `waitFor`'s own polling.
+  it("restores a device session's live view after input produces no frame", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const video = await waitFor(() => {
+      const element = document.querySelector("video");
+      expect(element).toBeTruthy();
+      return element as HTMLVideoElement;
+    });
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1));
+
+    fireEvent.keyDown(video, { key: "a" });
+    await act(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 1_900); });
+    });
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: restarting the right backend
+   * ------------------------------------------------------------------ */
+
+  // Both backends arm the same capture token, so the token cannot say which one
+  // is running. A remote chat restarted on window capture reads a Simulator
+  // window that is either absent or on the wrong machine.
+  it("restarts a remote live view on the host encoder, not on window capture", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+    expect(api.startStream).toHaveBeenLastCalledWith({
+      deviceUdid: device.udid,
+      backend: "idb-h264",
+      fps: 30,
+    }, null);
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the host-encoded retry
+   * ------------------------------------------------------------------ */
+
+  // A reconnect of the runtime closes the SSH forward, and rebuilding it can
+  // take more than one attempt. The retry used to write no state when a
+  // re-resolve came back empty, so its own effect never re-ran.
+  it("keeps retrying a remote live view after a re-resolve returns no address", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    // Fake timers from before the render: the retry is a `setTimeout` armed
+    // during mount, and a clock installed afterwards would never own it.
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(1);
+
+    await settleFakeTimers(4_200);
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(2);
+
+    await settleFakeTimers(4_200);
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(3);
+  });
+
+  // The other half of the same rule: a forward that is refused for good must
+  // not be asked forever.
+  it("stops retrying a remote live view once the attempt budget is spent", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(1);
+
+    // Eight retry windows for a budget of five. React commits the failed
+    // attempt at the end of each `act`, so the next window is what arms the
+    // retry after it — one long advance would only ever run the first.
+    for (let window = 0; window < 8; window += 1) {
+      await settleFakeTimers(4_200);
+    }
+
+    // One start plus five retries, and nothing after.
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(6);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the event log cursor
+   * ------------------------------------------------------------------ */
+
+  // `startEventLog` answers with a page that already holds rows. Leaving the
+  // cursor at zero made the first poll ask for the whole log again and append
+  // every row a second time.
+  it("does not replay the event log's first page on the first poll", async () => {
+    const { api } = installIosSimulatorApi();
+
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    fireEvent.click(screen.getByTestId("ios-pane-tools"));
+    await settleFakeTimers();
+    fireEvent.click(within(screen.getByTestId("ios-tools-column")).getByRole("button", { name: "Start" }));
+    await settleFakeTimers();
+    expect(screen.getByText("Event log (2)")).toBeTruthy();
+
+    // One poll interval past the start page.
+    await settleFakeTimers(1_800);
+
+    expect(api.getEventLog).toHaveBeenCalled();
+    expect(api.getEventLog.mock.calls[0]?.[0]).toMatchObject({ sinceId: 2 });
+    expect(screen.getByText("Event log (2)")).toBeTruthy();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the tools column and Preview Lab
+   * ------------------------------------------------------------------ */
+
+  // The chrome hides the toggle in Preview Lab, so a column left open there had
+  // no control that could close it and kept polling the device behind it.
+  it("hides an open device tools column in Preview Lab and brings it back after", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+    await waitFor(() => expect(screen.queryByTestId("ios-tools-column")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
+  });
+
+  it("says why a remote live view has no address instead of showing a blank frame", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/The runtime refused the port forward\./)).toBeTruthy();
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+  });
+});
+
+/**
+ * The launch stepper's one pure helper.
+ *
+ * It lives here rather than in its own file because it has exactly one caller —
+ * this panel — and a whole test file for one helper of one parent is how a
+ * feature ends up with more test files than contracts.
+ */
+describe("selectLaunchSteps", () => {
+  function progressRow(
+    overrides: Partial<IosSimulatorLaunchProgress>
+      & Pick<IosSimulatorLaunchProgress, "launchId" | "step" | "status">,
+  ): IosSimulatorLaunchProgress {
+    return {
+      message: overrides.status,
+      updatedAt: "2026-08-25T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("returns the latest row when a step receives multiple updates", () => {
+    // `find` returns the FIRST match, so a step that went running → failed kept
+    // its stale running row and the stepper hid the failure and its Close
+    // action.
+    const steps = selectLaunchSteps([
+      progressRow({ launchId: "launch-1", step: "build-app", status: "running" }),
+      progressRow({ launchId: "launch-1", step: "install-app", status: "pending" }),
+      progressRow({ launchId: "launch-1", step: "build-app", status: "failed", message: "xcodebuild failed" }),
+    ]);
+
+    expect(steps.map((item) => ({ step: item.step, status: item.status, message: item.message }))).toEqual([
+      { step: "build-app", status: "failed", message: "xcodebuild failed" },
+      { step: "install-app", status: "pending", message: "pending" },
+    ]);
   });
 });

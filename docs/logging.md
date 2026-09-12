@@ -314,6 +314,24 @@ would double every open/close pair and report closing as engagement. A seventh
 tool id is dropped rather than widening the allowlist, so a new tool has to be
 registered in the policy deliberately.
 
+Which live view an installation watches an iOS simulator through records the
+same `ade_feature_used` event from the drawer's single start path, with
+`feature: "work"`, `action: "ios_live_view"`, `source: "renderer_route"`, and a
+closed, prefixed `outcome`: `backend_window` or `backend_host_encoded`. It is
+emitted from the renderer for the same reason `tool_opened` is — the backend
+choice starts an ephemeral stream, not a durable record.
+
+The product question is whether anyone drives a simulator that is not on this
+Mac. `tool_ios` says the pane was opened and cannot tell those two installs
+apart, and that difference is the whole reason the host-encoded backend exists.
+Nothing finer crosses the boundary: no device, lane, machine name, stream
+address, token, codec, resolution, frame rate, or duration — a backend id says
+how the pixels arrived, and any of those would say what was being worked on. A
+third backend id is dropped rather than widening the allowlist. A per-backend
+`work_ios_live_view:<backend>` key with the same 24-hour minimum interval bounds
+this to at most two accepted events per installation per UTC day, inside the
+same limits, and no ceiling was raised.
+
 A per-tool `work_tool_opened:<id>` deduplication key with a 24-hour minimum
 interval bounds this to at most six accepted events per installation per UTC
 day no matter how often the user flips between panes, which is well inside the

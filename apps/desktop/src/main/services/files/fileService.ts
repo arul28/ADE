@@ -38,6 +38,7 @@ import type { ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceReg
 import { runGit } from "../git/git";
 import {
   hasNullByte,
+  isPathEscapeError,
   normalizeRelative,
   resolvePathWithinRoot,
   secureMkdirWithinRoot,
@@ -440,7 +441,7 @@ function ensureSafePath(
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       throw new Error("Refusing to access path outside workspace");
     }
     throw error;

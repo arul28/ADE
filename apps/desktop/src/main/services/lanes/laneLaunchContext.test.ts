@@ -15,10 +15,12 @@ vi.mock("node:fs", () => ({
   realpathSync: mocks.realpathSync,
 }));
 
-vi.mock("../shared/utils", () => ({
+vi.mock("../shared/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../shared/utils")>()),
   resolvePathWithinRoot: mocks.resolvePathWithinRoot,
 }));
 
+import { PATH_ESCAPES_ROOT_MESSAGE } from "../shared/utils";
 import { resolveLaneLaunchContext } from "./laneLaunchContext";
 
 function makeLaneService(worktreePath: string) {
@@ -132,7 +134,7 @@ describe("resolveLaneLaunchContext", () => {
   it("throws when requested cwd escapes the lane root", () => {
     setupDirectoryExists("/real/lane/root");
     mocks.resolvePathWithinRoot.mockImplementation(() => {
-      throw new Error("Path escapes root");
+      throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
     });
 
     expect(() =>

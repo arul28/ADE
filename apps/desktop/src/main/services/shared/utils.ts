@@ -397,6 +397,20 @@ function resolveCandidatePath(
   return cursor;
 }
 
+/** The message `resolvePathWithinRoot` uses for a containment failure. */
+export const PATH_ESCAPES_ROOT_MESSAGE = "Path escapes root";
+
+/**
+ * Whether a `resolvePathWithinRoot` failure was the containment rule.
+ *
+ * The resolver also surfaces a dangling symlink, a permission error and a link
+ * loop, so a caller that maps every failure to "outside the root" tells the
+ * user to fix a path that was never the problem.
+ */
+export function isPathEscapeError(error: unknown): boolean {
+  return error instanceof Error && error.message === PATH_ESCAPES_ROOT_MESSAGE;
+}
+
 /**
  * Resolve `candidate` against the real filesystem layout and ensure it stays
  * inside `root`, even when symlinks are involved.
@@ -409,7 +423,7 @@ export function resolvePathWithinRoot(
   const rootReal = realpathExisting(path.resolve(root));
   const candidateReal = resolveCandidatePath(root, candidate, opts);
   if (!isWithinDir(rootReal, candidateReal)) {
-    throw new Error("Path escapes root");
+    throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   }
   return candidateReal;
 }
@@ -441,7 +455,7 @@ function ensureDirectoryChainWithinRoot(
   let cursor = realpathExisting(candidateRoot);
 
   if (!isPathAlignedWithRoot(rootReal, cursor)) {
-    throw new Error("Path escapes root");
+    throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   }
 
   for (const segment of segments) {
@@ -449,7 +463,7 @@ function ensureDirectoryChainWithinRoot(
     if (segment === "..") {
       cursor = path.dirname(cursor);
       if (!isPathAlignedWithRoot(rootReal, cursor)) {
-        throw new Error("Path escapes root");
+        throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
       continue;
     }
@@ -459,7 +473,7 @@ function ensureDirectoryChainWithinRoot(
       fs.lstatSync(nextPath);
       const resolvedPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, resolvedPath)) {
-        throw new Error("Path escapes root");
+        throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
       if (!fs.statSync(resolvedPath).isDirectory()) {
         throw new Error(`Path is not a directory: ${nextPath}`);
@@ -473,12 +487,12 @@ function ensureDirectoryChainWithinRoot(
         throw error;
       }
       if (!isPathAlignedWithRoot(rootReal, nextPath)) {
-        throw new Error("Path escapes root");
+        throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
       fs.mkdirSync(nextPath);
       const createdPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, createdPath)) {
-        throw new Error("Path escapes root");
+        throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
       cursor = createdPath;
     }
@@ -497,7 +511,7 @@ function prepareMutationTargetWithinRoot(
   const parentPath = ensureDirectoryChainWithinRoot(rootReal, parentExpression, { createMissing: true });
   const targetPath = path.join(parentPath, path.basename(expression));
   if (!isWithinDir(rootReal, targetPath)) {
-    throw new Error("Path escapes root");
+    throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   }
   return { rootReal, parentPath, targetPath };
 }

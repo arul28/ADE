@@ -3,7 +3,7 @@ import { z } from "zod";
 import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { getErrorMessage, resolvePathWithinRoot } from "../../shared/utils";
+import { getErrorMessage, isPathEscapeError, resolvePathWithinRoot } from "../../shared/utils";
 
 /** Swappable for Vitest — defaults to Node's `execFile`. */
 let execFileForRipgrep: typeof execFile = execFile;
@@ -83,7 +83,7 @@ export function createGrepSearchTool(cwd: string) {
         return {
           matches: [],
           matchCount: 0,
-          error: message === "Path escapes root"
+          error: isPathEscapeError(error)
             ? `Search path is outside the repo root: ${searchPath ?? "."}`
             : `Search failed: ${message}`,
         };
