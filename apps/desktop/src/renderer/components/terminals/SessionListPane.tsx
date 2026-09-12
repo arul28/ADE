@@ -2299,10 +2299,19 @@ export const SessionListPane = React.memo(function SessionListPane({
             // pending check or an outstanding review, which the host still
             // reads as Working. Say so; a silent snap-back reads as a bug.
             if (result && !result.changed) {
+              // A live structured card is a different refusal: the row really
+              // is in Needs you, and clearing the attention columns would not
+              // answer the provider's question — so the card would sit there
+              // while the toast claimed a move. Say what is actually blocking.
+              const pendingCard = result.reason === "pending_input";
               showToast({
                 id: `session-board-move:${session.id}`,
-                title: `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
-                message: "The PR is what is waiting, not the chat.",
+                title: pendingCard
+                  ? "Answer the question first"
+                  : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
+                message: pendingCard
+                  ? "This chat is waiting on an answer, so moving it would not change what it needs."
+                  : "The PR is what is waiting, not the chat.",
                 durationMs: 4_000,
               });
             }
@@ -2339,7 +2348,12 @@ export const SessionListPane = React.memo(function SessionListPane({
                         // columns are written, the message was never sent, and
                         // it no longer knows what to put back.
                         ? "ADE no longer has this move staged. The card stays where you put it."
-                        : "The agent has already been told about this move.",
+                        : undone.reason === "session_advanced"
+                          // The chat moved on inside the window — a new hand, a
+                          // settle, a snooze. Putting the old state back would
+                          // overwrite something newer than the move.
+                          ? "This chat has changed since the move, so there is nothing left to take back."
+                          : "The agent has already been told about this move.",
                       tone: "error",
                     });
                   })

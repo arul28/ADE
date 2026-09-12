@@ -523,3 +523,178 @@ describe("a move that outlives its process", () => {
       });
   });
 });
+
+describe("a project that closes with a move still staged", () => {
+  beforeEach(() => {
+    __resetStagedBoardMovesForTest();
+    vi.useRealTimers();
+  });
+
+  /**
+   * The staging map is module-level while the services a dispatch needs are
+   * per-project, so a project teardown has to drain its OWN moves — and only
+   * those. Draining everything would dispatch another project's move seconds
+   * early, ending an undo window its user is still looking at; draining nothing
+   * leaves a 5-second timer armed over a disposed chat service and a closed
+   * database, which is a status write whose message never lands.
+   */
+  it("drains its own staged move and leaves another project's undo window open", async () => {
+    vi.useFakeTimers();
+    const projectA = makeSessionService(row({ id: "chat-a", settledAt: "2026-09-11T09:00:00.000Z" }));
+    const projectB = makeSessionService(row({ id: "chat-b", settledAt: "2026-09-11T09:00:00.000Z" }));
+    const messageA = vi.fn(async (_args: unknown) => ({ ok: true }));
+    const messageB = vi.fn(async (_args: unknown) => ({ ok: true }));
+    const actionsA = createSessionBoardMoveActions({
+      sessionService: projectA.service,
+      agentChatService: { messageSession: messageA },
+      logger: silentLogger,
+    });
+    const actionsB = createSessionBoardMoveActions({
+      sessionService: projectB.service,
+      agentChatService: { messageSession: messageB },
+      logger: silentLogger,
+    });
+
+    await actionsA.moveOnBoard({ sessionId: "chat-a", to: "working" });
+    const movedB = await actionsB.moveOnBoard({ sessionId: "chat-b", to: "working" }) as {
+      moveId: string;
+    };
+    expect(stagedBoardMoveCountForTest()).toBe(2);
+
+    await flushStagedBoardMoves({ sessionService: projectA.service });
+    expect(messageA).toHaveBeenCalledTimes(1);
+    expect(messageB).not.toHaveBeenCalled();
+    expect(stagedBoardMoveCountForTest()).toBe(1);
+
+    // B's move is untouched: still staged, still reversible.
+    expect(await actionsB.undoBoardMove({ sessionId: "chat-b", moveId: movedB.moveId }))
+      .toMatchObject({ ok: true, reversed: true });
+    await vi.advanceTimersByTimeAsync(BOARD_MOVE_STAGE_MS * 2);
+    expect(messageB).not.toHaveBeenCalled();
+  });
+});
+
+describe("an undo whose row moved on inside the window", () => {
+  beforeEach(() => {
+    __resetStagedBoardMovesForTest();
+    vi.useRealTimers();
+  });
+
+  it("leaves a newer hand-raise standing and still puts back what is untouched", async () => {
+    vi.useFakeTimers();
+    const snoozedUntil = new Date(Date.now() + 3_600_000).toISOString();
+    const sessions = makeSessionService(row({ snoozedUntil }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      agentChatService: { messageSession: vi.fn(async (_args: unknown) => ({ ok: true })) },
+      logger: silentLogger,
+    });
+    const moved = await actions.moveOnBoard({ sessionId: "chat-1", to: "done" }) as {
+      moveId: string;
+    };
+
+    // Inside the undo window the agent asks a question. That hand is newer than
+    // anything the move wrote, and it is what the user is looking at.
+    sessions.service.requestAttention("chat-1", "Which database?", "agent_explicit");
+
+    expect(await actions.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))
+      .toMatchObject({ ok: true, reversed: true });
+    // The hand survives the undo...
+    expect(sessions.current.attentionMessage).toBe("Which database?");
+    expect(sessions.current.attentionSource).toBe("agent_explicit");
+    // ...while the halves the row still carried from the move are reversed.
+    expect(sessions.current.settledAt).toBeNull();
+    expect(sessions.current.snoozedUntil).toBe(snoozedUntil);
+  });
+
+  it("refuses with `session_advanced` when nothing it wrote is left to take back", async () => {
+    vi.useFakeTimers();
+    const sessions = makeSessionService(row({ runtimeState: "running" }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      logger: silentLogger,
+    });
+    const moved = await actions.moveOnBoard({ sessionId: "chat-1", to: "done" }) as {
+      moveId: string;
+    };
+    expect(sessions.current.settledAt).not.toBeNull();
+
+    // Activity un-settles the row and the agent raises a hand: both halves of
+    // the move's write are gone, so there is nothing left of it to reverse.
+    sessions.service.unsettleSession("chat-1");
+    sessions.service.requestAttention("chat-1", "Which database?", "agent_explicit");
+
+    expect(await actions.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))
+      .toEqual({ ok: false, sessionId: "chat-1", moveId: moved.moveId, reason: "session_advanced" });
+    // The newer state survived the refusal.
+    expect(sessions.current.settledAt).toBeNull();
+    expect(sessions.current.attentionMessage).toBe("Which database?");
+  });
+});
+
+describe("a move over a live structured card", () => {
+  beforeEach(() => {
+    __resetStagedBoardMovesForTest();
+    vi.useRealTimers();
+  });
+
+  /**
+   * `clearAttentionRequest` does not touch the provider's pending item, and
+   * `chatSessionProjection` derives Needs you from exactly that — so a move to
+   * Working or Done used to report `changed: true` over a card that stayed put.
+   * Refusing is the only honest answer: a drag cannot answer the provider.
+   */
+  it("refuses instead of reporting a move the card ignores", async () => {
+    const sessions = makeSessionService(row({ runtimeState: "running" }));
+    const messageSession = vi.fn(async (_args: unknown) => ({ ok: true }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      agentChatService: {
+        messageSession,
+        getSessionSummary: async (_sessionId: string) => ({ awaitingInput: true }),
+      },
+      logger: silentLogger,
+    });
+
+    expect(await actions.moveOnBoard({ sessionId: "chat-1", to: "done" })).toMatchObject({
+      ok: false,
+      changed: false,
+      from: "needs_you",
+      to: "done",
+      moveId: null,
+      reason: "pending_input",
+    });
+    // Nothing was written and nothing was staged, so there is nothing to undo.
+    expect(sessions.calls).toEqual([]);
+    expect(stagedBoardMoveCountForTest()).toBe(0);
+    expect(messageSession).not.toHaveBeenCalled();
+  });
+
+  it("still allows Needs you, which is where the card already is", async () => {
+    const sessions = makeSessionService(row({ runtimeState: "running" }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      agentChatService: {
+        messageSession: vi.fn(async (_args: unknown) => ({ ok: true })),
+        getSessionSummary: async (_sessionId: string) => ({ awaitingInput: true }),
+      },
+      logger: silentLogger,
+    });
+    expect(await actions.moveOnBoard({ sessionId: "chat-1", to: "needs_you" }))
+      .toMatchObject({ ok: true, changed: true, to: "needs_you" });
+  });
+
+  it("moves as before when the chat service cannot answer the question", async () => {
+    const sessions = makeSessionService(row({ runtimeState: "running" }));
+    const actions = createSessionBoardMoveActions({
+      sessionService: sessions.service,
+      agentChatService: {
+        messageSession: vi.fn(async (_args: unknown) => ({ ok: true })),
+        getSessionSummary: async (_sessionId: string) => { throw new Error("chat service is closing"); },
+      },
+      logger: silentLogger,
+    });
+    expect(await actions.moveOnBoard({ sessionId: "chat-1", to: "done" }))
+      .toMatchObject({ ok: true, changed: true, to: "done" });
+  });
+});

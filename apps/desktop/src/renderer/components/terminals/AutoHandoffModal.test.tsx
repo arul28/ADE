@@ -298,6 +298,13 @@ describe("AutoHandoffModal", () => {
     renderModal();
     await screen.findByRole("dialog");
 
+    // The dialog mounts before the model list resolves, and a form with no
+    // model is invalid — so asserting an enabled Save on first paint is a race
+    // that only loses on a slow runner. Wait for the default model, which is
+    // the completion signal for the async load.
+    await waitFor(() => {
+      expect((screen.getByLabelText("Handoff model") as HTMLSelectElement).value).toBeTruthy();
+    });
     const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
     expect(save.disabled).toBe(false);
 

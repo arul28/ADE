@@ -2688,6 +2688,45 @@ export function createAutomationService({
   };
 
   /**
+   * Hand an unspent attempt back.
+   *
+   * Compare-and-set against the value this reservation bumped TO, never a blind
+   * decrement: another trigger may have reserved in between, and refunding its
+   * attempt instead of ours is how a ceiling silently grows.
+   */
+  const releaseRunCount = (ruleId: string, reservedCount: number): void => {
+    if (reservedCount <= 0) return;
+    try {
+      db.run(
+        `update kv set value = ? where key = ? and value = ?`,
+        [String(reservedCount - 1), runCountKey(ruleId), String(reservedCount)],
+      );
+    } catch {
+      // A counter left high only shortens this rule's own budget, which is the
+      // safe direction; never fail a run over the refund.
+    }
+  };
+
+  /**
+   * Park the counter exactly at the ceiling.
+   *
+   * Used for the two cases that must not keep climbing: a denied reservation
+   * (the attempt was never spent) and a retired rule that could not be deleted
+   * because it is shared. Both are "this rule is finished" — the counter is the
+   * gate that keeps saying so, so it has to stop growing rather than run away.
+   */
+  const pinRunCountToCap = (ruleId: string, maxRuns: number): void => {
+    try {
+      db.run(
+        `insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
+        [runCountKey(ruleId), String(maxRuns)],
+      );
+    } catch {
+      // Same direction as above: a counter that stayed high still denies.
+    }
+  };
+
+  /**
    * Chats a handoff rule created, so a rule can never be triggered by its own
    * output. Keyed by the NEW session id because that is what the later
    * `session.*` trigger carries, and kept in `kv` next to the run counters
@@ -2731,8 +2770,35 @@ export function createAutomationService({
   };
 
   /**
-   * Spend one attempt from a rule's budget after a run, and retire the rule
-   * when the budget is gone. Two independent bounds live here:
+   * One claimed attempt from a rule's budget, settled when the run ends.
+   *
+   * `settle` is idempotent and `release` only refunds a reservation nothing
+   * settled, so the two can both be called on the same reservation — the run
+   * paths settle in a `finally`, and `runRuleNow` releases afterwards to catch
+   * the exits where the run never started at all.
+   */
+  type RunBudgetReservation = {
+    settle: (outcome: { succeeded: boolean }) => void;
+    release: () => void;
+  };
+
+  /** A rule with no budget pays nothing: no counter, no settle, no refund. */
+  const UNBOUNDED_RUN_BUDGET: RunBudgetReservation = { settle: () => {}, release: () => {} };
+
+  /**
+   * How many runs this rule gets in total, or `null` when it is unbounded.
+   * One-shot rules carry a default ceiling because their retries have to end
+   * somewhere even when the user never picked a number.
+   */
+  const runBudgetCap = (rule: AutomationRule): number | null => {
+    const configured = normalizeMaxRuns(rule.maxRuns);
+    if (rule.oneShot !== true && configured === undefined) return null;
+    return configured ?? ONE_SHOT_DEFAULT_MAX_RUNS;
+  };
+
+  /**
+   * Claim one attempt from a rule's budget BEFORE the run starts, or refuse the
+   * run when the budget is gone. Two independent bounds live here:
    *
    * - `oneShot`: the rule exists to get one job done, so it is deleted when
    *   that job SUCCEEDS — a failed run keeps it, and the failure stays in run
@@ -2743,48 +2809,88 @@ export function createAutomationService({
    *   ones, and its Retries copy promises a bound, so the bound has to be real
    *   for a rule that keeps succeeding into a chat that ends the same way.
    *
-   * A rule with neither carries no counter and pays nothing for this.
+   * The claim is what makes the ceiling real. Recording the attempt after the
+   * run let two matching signals that arrived together both pass the check
+   * before either was written, so a `maxRuns: 1` rule could create two chats
+   * and two lanes; and it left a SHARED rule — which cannot be deleted — firing
+   * forever, because deletion was the only thing that stopped dispatch. Now the
+   * counter itself is the gate: a reservation past the ceiling is refused and
+   * rolled straight back, so the count never climbs past `maxRuns` either.
+   *
+   * Returns `null` when the run must not start. The counter lives in `kv` (see
+   * `runCountKey`) so pruning run history cannot hand a failing rule a fresh
+   * budget.
    */
-  const finalizeRunBudget = (rule: AutomationRule, outcome: { succeeded: boolean }): void => {
+  const reserveRunBudget = (rule: AutomationRule): RunBudgetReservation | null => {
     const oneShot = rule.oneShot === true;
-    const configuredMaxRuns = normalizeMaxRuns(rule.maxRuns);
-    if (!oneShot && configuredMaxRuns === undefined) return;
-    const maxRuns = configuredMaxRuns ?? ONE_SHOT_DEFAULT_MAX_RUNS;
+    const maxRuns = runBudgetCap(rule);
+    if (maxRuns === null) return UNBOUNDED_RUN_BUDGET;
     let runCount: number;
     try {
       runCount = bumpRunCount(rule.id);
     } catch (error) {
-      // Without a trustworthy count we cannot bound the retries, so keep the
-      // rule rather than risk deleting it on its first failure.
+      // Without a trustworthy count we cannot bound the retries, so let the run
+      // through and keep the rule rather than refuse work — or delete a rule —
+      // on the strength of a counter we could not read.
       logger.warn("automations.rule_budget.run_count_failed", {
         automationId: rule.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      return;
+      return UNBOUNDED_RUN_BUDGET;
     }
-    const retireForSuccess = oneShot && outcome.succeeded;
-    if (!retireForSuccess && runCount < maxRuns) {
-      logger.info("automations.rule_budget.retained", {
+    if (runCount > maxRuns) {
+      // The ceiling was spent before this trigger arrived. Give the attempt
+      // straight back — a denied run must not move the counter — and refuse.
+      pinRunCountToCap(rule.id, maxRuns);
+      logger.info("automations.rule_budget.exhausted", {
         automationId: rule.id,
-        runCount,
+        runCount: maxRuns,
         maxRuns,
-        reason: outcome.succeeded ? "run-succeeded" : "run-failed",
       });
-      return;
+      return null;
     }
-    deleteRetiredRule(rule, {
-      reason: retireForSuccess ? "succeeded" : "max-runs",
-      runCount,
-      maxRuns,
-    });
+    let done = false;
+    return {
+      settle: (outcome) => {
+        if (done) return;
+        done = true;
+        const retireForSuccess = oneShot && outcome.succeeded;
+        if (!retireForSuccess && runCount < maxRuns) {
+          logger.info("automations.rule_budget.retained", {
+            automationId: rule.id,
+            runCount,
+            maxRuns,
+            reason: outcome.succeeded ? "run-succeeded" : "run-failed",
+          });
+          return;
+        }
+        deleteRetiredRule(rule, {
+          reason: retireForSuccess ? "succeeded" : "max-runs",
+          runCount,
+          maxRuns,
+        });
+      },
+      release: () => {
+        if (done) return;
+        done = true;
+        releaseRunCount(rule.id, runCount);
+      },
+    };
   };
 
   /**
    * Remove a rule that has spent its budget. The read of the config happens
    * immediately before the write and the rule is only removed when it is still
    * there, so a concurrent config write either already removed it (nothing to
-   * do) or is preserved by re-reading the latest snapshot. Shared rules are
-   * left alone — the same boundary `deleteRule` enforces.
+   * do) or is preserved by re-reading the latest snapshot.
+   *
+   * A shared rule is never deleted — that boundary is `deleteRule`'s and it is
+   * deliberate: `.ade/ade.yaml` belongs to the repo, not to this process. It
+   * still has to STOP. Its counter is pinned at the ceiling instead, and
+   * `reserveRunBudget` refuses every later trigger against it, so the rule goes
+   * quiet at exactly the bound the user configured without this process
+   * rewriting a shared file. It is retired, not deleted: a teammate who edits
+   * the rule (or clears the counter with it) gets a working rule back.
    */
   const deleteRetiredRule = (
     rule: AutomationRule,
@@ -2794,7 +2900,13 @@ export function createAutomationService({
       const snapshot = projectConfigService.get();
       const sharedAutomations = Array.isArray(snapshot.shared?.automations) ? snapshot.shared.automations : [];
       if (sharedAutomations.some((entry) => entry?.id === rule.id)) {
-        logger.warn("automations.rule_budget.shared_rule_kept", { automationId: rule.id });
+        pinRunCountToCap(rule.id, context.maxRuns);
+        logger.warn("automations.rule_budget.shared_rule_retired", {
+          automationId: rule.id,
+          reason: context.reason,
+          runCount: context.runCount,
+          maxRuns: context.maxRuns,
+        });
         return;
       }
       const local = { ...(snapshot.local ?? {}) };
@@ -3219,7 +3331,11 @@ export function createAutomationService({
     return { status: "skipped", output: `Unknown action type '${action.type}'` };
   };
 
-  const runLegacyRule = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
+  const runLegacyRule = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    budget: RunBudgetReservation,
+  ): Promise<AutomationRun> => {
     const actions = rule.execution?.kind === "built-in"
       ? rule.execution.builtIn?.actions ?? []
       : rule.legacy?.actions ?? [];
@@ -3293,7 +3409,7 @@ export function createAutomationService({
         runId: run.id,
         ...(handoffSessionId ? { handoffSessionId } : {}),
       });
-      finalizeRunBudget(rule, { succeeded: runStatus === "succeeded" });
+      budget.settle({ succeeded: runStatus === "succeeded" });
     }
     return toRun(loadRunRow(run.id) ?? {
       id: run.id,
@@ -3467,16 +3583,19 @@ export function createAutomationService({
   };
 
   /**
-   * Dispatch an agent-session run and spend one attempt from the rule's budget
-   * on EVERY exit. The early failures inside — no chat service, lane resolution
-   * refused, no lane at all — are exactly the ones that repeat forever, so a
-   * rule that can never resolve a lane has to burn attempts and retire like any
-   * other failing rule rather than retry on every future trigger.
+   * Dispatch an agent-session run and settle the attempt `runRuleNow` already
+   * reserved for it on EVERY exit. The early failures inside — no chat service,
+   * lane resolution refused, no lane at all — are exactly the ones that repeat
+   * forever, so a rule that can never resolve a lane has to burn attempts and
+   * retire like any other failing rule rather than retry on every future
+   * trigger. They are failures of a run that STARTED, so they settle rather
+   * than release.
    */
   const dispatchAgentSessionRun = async (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
     existingRunId?: string | null;
+    budget: RunBudgetReservation;
   }): Promise<AutomationRun> => {
     let succeeded = false;
     try {
@@ -3484,7 +3603,7 @@ export function createAutomationService({
       succeeded = true;
       return run;
     } finally {
-      finalizeRunBudget(args.rule, { succeeded });
+      args.budget.settle({ succeeded });
     }
   };
 
@@ -3727,11 +3846,23 @@ export function createAutomationService({
     });
   };
 
+  /**
+   * Run one rule now, or answer `null` when its budget is spent.
+   *
+   * The attempt is claimed here, before either execution path starts, so the
+   * ceiling holds against triggers that arrive together — and is released again
+   * when the run never started, which is only the exits that throw before a run
+   * row exists (an unsupported execution kind). Both execution paths settle
+   * their own reservation in a `finally`, and settling wins over the release.
+   *
+   * A dry run reserves nothing: it starts no chat, spends no money, and must
+   * not spend a rule's real budget either.
+   */
   const runRuleNow = async (
     rule: AutomationRule,
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
-  ): Promise<AutomationRun> => {
+  ): Promise<AutomationRun | null> => {
     const snapshot = projectConfigService.get();
     const sharedAutomations = snapshot.shared?.automations;
     const isSharedRule = Array.isArray(sharedAutomations)
@@ -3742,10 +3873,32 @@ export function createAutomationService({
     if (options.dryRun) {
       return await simulateDryRun(rule, trigger);
     }
-    const executionKind = resolveExecutionKind(rule);
-    if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
-    if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
-    throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+    const budget = reserveRunBudget(rule);
+    if (!budget) {
+      logger.info("automations.trigger.suppressed", {
+        automationId: rule.id,
+        triggerType: trigger.triggerType,
+        reason: "budget-exhausted",
+      });
+      // A person pressed Run now: they get the real reason rather than the
+      // generic "changed before it could run" a null answer turns into.
+      if (trigger.triggerType === "manual") {
+        const cap = runBudgetCap(rule);
+        throw new Error(
+          `Automation '${rule.name}' has used all ${cap} of its configured runs. Raise its retry limit to run it again.`,
+        );
+      }
+      return null;
+    }
+    try {
+      const executionKind = resolveExecutionKind(rule);
+      if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger, budget });
+      if (executionKind === "built-in") return await runLegacyRule(rule, trigger, budget);
+      throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+    } finally {
+      // A no-op once either path settled; a refund when nothing ran at all.
+      budget.release();
+    }
   };
 
   const runRule = async (
@@ -3758,16 +3911,23 @@ export function createAutomationService({
       .catch(() => undefined)
       .then(() => {
         const isManualTrigger = trigger.triggerType === "manual";
-        const currentRule = isManualTrigger ? rule : findRule(rule.id);
+        const latestRule = findRule(rule.id);
+        // A manual run executes the rule the caller picked — running a DISABLED
+        // rule by hand is a supported flow — but never one that has LEFT the
+        // config while this call waited its turn in the queue. A rule that
+        // retired on the run ahead of it is gone, and its run counter went with
+        // it, so re-running the captured object would hand a spent budget a
+        // fresh chat and a fresh lane.
+        const currentRule = isManualTrigger ? (latestRule ? rule : null) : latestRule;
         const currentTrigger = typeof trigger.scheduleTriggerIndex === "number"
-          ? currentRule?.triggers[trigger.scheduleTriggerIndex]
+          ? latestRule?.triggers[trigger.scheduleTriggerIndex]
           : undefined;
         const staleSchedule = !isManualTrigger && trigger.triggerType === "schedule" && (
           !currentTrigger
           || currentTrigger.type !== "schedule"
           || (currentTrigger.cron ?? "").trim() !== (trigger.scheduleCronExpression ?? "").trim()
         );
-        if (!isManualTrigger && (!currentRule || !currentRule.enabled || staleSchedule)) {
+        if (!currentRule || (!isManualTrigger && (!currentRule.enabled || staleSchedule))) {
           logger.info("automations.trigger.suppressed", {
             automationId: rule.id,
             triggerType: trigger.triggerType,
@@ -3777,7 +3937,7 @@ export function createAutomationService({
           });
           return null;
         }
-        return runRuleNow(currentRule ?? rule, trigger, options);
+        return runRuleNow(currentRule, trigger, options);
       });
     runQueuesByAutomationId.set(rule.id, queued);
     try {

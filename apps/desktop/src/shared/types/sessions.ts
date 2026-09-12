@@ -416,22 +416,34 @@ export type SessionBoardMoveResult = {
   moveId: string | null;
   message?: string | null;
   undoExpiresAt: string | null;
+  /**
+   * Why the host refused the move, when it did (`ok: false`).
+   *
+   * `pending_input`: a structured provider card is still waiting on an answer.
+   * Clearing the attention columns would not resolve it — the card would stay
+   * in Needs you while the toast claimed the card had moved — and answering the
+   * provider on the user's behalf is not something a drag may do. Present only
+   * on a refusal, so a caller can say what happened instead of falling back to
+   * the "it is already there" wording that a `changed: false` no-op carries.
+   */
+  reason?: "pending_input";
 };
 
 /**
  * Result of reversing a Work-board drag, discriminated on `ok`.
  *
- * A refusal carries WHY — the message already went out, or the host no longer
- * knows about the move at all (it restarted between the drag and the undo).
- * Those are different facts and the caller says different things about them,
- * so they are not collapsed into one boolean.
+ * A refusal carries WHY — the message already went out, the host no longer
+ * knows about the move at all (it restarted between the drag and the undo), or
+ * the row moved on under the undo window and there is nothing left of the move
+ * to take back. Those are different facts and the caller says different things
+ * about them, so they are not collapsed into one boolean.
  */
 export type SessionBoardMoveUndoResult =
   | {
     ok: false;
     sessionId: string;
     moveId: string;
-    reason: "already_dispatched" | "unknown_move";
+    reason: "already_dispatched" | "unknown_move" | "session_advanced";
   }
   | {
     ok: true;

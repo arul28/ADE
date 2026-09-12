@@ -40,8 +40,10 @@ import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
    write is reversed with it.
 
    The bound on that, stated honestly: the staging map is in-process, and the
-   drain is guaranteed on exactly ONE path — a graceful shutdown, where the
-   desktop host awaits `flushStagedBoardMoves` in its shutdown sequence.
+   drain is guaranteed on exactly TWO paths — a graceful shutdown, where the
+   desktop host awaits `flushStagedBoardMoves` in its shutdown sequence, and a
+   project close, where it awaits the same drain SCOPED to that project's
+   session service before the context's chat service and database go away.
    Staging a second move for the same session also drains the first. Every
    other exit only ATTEMPTS it: the desktop host fires the drain without
    awaiting it from its synchronous cleanup, so the send starts against a live
@@ -50,6 +52,13 @@ import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
    cut off the status write survives without its message — nothing in a single
    process can prevent that — and `undoBoardMove` says `unknown_move` for the
    orphan rather than claiming it dispatched.
+
+   The undo is narrowed, not blind. A move stages what the row looked like
+   BEFORE it and what the write left behind AFTER it; the reversal restores
+   only the fields the row still carries from the move. Five seconds is long
+   enough for the agent to raise a hand, for activity to change the settle
+   tier, or for the user to snooze the row, and a full-snapshot restore would
+   silently overwrite whichever of those landed first.
 
    Waiting is not here on purpose. A row sits in Waiting because it is snoozed
    or because its PR is mid-CI; a drag cannot assert either, so the column is
@@ -145,6 +154,28 @@ type BoardMoveSnapshot = {
   attentionSource: SessionAttentionSource | null;
 };
 
+/**
+ * What the move's own write left on the row, so a reversal can tell "still
+ * mine" from "something newer happened here".
+ *
+ * The attention triple is the same one the rest of this branch reads —
+ * `pendingInputItemId | attentionRequestedAt | attentionSource` — because those
+ * three are what `canonicalSessionState` derives Needs you from, and any one of
+ * them changing means the hand on the row is no longer the one the move put
+ * there (or took away). `pendingInputItemId` is projection-only today, so it
+ * reads null off a raw row; it is compared anyway because a projected row
+ * carries it and a comparison that silently ignores a field is the bug this
+ * type exists to prevent.
+ */
+type BoardMoveLifecycleIdentity = {
+  settledAt: string | null;
+  settleOverride: SessionSettleOverride | null;
+  snoozedUntil: string | null;
+  attentionRequestedAt: string | null;
+  attentionSource: SessionAttentionSource | null;
+  pendingInputItemId: string | null;
+};
+
 type StagedBoardMove = {
   moveId: string;
   sessionId: string;
@@ -153,6 +184,14 @@ type StagedBoardMove = {
   at: string;
   text: string | null;
   before: BoardMoveSnapshot;
+  /** What the write left behind, re-read from the row it wrote. */
+  after: BoardMoveLifecycleIdentity | null;
+  /**
+   * The service this move writes through, and the only handle on WHICH project
+   * staged it: the map is module-level while every project context builds these
+   * actions over its own session service, so the instance IS the project scope.
+   */
+  sessionService: BoardMoveSessionService;
   timer: NodeJS.Timeout | null;
   /** Send the message now and drop the entry. Idempotent — it claims first. */
   dispatch: () => Promise<void>;
@@ -187,17 +226,34 @@ function rememberDispatchedMoveId(moveId: string): void {
 }
 
 /**
+ * Which staged moves a drain claims. An empty filter claims all of them.
+ *
+ * `sessionService` is how a caller says "this project": the map is module-level
+ * so a project teardown cannot flush by root, and a global flush on one
+ * project's close would dispatch another project's pending move early — killing
+ * an undo window the user is still looking at.
+ */
+export type StagedBoardMoveFilter = {
+  sessionId?: string;
+  sessionService?: BoardMoveSessionService;
+};
+
+/**
  * Dispatch staged moves immediately instead of waiting out their undo windows.
  *
- * Two callers, one reason: the status write has ALREADY landed, so the message
- * must not be lost. `moveOnBoard` drains the session's previous move before
- * staging a new one (at most one per session is ever in flight, so an undo can
- * only ever reverse the most recent), and the desktop host awaits this inside
- * its graceful shutdown. A hard kill cannot run it — see the header.
+ * Three callers, one reason: the status write has ALREADY landed, so the
+ * message must not be lost. `moveOnBoard` drains the session's previous move
+ * before staging a new one (at most one per session is ever in flight, so an
+ * undo can only ever reverse the most recent), the desktop host awaits this
+ * inside its graceful shutdown, and it awaits it again — filtered to the
+ * closing project's session service — before a project context is disposed. A
+ * hard kill cannot run it; see the header.
  */
-export async function flushStagedBoardMoves(sessionId?: string): Promise<void> {
-  const pending = [...stagedBoardMoves.values()]
-    .filter((staged) => !sessionId || staged.sessionId === sessionId);
+export async function flushStagedBoardMoves(filter?: StagedBoardMoveFilter): Promise<void> {
+  const pending = [...stagedBoardMoves.values()].filter((staged) => (
+    (!filter?.sessionId || staged.sessionId === filter.sessionId)
+    && (!filter?.sessionService || staged.sessionService === filter.sessionService)
+  ));
   for (const staged of pending) {
     if (staged.timer) clearTimeout(staged.timer);
     staged.timer = null;
@@ -215,9 +271,11 @@ export async function flushStagedBoardMoves(sessionId?: string): Promise<void> {
  *
  * It also never fires in Electron's main process, whose loop never empties.
  * That host gets its guarantee from `main.ts`, which AWAITS
- * `flushStagedBoardMoves` inside its shutdown sequence, before it disposes the
- * chat service the dispatch needs. This hook is the non-Electron fallback, not
- * the desktop guarantee.
+ * `flushStagedBoardMoves` inside its shutdown sequence, and again — scoped to
+ * the closing project's session service — at the top of
+ * `disposeContextResources`, both times before it disposes the chat service the
+ * dispatch needs. This hook is the non-Electron fallback, not the desktop
+ * guarantee.
  */
 let beforeExitHookInstalled = false;
 function ensureBeforeExitDrain(): void {
@@ -253,6 +311,20 @@ function captureBoardMoveSnapshot(row: TerminalSessionSummary): BoardMoveSnapsho
     attentionRequestedAt: row.attentionRequestedAt ?? null,
     attentionMessage: row.attentionMessage ?? null,
     attentionSource: row.attentionSource ?? null,
+  };
+}
+
+function captureLifecycleIdentity(
+  row: TerminalSessionSummary | null | undefined,
+): BoardMoveLifecycleIdentity | null {
+  if (!row) return null;
+  return {
+    settledAt: row.settledAt ?? null,
+    settleOverride: row.settleOverride ?? null,
+    snoozedUntil: row.snoozedUntil ?? null,
+    attentionRequestedAt: row.attentionRequestedAt ?? null,
+    attentionSource: row.attentionSource ?? null,
+    pendingInputItemId: row.pendingInputItemId ?? null,
   };
 }
 
@@ -326,41 +398,107 @@ async function applyBoardMoveStatusWrite(
   void from;
 }
 
+/** What a reversal actually put back, group by group. */
+type BoardMoveRestoreOutcome = {
+  settle: boolean;
+  attention: boolean;
+  snooze: boolean;
+};
+
+const RESTORED_NOTHING: BoardMoveRestoreOutcome = { settle: false, attention: false, snooze: false };
+
+function restoredSomething(outcome: BoardMoveRestoreOutcome): boolean {
+  return outcome.settle || outcome.attention || outcome.snooze;
+}
+
 /**
- * Undo the status write from the snapshot taken before it.
+ * Undo the status write from the snapshot taken before it — but only where the
+ * row still carries what the move wrote.
  *
- * Order matters: settling clears the attention columns (see `settleSessions`),
- * so attention is restored last and wins when a snapshot somehow carries both.
- * That is also the canonical precedence — needs_you outranks settled — so the
- * restored row reads the way the original one did.
+ * A move is reversible for five seconds, and five seconds is long enough for
+ * the agent to raise a hand, for a turn to change the settle tier, or for the
+ * user to snooze the row. Restoring the whole snapshot over any of those puts
+ * back state the user can see is stale, silently, which is worse than an undo
+ * that puts back less than everything. So each group is compared against what
+ * the move LEFT (`after`) and skipped when the live row has moved on:
+ *
+ *   settle     `settled_at` + the override, which the move wrote together.
+ *   attention  the hand: `attention_requested_at`, its source, and the
+ *              provider's pending item id.
+ *   snooze     the move woke the row, so restoring a snooze is only safe while
+ *              the row is still awake.
+ *
+ * With no `after` (a move staged before this existed, or a row that has since
+ * been deleted) there is nothing to compare, and the old unconditional restore
+ * is the honest fallback — it is still the state the move overwrote.
+ *
+ * Order matters within a restore: settling clears the attention columns (see
+ * `settleSessions`), so attention is restored last and wins when a snapshot
+ * somehow carries both. That is also the canonical precedence — needs_you
+ * outranks settled — so the restored row reads the way the original one did.
  */
 async function restoreBoardMoveSnapshot(
   sessionService: BoardMoveSessionService,
   sessionId: string,
   before: BoardMoveSnapshot,
+  after: BoardMoveLifecycleIdentity | null,
   nowMs: number = Date.now(),
-): Promise<void> {
-  sessionService.setSettleOverride(sessionId, before.settleOverride ?? null);
-  if (before.settledAt) {
-    await sessionService.settleSession(sessionId, { source: "user" });
-  } else {
-    sessionService.unsettleSession(sessionId);
+): Promise<BoardMoveRestoreOutcome> {
+  const live = captureLifecycleIdentity(sessionService.get(sessionId));
+  // A row that vanished has nothing to restore; a move with no `after` has
+  // nothing to compare, so every group is still "mine".
+  if (after && !live) return RESTORED_NOTHING;
+  const stillOurs = (...fields: Array<keyof BoardMoveLifecycleIdentity>): boolean =>
+    !after || !live || fields.every((field) => live[field] === after[field]);
+
+  const outcome: BoardMoveRestoreOutcome = {
+    settle: stillOurs("settledAt", "settleOverride"),
+    attention: stillOurs("attentionRequestedAt", "attentionSource", "pendingInputItemId"),
+    snooze: stillOurs("snoozedUntil"),
+  };
+  // The two lifecycle writes clear each other (a settle drops the attention
+  // columns, an attention request drops the settle), so a group that is still
+  // "ours" can still reach a newer fact through the other one's side door. The
+  // newer fact wins in both directions:
+  if (outcome.settle && before.settledAt && !outcome.attention && live?.attentionRequestedAt) {
+    // Re-settling would take away a hand the move never raised. Needs you
+    // outranks settled, so the hand stays and the settle goes with it.
+    outcome.settle = false;
   }
-  if (before.attentionRequestedAt) {
-    sessionService.requestAttention(
-      sessionId,
-      before.attentionMessage,
-      before.attentionSource ?? "agent_explicit",
-    );
-  } else {
-    sessionService.clearAttentionRequest(sessionId);
+  if (outcome.attention && before.attentionRequestedAt && !outcome.settle && live?.settledAt) {
+    // And restoring the move's old question would un-settle a row that has
+    // since declared itself done.
+    outcome.attention = false;
+  }
+
+  if (outcome.settle) {
+    sessionService.setSettleOverride(sessionId, before.settleOverride ?? null);
+    if (before.settledAt) {
+      await sessionService.settleSession(sessionId, { source: "user" });
+    } else {
+      sessionService.unsettleSession(sessionId);
+    }
+  }
+  if (outcome.attention) {
+    if (before.attentionRequestedAt) {
+      sessionService.requestAttention(
+        sessionId,
+        before.attentionMessage,
+        before.attentionSource ?? "agent_explicit",
+      );
+    } else {
+      sessionService.clearAttentionRequest(sessionId);
+    }
   }
   // A snooze whose deadline has already passed is not worth restoring: it would
   // be re-filed out of the board on the next tick for a window that is over.
   const until = before.snoozedUntil ? Date.parse(before.snoozedUntil) : Number.NaN;
-  if (Number.isFinite(until) && until > nowMs) {
+  if (outcome.snooze && Number.isFinite(until) && until > nowMs) {
     sessionService.snoozeSession(sessionId, before.snoozedUntil!);
+  } else {
+    outcome.snooze = false;
   }
+  return outcome;
 }
 
 
@@ -377,7 +515,41 @@ export type BoardMoveChatService = {
     kind: "auto";
     metadata: { boardMove: AgentChatBoardMoveMetadata };
   }): Promise<unknown> | unknown;
+  /**
+   * The live chat behind this row, for the one question a move has to ask it:
+   * is a structured provider card still waiting on an answer.
+   *
+   * It cannot be asked of the session row. `pendingInputItemId` is projected
+   * onto a row from the chat summary and is never a column, so
+   * `sessionService.get` reads it as null for a chat that is visibly parked in
+   * Needs you — which is exactly how a move to Working could report success
+   * over a live card. `awaitingInput` is the chat service's own
+   * `hasLivePendingInput`, the same check `chat.sendMessage` refuses on.
+   */
+  getSessionSummary?(sessionId: string): Promise<{ awaitingInput?: boolean } | null>;
 };
+
+/**
+ * Whether the provider is still blocked on a structured card nobody answered.
+ *
+ * Best effort by design: a host with no chat service, an older one with no
+ * summary reader, or a summary read that throws all answer "no" and let the
+ * move through. A board move must not fail because the question could not be
+ * asked — the refusal it feeds exists to stop a move that would LIE, and a
+ * thrown probe is not evidence of one.
+ */
+async function hasLiveStructuredCard(
+  chat: BoardMoveChatService | null | undefined,
+  sessionId: string,
+): Promise<boolean> {
+  if (typeof chat?.getSessionSummary !== "function") return false;
+  try {
+    const summary = await chat.getSessionSummary(sessionId);
+    return summary?.awaitingInput === true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The two board-move actions, built once and shared by every caller that can
@@ -422,6 +594,34 @@ export function createSessionBoardMoveActions(deps: {
       }
       const row = sessionService.get(sessionId);
       if (!row) throw new Error(`Session '${sessionId}' was not found.`);
+      // A live structured card outranks the drag, and the drag cannot answer
+      // it. `clearAttentionRequest` clears the attention columns but not the
+      // provider's pending item, so a move to Working or Done over a live card
+      // used to report `changed: true` and toast success while the card stayed
+      // in Needs you — the same "a move that visibly lies" this branch refuses
+      // for a snoozed row dragged to Done. Answering a provider's question on
+      // the user's behalf is not something a drag may do, so this refuses with
+      // a reason instead, exactly as `chat.sendMessage` refuses a send.
+      //
+      // Needs you is exempt: that is where the card already is, and raising the
+      // user's own hand on top of the provider's asserts nothing false.
+      //
+      // With no chat service (or an older one with no summary reader) there is
+      // nothing to ask, and the move proceeds as it did before.
+      if (to !== "needs_you" && (await hasLiveStructuredCard(deps.agentChatService, sessionId))) {
+        return {
+          ok: false,
+          sessionId,
+          // Needs you, not the derived column: the card IS parked there on the
+          // board the user dragged from, even though the raw row cannot say so.
+          from: "needs_you",
+          to,
+          changed: false,
+          moveId: null,
+          undoExpiresAt: null,
+          reason: "pending_input",
+        };
+      }
       // Checked BEFORE the flush below, so a duplicate drop event — which
       // arrives as a second call to the column the first one just reached —
       // stays a pure no-op instead of cutting the real move's undo short.
@@ -433,7 +633,7 @@ export function createSessionBoardMoveActions(deps: {
       // let an undo of the OLDER moveId restore a snapshot taken before it and
       // silently wipe this move's write. One in flight per session, and undo
       // only ever reaches the latest.
-      await flushStagedBoardMoves(sessionId);
+      await flushStagedBoardMoves({ sessionId });
       // Re-read and re-derive: a flushed move whose message could not be
       // delivered restores its own snapshot, so both the row and the column it
       // is in may have moved under us.
@@ -446,6 +646,12 @@ export function createSessionBoardMoveActions(deps: {
       const moveId = randomUUID();
       const at = new Date().toISOString();
       await applyBoardMoveStatusWrite(sessionService, sessionId, from, to);
+      // Re-read rather than predict: the write goes through four session-service
+      // methods whose own rules (a settle clearing attention, an attention
+      // request clearing a settle) decide what actually landed. A reversal
+      // compares against this, so it has to be what the row says, not what the
+      // move meant.
+      const after = captureLifecycleIdentity(sessionService.get(sessionId));
 
       const text = boardMoveMessageText(from, to);
       const dispatch = async (): Promise<void> => {
@@ -457,11 +663,12 @@ export function createSessionBoardMoveActions(deps: {
         const chat = deps.agentChatService;
         if (typeof chat?.messageSession !== "function") {
           // No chat service means no message, so the move never completed.
-          await restoreBoardMoveSnapshot(sessionService, sessionId, before);
+          const restored = await restoreBoardMoveSnapshot(sessionService, sessionId, before, after);
           deps.logger.warn("session.board_move_reverted", {
             sessionId,
             moveId,
             reason: "chat_service_unavailable",
+            restored,
           });
           return;
         }
@@ -475,17 +682,18 @@ export function createSessionBoardMoveActions(deps: {
             metadata: { boardMove: { from, to, at, moveId } },
           });
         } catch (error) {
-          await restoreBoardMoveSnapshot(sessionService, sessionId, before);
+          const restored = await restoreBoardMoveSnapshot(sessionService, sessionId, before, after);
           deps.logger.warn("session.board_move_reverted", {
             sessionId,
             moveId,
             reason: "message_failed",
+            restored,
             error: getErrorMessage(error),
           });
         }
       };
       const staged: StagedBoardMove = {
-        moveId, sessionId, from, to, at, text, before, timer: null, dispatch,
+        moveId, sessionId, from, to, at, text, before, after, sessionService, timer: null, dispatch,
       };
       stagedBoardMoves.set(moveId, staged);
       const timer = setTimeout(() => { void dispatch(); }, BOARD_MOVE_STAGE_MS);
@@ -515,6 +723,13 @@ export function createSessionBoardMoveActions(deps: {
      * alone would be exactly the divergence the staging exists to prevent, and
      * the agent has already been told. `unknown_move` is the other refusal: the
      * host has no record of this id at all, so it cannot say what to restore.
+     *
+     * `session_advanced` is the third, and it is a refusal rather than a
+     * half-restore: the row no longer carries ANYTHING this move wrote — a new
+     * hand, a new settle tier, a fresh snooze got there first — so there is
+     * nothing left to take back, and reporting `reversed` would claim a write
+     * that did not happen. A row that advanced in only one of those groups is
+     * still undone, minus that group; see `restoreBoardMoveSnapshot`.
      */
     undoBoardMove: async (args?: unknown): Promise<SessionBoardMoveUndoResult> => {
       const record = readObjectActionArg(args, "session.undoBoardMove");
@@ -531,11 +746,20 @@ export function createSessionBoardMoveActions(deps: {
       }
       stagedBoardMoves.delete(moveId);
       if (staged.timer) clearTimeout(staged.timer);
-      await restoreBoardMoveSnapshot(
+      const restored = await restoreBoardMoveSnapshot(
         sessionService,
         sessionId,
         staged.before,
+        staged.after,
       );
+      if (!restoredSomething(restored)) {
+        deps.logger.warn("session.board_move_undo_refused", {
+          sessionId,
+          moveId,
+          reason: "session_advanced",
+        });
+        return { ok: false, sessionId, moveId, reason: "session_advanced" };
+      }
       return { ok: true, sessionId, moveId, from: staged.from, to: staged.to, reversed: true };
     },
   };

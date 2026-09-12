@@ -5690,6 +5690,28 @@ app.whenReady().then(async () => {
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    // A staged board move whose project is closing, before anything it needs is
+    // gone. Its status write already landed and its message is still sitting
+    // behind a 5-second timer; the disposal below closes the chat service that
+    // dispatch sends through and the database a failed dispatch reverses into,
+    // while the timer stays armed and fires against both. Awaited here for the
+    // same reason the shutdown sequence awaits it — an unawaited drain races
+    // the very teardown it is trying to get ahead of.
+    //
+    // Scoped to THIS context's session service, which is what identifies the
+    // project: every context builds its own board-move actions over its own
+    // session service, and a global flush would dispatch another project's
+    // pending move early, ending an undo window its user is still looking at.
+    if (ctx.sessionService) {
+      try {
+        await flushStagedBoardMoves({ sessionService: ctx.sessionService });
+      } catch (error) {
+        ctx.logger.error("app.staged_board_move_flush_failed", {
+          projectRoot: ctx.project?.rootPath ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const normalizedRoot =
       typeof ctx.project?.rootPath === "string" &&
       ctx.project.rootPath.trim().length > 0

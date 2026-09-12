@@ -13913,15 +13913,22 @@ final class ADETests: XCTestCase {
     let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
 
-    // Claude can promote a staged row either way; Cursor's SDK has no mid-run
-    // message API, so it gets interrupt only; Codex has neither.
+    // Claude can promote a staged row either way. Codex folds a `turn/steer`
+    // request into the running turn, so it promotes inline but never
+    // interrupts. Cursor's SDK has no mid-run message API, so it gets interrupt
+    // only. `atomicDispatchModes` drops `.queue`, which is staging, not a
+    // promotion target.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
     XCTAssertEqual(
       workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil),
       [.inline, .interrupt]
     )
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [.inline])
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "codex-chat"), summary: nil),
+      [.inline]
+    )
     XCTAssertEqual(
       workChatManualSteerDispatchModes(
         session: makeTerminalSessionSummary(toolType: "cursor"),

@@ -23693,6 +23693,11 @@ function formatSessionLifecycle(value: unknown): string {
     // scripted caller cannot reconstruct.
     ["moved", boardMoveColumns(record)],
     ["changed", typeof record.changed === "boolean" ? (record.changed ? "yes" : "no (already there)") : undefined],
+    // A refusal has a reason, and "already there" is only one of them: the host
+    // also refuses a move over a live structured card, and an undo once the
+    // chat has moved on. Without this row the caller sees "no" and cannot tell
+    // which, so `ade session move` would report a refusal as a no-op.
+    ["reason", typeof record.reason === "string" ? record.reason : undefined],
     ["move id", record.moveId],
     ["undo expires", record.undoExpiresAt],
     ["message", record.message],

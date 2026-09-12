@@ -161,17 +161,20 @@ function makeRule(overrides: Partial<AutomationRuleInput> & { id: string }): Aut
 }
 
 /**
- * Config harness whose `effective.automations` is derived from
- * `local.automations`, so a rule that deletes itself really disappears.
+ * Config harness whose `effective.automations` is derived from `shared` +
+ * `local`, so a rule that deletes itself really disappears — and a shared rule,
+ * which this process must never rewrite, really does not.
  */
-function makeProjectConfigHarness(rules: AutomationRuleInput[]) {
+function makeProjectConfigHarness(rules: AutomationRuleInput[], sharedRules: AutomationRuleInput[] = []) {
   let local: any = { automations: rules.map((rule) => ({ ...rule })) };
+  let shared: any = { automations: sharedRules.map((rule) => ({ ...rule })) };
   const snapshot = () => ({
     trust: { requiresSharedTrust: false },
-    shared: {},
+    shared,
     local,
     effective: {
-      automations: (local.automations ?? []).map((rule: any) => normalizeRuntimeRule(rule)),
+      automations: [...(shared.automations ?? []), ...(local.automations ?? [])]
+        .map((rule: any) => normalizeRuntimeRule(rule)),
       providerMode: "guest",
       ui: {},
     },
@@ -181,10 +184,12 @@ function makeProjectConfigHarness(rules: AutomationRuleInput[]) {
       get: () => snapshot(),
       save: (next: any) => {
         local = next.local ?? local;
+        shared = next.shared ?? shared;
         return snapshot();
       },
     } as any,
     listLocalIds: () => (local.automations ?? []).map((rule: any) => rule.id),
+    listSharedIds: () => (shared.automations ?? []).map((rule: any) => rule.id),
   };
 }
 
@@ -193,11 +198,13 @@ const lanesCreated: Array<{ id: string; name: string; branchRef: string }> = [];
 
 function createService(args: {
   rules: AutomationRuleInput[];
+  /** Rules that live in `.ade/ade.yaml`, which this process may never rewrite. */
+  sharedRules?: AutomationRuleInput[];
   agentChatService?: unknown;
   db?: { db: AdeDb; raw: Database };
 }) {
   const store = args.db ?? createInMemoryAdeDb();
-  const projectConfig = makeProjectConfigHarness(args.rules);
+  const projectConfig = makeProjectConfigHarness(args.rules, args.sharedRules ?? []);
   const events: Array<Record<string, unknown>> = [];
   lanesCreated.length = 0;
   const service = createAutomationService({
@@ -701,6 +708,67 @@ describe("handoff action", () => {
     service.onSessionSignal(limitSignal);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(agentChatService.handoffSession).toHaveBeenCalledTimes(2);
+
+    service.dispose();
+  });
+
+  it("claims the attempt before the run, so two triggers cannot both spend the last one", async () => {
+    const agentChatService = agentChatStub();
+    // Two Run-now presses landing together. Both find the rule (the lookup is
+    // synchronous), both get past it, and the budget used to be recorded only
+    // after a run finished — so a one-run rule created two chats and two lanes.
+    const rule = handoffRule({
+      id: "handoff-manual",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      maxRuns: 1,
+    });
+    const { service, store, projectConfig } = createService({ rules: [rule], agentChatService });
+
+    const outcomes = await Promise.allSettled([
+      service.triggerManually({ id: "handoff-manual" }),
+      service.triggerManually({ id: "handoff-manual" }),
+    ]);
+
+    expect(store.db.all("select id from automation_runs")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(projectConfig.listLocalIds()).not.toContain("handoff-manual");
+    // The refused attempt was handed back, so the counter never ran past the cap.
+    const counter = store.db.get<{ value: string }>(
+      "select value from kv where key = 'automations.run-count.v1:proj:handoff-manual'",
+    );
+    expect(counter?.value ?? null).toBeNull();
+
+    service.dispose();
+  });
+
+  it("stops dispatching a SHARED rule at its ceiling instead of firing forever", async () => {
+    const agentChatService = agentChatStub();
+    // `.ade/ade.yaml` belongs to the repo, so a spent shared rule is never
+    // deleted. It still has to STOP: the counter is the gate, and it used to
+    // just keep climbing while the rule ran on every future trigger.
+    const { service, projectConfig, store } = createService({
+      rules: [],
+      sharedRules: [handoffRule({ maxRuns: 1 })],
+      agentChatService,
+    });
+
+    service.onSessionSignal(limitSignal);
+    await vi.waitFor(() => {
+      expect(agentChatService.handoffSession).toHaveBeenCalledTimes(1);
+    });
+
+    service.onSessionSignal(limitSignal);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(agentChatService.handoffSession).toHaveBeenCalledTimes(1);
+    expect(store.db.all("select id from automation_runs")).toHaveLength(1);
+    // Kept, because this process does not rewrite shared config...
+    expect(projectConfig.listSharedIds()).toContain("handoff-on-limit");
+    // ...and parked at the ceiling rather than counting up forever.
+    const counter = store.db.get<{ value: string }>(
+      "select value from kv where key = 'automations.run-count.v1:proj:handoff-on-limit'",
+    );
+    expect(counter?.value).toBe("1");
 
     service.dispose();
   });
