@@ -536,7 +536,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
 
     async startEventLog(args: IosSimulatorStartEventLogArgs = {}): Promise<IosSimulatorEventLogPage> {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
-      eventLog.start({ deviceUdid: udid, bundleId: args.bundleId ?? null, predicate: args.predicate ?? null });
+      eventLog.start({ deviceUdid: udid, bundleId: args.bundleId ?? null });
       return eventLog.read({});
     },
 

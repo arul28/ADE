@@ -1582,12 +1582,10 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   the same order, so the log shows what ADE did between two app log lines.
 
     $ ade --socket ios-sim log-start --bundle-id com.example.app --text
-    $ ade --socket ios-sim log-start --predicate 'subsystem == "com.example"' --text
 
   Flags:
     --device, --udid <id>  Simulator device.
     --bundle-id <id>       Keep only rows from this app.
-    --predicate <text>     Bare log-stream predicate; wins over --bundle-id.
 `,
   "log-stop": `${ADE_BANNER}
   iOS Simulator: log-stop
@@ -11410,11 +11408,9 @@ function buildIosSimulatorPlan(
   if (sub === "log-start" || sub === "logs-start") {
     const device = readValue(args, ["--device", "--udid"]);
     const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
-    const predicate = readValue(args, ["--predicate"]);
     return iosAction("iOS simulator event log start", "startEventLog", {
       deviceUdid: device,
       ...(bundleId ? { bundleId } : {}),
-      ...(predicate ? { predicate } : {}),
     });
   }
   if (sub === "log-stop" || sub === "logs-stop") {

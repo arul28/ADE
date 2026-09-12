@@ -980,10 +980,14 @@ export type IosSimulatorEventLogPage = {
 };
 
 export type IosSimulatorStartEventLogArgs = IosSimulatorDeviceArgs & {
-  /** Only keep rows whose process matches this app. */
+  /**
+   * Only keep rows whose `os_log` subsystem starts with this bundle id.
+   *
+   * There is no raw-predicate option on purpose. `log stream` reads the whole
+   * device, so an arbitrary predicate returns every other app's rows and the
+   * system's besides.
+   */
   bundleId?: string | null;
-  /** Bare `log stream` predicate. Takes precedence over `bundleId`. */
-  predicate?: string | null;
 };
 
 /**

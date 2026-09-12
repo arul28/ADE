@@ -477,7 +477,7 @@ SwiftUI screen from stale code.
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` (the caller's chat id comes from `$ADE_CHAT_SESSION_ID`) |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
 | `app-state` | `getAppState` | `--bundle-id`, `--device` |
-| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id`, `--predicate` |
+| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` |
 | `log-stop` (`logs-stop`) | `stopEventLog` | none |
 | `log` (`logs`) | `getEventLog` | `--device`, `--since`, `--limit` |
 | `find-element` (`find`) | `findElement` | `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, `--device`, `--lane`, `--project` |

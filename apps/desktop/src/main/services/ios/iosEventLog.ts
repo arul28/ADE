@@ -159,16 +159,16 @@ export function parseCompactLogLine(
  * than `==` so that a subsystem such as `com.acme.app.networking` still
  * matches.
  *
+ * There is deliberately no raw-predicate escape hatch. `log stream` reads the
+ * WHOLE device, so an arbitrary predicate returns every other app's rows and
+ * the system's besides — and nothing in the product ever asked for that. An
+ * agent that genuinely needs a device-wide log can run `simctl spawn` itself.
+ *
  * @throws Error when the bundle id contains a double quote or a backslash.
  */
 export function buildLogPredicate(args: {
   bundleId?: string | null;
-  predicate?: string | null;
 }): string | null {
-  const predicate = args.predicate ?? "";
-  if (predicate.trim().length > 0) {
-    return predicate;
-  }
   const bundleId = (args.bundleId ?? "").trim();
   if (bundleId.length === 0) {
     return null;
@@ -226,7 +226,7 @@ function clampReadLimit(limit: number | null | undefined): number {
 }
 
 export function createIosEventLog(deps: IosEventLogDeps): {
-  start(args: { deviceUdid: string; bundleId?: string | null; predicate?: string | null }): void;
+  start(args: { deviceUdid: string; bundleId?: string | null }): void;
   stop(): void;
   isRunning(): boolean;
   activeDeviceUdid(): string | null;
@@ -318,10 +318,7 @@ export function createIosEventLog(deps: IosEventLogDeps): {
         logger?.debug("ios_event_log.start_ignored", { deviceUdid: requested });
         return;
       }
-      const predicate = buildLogPredicate({
-        bundleId: args.bundleId,
-        predicate: args.predicate,
-      });
+      const predicate = buildLogPredicate({ bundleId: args.bundleId });
       const switched = deviceUdid !== null && deviceUdid !== requested;
       teardown();
       if (switched) {

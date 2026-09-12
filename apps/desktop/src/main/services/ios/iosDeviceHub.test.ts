@@ -1608,10 +1608,15 @@ describe("parseCompactLogLine", () => {
 });
 
 describe("buildLogPredicate", () => {
-  it("returns an explicit predicate unchanged", () => {
-    expect(
-      buildLogPredicate({ bundleId: "com.acme.app", predicate: 'process == "MyApp"' }),
-    ).toBe('process == "MyApp"');
+  it("has no raw-predicate escape hatch", () => {
+    // `log stream` reads the whole device, so an arbitrary predicate returns
+    // every other app's rows and the system's besides. Nothing in the product
+    // asked for that, and the option is gone rather than validated.
+    const withExtra = buildLogPredicate({
+      bundleId: "com.acme.app",
+      predicate: 'process == "Other"',
+    } as { bundleId?: string | null });
+    expect(withExtra).toBe('subsystem BEGINSWITH "com.acme.app"');
   });
 
   it("filters on the subsystem for a bundle id", () => {
@@ -1622,7 +1627,7 @@ describe("buildLogPredicate", () => {
 
   it("returns null when there is nothing to filter by", () => {
     expect(buildLogPredicate({})).toBeNull();
-    expect(buildLogPredicate({ bundleId: "  ", predicate: "  " })).toBeNull();
+    expect(buildLogPredicate({ bundleId: "  " })).toBeNull();
   });
 
   it("rejects a bundle id that can break out of the predicate string", () => {
