@@ -3159,6 +3159,15 @@ export function createAutomationService({
       // Only set when THIS branch created the lane, so the compensating delete
       // below can never touch a lane the user chose.
       let createdLaneId: string | null = null;
+      // `createLaneForRun` threads the new lane onto the SHARED trigger so a
+      // later step in the chain targets it. Deleting the lane has to put those
+      // back too, or a `continueOnFailure` / `alwaysRun` step resolves its
+      // default lane to one that no longer exists.
+      const triggerLaneBeforeCreate = {
+        laneId: trigger.laneId,
+        laneName: trigger.laneName,
+        branch: trigger.branch,
+      };
       if (mode === "fork") {
         // A fork's provider transcript is keyed to the source lane worktree, so
         // main never steers it — `handoffSession` resolves the source lane and
@@ -3236,6 +3245,11 @@ export function createAutomationService({
         // that landed. Only the lane this branch just made is ever removed;
         // an "explicit" or "same" target is the user's lane and is left alone.
         if (createdLaneId) {
+          // Undo the trigger mutation first, so a cleanup that itself fails
+          // still leaves the chain pointing at the lane it had before.
+          trigger.laneId = triggerLaneBeforeCreate.laneId;
+          trigger.laneName = triggerLaneBeforeCreate.laneName;
+          trigger.branch = triggerLaneBeforeCreate.branch;
           try {
             await laneService.delete({ laneId: createdLaneId });
           } catch (cleanupError) {

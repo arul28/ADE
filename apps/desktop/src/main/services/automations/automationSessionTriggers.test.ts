@@ -631,6 +631,11 @@ describe("handoff action", () => {
       expect(rows[0]?.status).toBe("failed");
       expect(rows[0]?.output).toContain("provider unavailable");
     });
+    // Lane creation threads the new lane onto the shared trigger, so deleting
+    // it has to put that back — otherwise a `continueOnFailure` or `alwaysRun`
+    // step later in the chain resolves its default lane to a deleted one.
+    expect(lanesCreated[0]?.id).toBe("lane-new-1");
+    expect(limitSignal.laneId).not.toBe("lane-new-1");
 
     service.dispose();
   });
