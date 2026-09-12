@@ -34564,11 +34564,13 @@ describe("createAgentChatService", () => {
       return { service, session, events, approvalEvent };
     };
 
-    it("delivers the Work-board status guidance to a project chat", async () => {
-      // The board position is derived, so an agent cannot set it — but it owns
-      // both inputs, and telling it so is the point of the line. It rides the
-      // shared ADE guidance block, which is why every provider gets it rather
-      // than only the ones that take the lane-directive path.
+    it("delivers the status mechanics to a project chat, and not the board rule", async () => {
+      // The note/ask mechanics ride the shared ADE guidance block, so every
+      // provider gets them. The board rule deliberately does NOT: that block is
+      // emitted whole inside the Cursor SDK prompt's hard 3 KB budget, which
+      // already sits at ~100% and truncates from the END, so a line here cost
+      // that prompt its subagent routing contract and its project rules. The
+      // rule lives in the ade-cli-control-plane skill instead.
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -34580,9 +34582,10 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
       await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
       const first = JSON.stringify(mockState.droidPromptCalls[0]);
-      expect(first).toContain("Your status on the Work board is derived from your turn state and your note.");
       expect(first).toContain("ade chat note");
       expect(first).toContain("ade chat ask");
+      expect(first).not.toContain("Work board is derived");
+      expect(first).not.toContain("Work-board column is derived");
     });
 
     it("keeps a durable marker for a plan card the user already answered", async () => {

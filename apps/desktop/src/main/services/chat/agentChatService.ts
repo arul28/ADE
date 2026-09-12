@@ -7836,11 +7836,12 @@ function buildAdeSessionLineageGuidance(
 /**
  * The lane-scoped ADE directive.
  *
- * The Work-board status line (`ADE_BOARD_STATUS_GUIDANCE`) rides in through
- * `buildAdeCliAgentGuidance` rather than being appended here, and deliberately:
- * Claude, Codex and OpenCode never take this path — they get their ADE guidance
- * through a persistent system prompt — so a line appended here would reach only
- * Cursor, Droid, Pi and the ACP providers. One line, one source, every chat.
+ * The Work-board status rule is NOT appended here, and is not in the shared
+ * session-status guidance either. A line in either place reaches the Cursor SDK
+ * prompt, which already sits at ~100% of its hard 3 KB budget and truncates
+ * from the END — so it would silently evict that prompt's subagent routing
+ * contract and project rules. The rule is documented in the "Board and status"
+ * section of the ade-cli-control-plane skill, which every agent reads.
  */
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,

@@ -95,15 +95,19 @@ describe("ADE bootstrap guidance", () => {
 });
 
 describe("Work board status guidance", () => {
-  it("states the derived board rule exactly once, and names both inputs", () => {
+  it("keeps the board rule OUT of this guidance, which is emitted under a hard budget", () => {
+    // The Cursor SDK prompt emits this constant whole inside a 3 KB budget that
+    // truncates from the END, and it already sits at ~100% of it. A board line
+    // here cost that prompt its subagent routing contract and its project
+    // rules, with nothing failing except two assertions in that file. The rule
+    // lives in the ade-cli-control-plane skill's "Board and status" section
+    // instead, which every agent reads and which no budget clips.
     const guidance = buildAdeBootstrapGuidance([]);
-    expect(guidance).toContain(
-      "Your status on the Work board is derived from your turn state and your note. "
-      + "Keep the note current with `ade chat note`, and use `ade chat ask` when you are blocked.",
-    );
-    // One line, not a paragraph repeated per section: a duplicated rule in a
-    // prompt is one an agent has to decide between.
-    expect(guidance.split("Your status on the Work board is derived")).toHaveLength(2);
+    expect(guidance).not.toContain("Work board is derived");
+    expect(guidance).not.toContain("Work-board column is derived");
+    // The mechanics an agent does need here are still present.
+    expect(guidance).toContain("ade chat note");
+    expect(guidance).toContain("ade chat ask");
   });
 
   it("never tells an agent it can set its own board column", () => {
