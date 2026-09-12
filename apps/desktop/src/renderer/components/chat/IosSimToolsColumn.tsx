@@ -539,7 +539,10 @@ export function IosSimToolsColumn({
             type="button"
             className={cn(BUTTON, "mr-0.5")}
             onClick={onToggleLog}
-            disabled={busy}
+            // Starting and stopping the log mutates one shared host process, and
+            // the service runs no ownership check of its own, so a chat that
+            // does not own the session could stop another chat's log.
+            disabled={locked}
           >
             {logRunning ? "Stop" : "Start"}
           </button>

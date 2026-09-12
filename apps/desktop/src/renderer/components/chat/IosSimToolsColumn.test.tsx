@@ -225,6 +225,15 @@ describe("IosSimToolsColumn", () => {
     expect(within(log).getByText("Could not load the profile.")).toBeTruthy();
   });
 
+  // Start and Stop drive one shared host process, and the service runs no
+  // ownership check of its own, so a chat that does not own the session could
+  // stop the log another chat is reading.
+  it("refuses to start or stop the event log while another chat owns the session", () => {
+    renderColumn({ disabled: true, logRows, logRunning: false });
+
+    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   // Starting the log is a request to read it, so Start that left the rows
   // folded read as a button that had done nothing.
   it("unfolds the rows once the log is running", () => {

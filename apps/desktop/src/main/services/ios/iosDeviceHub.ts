@@ -228,6 +228,35 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     };
   };
 
+  /**
+   * Lets go of a tracked session: shuts the simulator down when asked, stops a
+   * log stream that was following it, and announces the release.
+   *
+   * Shared by `closeDevice` and by `openDevice` taking over a different device,
+   * so a hand-off releases exactly what a close releases.
+   */
+  const releaseTrackedDevice = async (
+    previous: IosSimulatorDeviceSession,
+    shouldShutdown: boolean,
+  ): Promise<boolean> => {
+    let shutdown = false;
+    if (shouldShutdown) {
+      await deps.run("xcrun", ["simctl", "shutdown", previous.deviceUdid], { timeoutMs: 60_000 })
+        .then(() => {
+          shutdown = true;
+        })
+        .catch((error: unknown) => {
+          deps.logger.debug("ios_simulator.device_shutdown_failed", {
+            deviceUdid: previous.deviceUdid,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+    if (eventLog.activeDeviceUdid() === previous.deviceUdid) eventLog.stop();
+    deps.emit({ type: "device-session-released", previousDeviceSession: previous });
+    return shutdown;
+  };
+
   return {
     /* ----------------------------------------------------------------- *
      * Device sessions
@@ -254,17 +283,31 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           .catch(() => undefined);
       }
       if (args.openWindow !== false) deps.openSimulatorApp();
+      const previous = deviceSession;
+      const isSameDevice = previous?.deviceUdid === device.udid;
+      // Re-opening the same device keeps the original answer to "did ADE boot
+      // this?". The device is booted by the second call, so reading the state
+      // alone would record `false` and leave `closeDevice` with no reason to
+      // shut down a simulator ADE started.
+      const bootedByAde = (isSameDevice && previous?.bootedByAde === true) || !alreadyBooted;
+      if (previous && !isSameDevice) {
+        // Opening another device ends the session on this one, so it is
+        // released here rather than left untracked. ADE shuts it down when ADE
+        // booted it, which is what `closeDevice` would have done; a simulator
+        // the user started stays running.
+        await releaseTrackedDevice(previous, previous.bootedByAde);
+      }
       deviceSession = {
         deviceUdid: device.udid,
         deviceName: device.name,
         chatSessionId: args.chatSessionId ?? null,
         laneId: args.laneId ?? null,
         openedAt: nowIso(),
-        bootedByAde: !alreadyBooted,
+        bootedByAde,
       };
       deps.logger.info("ios_simulator.device_session_started", {
         deviceUdid: device.udid,
-        bootedByAde: !alreadyBooted,
+        bootedByAde,
       });
       recordAction(
         `Opened ${device.name}.`,
@@ -274,8 +317,21 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       return deviceSession;
     },
 
+    /**
+     * Releases the tracked device session.
+     *
+     * A named device that is not the tracked one is answered with a no-op
+     * rather than an error. The CLI forwards `--device`, so closing the session
+     * on the device the caller actually named is the only safe reading of
+     * `close-device --device <udid>`, and "close a device that is not open" is
+     * not a failure worth throwing over.
+     */
     async closeDevice(args: IosSimulatorCloseDeviceArgs = {}): Promise<IosSimulatorCloseDeviceResult> {
       if (!deviceSession) {
+        return { released: false, shutdown: false, previousDeviceSession: null };
+      }
+      const requested = args.deviceUdid?.trim() || null;
+      if (requested && requested !== deviceSession.deviceUdid) {
         return { released: false, shutdown: false, previousDeviceSession: null };
       }
       if (args.ignoreOwnership !== true) {
@@ -283,22 +339,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       }
       const previous = deviceSession;
       deviceSession = null;
-      let shutdown = false;
-      const shouldShutdown = args.shutdownDevice ?? previous.bootedByAde;
-      if (shouldShutdown) {
-        await deps.run("xcrun", ["simctl", "shutdown", previous.deviceUdid], { timeoutMs: 60_000 })
-          .then(() => {
-            shutdown = true;
-          })
-          .catch((error: unknown) => {
-            deps.logger.debug("ios_simulator.device_shutdown_failed", {
-              deviceUdid: previous.deviceUdid,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-      }
-      if (eventLog.activeDeviceUdid() === previous.deviceUdid) eventLog.stop();
-      deps.emit({ type: "device-session-released", previousDeviceSession: previous });
+      const shutdown = await releaseTrackedDevice(previous, args.shutdownDevice ?? previous.bootedByAde);
       return { released: true, shutdown, previousDeviceSession: previous };
     },
 
@@ -378,9 +419,18 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         service: args.service,
         action: args.action,
       });
+      // A `reset` takes the whole service back to its default and carries no
+      // bundle id, so both the row and the command leave it out. Printing it
+      // regardless gave a log row reading "for undefined" and a command nobody
+      // could run.
+      const bundleId = args.bundleId?.trim() || null;
       recordAction(
-        `${args.action} ${args.service} for ${args.bundleId}.`,
-        `ade ios-sim permission ${args.action} ${args.service} --bundle-id ${args.bundleId} --device ${udid}`,
+        bundleId
+          ? `${args.action} ${args.service} for ${bundleId}.`
+          : `${args.action} ${args.service}.`,
+        `ade ios-sim permission ${args.action} ${args.service}`
+          + (bundleId ? ` --bundle-id ${bundleId}` : "")
+          + ` --device ${udid}`,
       );
       return { ok: true };
     },

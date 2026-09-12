@@ -97,6 +97,26 @@ const activeStatus: IosSimulatorStatus = {
   },
 };
 
+/**
+ * "Open <device> without an app": a claimed, booted device and no app session.
+ *
+ * This is the shape the device hub added, and it is the one every live-view
+ * consumer has to accept. A guard that asks for `activeSession` sees nothing
+ * here, which is how the screen scale went missing and every tap landed short.
+ */
+const deviceSessionStatus: IosSimulatorStatus = {
+  ...activeStatus,
+  activeSession: null,
+  deviceSession: {
+    deviceUdid: device.udid,
+    deviceName: device.name,
+    chatSessionId: "chat-1",
+    laneId: "lane-1",
+    openedAt: "2026-04-29T00:00:00.000Z",
+    bootedByAde: false,
+  },
+};
+
 const launchTarget: IosSimulatorLaunchTarget = {
   id: "target-1",
   kind: "project",
@@ -623,6 +643,20 @@ class MockMenuResizeObserver {
  */
 async function openToolMenu(label: string): Promise<void> {
   fireEvent.keyDown(await screen.findByLabelText(label), { key: "Enter" });
+}
+
+/**
+ * Advance a fake clock and let everything it woke settle.
+ *
+ * The panel's timers all sit behind a promise chain, so a bare
+ * `advanceTimersByTime` moves the clock and stops before the work lands. The
+ * async form flushes microtasks between timers, and `act` commits what React
+ * queued from them.
+ */
+async function settleFakeTimers(ms = 0): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
 }
 
 describe("ChatIosSimulatorPanel", () => {
@@ -2797,6 +2831,230 @@ describe("ChatIosSimulatorPanel", () => {
     }, null);
     expect(api.resolveStreamUrl).not.toHaveBeenCalled();
     expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: a device session is a session
+   * ------------------------------------------------------------------ */
+
+  // The snapshot is fetched for exactly one number — `screen.scale` — and a tap
+  // is divided by it. Without one, every tap on a 3x device lands at a third of
+  // where the user clicked.
+  it("reads the screen scale for a device session that has no app session", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    await waitFor(() => expect(api.getScreenSnapshot).toHaveBeenCalled());
+  });
+
+  it("captures an inspect snapshot for a device session that has no app session", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        drawerModeRequest={{ mode: "inspect", nonce: 1 }}
+      />,
+    );
+
+    await waitFor(() => expect(api.getScreenSnapshot).toHaveBeenCalled());
+  });
+
+  // Input that produces no frame is what arms recovery: 1.5s to notice the frame
+  // never landed, then the 250ms the restart is scheduled behind. Real timers,
+  // because faking them here would also fake `waitFor`'s own polling.
+  it("restores a device session's live view after input produces no frame", async () => {
+    const { api } = installIosSimulatorApi({ status: deviceSessionStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const video = await waitFor(() => {
+      const element = document.querySelector("video");
+      expect(element).toBeTruthy();
+      return element as HTMLVideoElement;
+    });
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1));
+
+    fireEvent.keyDown(video, { key: "a" });
+    await act(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 1_900); });
+    });
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: restarting the right backend
+   * ------------------------------------------------------------------ */
+
+  // Both backends arm the same capture token, so the token cannot say which one
+  // is running. A remote chat restarted on window capture reads a Simulator
+  // window that is either absent or on the wrong machine.
+  it("restarts a remote live view on the host encoder, not on window capture", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+    expect(api.startStream).toHaveBeenLastCalledWith({
+      deviceUdid: device.udid,
+      backend: "idb-h264",
+      fps: 30,
+    }, null);
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the host-encoded retry
+   * ------------------------------------------------------------------ */
+
+  // A reconnect of the runtime closes the SSH forward, and rebuilding it can
+  // take more than one attempt. The retry used to write no state when a
+  // re-resolve came back empty, so its own effect never re-ran.
+  it("keeps retrying a remote live view after a re-resolve returns no address", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    // Fake timers from before the render: the retry is a `setTimeout` armed
+    // during mount, and a clock installed afterwards would never own it.
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(1);
+
+    await settleFakeTimers(4_200);
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(2);
+
+    await settleFakeTimers(4_200);
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(3);
+  });
+
+  // The other half of the same rule: a forward that is refused for good must
+  // not be asked forever.
+  it("stops retrying a remote live view once the attempt budget is spent", async () => {
+    chatScopeOverride = { isRemote: true, machineName: "MacBook Pro (97)" };
+    const { api } = installIosSimulatorApi({
+      resolveStreamUrl: { url: null, forwarded: false, error: "The runtime refused the port forward." },
+    });
+
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(1);
+
+    // Eight retry windows for a budget of five. React commits the failed
+    // attempt at the end of each `act`, so the next window is what arms the
+    // retry after it — one long advance would only ever run the first.
+    for (let window = 0; window < 8; window += 1) {
+      await settleFakeTimers(4_200);
+    }
+
+    // One start plus five retries, and nothing after.
+    expect(api.resolveStreamUrl).toHaveBeenCalledTimes(6);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the event log cursor
+   * ------------------------------------------------------------------ */
+
+  // `startEventLog` answers with a page that already holds rows. Leaving the
+  // cursor at zero made the first poll ask for the whole log again and append
+  // every row a second time.
+  it("does not replay the event log's first page on the first poll", async () => {
+    const { api } = installIosSimulatorApi();
+
+    vi.useFakeTimers();
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await settleFakeTimers();
+    fireEvent.click(screen.getByTestId("ios-pane-tools"));
+    await settleFakeTimers();
+    fireEvent.click(within(screen.getByTestId("ios-tools-column")).getByRole("button", { name: "Start" }));
+    await settleFakeTimers();
+    expect(screen.getByText("Event log (2)")).toBeTruthy();
+
+    // One poll interval past the start page.
+    await settleFakeTimers(1_800);
+
+    expect(api.getEventLog).toHaveBeenCalled();
+    expect(api.getEventLog.mock.calls[0]?.[0]).toMatchObject({ sinceId: 2 });
+    expect(screen.getByText("Event log (2)")).toBeTruthy();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Device hub: the tools column and Preview Lab
+   * ------------------------------------------------------------------ */
+
+  // The chrome hides the toggle in Preview Lab, so a column left open there had
+  // no control that could close it and kept polling the device behind it.
+  it("hides an open device tools column in Preview Lab and brings it back after", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+    await waitFor(() => expect(screen.queryByTestId("ios-tools-column")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("ios-pane-surface"));
+    expect(await screen.findByTestId("ios-tools-column")).toBeTruthy();
   });
 
   it("says why a remote live view has no address instead of showing a blank frame", async () => {

@@ -239,8 +239,22 @@ export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
     }
 
     const sets = parser.parameterSets();
-    if (sets.codec && (metrics.codec !== sets.codec || metrics.width !== sets.width)) {
+    const setsChanged = Boolean(sets.codec) && (
+      metrics.codec !== sets.codec
+      || metrics.width !== sets.width
+      || metrics.height !== sets.height
+    );
+    if (setsChanged) {
+      // A `VideoDecoder` keeps the configuration it was given, so a later SPS
+      // that changes the codec or the frame size leaves every attached reader
+      // decoding against the wrong one. Clearing `sentConfig` re-sends the
+      // config at the next keyframe. Metrics move in the same step, so an
+      // unchanged stream never trips this again and no config goes out twice.
+      const hadConfig = metrics.codec !== null;
       metrics = { ...metrics, codec: sets.codec, width: sets.width, height: sets.height };
+      if (hadConfig) {
+        for (const client of clients) client.sentConfig = false;
+      }
     }
 
     const config = configPayload();

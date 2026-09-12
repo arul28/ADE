@@ -225,6 +225,15 @@ const MEDIA_ZOOM_STEP = 0.25;
 
 /** How long to wait before rebuilding a dropped host-encoded read address. */
 const H264_RETRY_MS = 4_000;
+/**
+ * Consecutive failed re-resolves before the retry gives up.
+ *
+ * A forward that is still being rebuilt answers with no address for a few
+ * seconds, which is worth waiting out. A runtime that refuses the forward
+ * answers the same way forever, and at that point the overlay's Restart is the
+ * honest next step.
+ */
+const H264_RETRY_MAX_ATTEMPTS = 5;
 /** How often the Live chip re-reads the host encoder's own frame counters. */
 const STREAM_METRICS_POLL_MS = 3_000;
 
@@ -852,6 +861,15 @@ export function ChatIosSimulatorPanel({
    */
   const [toolsOpen, setToolsOpen] = useState(false);
   const [h264ReconnectNonce, setH264ReconnectNonce] = useState(0);
+  /**
+   * Consecutive re-resolves that came back with no address.
+   *
+   * The retry effect below writes no other state when a re-resolve fails, so
+   * without a counter in its dependency array it never ran a second time and one
+   * transient refusal killed the live view for good. The count also bounds the
+   * retry, which is what keeps a permanently refused forward from spinning.
+   */
+  const [h264ResolveFailures, setH264ResolveFailures] = useState(0);
   const [h264Canvas, setH264Canvas] = useState<HTMLCanvasElement | null>(null);
   /**
    * The address on the machine that owns the simulator.
@@ -958,6 +976,17 @@ export function ChatIosSimulatorPanel({
    * state it started from.
    */
   const deviceSession = status?.deviceSession ?? null;
+  /**
+   * Whether a booted device stands behind the drawer at all.
+   *
+   * Declared here, beside the two sessions it reads, because everything that
+   * needs a device — the live view, the screen snapshot, the recovery restart —
+   * needs exactly this and not an app session. Asking for `activeSession`
+   * instead is what left "Open <device> without an app" with an unscaled tap.
+   */
+  const hasActiveSession = Boolean(activeSession || deviceSession);
+  /** The device those sessions name, whichever kind of session it is. */
+  const activeSessionDeviceUdid = activeSession?.deviceUdid ?? deviceSession?.deviceUdid ?? null;
   /**
    * Which tree every scoped iOS Simulator call means.
    *
@@ -1627,6 +1656,9 @@ export function ChatIosSimulatorPanel({
     // would otherwise rebuild a forward to the old device with a token that
     // this stream's rotation has already invalidated — forever.
     h264HostUrlRef.current = null;
+    // A fresh stream gets a fresh retry budget, so a device switch or a manual
+    // Restart is not refused because the previous address had exhausted one.
+    setH264ResolveFailures(0);
     setLiveVisual({
       kind: "h264",
       status: "starting",
@@ -1746,11 +1778,13 @@ export function ChatIosSimulatorPanel({
   }, [activeDevice?.udid, rootScope, selectedDeviceUdid]);
 
   const scheduleWindowCaptureRecovery = useCallback((reason: string) => {
+    // Keyed on the session's device rather than on an app session, so the
+    // restart still fires for a device session — which owns a live view of its
+    // own and would otherwise stay frozen on the first dropped frame.
     if (
       mode !== "interact"
       || !activeDevice
-      || !activeSession
-      || activeSession.deviceUdid !== activeDevice.udid
+      || activeSessionDeviceUdid !== activeDevice.udid
       || liveVisualKind !== "window"
     ) {
       return;
@@ -1810,7 +1844,7 @@ export function ChatIosSimulatorPanel({
     }, 250);
   }, [
     activeDevice,
-    activeSession,
+    activeSessionDeviceUdid,
     liveVisualKind,
     mode,
     refreshSnapshot,
@@ -1927,13 +1961,15 @@ export function ChatIosSimulatorPanel({
     }
   }, [mode]);
 
+  // Same rule as the live view: the snapshot comes off a booted device, so a
+  // device session qualifies. Inspect showed an empty frame for one otherwise.
   useEffect(() => {
     if (mode !== "inspect" || !activeDevice || !status?.supported) return;
-    if (!activeSession) return;
+    if (!hasActiveSession) return;
     void refreshSnapshot({ priority: true }).catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
     });
-  }, [activeDevice, activeSession, mode, refreshSnapshot, status?.supported]);
+  }, [activeDevice, hasActiveSession, mode, refreshSnapshot, status?.supported]);
 
   const activeDeviceUdid = activeDevice?.udid ?? null;
 
@@ -1988,8 +2024,19 @@ export function ChatIosSimulatorPanel({
    * an owner of something the user is not looking at.
    */
   const showWatchRibbon = !mediaExpanded && ownedByOtherChat && mode !== "preview" && !setupBlocked;
-  /** The tools act on a device, so they only show once there is one. */
-  const toolsVisible = toolsOpen && !mediaExpanded && !setupBlocked && Boolean(activeDeviceUdid);
+  /**
+   * The tools act on a device, so they only show once there is one.
+   *
+   * Preview Lab is excluded for the same reason its chrome hides the toggle:
+   * the surface renders a SwiftUI preview, not the device. Without the mode
+   * check the column stayed beside the preview with no button left to close it,
+   * and kept polling the device behind it.
+   */
+  const toolsVisible = toolsOpen
+    && mode !== "preview"
+    && !mediaExpanded
+    && !setupBlocked
+    && Boolean(activeDeviceUdid);
 
   /* ------------------------------------------------------------------ *
    * Device tools
@@ -2046,11 +2093,20 @@ export function ChatIosSimulatorPanel({
     if (liveVisual?.kind !== "h264" || liveVisual.status !== "error") return;
     const hostUrl = h264HostUrlRef.current;
     if (!hostUrl) return;
+    if (h264ResolveFailures >= H264_RETRY_MAX_ATTEMPTS) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       void window.ade.iosSimulator.resolveStreamUrl(hostUrl, runtimePinRef.current)
         .then((resolved) => {
-          if (cancelled || !resolved.url) return;
+          if (cancelled) return;
+          // Counting the failure is the only state this branch writes, and it is
+          // what re-arms the effect. Returning quietly left the live view dead
+          // until something unrelated moved.
+          if (!resolved.url) {
+            setH264ResolveFailures((failures) => failures + 1);
+            return;
+          }
+          setH264ResolveFailures(0);
           setLiveVisual((current) => (
             current?.kind === "h264"
               ? { ...current, url: resolved.url, forwarded: resolved.forwarded, status: "starting", error: null }
@@ -2058,13 +2114,15 @@ export function ChatIosSimulatorPanel({
           ));
           setH264ReconnectNonce((nonce) => nonce + 1);
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled) setH264ResolveFailures((failures) => failures + 1);
+        });
     }, H264_RETRY_MS);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [liveVisual?.kind, liveVisual?.status]);
+  }, [h264ResolveFailures, liveVisual?.kind, liveVisual?.status]);
 
   // The host-encoded backend is the only one that counts its own frames, so it
   // is the only one whose numbers change without an event. A slow poll keeps
@@ -2089,7 +2147,6 @@ export function ChatIosSimulatorPanel({
   // A device session has no session id of its own, so its device udid stands in
   // as the identity the live-view effect restarts on.
   const activeSessionId = activeSession?.id ?? (deviceSession ? `device:${deviceSession.deviceUdid}` : null);
-  const activeSessionDeviceUdid = activeSession?.deviceUdid ?? deviceSession?.deviceUdid ?? null;
   const statusSupported = status?.supported ?? null;
   // The drawer is not always the thing that launched. An agent launches, the
   // user opens the drawer afterwards, and the session is then the only place
@@ -2334,11 +2391,15 @@ export function ChatIosSimulatorPanel({
 
   // Both live backends need one snapshot, for one number: `screen.scale`. A tap
   // is sent in device points and every live view measures in pixels, so without
-  // it every tap on a 3x device lands at a third of the intended position.
+  // it every tap on a 3x device lands at a third of the intended position. The
+  // guard therefore asks for a booted device and not for a launch: a device
+  // session carries a live view and no app session, and asking for a launch left
+  // "Open <device> without an app" unscaled on the canvas backend and silently
+  // dropping every tap on the window one.
   useEffect(() => {
-    if (mode !== "interact" || !liveVisualKind || !activeSession || snapshot) return;
+    if (mode !== "interact" || !liveVisualKind || !hasActiveSession || snapshot) return;
     void refreshSnapshot({ silent: true, priority: true });
-  }, [activeSession, liveVisualKind, mode, refreshSnapshot, snapshot]);
+  }, [hasActiveSession, liveVisualKind, mode, refreshSnapshot, snapshot]);
 
   useEffect(() => {
     if (mode !== "interact" || liveVisualKind !== "window" || !snapshot) return;
@@ -3222,7 +3283,6 @@ export function ChatIosSimulatorPanel({
 
   const canShowLiveVisual = mode === "interact" && liveVisual;
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
-  const hasActiveSession = Boolean(activeSession || deviceSession);
   const interactionDisabled = simulatorMutationBlocked || setupBlocked;
   const liveBlocker = useMemo(() => (
     mode === "interact" && liveVisual
@@ -3247,13 +3307,19 @@ export function ChatIosSimulatorPanel({
     // Same as the recovery path: the token is read before the prelude, so a
     // drawer that moves on during the stop below cancels this restart.
     const armedForRestart = captureStartRef.current;
-    // A remote chat never arms a capture token. Stopping the visual first
-    // would replace the remote-machine error with an empty live view.
+    // A cleared token means the drawer left Interact or lost its device.
+    // Stopping the visual first would replace a live error with an empty frame.
     if (armedForRestart == null) return;
+    // Both backends arm the same token, so it cannot say which one is running.
+    // Ask the same question the live-view effect asked: a remote chat has no
+    // Simulator window on this computer, so window capture would grab nothing —
+    // or, worse, the local machine's own simulator.
+    const useHostEncoder = chatScope.isRemote;
     try {
       stopRendererLiveVisual();
       await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      await startWindowCaptureVisual({ udid: device.udid, name: device.name }, armedForRestart);
+      if (useHostEncoder) await startH264Visual({ udid: device.udid, name: device.name }, armedForRestart);
+      else await startWindowCaptureVisual({ udid: device.udid, name: device.name }, armedForRestart);
       void refreshSnapshot({ silent: true, priority: true });
     } catch (error) {
       // The same terminal give-up as the effect's catch: nothing retries a
@@ -3261,17 +3327,37 @@ export function ChatIosSimulatorPanel({
       // or the host keeps re-parking Simulator.app behind a failed live view.
       void releaseParkingHold();
       const detail = error instanceof Error ? error.message : String(error);
-      setLiveVisual({
-        kind: "window",
-        status: "error",
-        sourceId: null,
-        sourceName: null,
-        width: null,
-        height: null,
-        error: detail,
-      });
+      setLiveVisual(useHostEncoder
+        ? {
+          kind: "h264",
+          status: "error",
+          url: null,
+          width: null,
+          height: null,
+          forwarded: false,
+          machineName: chatScope.machineName,
+          error: detail,
+        }
+        : {
+          kind: "window",
+          status: "error",
+          sourceId: null,
+          sourceName: null,
+          width: null,
+          height: null,
+          error: detail,
+        });
     }
-  }, [activeDevice, refreshSnapshot, releaseParkingHold, startWindowCaptureVisual, stopRendererLiveVisual]);
+  }, [
+    activeDevice,
+    chatScope.isRemote,
+    chatScope.machineName,
+    refreshSnapshot,
+    releaseParkingHold,
+    startH264Visual,
+    startWindowCaptureVisual,
+    stopRendererLiveVisual,
+  ]);
 
   const handleBlockerAction = useCallback((action: IosSimBlockerAction) => {
     // A remote-bound project refuses this call outright. Swallowing that left

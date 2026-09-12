@@ -37,6 +37,22 @@ import {
 
 
 const UDID = "1B2C3D4E-0000-1111-2222-333344445555";
+const OTHER_UDID = "9A8B7C6D-0000-1111-2222-333344445555";
+/**
+ * A second simulator, so a test can name a device the hub does not track.
+ *
+ * Built per call because the harness moves a device's state when it boots or
+ * shuts one down, and a shared object would carry that into the next test.
+ */
+function otherDevice(): IosSimulatorDevice {
+  return {
+    udid: OTHER_UDID,
+    name: "iPhone 17",
+    state: "Shutdown",
+    runtime: "iOS 26.0",
+    isAvailable: true,
+  };
+}
 const BUILD_ROOT = path.join(path.sep, "workspace", "lane-1");
 const FIXED_NOW = new Date("2026-09-11T10:00:00.000Z");
 
@@ -110,6 +126,8 @@ type Harness = {
 
 function createHarness(options: {
   device?: Partial<IosSimulatorDevice>;
+  /** Devices `resolveDevice` can find besides the default one. */
+  otherDevices?: IosSimulatorDevice[];
   elements?: IosScreenElement[];
   now?: () => Date;
   appSessionOwner?: string | null;
@@ -136,10 +154,19 @@ function createHarness(options: {
   // Tests that exercise the uninstall guard set this.
   const appSessionOwner = options.appSessionOwner ?? null;
 
+  const catalog: IosSimulatorDevice[] = [device, ...(options.otherDevices ?? [])];
+
   const deps: IosDeviceHubDeps = {
     getAppSessionOwner: () => appSessionOwner,
     run: async (file, args, runOptions) => {
       runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
+      // A booted device reports itself booted on the next read. Without that
+      // the fixture would let a second open see a shut-down device, which is
+      // the one state the ownership rules never have to deal with.
+      if (file === "xcrun" && args[0] === "simctl" && (args[1] === "boot" || args[1] === "shutdown")) {
+        const target = catalog.find((entry) => entry.udid === args[2]);
+        if (target) target.state = args[1] === "boot" ? "Booted" : "Shutdown";
+      }
       return { stdout: "", stderr: "" };
     },
     // A log stream the test drives by hand, so a case can put a line on the
@@ -151,7 +178,12 @@ function createHarness(options: {
       kill: () => { logLineHandler = null; },
     }),
     openSimulatorApp,
-    resolveDevice: async () => device,
+    resolveDevice: async (deviceUdid) => {
+      if (!deviceUdid) return device;
+      const found = catalog.find((entry) => entry.udid === deviceUdid);
+      if (!found) throw new Error(`Simulator device ${deviceUdid} is not available.`);
+      return found;
+    },
     resolveControlDeviceUdid: async (deviceUdid) => deviceUdid ?? UDID,
     getScreenSnapshot: async () => {
       const next = snapshots.length > 1 ? snapshots.shift() : snapshots[0];
@@ -278,6 +310,75 @@ describe("iosDeviceHub device sessions", () => {
 
     expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
     expect(result.shutdown).toBe(true);
+  });
+
+  it("closes nothing when the caller names a device that is not the open one", async () => {
+    // The CLI forwards `close-device --device <udid>`. Before this the hub
+    // ignored that value and released whatever it tracked, so naming device B
+    // shut down device A.
+    const harness = createHarness();
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+
+    const result = await harness.hub.closeDevice({ chatSessionId: "chat-a", deviceUdid: OTHER_UDID });
+    expect(result).toEqual({ released: false, shutdown: false, previousDeviceSession: null });
+    expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
+    expect(harness.hub.getDeviceSession()?.deviceUdid).toBe(UDID);
+
+    // Naming the device that IS open still closes it.
+    const closed = await harness.hub.closeDevice({ chatSessionId: "chat-a", deviceUdid: UDID });
+    expect(closed.released).toBe(true);
+    expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
+  });
+
+  it("keeps ADE's shutdown claim when the same device is opened twice", async () => {
+    const harness = createHarness();
+    const first = await harness.hub.openDevice({ chatSessionId: "chat-a" });
+    expect(first.bootedByAde).toBe(true);
+
+    // The second call finds the device booted, so reading the state alone
+    // recorded `bootedByAde: false` and left the simulator ADE started running
+    // after the close.
+    const second = await harness.hub.openDevice({ chatSessionId: "chat-a" });
+    expect(second.bootedByAde).toBe(true);
+
+    const result = await harness.hub.closeDevice({ chatSessionId: "chat-a" });
+    expect(result.shutdown).toBe(true);
+    expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
+  });
+
+  it("shuts the previous simulator down when a takeover names another device", async () => {
+    const harness = createHarness({ otherDevices: [otherDevice()] });
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+
+    const taken = await harness.hub.openDevice({
+      chatSessionId: "chat-b",
+      deviceUdid: OTHER_UDID,
+      force: true,
+    });
+
+    expect(taken.deviceUdid).toBe(OTHER_UDID);
+    // The old session is gone from the hub, so nothing would ever shut this
+    // device down again. It is released here instead of being orphaned.
+    expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
+    expect(harness.events.map((event) => event.type)).toEqual([
+      "device-session-started",
+      "device-session-released",
+      "device-session-started",
+    ]);
+    expect(harness.events[1]).toMatchObject({
+      type: "device-session-released",
+      previousDeviceSession: { deviceUdid: UDID },
+    });
+  });
+
+  it("leaves a user-started simulator running when a takeover names another device", async () => {
+    const harness = createHarness({ device: { state: "Booted" }, otherDevices: [otherDevice()] });
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+
+    await harness.hub.openDevice({ chatSessionId: "chat-b", deviceUdid: OTHER_UDID, force: true });
+
+    expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
+    expect(harness.events.some((event) => event.type === "device-session-released")).toBe(true);
   });
 
   it("refuses a second chat and names the owner", async () => {
@@ -411,6 +512,19 @@ describe("iosDeviceHub device tools", () => {
       `ade ios-sim status-bar --device ${UDID}`,
       `ade ios-sim status-bar --clear --device ${UDID}`,
     ]);
+  });
+
+  it("leaves the bundle id out of the row and the command for a permission reset", async () => {
+    // A reset takes the whole service back to its default and has no bundle id,
+    // so the row used to read "reset photos for undefined." and offer a command
+    // carrying `--bundle-id undefined`.
+    const harness = createHarness();
+    await harness.hub.setPermission({ service: "photos", action: "reset" });
+
+    const page = await harness.hub.getEventLog({});
+    const row = page.rows.find((entry) => entry.source === "ade");
+    expect(row?.message).toBe("reset photos.");
+    expect(row?.command).toBe(`ade ios-sim permission reset photos --device ${UDID}`);
   });
 
   it("marks the ade rows as actions so the drawer can tell them apart", async () => {

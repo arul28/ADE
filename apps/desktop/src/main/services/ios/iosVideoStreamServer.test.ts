@@ -15,8 +15,9 @@ function fromHex(hex: string): Uint8Array {
 
 /**
  * A real SPS from an iPhone simulator, keeping its `0x27` NAL header byte and
- * dropping the start code. It is the capture `h264AnnexB.test.ts` documents, so
- * the codec string the server publishes is one a device really produces.
+ * dropping the start code. It is the same capture the Annex-B parser section
+ * below parses as `REAL_SPS_HEX`, so the codec string the server publishes is
+ * one a device really produces.
  */
 const SPS = fromHex("27640032ac13142804a0141e4b9a810101520f080422a0");
 const SPS_CODEC = "avc1.640032";
@@ -58,6 +59,48 @@ function deltasOnly(): Uint8Array {
   return annexB([DELTA_SLICE, DELTA_SLICE, DELTA_SLICE]);
 }
 
+/**
+ * A second SPS at the same codec and width as `SPS`, and a taller frame.
+ *
+ * The device rotates or the encoder resizes and only the height moves. Built by
+ * a function rather than a constant because `SpsBitWriter` is declared in the
+ * parser section below, which has not run when this module is evaluated.
+ */
+function tallerSps(): Uint8Array {
+  const writer = new SpsBitWriter()
+    .ue(0) // seq_parameter_set_id
+    .ue(1) // chroma_format_idc, 4:2:0
+    .ue(0) // bit_depth_luma_minus8
+    .ue(0) // bit_depth_chroma_minus8
+    .bit(0) // qpprime_y_zero_transform_bypass_flag
+    .bit(0) // seq_scaling_matrix_present_flag
+    .ue(0) // log2_max_frame_num_minus4
+    .ue(2) // pic_order_cnt_type
+    .ue(1) // max_num_ref_frames
+    .bit(0) // gaps_in_frame_num_value_allowed_flag
+    .ue(73) // pic_width_in_mbs_minus1, 74 macroblocks
+    .ue(99) // pic_height_in_map_units_minus1, 100 macroblocks
+    .bit(1) // frame_mbs_only_flag
+    .bit(1) // direct_8x8_inference_flag
+    .bit(1) // frame_cropping_flag
+    .ue(0) // frame_crop_left_offset
+    .ue(3) // frame_crop_right_offset
+    .ue(0) // frame_crop_top_offset
+    .ue(0); // frame_crop_bottom_offset
+
+  // Profile 100 and level 0x32 keep the codec string identical to `SPS`, so a
+  // test that sees a new config saw the height alone change.
+  const payload = spsPayload(100, 0x00, 0x32, writer);
+  const nal = new Uint8Array(1 + payload.length);
+  nal[0] = 0x27;
+  nal.set(payload, 1);
+  return nal;
+}
+
+/** The cropped size `tallerSps` encodes: 74x16 - 6 wide, 100x16 tall. */
+const TALLER_SPS_WIDTH = 1178;
+const TALLER_SPS_HEIGHT = 1600;
+
 /* ------------------------------------------------------------------------- *
  * Record reader
  * ------------------------------------------------------------------------- */
@@ -71,8 +114,8 @@ type ParsedRecord = {
 /**
  * Decodes the wire framing without the renderer's parser.
  *
- * Reading the stream with the parser under test in the neighbouring file would
- * let both sides agree on a format that matches neither the documented header.
+ * Reading the stream with the Annex-B parser this file also covers would let
+ * both sides agree on a format that matches neither the documented header.
  */
 function decodeRecords(buffer: Uint8Array): { records: ParsedRecord[]; rest: Uint8Array } {
   const records: ParsedRecord[] = [];
@@ -397,6 +440,40 @@ describe("createIosVideoStreamServer streaming", () => {
     expect(records[1]?.keyframe).toBe(true);
 
     await firstReader.cancel();
+  });
+
+  it("re-sends the config when a later SPS changes the frame size, and only then", async () => {
+    const harness = createHarness();
+    const transport = await harness.server.start(OPTIONS);
+
+    const request = harness.open(transport.url);
+    const encoder = await harness.encoderAt(0);
+    encoder.emit(keyframeThenDelta());
+    const reader = createRecordReader(await request.response);
+    await reader.take(3);
+
+    // Same codec and same width, taller frame. The check compared the codec and
+    // the width only and never cleared `sentConfig`, so a reader kept decoding
+    // against parameter sets the stream had already left behind.
+    encoder.emit(annexB([tallerSps(), PPS, IDR_SLICE, DELTA_SLICE, DELTA_SLICE]));
+    const afterChange = await reader.take(5);
+
+    expect(afterChange[3]?.type).toBe(IOS_VIDEO_RECORD_TYPE_CONFIG);
+    expect(JSON.parse(new TextDecoder().decode(afterChange[3]?.payload))).toMatchObject({
+      codec: SPS_CODEC,
+      width: TALLER_SPS_WIDTH,
+      height: TALLER_SPS_HEIGHT,
+    });
+    expect(afterChange[4]?.type).toBe(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT);
+    expect(afterChange[4]?.keyframe).toBe(true);
+    expect(harness.server.metrics().height).toBe(TALLER_SPS_HEIGHT);
+
+    // The same parameter sets again are not a change, so the reader gets frames
+    // and no second copy of a config it already holds.
+    encoder.emit(annexB([tallerSps(), PPS, IDR_SLICE, DELTA_SLICE, DELTA_SLICE]));
+    const afterRepeat = await reader.take(8);
+    expect(afterRepeat.slice(5).map((record) => record.type))
+      .toEqual([IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT]);
   });
 
   it("sends nothing while the stream has produced no keyframe", async () => {

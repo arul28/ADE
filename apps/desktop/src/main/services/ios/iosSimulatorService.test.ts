@@ -1930,3 +1930,50 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 });
+
+describe("iosSimulatorService device tool targeting", () => {
+  const twoBootedIphonesJson = JSON.stringify({
+    devices: {
+      "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [
+        { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true },
+        { name: "iPhone Air", udid: "device-2", state: "Booted", isAvailable: true },
+      ],
+    },
+  });
+
+  it("sends an implicit device tool to the open device session, not the first booted iPhone", async () => {
+    // A chat that opens a device and never launches an app holds a device
+    // session and no app session. Without the device session in the precedence
+    // every appearance, location and log call fell through to "the first booted
+    // iPhone", which is another simulator as soon as two are up.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: twoBootedIphonesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await service.openDevice({ deviceUdid: "device-2", chatSessionId: "chat-a", openWindow: false });
+      await service.setAppearance({ appearance: "dark" });
+
+      const simctlUiCalls = runMock.mock.calls
+        .map(([, commandArgs]) => commandArgs)
+        .filter((commandArgs) => commandArgs[0] === "simctl" && commandArgs[1] === "ui");
+      expect(simctlUiCalls.length).toBeGreaterThan(0);
+      expect(simctlUiCalls.every((commandArgs) => commandArgs[2] === "device-2")).toBe(true);
+      expect(simctlUiCalls).toContainEqual(["simctl", "ui", "device-2", "appearance", "dark"]);
+
+      // The same precedence a status read reports, so the drawer and the tools
+      // never name different simulators.
+      expect((await service.getStatus()).activeDevice?.udid).toBe("device-2");
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+});

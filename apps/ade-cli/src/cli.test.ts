@@ -14165,6 +14165,21 @@ describe("ADE CLI", () => {
       );
     });
 
+    it("points each device-session command at its own force flag", () => {
+      // `shutdown --force` tears down an APP session. Telling a caller who
+      // asked to open or close a DEVICE to run it sends them at the wrong
+      // session entirely.
+      const owned = "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A.";
+      expect(iosSimulatorErrorHint(owned, "open-device")).toContain("ade ios-sim open-device --force");
+      expect(iosSimulatorErrorHint(owned, "close-device")).toContain("ade ios-sim close-device --force");
+      expect(iosSimulatorErrorHint(owned, "uninstall")).toContain("--chat-session");
+      for (const sub of ["open-device", "close-device", "uninstall"]) {
+        expect(iosSimulatorErrorHint(owned, sub)).not.toContain("shutdown --force");
+      }
+      // Everything else keeps the app-session advice.
+      expect(iosSimulatorErrorHint(owned, "screenshot")).toContain("ade ios-sim shutdown --force");
+    });
+
     it("turns the new simulator error codes into one actionable line", () => {
       expect(
         iosSimulatorErrorHint(

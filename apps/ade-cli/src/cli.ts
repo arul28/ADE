@@ -10598,6 +10598,18 @@ function iosSimulatorErrorHint(
     return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
   }
   if (message.includes(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE)) {
+    // The device-session commands carry their own `--force`, so pointing them
+    // at `shutdown --force` sends a caller to tear down an app session it was
+    // not asking about.
+    if (subcommand === "open-device" || subcommand === "open-sim" || subcommand === "boot") {
+      return "Another chat owns this simulator — wait for it to finish, or take the device with: ade ios-sim open-device --force";
+    }
+    if (subcommand === "close-device" || subcommand === "close-sim") {
+      return "Another chat owns this simulator — wait for it to finish, or close it anyway with: ade ios-sim close-device --force";
+    }
+    if (subcommand === "uninstall") {
+      return "Another chat owns this simulator — name your chat with --chat-session, or remove the app anyway with: ade ios-sim uninstall --force";
+    }
     return subcommand === "claim"
       ? "Another chat owns the simulator — wait for it to finish, or re-run this claim with --ignore-ownership to take it over without tearing the session down"
       : "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";

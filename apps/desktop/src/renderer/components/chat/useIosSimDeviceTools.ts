@@ -268,6 +268,13 @@ export function useIosSimDeviceTools({
           bundleId,
         }, runtimePinRef.current);
         logDeviceRef.current = activeDeviceUdid ?? null;
+        // The start page already carries rows, so the cursor has to move with
+        // them. Left at zero, the first poll asked for everything since the
+        // beginning of the log and appended the same rows a second time.
+        logCursorRef.current = page.cursor;
+        // A new run counts its own drops and reports its own error.
+        setLogDropped(0);
+        setLogError(page.lastError);
         setLogRunning(true);
         setLogRows(page.rows);
       } catch (error) {

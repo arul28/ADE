@@ -2430,8 +2430,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }, timeoutMs, `Xcode MCP ${toolName}`);
   };
 
+  /**
+   * Which simulator an implicit device tool acts on.
+   *
+   * The precedence matches `computeStatus`: the app session is the most
+   * specific claim, then the device session. Without the device session here, a
+   * chat that opened a non-default simulator and never launched an app had
+   * every `appearance`, `location` or `log` call fall through to "the first
+   * booted iPhone", which is another device as soon as two are up.
+   */
   const resolveControlDeviceUdid = async (deviceUdid?: string | null): Promise<string> => {
-    const udid = deviceUdid?.trim() || activeSession?.deviceUdid || streamStatus.deviceUdid;
+    const udid = deviceUdid?.trim()
+      || activeSession?.deviceUdid
+      || deviceHub?.getDeviceSession()?.deviceUdid
+      || streamStatus.deviceUdid;
     if (udid) return udid;
     return (await resolveDevice(null)).udid;
   };
