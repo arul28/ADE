@@ -290,8 +290,13 @@ decodes with WebCodecs, using a codec string built from the stream's own SPS.
 
 It needs `idb` and `idb_companion` on the machine that owns the simulator. It
 needs no Screen Recording grant and no visible Simulator window. It is the only
-backend that works when the simulator runs on another machine, so a Windows or
-Linux desktop bound to a remote Mac watches the session its agent drives.
+backend that works when the simulator runs on another machine, so a Mac bound to
+another Mac watches the session its agent drives.
+
+The Work tools pane offers the iOS tool on macOS only, so a Windows or Linux
+desktop cannot open this drawer even against a remote Mac. Nothing in the
+transport prevents it — the gate is `supportsIosSimulator: isMacPlatform()` in
+the renderer, which predates this backend.
 
 The token is the stream's only authorization, so two rules protect it. A fresh
 token is minted for every `startStream`, and only `startStream` returns it:

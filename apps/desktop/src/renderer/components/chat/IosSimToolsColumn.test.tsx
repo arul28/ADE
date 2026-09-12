@@ -168,6 +168,21 @@ describe("IosSimToolsColumn", () => {
     expect(screen.getAllByRole("switch")).toHaveLength(IOS_SIMULATOR_ACCESSIBILITY_OPTIONS.length - 1);
   });
 
+  // The size the device reported belongs on the trigger, not in the list. As a
+  // row it was selectable, and `simctl` refuses a size ADE has no name for, so
+  // the only thing that row could do was turn a click into an error.
+  //
+  // The menu's rows are not asserted here: the list is a `.map` over
+  // `IOS_SIMULATOR_CONTENT_SIZES` typed as `ToolMenuOption<IosSimulatorContentSize>[]`,
+  // so no other value can reach it, and Radix's menu does not open under jsdom
+  // in this repo. What a test can see is that the reported size still reaches
+  // the trigger, which is the whole reason the row existed.
+  it("keeps a text size it has no name for on the trigger", () => {
+    renderColumn({ settings: deviceSettings({ contentSize: "unknown" as never }) });
+
+    expect(screen.getByLabelText("Text size").textContent).toContain("unknown");
+  });
+
   it("reports the option and its new value when a toggle flips", () => {
     const { props } = renderColumn();
 

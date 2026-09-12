@@ -2641,6 +2641,32 @@ describe("ChatIosSimulatorPanel", () => {
     expect((screen.getByRole("switch", { name: "Reduce motion" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  // The leak this hook's extraction was written to close: switching Work tabs
+  // or closing the chat left `xcrun simctl spawn log stream` running on the
+  // host, one orphan per open.
+  it("stops the event log when the drawer unmounts", async () => {
+    const { api } = installIosSimulatorApi();
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+    const callsBeforeUnmount = api.stopEventLog.mock.calls.length;
+
+    view.unmount();
+
+    await waitFor(() => expect(api.stopEventLog.mock.calls.length)
+      .toBeGreaterThan(callsBeforeUnmount));
+  });
+
   it("keeps the event log running when closing the column fails to stop it", async () => {
     // Closing the column stops the log on the host. The host checks ownership
     // first, so that call can be refused — and clearing the running state

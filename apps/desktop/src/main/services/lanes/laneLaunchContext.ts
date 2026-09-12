@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { createLaneService } from "./laneService";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 
 export type LaneLaunchExecStrategy = "local";
 
@@ -78,7 +78,7 @@ export function resolveLaneLaunchContext(args: {
   try {
     resolvedCwd = resolvePathWithinRoot(laneRoot, requestedTarget);
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       throw new Error(
         `Requested cwd '${requestedCwd}' escapes lane '${laneId}'. ADE only launches work inside the selected lane worktree '${laneRoot}'.`,
       );

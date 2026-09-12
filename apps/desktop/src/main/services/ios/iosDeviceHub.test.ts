@@ -122,6 +122,8 @@ type Harness = {
   queueSnapshots: (snapshots: IosScreenSnapshot[]) => void;
   /** Puts one line on the running log stream. */
   emitLogLine: (line: string) => void;
+  /** The predicate of every log stream the hub has spawned, in order. */
+  logPredicates: Array<string | null>;
 };
 
 function createHarness(options: {
@@ -135,6 +137,8 @@ function createHarness(options: {
   appSessionDeviceUdid?: string | null;
 } = {}): Harness {
   const runs: RecordedRun[] = [];
+  /** One entry per spawned log stream, so a test can see what it filters on. */
+  const logPredicates: Array<string | null> = [];
   let logLineHandler: ((line: string) => void) | null = null;
   const interactions: Array<{ kind: "tap" | "type"; detail: string }> = [];
   const events: IosSimulatorEventPayload[] = [];
@@ -174,12 +178,15 @@ function createHarness(options: {
     },
     // A log stream the test drives by hand, so a case can put a line on the
     // wire without forking `simctl`.
-    spawnLogStream: (): IosEventLogProcess => ({
-      onLine: (handler) => { logLineHandler = handler; },
-      onError: () => {},
-      onExit: () => {},
-      kill: () => { logLineHandler = null; },
-    }),
+    spawnLogStream: (_deviceUdid, predicate): IosEventLogProcess => {
+      logPredicates.push(predicate);
+      return {
+        onLine: (handler) => { logLineHandler = handler; },
+        onError: () => {},
+        onExit: () => {},
+        kill: () => { logLineHandler = null; },
+      };
+    },
     openSimulatorApp,
     resolveDevice: async (deviceUdid) => {
       if (!deviceUdid) return device;
@@ -236,6 +243,7 @@ function createHarness(options: {
       expect(logLineHandler, "the log stream must be running").toBeTruthy();
       logLineHandler?.(line);
     },
+    logPredicates,
   };
 }
 
@@ -485,6 +493,65 @@ describe("iosDeviceHub device sessions", () => {
     })).resolves.toMatchObject({ running: true });
   });
 
+  it("follows the new app when the log is restarted with another bundle id", async () => {
+    // A start for the device that is already streaming was answered as a
+    // no-op without comparing the predicate, so moving to another app kept the
+    // old `subsystem BEGINSWITH` filter while reporting `running: true`. The
+    // bundle id is required precisely so a log is scoped to one app, and this
+    // path defeated that scoping with no signal.
+    const harness = createHarness();
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.a" });
+    harness.emitLogLine("2026-09-11 11:24:03.512 Df AppA[1:2] from the first app");
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.b" });
+
+    expect(harness.logPredicates).toEqual([
+      'subsystem BEGINSWITH "com.example.a"',
+      'subsystem BEGINSWITH "com.example.b"',
+    ]);
+    // The first app's rows go with it. Left in the ring they render under the
+    // second app's header, which is the same lie as mixing two devices.
+    const page = await harness.hub.getEventLog({ deviceUdid: UDID });
+    expect(page.rows.map((row) => row.message).join("\n")).not.toContain("from the first app");
+
+    // The drawer re-mounting with the same app still must not restart it.
+    harness.emitLogLine("2026-09-11 11:24:04.512 Df AppB[1:2] from the second app");
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.b" });
+    expect(harness.logPredicates).toHaveLength(2);
+    const kept = await harness.hub.getEventLog({ deviceUdid: UDID });
+    expect(kept.rows.map((row) => row.message).join("\n")).toContain("from the second app");
+
+    // Through a stop, too. `stop` keeps the device and the rows, so keying the
+    // clear on the session alone let the second app's rows survive into a
+    // third app — and closing the tools column stops the log, which makes this
+    // the ordinary path, not a corner.
+    harness.hub.stopEventLog();
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.c" });
+    const afterStop = await harness.hub.getEventLog({ deviceUdid: UDID });
+    expect(afterStop.rows.map((row) => row.message).join("\n")).not.toContain("from the second app");
+  });
+
+  it("does not let a proof capture eat the drawer's dropped-row count", async () => {
+    // `read` resets the counter, and the drawer's poll is the reader that
+    // shows the gap. A proof capture that consumed it left the next page
+    // reporting no gap for rows the reader never saw.
+    const harness = createHarness();
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.app" });
+    // The ring holds 500, so this overruns it and leaves a real gap to report.
+    for (let index = 0; index < 520; index += 1) {
+      harness.emitLogLine(`2026-09-11 11:24:03.512 Df MyApp[1:2] row ${index}`);
+    }
+
+    await harness.hub.captureProofBundle({ deviceUdid: UDID });
+
+    // The gap is the 20 rows the ring pushed out. A count near zero means the
+    // proof consumed it and the drawer is about to hide a gap it never saw.
+    // `toBeGreaterThan(0)` is not enough: the proof writes its own `ade` rows
+    // into a full ring, which drops a row or two and puts the count back above
+    // zero either way.
+    const page = await harness.hub.getEventLog({ deviceUdid: UDID });
+    expect(page.dropped).toBeGreaterThanOrEqual(20);
+  });
+
   it("leaves a simulator running when another chat runs an app on it", async () => {
     // The two sessions can name the same simulator and belong to different
     // chats. A chat that goes away releases its own claim; shutting the device
@@ -501,6 +568,27 @@ describe("iosDeviceHub device sessions", () => {
     expect(released.released).toBe(true);
     expect(released.shutdown).toBe(false);
     expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
+  });
+
+  it("still honours an explicit forced shutdown while another chat runs an app", async () => {
+    // The guard protects implicit cleanup, not the human. `close-device
+    // --force` says it closes a device another chat owns, and this release is
+    // the only place in ADE that runs `simctl shutdown`, so an absolute guard
+    // would leave a simulator no command could shut down.
+    const harness = createHarness({
+      appSessionOwner: "chat-app",
+      appSessionDeviceUdid: UDID,
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-device" });
+
+    const closed = await harness.hub.closeDevice({
+      chatSessionId: "chat-device",
+      shutdownDevice: true,
+      force: true,
+    });
+
+    expect(closed.shutdown).toBe(true);
+    expect(harness.runArgs()).toContainEqual(["simctl", "shutdown", UDID]);
   });
 
   it("still shuts down its own simulator when the app session is elsewhere", async () => {

@@ -207,6 +207,14 @@ export type IosEventLogProcess = {
  */
 type EventLogSession = {
   deviceUdid: string;
+  /**
+   * The predicate this stream runs with.
+   *
+   * Kept so a second `start` can tell "the same log" from "the same device,
+   * another app". Without it a bundle-id change was answered with a no-op and
+   * the stream kept filtering for the app the caller had moved off.
+   */
+  predicate: string | null;
   process: IosEventLogProcess;
   live: boolean;
 };
@@ -237,6 +245,15 @@ export function createIosEventLog(deps: IosEventLogDeps): {
     level?: IosSimulatorLogRow["level"];
   }): IosSimulatorLogRow;
   read(args: { sinceId?: number | null; limit?: number | null }): IosSimulatorEventLogPage;
+  /**
+   * The newest rows, with no page and no side effect.
+   *
+   * For a reader that is not the one showing the gap. A proof capture wants
+   * the rows and nothing else, and taking them through `read` consumed the
+   * dropped-row counter the drawer's poll needs, so the drawer's next page
+   * reported no gap for rows it never saw.
+   */
+  snapshotRows(limit?: number | null): IosSimulatorLogRow[];
   dispose(): void;
 } {
   const capacity = Math.max(1, Math.floor(deps.capacity ?? DEFAULT_CAPACITY));
@@ -246,6 +263,15 @@ export function createIosEventLog(deps: IosEventLogDeps): {
   const rows: IosSimulatorLogRow[] = [];
   let session: EventLogSession | null = null;
   let deviceUdid: string | null = null;
+  /**
+   * The predicate the buffered rows came from.
+   *
+   * Held next to `deviceUdid`, not inside `session`, because `stop` clears the
+   * session and keeps the rows. Without it a stop followed by a start on
+   * another app read as "same device, nothing changed", and the first app's
+   * rows stayed in the ring under the second app's header.
+   */
+  let bufferPredicate: string | null = null;
   let lastError: string | null = null;
   /** Highest id ever handed out. It never resets, so `sinceId` never repeats. */
   let lastId = 0;
@@ -296,13 +322,15 @@ export function createIosEventLog(deps: IosEventLogDeps): {
     /**
      * Starts the log stream for a device.
      *
-     * A start for the device that is already streaming is a no-op, because the
-     * drawer re-asks on every mount and a second stream would double every row.
+     * A start for the device AND the app that is already streaming is a no-op,
+     * because the drawer re-asks on every mount and a second stream would
+     * double every row.
      *
-     * A start for a different device stops the old stream and clears the
-     * buffer. Rows from two devices in one list are a lie: the list claims one
-     * timeline for one app, and mixed rows make a person read a message from a
-     * device they are not looking at as if it came from the device on screen.
+     * A start for a different device, or for a different app on the same
+     * device, stops the old stream and clears the buffer. Rows from two apps
+     * in one list are a lie: the list claims one timeline for one app, and
+     * mixed rows make a person read a message from something they are not
+     * looking at as if it came from what is on screen.
      *
      * The ids keep counting across the clear, so a `sinceId` from before the
      * switch never matches a row from after it.
@@ -314,22 +342,33 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       if (requested.length === 0) {
         throw new Error("Cannot start the iOS event log without a device udid.");
       }
-      if (session?.live && session.deviceUdid === requested) {
+      const predicate = buildLogPredicate({ bundleId: args.bundleId });
+      // The same device AND the same app is the drawer re-mounting, which must
+      // not restart the stream. The same device with another app is a real
+      // change: the caller moved to another bundle id and its rows have to
+      // follow, so that falls through to a respawn.
+      if (session?.live && session.deviceUdid === requested && session.predicate === predicate) {
         logger?.debug("ios_event_log.start_ignored", { deviceUdid: requested });
         return;
       }
-      const predicate = buildLogPredicate({ bundleId: args.bundleId });
-      const switched = deviceUdid !== null && deviceUdid !== requested;
+      // The buffer belongs to one device AND one app, so either changing
+      // clears it. Keyed on the device alone, a new app left the old app's
+      // rows in the ring and the drawer rendered them under the new app's
+      // header — the same lie as mixing two devices.
+      const switched = deviceUdid !== null
+        && (deviceUdid !== requested || bufferPredicate !== predicate);
       teardown();
       if (switched) {
         rows.length = 0;
         droppedSinceRead = 0;
       }
+      bufferPredicate = predicate;
       deviceUdid = requested;
       lastError = null;
 
       const active: EventLogSession = {
         deviceUdid: requested,
+        predicate,
         process: deps.spawnLogStream(requested, predicate),
         live: true,
       };
@@ -410,6 +449,12 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       return entry;
     },
 
+    /** The newest rows, with no page and no side effect. */
+    snapshotRows(limit) {
+      const count = clampReadLimit(limit);
+      return rows.slice(Math.max(0, rows.length - count));
+    },
+
     /**
      * Reads a page of rows in chronological order.
      *
@@ -420,7 +465,8 @@ export function createIosEventLog(deps: IosEventLogDeps): {
      *
      * `dropped` reports the rows lost since the previous `read` and then resets.
      * The count belongs to the page that hides the gap, and a count that never
-     * reset would report the same gap forever.
+     * reset would report the same gap forever. A reader that is not the one
+     * showing the gap wants `snapshotRows` instead.
      */
     read(args) {
       const limit = clampReadLimit(args.limit);
@@ -454,6 +500,7 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       teardown();
       rows.length = 0;
       deviceUdid = null;
+      bufferPredicate = null;
       droppedSinceRead = 0;
       lastError = null;
     },

@@ -121,15 +121,14 @@ export function useIosSimDeviceTools({
   const logRunningRef = useRef(false);
   logRunningRef.current = logRunning;
   /**
-   * The owning chat, for the two teardown effects below.
+   * Who the event-log calls speak as, and whether they may take a log the
+   * lane-scoped surface does not own.
    *
-   * They stop the log when the column closes and when the panel unmounts, and
-   * neither may re-arm on a new identity: listing `chatSessionId` would make
-   * the unmount cleanup fire on a chat switch and stop a log nobody asked to
-   * stop.
+   * Read through a ref by the two teardown effects below. They stop the log
+   * when the column closes and when the panel unmounts, and neither may re-arm
+   * on a new identity: listing it would make the unmount cleanup fire on a chat
+   * switch and stop a log nobody asked to stop.
    */
-  const chatSessionIdRef = useRef(chatSessionId);
-  chatSessionIdRef.current = chatSessionId;
   const logOwnerArgs = useMemo(
     () => ({ chatSessionId, ...(ignoreOwnership ? { force: true } : {}) }),
     [chatSessionId, ignoreOwnership],

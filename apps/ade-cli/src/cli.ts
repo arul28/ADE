@@ -10666,6 +10666,63 @@ function readIosSimulatorOutPath(args: string[]): JsonObject {
 }
 
 /**
+ * The device flag every ios-sim subcommand accepts.
+ *
+ * Thirty-one branches read the same two spellings. One reader keeps them
+ * identical; a copy in each branch is how the spellings drift apart.
+ */
+function readIosSimulatorDevice(args: string[]): string | null {
+  return readValue(args, ["--device", "--udid"]);
+}
+
+/**
+ * An `ios-sim` subcommand's enumerated argument: read it from its own flags or
+ * the next positional, require it, and answer only a member of `valid`.
+ *
+ * Five branches — appearance, content size, accessibility option, permission
+ * action and privacy service — read, require and validate the same way and
+ * refuse with the same sentence. One helper keeps that sentence identical; a
+ * copy in each branch is how the wording drifts apart.
+ *
+ * `label` is what the missing-value error calls the argument ("privacy
+ * service"); `noun` is what the unknown-value sentence calls it ("service").
+ * Three of the five branches spell those differently, so they are two fields
+ * rather than one.
+ *
+ * The five describing fields arrive as one options object: `sub`, `label` and
+ * `noun` are adjacent bare strings, and two call sites pass `label === noun`,
+ * so a transposed pair would compile and read correctly at those two while
+ * corrupting the other three.
+ */
+function readIosSimulatorEnum<T extends string>(
+  args: string[],
+  {
+    sub,
+    names,
+    label,
+    noun,
+    valid,
+  }: {
+    sub: string;
+    names: string[];
+    label: string;
+    noun: string;
+    valid: readonly T[];
+  },
+): T {
+  const value = requireValue(readValue(args, names) ?? firstPositional(args), label);
+  // `find` narrows to `T` where `includes` only answers a boolean, so the
+  // match itself is the return value and neither side needs a cast.
+  const match = valid.find((entry) => entry === value);
+  if (match === undefined) {
+    throw new CliUsageError(
+      `ios-sim ${sub}: unknown ${noun} '${value}'. Valid values: ${valid.join(", ")}.`,
+    );
+  }
+  return match;
+}
+
+/**
  * The element query shared by find-element, tap-element, fill-element,
  * wait-for-element and assert-visible.
  *
@@ -10785,7 +10842,7 @@ function buildIosSimulatorPlan(
     sub === "launchables"
   ) {
     return iosAction("iOS simulator launchable apps", "listLaunchTargets", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
     });
   }
@@ -10804,7 +10861,7 @@ function buildIosSimulatorPlan(
     // it here the flag was silently dropped and the retry failed identically.
     const force = readFlag(args, ["--force", "-f"]);
     const launchArgs: JsonObject = {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       targetId: readValue(args, ["--target", "--target-id"]),
       bundleId: readValue(args, ["--bundle-id", "--bundle"]),
@@ -10844,7 +10901,7 @@ function buildIosSimulatorPlan(
   }
   if (sub === "screenshot" || sub === "capture") {
     return iosAction("iOS simulator screenshot", "screenshot", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       ...readIosSimulatorOutPath(args),
     });
@@ -10855,7 +10912,7 @@ function buildIosSimulatorPlan(
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
     const screenshotArgs = collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       ...readIosSimulatorOutPath(args),
     });
@@ -10906,7 +10963,7 @@ function buildIosSimulatorPlan(
   }
   if (sub === "inspector") {
     return iosAction("iOS simulator inspector snapshot", "getInspectorSnapshot", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
     });
   }
   if (sub === "preview-status" || sub === "preview-doctor") {
@@ -10997,13 +11054,13 @@ function buildIosSimulatorPlan(
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
     return iosAction("iOS simulator screen snapshot", "getScreenSnapshot", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
     });
   }
   if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
     return iosAction("iOS simulator inspect point", "inspectPoint", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       x: readCoordinate("--x", 0),
       y: readCoordinate("--y", 1),
@@ -11049,7 +11106,7 @@ function buildIosSimulatorPlan(
       "--quality",
     ]);
     return iosAction("iOS simulator live view start", "startStream", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       fps: readNumberOption(args, ["--fps"], 60),
       backend: requestedBackend,
       ...(scaleFactor == null ? {} : { scaleFactor }),
@@ -11074,14 +11131,14 @@ function buildIosSimulatorPlan(
     // device, so the service takes no root and sending one only invents a
     // contract the CLI cannot keep.
     return iosAction("iOS simulator tap", "tap", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       x: readCoordinate("--x", 0),
       y: readCoordinate("--y", 1),
     });
   }
   if (sub === "drag" || sub === "swipe") {
     return iosAction(`iOS simulator ${sub}`, sub, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       startX: readCoordinate("--start-x", 0),
       startY: readCoordinate("--start-y", 1),
       endX: readCoordinate("--end-x", 2),
@@ -11091,7 +11148,7 @@ function buildIosSimulatorPlan(
   }
   if (sub === "select") {
     return iosAction("iOS simulator select", "selectPoint", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       x: readCoordinate("--x", 0),
       y: readCoordinate("--y", 1),
@@ -11099,7 +11156,7 @@ function buildIosSimulatorPlan(
   }
   if (sub === "type" || sub === "text") {
     return iosAction("iOS simulator type", "typeText", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
       text: requireValue(
         readValue(args, ["--value", "--message", "--input-text"]) ??
           readCommandTextValue(args, ["--text"]) ??
@@ -11140,7 +11197,7 @@ function buildIosSimulatorPlan(
    * accepting different spellings of the same query.
    */
   const elementTargetArgs = (): JsonObject => {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const project = readValue(args, ["--project"]);
     return {
       deviceUdid: device,
@@ -11149,7 +11206,7 @@ function buildIosSimulatorPlan(
     };
   };
   if (sub === "open-device" || sub === "open-sim" || sub === "boot") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     // A device session is not an app session: it boots a simulator and makes
     // it streamable, with no build and no install.
     const noWindow = readFlag(args, ["--no-window", "--headless"]);
@@ -11165,7 +11222,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "close-device" || sub === "close-sim") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const force = readFlag(args, ["--force", "-f"]);
     const ignoreOwnership = readFlag(args, [
       "--ignore-ownership",
@@ -11183,43 +11240,39 @@ function buildIosSimulatorPlan(
   }
   if (sub === "settings" || sub === "device-settings") {
     return iosAction("iOS simulator device settings", "getDeviceSettings", {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
+      deviceUdid: readIosSimulatorDevice(args),
     });
   }
   if (sub === "appearance") {
-    const device = readValue(args, ["--device", "--udid"]);
-    const appearance = requireValue(
-      readValue(args, ["--appearance"]) ?? firstPositional(args),
-      "appearance",
-    );
-    if (appearance !== "light" && appearance !== "dark") {
-      throw new CliUsageError(
-        `ios-sim appearance: unknown appearance '${appearance}'. Valid values: light, dark.`,
-      );
-    }
+    const device = readIosSimulatorDevice(args);
+    const appearance = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--appearance"],
+      label: "appearance",
+      noun: "appearance",
+      valid: ["light", "dark"] as const,
+    });
     return iosAction("iOS simulator appearance", "setAppearance", {
       deviceUdid: device,
       appearance,
     });
   }
   if (sub === "content-size" || sub === "text-size") {
-    const device = readValue(args, ["--device", "--udid"]);
-    const contentSize = requireValue(
-      readValue(args, ["--content-size", "--size"]) ?? firstPositional(args),
-      "content size",
-    );
-    if (!(IOS_SIMULATOR_CONTENT_SIZES as readonly string[]).includes(contentSize)) {
-      throw new CliUsageError(
-        `ios-sim ${sub}: unknown content size '${contentSize}'. Valid values: ${IOS_SIMULATOR_CONTENT_SIZES.join(", ")}.`,
-      );
-    }
+    const device = readIosSimulatorDevice(args);
+    const contentSize = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--content-size", "--size"],
+      label: "content size",
+      noun: "content size",
+      valid: IOS_SIMULATOR_CONTENT_SIZES,
+    });
     return iosAction("iOS simulator content size", "setContentSize", {
       deviceUdid: device,
       contentSize,
     });
   }
   if (sub === "accessibility" || sub === "a11y") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     // `--on` / `--off` only. `--enabled` carries a VALUE for another command, and
     // a name that is a boolean in one place and a carrier in another swallows
     // the token after it — which this command has, because its option and its
@@ -11229,17 +11282,13 @@ function buildIosSimulatorPlan(
     if (enabledFlag && disabledFlag) {
       throw new CliUsageError("Use --on or --off, not both.");
     }
-    const option = requireValue(
-      readValue(args, ["--option"]) ?? firstPositional(args),
-      "accessibility option",
-    );
-    if (
-      !(IOS_SIMULATOR_ACCESSIBILITY_OPTIONS as readonly string[]).includes(option)
-    ) {
-      throw new CliUsageError(
-        `ios-sim ${sub}: unknown option '${option}'. Valid values: ${IOS_SIMULATOR_ACCESSIBILITY_OPTIONS.join(", ")}.`,
-      );
-    }
+    const option = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--option"],
+      label: "accessibility option",
+      noun: "option",
+      valid: IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
+    });
     const state = enabledFlag || disabledFlag ? null : firstPositional(args);
     const enabled = enabledFlag
       ? true
@@ -11262,7 +11311,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "location") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     if (readFlag(args, ["--clear", "--reset"])) {
       return iosAction("iOS simulator clear location", "clearLocation", { deviceUdid: device });
     }
@@ -11286,26 +11335,22 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "permission" || sub === "privacy") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
-    const action = requireValue(
-      readValue(args, ["--action"]) ?? firstPositional(args),
-      "permission action",
-    );
-    if (action !== "grant" && action !== "revoke" && action !== "reset") {
-      throw new CliUsageError(
-        `ios-sim ${sub}: unknown action '${action}'. Valid values: grant, revoke, reset.`,
-      );
-    }
-    const service = requireValue(
-      readValue(args, ["--service"]) ?? firstPositional(args),
-      "privacy service",
-    );
-    if (!(IOS_SIMULATOR_PRIVACY_SERVICES as readonly string[]).includes(service)) {
-      throw new CliUsageError(
-        `ios-sim ${sub}: unknown service '${service}'. Valid values: ${IOS_SIMULATOR_PRIVACY_SERVICES.join(", ")}.`,
-      );
-    }
+    const action = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--action"],
+      label: "permission action",
+      noun: "action",
+      valid: ["grant", "revoke", "reset"] as const,
+    });
+    const service = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--service"],
+      label: "privacy service",
+      noun: "service",
+      valid: IOS_SIMULATOR_PRIVACY_SERVICES,
+    });
     return iosAction("iOS simulator permission", "setPermission", {
       deviceUdid: device,
       action,
@@ -11316,7 +11361,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "push") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
       readValue(args, ["--bundle-id", "--bundle"]),
       "--bundle-id",
@@ -11336,7 +11381,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "open-url") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const url = requireValue(
       readValue(args, ["--url"]) ?? firstPositional(args),
       "url",
@@ -11344,7 +11389,7 @@ function buildIosSimulatorPlan(
     return iosAction("iOS simulator open url", "openUrl", { deviceUdid: device, url });
   }
   if (sub === "relaunch" || sub === "restart-app") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
       readValue(args, ["--bundle-id", "--bundle"]),
       "--bundle-id",
@@ -11355,7 +11400,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "terminate" || sub === "kill-app") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
       readValue(args, ["--bundle-id", "--bundle"]),
       "--bundle-id",
@@ -11366,7 +11411,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "uninstall") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
       readValue(args, ["--bundle-id", "--bundle"]),
       "--bundle-id",
@@ -11387,7 +11432,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "status-bar") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     if (readFlag(args, ["--clear", "--reset"])) {
       return iosAction("iOS simulator clear status bar", "clearStatusBar", { deviceUdid: device });
     }
@@ -11408,7 +11453,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "app-state") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
       readValue(args, ["--bundle-id", "--bundle"]),
       "--bundle-id",
@@ -11416,7 +11461,7 @@ function buildIosSimulatorPlan(
     return iosAction("iOS simulator app state", "getAppState", { deviceUdid: device, bundleId });
   }
   if (sub === "log-start" || sub === "logs-start") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     // Required. `log stream` reads the whole device, so a run with no scope
     // returns every other app's rows and the system's.
     const bundleId = requireValue(
@@ -11439,7 +11484,7 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "log" || sub === "logs") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const sinceId = readNumberOption(args, ["--since", "--since-id"]);
     const limit = readNumberOption(args, ["--limit"]);
     return iosAction("iOS simulator event log", "getEventLog", {
@@ -11483,7 +11528,7 @@ function buildIosSimulatorPlan(
     return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
   }
   if (sub === "proof-bundle") {
-    const device = readValue(args, ["--device", "--udid"]);
+    const device = readIosSimulatorDevice(args);
     const project = readValue(args, ["--project"]);
     const outDir = readValue(args, ["--out", "--out-dir", "--output"]);
     const caption = readValue(args, ["--caption", "--description"]);

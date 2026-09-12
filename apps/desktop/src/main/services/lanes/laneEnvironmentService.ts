@@ -19,6 +19,7 @@ import { laneSetupScriptHasWork } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
 import {
+  isPathEscapeError,
   resolvePathWithinRoot,
   secureCopyPathIntoRoot,
   secureWriteFileWithinRoot,
@@ -48,7 +49,7 @@ function resolveCheckedPath(
   try {
     return resolvePathWithinRoot(root, relative, opts);
   } catch (err) {
-    if (err instanceof Error && err.message === "Path escapes root") {
+    if (isPathEscapeError(err)) {
       logger.warn(logTag, logContext);
       throw new Error("Path escapes allowed directory");
     }
@@ -56,7 +57,8 @@ function resolveCheckedPath(
   }
 }
 
-function isPathEscapeError(error: unknown): boolean {
+/** Whether an error is this file's own rewritten escape message, not `resolvePathWithinRoot`'s. */
+function isLaneEscapeRejection(error: unknown): boolean {
   return error instanceof Error && error.message === "Path escapes allowed directory";
 }
 
@@ -71,7 +73,7 @@ function secureWriteTextFile(
   try {
     secureWriteFileWithinRoot(root, relative, content, "utf8");
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       logger.warn(logTag, logContext);
       throw new Error("Path escapes allowed directory");
     }
@@ -97,7 +99,7 @@ function secureCopyPath(
   try {
     secureCopyPathIntoRoot(destRoot, destRelative, sourcePath);
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       logger.warn(destLogTag, destLogContext);
       throw new Error("Path escapes allowed directory");
     }
@@ -952,7 +954,7 @@ export function createLaneEnvironmentService({
           { allowMissing: true },
         );
       } catch (error) {
-        if (isPathEscapeError(error)) {
+        if (isLaneEscapeRejection(error)) {
           progressMap.delete(lane.id);
           return;
         }

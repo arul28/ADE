@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import type { DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
@@ -284,7 +284,7 @@ function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: 
   const absPath = resolvePathWithinRoot(root, filePath, { allowMissing: true });
   const gitPath = path.relative(root, absPath).replace(/\\/g, "/");
   if (!gitPath || gitPath.startsWith("../") || gitPath === "..") {
-    throw new Error("Path escapes root");
+    throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   }
   return { absPath, gitPath };
 }

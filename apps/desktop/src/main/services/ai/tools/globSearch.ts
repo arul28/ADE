@@ -2,7 +2,7 @@ import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { getErrorMessage, resolvePathWithinRoot } from "../../shared/utils";
+import { getErrorMessage, isPathEscapeError, resolvePathWithinRoot } from "../../shared/utils";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
@@ -37,7 +37,7 @@ export function createGlobSearchTool(cwd: string) {
         return {
           files: [],
           count: 0,
-          error: message === "Path escapes root"
+          error: isPathEscapeError(error)
             ? `Glob search path is outside the repo root: ${basePath ?? "."}`
             : `Glob search failed: ${message}`,
         };

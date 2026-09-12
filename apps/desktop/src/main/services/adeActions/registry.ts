@@ -144,7 +144,7 @@ import { runGit } from "../git/git";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
-import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
@@ -1582,7 +1582,7 @@ function resolveAgentChatImagePath(projectRoot: string, rawPath: unknown): strin
   try {
     return resolvePathWithinRoot(projectRoot, value);
   } catch (error) {
-    if (error instanceof Error && error.message === "Path escapes root") {
+    if (isPathEscapeError(error)) {
       throw new Error("Image path must be inside the project.");
     }
     throw error;

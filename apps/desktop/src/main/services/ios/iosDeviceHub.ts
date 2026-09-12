@@ -256,17 +256,62 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
   };
 
   /**
+   * True when a chat other than `chatSessionId` runs an app on this device.
+   *
+   * Shutting such a device down hands that chat a dead simulator and a session
+   * that still says it is running, so every release path asks this before it
+   * shuts anything down.
+   */
+  const appSessionHeldByAnotherChat = (
+    deviceUdid: string,
+    chatSessionId: string | null,
+  ): boolean => {
+    const appOwner = deps.getAppSessionOwner();
+    return appOwner !== null
+      && appOwner !== chatSessionId
+      && deps.getAppSessionDeviceUdid() === deviceUdid;
+  };
+
+  /**
    * Lets go of a tracked session: shuts the simulator down when asked, stops a
    * log stream that was following it, and announces the release.
    *
-   * Shared by `closeDevice` and by `openDevice` taking over a different device,
-   * so a hand-off releases exactly what a close releases.
+   * Shared by `closeDevice`, by `openDevice` taking over a different device,
+   * and by `releaseDeviceIfOwnedBy`, so every release lets go of the same
+   * things.
    */
   const releaseTrackedDevice = async (
     previous: IosSimulatorDeviceSession,
     shouldShutdown: boolean,
+    /**
+     * The chat doing the releasing, and whether it is overriding.
+     *
+     * `releasedBy` is required, not defaulted: the plausible default is the
+     * session's own owner, which is the chat being released rather than the
+     * one releasing it, and that reading makes the guard below weaker instead
+     * of stronger. A new release path has to say who is releasing.
+     */
+    by: { releasedBy: string | null; force: boolean },
   ): Promise<boolean> => {
     let shutdown = false;
+    // Asked here rather than at each call site: `openDevice`, `closeDevice`
+    // and `releaseDeviceIfOwnedBy` all shut devices down, and a guard on one
+    // of them protects nothing on the other two.
+    //
+    // `force` passes through because this is the only place in ADE that runs
+    // `simctl shutdown`. An absolute guard would leave a simulator no ADE
+    // command could shut down, and `close-device --force` already tells the
+    // user it closes one anyway.
+    if (
+      shouldShutdown
+      && !by.force
+      && appSessionHeldByAnotherChat(previous.deviceUdid, by.releasedBy)
+    ) {
+      deps.logger.info("ios_simulator.device_shutdown_skipped_app_session", {
+        deviceUdid: previous.deviceUdid,
+      });
+      shouldShutdown = false;
+    }
     if (shouldShutdown) {
       await deps.run("xcrun", ["simctl", "shutdown", previous.deviceUdid], { timeoutMs: 60_000 })
         .then(() => {
@@ -323,7 +368,13 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           // released here rather than left untracked. ADE shuts it down when ADE
           // booted it, which is what `closeDevice` would have done; a simulator
           // the user started stays running.
-          await releaseTrackedDevice(previous, previous.bootedByAde);
+          await releaseTrackedDevice(previous, previous.bootedByAde, {
+            releasedBy: args.chatSessionId ?? null,
+            // Opening another device is not a request to shut this one down,
+            // so `force` here would only mean "take a device another chat is
+            // using and kill its app too". It never does.
+            force: false,
+          });
         }
         deviceSession = {
           deviceUdid: device.udid,
@@ -369,7 +420,16 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         }
         const previous = deviceSession;
         deviceSession = null;
-        const shutdown = await releaseTrackedDevice(previous, args.shutdownDevice ?? previous.bootedByAde);
+        const shutdown = await releaseTrackedDevice(
+          previous,
+          args.shutdownDevice ?? previous.bootedByAde,
+          {
+            releasedBy: args.chatSessionId ?? null,
+            // The explicit, human-initiated path. `close-device --force` says
+            // it closes a device another chat owns, so it shuts one down.
+            force: args.force === true || args.ignoreOwnership === true,
+          },
+        );
         return { released: true, shutdown, previousDeviceSession: previous };
       });
     },
@@ -388,19 +448,12 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           return { released: false, shutdown: false, previousDeviceSession: null };
         }
         deviceSession = null;
-        // A chat that goes away releases its own claim, not another chat's
-        // work. When a different chat runs an app on this simulator, shutting
-        // it down would leave that chat with a dead device and a session that
-        // still says it is running, so the claim drops and the device stays up.
-        const appOwner = deps.getAppSessionOwner();
-        const appDevice = deps.getAppSessionDeviceUdid();
-        const appSessionOnThisDevice = appOwner !== null
-          && appOwner !== chatSessionId
-          && appDevice === previous.deviceUdid;
-        const shutdown = await releaseTrackedDevice(
-          previous,
-          previous.bootedByAde && !appSessionOnThisDevice,
-        );
+        // Cleanup after a chat that went away. Nobody asked for this, so it
+        // never overrides another chat's app session.
+        const shutdown = await releaseTrackedDevice(previous, previous.bootedByAde, {
+          releasedBy: chatSessionId,
+          force: false,
+        });
         return { released: true, shutdown, previousDeviceSession: previous };
       });
     },
@@ -884,10 +937,12 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       const logDeviceUdid = eventLog.activeDeviceUdid();
       const logFromAnotherDevice = logDeviceUdid !== null && logDeviceUdid !== shot.deviceUdid;
       if (limit > 0 && !logFromAnotherDevice) {
-        const page = eventLog.read({ limit });
-        if (page.rows.length) {
+        // The drawer is the reader that shows the gap, so a proof capture takes
+        // the rows without consuming the counter on its way past.
+        const logRows = eventLog.snapshotRows(limit);
+        if (logRows.length) {
           logPath = path.join(dir, "log.json");
-          await fileSystem.writeFile(logPath, JSON.stringify(page.rows, null, 2));
+          await fileSystem.writeFile(logPath, JSON.stringify(logRows, null, 2));
         }
       }
 

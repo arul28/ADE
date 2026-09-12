@@ -577,8 +577,13 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  *
  * 103 since `readIosSimulatorElementQuery`: six `ios-sim` subcommands build the
  * same element query, and one reader is why they cannot drift apart.
+ *
+ * 105 since `readIosSimulatorDevice` and `readIosSimulatorEnum`: thirty-one
+ * `ios-sim` branches read the same `--device|--udid` pair, and five read,
+ * require and validate an enumerated argument with the same refusal sentence.
+ * One reader each is why neither can drift apart.
  */
-const ARGV_READER_COUNT = 103;
+const ARGV_READER_COUNT = 105;
 
 /** The carrier-aware positional readers the browser table must reach. */
 const CARRIER_AWARE_READERS = [
@@ -627,7 +632,7 @@ describe("browser value flags", () => {
     // `buildActionRunStep(args, target = parseActionRunTarget(args))` reaches
     // that reader from its SIGNATURE only — cli.ts's one such edge. The
     // counts cannot show this: the edge leads to a function the bodies
-    // already reach, so `ARGV_READERS.size` is 102 either way. Without these
+    // already reach, so `ARGV_READERS.size` is 105 either way. Without these
     // three, reverting `scanRoots` to a body-only read breaks nothing and an
     // argv reader called from a parameter default goes back to being
     // classified as reading nothing.

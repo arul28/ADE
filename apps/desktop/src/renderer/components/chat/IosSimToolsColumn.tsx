@@ -110,7 +110,7 @@ const INPUT = cn(
   "disabled:cursor-not-allowed disabled:opacity-45",
 );
 
-type ToolMenuOption = { value: string; label: string };
+type ToolMenuOption<T extends string> = { value: T; label: string };
 
 /**
  * One value picker for the whole column.
@@ -119,8 +119,13 @@ type ToolMenuOption = { value: string; label: string };
  * lands as a third visual language beside the browser pane's Radix menus, so
  * the list is the house menu instead: same surface, same item metrics, same
  * accent check mark on whatever is on.
+ *
+ * The menu is generic over its value so each caller keeps its own union all
+ * the way through: a menu built from `IosSimulatorPrivacyService` rows hands
+ * an `IosSimulatorPrivacyService` back. A picker that answered in `string`
+ * would need an assertion at exactly the point a wrong value reaches `simctl`.
  */
-function ToolMenu({
+function ToolMenu<T extends string>({
   ariaLabel,
   value,
   placeholder,
@@ -130,12 +135,13 @@ function ToolMenu({
   className,
 }: {
   ariaLabel: string;
+  /** What is on now, which may be nothing, or a value no option carries. */
   value: string;
   /** Shown on the trigger when the current value is not one of the options. */
   placeholder: string;
-  options: ToolMenuOption[];
+  options: ToolMenuOption<T>[];
   disabled: boolean;
-  onChange: (value: string) => void;
+  onChange: (value: T) => void;
   className?: string;
 }) {
   const current = options.find((option) => option.value === value);
@@ -160,7 +166,16 @@ function ToolMenu({
           className={MENU_CONTENT_CLASS}
         >
           <DropdownMenu.Label className={MENU_LABEL_CLASS}>{ariaLabel}</DropdownMenu.Label>
-          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
+          <DropdownMenu.RadioGroup
+            value={value}
+            onValueChange={(next) => {
+              // Radix answers in `string`. Finding the row again is what proves
+              // the answer is one of ours, and it is the only place that has to
+              // know: every caller is handed back its own type.
+              const option = options.find((item) => item.value === next);
+              if (option) onChange(option.value);
+            }}
+          >
             {options.map((option) => (
               <DropdownMenu.RadioItem
                 key={option.value}
@@ -321,14 +336,12 @@ export function IosSimToolsColumn({
   const accessibility = settings?.accessibility ?? null;
 
   const contentSize = settings?.contentSize ?? "";
-  // A device can answer with a size this build has no name for. Listing it
-  // keeps the trigger honest rather than showing a value with no row behind it.
-  const contentSizeOptions: ToolMenuOption[] = [
-    ...(contentSize && !IOS_SIMULATOR_CONTENT_SIZES.includes(contentSize as IosSimulatorContentSize)
-      ? [{ value: contentSize, label: contentSize }]
-      : []),
-    ...IOS_SIMULATOR_CONTENT_SIZES.map((size) => ({ value: size, label: size })),
-  ];
+  // A device can answer with a size this build has no name for. The trigger's
+  // placeholder reports it, and the menu offers only the sizes ADE can set:
+  // listing the unknown one as a row made it selectable, and `simctl` refuses
+  // it, so the only thing that row could do was turn a click into an error.
+  const contentSizeOptions: ToolMenuOption<IosSimulatorContentSize>[] =
+    IOS_SIMULATOR_CONTENT_SIZES.map((size) => ({ value: size, label: size }));
 
   const locationLabel = settings?.location
     ? `${settings.location.latitude.toFixed(3)}, ${settings.location.longitude.toFixed(3)}`
@@ -409,7 +422,7 @@ export function IosSimToolsColumn({
               { value: "dark", label: "Dark" },
             ]}
             disabled={locked}
-            onChange={(next) => onSetAppearance(next as IosSimulatorAppearance)}
+            onChange={onSetAppearance}
           />
         </div>
         <div className={ROW}>
@@ -419,10 +432,10 @@ export function IosSimToolsColumn({
             ariaLabel="Text size"
             className="w-[112px] shrink-0"
             value={contentSize}
-            placeholder="Unknown"
+            placeholder={contentSize || "Unknown"}
             options={contentSizeOptions}
             disabled={locked}
-            onChange={(next) => onSetContentSize(next as IosSimulatorContentSize)}
+            onChange={onSetContentSize}
           />
         </div>
       </Section>
@@ -483,7 +496,7 @@ export function IosSimToolsColumn({
             placeholder="Pick a service"
             options={IOS_SIMULATOR_PRIVACY_SERVICES.map((service) => ({ value: service, label: service }))}
             disabled={locked}
-            onChange={(next) => setPermissionService(next as IosSimulatorPrivacyService)}
+            onChange={setPermissionService}
           />
         </div>
         <div className={cn(ROW, "gap-1")}>

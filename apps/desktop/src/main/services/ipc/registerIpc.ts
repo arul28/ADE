@@ -900,7 +900,7 @@ import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
-import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -3986,7 +3986,7 @@ export function registerIpc({
         targetPath = resolvePathWithinRoot(rootPath, candidatePath, { allowMissing: true });
       } catch (resolveError: unknown) {
         // Only translate containment errors; rethrow unexpected failures.
-        if (resolveError instanceof Error && resolveError.message === "Path escapes root") {
+        if (isPathEscapeError(resolveError)) {
           throw new Error("relativePath escapes rootPath.");
         }
         throw resolveError;

@@ -2186,16 +2186,15 @@ export function ChatIosSimulatorPanel({
     // longer tears the stream down — while a real device switch still does,
     // which is what re-picks the capture source instead of parking on the old
     // simulator window.
-    if (mode !== "interact" || statusSupported === null) {
-      stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
-      void releaseParkingHold();
-      streamStartedByPanelRef.current = false;
-      return;
-    }
+    // One guard, because the two that stood here had the same body:
+    // `statusSupported !== true` covers both "not read yet" and "not
+    // supported". Everything that is not a live view this panel can drive
+    // tears the stream down the same way. It stays an early return so the
+    // device id is narrowed for the code below.
     if (
-      !activeDeviceUdid
-      || !statusSupported
+      mode !== "interact"
+      || statusSupported !== true
+      || !activeDeviceUdid
       || !activeSessionId
       || activeSessionDeviceUdid !== activeDeviceUdid
     ) {

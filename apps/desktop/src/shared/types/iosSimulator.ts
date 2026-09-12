@@ -696,8 +696,14 @@ export type IosSimulatorEventPayload =
  * window itself. A chat pinned to a remote Mac therefore had a live view it
  * could never show. The `idb-h264` backend moves the encode to the machine
  * that owns the simulator and hands the desktop a loopback URL instead of a
- * window id, so a Windows or Linux desktop bound to a remote Mac watches the
- * same session the agent drives.
+ * window id, so a Mac bound to another Mac watches the same session the agent
+ * drives.
+ *
+ * The Work tools pane still offers the iOS tool on macOS only
+ * (`supportsIosSimulator: isMacPlatform()`), so a Windows or Linux desktop
+ * cannot open this drawer even against a remote Mac. The transport does not
+ * care which desktop reads it; the gate is the renderer's, and moving it is a
+ * behaviour change this branch did not make.
  * ------------------------------------------------------------------------- */
 
 /**
