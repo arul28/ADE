@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type {
   IosScreenSnapshot,
-  IosSimulatorDevice,
   IosSimulatorPrivacyPane,
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   OpenProjectBinding,
 } from "../../../shared/types";
 import type { IosSimH264Status } from "./IosSimH264Video";
@@ -19,16 +17,13 @@ import {
   openIosSimSettingsPane,
   revealSimulator,
 } from "./iosSimContracts";
-
-/** Where the device screen sits inside a captured Simulator window, in video pixels. */
-type WindowScreenRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  confidence: number;
-  source: "matched" | "heuristic";
-};
+import {
+  buildDesktopCaptureConstraints,
+  calibrateWindowScreenRect,
+  heuristicWindowScreenRect,
+  pickSimulatorWindowSource,
+  type WindowScreenRect,
+} from "./iosSimWindowGeometry";
 
 /** What the drawer is currently showing, and which backend is producing it. */
 export type LiveVisual =
@@ -93,166 +88,6 @@ const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
 const WINDOW_POLL_STABLE_THRESHOLD = 3;
 
-function pickSimulatorWindowSource(
-  sources: IosSimulatorWindowSource[],
-  device: { name: string } | null,
-): IosSimulatorWindowSource | null {
-  if (!sources.length) return null;
-  const deviceName = device?.name.toLowerCase() ?? "";
-  return [...sources]
-    .filter((source) => !/developer tools|devtools|ade/i.test(source.name))
-    .map((source) => {
-      const name = source.name.toLowerCase();
-      let score = 0;
-      if (deviceName && name.includes(deviceName)) score += 80;
-      if (name.includes("simulator")) score += 50;
-      if (/\biphone\b|\bipad\b|\bios\b/.test(name)) score += 30;
-      if (name.includes("apple tv") || name.includes("watch")) score -= 20;
-      return { source, score };
-    })
-    .filter(({ source, score }) => {
-      const name = source.name.toLowerCase();
-      if (deviceName) return name.includes(deviceName) || name.includes("simulator");
-      return score >= 50;
-    })
-    .sort((a, b) => b.score - a.score || a.source.name.localeCompare(b.source.name))[0]?.source ?? null;
-}
-
-function buildDesktopCaptureConstraints(sourceId: string, maxFrameRate: number): MediaStreamConstraints {
-  return {
-    audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: "desktop",
-        chromeMediaSourceId: sourceId,
-        minFrameRate: Math.min(30, maxFrameRate),
-        maxFrameRate,
-      },
-      optional: [{ cursor: "never" }],
-    },
-  } as unknown as MediaStreamConstraints;
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Unable to load iOS snapshot for window calibration."));
-    image.src = src;
-  });
-}
-
-function heuristicWindowScreenRect(
-  videoWidth: number,
-  videoHeight: number,
-  screenWidth: number | null | undefined,
-  screenHeight: number | null | undefined,
-): WindowScreenRect | null {
-  if (videoWidth <= 0 || videoHeight <= 0 || !screenWidth || !screenHeight) return null;
-  const aspect = screenWidth / screenHeight;
-  if (!Number.isFinite(aspect) || aspect <= 0) return null;
-  const widthLimited = videoWidth * 0.91;
-  const heightLimited = videoHeight * 0.9 * aspect;
-  const width = Math.min(widthLimited, heightLimited);
-  const height = width / aspect;
-  const residualX = Math.max(0, videoWidth - width);
-  const residualY = Math.max(0, videoHeight - height);
-  return {
-    x: residualX / 2,
-    y: Math.min(residualY, Math.max(videoHeight * 0.065, residualY * 0.82)),
-    width,
-    height,
-    confidence: 0.45,
-    source: "heuristic",
-  };
-}
-
-function luminanceAt(data: Uint8ClampedArray, index: number): number {
-  return (data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114);
-}
-
-async function calibrateWindowScreenRect(
-  video: HTMLVideoElement,
-  snapshot: IosScreenSnapshot,
-): Promise<WindowScreenRect | null> {
-  const videoWidth = video.videoWidth;
-  const videoHeight = video.videoHeight;
-  const screenWidth = snapshot.screenshot.width;
-  const screenHeight = snapshot.screenshot.height;
-  const fallback = heuristicWindowScreenRect(videoWidth, videoHeight, screenWidth, screenHeight);
-  if (!fallback || !snapshot.screenshot.dataUrl || video.readyState < video.HAVE_CURRENT_DATA) return fallback;
-
-  try {
-    const image = await loadImage(snapshot.screenshot.dataUrl);
-    const aspect = screenWidth && screenHeight ? screenWidth / screenHeight : image.naturalWidth / image.naturalHeight;
-    const sampleWidth = 28;
-    const sampleHeight = Math.max(40, Math.round(sampleWidth / aspect));
-
-    const referenceCanvas = document.createElement("canvas");
-    referenceCanvas.width = sampleWidth;
-    referenceCanvas.height = sampleHeight;
-    const referenceCtx = referenceCanvas.getContext("2d", { willReadFrequently: true });
-    if (!referenceCtx) return fallback;
-    referenceCtx.drawImage(image, 0, 0, sampleWidth, sampleHeight);
-    const reference = referenceCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
-
-    const videoCanvas = document.createElement("canvas");
-    videoCanvas.width = videoWidth;
-    videoCanvas.height = videoHeight;
-    const videoCtx = videoCanvas.getContext("2d");
-    if (!videoCtx) return fallback;
-    videoCtx.drawImage(video, 0, 0, videoWidth, videoHeight);
-
-    const candidateCanvas = document.createElement("canvas");
-    candidateCanvas.width = sampleWidth;
-    candidateCanvas.height = sampleHeight;
-    const candidateCtx = candidateCanvas.getContext("2d", { willReadFrequently: true });
-    if (!candidateCtx) return fallback;
-
-    let bestRect: WindowScreenRect = fallback;
-    let bestScore = Number.POSITIVE_INFINITY;
-    const heightScales = [0.96, 0.98, 1, 1.02, 1.04];
-    const xOffsets = [-0.04, -0.025, -0.01, 0, 0.01, 0.025, 0.04];
-    const yOffsets = [-0.06, -0.04, -0.02, 0, 0.02, 0.04, 0.06];
-
-    for (const heightScale of heightScales) {
-      const height = fallback.height * heightScale;
-      const width = height * aspect;
-      if (width <= 0 || height <= 0 || width > videoWidth || height > videoHeight) continue;
-      const baseX = fallback.x + ((fallback.width - width) / 2);
-      const baseY = fallback.y + ((fallback.height - height) / 2);
-      for (const xOffset of xOffsets) {
-        for (const yOffset of yOffsets) {
-          const x = Math.max(0, Math.min(videoWidth - width, baseX + (videoWidth * xOffset)));
-          const y = Math.max(0, Math.min(videoHeight - height, baseY + (videoHeight * yOffset)));
-          candidateCtx.clearRect(0, 0, sampleWidth, sampleHeight);
-          candidateCtx.drawImage(videoCanvas, x, y, width, height, 0, 0, sampleWidth, sampleHeight);
-          const candidate = candidateCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
-          let score = 0;
-          for (let index = 0; index < reference.length; index += 4) {
-            score += Math.abs(luminanceAt(reference, index) - luminanceAt(candidate, index));
-          }
-          score /= reference.length / 4;
-          if (score < bestScore) {
-            bestScore = score;
-            bestRect = {
-              x,
-              y,
-              width,
-              height,
-              confidence: Math.max(0, Math.min(1, 1 - (score / 255))),
-              source: "matched",
-            };
-          }
-        }
-      }
-    }
-    return bestRect.confidence > 0.55 ? bestRect : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 /**
  * Records which live view an installation actually watches a simulator through.
  *
@@ -289,15 +124,15 @@ export type UseIosSimLiveViewArgs = {
    */
   mode: "interact" | "inspect" | "preview";
   /**
-   * The device the recovery restart and the manual Restart act on. Per-render
-   * object identity (it is the panel's own `useMemo`), which is why only the
-   * two callbacks that need the whole device list it — the effects below key on
-   * the primitives instead.
+   * The device every backend here acts on.
+   *
+   * Two primitives rather than the panel's device object. That object is a
+   * `useMemo` over the device list, and `refreshStatus` replaces the list on
+   * every status poll, so depending on its identity churned the recovery and
+   * restart callbacks on that timer.
    */
-  activeDevice: IosSimulatorDevice | null;
-  /** `activeDevice.udid`, as a primitive: the main effect keys on this. */
   activeDeviceUdid: string | null;
-  /** `activeDevice.name`, as a primitive, for the same reason. */
+  /** The device's name, for the backends that report which one they opened. */
   activeDeviceName: string | null;
   /**
    * The device the app-or-device session names. A live view is only started
@@ -329,7 +164,7 @@ export type UseIosSimLiveViewArgs = {
   /**
    * Re-reads the screen snapshot. Per-render identity (a `useCallback` in the
    * panel), and listed in the dependency arrays that already listed it there,
-   * so it behaves exactly as it did in the component.
+   *
    */
   refreshSnapshot: (options?: { silent?: boolean; priority?: boolean }) => Promise<void>;
   /**
@@ -346,21 +181,15 @@ export type UseIosSimLiveViewArgs = {
   /**
    * The panel's launch, for the overlay's Relaunch action.
    *
-   * A ref rather than the function: `launch` is declared after this hook runs
-   * (it needs values this hook has no business knowing), so the blocker handler
-   * cannot close over it. The panel already keeps this ref current with a sync
-   * effect and already calls through it elsewhere.
+   * A ref rather than the function, because the two are in a cycle: the
+   * blocker handler calls `launch`, `launch` depends on the panel's
+   * `refreshStatus`, and `refreshStatus` depends on `syncExistingStreamStatus`,
+   * which this hook returns. `launch` therefore cannot be declared before this
+   * call, and passing it directly is a temporal dead zone rather than a type
+   * error. The panel already keeps this ref current with a sync effect and
+   * already calls through it elsewhere.
    */
   launchRef: MutableRefObject<(() => Promise<void>) | null>;
-  /**
-   * The inspect snapshot's `<img>`.
-   *
-   * A live-view hook wants it for one reason: it is the last fallback for "how
-   * big is the media on screen". With no live visual and no video element, the
-   * still image is the only node that knows the intrinsic size, and the pointer
-   * mapping is measured against whatever that size is.
-   */
-  imageRef: MutableRefObject<HTMLImageElement | null>;
   /**
    * Where a live-view failure surfaces. Must be stable: several callbacks below
    * list it, so a fresh identity each render would re-arm them.
@@ -378,8 +207,6 @@ export type IosSimLiveView = {
   liveBlocker: IosSimBlocker | null;
   handleBlockerAction: (action: IosSimBlockerAction) => void;
   h264ReconnectNonce: number;
-  h264Canvas: HTMLCanvasElement | null;
-  setH264Canvas: (canvas: HTMLCanvasElement | null) => void;
   handleH264Status: (next: IosSimH264Status, nextError: string | null) => void;
   handleH264Dimensions: (size: { width: number; height: number }) => void;
   setVideoNode: (video: HTMLVideoElement | null) => void;
@@ -413,7 +240,6 @@ export type IosSimLiveView = {
  */
 export function useIosSimLiveView({
   mode,
-  activeDevice,
   activeDeviceUdid,
   activeDeviceName,
   activeSessionDeviceUdid,
@@ -426,7 +252,6 @@ export function useIosSimLiveView({
   refreshSnapshot,
   runtimePinRef,
   launchRef,
-  imageRef,
   onError,
 }: UseIosSimLiveViewArgs): IosSimLiveView {
   const [liveVisual, setLiveVisual] = useState<LiveVisual | null>(null);
@@ -440,7 +265,6 @@ export function useIosSimLiveView({
    * retry, which is what keeps a permanently refused forward from spinning.
    */
   const [h264ResolveFailures, setH264ResolveFailures] = useState(0);
-  const [h264Canvas, setH264Canvas] = useState<HTMLCanvasElement | null>(null);
   /**
    * The address on the machine that owns the simulator.
    *
@@ -504,14 +328,21 @@ export function useIosSimLiveView({
    */
   const captureStartRef = useRef<symbol | null>(null);
 
-  const liveWidth = liveVisual?.width ?? videoRef.current?.videoWidth ?? imageRef.current?.naturalWidth ?? null;
-  const liveHeight = liveVisual?.height ?? videoRef.current?.videoHeight ?? imageRef.current?.naturalHeight ?? null;
+  // No fallback to the inspect image. It carried one over from the panel, and
+  // the two can never be on screen together: the still is rendered only in
+  // Inspect and every reader of these is gated on Interact, so the term could
+  // only ever read a detached node from the previous commit.
+  const liveWidth = liveVisual?.width ?? videoRef.current?.videoWidth ?? null;
+  const liveHeight = liveVisual?.height ?? videoRef.current?.videoHeight ?? null;
   const liveVisualKind = liveVisual?.kind ?? null;
   const liveWindowSourceId = liveVisual?.kind === "window" ? liveVisual.sourceId : null;
   const liveWindowHeight = liveVisual?.kind === "window" ? liveVisual.height : null;
   const liveWindowWidth = liveVisual?.kind === "window" ? liveVisual.width : null;
 
   const syncExistingStreamStatus = useCallback((nextStreamStatus: IosSimulatorStreamStatus | null) => {
+    // The panel's caller answers a failed read with null. Writing that through
+    // would blank the live chip's metrics because a status could not be read,
+    // which is not the same thing as the stream having no metrics.
     if (!nextStreamStatus) return;
     setStreamStatus(nextStreamStatus);
   }, []);
@@ -849,7 +680,6 @@ export function useIosSimLiveView({
     });
   }, [chatIsRemote, chatMachineName, runtimePinRef]);
 
-
   /**
    * `liveStreamRef` is only ever populated by window capture, so its presence is
    * the whole precondition. Stable identity matters: React re-runs a callback
@@ -904,8 +734,8 @@ export function useIosSimLiveView({
     // own and would otherwise stay frozen on the first dropped frame.
     if (
       mode !== "interact"
-      || !activeDevice
-      || activeSessionDeviceUdid !== activeDevice.udid
+      || !activeDeviceUdid
+      || activeSessionDeviceUdid !== activeDeviceUdid
       || liveVisualKind !== "window"
     ) {
       return;
@@ -929,7 +759,10 @@ export function useIosSimLiveView({
           // same cancellation token, so a drawer that closed or switched out of
           // Interact during the stop above stops this run before it starts
           // anything.
-          await startWindowCaptureVisual(activeDevice, armedForRecovery);
+          await startWindowCaptureVisual(
+            { udid: activeDeviceUdid, name: activeDeviceName ?? "" },
+            armedForRecovery,
+          );
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
           // Same dead end as the effect's give-up path: nothing retries a
@@ -964,7 +797,8 @@ export function useIosSimLiveView({
       });
     }, 250);
   }, [
-    activeDevice,
+    activeDeviceName,
+    activeDeviceUdid,
     activeSessionDeviceUdid,
     liveVisualKind,
     mode,
@@ -1405,8 +1239,8 @@ export function useIosSimLiveView({
   ), [frameStalled, liveVisual, mode, revealError, simulatorWindowState, streamStatus?.degradationReason, streamStatus?.fallbackReason]);
 
   const restartLiveView = useCallback(async () => {
-    const device = activeDevice;
-    if (!device) return;
+    if (!activeDeviceUdid) return;
+    const device = { udid: activeDeviceUdid, name: activeDeviceName ?? "" };
     // Same as the recovery path: the token is read before the prelude, so a
     // drawer that moves on during the stop below cancels this restart.
     const armedForRestart = captureStartRef.current;
@@ -1452,7 +1286,8 @@ export function useIosSimLiveView({
         });
     }
   }, [
-    activeDevice,
+    activeDeviceName,
+    activeDeviceUdid,
     chatIsRemote,
     chatMachineName,
     refreshSnapshot,
@@ -1514,9 +1349,7 @@ export function useIosSimLiveView({
     liveBlocker,
     handleBlockerAction,
     h264ReconnectNonce,
-    h264Canvas,
-    setH264Canvas,
-    handleH264Status,
+        handleH264Status,
     handleH264Dimensions,
     setVideoNode,
     videoRef,

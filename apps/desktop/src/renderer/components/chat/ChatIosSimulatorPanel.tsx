@@ -876,8 +876,6 @@ export function ChatIosSimulatorPanel({
     liveBlocker,
     handleBlockerAction,
     h264ReconnectNonce,
-    h264Canvas,
-    setH264Canvas,
     handleH264Status,
     handleH264Dimensions,
     setVideoNode,
@@ -888,7 +886,6 @@ export function ChatIosSimulatorPanel({
     handleStreamEvent,
   } = useIosSimLiveView({
     mode,
-    activeDevice,
     activeDeviceUdid,
     activeDeviceName,
     activeSessionDeviceUdid,
@@ -901,9 +898,16 @@ export function ChatIosSimulatorPanel({
     refreshSnapshot,
     runtimePinRef,
     launchRef,
-    imageRef,
     onError: setMessage,
   });
+
+  /**
+   * The canvas the host-encoded player draws to.
+   *
+   * The panel renders it, measures it, and maps pointers against it. The hook
+   * never reads it, so it lives with its only user rather than one layer up.
+   */
+  const [h264Canvas, setH264Canvas] = useState<HTMLCanvasElement | null>(null);
 
   let mediaWidth: number;
   let mediaHeight: number;
