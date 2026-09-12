@@ -46,6 +46,15 @@ describe("triggerClause", () => {
     );
   });
 
+  it("describes chat-session triggers in plain words", () => {
+    expect(triggerClause({ type: "session.limit_reached", sessionId: "chat-1" })).toBe(
+      "This chat hits its usage limit",
+    );
+    expect(triggerClause({ type: "session.limit_reached" })).toBe("An agent session hits its usage limit");
+    expect(triggerClause({ type: "session.failed", providers: ["claude"] })).toBe("A claude session fails");
+    expect(triggerClause({ type: "session.ended_without_pr" })).toBe("An agent session ends with no PR");
+  });
+
   it("describes a lane merged with a name pattern", () => {
     expect(triggerClause({ type: "lane.merged", namePattern: "feature/*" })).toBe(
       "A lane matching feature/* is merged",
@@ -65,6 +74,24 @@ describe("buildRuleSentence", () => {
     );
     expect(sentence.trigger).toBe("A GitHub issue is opened");
     expect(sentence.steps).toEqual(["create a lane", "run an agent", "open a draft PR"]);
+  });
+
+  it("names the handoff target model", () => {
+    const sentence = buildRuleSentence(
+      rule({
+        triggers: [{ type: "session.limit_reached", sessionId: "chat-1" }],
+        trigger: { type: "session.limit_reached", sessionId: "chat-1" },
+        execution: {
+          kind: "built-in",
+          builtIn: {
+            actions: [{ type: "handoff", targetModelId: "anthropic/claude-sonnet-5" }],
+          },
+        },
+      }),
+    );
+    expect(sentence.trigger).toBe("This chat hits its usage limit");
+    // The display name, not the registry id.
+    expect(sentence.steps).toEqual(["hand off to Claude Sonnet 5"]);
   });
 
   it("maps built-in ade-actions to friendly phrases", () => {

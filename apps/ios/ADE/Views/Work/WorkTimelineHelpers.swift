@@ -3423,6 +3423,34 @@ private func eventCard(
           isInProgress: !resumed
         )
       }
+      // ── Board move ──
+      // The user dragged this chat's card between columns and the host sent the
+      // agent a sentence about it. It renders as a quiet notice rather than a
+      // user bubble for the reason desktop states: the user made a state change
+      // to the row, they did not write the sentence, and a bubble would put
+      // words in their mouth. Deliberately ahead of the low-signal filter —
+      // this card is the only place the phone says a move happened at all.
+      if kind == "board_move" {
+        let columns = (detail ?? "").split(separator: "|", maxSplits: 1).map(String.init)
+        let arrow = columns.count == 2
+          ? "\(workBoardColumnLabel(columns[0])) → \(workBoardColumnLabel(columns[1]))"
+          : columns.first.map(workBoardColumnLabel)
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: "Moved on the board",
+          icon: "rectangle.3.group",
+          // Identity of an action the user took, not a state to be alarmed
+          // about: the same muted treatment the lineage chip gets on the row.
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          // The exact text the agent received, so what the phone shows and what
+          // the agent was told cannot diverge.
+          body: nonEmptyWorkTimelineText(message),
+          bullets: [],
+          metadata: arrow.map { [$0] } ?? []
+        )
+      }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,

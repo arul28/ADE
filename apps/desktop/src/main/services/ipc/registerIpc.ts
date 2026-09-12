@@ -849,6 +849,7 @@ import type { CursorCloudIngressService } from "../automations/cursorCloudIngres
 import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
+import { createSessionBoardMoveActions } from "../adeActions/sessionBoardMove";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
 
@@ -7722,6 +7723,44 @@ export function registerIpc({
       if (!sessionId) throw new Error("Session id is required.");
       const override = parseSettleOverrideArg(arg?.override, "sessions:setSettleOverride");
       return ctx.sessionService.setSettleOverride(sessionId, override);
+    },
+  );
+
+  // Board moves are built from the shared factory rather than reimplemented
+  // here: the staging map, the host-stamped provenance, and the reversal all
+  // live behind it, and a second copy in IPC would be a second staging map — an
+  // undo sent from this window would not find a move made over sync.
+  //
+  // Built per call rather than once at registration, because the session
+  // service only exists once a project is open. Nothing is lost by it: the
+  // staging map the factory drives is module-level, so every instance shares
+  // the same pending moves.
+  const boardMoveActions = (): ReturnType<typeof createSessionBoardMoveActions> => {
+    const ctx = ensureSessionContext();
+    return createSessionBoardMoveActions({
+      sessionService: ctx.sessionService,
+      agentChatService: ctx.agentChatService ?? null,
+      logger: ctx.logger,
+    });
+  };
+
+  ipcMain.handle(
+    IPC.sessionsMoveOnBoard,
+    async (_event, arg: { sessionId?: unknown; to?: unknown }): Promise<unknown> => {
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      return boardMoveActions().moveOnBoard({ sessionId, to: arg?.to });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsUndoBoardMove,
+    async (_event, arg: { sessionId?: unknown; moveId?: unknown }): Promise<unknown> => {
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      const moveId = typeof arg?.moveId === "string" ? arg.moveId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      if (!moveId) throw new Error("Move id is required.");
+      return boardMoveActions().undoBoardMove({ sessionId, moveId });
     },
   );
 

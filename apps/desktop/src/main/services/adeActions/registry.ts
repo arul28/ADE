@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import {
@@ -88,15 +87,11 @@ import type {
   ArchiveAndReclaimLaneArgs,
   DeleteLaneArgs,
   FileChangeEvent,
-  FilesWatchArgs,
-  LaneBranchDriftResolution,
   LaneEnvInitProgress,
   LaneListSnapshot,
   LanePreviewInfo,
   ListSessionsArgs,
   ListLanesArgs,
-  SessionSettleOverride,
-  SessionWakeReason,
   UpdateSessionMetaArgs,
   PrAgentPermissionMode,
   PrAiResolutionContext,
@@ -146,14 +141,10 @@ import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
+import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
-import {
-  parseSettleOverrideArg,
-  parseSnoozeDeadline,
-  parseWakeReason,
-} from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -171,1097 +162,64 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 // module's whole service graph to get it. Re-exported here because this is
 // where every existing caller looks for them.
 import type { AdeActionDomain } from "./domains";
+import {
+  asActionRecord,
+  optionalNonEmptyString,
+  readBranchDriftResolution,
+  readChatHistoryActionArgs,
+  readObjectActionArg,
+  readOptionalIntegerActionField,
+  readRuntimeFileWatchSenderId,
+  readSessionIdList,
+  readSettleOverride,
+  readStringActionArg,
+  readWakeReason,
+  requireNonEmptyString,
+  requireSnoozeDeadline,
+  toRuntimeFileWatchArgs,
+} from "./actionArgs";
+import { createSessionBoardMoveActions } from "./sessionBoardMove";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
 
-export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+/* Policy (who may call what) and the documented input shapes both live in
+   siblings now: they are pure data with no runtime dependency, and 1,200 lines
+   of table in the middle of the registry buried the wiring it exists for.
+   The gate's PREDICATES moved with the tables they read, for the same reason.
+   Re-exported here so every existing call site keeps its import. */
+export {
+  ADE_ACTION_ALLOWLIST,
+  ADE_ACTION_CTO_ONLY,
+  callerHasRoleAtLeast,
+  isAllowedAdeAction,
+  isAutomationAllowedAdeAction,
+  isCtoOnlyAdeAction,
+  listAllowedAdeActionNames,
+  scopeAccountStatusForRole,
+} from "./actionPolicy";
+export type { AdeActionRole, CtoOnlyRule } from "./actionPolicy";
+export {
+  getAdeActionInputContract,
+} from "./actionInputContracts";
+export type { AdeActionInputContract } from "./actionInputContracts";
 
-/**
- * Methods that require at least `cto` role when invoked via `run_ade_action`.
- * The generic bridge has no built-in role check, so anything that mutates
- * account-level credentials, persisted policy, or drives privileged polling
- * must be listed here.
- */
-export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: [
-    "startLogin",
-    "pollLogin",
-    "startDeviceLogin",
-    "pollDeviceLogin",
-    "cancelLogin",
-    "signOut",
-    "getToken",
-    "createToken",
-    "listMachines",
-    "pairMachine",
-    "deleteMachine",
-  ],
-  attention: [
-    "getSnapshot",
-    "acknowledge",
-    "reportPresence",
-    "getPreferences",
-    "putPreferences",
-    "putMachinePreferences",
-  ],
-  // The CTO's durable memory is injected into every CTO session; only the CTO
-  // itself (and the user's own UI, which connects at cto role) may rewrite it.
-  cto_memory: ["updateMemory"],
-  linear_credentials: [
-    "setToken",
-    "setOAuthToken",
-    "setOAuthClientCredentials",
-    "clearToken",
-    "clearOAuthClientCredentials",
-  ],
-  linear_oauth: ["startSession"],
-  github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
-  update: ["quitAndInstall"],
-  // Linear webhook lifecycle mutates account-level state (registers/deletes a
-  // webhook against the user's Linear organization), so it stays CTO-only;
-  // status/poll/cleanup reads remain open to agents.
-  // cancelScheduledCleanup can silently defeat a cleanup policy another
-  // automation scheduled, so it is operator-only like the webhook lifecycle.
-  automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"],
-  budget: ["updateConfig"],
-  feedback: ["submitPreparedDraft"],
-  // `applyAccountRollups` writes another machine's history into a
-  // CRR-replicated table. The desktop app pushes it over the local socket
-  // after its own account fan-out; no agent has any reason to call it.
-  usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"],
-  analytics: ["setEnabled", "flush"],
-  storage: ["cleanup", "runMaintenanceNow"],
-  search: ["rebuildIndex"],
-  project_secret: ["exportEnv"],
-  // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
-  // is a subjective judgment and agents are unreliable at it, so settlement is
-  // reachable only from surfaces that connect at cto role — the desktop
-  // renderer's remote-runtime client and the `ade code` TUI, both of which are
-  // driven by the user — plus the deterministic PR-merge policy, which never
-  // goes through this bridge at all. A session-bound agent CLI authenticates as
-  // `agent`/`orchestrator` and is refused here. Do not add a self-service
-  // settle action back: see the note above `unsettleSession` below.
-  session: [
-    "settleSession",
-    "unsettleSession",
-    "settleSessions",
-    "unsettleSessions",
-    "setSettleOverride",
-    "updateLifecycleSettings",
-  ],
-  // Stashes are unsent user-authored drafts. Desktop runtime clients connect
-  // without a chat binding at CTO role; session-bound agents must never read
-  // or mutate this private composer state through `ade actions`.
-  chat: ["listPromptStashes", "createPromptStash", "deletePromptStash"],
-  // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
-  // Session-bound agents use the dedicated RPC tools, which derive an owner
-  // and filesystem jail from their authenticated chat context.
-  computer_use_artifacts: [
-    "deleteArtifacts",
-    "getOwnerSnapshot",
-    "listArtifacts",
-    "listBrokenArtifacts",
-    "pruneBrokenArtifacts",
-    "recoverArtifact",
-    "updateArtifactReview",
-  ],
-};
+/* The `unknown -> typed` argument readers moved to `./actionArgs` with the two
+   that were already there — one answer to "how does an action read its input",
+   rather than a boundary drawn around whichever two a sibling happened to need.
+   Not re-exported: nothing outside this file ever imported them (they were
+   module-private here), and a pass-through would be a second import path for
+   values that already have one. */
 
-const ROLE_ORDER: Record<AdeActionRole, number> = {
-  external: 0,
-  evaluator: 1,
-  agent: 2,
-  orchestrator: 3,
-  cto: 4,
-};
-
-export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
-  return (ADE_ACTION_CTO_ONLY[domain] ?? []).includes(action);
-}
-
-export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, minRole: AdeActionRole): boolean {
-  if (!role) return false;
-  return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
-}
-
-export function scopeAccountStatusForRole(
-  status: unknown,
-  role: AdeActionRole | undefined | null,
-): unknown {
-  if (callerHasRoleAtLeast(role, "cto")) return status;
-  const record = status && typeof status === "object" && !Array.isArray(status)
-    ? status as Record<string, unknown>
-    : {};
-  const source = record.source;
-  // sessionState carries no identity — an agent-role caller still needs to
-  // tell an expired sign-in from a signed-out machine or an unreadable store.
-  const sessionState = record.sessionState;
-  return {
-    signedIn: record.signedIn === true,
-    userId: null,
-    email: null,
-    name: null,
-    expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
-    ...(source === "loopback" || source === "device" || source === "env-token" ? { source } : {}),
-    ...(sessionState === "active" || sessionState === "signed_out" || sessionState === "expired"
-      || sessionState === "unreadable"
-      ? { sessionState }
-      : {}),
-  };
-}
-
-export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: [
-    "startLogin",
-    "pollLogin",
-    "startDeviceLogin",
-    "pollDeviceLogin",
-    "status",
-    "cancelLogin",
-    "signOut",
-    "getToken",
-    "createToken",
-  ],
-  attention: [
-    "getSnapshot",
-    "acknowledge",
-    "reportPresence",
-    "getPreferences",
-    "putPreferences",
-    "putMachinePreferences",
-  ],
-  lane: [
-    "archive",
-    "archiveAndReclaim",
-    "attachLinearIssueToSession",
-    "attachGitHubIssueToSession",
-    "cancelDelete",
-    "create",
-    "createChild",
-    "createFromUnstaged",
-    "deferRebaseSuggestion",
-    "delete",
-    "deleteTemplate",
-    "detachLinearIssueFromSession",
-    "detachGitHubIssueFromSession",
-    "diagnosticsActivateFallback",
-    "diagnosticsDeactivateFallback",
-    "diagnosticsGetLaneHealth",
-    "diagnosticsGetStatus",
-    "diagnosticsRunFullCheck",
-    "diagnosticsRunHealthCheck",
-    "dismissAutoRebaseStatus",
-    "dismissRebaseSuggestion",
-    "getBranchDrift",
-    "getChildren",
-    "getDefaultTemplate",
-    "getDeleteRisk",
-    "getReclaimRisk",
-    "getEnvStatus",
-    "getOverlay",
-    "getStackChain",
-    "getSummary",
-    "getTemplate",
-    "importBranch",
-    "initEnv",
-    "listAutoRebaseStatuses",
-    "list",
-    "listDeleteProgress",
-    "listSnapshots",
-    "listRebaseSuggestions",
-    "listTemplates",
-    "listLinearIssuesForLaneSessions",
-    "listLinearIssuesForSession",
-    "listGitHubIssuesForLaneSessions",
-    "listGitHubIssuesForSession",
-    "linkLinearIssues",
-    "oauthDecodeState",
-    "oauthEncodeState",
-    "oauthGenerateRedirectUris",
-    "oauthGetStatus",
-    "oauthListSessions",
-    "oauthUpdateConfig",
-    "portAcquire",
-    "portGetLease",
-    "portListConflicts",
-    "portListLeases",
-    "portRecoverOrphans",
-    "portRelease",
-    "previewBranchSwitch",
-    "proxyAddRoute",
-    "proxyGetPreviewInfo",
-    "proxyGetStatus",
-    "proxyRemoveRoute",
-    "proxyStart",
-    "proxyStop",
-    "refreshSnapshots",
-    "rebaseAbort",
-    "rebasePush",
-    "rebaseRollback",
-    "rebaseStart",
-    "rename",
-    "reparent",
-    "resolveBranchDrift",
-    "applyTemplate",
-    "saveTemplate",
-    "setDefaultTemplate",
-    "switchBranch",
-    "unarchive",
-    "unlinkLinearIssues",
-    "updateAppearance",
-  ],
-  git: [
-    "abortRebase",
-    "checkoutBranch",
-    "cherryPickCommit",
-    "commit",
-    "continueRebase",
-    "createTag",
-    "discardFile",
-    "fetch",
-    "generateCommitMessage",
-    "getCommit",
-    "getCommitMessage",
-    "isCommitInLaneHistory",
-    "getConflictState",
-    "getFileHistory",
-    "getOpenPrForBranch",
-    "getOriginRemote",
-    "getUserIdentity",
-    "getSyncStatus",
-    "listBranches",
-    "listCommitFiles",
-    "listRecentCommits",
-    "listStashes",
-    "mergeAbort",
-    "mergeContinue",
-    "pull",
-    "push",
-    "rebaseAbort",
-    "rebaseContinue",
-    "redoLastHeadChange",
-    "resetToCommit",
-    "restoreStagedFile",
-    "revertCommit",
-    "stageAll",
-    "stageFile",
-    "stagePaths",
-    "stash",
-    "stashApply",
-    "stashClear",
-    "stashDrop",
-    "stashPop",
-    "stashPush",
-    "sync",
-    "undoLastHeadChange",
-    "unstageAll",
-    "unstageFile",
-    "unstagePaths",
-  ],
-  diff: ["getChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
-  conflicts: [
-    "applyProposal",
-    "attachResolverSession",
-    "cancelResolverSession",
-    "commitExternalResolverRun",
-    "finalizeResolverSession",
-    "getBatchAssessment",
-    "getLaneStatus",
-    "getRiskMatrix",
-    "listExternalResolverRuns",
-    "listOverlaps",
-    "listProposals",
-    "prepareProposal",
-    "prepareResolverSession",
-    "rebaseLane",
-    "requestProposal",
-    "runExternalResolver",
-    "runPrediction",
-    "simulateMerge",
-    "suggestResolverTarget",
-    "undoProposal",
-    "scanRebaseNeeds",
-    "getRebaseNeed",
-    "dismissRebase",
-    "deferRebase",
-  ],
-  pr: [
-    "addComment",
-    "reconcileOnFocus",
-    "syncLanePr",
-    "aiResolutionGetSession",
-    "aiResolutionInput",
-    "aiResolutionStart",
-    "aiResolutionStop",
-    "aiReviewSummary",
-    "cleanupBranch",
-    "cleanupIntegrationWorkflow",
-    "closePr",
-    "commitIntegration",
-    "createFromLane",
-    "createLaneFromPrBranch",
-    "createIntegrationLane",
-    "createIntegrationLaneForProposal",
-    "createIntegrationPr",
-    "createGithubStack",
-    "delete",
-    "deleteIntegrationProposal",
-    "dismissIntegrationCleanup",
-    "draftDescription",
-    "getActionRuns",
-    "getActionRunsByGithub",
-    "getActivity",
-    "getActivityByGithub",
-    "getWorkflowGraph",
-    "getCheckLog",
-    "getChecks",
-    "getChecksByGithub",
-    "getStatusByGithub",
-    "getComments",
-    "getCommentsByGithub",
-    "getCommits",
-    "getCommitsByGithub",
-    "getConflictAnalysis",
-    "getDetail",
-    "getDetailByGithub",
-    "getDeployments",
-    "getForLane",
-    "getFiles",
-    "getFilesByGithub",
-    "getGithubSnapshot",
-    "listGithubStacks",
-    "getIntegrationResolutionState",
-    "getMergeContext",
-    "getMergeContexts",
-    "getMobileGithubDetail",
-    "getMobileSnapshot",
-    "getPrHealth",
-    "getAiSummary",
-    "getReviewThreads",
-    "getReviewThreadsByGithub",
-    "getReviews",
-    "getReviewsByGithub",
-    "getStatus",
-    "ingestGithubWebhook",
-    "land",
-    "linkToLane",
-    "listAll",
-    "listGroupPrs",
-    "listIntegrationProposals",
-    "listIntegrationWorkflows",
-    "listPrsByLane",
-    "listOpenPullRequests",
-    "listSnapshots",
-    "listWithConflicts",
-    "postReviewComment",
-    "reactToComment",
-    "recheckIntegrationStep",
-    "refresh",
-    "addGithubStackPullRequests",
-    "requestReviewers",
-    "resolveReviewThread",
-    "retargetBase",
-    "reopenPr",
-    "replyToReviewThread",
-    "rerunChecks",
-    "regenerateAiSummary",
-    "setLabels",
-    "setReviewThreadResolved",
-    "simulateIntegration",
-    "startIntegrationResolution",
-    "preflightCreateLaneFromPrBranch",
-    "submitReview",
-    "syncGithubStacks",
-    "unstackGithubStack",
-    "updateBody",
-    "updateBranch",
-    "updateComment",
-    "updateDescription",
-    "updateIntegrationProposal",
-    "updateTitle",
-  ],
-  tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
-  chat: [
-    "archiveSession",
-    "cancelDispatchedSteer",
-    "cancelSteer",
-    "createSession",
-    "deleteSession",
-    "dispatchSteer",
-    "editSteer",
-    "ensureCtoSession",
-    "getAvailableModels",
-    "getClaudeSessionInfo",
-    "getClaudeSessionMessages",
-    "getChatEventHistory",
-    "getChatEventHistoryPage",
-    "getContextUsage",
-    "getImageDataUrl",
-    "getMainTranscript",
-    "getSubagentTranscript",
-    "setCodexGoal",
-    "setCodexGoalStatus",
-    "clearCodexGoal",
-    "getCodexGoal",
-    "resetCodexMemory",
-    "terminateCodexBackgroundTerminal",
-    "listClaudeOutputStyles",
-    "getSessionCapabilities",
-    "getSessionSummary",
-    "getTurnStatus",
-    "getSlashCommands",
-    "getTurnFileDiff",
-    "getParallelLaunchState",
-    "interrupt",
-    "interruptWithQueueMode",
-    "stopTask",
-    "recoverTurn",
-    "recoverCodexTurn",
-    "resolveUnprocessedMessage",
-    "recoverContinuity",
-    "restoreCancelledQueue",
-    "killDroidWorker",
-    "launchCli",
-    "launchHeadless",
-    "createScheduledWork",
-    "listScheduledWork",
-    "getScheduledWorkState",
-    "listClaudePlugins",
-    "listCodexPlugins",
-    "listClaudeSessions",
-    "listSessions",
-    "listSubagents",
-    "listPromptStashes",
-    "createPromptStash",
-    "deletePromptStash",
-    "messageSession",
-    "modelCatalog",
-    "approveToolUse",
-    "codexFuzzyFileSearch",
-    "fileSearch",
-    "listMentionSuggestions",
-    "handoffSession",
-    "prepareCrossMachineHandoff",
-    "validateCrossMachineSource",
-    "preflightCrossMachineDestination",
-    "fastForwardCrossMachineHandoffLane",
-    "acceptCrossMachineHandoff",
-    "markCrossMachineHandoff",
-    "respondToInput",
-    "resolveSmartLinkPreview",
-    "reloadClaudePlugins",
-    "rewindFiles",
-    "saveTempAttachment",
-    "copyTempAttachment",
-    // The paired desktop's ticket mint for the streamed HTTP upload route.
-    // `remoteConnectionService.uploadChatAttachment` calls it by string over
-    // `run_ade_action`, so leaving it off this list left remote-paired attach
-    // failing on every machine.
-    "createAttachmentUpload",
-    "sendMessage",
-    "readTranscript",
-    "readTranscriptPage",
-    "setClaudeOutputStyle",
-    "setParallelLaunchState",
-    "cancelScheduledWork",
-    "resumeUsageLimitNow",
-    "setScheduledWorkPaused",
-    "steer",
-    "suggestLaneNameFromPrompt",
-    "generateAutoLaneIdentity",
-    "unarchiveSession",
-    "updateSession",
-    "regenerateSessionMetadata",
-    "setSpawnKind",
-    "dismissSubagentTakeoverPrompt",
-    "warmupModel",
-  ],
-  keybindings: ["get", "set"],
-  ai: [
-    "getStatus",
-    "getOpenCodeRuntimeDiagnostics",
-    "isOpenCodeInstalled",
-    "verifyApiKeyConnection",
-    "storeApiKey",
-    "deleteApiKey",
-    "listApiKeys",
-    "updateConfig",
-    "opencodeAuthMethods",
-    "opencodeOAuthStart",
-    "opencodeOAuthCancel",
-    "setOpencodeProviderKey",
-    "clearOpencodeProviderKey",
-    "refreshModelsDev",
-    "piLoginProviders",
-    "piLoginStart",
-    "piLoginSubmit",
-    "piLoginCancel",
-    "cursorAuthStatus",
-    "cursorAuthLogin",
-    "cursorAuthLogout",
-    "cursorAuthCancel",
-    "listCursorCloudRepositories",
-    "listCursorCloudAgents",
-    "listCursorCloudRuns",
-    "createCursorCloudRun",
-    "getCursorCloudLaneSecretNames",
-    "archiveCursorCloudAgent",
-    "unarchiveCursorCloudAgent",
-    "deleteCursorCloudAgent",
-    "getCursorCloudAgent",
-    "listCursorCloudArtifacts",
-    "downloadCursorCloudArtifact",
-    "cursorCloudStreamRun",
-    "cancelCursorCloudRun",
-    "cursorCloudFollowUp",
-    "openCursorCloudChat",
-    "watchCursorCloudMirror",
-    "getCursorCloudFleet",
-    "resolveCursorCloudAgentLane",
-    "pullCursorCloudAgentIntoLane",
-    "stopCursorCloudAgentRun",
-  ],
-  onboarding: [
-    "complete",
-    "detectDefaults",
-    "getStatus",
-    "setDismissed",
-  ],
-  automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
-  cto_state: [
-    "completeOnboardingStep",
-    "dismissOnboarding",
-    "getAttention",
-    "getIdentity",
-    "getOnboardingState",
-    "getSessionLogs",
-    "getSnapshot",
-    "previewSystemPrompt",
-    "resetOnboarding",
-    "runProjectScan",
-    "updateIdentity",
-  ],
-  cto_memory: ["getSnapshot", "searchMemory", "updateMemory"],
-  session: [
-    "backfillDeltas",
-    "clearWokeMarker",
-    "deleteSession",
-    "get",
-    "getDelta",
-    "getLifecycleSettings",
-    "getSettleResidue",
-    "list",
-    "readTranscriptTail",
-    "requestSessionAttention",
-    "setSessionStatusNote",
-    "setSettleOverride",
-    "snoozeSession",
-    "snoozeSessions",
-    "settleSession",
-    "settleSessions",
-    "updateLifecycleSettings",
-    "unsettleSession",
-    "unsettleSessions",
-    "updateMeta",
-    "wakeSession",
-    "wakeSessions",
-  ],
-  operation: ["finish", "get", "list", "start"],
-  ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"],
-  linear_credentials: [
-    "clearOAuthClientCredentials",
-    "clearToken",
-    "getStatus",
-    "setOAuthClientCredentials",
-    "setOAuthToken",
-    "setToken",
-  ],
-  linear_oauth: [
-    "getSession",
-    "startSession",
-  ],
-  linear_issue_tracker: [
-    "addIssueLabel",
-    "addLabel",
-    "createComment",
-    "fetchIssueById",
-    "fetchIssuesByIds",
-    "fetchIssueComments",
-    "graphql",
-    "getIssuePickerData",
-    "getConnectionStatus",
-    "getQuickView",
-    "getStatus",
-    "getWorkflowCatalog",
-    "listLabels",
-    "listIssues",
-    "listProjects",
-    "listWorkflowStates",
-    "listUsers",
-    "removeIssueLabel",
-    "searchIssues",
-    "updateComment",
-    "updateIssueAssignee",
-    "updateIssueState",
-  ],
-  github: [
-    "clearToken",
-    "clearAppUserAuth",
-    "detectRepo",
-    "getAppInstallationStatus",
-    "getAppUserAuthStatus",
-    "getRepoOrThrow",
-    "getRemoteStatus",
-    "getRequestBudget",
-    "getStatus",
-    "createRepoAutolink",
-    "listRepoAutolinks",
-    "listRepoCollaborators",
-    "listRepoIssues",
-    "getIssue",
-    "listRepoLabels",
-    "pollAppUserDeviceAuth",
-    "publishCurrentProject",
-    "setToken",
-    "startAppUserDeviceAuth",
-  ],
-  feedback: ["list", "prepareDraft", "submitPreparedDraft"],
-  usage: [
-    "applyAccountRollups",
-    "forceRefresh",
-    "getAdeUsageStats",
-    "getUsageSnapshot",
-    "noteQuotaDemand",
-    "refreshHistory",
-    "poll",
-    "start",
-    "stop",
-  ],
-  analytics: ["capture", "getStatus", "setEnabled", "flush"],
-  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
-  budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
-  update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
-  file: [
-    "blame",
-    "createDirectory",
-    "createFile",
-    "deletePath",
-    "listTree",
-    "listTreeChildren",
-    "listWorkspaces",
-    "quickOpen",
-    "readFile",
-    "readFileRange",
-    "refreshGitDecorations",
-    "rename",
-    "searchText",
-    "stopWatching",
-    "watchWorkspace",
-    "writeTextAtomic",
-    "writeWorkspaceText",
-  ],
-  pty: ["create", "dispose", "list", "resize", "resumeSession", "sendToSession", "write"],
-  terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
-  layout: ["get", "set"],
-  tiling_tree: ["get", "set"],
-  graph_state: ["get", "set"],
-  // Read-only for everyone except the desktop that owns the pane:
-  // `setActiveTool` is how a desktop renderer publishes which tool it has open
-  // so phones and the hosted web client can mirror it.
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview"],
-  // `ingest` is intentionally absent. Proof-drawer entries are created only by
-  // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
-  // that wrap it, which validate owner claims and the caller's import root.
-  computer_use_artifacts: [
-    "deleteArtifacts",
-    "getOwnerSnapshot",
-    "getBackendStatus",
-    "listArtifacts",
-    "listBrokenArtifacts",
-    "pruneBrokenArtifacts",
-    "readArtifactPreview",
-    "recoverArtifact",
-    "updateArtifactReview",
-  ],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint", "openDevice", "closeDevice", "getDeviceSession", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation", "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp", "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "startEventLog", "stopEventLog", "getEventLog", "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle"],
-  app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
-  // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
-  // served by the runtime daemon itself, so a desktop that took a forwarded
-  // `ade browser open` can tell the machine that asked. Absent on a desktop's
-  // own service object, where `listAllowedAdeActionNames` filters it out.
-  built_in_browser: [
-    ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
-    BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
-  ],
-  automations: [
-    "list",
-    "get",
-    "saveRule",
-    "deleteRule",
-    "toggleRule",
-    "triggerManually",
-    "getHistory",
-    "listRuns",
-    "getRunDetail",
-    "getIngressStatus",
-    "startIngress",
-    "refreshWebhookGatewayStatus",
-    "setWebhookGatewayPublicUrl",
-    "listIngressEvents",
-    "listScheduledCleanups",
-    "cancelScheduledCleanup",
-    "linearIngressGetStatus",
-    "linearIngressSetup",
-    "linearIngressTeardown",
-    "linearIngressPollNow",
-  ],
-  review: [
-    "cancelRun",
-    "deleteSuppression",
-    "getRunDetail",
-    "listLaunchContext",
-    "listRuns",
-    "listSuppressions",
-    "qualityReport",
-    "recordFeedback",
-    "rerun",
-    "startRun",
-  ],
-  issue: [
-    "addComment",
-    "setLabels",
-    "close",
-    "reopen",
-    "assign",
-    "setTitle",
-  ],
-  orchestration: [
-    "runCreate",
-    "bundleRead",
-    "manifestReadSection",
-    "manifestPatch",
-    "planAppend",
-    "planWrite",
-    "assetRegister",
-    "claimTask",
-    "releaseTask",
-    "runList",
-    "spawnAgent",
-    "agentInject",
-    "subscribe",
-    "unsubscribe",
-  ],
-  search: ["query", "indexStatus", "rebuildIndex"],
-  // No `watchDetail`/`unwatchDetail`: live detail watching pushes updates over a
-  // per-sender Electron IPC channel, which has no remote-runtime equivalent, so
-  // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
-  // Exposing them here would hand remote callers a snapshot that never updates.
-  "external-sessions": ["list", "import", "getDetail"],
-};
-
-export type AdeActionInputContract = {
-  description?: string;
-  input?: string;
-  example?: string;
-};
-
-const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
-  account: {
-    startLogin: {
-      description: "Start the machine-owned ADE account OAuth PKCE login flow.",
-      input: "no input",
-      example: "ade login",
-    },
-    pollLogin: {
-      description: "Poll an in-memory ADE account login session.",
-      input: "object { sessionId: string }",
-      example: "ade actions run account.pollLogin --input-json '{\"sessionId\":\"...\"}'",
-    },
-    startDeviceLogin: {
-      description: "Start the machine-owned ADE account device authorization flow for headless sign-in.",
-      input: "no input",
-      example: "ade login --headless",
-    },
-    pollDeviceLogin: {
-      description: "Poll an in-memory ADE account device authorization session.",
-      input: "object { sessionId: string }",
-      example: "ade actions run account.pollDeviceLogin --input-json '{\"sessionId\":\"...\"}'",
-    },
-    status: {
-      description: "Read the machine-owned ADE account sign-in status without exposing tokens.",
-      input: "no input",
-      example: "ade auth status --text",
-    },
-    cancelLogin: {
-      description: "Cancel a pending in-memory ADE account login session so a late browser callback cannot sign in.",
-      input: "object { sessionId: string }",
-      example: "ade actions run account.cancelLogin --input-json '{\"sessionId\":\"...\"}'",
-    },
-    signOut: {
-      description: "Clear the machine-owned ADE account session.",
-      input: "no input",
-      example: "ade logout",
-    },
-    getToken: {
-      description: "Internal bearer-token accessor for ADE remote services; refreshes near expiry.",
-      input: "no input",
-    },
-    createToken: {
-      description: "Return a self-contained durable account token once for ADE_ACCOUNT_TOKEN provisioning.",
-      input: "no input",
-      example: "ade account token create",
-    },
-  },
-  attention: {
-    getSnapshot: {
-      description: "Read the account-wide Activity stream across every connected machine and project.",
-      input: "object { since?: non-negative integer, streamId?: string | null }",
-      example: "ade --role cto actions run attention.getSnapshot --input-json '{\"since\":0}' --json",
-    },
-    acknowledge: {
-      description: "Mark up to 64 Activity items as seen or dismissed across account surfaces.",
-      input: "object { itemIds: string[], seenAt?: ISO timestamp, dismissedAt?: ISO timestamp | null }",
-      example: "ade --role cto actions run attention.acknowledge --input-json '{\"itemIds\":[\"attention-item-1\"],\"seenAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
-    },
-    reportPresence: {
-      description: "Report one device's foreground and ambient-surface presence for desktop-first notification delivery.",
-      input: "AttentionPresence object { deviceId, deviceName, platform, appForeground, ambientSurfaceVisible, visibleItemIds, observedAt }",
-      example: "ade --role cto actions run attention.reportPresence --input-json '{\"deviceId\":\"mac-1\",\"deviceName\":\"MacBook Pro\",\"platform\":\"macOS\",\"appForeground\":true,\"ambientSurfaceVisible\":true,\"visibleItemIds\":[],\"observedAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
-    },
-    getPreferences: {
-      description: "Read account, device, project, and muted-session Activity preferences for the signed-in owner.",
-      input: "object { accountOwnerId: string }",
-      example: "ade --role cto actions run attention.getPreferences --input-json '{\"accountOwnerId\":\"user_123\"}' --json",
-    },
-    putPreferences: {
-      description: "Replace Activity preferences for the signed-in account owner.",
-      input: "object { accountOwnerId: string, preferences: AttentionPreferences }",
-      example: "ade --role cto actions run attention.putPreferences --input-json '{\"accountOwnerId\":\"user_123\",\"preferences\":{\"account\":{},\"devices\":{},\"projects\":{},\"mutedSessionIds\":[]}}' --json",
-    },
-    putMachinePreferences: {
-      description: "Patch Activity preferences for one machine (e.g. mute its notifications) without replacing the whole document.",
-      input: "object { accountOwnerId: string, machineKey: string, preferences: Partial<AttentionPreferenceScope> }",
-      example: "ade --role cto actions run attention.putMachinePreferences --input-json '{\"accountOwnerId\":\"user_123\",\"machineKey\":\"machine:abc\",\"preferences\":{\"notificationsEnabled\":false}}' --json",
-    },
-  },
-  project_secret: {
-    list: {
-      description: "List ADE project secret names and metadata without revealing values.",
-      input: "no input",
-      example: "ade secrets list --text",
-    },
-    get: {
-      description: "Read one ADE project secret value when the user explicitly asked for that secret.",
-      input: "object { name: string }",
-      example: "ade secrets get STRIPE_API_KEY --text",
-    },
-    set: {
-      description: "Create or replace one ADE project secret.",
-      input: "object { name: string, value: string }",
-      example: "ade secrets set STRIPE_API_KEY --value sk_test_...",
-    },
-    delete: {
-      description: "Delete one ADE project secret.",
-      input: "object { name: string, confirmName: string }",
-      example: "ade secrets delete STRIPE_API_KEY",
-    },
-    previewEnvImport: {
-      description: "Parse bounded .env file content and mark variables that will replace existing ADE secrets.",
-      input: "object { fileName: string, content: string }",
-    },
-    importEnv: {
-      description: "Atomically create or replace selected ADE secrets parsed from a .env file.",
-      input: "object { secrets: Array<{ name: string, value: string }> }",
-    },
-    exportEnv: {
-      description: "Export every ADE project secret to a new ade-secrets.env file in this machine's Downloads folder.",
-      input: "no input",
-    },
-  },
-  analytics: {
-    capture: {
-      description: "Capture one privacy-bounded ADE product event. Event names and properties are strictly allowlisted and quota limited.",
-      input: "object { event, surface, properties?, projectId?, sessionId?, clientEventId?, occurredAt?, dedupeKey?, minimumIntervalMs? }",
-      example: "ade actions run analytics.capture --input-json '{\"event\":\"ade_screen_viewed\",\"surface\":\"tui\",\"properties\":{\"screen\":\"details_help\"}}'",
-    },
-    getStatus: {
-      description: "Read anonymous product analytics configuration and local daily budget counters.",
-      input: "no input",
-      example: "ade actions run analytics.getStatus --text",
-    },
-  },
-  usage: {
-    getAdeUsageStats: {
-      description:
-        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this computer only, \"project\" is the open project's share of it.",
-      input:
-        "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
-      example: "ade usage stats --preset 30d --scope account --text",
-    },
-    getUsageSnapshot: {
-      description:
-        "Read provider rate-limit windows and spend controls. Account-tied, so it takes no scope.",
-      input: "no input",
-      example: "ade actions run usage.getUsageSnapshot --text",
-    },
-  },
-  lane: {
-    getReclaimRisk: {
-      description: "Preview what ADE can safely remove for one lane, including estimated bytes and any blocked reasons.",
-      input: "object { laneId: string }",
-      example: "ade lanes reclaim-preview lane-123 --text",
-    },
-    archiveAndReclaim: {
-      description: "Archive a lane and remove only its ADE-managed local worktree and generated data. The lane, branch, chat, and metadata remain.",
-      input: "object { laneId: string, confirmation: \"RECLAIM\", forceDirty?: boolean }",
-      example: "ade lanes archive-and-reclaim lane-123 --confirm RECLAIM --text",
-    },
-    unarchive: {
-      description: "Restore an archived lane and safely recreate its managed worktree when it was reclaimed.",
-      input: "object { laneId: string }",
-      example: "ade lanes unarchive lane-123 --text",
-    },
-  },
-  chat: {
-    createSession: {
-      description: "Create a persistent ADE Work chat session.",
-      input: "object { laneId?, provider?, model?/modelId?, reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",
-      example: "ade actions run chat.createSession --input-json '{\"laneId\":\"lane-1\",\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\",\"reasoningEffort\":\"xhigh\",\"permissionMode\":\"full-auto\",\"fastMode\":false}'",
-    },
-    getAvailableModels: {
-      description: "List available chat models, optionally filtered by provider.",
-      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"opencode\" }",
-      example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
-    },
-    getSessionSummary: {
-      description: "Read one chat session summary, plus the IANA timeZone of the ADE brain that produced its timestamps.",
-      input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
-      example: "ade actions run chat.getSessionSummary --scalar chat-123",
-    },
-    getTurnStatus: {
-      description: "Read live turn status for one chat: RUNNING, BLOCKED, or IDLE.",
-      input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
-      example: "ade actions run chat.getTurnStatus --scalar chat-123",
-    },
-    createScheduledWork: {
-      description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
-      input: "object { sessionId?: string, prompt: string, exactly one of cron?: string | runAt?: ISO 8601 string with offset/Z | delaySeconds?: positive integer, recurring?: boolean, reason?: string }",
-      example: "ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"Check CI and report\"}' --text",
-    },
-    listScheduledWork: {
-      description: "List ADE-managed durable wakeups, cron jobs, and loops, optionally for one chat.",
-      input: "object { sessionId?: string, includeTerminal?: boolean }",
-      example: "ade actions run chat.listScheduledWork --input-json '{\"sessionId\":\"chat-123\"}' --text",
-    },
-    getScheduledWorkState: {
-      description: "Read pause state, next wake time, and active durable jobs for an eligible chat or tracked provider CLI session.",
-      input: "object { sessionId: string }",
-      example: "ade actions run chat.getScheduledWorkState --input-json '{\"sessionId\":\"chat-123\"}' --text",
-    },
-    cancelScheduledWork: {
-      description: "Cancel one ADE-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
-      input: "object { sessionId: string, scheduleId: string }",
-      example: "ade actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
-    },
-    resumeUsageLimitNow: {
-      description: "Send the usage-limit continue prompt now instead of waiting for the published reset. Cancels the armed auto-resume row and clears the paused streak.",
-      input: "object { sessionId: string }",
-      example: "ade actions run chat.resumeUsageLimitNow --input-json '{\"sessionId\":\"chat-123\"}' --text",
-    },
-    readTranscript: {
-      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
-      input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",
-      example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20,\"maxChars\":8000}'",
-    },
-    readTranscriptPage: {
-      description: "Read a bounded page of recent or older user/assistant messages for any project-backed chat on this machine.",
-      input: "object { sessionId: string, beforeOffset?: number, limit?: number, maxChars?: number }",
-      example: "ade actions run chat.readTranscriptPage --input-json '{\"sessionId\":\"chat-123\",\"beforeOffset\":4096,\"limit\":20,\"maxChars\":8000}'",
-    },
-    getChatEventHistory: {
-      description: "Read the recent raw chat event stream, including scheduled work, transcript retractions, tool calls, and metadata events.",
-      input: "object { sessionId: string, maxEvents?: number, maxBytes?: number } or argsList [sessionId, options?]",
-      example: "ade actions run chat.getChatEventHistory --input-json '{\"sessionId\":\"chat-123\",\"maxEvents\":128}' --json",
-    },
-    getChatEventHistoryPage: {
-      description: "Page older raw chat events before an event-history byte offset.",
-      input: "object { sessionId: string, beforeOffset: number, maxBytes?: number } or argsList [sessionId, options]",
-      example: "ade actions run chat.getChatEventHistoryPage --input-json '{\"sessionId\":\"chat-123\",\"beforeOffset\":4096,\"maxBytes\":65536}' --json",
-    },
-    sendMessage: {
-      description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
-      input: "object { sessionId: string, text: string, attachments? }",
-      example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
-    },
-    messageSession: {
-      description: "Deliver a message to a chat using ADE-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
-      input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata? }",
-      example: "ade actions run chat.messageSession --input-json '{\"sessionId\":\"chat-123\",\"kind\":\"auto\",\"text\":\"use this context\"}'",
-    },
-    modelCatalog: {
-      description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
-      input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string }",
-      example: "ade actions run chat.modelCatalog --input-json '{\"mode\":\"cached\"}' --json",
-    },
-    resolveSmartLinkPreview: {
-      description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
-      input: "object { url: string }",
-      example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
-    },
-    recoverCodexTurn: {
-      description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",
-      input: "object { sessionId: string, turnId: string, action: \"wait\" | \"steer\" | \"interrupt_retry_same_thread\" | \"restart_resume_thread\" }",
-      example: "ade actions run chat.recoverCodexTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"wait\"}'",
-    },
-    recoverTurn: {
-      description: "Recover a stalled provider turn using ADE's provider-neutral wait, nudge, same-runtime retry, or restart-and-resume actions.",
-      input: "object { sessionId: string, turnId: string, action: \"wait\" | \"nudge\" | \"retry_same_runtime\" | \"restart_resume\" }",
-      example: "ade actions run chat.recoverTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"restart_resume\"}'",
-    },
-    resolveUnprocessedMessage: {
-      description: "Idempotently run an accepted-but-unprocessed follow-up as the next turn, or dismiss it.",
-      input: "object { sessionId: string, steerId: string, action: \"run_next\" | \"dismiss\" }",
-      example: "ade actions run chat.resolveUnprocessedMessage --input-json '{\"sessionId\":\"chat-123\",\"steerId\":\"steer-456\",\"action\":\"run_next\"}'",
-    },
-    recoverContinuity: {
-      description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
-      input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
-      example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
-    },
-    setSpawnKind: {
-      description: "Demote a subagent chat to a peer (reports stop) or promote a peer back to a subagent (reports resume). Taking over posts a quiet note on the parent.",
-      input: "object { sessionId: string, spawnKind: \"subagent\" | \"peer\" }",
-      example: "ade actions run chat.setSpawnKind --input-json '{\"sessionId\":\"chat-123\",\"spawnKind\":\"peer\"}' --text",
-    },
-    dismissSubagentTakeoverPrompt: {
-      description: "Record that the subagent takeover banner was shown and answered or dismissed, so it does not reappear.",
-      input: "object { sessionId: string }",
-      example: "ade actions run chat.dismissSubagentTakeoverPrompt --input-json '{\"sessionId\":\"chat-123\"}' --text",
-    },
-  },
-  "external-sessions": {
-    list: {
-      description: "List provider-native CLI sessions found outside ADE.",
-      input: "object { providers?, laneId?, cwd?, scope?: \"project\" | \"all\", limit? }",
-      example: "ade actions run external-sessions.list --input-json '{\"scope\":\"project\",\"limit\":20}' --text",
-    },
-    import: {
-      description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
-      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
-      example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
-    },
-    getDetail: {
-      description: "Re-parse one outside session file and return a generous transcript tail.",
-      input: "object { provider, sessionId }",
-      example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
-    },
-  },
-};
-
+/* The Work-board drag lives in `./sessionBoardMove`: it owns module-level
+   mutable state with live timers, which does not belong inside a registry of
+   stateless domain services. Only the two names callers reach for through the
+   registry are re-exported — the sync command table's builder and the quit
+   drain `main.ts` runs. Everything else (the texts, the staging-map test seams,
+   the move-target vocabulary) is imported from `./sessionBoardMove` or
+   `shared/types/chat` directly, and a pass-through here would be a second
+   import path for values that already have one. */
+export { createSessionBoardMoveActions, flushStagedBoardMoves } from "./sessionBoardMove";
 
 /**
  * Caller-supplied chat metadata, minus the keys only the host may set.
@@ -1281,13 +239,6 @@ function withoutHostOnlyChatMetadata(
   const { metadata: _hostOnlyStripped, ...rest } = record;
   const stripped = stripHostOnlyChatMetadata(metadata as Record<string, unknown>);
   return stripped ? { ...rest, metadata: stripped } : rest;
-}
-
-export function getAdeActionInputContract(
-  domain: AdeActionDomain,
-  action: string,
-): AdeActionInputContract | undefined {
-  return ADE_ACTION_INPUT_CONTRACTS[domain]?.[action];
 }
 
 type AutomationsDomainService = {
@@ -2110,10 +1061,27 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       ctoMemoryService.writeMemory(args.memory);
       return ctoMemoryService.getSnapshot();
     },
-    searchMemory: (args?: { query?: string; limit?: number }) => {
+    searchMemory: (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
       const query = args?.query ?? "";
-      const rows = ctoMemoryService.searchMemory(query, { limit: args?.limit ?? 20 });
+      const rows = ctoMemoryService.searchMemory(query, {
+        limit: args?.limit ?? 20,
+        ...(args?.tags ? { tags: args.tags } : {}),
+      });
       return { query, rows };
+    },
+    /**
+     * One of the three non-CTO methods on this domain — see the `cto_memory`
+     * rule in `actionPolicy.ts`, which is `allExcept` so everything else here
+     * is CTO-only by omission. Append-only: it cannot read or modify durable
+     * memory, so a worker handing up a finding gains no view of what the CTO
+     * already knows (the other two, `getSnapshot` and `searchMemory`, can read
+     * it; see that rule for why they stay open).
+     */
+    recordDiscovery: (args?: { fact?: string; tags?: CtoMemoryTags }) => {
+      if (typeof args?.fact !== "string" || !args.fact.trim().length) {
+        throw new Error("recordDiscovery requires a non-empty string `fact` field.");
+      }
+      return ctoMemoryService.recordDiscovery(args.fact, args.tags ?? null);
     },
   };
 }
@@ -2464,6 +1432,11 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId, settleOverride: override };
     },
+    ...createSessionBoardMoveActions({
+      sessionService,
+      agentChatService: runtime.agentChatService,
+      logger: runtime.logger,
+    }),
     clearWokeMarker: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.clearWokeMarker");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
@@ -3191,23 +2164,6 @@ async function buildAiSettingsStatus(
   };
 }
 
-function optionalNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : null;
-}
-
-function requireNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string") {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
-  }
-  const trimmed = value.trim();
-  if (!trimmed.length) {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
-  }
-  return trimmed;
-}
-
 function clampDockLayout(layout: Record<string, unknown>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [key, value] of Object.entries(layout)) {
@@ -3316,119 +2272,6 @@ type TerminalDomainService = {
   activeForChat(args?: unknown): unknown;
   reattachChatCli(args?: unknown): Promise<unknown>;
 };
-
-const RUNTIME_FILE_WATCH_CLIENT_ID_FIELD = "__adeRuntimeClientId";
-const RUNTIME_FILE_WATCH_DEFAULT_SENDER_ID = 1;
-
-function asActionRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function readObjectActionArg(value: unknown, actionName: string): Record<string, unknown> {
-  if (value == null) return {};
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  throw new Error(`${actionName} expects an object input. Use --input-json '{...}' or see \`ade actions list --domain chat --text\`.`);
-}
-
-
-/**
- * Snooze deadlines cross the agent boundary as free text, so they are validated
- * before reaching `sessionService`, which returns a bare `false` for both
- * "no such row" and "unparseable date". Shared with the IPC and agent-tool
- * surfaces so all three reject the same inputs.
- */
-function requireSnoozeDeadline(value: unknown): string {
-  return parseSnoozeDeadline(value);
-}
-
-function readSessionIdList(value: unknown, actionName: string): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`${actionName} requires a 'sessionIds' array.`);
-  }
-  const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
-  if (!ids.length) {
-    throw new Error(`${actionName} requires at least one session id.`);
-  }
-  return ids;
-}
-
-function readWakeReason(value: unknown, actionName: string): SessionWakeReason {
-  return parseWakeReason(value, actionName);
-}
-
-function readSettleOverride(value: unknown, actionName: string): SessionSettleOverride | null {
-  return parseSettleOverrideArg(value, actionName);
-}
-
-function readBranchDriftResolution(value: unknown, actionName: string): LaneBranchDriftResolution {
-  if (value === "switch-back" || value === "keep-head") return value;
-  throw new Error(`${actionName} 'resolution' must be 'switch-back' or 'keep-head'.`);
-}
-
-function readOptionalIntegerActionField(value: unknown, field: string): number | undefined {
-  if (value == null || value === "") return undefined;
-  const numeric = typeof value === "number"
-    ? value
-    : typeof value === "string" && value.trim()
-      ? Number.parseInt(value, 10)
-      : NaN;
-  if (!Number.isFinite(numeric)) {
-    throw new Error(`Expected '${field}' to be a finite number.`);
-  }
-  return Math.floor(numeric);
-}
-
-function readChatHistoryActionArgs(
-  value: unknown,
-  actionName: string,
-): { sessionId: string; options: Record<string, unknown> } {
-  if (Array.isArray(value)) {
-    return {
-      sessionId: requireNonEmptyString(value[0], "sessionId"),
-      options: asActionRecord(value[1]),
-    };
-  }
-  if (typeof value === "string") {
-    return {
-      sessionId: requireNonEmptyString(value, "sessionId"),
-      options: {},
-    };
-  }
-  const record = readObjectActionArg(value, actionName);
-  return {
-    sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
-    options: record,
-  };
-}
-
-function readRuntimeFileWatchSenderId(args: Record<string, unknown>): number {
-  const raw = args[RUNTIME_FILE_WATCH_CLIENT_ID_FIELD];
-  const numeric = typeof raw === "number"
-    ? raw
-    : typeof raw === "string"
-      ? Number.parseInt(raw, 10)
-      : NaN;
-  if (Number.isSafeInteger(numeric) && numeric > 0) {
-    return numeric;
-  }
-  return RUNTIME_FILE_WATCH_DEFAULT_SENDER_ID;
-}
-
-function toRuntimeFileWatchArgs(args: Record<string, unknown>): FilesWatchArgs {
-  const { [RUNTIME_FILE_WATCH_CLIENT_ID_FIELD]: _clientId, ...watchArgs } = args;
-  return watchArgs as unknown as FilesWatchArgs;
-}
-
-function readStringActionArg(value: unknown, field: string): string {
-  if (typeof value === "string") {
-    return requireNonEmptyString(value, field);
-  }
-  return requireNonEmptyString(asActionRecord(value)[field], field);
-}
 
 type PrAiRuntimeSession = {
   sessionId: string;
@@ -4350,25 +3193,4 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
   };
-}
-
-export function listAllowedAdeActionNames(
-  domain: AdeActionDomain,
-  service: Record<string, unknown>,
-): string[] {
-  const allowed = ADE_ACTION_ALLOWLIST[domain] ?? [];
-  return allowed
-    .filter((key) => typeof service[key] === "function")
-    .sort((a, b) => a.localeCompare(b));
-}
-
-export function isAllowedAdeAction(domain: AdeActionDomain, action: string): boolean {
-  return (ADE_ACTION_ALLOWLIST[domain] ?? []).includes(action);
-}
-
-export function isAutomationAllowedAdeAction(
-  domain: AdeActionDomain,
-  action: string,
-): boolean {
-  return isAllowedAdeAction(domain, action) && !isCtoOnlyAdeAction(domain, action);
 }

@@ -13,6 +13,8 @@ import type {
   AutomationOutputs,
   AutomationReviewProfile,
   AutomationRule,
+  AutomationRuleOrigin,
+  AutomationRuleScope,
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
@@ -155,6 +157,12 @@ export type AutomationsEventPayload = {
     | "ingress-updated";
   automationId?: string;
   runId?: string;
+  /**
+   * Set when the run's `handoff` action created a chat. `HandoffLaunchJob` is a
+   * renderer-only type, so the main process publishes the new session id here
+   * and the renderer builds the job from it.
+   */
+  handoffSessionId?: string;
 };
 
 export type AutomationIngressSource =
@@ -344,13 +352,29 @@ export type AutomationDraftAction =
       codexFastMode?: boolean;
       permissionConfig?: AiPermissionSettings;
     })
-  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig });
+  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
+  | (AutomationDraftActionBase & {
+      type: "handoff";
+      handoffMode?: "fork" | "brief";
+      targetModelId?: string;
+      targetLaneMode?: AutomationAction["targetLaneMode"];
+      laneNameTemplate?: string;
+      promptTemplate?: string;
+      reasoningEffort?: AutomationAction["reasoningEffort"];
+    });
 
 export type AutomationRuleDraft = {
   id?: string | null;
   name: string;
   description?: string;
   enabled: boolean;
+  /** Provenance. Absent means the user authored the rule. */
+  origin?: AutomationRuleOrigin;
+  scope?: AutomationRuleScope;
+  originRequest?: string;
+  oneShot?: boolean;
+  /** Attempt cap. A one-shot draft with no value is saved with the default budget. */
+  maxRuns?: number;
   mode: AutomationMode;
   triggers: AutomationTrigger[];
   /** @deprecated Legacy planner/editor compatibility field. */

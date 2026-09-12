@@ -605,4 +605,609 @@ final class PendingSessionSettleOverlayWiringTests: XCTestCase {
       )
     }
   }
+
+  // MARK: - The one backstop sweeper, serving both overlays
+
+  /// The settle and attention-clear sweepers were verbatim copies, and the copy
+  /// had already drifted. One sweeper now serves both kinds, so the first thing
+  /// to pin is that unifying the CODE did not unify the WINDOWS: each kind still
+  /// waits its own `staleAfter`, and the attention clear's is deliberately much
+  /// shorter because its failure mode is a hidden ask rather than a stale chip.
+  @MainActor
+  func testTheSharedSweeperKeepsEachOverlaysOwnWindow() {
+    let slack: UInt64 = 250_000_000
+    XCTAssertEqual(
+      SyncService.sessionOverlayBackstopDelayNanosecondsForTesting("settle"),
+      UInt64(PendingSessionSettleStates.staleAfter * 1_000_000_000) + slack
+    )
+    XCTAssertEqual(
+      SyncService.sessionOverlayBackstopDelayNanosecondsForTesting("attentionClear"),
+      UInt64(PendingAttentionClearStates.staleAfter * 1_000_000_000) + slack
+    )
+    XCTAssertNotEqual(
+      SyncService.sessionOverlayBackstopDelayNanosecondsForTesting("settle"),
+      SyncService.sessionOverlayBackstopDelayNanosecondsForTesting("attentionClear"),
+      "one sweeper, two windows — a shared delay would be the drift this fixed"
+    )
+    XCTAssertNil(SyncService.sessionOverlayBackstopDelayNanosecondsForTesting("nonsense"))
+  }
+
+  /// Each overlay arms and disarms its own timer, and — the asymmetry the copy
+  /// introduced — BOTH resets now cancel. The settle reset used to leave its
+  /// sweeper armed over a map it had just emptied, so the timer woke, took a
+  /// session read nobody asked for (against a host that, on the unpair path, is
+  /// gone) and only then stood down.
+  @MainActor
+  func testEachResetStandsItsOwnBackstopDown() async throws {
+    try await withService { service, database in
+      var asking = makeSession(id: "session-2", laneId: "lane-1")
+      asking.pendingInputItemId = "item-1"
+      try database.replaceTerminalSessions([
+        makeSession(id: "session-1", laneId: "lane-1"),
+        asking,
+      ])
+
+      XCTAssertTrue(service.armedSessionOverlayBackstopKindsForTesting.isEmpty)
+
+      service.beginPendingSessionSettleForTesting(
+        .settle(uptime: ProcessInfo.processInfo.systemUptime, timestamp: "2026-08-10T12:00:00.000Z"),
+        for: "session-1"
+      )
+      XCTAssertEqual(
+        service.armedSessionOverlayBackstopKindsForTesting,
+        ["settle"],
+        "a settle must not arm the attention-clear sweeper"
+      )
+
+      XCTAssertTrue(service.beginPendingAttentionClearForTesting(for: "session-2"))
+      XCTAssertEqual(
+        service.armedSessionOverlayBackstopKindsForTesting,
+        ["settle", "attentionClear"]
+      )
+
+      service.resetSessionOverlaysForTesting()
+      XCTAssertTrue(
+        service.armedSessionOverlayBackstopKindsForTesting.isEmpty,
+        "both resets cancel; neither leaves a sweeper running over an empty map"
+      )
+    }
+  }
+}
+
+/// U9, the phone half: a Work row that keeps saying "Needs you" after the user
+/// has already answered.
+///
+/// The host clears the attention columns when a card settles, but that clear
+/// rides the CRDT changeset, and the `pending_input_resolved` / `user_message`
+/// chat event reaches the phone first. `PendingAttentionClearStates` bridges
+/// that window — and the tests that matter most here are the ones pinning what
+/// the bridge must NEVER do: hide a real ask, or treat the host talking on the
+/// agent's behalf as a human answering.
+final class PendingAttentionClearStatesTests: XCTestCase {
+  /// Monotonic uptime, not wall clock — same reasoning as the settle overlay.
+  private let now: TimeInterval = 20_000
+
+  private func session(
+    id: String = "session-1",
+    pendingInputItemId: String? = nil,
+    attentionRequestedAt: String? = nil,
+    attentionSource: String? = nil
+  ) -> TerminalSessionSummary {
+    var summary = TerminalSessionSummary(
+      id: id,
+      laneId: "lane-1",
+      laneName: "Lane",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: "claude-chat",
+      title: "Session",
+      status: "running",
+      startedAt: "2026-08-10T00:00:00.000Z",
+      endedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      runtimeState: "idle",
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil
+    )
+    summary.pendingInputItemId = pendingInputItemId
+    summary.attentionRequestedAt = attentionRequestedAt
+    summary.attentionSource = attentionSource
+    return summary
+  }
+
+  func testOverlayHidesTheAskTheUserJustAnswered() {
+    var states = PendingAttentionClearStates()
+    let asking = session(pendingInputItemId: "item-1", attentionRequestedAt: "2026-08-10T12:00:00.000Z")
+    states.begin(for: "session-1", baseline: asking, uptime: now)
+
+    let overlaid = states.apply(to: asking)
+
+    XCTAssertNil(overlaid.pendingInputItemId)
+    XCTAssertNil(overlaid.attentionRequestedAt)
+    XCTAssertNil(overlaid.attentionSource)
+  }
+
+  /// The failure mode this whole design is shaped around. An agent that raises
+  /// its hand again the instant the user replies is normal and important, and a
+  /// local guess from a moment ago must never outvote it.
+  func testANewAskFromTheHostIsNeverSuppressed() {
+    var states = PendingAttentionClearStates()
+    states.begin(
+      for: "session-1",
+      baseline: session(pendingInputItemId: "item-1", attentionRequestedAt: "2026-08-10T12:00:00.000Z"),
+      uptime: now
+    )
+
+    // The agent asks again: a fresh itemId, a fresh attention stamp.
+    let reAsked = session(pendingInputItemId: "item-2", attentionRequestedAt: "2026-08-10T12:00:01.000Z")
+
+    XCTAssertEqual(
+      states.apply(to: reAsked).pendingInputItemId,
+      "item-2",
+      "a newer host ask outranks an older local guess"
+    )
+    XCTAssertEqual(states.apply(to: reAsked).attentionRequestedAt, "2026-08-10T12:00:01.000Z")
+  }
+
+  /// Even a partial move — the host clearing the item but leaving the escalated
+  /// attention stamp, or the reverse — takes the overlay out of the picture. The
+  /// key is the whole attention row, not one column of it.
+  func testAnyMovementInTheAttentionRowMakesTheOverlayInert() {
+    var states = PendingAttentionClearStates()
+    states.begin(
+      for: "session-1",
+      baseline: session(pendingInputItemId: "item-1", attentionRequestedAt: "2026-08-10T12:00:00.000Z"),
+      uptime: now
+    )
+
+    let partiallyMoved = session(pendingInputItemId: nil, attentionRequestedAt: "2026-08-10T12:00:00.000Z")
+
+    XCTAssertEqual(states.apply(to: partiallyMoved).attentionRequestedAt, "2026-08-10T12:00:00.000Z")
+  }
+
+  func testAHostChangesetRetiresTheOverlay() {
+    var states = PendingAttentionClearStates()
+    states.begin(for: "session-1", baseline: session(pendingInputItemId: "item-1"), uptime: now)
+
+    // The host's clear lands — exactly what the overlay was predicting.
+    XCTAssertTrue(states.prune(against: [session(pendingInputItemId: nil)], uptime: now))
+
+    XCTAssertTrue(
+      states.isEmpty,
+      "a local guess must not outlive the host state it was guessing at"
+    )
+  }
+
+  /// The re-ask, end to end through the overlay's own lifecycle: the guess is
+  /// retired by the changeset that carries the new ask, so nothing is left that
+  /// a later identical-looking row could re-activate.
+  func testTheReAskChangesetRetiresTheOverlayToo() {
+    var states = PendingAttentionClearStates()
+    states.begin(for: "session-1", baseline: session(pendingInputItemId: "item-1"), uptime: now)
+
+    XCTAssertTrue(states.prune(against: [session(pendingInputItemId: "item-2")], uptime: now))
+    XCTAssertTrue(states.isEmpty)
+  }
+
+  func testACalmRowRecordsNoOverlay() {
+    var states = PendingAttentionClearStates()
+
+    XCTAssertEqual(states.begin(for: "session-1", baseline: session(), uptime: now), 0)
+    XCTAssertTrue(
+      states.isEmpty,
+      "an overlay over a calm row is a suppression lying in wait for the next real ask"
+    )
+  }
+
+  /// A provider's structured input raises needs-you through `attention_source`
+  /// alone, so that column has to count as an ask in its own right.
+  func testProviderStructuredAttentionCountsAsAnAsk() {
+    var states = PendingAttentionClearStates()
+    let asking = session(attentionSource: "provider_structured")
+
+    XCTAssertNotEqual(states.begin(for: "session-1", baseline: asking, uptime: now), 0)
+    XCTAssertNil(states.apply(to: asking).attentionSource)
+  }
+
+  func testTheOverlayExpiresAtTheBackstop() {
+    var states = PendingAttentionClearStates()
+    states.begin(for: "session-1", baseline: session(pendingInputItemId: "item-1"), uptime: now)
+
+    // The confirming changeset never arrives. A suppression must lapse rather
+    // than paint a calm row indefinitely.
+    XCTAssertTrue(states.prune(against: [], uptime: now + PendingAttentionClearStates.staleAfter + 1))
+    XCTAssertTrue(states.isEmpty)
+  }
+
+  func testOverlayOnlyTouchesTheSessionItWasBegunFor() {
+    var states = PendingAttentionClearStates()
+    states.begin(for: "session-1", baseline: session(pendingInputItemId: "item-1"), uptime: now)
+
+    let rows = states.apply(to: [
+      session(id: "session-1", pendingInputItemId: "item-1"),
+      session(id: "session-2", pendingInputItemId: "item-1"),
+    ])
+
+    XCTAssertNil(rows[0].pendingInputItemId)
+    XCTAssertEqual(rows[1].pendingInputItemId, "item-1")
+  }
+
+  func testRemoveAllForgetsEverythingInFlight() {
+    var states = PendingAttentionClearStates()
+    states.begin(for: "session-1", baseline: session(pendingInputItemId: "item-1"), uptime: now)
+
+    states.removeAll()
+
+    XCTAssertTrue(states.isEmpty)
+    XCTAssertEqual(states.apply(to: session(pendingInputItemId: "item-1")).pendingInputItemId, "item-1")
+  }
+}
+
+/// The wiring half: the chat event has to reach both halves of the local
+/// attention state — the cached chat summary AND the session row's overlay —
+/// and it has to refuse to do so for a message the host authored itself.
+final class PendingAttentionClearWiringTests: XCTestCase {
+  private func makeLane(id: String) -> LaneSummary {
+    LaneSummary(
+      id: id, name: "Lane", description: nil, laneType: "worktree", baseRef: "main",
+      branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil,
+      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
+      createdAt: "", archivedAt: nil, devicesOpen: nil
+    )
+  }
+
+  private func makeSession(
+    id: String = "session-1",
+    pendingInputItemId: String?
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: id,
+      laneId: "lane-1",
+      laneName: "Lane",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: "claude-chat",
+      title: "Chat",
+      status: "running",
+      startedAt: "2026-08-10T00:00:00.000Z",
+      endedAt: nil,
+      archivedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      runtimeState: "idle",
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil,
+      chatSessionId: nil,
+      pendingInputItemId: pendingInputItemId
+    )
+  }
+
+  private func makeChatSummary(
+    awaitingInput: Bool?,
+    pendingInputItemId: String?
+  ) -> AgentChatSessionSummary {
+    AgentChatSessionSummary(
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "opus",
+      modelId: nil,
+      sessionProfile: nil,
+      title: nil,
+      goal: nil,
+      reasoningEffort: nil,
+      codexFastMode: nil,
+      fastMode: nil,
+      executionMode: nil,
+      permissionMode: nil,
+      interactionMode: nil,
+      claudePermissionMode: nil,
+      codexApprovalPolicy: nil,
+      codexSandbox: nil,
+      codexConfigSource: nil,
+      opencodePermissionMode: nil,
+      droidPermissionMode: nil,
+      cursorModeSnapshot: nil,
+      cursorModeId: nil,
+      cursorConfigValues: nil,
+      identityKey: nil,
+      surface: nil,
+      automationId: nil,
+      automationRunId: nil,
+      capabilityMode: nil,
+      computerUse: nil,
+      completion: nil,
+      status: "running",
+      idleSinceAt: nil,
+      startedAt: "2026-08-10T00:00:00.000Z",
+      endedAt: nil,
+      archivedAt: nil,
+      lastActivityAt: "2026-08-10T00:00:00.000Z",
+      lastOutputPreview: nil,
+      summary: nil,
+      awaitingInput: awaitingInput,
+      pendingInputItemId: pendingInputItemId,
+      threadId: nil,
+      requestedCwd: nil
+    )
+  }
+
+  private func envelope(_ event: AgentChatEvent) -> AgentChatEventEnvelope {
+    AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-08-10T12:00:00.000Z",
+      event: event,
+      sequence: 1
+    )
+  }
+
+  private func rawPayload(_ event: [String: Any]) -> [String: Any] {
+    ["sessionId": "session-1", "event": event]
+  }
+
+  @MainActor
+  private func withService(
+    pendingInputItemId: String? = "item-1",
+    _ body: (SyncService, DatabaseService) async throws -> Void
+  ) async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-1', '/tmp/p1', 'P1', 'main', '2026-08-10T00:00:00.000Z', '2026-08-10T00:00:00.000Z');
+    """)
+    database.setActiveProjectId("project-1")
+    try database.replaceLaneSnapshots([makeLane(id: "lane-1")])
+    try database.replaceTerminalSessions([makeSession(pendingInputItemId: pendingInputItemId)])
+    service.cacheChatSummary(makeChatSummary(awaitingInput: true, pendingInputItemId: pendingInputItemId))
+    try await body(service, database)
+  }
+
+  @MainActor
+  func testPendingInputResolvedClearsTheCachedAttentionFlags() async throws {
+    try await withService { service, _ in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.pendingInputResolved(itemId: "item-1", resolution: "accepted", turnId: "turn-1")),
+        rawPayload: rawPayload([
+          "type": "pending_input_resolved",
+          "itemId": "item-1",
+          "resolution": "accepted",
+        ])
+      )
+
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.awaitingInput, false)
+      XCTAssertNil(service.chatSummaryCache["session-1"]?.pendingInputItemId)
+    }
+  }
+
+  @MainActor
+  func testAHumanUserMessageClearsTheCachedAttentionFlags() async throws {
+    try await withService { service, _ in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.userMessage(
+          text: "yes, go ahead",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )),
+        rawPayload: rawPayload(["type": "user_message", "text": "yes, go ahead"])
+      )
+
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.awaitingInput, false)
+      XCTAssertNil(service.chatSummaryCache["session-1"]?.pendingInputItemId)
+
+      // And the row itself reads calm through the chokepoint, without the
+      // database having been touched — the overlay never replicates.
+      let overlaid = try await service.fetchSession(id: "session-1")
+      XCTAssertNil(overlaid?.pendingInputItemId)
+    }
+  }
+
+  /// A scheduled wake, a child's completion report, a sibling's relay: the host
+  /// delivers all of them as `user_message`. None is a human answering, and
+  /// treating one as an answer would mask a genuine "Needs you".
+  @MainActor
+  func testAHostAuthoredMessageLeavesTheAttentionAlone() async throws {
+    try await withService { service, _ in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.userMessage(
+          text: "Scheduled wake: continue the migration.",
+          attachments: nil,
+          turnId: "turn-2",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )),
+        rawPayload: rawPayload([
+          "type": "user_message",
+          "text": "Scheduled wake: continue the migration.",
+          "metadata": [
+            "scheduledWake": [
+              "scheduleId": "sched-1",
+              "kind": "wakeup",
+              "firedAt": "2026-08-10T12:00:00.000Z",
+            ],
+          ],
+        ])
+      )
+
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.awaitingInput, true)
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.pendingInputItemId, "item-1")
+
+      let row = try await service.fetchSession(id: "session-1")
+      XCTAssertEqual(row?.pendingInputItemId, "item-1", "a host-authored message must not clear a real ask")
+    }
+  }
+
+  /// Dragging a card into "Needs you" is the one board move the host refuses to
+  /// clear attention for. Its message rides the wire as a `user_message`, so the
+  /// phone must read it as host-authored or it masks the row the user just
+  /// parked for the whole life of the overlay.
+  @MainActor
+  func testABoardMoveIntoNeedsYouLeavesTheAttentionAlone() async throws {
+    try await withService { service, _ in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.userMessage(
+          text: "Moved to Needs you.",
+          attachments: nil,
+          turnId: "turn-2",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )),
+        rawPayload: rawPayload([
+          "type": "user_message",
+          "text": "Moved to Needs you.",
+          "metadata": [
+            "boardMove": [
+              "from": "working",
+              "to": "needs_you",
+            ],
+          ],
+        ])
+      )
+
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.awaitingInput, true)
+      XCTAssertEqual(service.chatSummaryCache["session-1"]?.pendingInputItemId, "item-1")
+
+      let row = try await service.fetchSession(id: "session-1")
+      XCTAssertEqual(row?.pendingInputItemId, "item-1", "a board move must not clear the attention it just raised")
+    }
+  }
+
+  @MainActor
+  func testEveryHostAuthoredMarkerIsRecognised() async throws {
+    try await withService { service, _ in
+      for key in ["scheduledWake", "spawnCompletion", "spawnDispatch", "agentRelay", "hostContinuation", "boardMove"] {
+        XCTAssertTrue(
+          service.isHostAuthoredChatMessagePayload(rawPayload([
+            "type": "user_message",
+            "text": "…",
+            "metadata": [key: ["any": "value"]],
+          ])),
+          "\(key) marks a message the host authored on the agent's behalf"
+        )
+      }
+      XCTAssertFalse(
+        service.isHostAuthoredChatMessagePayload(rawPayload([
+          "type": "user_message",
+          "text": "…",
+          // Provenance on a "Run next" replay of the USER's own message — still
+          // a human answering, so it must not be excluded.
+          "metadata": ["replayedFromUnprocessedSteer": ["action": "run_next"]],
+        ]))
+      )
+    }
+  }
+
+  /// The sequence the overlay exists to survive: the user answers, the row goes
+  /// calm immediately, and the agent raises its hand again before the first
+  /// clear has even replicated. The row must come back to "Needs you".
+  @MainActor
+  func testTheRowReturnsToNeedsYouWhenTheAgentImmediatelyAsksAgain() async throws {
+    try await withService { service, database in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.pendingInputResolved(itemId: "item-1", resolution: "accepted", turnId: "turn-1")),
+        rawPayload: rawPayload(["type": "pending_input_resolved", "itemId": "item-1", "resolution": "accepted"])
+      )
+
+      // `XCTUnwrap` takes an autoclosure, which cannot carry an `await`.
+      let answeredRow = try await service.fetchSession(id: "session-1")
+      let answered = try XCTUnwrap(answeredRow)
+      XCTAssertNil(answered.pendingInputItemId)
+      XCTAssertNotEqual(
+        workCanonicalSessionState(session: answered, summary: service.chatSummaryCache["session-1"]).phase,
+        .needsYou,
+        "the row leaves Needs you on the answer, not one changeset later"
+      )
+
+      // The agent asks again, and the host's changeset lands.
+      try database.replaceTerminalSessions([makeSession(pendingInputItemId: "item-2")])
+
+      let reAskedRow = try await service.fetchSession(id: "session-1")
+      let reAsked = try XCTUnwrap(reAskedRow)
+      XCTAssertEqual(reAsked.pendingInputItemId, "item-2")
+      XCTAssertEqual(
+        workCanonicalSessionState(session: reAsked, summary: service.chatSummaryCache["session-1"]).phase,
+        .needsYou,
+        "a newer host ask must never be suppressed by an older local guess"
+      )
+    }
+  }
+
+  /// The host's clear is the source of truth; the overlay is only a bridge to
+  /// it. Once the changeset lands the guess is gone, so it cannot be sitting
+  /// there to swallow a later ask that happens to look the same.
+  @MainActor
+  func testTheOverlayIsPrunedWhenTheHostChangesetLands() async throws {
+    try await withService { service, database in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.pendingInputResolved(itemId: "item-1", resolution: "accepted", turnId: "turn-1")),
+        rawPayload: rawPayload(["type": "pending_input_resolved", "itemId": "item-1", "resolution": "accepted"])
+      )
+
+      // The host agrees and clears the columns.
+      try database.replaceTerminalSessions([makeSession(pendingInputItemId: nil)])
+      _ = try await service.fetchSessions()
+
+      // Now the SAME itemId comes back — a genuinely new ask that happens to
+      // reuse the id. A retired overlay cannot hide it.
+      try database.replaceTerminalSessions([makeSession(pendingInputItemId: "item-1")])
+      let row = try await service.fetchSession(id: "session-1")
+      XCTAssertEqual(row?.pendingInputItemId, "item-1")
+    }
+  }
+
+  /// A message into a chat that is not asking for anything must not leave a
+  /// suppression behind for the NEXT ask to walk into.
+  @MainActor
+  func testAMessageIntoACalmChatLeavesNoSuppression() async throws {
+    try await withService(pendingInputItemId: nil) { service, database in
+      service.applyChatAttentionResolutionIfNeeded(
+        envelope: envelope(.userMessage(
+          text: "one more thing",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )),
+        rawPayload: rawPayload(["type": "user_message", "text": "one more thing"])
+      )
+
+      try database.replaceTerminalSessions([makeSession(pendingInputItemId: "item-9")])
+
+      let row = try await service.fetchSession(id: "session-1")
+      XCTAssertEqual(row?.pendingInputItemId, "item-9")
+    }
+  }
 }

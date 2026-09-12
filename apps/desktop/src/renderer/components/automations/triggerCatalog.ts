@@ -137,8 +137,13 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     label: "Chat session",
     icon: ChatCircleText,
     accent: "#58A6FF",
-    hint: "When an agent session ends",
-    events: [{ value: "session-end", label: "Session ended" }],
+    hint: "When a chat ends, fails, or hits a limit",
+    events: [
+      { value: "session-end", label: "Session ended" },
+      { value: "session.limit_reached", label: "Usage limit reached" },
+      { value: "session.failed", label: "Session failed" },
+      { value: "session.ended_without_pr", label: "Ended without a PR" },
+    ],
   },
   {
     value: "webhook",
@@ -169,7 +174,7 @@ export function sourceForTriggerType(type: string): TriggerSource {
   if (type.startsWith("cursor.")) return "cursor";
   if (type === "file.change") return "file";
   if (type === "lane.created" || type === "lane.archived" || type === LANE_MERGED_TRIGGER_TYPE) return "lane";
-  if (type === "session-end") return "session";
+  if (type === "session-end" || type.startsWith("session.")) return "session";
   if (type === "github-webhook" || type === "webhook") return "webhook";
   return "manual";
 }

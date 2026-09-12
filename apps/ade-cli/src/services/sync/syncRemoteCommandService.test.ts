@@ -3034,6 +3034,11 @@ describe("mobile lifecycle command contract", () => {
       },
     });
 
+    // A board move is reversible for five seconds and then final. Replaying one
+    // off a reconnect queue would move a card the user stopped looking at
+    // minutes ago, with its undo toast long gone — so this pair alone is not
+    // queueable, and that is the contract, not an omission.
+    const NON_QUEUEABLE_SESSION_ACTIONS = new Set(["session.moveOnBoard", "session.undoBoardMove"]);
     // iOS gates its lifecycle UI on these appearing in hello_ok's descriptor
     // list, so a missing registration silently hides the whole feature.
     for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
@@ -3041,7 +3046,7 @@ describe("mobile lifecycle command contract", () => {
       expect(service.getDescriptor(action)).toEqual({
         action,
         scope: "project",
-        policy: { viewerAllowed: true, queueable: true },
+        policy: { viewerAllowed: true, queueable: !NON_QUEUEABLE_SESSION_ACTIONS.has(action) },
       });
     }
 

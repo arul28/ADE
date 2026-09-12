@@ -31,10 +31,13 @@ actionCatalog.ts               step kinds + add-menu data (incl delete-lane)
 variableCatalog.ts             {{trigger.*}} variables grouped per trigger source
 localAutomationConfig.ts       string consts for not-yet-landed types (lane.merged/delete-lane/alwaysRun)
 list/
-  RuleList.tsx                 left rail: header, search, ingress strip, rows, empty state
-  RuleRow.tsx                  one sentence row: toggle, status glyph, next/last run, hover actions
+  RuleList.tsx                 left rail: header, search, ingress strip, provenance
+                               filter (All / By CTO / Handoffs), rows, empty state
+  RuleRow.tsx                  one sentence row: toggle, status glyph, next/last run, hover
+                               actions, CTO origin pill, scope + one-shot provenance line
   RuleSentence.tsx             renders trigger→steps clauses
-  AutomationsEmptyState.tsx    first-visit: 3 flagship template cards
+  AutomationsEmptyState.tsx    first-visit: 3 flagship template cards; also
+                               AutomationsFilterEmptyState for a filter that matches nothing
 builder/
   RuleBuilder.tsx              header (Run now / Dry run / Save + status) + vertical step stack
   TriggerCard.tsx              pinned card: source picker → event → filter rows
@@ -81,6 +84,11 @@ Trigger clause (concrete, sentence case, no jargon):
 - git.push branch main → `A push lands on main`
 - file.change paths → `A file changes in src/**`
 - session-end → `An agent session ends`
+- session.limit_reached / .failed / .ended_without_pr → `This chat hits its usage
+  limit` / `A claude session fails` / `An agent session ends with no PR`. The
+  subject is chosen by `sessionSubject`: a rule scoped to one chat says
+  `This chat`, otherwise the provider filter narrows it, and a rule with neither
+  covers every session in the project.
 - webhook → `A webhook fires`
 - manual → `Run manually`
 
@@ -90,6 +98,8 @@ Step clause:
 - ade-action → friendly map (pr.addComment→`comment on the PR`, issue.setLabels→`label the issue`,
   issue.close→`close the issue`, linear_sync.*→`sync Linear`) else `run {domain}.{action}`
 - delete-lane / cleanup → `clean up the lane`
+- handoff → `hand off to Claude Sonnet 5` (or `fork the chat to …`) — the model's
+  display name resolved through the registry, never the raw id
 - disposition open-pr-draft → append `open a draft PR`
 
 ## Wireframes

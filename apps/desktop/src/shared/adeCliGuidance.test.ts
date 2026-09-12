@@ -93,3 +93,29 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
   });
 });
+
+describe("Work board status guidance", () => {
+  it("keeps the board rule OUT of this guidance, which is emitted under a hard budget", () => {
+    // The Cursor SDK prompt emits this constant whole inside a 3 KB budget that
+    // truncates from the END, and it already sits at ~100% of it. A board line
+    // here cost that prompt its subagent routing contract and its project
+    // rules, with nothing failing except two assertions in that file. The rule
+    // lives in the ade-cli-control-plane skill's "Board and status" section
+    // instead, which every agent reads and which no budget clips.
+    const guidance = buildAdeBootstrapGuidance([]);
+    expect(guidance).not.toContain("Work board is derived");
+    expect(guidance).not.toContain("Work-board column is derived");
+    // The mechanics an agent does need here are still present.
+    expect(guidance).toContain("ade chat note");
+    expect(guidance).toContain("ade chat ask");
+  });
+
+  it("never tells an agent it can set its own board column", () => {
+    // Settling is the user's call (or the PR-merge policy's), and there is no
+    // "move my card" action. Guidance that implied otherwise would send the
+    // agent hunting for one.
+    const guidance = buildAdeBootstrapGuidance([]);
+    expect(guidance).not.toContain("moveOnBoard");
+    expect(guidance).toContain("You cannot settle or unsettle a session");
+  });
+});

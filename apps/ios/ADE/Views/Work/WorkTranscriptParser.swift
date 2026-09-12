@@ -429,6 +429,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       switch type {
       case "user_message":
         event = workSpawnCompletionEvent(from: eventDict["metadata"], fallbackTurnId: turnId)
+          ?? workBoardMoveEvent(from: eventDict, fallbackTurnId: turnId)
           ?? .userMessage(
             text: userMessageDisplayText(from: eventDict),
             attachments: parseAgentChatFileRefs(from: eventDict["attachments"]),
@@ -1148,6 +1149,35 @@ private func workSpawnCompletionEvent(
     model: nil,
     reasoningEffort: nil,
     turnId: optionalString(completion["childTurnId"]) ?? fallbackTurnId
+  )
+}
+
+/// A board drag, which arrives as a `user_message` the HOST wrote.
+///
+/// It must not render as a user bubble: the user moved a card, they did not
+/// type this sentence, and a bubble would put words in their mouth. Lifting it
+/// to a `systemNotice` here — the same hook `spawnCompletion` uses one line up —
+/// is what routes it to the timeline's quiet event card instead.
+///
+/// `from` and `to` are passed through RAW in `detail` and are turned into
+/// labels at the card, so the wire ids never reach a screen and a fifth column
+/// added host-side needs no change here. Mirrors the `boardMove` branch of
+/// desktop's `AgentChatMessageList`.
+private func workBoardMoveEvent(
+  from eventDict: [String: Any],
+  fallbackTurnId: String?
+) -> WorkChatEvent? {
+  guard let container = eventDict["metadata"] as? [String: Any],
+        let boardMove = container["boardMove"] as? [String: Any],
+        let to = optionalString(boardMove["to"])
+  else { return nil }
+  let from = optionalString(boardMove["from"])
+  return .systemNotice(
+    kind: "board_move",
+    message: userMessageDisplayText(from: eventDict),
+    detail: from.map { "\($0)|\(to)" } ?? to,
+    turnId: fallbackTurnId,
+    steerId: nil
   )
 }
 

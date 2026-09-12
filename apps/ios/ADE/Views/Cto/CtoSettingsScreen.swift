@@ -101,6 +101,10 @@ struct CtoSettingsScreen: View {
           lanes: [],
           commandScope: .project,
           isBusy: modelUpdateInFlight,
+          // The CTO is interrupted constantly, so it may only run on a provider
+          // that can redirect a turn already in flight. Mirrors the desktop's
+          // `CTO_LIVE_REDIRECT_PROVIDERS` filter on the same picker.
+          modelFilter: { providerSupportsLiveRedirect($0.provider) },
           onSelect: { option, pickedReasoning, _, pickedFastMode in
             Task { @MainActor in
               let currentReasoning = currentReasoningEffort
@@ -183,19 +187,19 @@ struct CtoSettingsScreen: View {
   private var currentModelId: String {
     ctoSession?.modelId
       ?? ctoSession?.model
-      ?? snapshot?.identity.modelPreferences.model
+      ?? snapshot?.identity.modelPreferences?.model
       ?? ""
   }
 
   private var currentProvider: String {
     ctoSession?.provider
-      ?? snapshot?.identity.modelPreferences.provider
+      ?? snapshot?.identity.modelPreferences?.provider
       ?? "claude"
   }
 
   private var currentReasoningEffort: String {
     ctoSession?.reasoningEffort
-      ?? snapshot?.identity.modelPreferences.reasoningEffort
+      ?? snapshot?.identity.modelPreferences?.reasoningEffort
       ?? ""
   }
 
@@ -212,7 +216,7 @@ struct CtoSettingsScreen: View {
       details.append("fast")
     }
     return details.isEmpty
-      ? snapshot.identity.modelPreferences.model
+      ? (snapshot.identity.modelPreferences?.model ?? "")
       : details.joined(separator: " · ")
   }
 
@@ -541,7 +545,8 @@ private struct IdentityCard: View {
   }
 
   private var providerModelText: String {
-    "\(identity.modelPreferences.provider) · \(identity.modelPreferences.model)"
+    guard let preferences = identity.modelPreferences else { return "No model picked yet" }
+    return "\(preferences.provider) · \(preferences.model)"
   }
 
   private var summaryText: String {

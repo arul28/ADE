@@ -294,6 +294,7 @@ import type { AutomationAdeActionRegistry } from "./services/automations/automat
 import {
   ADE_ACTION_ALLOWLIST,
   type AdeActionDomain,
+  flushStagedBoardMoves,
   getAdeActionDomainServices,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
@@ -3851,6 +3852,19 @@ app.whenReady().then(async () => {
       projectId,
       adeDir: adePaths.adeDir,
       ctoMemoryService,
+      // Resolved on every refresh, not captured here: the chat service does not
+      // exist yet at this point in boot, and the live block must not be pinned
+      // to whatever was null when the CTO service was constructed.
+      getLiveStateSources: () => {
+        const chat = agentChatServiceRef;
+        if (!chat) return null;
+        return {
+          laneService,
+          prService: prServiceRef,
+          automationService,
+          listChats: chat.listSessions,
+        };
+      },
     });
 
     const adeProjectService = createAdeProjectService({
@@ -3924,6 +3938,19 @@ app.whenReady().then(async () => {
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
+      // The CTO's domain coverage. All lazy — several of these are created
+      // later in this same bootstrap, and the CTO's tool map is only built when
+      // a CTO session actually runs.
+      getAutomationPlannerService: () => automationPlannerService,
+      getReviewService: () => reviewService,
+      getUsageService: () => usageTrackingService,
+      getBudgetService: () => budgetCapService,
+      // Names and metadata only. `projectSecretService.get`/`exportEnv` are
+      // deliberately NOT reachable from any CTO tool.
+      getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
+      getIosSimulatorService: () => iosSimulatorService,
+      getAppControlService: () => appControlService,
+      getBuiltInBrowserService: () => builtInBrowserService,
       getGitService: () => gitServiceRef,
       conflictService,
       laneService,
@@ -5663,6 +5690,28 @@ app.whenReady().then(async () => {
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    // A staged board move whose project is closing, before anything it needs is
+    // gone. Its status write already landed and its message is still sitting
+    // behind a 5-second timer; the disposal below closes the chat service that
+    // dispatch sends through and the database a failed dispatch reverses into,
+    // while the timer stays armed and fires against both. Awaited here for the
+    // same reason the shutdown sequence awaits it — an unawaited drain races
+    // the very teardown it is trying to get ahead of.
+    //
+    // Scoped to THIS context's session service, which is what identifies the
+    // project: every context builds its own board-move actions over its own
+    // session service, and a global flush would dispatch another project's
+    // pending move early, ending an undo window its user is still looking at.
+    if (ctx.sessionService) {
+      try {
+        await flushStagedBoardMoves({ sessionService: ctx.sessionService });
+      } catch (error) {
+        ctx.logger.error("app.staged_board_move_flush_failed", {
+          projectRoot: ctx.project?.rootPath ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const normalizedRoot =
       typeof ctx.project?.rootPath === "string" &&
       ctx.project.rootPath.trim().length > 0
@@ -6685,6 +6734,26 @@ app.whenReady().then(async () => {
   };
 
   const runImmediateProcessCleanup = (reason: string): void => {
+    // First, before anything is torn down. A staged board move has already
+    // written the status columns; its message is what is still pending, and
+    // dispatching it needs a live `agentChatService` (disposed below) and an
+    // unflushed db (flushed below), so it cannot be the last statement here.
+    //
+    // Best effort only: this function is synchronous and the forced/exit paths
+    // call `app.exit` in the same frame, so a slow provider send can be cut off
+    // — `undoBoardMove` reports `unknown_move` for that case rather than
+    // claiming the message was delivered.
+    //
+    // Skipped on the fast-kill prelude. `requestAppShutdown` calls this before
+    // it installs `shutdownPromise`, and a drain here CLAIMS each staged move
+    // synchronously — so firing it would empty the map and turn the awaited
+    // drain a few lines later into a no-op, trading the one guaranteed path
+    // for an unawaited attempt against a service being disposed in this frame.
+    if (!reason.startsWith("fast_kill:")) {
+      void flushStagedBoardMoves().catch(() => {
+        // A failed drain must never block shutdown.
+      });
+    }
     try {
       attentionNotchHelper?.dispose();
     } catch {
@@ -6806,6 +6875,21 @@ app.whenReady().then(async () => {
         exitCode,
         fastKillFirst: args.fastKillFirst ?? false,
       });
+
+      // Deliver any staged board move before teardown starts. This is the only
+      // awaited drain: `staged.dispatch()` sends a chat message, so it needs a
+      // live `agentChatService` and an unflushed db — both gone by the time
+      // `closeAllProjectContexts` / `runImmediateProcessCleanup` have run. It
+      // sits first so a slow browser-storage flush cannot eat its budget; the
+      // force timer still bounds the whole sequence.
+      try {
+        await flushStagedBoardMoves();
+      } catch (error) {
+        shutdownLogger.error("app.staged_board_move_flush_failed", {
+          reason: args.reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       try {
         autoUpdateService?.dispose();

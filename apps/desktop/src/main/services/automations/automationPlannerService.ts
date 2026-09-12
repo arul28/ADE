@@ -25,6 +25,12 @@ import {
   type AutomationValidateDraftResult,
   type TestSuiteDefinition
 } from "../../../shared/types";
+import {
+  ONE_SHOT_DEFAULT_MAX_RUNS,
+  normalizeMaxRuns,
+  normalizeRuleOrigin,
+  validateHandoffLaneTarget,
+} from "./automationService";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -35,6 +41,14 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
+
+/** How a handoff step's lane target reads in the simulation list. */
+function handoffLaneSummary(action: AutomationAction): string {
+  const laneMode = action.targetLaneMode ?? "same";
+  if (laneMode === "new") return "a new lane";
+  if (laneMode === "explicit") return `lane ${action.targetLaneId ?? ""}`.trim();
+  return "the same lane";
+}
 
 function resolveAutomationCwdBase(
   projectRoot: string,
@@ -709,6 +723,11 @@ function normalizeDraft(args: {
     if (stateTransition) trigger.stateTransition = stateTransition;
     const changedFields = Array.isArray(raw?.changedFields) ? raw.changedFields.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
     if (changedFields.length) trigger.changedFields = changedFields;
+    // `session.*` scoping: one chat, and/or a provider allow-list.
+    const sessionId = safeTrim(raw?.sessionId);
+    if (sessionId) trigger.sessionId = sessionId;
+    const providers = Array.isArray(raw?.providers) ? raw.providers.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (providers.length) trigger.providers = providers;
     if (raw?.activeHours && typeof raw.activeHours === "object") {
       const start = safeTrim(raw.activeHours.start);
       const end = safeTrim(raw.activeHours.end);
@@ -782,7 +801,8 @@ function normalizeDraft(args: {
       type !== "run-command" &&
       type !== "delete-lane" &&
       type !== "ade-action" &&
-      type !== "agent-session"
+      type !== "agent-session" &&
+      type !== "handoff"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
       continue;
@@ -836,6 +856,38 @@ function normalizeDraft(args: {
           ...(adeAction?.args !== undefined ? { args: adeAction.args } : {}),
           ...(adeAction?.resolvers && typeof adeAction.resolvers === "object" ? { resolvers: adeAction.resolvers } : {}),
         },
+      });
+      continue;
+    }
+
+    if (type === "handoff") {
+      const targetModelId = safeTrim(action?.targetModelId);
+      if (!targetModelId) {
+        issues.push({ level: "error", path: `actions[${idx}].targetModelId`, message: "handoff requires a target model." });
+        continue;
+      }
+      const handoffMode = action?.handoffMode === "fork" ? "fork" : "brief";
+      const targetLaneMode = action?.targetLaneMode === "new" || action?.targetLaneMode === "explicit"
+        ? action.targetLaneMode
+        : "same";
+      // "explicit" without a lane, or any lane move on a fork, is a
+      // configuration error — never a silent fallback to the source lane.
+      const laneTargetError = validateHandoffLaneTarget({ handoffMode, targetLaneMode, targetLaneId });
+      if (laneTargetError) {
+        issues.push({ level: "error", path: `actions[${idx}].targetLaneMode`, message: laneTargetError });
+        continue;
+      }
+      const promptTemplate = safeTrim(action?.promptTemplate);
+      const reasoningEffort = safeTrim(action?.reasoningEffort);
+      const laneNameTemplate = safeTrim(action?.laneNameTemplate);
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        handoffMode,
+        targetModelId,
+        targetLaneMode,
+        ...(laneNameTemplate ? { laneNameTemplate } : {}),
+        ...(promptTemplate ? { promptTemplate } : {}),
+        ...(reasoningEffort ? { reasoningEffort: reasoningEffort as NonNullable<AutomationAction["reasoningEffort"]> } : {}),
       });
       continue;
     }
@@ -998,11 +1050,30 @@ function normalizeDraft(args: {
     ? args.draft.includeProjectContext
     : Boolean(args.draft.contextSources?.length);
 
+  const scope = args.draft.scope && safeTrim(args.draft.scope.sessionId)
+    ? {
+        sessionId: safeTrim(args.draft.scope.sessionId),
+        // Stored on the rule so the label survives the chat being deleted.
+        sessionTitle: safeTrim(args.draft.scope.sessionTitle),
+      }
+    : undefined;
+
   const normalized: AutomationRuleDraftNormalized = {
     ...(args.draft.id ? { id: safeTrim(args.draft.id) } : {}),
     name,
     description: safeTrim(args.draft.description),
     enabled,
+    origin: normalizeRuleOrigin(args.draft.origin),
+    ...(scope ? { scope } : {}),
+    ...(safeTrim(args.draft.originRequest) ? { originRequest: safeTrim(args.draft.originRequest) } : {}),
+    ...(args.draft.oneShot === true ? { oneShot: true } : {}),
+    // A one-shot rule that named no cap gets the default budget, so an
+    // un-configured rule on a repeating trigger cannot retry forever.
+    ...(() => {
+      const maxRuns = normalizeMaxRuns(args.draft.maxRuns)
+        ?? (args.draft.oneShot === true ? ONE_SHOT_DEFAULT_MAX_RUNS : undefined);
+      return maxRuns ? { maxRuns } : {};
+    })(),
     mode: args.draft.mode === "fix" || args.draft.mode === "monitor" ? args.draft.mode : "review",
     triggers,
     trigger: triggers[0],
@@ -1392,6 +1463,13 @@ export function createAutomationPlannerService({
         name: normalized.name,
         ...(safeTrim(normalized.description) ? { description: safeTrim(normalized.description) } : {}),
         enabled: normalized.enabled,
+        // Provenance travels with the rule. `origin: "user"` is the default and
+        // is written explicitly so an edited rule never loses its authorship.
+        origin: normalized.origin,
+        ...(normalized.scope ? { scope: normalized.scope } : {}),
+        ...(safeTrim(normalized.originRequest) ? { originRequest: safeTrim(normalized.originRequest) } : {}),
+        ...(normalized.oneShot === true ? { oneShot: true } : {}),
+        ...(normalized.maxRuns ? { maxRuns: normalized.maxRuns } : {}),
         mode: normalized.mode,
         triggers: normalized.triggers,
         execution,
@@ -1468,6 +1546,18 @@ export function createAutomationPlannerService({
         }
         if (action.type === "predict-conflicts") {
           return { index, type: action.type, summary: "Run conflict prediction", warnings };
+        }
+        if (action.type === "handoff") {
+          const triggerType = normalized.triggers[0]?.type ?? "manual";
+          if (!triggerType.startsWith("session.")) {
+            warnings.push("Handoff needs a trigger that carries a chat session, such as session.limit_reached.");
+          }
+          return {
+            index,
+            type: action.type,
+            summary: `Hand off the chat to ${action.targetModelId ?? "another model"} (${action.handoffMode ?? "brief"}, ${handoffLaneSummary(action)})`,
+            warnings,
+          };
         }
         return { index, type: action.type, summary: action.type, warnings };
       });

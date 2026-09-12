@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTIVE_TURN_DISPATCH_MODES,
+  CTO_LIVE_REDIRECT_PROVIDERS,
+  providerSupportsLiveRedirect,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
@@ -30,16 +33,20 @@ describe("Droid permission vocabulary", () => {
 });
 
 describe("active-turn dispatch modes", () => {
-  it("is the one table every surface reads: Claude all three, Cursor no inline, others queue-only", () => {
+  it("is the one table every surface reads: Claude all three, Codex inline-only, Cursor no inline, others queue-only", () => {
     expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
+    // Codex's app-server takes `turn/steer` into the running turn — the service
+    // has always sent it; the table was the thing that never said so.
+    expect(activeTurnDispatchModes("codex")).toEqual(["inline", "queue"]);
     expect(activeTurnDispatchModes("cursor")).toEqual(["interrupt", "queue"]);
-    for (const provider of ["codex", "opencode", "droid", "pi", "unknown-provider", undefined]) {
+    for (const provider of ["opencode", "droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
   });
 
   it("defaults to the first mode in menu order", () => {
     expect(defaultActiveTurnDispatchMode("claude")).toBe("inline");
+    expect(defaultActiveTurnDispatchMode("codex")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("cursor")).toBe("interrupt");
     expect(defaultActiveTurnDispatchMode("droid")).toBe("queue");
   });
@@ -55,12 +62,42 @@ describe("active-turn dispatch modes", () => {
   it("rejects an inline dispatch on Cursor rather than downgrading it", () => {
     expect(supportsActiveTurnDispatchMode("cursor", "interrupt")).toBe(true);
     expect(supportsActiveTurnDispatchMode("cursor", "inline")).toBe(false);
+    // Codex gained inline, not interrupt: there is no cancel-and-resend.
+    expect(supportsActiveTurnDispatchMode("codex", "inline")).toBe(true);
     expect(supportsActiveTurnDispatchMode("codex", "interrupt")).toBe(false);
     // The host rejection the renderer and TUI both surface verbatim.
     expect(unsupportedActiveTurnDispatchModeMessage("cursor", "inline"))
       .toBe("Cursor sessions support only the \"interrupt\" active-turn dispatch mode.");
     expect(unsupportedActiveTurnDispatchModeMessage("codex", "interrupt"))
+      .toBe("Codex sessions support only the \"inline\" active-turn dispatch mode.");
+    expect(unsupportedActiveTurnDispatchModeMessage("droid", "interrupt"))
       .toContain("don't support");
+  });
+});
+
+describe("CTO live-redirect providers", () => {
+  it("lists exactly the providers that can redirect a turn already in flight", () => {
+    expect([...CTO_LIVE_REDIRECT_PROVIDERS]).toEqual(["claude", "codex", "cursor"]);
+    for (const provider of ["claude", "codex", "cursor"]) {
+      expect(providerSupportsLiveRedirect(provider)).toBe(true);
+    }
+    for (const provider of ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""]) {
+      expect(providerSupportsLiveRedirect(provider)).toBe(false);
+    }
+    expect(providerSupportsLiveRedirect("  CURSOR ")).toBe(true);
+  });
+
+  it("is its own contract, not a read of the composer's dispatch table", () => {
+    // Cursor qualifies through interrupt-and-resend and has no "inline" at all,
+    // so anything derived from `ACTIVE_TURN_DISPATCH_MODES` would have had to
+    // pick a mode to key off and would have got Cursor or Codex wrong. Keeping
+    // them separate is what stops a composer-menu edit from quietly changing
+    // who is allowed to be the CTO.
+    const inlineCapable = Object.entries(ACTIVE_TURN_DISPATCH_MODES)
+      .filter(([, modes]) => modes?.includes("inline"))
+      .map(([provider]) => provider);
+    expect(inlineCapable).not.toContain("cursor");
+    expect(providerSupportsLiveRedirect("cursor")).toBe(true);
   });
 });
 

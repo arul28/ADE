@@ -209,16 +209,25 @@ uses to act on ADE itself:
 
 | Tool family | Purpose |
 |---|---|
-| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, initial prompt, and optional `permissionMode` (`default` \| `auto` \| `plan` \| `edit` \| `full-auto` \| `config-toml`, forwarded to `chat.createSession` only when supplied, so an omitted value keeps the provider default rather than pinning a substituted one). Droid's provider-native `droidPermissionMode` (`read-only` \| `auto-low` \| `auto-medium` \| `auto-high` \| `agi`) is forwarded independently when supplied; `agi` starts Droid's read-only orchestrator mode. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
+| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, initial prompt, an optional `spawnKind` (defaulting to `subagent`, so the child reports back), and optional `permissionMode` (`default` \| `auto` \| `plan` \| `edit` \| `full-auto` \| `config-toml`, forwarded to `chat.createSession` only when supplied, so an omitted value keeps the provider default rather than pinning a substituted one). Droid's provider-native `droidPermissionMode` (`read-only` \| `auto-low` \| `auto-medium` \| `auto-high` \| `agi`) is forwarded independently when supplied; `agi` starts Droid's read-only orchestrator mode. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
 | `interruptChat`, `steerChat`, `cancelSteer`, `listSubagents`, `approveToolUse` | Mid-session control over other chat sessions: interrupt a turn, inject a steer instruction, cancel a pending steer by its `steerId`, enumerate spawned sub-agents, and answer a pending permission prompt. Each is a **required** dep on `CtoOperatorToolDeps` and maps onto the corresponding `agentChatService` method (`approveToolUse` translates the tool's `toolUseId` to the service's `itemId`), so none of them can be advertised without an implementation behind it. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. `createTerminal` passes explicit `cols: 100`, `rows: 30`, and a title, rather than relying on the pty service's default clamp. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
-| `saveMemory`, `searchMemory`, `readMemory` | Durable CTO memory: save facts, search prior context, review what it knows. |
+| `saveMemory`, `searchMemory`, `readMemory`, `readDiscoveries` | Durable CTO memory: save tagged facts, search prior context by text or tag, review what it knows, and drain the worker-discovery queue any agent can append to. |
+| `loadCtoTools` | List the thirteen tool packs with their scopes and load state, or load one pack's full descriptions. Loading is a description-level economy — every CTO tool is registered and callable whether or not its pack is loaded. |
 | Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
 | `listLinearIssues`, `getLinearIssue` | Issue reads. |
 | `listTestSuites`, `runTestSuite`, `stopTestSuite`, `listTestRuns` | Test orchestration. |
 | `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState` | Git reads. `laneId` is optional and defaults to the CTO session's lane. |
 | `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, `gitMergeAbort` | Git mutations. `laneId` is **required** — see [Lane defaulting is read-only](#lane-defaulting-is-read-only). |
+
+The curated set reaches well beyond this table — packs cover files, conflicts,
+scheduling, proof, code review, search, usage/budget reads, project config,
+device control, and orchestration reads. Two guards apply across it:
+destructive tools (replacing or deleting an automation rule, cancelling
+scheduled work) raise the same approval card an agent tool call raises, and
+`getProjectConfig` redacts env bags and credential-shaped values while leaving
+every key visible. See [CTO › Tool packs](../cto/README.md#tool-packs).
 
 The system prompt's capability manifest is driven by which tool names
 are actually present; `systemPrompt.ts` inspects `toolNames` and

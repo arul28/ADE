@@ -8,6 +8,7 @@ import type {
   TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import type { WorkBoardMoveTarget } from "../../../shared/types/chat";
 import type {
   SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
@@ -386,6 +387,38 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         { settleOverride: override },
         appliedToAll,
       ));
+    },
+    /**
+     * Work-board drag. No optimistic patch: a move writes several lifecycle
+     * columns at once (and one of them raises the attention hand), so the honest
+     * thing is to let the authoritative row land rather than guess at six
+     * columns from the target column alone.
+     */
+    moveOnBoard: async (
+      sessionId: string,
+      to: WorkBoardMoveTarget,
+      pin?: RuntimePinArg,
+    ) => {
+      assertWebRuntimePinRoutable("sessions.moveOnBoard", pin, infra);
+      assertLifecycleAvailable("session.moveOnBoard");
+      const result = await commands.call<unknown>(
+        "session.moveOnBoard",
+        { sessionId, to },
+        { fallback: null, idempotent: false },
+      );
+      notifySessionsChanged([sessionId]);
+      return result;
+    },
+    undoBoardMove: async (sessionId: string, moveId: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.undoBoardMove", pin, infra);
+      assertLifecycleAvailable("session.undoBoardMove");
+      const result = await commands.call<unknown>(
+        "session.undoBoardMove",
+        { sessionId, moveId },
+        { fallback: null, idempotent: false },
+      );
+      notifySessionsChanged([sessionId]);
+      return result;
     },
     clearWokeMarker: async (sessionId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.clearWokeMarker", pin, infra);

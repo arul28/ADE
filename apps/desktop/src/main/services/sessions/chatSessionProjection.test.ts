@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary, TerminalSessionSummary } from "../../../shared/types";
-import { projectChatOntoSession } from "./chatSessionProjection";
+import {
+  projectChatOntoSession,
+  projectChatSummariesOntoSessions,
+} from "./chatSessionProjection";
 
 function session(): TerminalSessionSummary {
   return {
@@ -45,6 +48,30 @@ function chat(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessio
 }
 
 describe("chatSessionProjection", () => {
+  it("stamps provider_structured only when it can name the card", () => {
+    const projected = projectChatOntoSession(session(), chat({ awaitingInput: true, pendingInputItemId: "item-7" }));
+    expect(projected.pendingInputItemId).toBe("item-7");
+    expect(projected.attentionSource).toBe("provider_structured");
+  });
+
+  it("never manufactures a Needs you with a null pending item id", () => {
+    // `canonicalSessionState` treats `provider_structured` as a needs-you
+    // trigger in its own right, so stamping it with no item id creates a card
+    // that names nothing: there is no request to answer, and answering the one
+    // that just settled cannot clear it. That is the stuck "Needs you".
+    const projected = projectChatOntoSession(session(), chat({ awaitingInput: true }));
+    expect(projected.pendingInputItemId).toBeNull();
+    expect(projected.attentionSource).toBeUndefined();
+  });
+
+  it("leaves a non-structured attention source alone when there is no item id", () => {
+    // An `ade chat ask` escalation is a different source and a different claim;
+    // the projection must not overwrite it just because awaitingInput is set.
+    const row = { ...session(), attentionSource: "agent_explicit" as const };
+    const projected = projectChatOntoSession(row, chat({ awaitingInput: true }));
+    expect(projected.attentionSource).toBe("agent_explicit");
+  });
+
   it("projects current plan mode without changing idle chat lifecycle", () => {
     const projected = projectChatOntoSession(session(), chat({
       interactionMode: "plan",
@@ -143,5 +170,78 @@ describe("chatSessionProjection", () => {
       fromModelId: "anthropic/claude-sonnet-5",
       toModelId: "openai/gpt-5.4",
     }]);
+  });
+});
+
+describe("chatSessionProjection — identity lineage (U8)", () => {
+  /** A terminal row for a spawned chat. Lineage lives on the CHAT summary, not
+   *  here — the terminal row is what the projection writes onto. */
+  function child(id: string): TerminalSessionSummary {
+    return { ...session(), id, title: id };
+  }
+
+  it("stamps parentIdentityKey on a child whose orchestration parent is the CTO", () => {
+    const sessions = [
+      { ...session(), id: "cto-session", title: "CTO" },
+      child("child-of-cto"),
+      child("child-of-chat"),
+      { ...session(), id: "plain-chat", title: "Plain chat" },
+    ];
+    const chats: AgentChatSessionSummary[] = [
+      chat({ sessionId: "cto-session", identityKey: "cto" }),
+      chat({ sessionId: "plain-chat" }),
+      chat({ sessionId: "child-of-cto", orchestrationParentSessionId: "cto-session", spawnKind: "subagent" }),
+      chat({ sessionId: "child-of-chat", orchestrationParentSessionId: "plain-chat", spawnKind: "subagent" }),
+    ];
+
+    const projected = projectChatSummariesOntoSessions(sessions, chats);
+    const byId = new Map(projected.map((s) => [s.id, s]));
+
+    // The identity row itself is still filtered out of the roster — that is
+    // precisely why the child has to be told who its parent is.
+    expect(byId.has("cto-session")).toBe(false);
+    expect(byId.get("child-of-cto")?.parentIdentityKey).toBe("cto");
+    // An ordinary chat parent stamps nothing: absent is the single no-op value.
+    expect("parentIdentityKey" in (byId.get("child-of-chat") ?? {})).toBe(false);
+    expect("parentIdentityKey" in (byId.get("plain-chat") ?? {})).toBe(false);
+  });
+
+  it("stamps nothing when the parent is not in the projected chat set", () => {
+    // A reparented or deleted parent must not leave a stale CTO claim behind.
+    const projected = projectChatSummariesOntoSessions(
+      [child("orphan")],
+      [chat({ sessionId: "orphan", orchestrationParentSessionId: "gone" })],
+    );
+    expect("parentIdentityKey" in (projected[0] ?? {})).toBe(false);
+  });
+
+  it("never stamps the key without a parent id", () => {
+    // The field is a claim ABOUT a parent; the two travel together or not at all.
+    const projected = projectChatOntoSession(session(), chat(), "cto");
+    expect("parentIdentityKey" in projected).toBe(false);
+  });
+});
+
+describe("chatSessionProjection — model", () => {
+  it("projects the model and canonical id onto the terminal row", () => {
+    const projected = projectChatOntoSession(session(), chat({
+      model: "openai/gpt-5.6-sol",
+      modelId: "openai/gpt-5.6-sol",
+    }));
+    expect(projected.model).toBe("openai/gpt-5.6-sol");
+    expect(projected.modelId).toBe("openai/gpt-5.6-sol");
+  });
+
+  it("leaves both absent when the provider reported nothing usable", () => {
+    // "We do not know" and "no model" have to be the SAME value on the row, or
+    // every display site has to re-test for an empty string.
+    const blank = projectChatOntoSession(session(), chat({ model: "   " }));
+    expect("model" in blank).toBe(false);
+    expect("modelId" in blank).toBe(false);
+  });
+
+  it("trims a padded model ref rather than passing the padding on", () => {
+    const projected = projectChatOntoSession(session(), chat({ model: "  claude-opus-5  " }));
+    expect(projected.model).toBe("claude-opus-5");
   });
 });

@@ -296,3 +296,228 @@ final class WorkAssistantRenderingTests: XCTestCase {
     XCTAssertFalse(rendered.contains { if case .assistantMonospaced = $0.payload { return true }; return false }, file: file, line: line)
   }
 }
+
+/// The lane→PR gate `WorkSessionDestinationView` reads before it resolves a PR
+/// or hands a badge to the chat view. CTO reuses that destination with a
+/// synthetic lane id, so the gate — not `showsLaneActions` alone — is what keeps
+/// the project's primary-lane PR out of the CTO composer.
+final class WorkChatLanePrPolicyTests: XCTestCase {
+  /// A resolved primary-lane PR, i.e. exactly what the CTO chat used to inherit.
+  private func makeTag() -> LanePrTag {
+    LanePrTag(
+      source: .ade,
+      prId: "pr-1",
+      githubPrNumber: 1235,
+      githubUrl: "https://github.com/example/ade/pull/1235",
+      title: "Mobile sync host recovery",
+      state: "open",
+      headBranch: "ade/8eab2d87",
+      updatedAt: "2026-09-11T00:00:00.000Z"
+    )
+  }
+
+  func testCtoConfigurationResolvesNoLanePr() {
+    let policy = WorkChatLanePrPolicy(showsLaneActions: false)
+    XCTAssertFalse(policy.resolvesLanePr)
+    XCTAssertFalse(policy.rendersPrBadge)
+  }
+
+  func testLaneBackedChatResolvesAndRendersLanePr() {
+    let policy = WorkChatLanePrPolicy(showsLaneActions: true)
+    XCTAssertTrue(policy.resolvesLanePr)
+    XCTAssertTrue(policy.rendersPrBadge)
+  }
+
+  func testSubagentTranscriptRendersNoBadgeButStillResolves() {
+    let policy = WorkChatLanePrPolicy(showsLaneActions: true, viewingSubagent: true)
+    XCTAssertTrue(policy.resolvesLanePr)
+    XCTAssertFalse(policy.rendersPrBadge)
+  }
+
+  /// The composer badge input itself: even when a lane PR is somehow in state,
+  /// a lane-action-free chat passes `nil` to `WorkChatSessionView`.
+  func testCtoConfigurationPassesNoPrBadgeEvenWithAResolvedTag() {
+    let tag = makeTag()
+    let ctoPolicy = WorkChatLanePrPolicy(showsLaneActions: false)
+    let ctoBadge = ctoPolicy.rendersPrBadge ? workChatPrBadgeModel(tag: tag, pr: nil) : nil
+    XCTAssertNil(ctoBadge)
+
+    let lanePolicy = WorkChatLanePrPolicy(showsLaneActions: true)
+    let laneBadge = lanePolicy.rendersPrBadge ? workChatPrBadgeModel(tag: tag, pr: nil) : nil
+    XCTAssertEqual(laneBadge?.title, "Mobile sync host recovery")
+  }
+}
+
+/// The CTO composer's send-mode filter (`workChatActiveSendCapability`). The
+/// host caps the identity session's steer queue at zero and rewrites a queued
+/// delivery into the provider's first live-redirect mode, so offering "send
+/// after turn" there would promise a wait that never happens. Desktop applies
+/// the same filter in `AgentChatComposer.tsx`; these pin the iOS half, and the
+/// unchanged half for every ordinary chat that shares this composer.
+final class WorkChatActiveSendCapabilityTests: XCTestCase {
+  func testCtoSurfaceOffersNoQueueModeForEveryEligibleProvider() {
+    // Read off the eligibility contract rather than restating the list.
+    for provider in ctoLiveRedirectProviders {
+      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      XCTAssertFalse(capability.modes.contains(.queue), "expected \(provider) CTO menu to drop queue")
+      XCTAssertFalse(capability.modes.isEmpty, "expected \(provider) CTO menu to keep a live-redirect mode")
+    }
+  }
+
+  func testCtoSurfaceKeepsExactlyTheLiveRedirectModesInMenuOrder() {
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true).modes,
+      [.inline, .interrupt]
+    )
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true).modes,
+      [.inline]
+    )
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes,
+      [.interrupt]
+    )
+  }
+
+  /// The primary send button labels itself with `defaultMode`, so a queue
+  /// default would name a mode the caret menu no longer lists.
+  func testCtoDefaultModeIsNeverQueue() {
+    for provider in ctoLiveRedirectProviders {
+      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      XCTAssertNotEqual(capability.defaultMode, .queue, "expected \(provider) CTO default to redirect")
+      XCTAssertEqual(capability.defaultMode, capability.modes.first)
+    }
+  }
+
+  /// Family collapse still applies: a CTO session labelled `claude-code` or
+  /// `cursor-agent` must not fall through to the queue-only default arm.
+  func testCtoSurfaceNormalizesProviderFamilyAliases() {
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "claude-code", liveRedirectOnly: true).modes,
+      [.inline, .interrupt]
+    )
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "cursor-agent", liveRedirectOnly: true).modes,
+      [.interrupt]
+    )
+  }
+
+  /// Copy and interrupt wording are untouched by the filter — only the menu
+  /// contents change.
+  func testCtoSurfaceKeepsAgentLabelAndInterruptWording() {
+    let cursor = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true)
+    XCTAssertEqual(cursor.agentLabel, "Cursor")
+    XCTAssertTrue(cursor.interruptContinues)
+
+    let claude = workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true)
+    XCTAssertEqual(claude.agentLabel, "Claude")
+    XCTAssertFalse(claude.interruptContinues)
+  }
+
+  /// The regression guard that matters most: this composer is every chat on the
+  /// phone, so an ordinary chat must see the provider table verbatim — here an
+  /// inline-capable provider and a queue-only one.
+  func testOrdinaryChatKeepsEveryProviderMenuUnchanged() {
+    for provider in ["claude", "codex", "cursor", "claude-code", "qwen", "kimi", "grok", "copilot", "droid"] {
+      XCTAssertEqual(
+        workChatActiveSendCapability(provider: provider, liveRedirectOnly: false),
+        WorkActiveSendCapability.forProvider(provider),
+        "expected \(provider) to keep its unfiltered menu outside the CTO"
+      )
+    }
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false).modes,
+      [.inline, .queue, .interrupt]
+    )
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "qwen", liveRedirectOnly: false).modes,
+      [.queue]
+    )
+  }
+
+  /// Safety rule, mirrored from desktop: filtering must never empty the menu.
+  /// No CTO-eligible provider is queue-only today, so this is unreachable in
+  /// the product — but an empty send menu is a dead end and must stay
+  /// impossible if some other caller ever sets the flag.
+  func testQueueOnlyProviderKeepsItsRealMenuUnderTheCtoFilter() {
+    for provider in ["qwen", "kimi", "grok", "copilot", "droid"] {
+      let filtered = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      XCTAssertEqual(filtered, WorkActiveSendCapability.forProvider(provider), "expected \(provider) menu kept")
+      XCTAssertFalse(filtered.modes.isEmpty, "expected \(provider) menu to stay non-empty")
+    }
+  }
+
+  /// The composer hides the picker for a single-mode provider, so the CTO on
+  /// Codex or Cursor gets a plain send button rather than a one-item menu,
+  /// while Claude keeps a real two-way choice.
+  func testCtoPickerRemainsAChoiceOnlyWhereMoreThanOneModeSurvives() {
+    XCTAssertEqual(workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true).modes.count, 2)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true).modes.count, 1)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes.count, 1)
+  }
+
+  // MARK: - Work-board move (chat side)
+
+  /// The host writes the board-drag nudge as a `user_message`. Rendering it as
+  /// a user bubble would put words in the user's mouth they never typed — the
+  /// same rule desktop's `AgentChatMessageList` states — so the parser has to
+  /// lift it out of the user-message path entirely.
+  func testBoardMoveArrivesAsANoticeRatherThanAUserBubble() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-12T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"The user moved this to Done on the board.","turnId":"turn-1","metadata":{"boardMove":{"from":"needs_you","to":"done","at":"2026-09-12T00:00:01.000Z","moveId":"move-1"}}}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+    guard case .systemNotice(let kind, let message, let detail, _, _) = transcript[0].event else {
+      return XCTFail("expected a system notice, got \(transcript[0].event)")
+    }
+    XCTAssertEqual(kind, "board_move")
+    // The EXACT sentence the agent received, so the phone and the agent cannot
+    // be told two different things.
+    XCTAssertEqual(message, "The user moved this to Done on the board.")
+    // Columns pass through raw; only the card turns them into words.
+    XCTAssertEqual(detail, "needs_you|done")
+  }
+
+  /// An ordinary user message must be unaffected — the lift is keyed to the
+  /// `boardMove` marker and nothing else.
+  func testPlainUserMessageStillRendersAsAUserMessage() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-12T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"ship it","turnId":"turn-1"}}
+    """
+    guard case .userMessage(let text, _, _, _, _, _) = parseWorkChatTranscript(raw)[0].event else {
+      return XCTFail("expected a user message")
+    }
+    XCTAssertEqual(text, "ship it")
+  }
+
+  /// The card reads the way the board header reads: labels, never wire ids.
+  func testBoardMoveCardNamesColumnsTheWayTheBoardDoes() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-12T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"The user moved this to Done on the board.","turnId":"turn-1","metadata":{"boardMove":{"from":"needs_you","to":"done","at":"2026-09-12T00:00:01.000Z","moveId":"move-1"}}}}
+    """
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let cards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
+      return card.title == "Moved on the board" ? card : nil
+    }
+    XCTAssertEqual(cards.count, 1, "expected exactly one board-move card")
+    XCTAssertEqual(cards.first?.metadata, ["Needs you → Done"])
+    XCTAssertEqual(cards.first?.body, "The user moved this to Done on the board.")
+    // A move card is identity for an action the user took, not an alarm.
+    XCTAssertEqual(cards.first?.tint, ColorToken.secondary)
+  }
+
+  /// A host that names a column this build has never heard of should still be
+  /// legible: the raw id is the fallback, not a blank or a guess.
+  func testUnknownBoardColumnFallsBackToItsRawId() {
+    XCTAssertEqual(workBoardColumnLabel("needs_you"), "Needs you")
+    XCTAssertEqual(workBoardColumnLabel("waiting"), "Waiting")
+    XCTAssertEqual(workBoardColumnLabel("blocked"), "blocked")
+  }
+}

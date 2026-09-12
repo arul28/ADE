@@ -110,7 +110,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   // visibility overlay, not a phase — see tuiClient/sessionLifecycle.ts.
   // The bare group name is registered so submitting it prints usage instead of
   // leaking "/session" into the chat as a message.
-  { name: "/session", description: "Run a session lifecycle command", placement: "right", argumentHint: "<snooze|wake|settle|unsettle|keep-active|demote|promote>", category: "Chats" },
+  { name: "/session", description: "Run a session lifecycle command", placement: "right", argumentHint: "<snooze|wake|settle|unsettle|keep-active|demote|promote|move>", category: "Chats" },
   { name: "/session snooze", description: "Snooze a session out of the Activity list until a deadline", placement: "right", argumentHint: "[session-id] [30m|1h|4h|1d]", category: "Chats" },
   { name: "/session wake", description: "Wake a snoozed session back into the Activity list", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session settle", description: "Mark a session settled", placement: "right", argumentHint: "[session-id] [outcome]", category: "Chats" },
@@ -118,6 +118,12 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/session keep-active", description: "Pin a session active against a later settle", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session demote", description: "Take over a subagent so it stops reporting to its parent", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session promote", description: "Restore a peer as a subagent so it reports to its parent again", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  // The board itself is a desktop view — three columns of cards do not belong
+  // in a 38-column pane — but the MOVE is a one-verb state change on a session,
+  // exactly the shape of the verbs above, and it is the only way to file a row
+  // from a terminal. The confirmation is one line, so nothing here has to
+  // render a column.
+  { name: "/session move", description: "File a session under a Work-board column", placement: "right", argumentHint: "[session-id] <needs-you|working|done>", category: "Chats" },
   { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"], category: "Model" },
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List Claude plugins, or reload / run native plugin args", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },

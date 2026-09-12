@@ -500,12 +500,12 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(byLane.first?.sessions.map(\.id), ["s-1"])
   }
 
-  // MARK: - Finished is not "Your move"
+  // MARK: - Finished is not "Needs you"
 
   /// Ready and idle are emerald "Done" — finished, unseen. Filing them under
-  /// the amber "Your move" header is the exact confusion the shared vocabulary
+  /// the amber "Needs you" header is the exact confusion the shared vocabulary
   /// exists to kill: amber must mean a session blocked on the user, nothing else.
-  func testReadyAndIdleLandInDoneAndNeedsYouStaysInYourMove() {
+  func testReadyAndIdleLandInDoneAndNeedsYouHoldsOnlyARaisedHand() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
       sessions: [
@@ -526,22 +526,38 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(sessionIdsBySectionId["status:done"]?.sorted(), ["s-idle", "s-ready"])
   }
 
-  /// Done sits between the row that wants you and the rows that are over.
-  func testDoneIsOrderedAfterYourMoveAndBeforeEnded() {
+  /// The section order is the chip order: what wants you, what is working, what
+  /// is blocked on neither, then what is over. `status:ended` is gone — it was
+  /// merged into `status:done`, which now holds every outcome, so a "Done" chip
+  /// no longer scatters its rows across two headers.
+  func testSectionsAreOrderedAndNamedLikeTheChips() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
+    let ciLane = makeLane(id: "lane-ci", name: "ci")
     let presentation = makePresentation(
       sessions: [
         makeSession(id: "s-needs-you", laneId: lane.id, pendingInputItemId: "item-1"),
+        makeSession(id: "s-working", laneId: lane.id),
+        makeSession(id: "s-ci-blocked", laneId: ciLane.id),
         makeSession(id: "s-ready", laneId: lane.id, runtimeState: "idle"),
         makeSession(id: "s-ended", laneId: lane.id, toolType: "codex", status: "detached", runtimeState: "exited"),
       ],
-      lanes: [lane],
+      lanes: [lane, ciLane],
+      pullRequests: [makePr(id: "pr-ci", lane: ciLane, checksStatus: "pending")],
       organization: .byStatus
     )
 
     XCTAssertEqual(
       presentation.sessionGroups.map(\.id),
-      ["status:awaiting", "status:done", "status:ended"]
+      ["status:awaiting", "status:running", workWaitingSectionId, "status:done"]
+    )
+    XCTAssertEqual(
+      presentation.sessionGroups.map(\.label),
+      ["Needs you", "Working", "Waiting", "Done"]
+    )
+    XCTAssertEqual(
+      presentation.sessionGroups.last?.sessions.map(\.id).sorted(),
+      ["s-ended", "s-ready"],
+      "the merged Done section holds both what finished and what is over"
     )
   }
 
@@ -585,13 +601,434 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(banners.map(\.id), ["studio"])
   }
 
+  // MARK: - Status chips: the board's four columns
+
+  /// The contract the chips inherit from the desktop board: Needs you /
+  /// Working / Waiting / Done are a PARTITION of the non-archived list. No row
+  /// may answer to two chips, and none may fall through all four.
+  func testStatusChipsPartitionTheWorkList() {
+    let plainLane = makeLane(id: "lane-plain", name: "plain")
+    let ciLane = makeLane(id: "lane-ci", name: "ci")
+    let sessions = [
+      makeSession(id: "s-needs-you", laneId: plainLane.id, pendingInputItemId: "input-1"),
+      makeSession(id: "s-working", laneId: plainLane.id),
+      makeSession(id: "s-ci-blocked", laneId: ciLane.id),
+      makeSession(
+        id: "s-snoozed",
+        laneId: plainLane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60))
+      ),
+      makeSession(
+        id: "s-snoozed-needs-you",
+        laneId: plainLane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60)),
+        pendingInputItemId: "input-2"
+      ),
+      makeSession(id: "s-ended", laneId: plainLane.id, toolType: "shell", status: "ended", runtimeState: "exited"),
+      makeSession(id: "s-settled", laneId: plainLane.id, settledAt: iso(now.addingTimeInterval(-60))),
+    ]
+    let reasons = workLaneWaitingReasonByLaneId(
+      lanes: [plainLane, ciLane],
+      pullRequests: [makePr(id: "pr-ci", lane: ciLane, checksStatus: "pending")]
+    )
+
+    let buckets = [
+      WorkSessionStatusFilter.needsYou,
+      .working,
+      .waiting,
+      .done,
+    ].map { status in
+      Set(filteredIds(sessions, status: status, laneWaitingReasons: reasons))
+    }
+
+    for (index, bucket) in buckets.enumerated() {
+      for other in buckets[(index + 1)...] {
+        XCTAssertTrue(
+          bucket.isDisjoint(with: other),
+          "A session answered to two chips: \(bucket.intersection(other))"
+        )
+      }
+    }
+    XCTAssertEqual(
+      buckets.reduce(into: Set<String>()) { $0.formUnion($1) },
+      Set(sessions.map(\.id)),
+      "Every non-archived session belongs to exactly one chip"
+    )
+  }
+
+  /// Waiting is assembled first, from the two things that block a row on
+  /// neither you nor the agent: a snooze, and a live lane PR still on CI.
+  func testWaitingChipHoldsSnoozedAndPrBlockedSessions() {
+    let plainLane = makeLane(id: "lane-plain", name: "plain")
+    let ciLane = makeLane(id: "lane-ci", name: "ci")
+    let sessions = [
+      makeSession(id: "s-working", laneId: plainLane.id),
+      makeSession(id: "s-ci-blocked", laneId: ciLane.id),
+      makeSession(
+        id: "s-snoozed",
+        laneId: plainLane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60))
+      ),
+    ]
+    let reasons = workLaneWaitingReasonByLaneId(
+      lanes: [plainLane, ciLane],
+      pullRequests: [makePr(id: "pr-ci", lane: ciLane, checksStatus: "pending")]
+    )
+
+    XCTAssertEqual(
+      Set(filteredIds(sessions, status: .waiting, laneWaitingReasons: reasons)),
+      ["s-snoozed", "s-ci-blocked"]
+    )
+    XCTAssertEqual(
+      filteredIds(sessions, status: .working, laneWaitingReasons: reasons),
+      ["s-working"],
+      "Working is what is LEFT of the running set once Waiting is taken out"
+    )
+  }
+
+  /// With no PRs loaded the lane map is empty, which must read as "no PR wait
+  /// known" and leave every running row in Working — never as a wait.
+  func testWaitingChipFallsBackToSnoozeOnlyWithoutPrs() {
+    let lane = makeLane(id: "lane-plain", name: "plain")
+    let sessions = [
+      makeSession(id: "s-working", laneId: lane.id),
+      makeSession(
+        id: "s-snoozed",
+        laneId: lane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60))
+      ),
+    ]
+
+    XCTAssertEqual(filteredIds(sessions, status: .waiting), ["s-snoozed"])
+    XCTAssertEqual(filteredIds(sessions, status: .working), ["s-working"])
+  }
+
+  /// The snooze overlay yields to a raised hand, exactly as the filing rule
+  /// does — otherwise an "until I'm asked" snooze buries the row asking.
+  func testNeedsYouOutranksSnoozeInTheChips() {
+    let lane = makeLane(id: "lane-plain", name: "plain")
+    let sessions = [
+      makeSession(
+        id: "s-snoozed-needs-you",
+        laneId: lane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60)),
+        pendingInputItemId: "input-1"
+      ),
+    ]
+
+    XCTAssertEqual(filteredIds(sessions, status: .needsYou), ["s-snoozed-needs-you"])
+    XCTAssertTrue(filteredIds(sessions, status: .waiting).isEmpty)
+  }
+
+  /// Done is ended PLUS settled, the same pair the desktop column holds.
+  func testDoneChipHoldsEndedAndSettledSessions() {
+    let lane = makeLane(id: "lane-plain", name: "plain")
+    let sessions = [
+      // A chat that merely stopped rests at `ready`; a standalone shell is the
+      // row that actually reaches the ended phase.
+      makeSession(id: "s-ended", laneId: lane.id, toolType: "shell", status: "ended", runtimeState: "exited"),
+      makeSession(id: "s-settled", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+      makeSession(id: "s-working", laneId: lane.id),
+    ]
+
+    XCTAssertEqual(Set(filteredIds(sessions, status: .done)), ["s-ended", "s-settled"])
+  }
+
+  /// `workLanePrWaitingReason` against the desktop rules verbatim: only a live
+  /// PR waits, `pending` outranks a review request, and `none`/`not_run`/
+  /// `failing` are not waits at all.
+  func testLanePrWaitingReasonMirrorsDesktopRules() {
+    let lane = makeLane(id: "lane-ci", name: "ci")
+    func reason(
+      state: String = "open",
+      checks: String = "none",
+      review: String = "none"
+    ) -> WorkBoardWaitingReason? {
+      workLanePrWaitingReason([
+        makePr(id: "pr-1", lane: lane, state: state, checksStatus: checks, reviewStatus: review)
+      ])
+    }
+
+    XCTAssertNil(workLanePrWaitingReason([]))
+    XCTAssertEqual(reason(checks: "pending"), .ci)
+    XCTAssertEqual(reason(review: "requested"), .review)
+    XCTAssertEqual(reason(checks: "pending", review: "requested"), .ci, "CI outranks a review request")
+    XCTAssertEqual(reason(state: "draft", checks: "pending"), .ci, "A draft PR is still live")
+    XCTAssertNil(reason(state: "merged", checks: "pending"), "A merged PR's checks are history")
+    XCTAssertNil(reason(state: "closed", review: "requested"))
+    XCTAssertNil(reason(checks: "none"))
+    XCTAssertNil(reason(checks: "not_run"))
+    XCTAssertNil(reason(checks: "failing"), "Failing is the agent's problem, not a wait")
+  }
+
+  /// The lane map matches PRs the way the lane's own chip does: same branch,
+  /// same lane, and never a row detached from its deleted lane.
+  func testLaneWaitingReasonIgnoresForeignAndDetachedPrs() {
+    let lane = makeLane(id: "lane-ci", name: "ci")
+    let otherLane = makeLane(id: "lane-other", name: "other")
+
+    XCTAssertEqual(
+      workLaneWaitingReasonByLaneId(
+        lanes: [lane, otherLane],
+        pullRequests: [makePr(id: "pr-1", lane: otherLane, checksStatus: "pending")]
+      ),
+      [otherLane.id: .ci]
+    )
+    XCTAssertTrue(
+      workLaneWaitingReasonByLaneId(
+        lanes: [lane],
+        pullRequests: [
+          makePr(
+            id: "pr-detached",
+            lane: lane,
+            checksStatus: "pending",
+            detached: PrDetachedLane(at: iso(now), laneName: lane.name, laneColor: nil, chats: 0, artifacts: 0, checkpoints: 0)
+          )
+        ]
+      ).isEmpty
+    )
+  }
+
+  /// The chip raw values are persisted per project+host, so they are wire
+  /// values, and the case names are not. `needsYou`/`working`/`done` are board
+  /// vocabulary on cases whose raw values must still be byte-identical to the
+  /// `needsInput`/`running`/`ended` already sitting in every saved view state —
+  /// a changed raw value would decode as nil and silently reset the view.
+  func testPersistedStatusFilterRawValuesSurviveTheRename() {
+    XCTAssertEqual(
+      WorkSessionStatusFilter.allCases.map(\.rawValue),
+      ["all", "needsInput", "running", "waiting", "ended", "archived"]
+    )
+    XCTAssertEqual(WorkSessionStatusFilter.needsYou.rawValue, "needsInput")
+    XCTAssertEqual(WorkSessionStatusFilter.working.rawValue, "running")
+    XCTAssertEqual(WorkSessionStatusFilter.done.rawValue, "ended")
+
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "needsInput"), .needsYou)
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "needsInput")?.title, "Needs you")
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "running"), .working)
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "running")?.title, "Working")
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "ended"), .done)
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "ended")?.title, "Done")
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "waiting"), .waiting)
+
+    // The decode WorkRootScreen performs on the stored view state.
+    XCTAssertNil(WorkSessionStatusFilter(rawValue: "live"))
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: "live") ?? .all, .all)
+    // Every case name is also a non-value on the wire: a build that wrote the
+    // Swift spelling instead of the raw value must not decode.
+    for caseName in ["needsYou", "working", "done"] {
+      XCTAssertNil(
+        WorkSessionStatusFilter(rawValue: caseName),
+        "\(caseName) is a case name, never a persisted value"
+      )
+      XCTAssertEqual(WorkSessionStatusFilter(rawValue: caseName) ?? .all, .all)
+    }
+    XCTAssertEqual(WorkSessionStatusFilter(rawValue: WorkProjectViewState.empty.statusFilter), .all)
+  }
+
+  func testWaitingEmptyStateNamesWhatWouldHaveBeenThere() {
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .waiting, searchText: "", hasFilters: true),
+      "Nothing is waiting"
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateMessage(status: .waiting, searchText: "", hasFilters: true, isLive: true),
+      "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .working, searchText: "", hasFilters: true),
+      "Nothing is working"
+    )
+  }
+
+  // MARK: - The chips and the section headers are ONE partition
+
+  /// The chip you tap and the header its rows land under must be the same four
+  /// buckets with the same four words.
+  ///
+  /// They were not. The "Done" chip selected `failed|stopped|ended|settled`
+  /// while the sections it filed into were a different split — a header called
+  /// "Done" holding `ready|idle|settled` and one called "Ended" holding
+  /// `failed|stopped|ended` — so tapping Done scattered its own rows across two
+  /// differently-named headers, and the "Done" header additionally held resting
+  /// rows the Done chip never selected.
+  func testStatusSectionsAndChipsNameTheSameFourThings() {
+    let plainLane = makeLane(id: "lane-plain", name: "plain")
+    let ciLane = makeLane(id: "lane-ci", name: "ci")
+    let sessions = [
+      makeSession(id: "s-needs-you", laneId: plainLane.id, pendingInputItemId: "input-1"),
+      makeSession(id: "s-working", laneId: plainLane.id),
+      makeSession(id: "s-ci-blocked", laneId: ciLane.id),
+      makeSession(
+        id: "s-snoozed",
+        laneId: plainLane.id,
+        snoozedUntil: iso(now.addingTimeInterval(3600)),
+        snoozedAt: iso(now.addingTimeInterval(-60))
+      ),
+      // The two resting phases, which is where the chip and the header used to
+      // disagree: a chat between turns is `ready`, an idle CLI is `idle`.
+      makeSession(id: "s-ready", laneId: plainLane.id, toolType: "claude-chat", status: "completed", runtimeState: "idle"),
+      makeSession(id: "s-idle", laneId: plainLane.id, toolType: "shell", status: "running", runtimeState: "idle"),
+      makeSession(id: "s-ended", laneId: plainLane.id, toolType: "shell", status: "ended", runtimeState: "exited"),
+      makeSession(id: "s-settled", laneId: plainLane.id, settledAt: iso(now.addingTimeInterval(-60))),
+    ]
+    let reasons = workLaneWaitingReasonByLaneId(
+      lanes: [plainLane, ciLane],
+      pullRequests: [makePr(id: "pr-ci", lane: ciLane, checksStatus: "pending")]
+    )
+
+    // Called directly rather than through `workSessionGroups`, which lifts
+    // snoozed and settled rows onto the quiet shelves ahead of every
+    // organization. This is the by-status partition itself.
+    let groups = workSessionGroupsByStatus(
+      sessions: sessions,
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      laneWaitingReasonByLaneId: reasons,
+      now: now
+    )
+
+    XCTAssertEqual(
+      groups.map(\.label),
+      ["Needs you", "Working", "Waiting", "Done"],
+      "Four sections, in the chips' order and in the chips' words — no 'Ended', no 'Your move'"
+    )
+
+    let chips: [WorkSessionStatusFilter] = [.needsYou, .working, .waiting, .done]
+    for chip in chips {
+      let section = groups.first { $0.label == chip.title }
+      XCTAssertEqual(
+        section?.sessions.map(\.id).sorted(),
+        filteredIds(sessions, status: chip, laneWaitingReasons: reasons).sorted(),
+        "The \(chip.title) header must hold exactly what the \(chip.title) chip selects"
+      )
+    }
+
+    // The specific rows the two sides used to file differently.
+    XCTAssertEqual(
+      Set(groups.first { $0.label == "Done" }?.sessions.map(\.id) ?? []),
+      ["s-ready", "s-idle", "s-ended", "s-settled"],
+      "A resting chat is a finished outcome — the same emerald Done the row badge shows"
+    )
+    XCTAssertEqual(
+      groups.first { $0.label == "Needs you" }?.sessions.map(\.id),
+      ["s-needs-you"],
+      "Amber stays reserved for a row actually blocked on the user"
+    )
+  }
+
+  /// The four words come from one place each, so a chip and its header cannot
+  /// drift apart again: three borrow `ActivityBand.title`, the shared Swift
+  /// spelling of the board columns, and Waiting — the one column that band has
+  /// no case for — is spelled exactly once.
+  func testStatusChipTitlesComeFromTheSharedBandVocabulary() {
+    XCTAssertEqual(WorkSessionStatusFilter.needsYou.title, ActivityBand.needsYou.title)
+    XCTAssertEqual(WorkSessionStatusFilter.working.title, ActivityBand.working.title)
+    XCTAssertEqual(WorkSessionStatusFilter.done.title, ActivityBand.done.title)
+    XCTAssertEqual(WorkSessionStatusFilter.waiting.title, "Waiting")
+    XCTAssertEqual(
+      Set([
+        WorkSessionStatusFilter.needsYou.title,
+        WorkSessionStatusFilter.working.title,
+        WorkSessionStatusFilter.waiting.title,
+        WorkSessionStatusFilter.done.title,
+      ]).count,
+      4,
+      "four distinct words for four distinct buckets"
+    )
+  }
+
+  /// Every canonical phase answers to exactly one of the three phase-derived
+  /// chips — the totality the two old switches each had to maintain separately.
+  func testEveryPhaseFilesUnderExactlyOnePhaseDerivedChip() {
+    let phases: [CanonicalSessionPhase] = [
+      .starting, .running, .needsYou, .failed, .stale, .ready, .idle, .stopped, .ended, .settled,
+    ]
+    let phaseDerivedChips: [WorkSessionStatusFilter] = [.needsYou, .working, .done]
+    for phase in phases {
+      let chip = workStatusFilterPartition(phase: phase)
+      XCTAssertTrue(
+        phaseDerivedChips.contains(chip),
+        "\(phase) filed under \(chip.title), which is not a phase-derived chip"
+      )
+    }
+    XCTAssertEqual(workStatusFilterPartition(phase: .needsYou), .needsYou)
+    XCTAssertEqual(workStatusFilterPartition(phase: .stale), .working)
+    XCTAssertEqual(workStatusFilterPartition(phase: .ready), .done)
+    XCTAssertEqual(workStatusFilterPartition(phase: .idle), .done)
+    XCTAssertEqual(workStatusFilterPartition(phase: .failed), .done)
+  }
+
   // MARK: - Fixtures
+  private func filteredIds(
+    _ sessions: [TerminalSessionSummary],
+    status: WorkSessionStatusFilter,
+    laneWaitingReasons: [String: WorkBoardWaitingReason] = [:]
+  ) -> [String] {
+    workFilteredSessions(
+      sessions,
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      selectedStatus: status,
+      selectedLaneId: "all",
+      searchText: "",
+      laneWaitingReasonByLaneId: laneWaitingReasons,
+      now: now
+    ).map(\.id)
+  }
+
+  private func makePr(
+    id: String,
+    lane: LaneSummary,
+    state: String = "open",
+    checksStatus: String = "none",
+    reviewStatus: String = "none",
+    detached: PrDetachedLane? = nil
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: lane.id,
+      laneName: lane.name,
+      projectId: "project-1",
+      repoOwner: "arul",
+      repoName: "ade",
+      githubPrNumber: 1,
+      githubUrl: "https://github.com/arul/ade/pull/1",
+      title: "PR",
+      state: state,
+      baseBranch: lane.baseRef,
+      headBranch: lane.branchRef,
+      checksStatus: checksStatus,
+      reviewStatus: reviewStatus,
+      additions: 0,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: iso(now.addingTimeInterval(-600)),
+      updatedAt: iso(now.addingTimeInterval(-60)),
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      detached: detached
+    )
+  }
+
 
   private func makePresentation(
     sessions: [TerminalSessionSummary],
     lanes: [LaneSummary],
     pinnedLaneIds: Set<String> = [],
     searchText: String = "",
+    pullRequests: [PullRequestListItem] = [],
     organization: WorkSessionOrganization = .byLane
   ) -> WorkRootSessionPresentation {
     buildWorkRootSessionPresentation(
@@ -604,6 +1041,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       searchText: searchText,
       organization: organization,
       orderedLanes: lanes,
+      pullRequests: pullRequests,
       pinnedLaneIds: pinnedLaneIds,
       now: now
     )

@@ -52,7 +52,11 @@ struct CtoSessionDestinationView: View {
         navigationChrome: navigationChrome,
         showsLaneActions: false,
         navigationTitleOverride: navigationTitle,
-        compactComposer: true
+        compactComposer: true,
+        // The CTO never queues: new input redirects the running turn. The host
+        // enforces this (steer queue cap of zero on the identity session); this
+        // keeps the composer menu from offering a wait it would not honor.
+        liveRedirectOnlySends: true
       )
       .environmentObject(syncService)
     }
@@ -63,7 +67,7 @@ struct CtoSessionDestinationView: View {
       ProgressView()
         .controlSize(.large)
         .tint(ADEColor.ctoAccent)
-      Text("Waking the CTO chat…")
+      Text("Opening the CTO")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
     }

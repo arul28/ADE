@@ -767,8 +767,11 @@ window) — the same replay staged when a wedged thread is recycled.
 actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
-Cursor is likewise the one non-Claude provider that can take a message *during*
-a live turn, and it takes it differently. The SDK has no mid-run message API, so
+Cursor is one of two non-Claude providers that can take a message *during*
+a live turn, and it is the one that takes it by stopping. (Codex is the other,
+and the mirror case: its app-server folds a `turn/steer` request into the
+running turn, so `ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but
+no `interrupt`.) The Cursor SDK has no mid-run message API, so
 `ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`) gives Cursor `interrupt`
 and `queue` but no `inline`: the redirect stops the run, waits for the turn to
 settle, and sends the message as the next turn on the same agent, which keeps

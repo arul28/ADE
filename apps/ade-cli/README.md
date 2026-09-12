@@ -601,6 +601,10 @@ ade chat steer session-id --text "active-turn context" --dispatch interrupt   # 
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
+ade --role cto session move session-id --to done             # file the row under a Work-board column: needs-you|working|done ('needs_you' spelling also accepted)
+                                                            # CTO-only, like every other settle-column writer: a move tells the agent the USER moved it, so a session-bound agent must not move its own card
+                                                            # 'waiting' is refused — a row sits there because it is snoozed or its PR is mid-CI, so it is derived, never a target
+                                                            # reversible for 5s via: ade --role cto actions run session.undoBoardMove --input-json '{"sessionId":"...","moveId":"..."}'
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d
 ade session snooze session-id --until 2026-07-26T18:00:00Z  # explicit ISO-8601 deadline (must be in the future)
 ade session snooze session-id --until-asked                 # open-ended, matching the desktop/iOS "Until I'm asked" preset: only a hand-raise brings it back

@@ -28,6 +28,10 @@ struct WorkModelPickerSheet: View {
   let lanes: [LaneSummary]
   let isBusy: Bool
   let commandScope: WorkModelPickerScope
+  /// Extra per-model gate applied on top of availability scoping. Surfaces with
+  /// a narrower contract than "every configured model" pass one — the CTO only
+  /// accepts providers that can redirect a live turn.
+  let modelFilter: ((WorkModelOption) -> Bool)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -40,6 +44,7 @@ struct WorkModelPickerSheet: View {
     lanes: [LaneSummary] = [],
     commandScope: WorkModelPickerScope = .project,
     isBusy: Bool,
+    modelFilter: ((WorkModelOption) -> Bool)? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
@@ -51,6 +56,7 @@ struct WorkModelPickerSheet: View {
     self.lanes = lanes
     self.commandScope = commandScope
     self.isBusy = isBusy
+    self.modelFilter = modelFilter
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
     _selectedRuntimeProvider = State(initialValue: currentProvider)
@@ -270,7 +276,9 @@ struct WorkModelPickerSheet: View {
   }
 
   private func scopedCatalog(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
-    let availabilityScoped = workFilterCatalogForCursorAvailability(groups, mode: cursorAvailabilityMode)
+    let availabilityScoped = applyModelFilter(
+      workFilterCatalogForCursorAvailability(groups, mode: cursorAvailabilityMode)
+    )
     guard let availableModelIds else { return availabilityScoped }
     let scopedIds = availableModelIds
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -280,6 +288,21 @@ struct WorkModelPickerSheet: View {
     return availabilityScoped.compactMap { group -> WorkModelCatalogGroup? in
       let providers = group.providers.compactMap { provider -> WorkModelProvider? in
         let models = provider.models.filter { matcher.matches($0.id) }
+        guard !models.isEmpty else { return nil }
+        return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
+      }
+      guard !providers.isEmpty else { return nil }
+      return WorkModelCatalogGroup(key: group.key, displayName: group.displayName, providers: providers)
+    }
+  }
+
+  /// Drops models the caller's contract excludes, then the providers and groups
+  /// that end up empty, so the rail never offers a tab with nothing behind it.
+  private func applyModelFilter(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+    guard let modelFilter else { return groups }
+    return groups.compactMap { group -> WorkModelCatalogGroup? in
+      let providers = group.providers.compactMap { provider -> WorkModelProvider? in
+        let models = provider.models.filter(modelFilter)
         guard !models.isEmpty else { return nil }
         return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
       }

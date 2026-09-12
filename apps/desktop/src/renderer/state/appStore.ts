@@ -156,6 +156,17 @@ export type WorkSessionListOrganization =
   | "by-lane"
   | "by-time";
 /**
+ * Which shape the Work tab's session roster is drawn in.
+ *
+ * Deliberately orthogonal to `sessionListOrganization`: the grouping mode says
+ * how the LIST is cut (lane / status / time), and it keeps meaning exactly that
+ * while the board is on — flip back to "list" and you land in the grouping you
+ * left, not in a reset one. Folding the board in as a fourth grouping value
+ * would have destroyed that, and would also have forced every `by-lane` /
+ * `by-time` branch in `SessionListPane` to grow a board case.
+ */
+export type WorkViewMode = "list" | "board";
+/**
  * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
  * resizable split layout. `sessionIds` is the membership (drives the sidebar
  * grid badge); the actual split geometry persists separately under `layoutId`
@@ -189,6 +200,8 @@ export type WorkProjectViewState = {
   search: string;
   /** Session list grouping mode. */
   sessionListOrganization: WorkSessionListOrganization;
+  /** List vs Kanban board for the Work roster. Orthogonal to the grouping above. */
+  workViewMode: WorkViewMode;
   /** Lane ids collapsed in "by-lane" folder view (others expanded). */
   workCollapsedLaneIds: string[];
   /** Tab group ids collapsed in the Work tab strip. */
@@ -315,6 +328,9 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
+    // The list is the default and stays the default: the board is an opt-in
+    // second reading of the same roster, never a migration everyone is handed.
+    workViewMode: "list",
     workCollapsedLaneIds: [],
     workCollapsedTabGroupIds: [],
     // Settled starts collapsed: the tier is present but quiet by default.
@@ -430,6 +446,10 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
       || candidate.sessionListOrganization === "by-time"
         ? candidate.sessionListOrganization
         : "by-lane",
+    // Purely additive, hence NO `WORK_VIEW_STATE_VERSION` bump: a blob written
+    // before the board existed has no `workViewMode` at all and normalizes to
+    // "list", which is precisely the behaviour it already had.
+    workViewMode: candidate.workViewMode === "board" ? "board" : "list",
     workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),

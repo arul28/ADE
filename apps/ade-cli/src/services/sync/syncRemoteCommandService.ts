@@ -302,6 +302,7 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { createOrchestrationDomainService } from "../../../../desktop/src/main/services/orchestration/orchestrationDomain";
 import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
@@ -4230,6 +4231,11 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
 }
 
 function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const boardMoveActions = createSessionBoardMoveActions({
+    sessionService: args.sessionService,
+    agentChatService: args.agentChatService,
+    logger: args.logger,
+  });
   register("work.getSession", { viewerAllowed: true }, async (payload) =>
     getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId));
   register("work.deleteSession", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -4346,6 +4352,24 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const sessionId = requireString(payload.sessionId, "session.clearWokeMarker requires sessionId.");
     return { ok: args.sessionService.clearWokeMarker(sessionId), sessionId };
   });
+  // The board-move pair shares ONE implementation with the desktop action
+  // registry, and deliberately so: the staged move lives in a module-level map,
+  // so an undo sent from the phone has to find the move the desktop made. Two
+  // copies would be two maps.
+  //
+  // Not queueable. A move's whole contract is a 5-second reversible window; a
+  // command replayed minutes later after a reconnect would move a card the user
+  // has long since stopped looking at, and its undo toast is gone.
+  register("session.moveOnBoard", { viewerAllowed: true, queueable: false }, async (payload) =>
+    await boardMoveActions.moveOnBoard({
+      sessionId: requireString(payload.sessionId, "session.moveOnBoard requires sessionId."),
+      to: payload.to,
+    }));
+  register("session.undoBoardMove", { viewerAllowed: true, queueable: false }, async (payload) =>
+    await boardMoveActions.undoBoardMove({
+      sessionId: requireString(payload.sessionId, "session.undoBoardMove requires sessionId."),
+      moveId: requireString(payload.moveId, "session.undoBoardMove requires moveId."),
+    }));
   register("work.runQuickCommand", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseQuickCommandArgs(payload);
     return await args.ptyService.create({

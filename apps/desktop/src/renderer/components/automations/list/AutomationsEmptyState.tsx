@@ -1,3 +1,4 @@
+import { Funnel } from "@phosphor-icons/react";
 import type { AutomationRuleDraft } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
@@ -52,6 +53,39 @@ export function AutomationsEmptyState({
         className="mt-2 text-[11px] font-medium text-accent hover:underline"
       >
         Browse all templates →
+      </button>
+    </div>
+  );
+}
+
+/**
+ * What the list shows when a provenance chip is on and matches nothing. It
+ * names the filter that is hiding things — an empty list with no explanation
+ * reads as "my automations are gone" — and offers the way back.
+ */
+export function AutomationsFilterEmptyState({
+  filterLabel,
+  onShowAll,
+}: {
+  filterLabel: string;
+  onShowAll: () => void;
+}) {
+  return (
+    <div
+      data-testid="automations-filter-empty"
+      className="flex flex-col items-center justify-center px-3 py-10 text-center"
+    >
+      <Funnel size={16} weight="regular" className="mb-2 text-muted-fg/25" />
+      <div className="text-[11px] font-medium text-fg/70">No automations match</div>
+      <div className="mt-1 max-w-[190px] text-[10px] leading-relaxed text-muted-fg/45">
+        The {filterLabel} filter is hiding the rest.
+      </div>
+      <button
+        type="button"
+        className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg"
+        onClick={onShowAll}
+      >
+        Show all
       </button>
     </div>
   );

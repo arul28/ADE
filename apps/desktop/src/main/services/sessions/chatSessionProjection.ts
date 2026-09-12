@@ -70,6 +70,19 @@ export function fallbackUnprojectedChatSession(
 export function projectChatOntoSession(
   session: TerminalSessionSummary,
   chat: AgentChatSessionSummary,
+  /**
+   * Identity key of this chat's orchestration parent, when the parent IS an
+   * identity session (today: the CTO). Resolved by the caller from HOST state —
+   * the same `listSessions` answer this projection is built from — because the
+   * parent's identity is a fact about the parent row, and a renderer-side cache
+   * of it would go stale the moment a chat is reparented or the CTO thread is
+   * recreated.
+   *
+   * Passed in rather than read off `chat` for the same reason
+   * `orchestrationParentSessionId` is: a summary describes ITSELF, and asking
+   * one row to carry a claim about a different row is how the two drift.
+   */
+  parentIdentityKey?: string | null,
 ): TerminalSessionSummary {
   const base: TerminalSessionSummary = {
     ...session,
@@ -85,6 +98,12 @@ export function projectChatOntoSession(
     ...(chat.modelHandoffHistory?.length
       ? { modelHandoffHistory: chat.modelHandoffHistory }
       : {}),
+    // Whatever the provider actually reported, and nothing more. A blank or
+    // absent model must stay absent on the row: the card renders the chip only
+    // when there is a real answer, so "we do not know" and "no model" have to
+    // be the same value here rather than an empty string the UI has to re-test.
+    ...(chat.model?.trim() ? { model: chat.model.trim() } : {}),
+    ...(chat.modelId?.trim() ? { modelId: chat.modelId.trim() } : {}),
     ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
     ...(chat.orchestrationRunId
       ? {
@@ -96,18 +115,43 @@ export function projectChatOntoSession(
     ...(chat.orchestrationParentSessionId
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
+    // Only stamped when there genuinely is an identity parent. Writing an
+    // explicit `null` would make every ordinary spawned chat carry the field,
+    // and "present but null" and "absent" would then have to mean the same
+    // thing at every read site — one more invariant for no gain.
+    // The caller's resolution wins, and the chat service's own field is the
+    // fallback — either side may be the one that knows, and both read the same
+    // host state, so they cannot disagree about a parent that exists.
+    ...(chat.orchestrationParentSessionId && (parentIdentityKey ?? chat.parentIdentityKey)
+      ? { parentIdentityKey: parentIdentityKey ?? chat.parentIdentityKey }
+      : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
   };
   if (chat.awaitingInput) {
+    const pendingInputItemId = chat.pendingInputItemId ?? session.pendingInputItemId ?? null;
     return {
       ...base,
       runtimeState: "waiting-input",
       chatIdleSinceAt: null,
-      pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
-      attentionSource: "provider_structured",
+      pendingInputItemId,
+      // `provider_structured` is the claim "there is a structured card the
+      // provider is blocked on", and `canonicalSessionState` treats it as a
+      // needs-you trigger in its OWN right — independent of the item id. So
+      // stamping it with a null item id manufactures a Needs you that names no
+      // card: nothing to answer, and answering the card that just settled does
+      // not clear it, because the answer clears the item id (and the attention
+      // columns) while this source would be re-stamped on the next projection.
+      // With no item id, leave whatever the row already declared alone.
+      ...(pendingInputItemId
+        ? { attentionSource: "provider_structured" as const }
+        : {
+            attentionSource: session.attentionSource === "provider_structured"
+              ? null
+              : session.attentionSource,
+          }),
     };
   }
   if (chat.status === "active") {
@@ -136,10 +180,21 @@ export function projectChatSummariesOntoSessions(
   allChats: AgentChatSessionSummary[],
 ): TerminalSessionSummary[] {
   const identitySessionIds = new Set<string>();
+  /**
+   * Identity sessions, by id, so a CHILD can be told who its parent is.
+   *
+   * The identity rows are already in `allChats` (the caller asks for them with
+   * `includeIdentity: true`) and are already indexed here to be filtered OUT of
+   * the roster — the CTO thread is hidden from every session list. Keying their
+   * identity here costs one map and makes the lineage stamp a pure function of
+   * host state: no extra fetch, no renderer cache, and nothing to go stale.
+   */
+  const identityKeyBySessionId = new Map<string, string>();
   const chatSummaryBySessionId = new Map<string, AgentChatSessionSummary>();
   for (const chat of allChats) {
     if (chat.identityKey) {
       identitySessionIds.add(chat.sessionId);
+      identityKeyBySessionId.set(chat.sessionId, chat.identityKey);
     } else {
       chatSummaryBySessionId.set(chat.sessionId, chat);
     }
@@ -150,9 +205,11 @@ export function projectChatSummariesOntoSessions(
     .map((session) => {
       if (!isChatToolType(session.toolType)) return session;
       const chat = chatSummaryBySessionId.get(session.id);
-      return chat
-        ? projectChatOntoSession(session, chat)
-        : fallbackUnprojectedChatSession(session);
+      if (!chat) return fallbackUnprojectedChatSession(session);
+      const parentIdentityKey = chat.orchestrationParentSessionId
+        ? identityKeyBySessionId.get(chat.orchestrationParentSessionId) ?? null
+        : null;
+      return projectChatOntoSession(session, chat, parentIdentityKey);
     });
 }
 
@@ -218,9 +275,18 @@ export async function getSessionWithChatProjection(
   if (!isChatToolType(session.toolType)) return session;
   try {
     const chat = await services.agentChatService?.getSessionSummary(sessionId);
-    return chat
-      ? projectChatOntoSession(session, chat)
-      : fallbackUnprojectedChatSession(session);
+    if (!chat) return fallbackUnprojectedChatSession(session);
+    // Same fact, same source, one row at a time: the detail path has no roster
+    // to index, so it asks the host for the parent directly rather than letting
+    // the caller supply an answer the list path derived.
+    let parentIdentityKey: string | null = null;
+    if (chat.orchestrationParentSessionId && services.agentChatService) {
+      const parent = await services.agentChatService.getSessionSummary(
+        chat.orchestrationParentSessionId,
+      );
+      parentIdentityKey = parent?.identityKey ?? null;
+    }
+    return projectChatOntoSession(session, chat, parentIdentityKey);
   } catch (error) {
     services.logger.warn("sessions.chat_projection_failed", {
       sessionId,

@@ -758,3 +758,78 @@ describe("SessionContextMenu spawn kind", () => {
     expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
   });
 });
+
+describe("SessionContextMenu auto handoff", () => {
+  let list: ReturnType<typeof vi.fn>;
+  let deleteRule: ReturnType<typeof vi.fn>;
+
+  const handoffRule = (id: string, sessionId: string) => ({
+    id,
+    name: "Auto handoff",
+    origin: "chat-menu",
+    scope: { sessionId, sessionTitle: "Claude chat" },
+    enabled: true,
+    mode: "review",
+    triggers: [{ type: "session.limit_reached", sessionId }],
+    trigger: { type: "session.limit_reached", sessionId },
+    actions: [{ type: "handoff", targetModelId: "openai/gpt-5.6-luna" }],
+  });
+
+  beforeEach(() => {
+    list = vi.fn().mockResolvedValue([]);
+    deleteRule = vi.fn().mockResolvedValue([]);
+    (window as unknown as { ade: unknown }).ade = {
+      automations: { list, deleteRule, saveDraft: vi.fn() },
+      sessions: {},
+    };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.clearAllMocks();
+  });
+
+  it("offers the add form when this chat has no scoped rule", async () => {
+    renderMenu(makeSession());
+    // The row paints before the lookup answers, so the add label is correct
+    // immediately and never flickers into existence.
+    expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
+    expect(screen.queryByTestId("session-menu-remove-auto-handoff")).toBeNull();
+  });
+
+  it("settles into the edit label once a scoped rule comes back", async () => {
+    list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
+    renderMenu(makeSession());
+
+    expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
+    await waitFor(() => {
+      expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Edit auto handoff…");
+    });
+  });
+
+  it("shows Remove only for a rule scoped to this very chat, and deletes it", async () => {
+    list.mockResolvedValue([handoffRule("auto-handoff-other-limit", "some-other-chat")]);
+    renderMenu(makeSession());
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(screen.queryByTestId("session-menu-remove-auto-handoff")).toBeNull();
+
+    cleanup();
+    list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
+    const { onClose } = renderMenu(makeSession());
+    const remove = await screen.findByTestId("session-menu-remove-auto-handoff");
+
+    fireEvent.click(remove);
+    await waitFor(() => {
+      expect(deleteRule).toHaveBeenCalledWith({ id: "auto-handoff-chat-1-limit" });
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("offers nothing on a non-chat row", async () => {
+    renderMenu(makeSession({ toolType: "shell", status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
+    expect(screen.queryByTestId("session-menu-auto-handoff")).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+  });
+});

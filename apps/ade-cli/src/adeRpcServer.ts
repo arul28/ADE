@@ -3119,13 +3119,16 @@ async function runCtoOperatorBridgeTool(
   const agentChatService = requireAgentChatService(runtime);
   const defaultLaneId = (resolveRequestedOrSessionLaneId(runtime, session, toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
   const ctoIdentity = runtime.ctoStateService.getIdentity();
-  const preferredProvider = ctoIdentity.modelPreferences.provider.trim().toLowerCase();
+  // Null until the user picks a model the CTO can steer live; the Claude/Codex
+  // fallback below already covers "nothing chosen yet".
+  const ctoModelPreferences = ctoIdentity.modelPreferences;
+  const preferredProvider = (ctoModelPreferences?.provider ?? "").trim().toLowerCase();
   const fallbackModelId = preferredProvider.includes("claude")
     ? (getDefaultModelDescriptor("claude")?.id ?? null)
     : (getDefaultModelDescriptor("codex")?.id ?? null);
   const defaultModelId =
-    (typeof ctoIdentity.modelPreferences.modelId === "string" && ctoIdentity.modelPreferences.modelId.trim().length
-      ? ctoIdentity.modelPreferences.modelId.trim()
+    (typeof ctoModelPreferences?.modelId === "string" && ctoModelPreferences.modelId.trim().length
+      ? ctoModelPreferences.modelId.trim()
       : null)
     ?? fallbackModelId;
   const tools = createCtoOperatorTools({

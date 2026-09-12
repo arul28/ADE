@@ -157,6 +157,7 @@ import {
   setSessionSettleOverride,
   settleSession,
   snoozeSession,
+  moveSessionOnBoard,
   wakeSession,
   startCliTerminalSession,
   type CliTerminalProvider,
@@ -182,6 +183,8 @@ import {
   resolveSnoozeChoices,
   resolveSnoozeFreeText,
   clearWokeMarkerOnVisit as clearSessionWokeMarkerOnVisit,
+  boardColumnLabel,
+  resolveBoardMoveTarget,
   sessionLifecycleCommandFor,
   sessionLifecycleMarker,
   type SessionLifecycleCommand,
@@ -12219,8 +12222,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         activeSessionId: activeSessionIdRef.current,
         knownSessionIds: displaySessions.map((session) => session.sessionId),
         // wake/unsettle/keep-active take no other argument, so a leading token
-        // that names no session is a typo rather than a passthrough.
-        strictLeadingToken: lifecycleVerb !== "snooze" && lifecycleVerb !== "settle",
+        // that names no session is a typo rather than a passthrough. `move`
+        // joins snooze/settle: its own argument is a column name, which never
+        // looks like a session id.
+        strictLeadingToken: lifecycleVerb !== "snooze"
+          && lifecycleVerb !== "settle"
+          && lifecycleVerb !== "move",
       });
       if (!target.ok) {
         setRightPane({ kind: "details", title: "Session lifecycle", body: target.message });
@@ -12243,7 +12250,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           await applySessionSnooze(target.sessionId, resolved.untilIso, `${resolved.confirmation}${scope}`);
           return;
         }
-        if (lifecycleVerb === "wake") {
+        if (lifecycleVerb === "move") {
+          const column = resolveBoardMoveTarget(target.rest);
+          if (!column.ok) {
+            setRightPane({ kind: "details", title: "Session move", body: column.message });
+            return;
+          }
+          const result = await moveSessionOnBoard(conn, target.sessionId, column.to);
+          // `changed: false` means the row was already there and nothing was
+          // written — no message, nothing to undo — so saying "Moved" would be
+          // a lie. The host decides `from`; this only reports it.
+          addNotice(
+            result.changed
+              ? `Moved to ${boardColumnLabel(column.to)}.${scope}`
+              : `Already ${boardColumnLabel(result.from).toLowerCase()}.${scope}`,
+            result.changed ? "success" : "info",
+          );
+        } else if (lifecycleVerb === "wake") {
           await wakeSession(conn, target.sessionId, "manual");
           addNotice(`Woke the session.${scope}`, "success");
         } else if (lifecycleVerb === "settle") {

@@ -105,7 +105,16 @@ don't leak across filter changes.
 
 ## Session sidebar: `SessionListPane.tsx`
 
-Lists sessions grouped by one of three modes (controlled by
+The pane renders one of two views, chosen by `workViewMode` (`"list"` or
+`"board"`) — an axis independent of grouping, so switching to the board and back
+returns to the grouping you left. In board mode the pane's body is
+`WorkKanbanBoard` and `TerminalsPage` gives it the whole Work content area
+rather than driving the splitter, because moving the splitter would overwrite
+the user's list-mode layout. See
+[The Work board](README.md#the-work-board) for the columns and the move
+contract.
+
+In list mode it lists sessions grouped by one of three modes (controlled by
 `sessionListOrganization` in the work view state):
 
 - `by-lane` — one group per active lane
@@ -1451,6 +1460,15 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
+- Chat rows also carry **Auto handoff…** (or **Edit auto handoff…** once rules
+  exist for the chat) and **Remove auto handoff**, which open `AutoHandoffModal`
+  — the chat menu's way of arming "when this chat hits its limit / fails / ends
+  with no PR, continue it on another model". The modal is hosted at the
+  `SessionContextMenu` level rather than inside the panel, because opening it
+  closes the menu and a modal mounted in the panel would unmount in the same
+  tick. The existing-rule list is fetched asynchronously and `null` means "not
+  answered yet": a context menu that waits on IPC before it appears is a broken
+  context menu.
 - Chat metadata generation makes one structured request for all three visible
   fields and applies only the selected fields. A status-only refresh sends the
   lane name, chat title, worktree folder, and last assistant paragraphs — not

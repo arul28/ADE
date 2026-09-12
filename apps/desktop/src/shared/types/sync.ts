@@ -1857,6 +1857,8 @@ export type SyncRemoteCommandAction =
   | "session.wakeSession"
   | "session.wakeSessions"
   | "session.setSettleOverride"
+  | "session.moveOnBoard"
+  | "session.undoBoardMove"
   | "session.clearWokeMarker"
   | "work.runQuickCommand"
   | "work.startCliSession"

@@ -471,3 +471,23 @@ export function truncateSessionLabel(text: string, max = 24): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}...`;
 }
+
+/**
+ * When this row last did anything — the one chain every "last activity" label
+ * reads.
+ *
+ * The fallbacks are in order of how recent they can be. `lastActivityAt` is
+ * stamped by the runtime and is the truth whenever it exists; `settledAt` and
+ * `endedAt` are the two ways a row stops producing it, settled being the later
+ * of the two (a row is ended, then filed); `startedAt` is the floor, and every
+ * row has one. Three surfaces used to carry three different prefixes of this
+ * chain and agreed only by accident.
+ *
+ * This is NOT the right answer for "when did this END" — a status slot showing
+ * a finish time wants `endedAt ?? startedAt` and says so at its call site.
+ */
+export function sessionActivityInstant(
+  session: Pick<TerminalSessionSummary, "lastActivityAt" | "settledAt" | "endedAt" | "startedAt">,
+): string {
+  return session.lastActivityAt ?? session.settledAt ?? session.endedAt ?? session.startedAt;
+}

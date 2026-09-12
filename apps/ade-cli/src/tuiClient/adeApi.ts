@@ -55,6 +55,7 @@ import type {
   AgentChatSubagentTranscriptMessage,
   ClaudeActiveGoal,
   CodexThreadGoal,
+  WorkBoardMoveTarget,
 } from "../../../desktop/src/shared/types/chat";
 import type {
   AiSettingsStatus,
@@ -76,6 +77,7 @@ import type {
   ChatTerminalSession,
   PtyResumeSessionResult,
   PtySendToSessionResult,
+  SessionBoardMoveResult,
   TerminalSessionSummary,
 } from "../../../desktop/src/shared/types";
 import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
@@ -370,6 +372,21 @@ export async function wakeSession(
     sessionId,
     ...(reason ? { reason } : {}),
   });
+}
+
+/**
+ * File a session under a Work-board column.
+ *
+ * The host decides `from` — the caller never claims it — and returns the staged
+ * move, so the reply carries whether anything actually changed and the exact
+ * sentence the agent was handed.
+ */
+export async function moveSessionOnBoard(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  to: WorkBoardMoveTarget,
+): Promise<SessionBoardMoveResult> {
+  return await connection.action("session", "moveOnBoard", { sessionId, to });
 }
 
 /** Set or clear an explicit settle override. */

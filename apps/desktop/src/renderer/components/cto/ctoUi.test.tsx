@@ -29,6 +29,9 @@ vi.mock("./useCtoModelOptions", () => ({
     reasoningEffort: null,
     supportsFastMode: modelId !== "anthropic/claude-opus-4-8",
   }),
+  // The CTO pickers pass this straight to ModelPicker's `filter`, so the mock
+  // has to supply it or every settings render throws.
+  ctoModelSupportsLiveRedirect: () => true,
 }));
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
@@ -129,6 +132,26 @@ describe("CtoPage settings", () => {
   it("renders the persistent thread once the session wakes", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     expect(await screen.findByTestId("cto-agent-chat-pane")).toBeTruthy();
+  });
+
+  it("shows the picker card instead of the thread while no live-steer model is picked", async () => {
+    const getState = vi.fn().mockResolvedValue({
+      identity: { ...IDENTITY, modelPreferences: null },
+      recentSessions: [],
+    });
+    globalThis.window.ade = {
+      ...(globalThis.window.ade as object),
+      cto: { ...((globalThis.window.ade as { cto: object }).cto), getState },
+    } as never;
+
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+
+    const card = await screen.findByTestId("cto-model-pick");
+    expect(card.textContent).toContain("Pick a model that can steer live turns");
+    expect(screen.queryByTestId("cto-agent-chat-pane")).toBeNull();
+    // The existing thread is never recreated to force a pick — ensureSession
+    // simply does not run until there is a model it could run on.
+    expect(ensureSession).not.toHaveBeenCalled();
   });
 
   it("states that the CTO always runs on This computer without offering a switch", async () => {

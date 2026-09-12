@@ -78,7 +78,10 @@ import {
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   type AdeChatSessionSummaryActionResult,
+  isWorkBoardMoveTarget,
+  WORK_BOARD_COLUMN_LABEL,
   type AgentChatDroidPermissionMode,
+  type WorkBoardColumn,
 } from "../../desktop/src/shared/types/chat";
 import {
   parseUsageLimitResume,
@@ -829,7 +832,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -2568,6 +2572,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Snooze until an explicit ISO-8601 deadline
     $ ade session snooze <id> --until-asked          Snooze open-ended (the desktop/iOS "Until I'm asked" preset):
                                                     no clock deadline, so only a hand-raise brings the row back
+    $ ade --role cto session move <id> --to done    File the session under a Work-board column
+                                                    (needs-you|working|done; both spellings of 'needs-you' accepted).
+                                                    CTO-only, like the other settle-column writers: the move tells the
+                                                    agent the USER moved its card, so an agent must not move its own.
+                                                    'waiting' is refused: a row sits there because it is snoozed or its
+                                                    PR is mid-CI, so it is derived and never a drop target.
+                                                    The move is reversible for 5 seconds through
+                                                    'actions run session.undoBoardMove' with the returned moveId.
     $ ade session wake <id>                         Clear the snooze now (--reason timer|needs_you|error|turn_complete|manual)
     $ ade session clear-woke <id>                   Drop the "woke early" marker after visiting the row
     $ ade session actions --text                    List raw session service actions
@@ -8388,6 +8400,40 @@ function buildSessionPlan(args: string[]): CliPlan {
     };
   }
 
+  if (sub === "move") {
+    // `needs-you` is what the board column is called on screen; `needs_you` is
+    // what the action takes. Accept both so nobody has to remember which side
+    // of the seam they are on.
+    const rawTarget = (
+      readValue(args, ["--to", "--column", "--target"])
+      ?? firstStandalonePositional(args)
+      ?? ""
+    ).trim().toLowerCase().replace(/-/g, "_");
+    if (rawTarget === "waiting") {
+      throw new CliUsageError(
+        "Waiting is derived — a row sits there because it is snoozed or its PR is mid-CI — so it is not a move target. Use needs-you, working, or done.",
+      );
+    }
+    if (!isWorkBoardMoveTarget(rawTarget)) {
+      throw new CliUsageError(
+        "session move requires --to needs-you|working|done.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "session move",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "moveOnBoard",
+          collectGenericObjectArgs(args, { sessionId, to: rawTarget }),
+        ),
+      ],
+    };
+  }
+
   if (sub === "clear-woke" || sub === "clear-wake") {
     return {
       kind: "execute",
@@ -8405,7 +8451,7 @@ function buildSessionPlan(args: string[]): CliPlan {
   }
 
   throw new CliUsageError(
-    `Unknown session subcommand '${sub}'. Try: show, snooze, wake, clear-woke.`,
+    `Unknown session subcommand '${sub}'. Try: show, move, snooze, wake, clear-woke.`,
   );
 }
 
@@ -23635,8 +23681,47 @@ function formatSessionLifecycle(value: unknown): string {
     ["snoozed at", record.snoozedAt],
     ["woke at", record.wokeAt],
     ["woke reason", record.wokeReason ?? record.reason],
+    // `session move`'s ack. Undefined for every other command here, so
+    // `renderKeyValues` drops the rows — the same way the snooze rows are
+    // dropped for a session that was never snoozed.
+    //
+    // `moved` is printed rather than inferred from `from`/`to`: a drop onto the
+    // column a row is already in writes nothing and sends the agent nothing, so
+    // "needs you -> needs you" with no further comment would read as a move
+    // that happened. `move id` is the handle `session.undoBoardMove` takes, and
+    // `message` is the exact sentence the agent was handed — the one thing a
+    // scripted caller cannot reconstruct.
+    ["moved", boardMoveColumns(record)],
+    ["changed", typeof record.changed === "boolean" ? (record.changed ? "yes" : "no (already there)") : undefined],
+    // A refusal has a reason, and "already there" is only one of them: the host
+    // also refuses a move over a live structured card, and an undo once the
+    // chat has moved on. Without this row the caller sees "no" and cannot tell
+    // which, so `ade session move` would report a refusal as a no-op.
+    ["reason", typeof record.reason === "string" ? record.reason : undefined],
+    ["move id", record.moveId],
+    ["undo expires", record.undoExpiresAt],
+    ["message", record.message],
     ["ok", record.ok],
   ]);
+}
+
+/**
+ * The `from -> to` line for a board move, spelled the way the columns are
+ * written on screen.
+ *
+ * Labels come from the shared `WORK_BOARD_COLUMN_LABEL`, never from a local
+ * table: a terminal printing `needs_you` while the board header says "Needs
+ * you" is the drift this map exists to prevent. An unrecognized column falls
+ * through to its raw id rather than being dropped — a newer host naming a
+ * column this build has not heard of should still be legible here.
+ */
+function boardMoveColumns(record: JsonObject): string | undefined {
+  const to = asString(record.to);
+  if (!to) return undefined;
+  const label = (column: string): string =>
+    WORK_BOARD_COLUMN_LABEL[column as WorkBoardColumn] ?? column;
+  const from = asString(record.from);
+  return from ? `${label(from)} -> ${label(to)}` : label(to);
 }
 
 /**

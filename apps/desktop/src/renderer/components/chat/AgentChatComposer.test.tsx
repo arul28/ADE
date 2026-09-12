@@ -536,6 +536,27 @@ describe("AgentChatComposer", () => {
 
   it("says why a queue-only agent cannot take the staged message mid-turn", () => {
     renderComposer({
+      sessionProvider: "droid",
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments: [],
+        contextAttachments: [],
+      }],
+      onCancelSteer: vi.fn(),
+    });
+
+    // Droid is queue-only: there is no force-send and no interrupt-and-send, so
+    // the strip has to name the limit rather than just omit the buttons.
+    expect(screen.getByText(/Droid cannot take a message mid-turn/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Interrupt/ })).toBeNull();
+    // "Hover to …" is simply wrong on a touch pointer.
+    expect(screen.queryByText(/Hover to/)).toBeNull();
+  });
+
+  it("does not claim Codex is queue-only — it takes a turn/steer into the live turn", () => {
+    renderComposer({
       sessionProvider: "codex",
       pendingSteers: [{
         steerId: "steer-1",
@@ -546,13 +567,9 @@ describe("AgentChatComposer", () => {
       onCancelSteer: vi.fn(),
     });
 
-    // Codex is queue-only: there is no force-send and no interrupt-and-send, so
-    // the strip has to name the limit rather than just omit the buttons.
-    expect(screen.getByText(/Codex cannot take a message mid-turn/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
+    expect(screen.queryByText(/cannot take a message mid-turn/)).toBeNull();
+    // Codex has inline and no interrupt, so the strip must never offer one.
     expect(screen.queryByRole("button", { name: /^Interrupt/ })).toBeNull();
-    // "Hover to …" is simply wrong on a touch pointer.
-    expect(screen.queryByText(/Hover to/)).toBeNull();
   });
 
   it("does not claim Claude is queue-only when its dispatch handlers are merely unwired", () => {
@@ -714,6 +731,100 @@ describe("AgentChatComposer", () => {
     expect(options).toHaveLength(3);
     expect(options[0]).toContain("Send during turn");
     expect(options[2]).toContain("Interrupt & send");
+  });
+
+  it("keeps a normal chat's delivery menu unchanged", () => {
+    // Regression guard for the CTO-only queue removal: every non-identity
+    // surface must keep the exact options it has today. Codex is the default
+    // provider in `buildComposerProps` and carries inline + queue.
+    renderComposer({
+      onSendSteerNow: vi.fn(),
+    });
+
+    expect(screen.getByRole("button", { name: "Send during turn" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+    expect(options).toHaveLength(2);
+    expect(options[0]).toContain("Send during turn");
+    expect(options[1]).toContain("Send after turn");
+  });
+
+  describe("CTO identity session", () => {
+    // The host rewrites a queued delivery on the identity session into the
+    // provider's first non-queue mode, so offering "queue" would be a lie.
+    const CTO_SURFACE = { surfaceProfile: "persistent_identity" as const };
+
+    it("offers Claude only the live-redirect modes", () => {
+      renderComposer({
+        ...CTO_SURFACE,
+        ...CLAUDE_STEER_OVERRIDES,
+        onSendSteerNow: vi.fn(),
+        onSendSteerInterrupt: vi.fn(),
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+      const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+      expect(options).toHaveLength(2);
+      expect(options[0]).toContain("Send during turn");
+      expect(options[1]).toContain("Interrupt & send");
+      expect(screen.queryByRole("menuitemradio", { name: /Send after turn/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Send after turn" })).toBeNull();
+    });
+
+    it("offers Codex only send-during-turn", () => {
+      const onSendSteerNow = vi.fn();
+      renderComposer({
+        ...CTO_SURFACE,
+        // Codex has inline but no interrupt, so the host wires only inline.
+        onSendSteerNow,
+        onSendSteerInterrupt: undefined,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+      const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+      expect(options).toHaveLength(1);
+      expect(options[0]).toContain("Send during turn");
+      expect(screen.queryByRole("menuitemradio", { name: /Send after turn/ })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
+      expect(onSendSteerNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("offers Cursor only interrupt-and-continue", () => {
+      const onSendSteerInterrupt = vi.fn();
+      renderComposer({
+        ...CTO_SURFACE,
+        ...CURSOR_STEER_OVERRIDES,
+        onSendSteerNow: undefined,
+        onSendSteerInterrupt,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+      const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+      expect(options).toHaveLength(1);
+      expect(options[0]).toContain("Interrupt & continue");
+      expect(screen.queryByRole("menuitemradio", { name: /Send after turn/ })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Interrupt & continue" }));
+      expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the primary send inside the offered modes when a mode is unwired", () => {
+      // Claude picked while the live session cannot dispatch inline: the
+      // primary button must fall to interrupt, never to a queue the menu does
+      // not list.
+      const onSendSteerInterrupt = vi.fn();
+      renderComposer({
+        ...CTO_SURFACE,
+        ...CLAUDE_STEER_OVERRIDES,
+        onSendSteerNow: undefined,
+        onSendSteerInterrupt,
+      });
+
+      expect(screen.queryByRole("button", { name: "Send after turn" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Interrupt & send" }));
+      expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("disables the active-turn send actions when the draft is whitespace-only", () => {

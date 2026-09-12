@@ -8,9 +8,13 @@ There is one persistent identity: the CTO. The former worker/hiring agent identi
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity CRUD, session logs, system-prompt composition, onboarding state, reconstruction context, and startup reconciliation. |
-| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The smart-memory file store: `MEMORY.md`, `thread-state.md`, daily logs, search, and injection sections. |
-| `apps/desktop/src/main/services/cto/ctoPromptContent.ts` | `buildCtoCapabilityManifest()` — the operator-tool manifest injected into the prompt. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity CRUD, session logs, system-prompt composition, onboarding state, reconstruction context, the live project-state block, and startup reconciliation. |
+| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The smart-memory file store: `MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, and injection sections. |
+| `apps/desktop/src/main/services/cto/ctoPromptContent.ts` | `buildCtoCapabilityManifest()` — the operator-tool manifest and tool-pack list injected into the prompt — plus the nightly memory-gardener job constants. |
+| `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of CTO tool packs and their one-line scopes. Zero imports, so the prompt builder can read it without the tool runtime. |
+| `apps/desktop/src/main/services/chat/ctoTurnContext.ts` | Pure pieces of a CTO turn: line-aligned tail truncation, the per-lane memory injection rule, child PR extraction, and the one-line child report format. |
+| `apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts` | Codex dynamic-tool specs and the CTO pack defer predicate. |
+| `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Hosts `recordDiscovery`, the append-only memory contribution every agent gets. |
 | `apps/desktop/src/main/services/projects/logIntegrityService.ts` | Hash-chained integrity for CTO session logs. |
 | `apps/desktop/src/shared/ctoPersonalityPresets.ts` | Built-in personality overlays plus `custom`. |
 | `apps/desktop/src/renderer/components/cto/IdentityEditor.tsx` | UI for editing CTO name, persona, personality, and work style. |
@@ -71,11 +75,23 @@ These fields drive prompt adjustments for detail level, initiative, and when to 
 
 The CTO's durable knowledge lives in files under `.ade/cto/`, owned by `ctoMemoryService`:
 
-- `MEMORY.md` — curated durable facts (decisions, preferences, standing context) under a `## Facts` list. Written by the `saveMemory` tool and the `CtoMemoryPanel` editor. Always injected (tail-capped for injection; the disk copy is never truncated, with a 64 KiB hard cap that drops oldest facts).
+- `MEMORY.md` — curated durable facts (decisions, preferences, standing context) under a `## Facts` list. Written by the `saveMemory` tool and the `CtoMemoryPanel` editor. Always injected (tail-capped for injection; the disk copy is never truncated, with a 64 KiB hard cap that moves oldest facts into `memory-archive.md`).
 - `thread-state.md` — a rolling summary of the current goal, recent decisions, and open loops. Rewritten by the continuity flush.
 - `daily/<YYYY-MM-DD>.md` — an append-only per-turn journal (`HH:MM — intent → outcome`).
+- `discoveries.md` (+ `discoveries-archive.md`, `discoveries.cursor`) — the unreviewed worker-discovery queue any agent can append to, drained into the CTO's turn rather than injected.
 
-The CTO reads and writes memory through operator tools: `saveMemory(fact)` (append a durable fact, exact duplicates ignored), `searchMemory(query)` (bounded file search across memory, thread state, and daily logs), and `readMemory()` (durable facts + current thread state).
+The CTO reads and writes memory through operator tools: `saveMemory(fact, tags?)` (append a durable fact, exact duplicates ignored), `searchMemory(query, { tags? })` (bounded file search across memory, thread state, and daily logs), `readMemory()` (durable facts + current thread state), and `readDiscoveries()` (drain the worker queue).
+
+### Tagged facts, and who else can reach memory
+
+Facts carry a closed-vocabulary `[lane: pr: path: topic:]` suffix. Tags make memory addressable rather than merely searchable: `searchMemory` accepts an empty query when tags are given, and returns tag-value matches ahead of plain text matches. The suffix is appended after the fact is clipped, so a long fact can never truncate away its own tags.
+
+Two consequences reach ordinary agents, not just the CTO:
+
+- **Every agent can contribute.** `recordDiscovery` is a universal tool (also `ade actions run cto_memory.recordDiscovery`) that appends one timestamped, secret-redacted, tagged line to the discovery queue. There is deliberately no matching read tool on the worker side — a worker hands a finding up without gaining a view of what the CTO knows — and the action policy for the `cto_memory` domain is inverted (`allExcept`) so a method added there later is CTO-only by omission. The queue is byte-capped with archive eviction, and its read cursor is a byte offset that can re-deliver but never skip.
+- **Every project chat receives what memory knows about its lane.** `buildLaneMemoryContextSection(laneId)` returns the lane-tagged facts plus the rolling thread state, or nothing when there is nothing lane-scoped to say. `shouldInjectLaneMemoryContext` delivers it once per lane change, riding the same dedupe key as the lane execution directive, and never to the CTO (which already has all of memory) or a personal chat (which has no project lane).
+
+A nightly ADE-owned cron job on the CTO session distills the daily logs and the discovery queue into tagged durable facts, merges duplicates, and archives facts whose PR merged long ago. See [CTO › Nightly memory gardening](../cto/README.md#nightly-memory-gardening).
 
 ### Flush and injection lifecycle
 
@@ -95,6 +111,7 @@ On every CTO session start, and after compaction or a model switch, `ctoStateSer
 2. ADE operational/environment knowledge.
 3. Identity metadata (name, persona, preferred model) and recent CTO session summaries.
 4. The memory sections from `ctoMemoryService.buildMemoryContextSections()` — durable memory, thread state, and the recent daily log.
+5. The live project-state block, appended last — see [CTO › Live project state](../cto/README.md#live-project-state). It goes last because the prefix truncates by keeping its tail, so the most perishable section must sit where a budgeted send cannot cut it. That truncation is line-aligned (`truncateTailToLineBoundary`), so the model never receives half a doctrine line or half a lane row.
 
 `agentChatService` stages this as `pendingReconstructionContext` and re-injects it via `refreshReconstructionContext()` so the identity session does not drift into generic chat behavior.
 

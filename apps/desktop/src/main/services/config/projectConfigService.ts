@@ -20,6 +20,8 @@ import type {
   AutomationMode,
   AutomationOutputs,
   AutomationRule,
+  AutomationRuleOrigin,
+  AutomationRuleScope,
   AutomationReviewProfile,
   AutomationRunQueueStatus,
   AutomationToolFamily,
@@ -490,6 +492,10 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const changedFields = asStringArray(value.changedFields);
   const secretRef = asString(value.secretRef);
   const repo = asString(value.repo);
+  const sessionId = asString(value.sessionId)?.trim();
+  const providers = asStringArray(value.providers)
+    ?.map((entry) => entry.trim())
+    .filter(Boolean);
   const draftStateRaw = asString(value.draftState)?.trim();
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
@@ -511,6 +517,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (changedFields != null) out.changedFields = changedFields;
   if (secretRef != null) out.secretRef = secretRef;
   if (repo != null) out.repo = repo;
+  if (sessionId) out.sessionId = sessionId;
+  if (providers?.length) out.providers = providers;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
   return out;
@@ -614,6 +622,15 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const adeAction = coerceRunAdeActionConfig(value.adeAction);
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
+  const handoffModeRaw = asString(value.handoffMode)?.trim();
+  const handoffMode = handoffModeRaw === "fork" || handoffModeRaw === "brief" ? handoffModeRaw : undefined;
+  const targetModelId = asString(value.targetModelId)?.trim();
+  const targetLaneModeRaw = asString(value.targetLaneMode)?.trim();
+  const targetLaneMode = targetLaneModeRaw === "same" || targetLaneModeRaw === "new" || targetLaneModeRaw === "explicit"
+    ? targetLaneModeRaw
+    : undefined;
+  const promptTemplate = asString(value.promptTemplate);
+  const reasoningEffort = asString(value.reasoningEffort)?.trim();
   const modelConfig = coerceModelConfig(value.modelConfig);
   const fastMode = asBool(value.fastMode ?? value.codexFastMode);
   const permissionConfig = coerceAutomationPermissionConfig(value.permissionConfig);
@@ -635,6 +652,11 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (adeAction != null) out.adeAction = adeAction;
   if (prompt != null) out.prompt = prompt;
   if (sessionTitle != null) out.sessionTitle = sessionTitle;
+  if (handoffMode) out.handoffMode = handoffMode;
+  if (targetModelId) out.targetModelId = targetModelId;
+  if (targetLaneMode) out.targetLaneMode = targetLaneMode;
+  if (promptTemplate != null) out.promptTemplate = promptTemplate;
+  if (reasoningEffort) out.reasoningEffort = reasoningEffort as NonNullable<AutomationAction["reasoningEffort"]>;
   if (modelConfig != null) out.modelConfig = modelConfig;
   if (fastMode != null) out.fastMode = fastMode;
   if (permissionConfig != null) out.permissionConfig = permissionConfig;
@@ -886,6 +908,17 @@ function coerceAutomationVerification(value: unknown): AutomationVerification | 
   };
 }
 
+/**
+ * The originating chat of a rule. `sessionTitle` is kept on the rule so the
+ * label survives the chat being deleted; a scope without a session id is dropped.
+ */
+function coerceAutomationRuleScope(value: unknown): AutomationRuleScope | undefined {
+  if (!isRecord(value)) return undefined;
+  const sessionId = asString(value.sessionId)?.trim();
+  if (!sessionId) return undefined;
+  return { sessionId, sessionTitle: asString(value.sessionTitle)?.trim() ?? "" };
+}
+
 function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (!isRecord(value)) return null;
   const id = asString(value.id)?.trim() ?? "";
@@ -899,6 +932,16 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
     modeRaw === "review" || modeRaw === "fix" || modeRaw === "monitor"
       ? modeRaw
       : undefined;
+  // Provenance. A config written before these fields existed has no `origin`;
+  // the runtime normalizer reads that as `"user"`, so nothing is written here.
+  const originRaw = asString(value.origin)?.trim();
+  const origin: AutomationRuleOrigin | undefined =
+    originRaw === "user" || originRaw === "cto" || originRaw === "chat-menu" ? originRaw : undefined;
+  const scope = coerceAutomationRuleScope(value.scope);
+  const originRequest = asString(value.originRequest)?.trim();
+  const oneShot = asBool(value.oneShot);
+  const maxRunsRaw = asNumber(value.maxRuns);
+  const maxRuns = maxRunsRaw != null && Number.isFinite(maxRunsRaw) && maxRunsRaw >= 1 ? Math.floor(maxRunsRaw) : undefined;
   const trigger = coerceAutomationTrigger(value.trigger);
   const triggers = Array.isArray(value.triggers)
     ? value.triggers.map(coerceAutomationTrigger).filter((x): x is AutomationTrigger => x != null)
@@ -953,6 +996,11 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (name != null) out.name = name;
   if (description != null) out.description = description;
   if (enabled != null) out.enabled = enabled;
+  if (origin != null) out.origin = origin;
+  if (scope != null) out.scope = scope;
+  if (originRequest) out.originRequest = originRequest;
+  if (oneShot != null) out.oneShot = oneShot;
+  if (maxRuns != null) out.maxRuns = maxRuns;
   if (mode != null) out.mode = mode;
   if (triggers != null) out.triggers = triggers;
   if (trigger != null) out.trigger = trigger;
@@ -2435,6 +2483,13 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       name: entry.name?.trim() ?? entry.id.trim(),
       ...(entry.description?.trim() ? { description: entry.description.trim() } : {}),
       mode: entry.mode ?? "review",
+      // Provenance. Configs written before these fields existed have no
+      // `origin`, which reads as the user's own rule.
+      origin: entry.origin ?? "user",
+      ...(entry.scope ? { scope: entry.scope } : {}),
+      ...(entry.originRequest?.trim() ? { originRequest: entry.originRequest.trim() } : {}),
+      ...(entry.oneShot === true ? { oneShot: true } : {}),
+      ...(typeof entry.maxRuns === "number" && entry.maxRuns >= 1 ? { maxRuns: Math.floor(entry.maxRuns) } : {}),
       triggers: triggers.map((trigger) => ({
         type: trigger.type,
         ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
@@ -2457,6 +2512,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
         ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
         ...(trigger.repo ? { repo: trigger.repo.trim() } : {}),
+        ...(trigger.sessionId ? { sessionId: trigger.sessionId.trim() } : {}),
+        ...(trigger.providers?.length ? { providers: trigger.providers.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
@@ -2494,6 +2551,11 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.adeAction ? { adeAction: action.adeAction } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
+        ...(action.handoffMode ? { handoffMode: action.handoffMode } : {}),
+        ...(action.targetModelId ? { targetModelId: action.targetModelId.trim() } : {}),
+        ...(action.targetLaneMode ? { targetLaneMode: action.targetLaneMode } : {}),
+        ...(action.promptTemplate ? { promptTemplate: action.promptTemplate } : {}),
+        ...(action.reasoningEffort ? { reasoningEffort: action.reasoningEffort } : {}),
       })),
       legacy: {
         ...(legacyTrigger ? { trigger: legacyTrigger } : {}),
@@ -2517,6 +2579,11 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.adeAction ? { adeAction: action.adeAction } : {}),
             ...(action.prompt ? { prompt: action.prompt } : {}),
             ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
+            ...(action.handoffMode ? { handoffMode: action.handoffMode } : {}),
+            ...(action.targetModelId ? { targetModelId: action.targetModelId.trim() } : {}),
+            ...(action.targetLaneMode ? { targetLaneMode: action.targetLaneMode } : {}),
+            ...(action.promptTemplate ? { promptTemplate: action.promptTemplate } : {}),
+            ...(action.reasoningEffort ? { reasoningEffort: action.reasoningEffort } : {}),
           })),
         } : {}),
       },

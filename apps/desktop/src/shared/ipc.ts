@@ -299,6 +299,10 @@ export const IPC = {
   sessionsSnoozeMany: "ade.sessions.snoozeMany",
   sessionsWakeMany: "ade.sessions.wakeMany",
   sessionsSetSettleOverride: "ade.sessions.setSettleOverride",
+  // A Work-board drag: the lifecycle write plus the host-authored message the
+  // agent reacts to, and the 5s reversal for both.
+  sessionsMoveOnBoard: "ade.sessions.moveOnBoard",
+  sessionsUndoBoardMove: "ade.sessions.undoBoardMove",
   sessionsClearWokeMarker: "ade.sessions.clearWokeMarker",
   sessionsLifecycleSettingsGet: "ade.sessions.lifecycleSettings.get",
   sessionsLifecycleSettingsUpdate: "ade.sessions.lifecycleSettings.update",

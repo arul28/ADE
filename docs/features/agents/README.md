@@ -9,8 +9,10 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, immutable doctrine, personality overlays, and system-prompt preview. |
-| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, search, injection sections). |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
+| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, injection sections). |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
+| `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 13 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
+| `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
@@ -334,7 +336,9 @@ inheriting it, so it cannot self-update the binary ADE pinned. See
 
 ## Smart memory and reconstruction
 
-The CTO's durable memory lives in files under `.ade/cto/` (`MEMORY.md`, `thread-state.md`, `daily/<date>.md`) owned by `ctoMemoryService`. A deterministic flush writes the rolling summary before compaction and before model switches; a best-effort LLM upgrade refines it. `refreshReconstructionContext()` re-injects identity plus memory after compaction and switches. Full details in [Identity and Personas](identity-and-personas.md#smart-memory-system).
+The CTO's durable memory lives in files under `.ade/cto/` (`MEMORY.md`, `thread-state.md`, `daily/<date>.md`, `discoveries.md`) owned by `ctoMemoryService`. A deterministic flush writes the rolling summary before compaction and before model switches; a best-effort LLM upgrade refines it. `refreshReconstructionContext()` re-injects identity plus memory after compaction and switches.
+
+Two parts of that system are not CTO-only. Every agent gets `recordDiscovery`, an append-only tool that hands one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover — with no matching read tool, so contributing never grants a view of the CTO's memory. And every project chat receives the facts memory holds about *its* lane, injected once per lane change beside the lane execution directive. Full details in [Identity and Personas](identity-and-personas.md#smart-memory-system).
 
 ## Session logs
 

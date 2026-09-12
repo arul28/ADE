@@ -23,6 +23,12 @@ export const adeBundledAgentSkills = [
  * list when the user settles them or when their PR merges. Keep this guidance
  * pointed at note/ask; do not re-add settle instructions.
  */
+// NOTE: the Work-board status rule deliberately does NOT live here. This
+// constant is emitted whole inside the Cursor SDK prompt's hard 3 KB budget,
+// which truncates from the END — and that prompt already sits at ~100% of it,
+// so every byte added here comes out of the subagent routing contract and the
+// project rules below it. The board rule is documented where an agent actually
+// reads it: the "Board and status" section of the ade-cli-control-plane skill.
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
   `- Working: \`ade chat note "testing desktop auth fallback"\`; aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer — a guideline, not a hard limit. Notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters, so a long note still beats no note.`,

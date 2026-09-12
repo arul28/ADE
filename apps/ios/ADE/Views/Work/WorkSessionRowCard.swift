@@ -182,6 +182,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let isProminent: Bool
   let model: String?
   let isSubagent: Bool
+  /// Spawned BY the CTO. Held separately from `isSubagent` because it REPLACES
+  /// it on screen rather than adding to it — see `lineageMark`.
+  let isCtoChild: Bool
   let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
@@ -268,6 +271,11 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.statusTone = row.status?.tone
     self.model = chatSummary?.model
     self.isSubagent = chatSummary?.spawnKind == .subagent
+    // Read off the SESSION, never the chat summary: `parentIdentityKey` is a
+    // host projection carried on the session row, and the CTO parent it names is
+    // filtered out of every roster the phone holds — so there is no parent
+    // summary here to ask, and nothing to derive it from.
+    self.isCtoChild = session.isCtoChild
     self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -378,13 +386,7 @@ struct WorkSessionRow: View, Equatable {
         size: 20
       )
 
-      if showsSubagentIdentity {
-        Image(systemName: "person.2.fill")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .fixedSize()
-          .accessibilityHidden(true)
-      }
+      lineageMark(font: .caption2)
 
       Text(chatSummary?.title ?? session.title)
         .font(.caption.weight(.semibold))
@@ -469,21 +471,56 @@ struct WorkSessionRow: View, Equatable {
           laneChip
           laneGitState
         }
-        if showsSubagentIdentity {
-          Image(systemName: "person.2.fill")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .fixedSize()
-            .accessibilityHidden(true)
-        }
+        lineageMark(font: .caption2)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       statusSlot(wraps: false)
     }
   }
 
+  /// A CTO child REPLACES the subagent glyph rather than sitting beside it.
+  /// Both answer "who spawned this", the CTO answer is strictly more specific,
+  /// and line 1 is the most crowded line on the card — matching how desktop's
+  /// `SessionCard` suppresses the Subagent/Peer pill for a CTO child.
   private var showsSubagentIdentity: Bool {
-    renderSignature.isSubagent
+    renderSignature.isSubagent && !renderSignature.isCtoChild
+  }
+
+  private var showsCtoLineage: Bool {
+    renderSignature.isCtoChild
+  }
+
+  /// Who spawned this row, as one mark.
+  ///
+  /// Informational, unlike desktop's chip, which is also a button to the CTO
+  /// page. Row-internal navigation targets are not a shape this list has: the
+  /// subagent glyph beside it has never been tappable, and the row's own tap
+  /// target opens the session. The CTO is one tab away, so the chip states the
+  /// lineage and leaves navigation to the tab bar.
+  ///
+  /// `font` is a parameter rather than an outer modifier because the leaves set
+  /// their own — an outer `.font` would lose to them — and the accessible
+  /// layout draws this one size larger than the packed line-1 form does.
+  @ViewBuilder
+  private func lineageMark(font: Font) -> some View {
+    if showsCtoLineage {
+      HStack(spacing: 3) {
+        Image(systemName: "brain")
+        Text("CTO")
+      }
+      .font(font.weight(.semibold))
+      // Muted, not accent: lineage is identity, and identity never spends a
+      // status hue — the same rule the pin glyph follows two lines up.
+      .foregroundStyle(ADEColor.textMuted)
+      .fixedSize()
+      .accessibilityHidden(true)
+    } else if showsSubagentIdentity {
+      Image(systemName: "person.2.fill")
+        .font(font.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+        .fixedSize()
+        .accessibilityHidden(true)
+    }
   }
 
   private var lineTwo: some View {
@@ -568,12 +605,10 @@ struct WorkSessionRow: View, Equatable {
           previewView(lineLimit: 2)
         }
 
-        if showsSubagentIdentity {
-          Image(systemName: "person.2.fill")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .accessibilityHidden(true)
-        }
+        // The accessible layout stacks what line 1 packs across, so it carries
+        // the same lineage mark — at the larger size this layout uses
+        // throughout, which is what the subagent glyph here already used.
+        lineageMark(font: .caption)
 
         if showsLaneIdentity {
           laneChip
@@ -859,7 +894,13 @@ struct WorkSessionRow: View, Equatable {
     if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
       parts.append("has a question")
     }
-    if renderSignature.isSubagent {
+    // The glyphs are `accessibilityHidden`, so the lineage has to be stated
+    // here or it is colour-and-shape-only meaning. Same precedence as the
+    // drawing: "spawned by the CTO" is the more specific answer and stands in
+    // for "subagent".
+    if renderSignature.isCtoChild {
+      parts.append("spawned by the CTO")
+    } else if renderSignature.isSubagent {
       parts.append("subagent")
     }
     if let model = renderSignature.model, !model.isEmpty {

@@ -1456,7 +1456,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertFalse(isSessionFiledAsSnoozed(lapsed, phase: .running, now: now))
   }
 
-  func testWorkSessionGroupsKeepASnoozedNeedsYouRowInYourMove() {
+  func testWorkSessionGroupsKeepASnoozedNeedsYouRowInNeedsYou() {
     var blocked = snoozedSession(
       untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
       atOffset: -60,
@@ -1478,6 +1478,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
 
     XCTAssertEqual(groups.map(\.id), ["status:awaiting", workSnoozedSectionId])
+    XCTAssertEqual(groups.first?.label, WorkSessionStatusFilter.needsYou.title)
     XCTAssertEqual(groups.first?.sessions.map(\.id), ["s-blocked"])
     XCTAssertEqual(groups.last?.sessions.map(\.id), ["s-calm"])
   }
@@ -1600,7 +1601,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     //
     // The invariant that survives — and the one worth pinning — is narrower:
     // quietness is confined to those trailing shelves. An ordinary section
-    // ("Your move", "Working", a time bucket) must never fold itself away.
+    // ("Needs you", "Working", a time bucket) must never fold itself away.
     var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
     settled.id = "s-settled"
     settled.settledAt = iso(now.addingTimeInterval(-120))
@@ -1675,7 +1676,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let saved = WorkProjectViewState(
       searchText: "saved search",
       laneFilter: "lane-7",
-      statusFilter: WorkSessionStatusFilter.ended.rawValue,
+      statusFilter: WorkSessionStatusFilter.done.rawValue,
       organization: WorkSessionOrganization.byStatus.rawValue,
       collapsedSectionIds: "lane:lane-7,status:settled"
     )

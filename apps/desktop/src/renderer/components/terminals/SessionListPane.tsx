@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, NotePencil, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -59,7 +59,15 @@ import {
   type WorkSessionFilters,
   type WorkToolFamily,
 } from "./workSessionFilters";
-import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization } from "../../state/appStore";
+import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
+import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
+import type { WorkBoardWaitingReason } from "./useWorkSessions";
+import {
+  WORK_BOARD_COLUMN_LABEL,
+  isWorkBoardMoveTarget,
+  type WorkBoardColumn,
+} from "../../../shared/types/chat";
+import { showToast } from "../app/toast/toastStore";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -92,6 +100,7 @@ const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   manual: "Manual",
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
+const EMPTY_BOARD_WAITING_REASONS: ReadonlyMap<string, WorkBoardWaitingReason> = new Map();
 /** Upper bound on the foreign-row snooze-expiry timer. */
 const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
@@ -913,6 +922,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   onContextMenu,
   sessionListOrganization,
   setSessionListOrganization,
+  workViewMode = "list",
+  setWorkViewMode,
+  workBoardBuckets,
+  workBoardWaitingReasons = EMPTY_BOARD_WAITING_REASONS,
   workCollapsedLaneIds,
   toggleWorkLaneCollapsed,
   workCollapsedSectionIds,
@@ -999,6 +1012,20 @@ export const SessionListPane = React.memo(function SessionListPane({
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
+  /**
+   * List vs board. Optional with a "list" default so every standalone caller of
+   * this pane (tests, ADE Web) keeps compiling and keeps its current shape.
+   */
+  workViewMode?: WorkViewMode;
+  setWorkViewMode?: (mode: WorkViewMode) => void;
+  /**
+   * The board's four columns, derived once by `useWorkSessions` from the same
+   * filtered buckets the list renders. Absent means the toggle is not offered
+   * at all — a pane that cannot be handed board data must not advertise a board.
+   */
+  workBoardBuckets?: Record<WorkBoardColumn, TerminalSessionSummary[]>;
+  /** Why each Waiting row is waiting. Keyed by session id; empty is valid. */
+  workBoardWaitingReasons?: ReadonlyMap<string, WorkBoardWaitingReason>;
   workCollapsedLaneIds: string[];
   toggleWorkLaneCollapsed: (laneId: string) => void;
   workCollapsedSectionIds: string[];
@@ -1165,6 +1192,11 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const isByLane = sessionListOrganization === "by-lane";
   const isByTime = sessionListOrganization === "by-time";
+  // The board is only reachable when the caller actually supplied its columns:
+  // a persisted `workViewMode: "board"` on a pane wired without board data must
+  // fall back to the list rather than render four empty columns.
+  const boardAvailable = Boolean(workBoardBuckets && setWorkViewMode);
+  const isBoard = boardAvailable && workViewMode === "board";
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
@@ -1840,6 +1872,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     return ids;
   }, [excludedTopLevelIds, expandSessionWithChildren]);
   const renderedSessionIds = useMemo(() => {
+    // Board mode first: it replaces the list wholesale, so the ids downstream
+    // consumers get (range selection, `onSelectSession`'s visible set) have to
+    // be the board's reading order — columns left to right, cards top to
+    // bottom — and not the list's, which is not on screen at all.
+    if (isBoard && workBoardBuckets) {
+      const ids: string[] = [];
+      for (const column of WORK_BOARD_COLUMNS) {
+        ids.push(...collectVisibleIds(workBoardBuckets[column.key]));
+      }
+      return ids;
+    }
     if (isByLane) {
       const ids: string[] = [];
       const laneVisibleIds = (laneId: string, list: TerminalSessionSummary[]): string[] => {
@@ -1901,9 +1944,11 @@ export const SessionListPane = React.memo(function SessionListPane({
     collectVisibleIds,
     endedFiltered,
     headerlessLaneIds,
+    isBoard,
     isByLane,
     isByTime,
     laneShelfFor,
+    workBoardBuckets,
     missingLaneSessionGroups,
     orderedLanes,
     quietIdSet,
@@ -1968,6 +2013,8 @@ export const SessionListPane = React.memo(function SessionListPane({
      * that machine was somewhere else entirely. One resolver, one answer.
      */
     machineMarker?: CrossMachineLaneMarker | null;
+    /** Board cards only: the column states the status, so the card must not. */
+    suppressStatusLabel?: boolean;
   };
   const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
@@ -2057,6 +2104,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
         suppressMachineChip={options?.suppressMachineChip}
+        suppressStatusLabel={options?.suppressStatusLabel}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
@@ -2132,6 +2180,206 @@ export const SessionListPane = React.memo(function SessionListPane({
         );
       });
   };
+
+  /**
+   * A board tile's body.
+   *
+   * Deliberately `renderCardCore` with the SINGLETON options — the same shape a
+   * lane with exactly one session renders in the list. That form is the one
+   * that carries the lane identity, the lane's PR badge and the lane menu on
+   * the card itself, which is exactly what a board card needs: there is no lane
+   * divider above it to inherit any of that from.
+   *
+   * Consequence worth stating: left click, right click (the shared
+   * `SessionContextMenu`, lane section included), the hover card, the provider
+   * glyph, the CTO/lineage chip and the cross-fading note line are not
+   * reimplemented here. There is no second code path to keep in sync.
+   */
+  const renderBoardCard = (session: TerminalSessionSummary): React.ReactNode => {
+    const lane = laneById.get(session.laneId) ?? null;
+    const lanePrs = lane ? boundMachineLanePrs(prsByLaneId, lane.id) : [];
+    const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
+    return renderCardCore(session, {
+      showLaneIdentity: true,
+      // The column header is the authority on status here; a card repeating it
+      // is at best noise and at worst a contradiction (a "Done" pill under the
+      // "Needs you" heading). The word moves to the hover card — see SessionCard.
+      suppressStatusLabel: true,
+      lanePr: primaryPr,
+      lanePrs,
+      onOpenLanePrs: lane
+        ? () => navigate(`/prs${buildPrsRouteSearch({
+            activeTab: "normal",
+            selectedPrId: null,
+            selectedLaneId: lane.id,
+            selectedRebaseItemId: null,
+          })}`)
+        : undefined,
+      machineMarker: markersByLaneId.get(session.laneId) ?? null,
+      laneActions: lane
+        ? {
+            laneId: lane.id,
+            laneName: lane.name,
+            lane,
+            onToggleWorkPin: toggleWorkLanePinned,
+            workPinnedLaneIds,
+            workPinLaneId: lane.id,
+            open: ({ x, y }) => triggerLaneContextMenu(lane.id, {
+              preventDefault: () => {},
+              clientX: x,
+              clientY: y,
+            }),
+          }
+        : null,
+    });
+  };
+
+  /**
+   * Sessions whose board move has been delivered but not yet answered.
+   *
+   * The card pulses while its id is here, which is the only honest thing the
+   * board can say between "the user moved it" and "the agent reacted": the
+   * status write lands instantly, the message does not. Cleared by the first
+   * activity newer than the move, so a chat that was already mid-turn stops
+   * pulsing on its own next frame rather than pulsing until it happens to idle.
+   */
+  const [boardMovePulses, setBoardMovePulses] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    if (boardMovePulses.size === 0) return;
+    let changed = false;
+    const next = new Map(boardMovePulses);
+    for (const [sessionId, movedAt] of boardMovePulses) {
+      const session = allSessionsUnfiltered.find((candidate) => candidate.id === sessionId);
+      const activity = session?.lastActivityAt ?? null;
+      if (!session || (activity && activity > movedAt)) {
+        next.delete(sessionId);
+        changed = true;
+      }
+    }
+    if (changed) setBoardMovePulses(next);
+  }, [allSessionsUnfiltered, boardMovePulses]);
+
+  /**
+   * Apply a board drop.
+   *
+   * One call, one action: `session.moveOnBoard` owns the lifecycle write AND
+   * the message the agent reacts to, so the renderer cannot land one without
+   * the other (and cannot invent a third variant of "what Done means"). The
+   * Waiting column is refused upstream — it is derived and cannot be asserted.
+   *
+   * The undo is the snooze toast's shape exactly: 5 seconds, one action, and it
+   * reverses BOTH halves — the host refuses the undo once the message has gone
+   * out rather than reversing the write alone.
+   */
+  const handleBoardMove = useCallback(
+    (session: TerminalSessionSummary, column: WorkBoardColumn) => {
+      const move = window.ade.sessions?.moveOnBoard;
+      if (typeof move !== "function") {
+        showToast({
+          title: "Move failed",
+          message: "This window cannot move board cards.",
+          tone: "error",
+        });
+        return;
+      }
+      // The board's column keys ARE the action's targets, so there is nothing
+      // to translate; Waiting is refused by the guard because it is derived.
+      if (!isWorkBoardMoveTarget(column)) return;
+      const to = column;
+      void move(session.id, to)
+        .then((result) => {
+          if (!result?.changed || !result.moveId) {
+            // A no-op is ALWAYS a disagreement here: the board only offers a
+            // column the card is not already in, so the host answering "it is
+            // already there" means the two derived it differently. They can,
+            // in exactly one way — the host files Waiting from the snooze
+            // alone, while this board also parks a running row there for a
+            // pending check or an outstanding review, which the host still
+            // reads as Working. Say so; a silent snap-back reads as a bug.
+            if (result && !result.changed) {
+              // A live structured card is a different refusal: the row really
+              // is in Needs you, and clearing the attention columns would not
+              // answer the provider's question — so the card would sit there
+              // while the toast claimed a move. Say what is actually blocking.
+              const pendingCard = result.reason === "pending_input";
+              showToast({
+                id: `session-board-move:${session.id}`,
+                title: pendingCard
+                  ? "Answer the question first"
+                  : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
+                message: pendingCard
+                  ? "This chat is waiting on an answer, so moving it would not change what it needs."
+                  : "The PR is what is waiting, not the chat.",
+                durationMs: 4_000,
+              });
+            }
+            return;
+          }
+          const moveId = result.moveId;
+          setBoardMovePulses((previous) => {
+            const next = new Map(previous);
+            next.set(session.id, new Date().toISOString());
+            return next;
+          });
+          showToast({
+            id: `session-board-move:${session.id}`,
+            title: `Moved to ${WORK_BOARD_COLUMN_LABEL[to]}`,
+            message: result.message ? "The agent will be told." : undefined,
+            durationMs: 5_000,
+            action: {
+              label: "Undo",
+              onClick: () => {
+                const undo = window.ade.sessions?.undoBoardMove;
+                if (typeof undo !== "function") return;
+                void undo(session.id, moveId)
+                  .then((undone) => {
+                    setBoardMovePulses((previous) => {
+                      const next = new Map(previous);
+                      next.delete(session.id);
+                      return next;
+                    });
+                    if (undone?.ok !== false) return;
+                    showToast({
+                      title: "Too late to undo",
+                      message: undone.reason === "unknown_move"
+                        // The host restarted inside the undo window: the
+                        // columns are written, the message was never sent, and
+                        // it no longer knows what to put back.
+                        ? "ADE no longer has this move staged. The card stays where you put it."
+                        : undone.reason === "session_advanced"
+                          // The chat moved on inside the window — a new hand, a
+                          // settle, a snooze. Putting the old state back would
+                          // overwrite something newer than the move.
+                          ? "This chat has changed since the move, so there is nothing left to take back."
+                          : "The agent has already been told about this move.",
+                      tone: "error",
+                    });
+                  })
+                  .catch((error: unknown) => {
+                    showToast({
+                      title: "Undo failed",
+                      message: error instanceof Error ? error.message : String(error),
+                      tone: "error",
+                    });
+                  });
+              },
+            },
+          });
+        })
+        .catch((error: unknown) => {
+          showToast({
+            title: "Move failed",
+            // The host reverses its own status write when the move cannot
+            // complete, so the card genuinely did not move.
+            message: error instanceof Error ? error.message : String(error),
+            tone: "error",
+          });
+        });
+    },
+    [],
+  );
 
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
     <AnimatePresence initial={false}>
@@ -3045,6 +3293,39 @@ export const SessionListPane = React.memo(function SessionListPane({
               ) : null}
             </button>
           </SmartTooltip>
+          {/* List ↔ board, immediately left of the funnel. It uses the Work
+              tab's own segmented-control idiom (`.ade-work-segmented` in
+              index.css), which already carries the light-theme active fill —
+              so there is no new control shape and no new colour here. Icon-only
+              because the strip is 8 units tall and already holds four controls;
+              each half keeps a real accessible name and tooltip. */}
+          {boardAvailable && setWorkViewMode ? (
+            <div
+              className="ade-work-segmented shrink-0"
+              role="group"
+              aria-label="Session view"
+              data-testid="work-view-mode-toggle"
+            >
+              {([
+                { mode: "list" as const, label: "List", Icon: ListBullets, description: "Group sessions in the scrolling list." },
+                { mode: "board" as const, label: "Board", Icon: Kanban, description: "Lay sessions out as a board: Needs you, Working, Waiting, Done." },
+              ]).map(({ mode, label, Icon, description }) => (
+                <SmartTooltip key={mode} content={{ label, description }}>
+                  <button
+                    type="button"
+                    className="ade-work-segmented-item"
+                    data-active={workViewMode === mode ? "true" : undefined}
+                    aria-pressed={workViewMode === mode}
+                    aria-label={`${label} view`}
+                    data-testid={`work-view-mode-${mode}`}
+                    onClick={() => setWorkViewMode(mode)}
+                  >
+                    <Icon size={12} weight={workViewMode === mode ? "fill" : "regular"} aria-hidden />
+                  </button>
+                </SmartTooltip>
+              ))}
+            </div>
+          ) : null}
           <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane or time." }}>
             <button
               type="button"
@@ -3305,10 +3586,25 @@ export const SessionListPane = React.memo(function SessionListPane({
       {/* Session list */}
       <div
         ref={listScrollRef}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-0.5 pt-2"
+        className={cn(
+          "min-h-0 flex-1 px-0.5 pt-2",
+          // The board scrolls per column, so the outer box must not scroll at
+          // all — otherwise the columns grow to their content and the whole
+          // board scrolls as one, which is the thing four columns exist to avoid.
+          isBoard ? "overflow-hidden" : "overflow-y-auto overflow-x-hidden",
+        )}
         data-tour="work.crossLaneSwitch"
       >
-        {!hasAnySessions && chipFiltersActive ? (
+        {isBoard && workBoardBuckets ? (
+          <WorkKanbanBoard
+            buckets={workBoardBuckets}
+            waitingReasons={workBoardWaitingReasons}
+            renderCard={renderBoardCard}
+            laneAccentFor={(session) => laneById.get(session.laneId)?.color ?? null}
+            onMoveSession={handleBoardMove}
+            pulsingSessionIds={boardMovePulses}
+          />
+        ) : !hasAnySessions && chipFiltersActive ? (
           // Chip filters persist across restarts, so an empty list has to say
           // WHY it is empty — otherwise a filter left on last week reads as
           // "all my work is gone".

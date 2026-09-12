@@ -122,6 +122,7 @@ import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
+  messageClearsAttentionMarkers,
 } from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
@@ -396,6 +397,8 @@ import type {
   AgentChatPermissionPolicy,
   AgentChatSettingSources,
   AgentChatSettingSourcesCapability,
+  AutomationRule,
+  AutomationRuleSummary,
   CodexPlanState,
   CodexModerationMetadata,
   AgentChatMcpToolSource,
@@ -440,7 +443,9 @@ import {
   isAcpChatProvider,
   legacyPermissionModeFromDroidPermissionMode,
   spawnCompletedNoticeMessage,
+  activeTurnDispatchModes,
   defaultActiveTurnDispatchMode,
+  providerSupportsLiveRedirect,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
@@ -562,8 +567,33 @@ import {
 } from "../ai/tools/orchestrationTools";
 import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
-import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
-import { CTO_INTRO_ONBOARDING_STEP, CTO_INTRO_PROMPT } from "../cto/ctoPromptContent";
+import {
+  buildCodexDynamicToolSpecs,
+  codexDeferCtoTool,
+  jsonSchemaForExecutableTool,
+  type CodexDynamicToolSpec,
+} from "./codexCtoToolDeferral";
+import {
+  formatCtoChildReportLine,
+  readChildPullRequestNumber,
+  shouldInjectLaneMemoryContext,
+  truncateTailToLineBoundary,
+} from "./ctoTurnContext";
+import {
+  applyCtoToolPackVisibility,
+  createCtoOperatorTools,
+  type CtoOperatorToolDeps,
+  type CtoOperatorToolMap,
+  type CtoToolPack,
+} from "../ai/tools/ctoOperatorTools";
+import {
+  CTO_INTRO_ONBOARDING_STEP,
+  CTO_INTRO_PROMPT,
+  CTO_MEMORY_GARDENER_CRON,
+  CTO_MEMORY_GARDENER_ONBOARDING_STEP,
+  CTO_MEMORY_GARDENER_PROMPT,
+  CTO_MEMORY_GARDENER_TITLE,
+} from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
@@ -1269,14 +1299,6 @@ type CodexRateLimits = {
   spendControlReached?: boolean;
 };
 
-type CodexDynamicToolSpec = {
-  namespace?: string | null;
-  name: string;
-  description: string;
-  inputSchema: unknown;
-  deferLoading?: boolean;
-};
-
 type PersistedRecentConversationEntry = {
   role: "user" | "assistant";
   text: string;
@@ -1416,6 +1438,20 @@ type PersistedChatState = {
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
   awaitingInput?: boolean;
+  /**
+   * Plan approvals the user has ALREADY answered, whose `pending_input_resolved`
+   * receipt is deliberately withheld until `drainPendingPlanFollowups` runs.
+   *
+   * Without this marker a crash in that window resurrects the card: the
+   * approval entry keeps `awaitingInput: true` persisted, and the transcript
+   * fallback (`latestPendingInputItemIdFromEvents`) sees an `approval_request`
+   * with no resolution, so the restarted chat reads "Needs you" for a plan the
+   * user decided before the restart — and answering it again is impossible,
+   * because the runtime that raised it is gone. Entries are dropped the moment
+   * the real receipt is written, so this never grows and never outlives the
+   * truth it stands in for.
+   */
+  answeredPlanApprovalItemIds?: string[];
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
   /** Non-interactive runtime mode (e.g. "print" for one-shot CLI output). Drives initialize handshake opt-outs. */
@@ -3649,6 +3685,8 @@ type ManagedChatSession = {
   claudeQuotaCardLiveChecked?: boolean;
   claudeQuotaCardWasLive?: boolean;
   codexTerminalTurnIds: Set<string>;
+  /** Live mirror of `PersistedChatState.answeredPlanApprovalItemIds`. */
+  answeredPlanApprovalItemIds: Set<string>;
   codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
@@ -3671,6 +3709,15 @@ type ManagedChatSession = {
   pendingInputSettlement?: Promise<void>;
   /** Live HTTP MCP leases, at most one per tool set. */
   httpMcpServers: Partial<Record<"orchestration" | "cto", HttpMcpLease>>;
+  /**
+   * Extension tool packs the CTO has asked for in this session (`loadCtoTools`).
+   * The core pack is never listed here — it is always loaded by construction,
+   * so an empty set still means "every core tool, fully described".
+   *
+   * Per-session and in-memory on purpose: a pack loaded for one investigation
+   * should not permanently widen every later thread's prompt.
+   */
+  ctoToolPacks: Set<CtoToolPack>;
   activeBashControllers: Set<AbortController>;
   eventSequence: number;
   lastActivityTimestamp: number;
@@ -7755,21 +7802,6 @@ type HttpMcpLease = {
   close: () => Promise<void>;
 };
 
-function stripJsonSchemaMeta(schema: unknown): unknown {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
-  const record = { ...(schema as Record<string, unknown>) };
-  delete record.$schema;
-  return record;
-}
-
-function jsonSchemaForExecutableTool(toolDefinition: ExecutableTool): unknown {
-  try {
-    return stripJsonSchemaMeta(z.toJSONSchema(toolDefinition.inputSchema as ZodType));
-  } catch {
-    return { type: "object", additionalProperties: true };
-  }
-}
-
 function stringifyExecutableToolOutput(output: unknown): string {
   if (typeof output === "string") return output;
   try {
@@ -7801,6 +7833,16 @@ function buildAdeSessionLineageGuidance(
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
 
+/**
+ * The lane-scoped ADE directive.
+ *
+ * The Work-board status rule is NOT appended here, and is not in the shared
+ * session-status guidance either. A line in either place reaches the Cursor SDK
+ * prompt, which already sits at ~100% of its hard 3 KB budget and truncates
+ * from the END — so it would silently evict that prompt's subagent routing
+ * contract and project rules. The rule is documented in the "Board and status"
+ * section of the ade-cli-control-plane skill, which every agent reads.
+ */
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
@@ -8454,6 +8496,20 @@ type AgentChatAutomationService = {
   triggerManually: (args: any) => Promise<any>;
   listRuns: (args?: any) => any[];
   cancelRunForDeletedChat: (args: { sessionId: string; runId?: string | null }) => void;
+  /**
+   * Rule lifecycle, optional so narrow runtime doubles keep compiling. The CTO
+   * tools that use them answer "not available" when a host wires only the
+   * read/trigger pair.
+   *
+   * These are the REAL `automationService` member names. It exposes `toggle`,
+   * not `toggleRule`, and no rule-by-id read at all — the by-id read comes from
+   * the project config, exactly as `buildAutomationsDomainService` does it in
+   * the action registry. Probing for `get`/`toggleRule` here silently produced
+   * a null dep, which made every CTO automation-rule tool answer "not
+   * available" on a fully wired desktop.
+   */
+  deleteRule?: (args: { id: string }) => AutomationRuleSummary[];
+  toggle?: (args: { id: string; enabled: boolean }) => AutomationRuleSummary[];
 };
 
 /** Live in-memory chat-event rings kept by the brain. Snapshot hydration must
@@ -8508,6 +8564,22 @@ export function createAgentChatService(args: {
     & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
+  /**
+   * Domain coverage for the CTO's operator tools. Every one is optional and
+   * lazily resolved: the desktop wires all of them, `ade code` and the headless
+   * brain wire a subset, and an unwired service leaves its tools answering
+   * "not available on this runtime" instead of throwing (runtime-backed null
+   * services). None of them are used by any non-CTO session.
+   */
+  getAutomationPlannerService?: () => CtoOperatorToolDeps["automationPlannerService"];
+  getReviewService?: () => CtoOperatorToolDeps["reviewService"];
+  getUsageService?: () => CtoOperatorToolDeps["usageService"];
+  getBudgetService?: () => CtoOperatorToolDeps["budgetService"];
+  /** NAMES ONLY — the type carries no value accessor, so no tool can read a secret. */
+  getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
+  getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
+  getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
+  getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
@@ -8615,6 +8687,14 @@ export function createAgentChatService(args: {
     getTestService,
     ptyService,
     getAutomationService,
+    getAutomationPlannerService,
+    getReviewService,
+    getUsageService,
+    getBudgetService,
+    getProjectSecretService,
+    getIosSimulatorService,
+    getAppControlService,
+    getBuiltInBrowserService,
     getGitService,
     conflictService,
     computerUseArtifactBrokerService,
@@ -10186,8 +10266,22 @@ export function createAgentChatService(args: {
     laneId: string;
     modelId: string | null;
     reasoningEffort: string | null;
+    /**
+     * The live session, when there is one. `previewSessionToolNames` builds the
+     * same dep set without a session (it only reads tool NAMES), so pack
+     * bookkeeping and the approval card are absent there by construction.
+     */
+    managed?: ManagedChatSession | null;
   }): Parameters<typeof createCtoOperatorTools>[0] => {
-    const { sessionId, laneId, modelId, reasoningEffort } = args;
+    const { sessionId, laneId, modelId, reasoningEffort, managed = null } = args;
+    const automationService = getAutomationService?.() ?? null;
+    // Hoisted out of the object literal below: TypeScript cannot carry a
+    // `typeof automationService.get === "function"` narrowing across the arrow
+    // that calls it, so reading the members once here is what removes the
+    // non-null assertions. `.call` keeps `this` — the registry's `deleteRule`
+    // and `toggleRule` return `this.list()`.
+    const automationRuleDelete = automationService?.deleteRule;
+    const automationRuleToggle = automationService?.toggle;
     return {
         currentSessionId: sessionId,
         defaultLaneId: laneId,
@@ -10199,7 +10293,7 @@ export function createAgentChatService(args: {
         fileService: fileService ?? null,
         testService: getTestService?.() ?? null,
         ptyService: ptyService ?? null,
-        automationService: getAutomationService?.() ?? null,
+        automationService,
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
@@ -10233,6 +10327,82 @@ export function createAgentChatService(args: {
             reuseExisting,
             permissionMode: "full-auto",
           }),
+
+        // ── Full domain coverage, loaded on demand ──
+        // Pack bookkeeping is per live session. Without one (the prompt-manifest
+        // preview) `loadCtoTools` still lists packs; it just has nowhere to
+        // record the load, which is correct — the preview runs no turns.
+        ...(managed
+          ? {
+              onToolPackLoaded: (pack: CtoToolPack) => {
+                managed.ctoToolPacks.add(pack);
+              },
+              loadedToolPacks: () => managed.ctoToolPacks,
+              // Destructive CTO tools raise the SAME approval card an agent's
+              // tool call raises; the user answers it through `approveToolUse`.
+              requestApproval: async ({ title, description, detail }) => {
+                const response = await requestChatInput({
+                  chatSessionId: managed.session.id,
+                  title,
+                  body: description,
+                  source: "ade",
+                  questions: [{
+                    id: "tool_decision",
+                    header: "Tool approval",
+                    question: description,
+                    options: [
+                      { label: "Allow", value: "allow", recommended: true },
+                      { label: "Deny", value: "deny" },
+                    ],
+                    allowsFreeform: true,
+                  }],
+                  providerMetadata: { toolApproval: true, detail: detail ?? null },
+                  eventDescription: description,
+                  eventDetail: { toolApproval: true, detail: detail ?? null },
+                });
+                const answer = firstAnswerText(response.answers, response.responseText).toLowerCase();
+                const denied = response.decision === "decline"
+                  || response.decision === "cancel"
+                  || answer.includes("deny")
+                  || answer.includes("reject");
+                return { approved: !denied, reason: response.responseText };
+              },
+            }
+          : {}),
+        automationPlannerService: getAutomationPlannerService?.() ?? null,
+        automationRuleService: automationService && automationRuleDelete && automationRuleToggle
+          ? {
+              // Read a rule by id out of the project config: the automation
+              // service has no by-id accessor, and this is the same source the
+              // action registry reads.
+              get: ({ id }) => {
+                const trimmed = id?.trim();
+                if (!trimmed) return null;
+                return projectConfigService.get().effective.automations.find((rule) => rule.id === trimmed) ?? null;
+              },
+              deleteRule: (a) => automationRuleDelete.call(automationService, a),
+              toggleRule: (a) => automationRuleToggle.call(automationService, a),
+            }
+          : null,
+        handoffSession: (handoffArgs) => handoffSession(handoffArgs as AgentChatHandoffArgs),
+        scheduledWorkService: {
+          create: (a) => createScheduledWork(a as AgentChatCreateScheduledWorkArgs),
+          list: (a) => listScheduledWork(a ?? {}),
+          getState: (a) => getScheduledWorkState(a),
+          cancel: (a) => cancelScheduledWork(a),
+          setPaused: (a) => setScheduledWorkPaused(a),
+        },
+        proofIngestService: computerUseArtifactBrokerRef ?? null,
+        reviewService: getReviewService?.() ?? null,
+        searchService: getSearchService?.() ?? null,
+        usageService: getUsageService?.() ?? null,
+        budgetService: getBudgetService?.() ?? null,
+        projectConfigService,
+        projectSecretService: getProjectSecretService?.() ?? null,
+        iosSimulatorService: getIosSimulatorService?.() ?? null,
+        appControlService: getAppControlService?.() ?? null,
+        builtInBrowserService: getBuiltInBrowserService?.() ?? null,
+        orchestrationService: getOrchestrationService?.() ?? null,
     };
   };
 
@@ -10246,14 +10416,32 @@ export function createAgentChatService(args: {
    */
   const createCtoRuntimeToolMap = (
     managed: ManagedChatSession,
-  ): OrchestrationToolMap | null => {
+  ): CtoOperatorToolMap | null => {
     if (managed.session.identityKey !== "cto") return null;
     return createCtoOperatorTools(buildCtoOperatorToolDeps({
       sessionId: managed.session.id,
       laneId: managed.session.laneId,
       modelId: managed.session.modelId ?? null,
       reasoningEffort: managed.session.reasoningEffort ?? null,
+      managed,
     }));
+  };
+
+  /**
+   * What the session actually ADVERTISES this turn.
+   *
+   * Every tool stays registered and callable — deferral must never make a
+   * capability unreachable, only quiet. Core-pack tools always carry their full
+   * description; an unloaded extension pack carries a one-line summary plus a
+   * pointer at `loadCtoTools`, which is what makes the tool list affordable
+   * without hiding anything.
+   */
+  const createCtoAdvertisedToolMap = (
+    managed: ManagedChatSession,
+  ): CtoOperatorToolMap | null => {
+    const tools = createCtoRuntimeToolMap(managed);
+    if (!tools) return null;
+    return applyCtoToolPackVisibility(tools, managed.ctoToolPacks);
   };
 
   const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => {
@@ -12044,7 +12232,8 @@ export function createAgentChatService(args: {
       const nextModel = managed.session.model;
       const nextReasoning = managed.session.reasoningEffort ?? null;
       if (
-        prefs.provider === nextProvider
+        prefs
+        && prefs.provider === nextProvider
         && prefs.model === nextModel
         && prefs.modelId === modelId
         && (prefs.reasoningEffort ?? null) === nextReasoning
@@ -12201,8 +12390,61 @@ export function createAgentChatService(args: {
       sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
     }
 
+    // The one memory section that is NOT CTO-gated. Every project chat gets the
+    // facts tagged with its own lane plus the rolling thread state, so a worker
+    // starts with what is already known about the ground it stands on.
+    //
+    // Delivered once per lane change, not once per turn: it rides the same
+    // `lastLaneDirectiveKey` dedupe as the lane execution directive, which the
+    // send path stamps after a successful delivery. A worker that never moves
+    // lanes therefore sees it exactly once.
+    if (ctoMemoryService) {
+      const executionLaneId = resolveManagedExecutionLaneId(managed);
+      const laneDirectiveKey = buildLaneDirectiveKey({
+        laneId: executionLaneId,
+        laneWorktreePath: managed.laneWorktreePath,
+      });
+      const deliverLaneMemory = shouldInjectLaneMemoryContext({
+        isCto,
+        isPersonal: isPersonalSession(managed.session),
+        laneDirectiveKey,
+        lastLaneDirectiveKey: managed.lastLaneDirectiveKey,
+      });
+      const laneMemory = deliverLaneMemory
+        ? ctoMemoryService.buildLaneMemoryContextSection(executionLaneId)
+        : null;
+      if (laneMemory) {
+        sections.push([laneMemory.title, laneMemory.body].join("\n"));
+      }
+    }
+
     const nextContext = sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
     managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
+  };
+
+  /**
+   * Recapture the CTO's live project state and fold it back into the pending
+   * turn context.
+   *
+   * Called at the top of a send rather than on a timer: a live block describing
+   * lanes and PRs as they were an hour ago is worse than no block, because the
+   * CTO is told not to re-derive it. Every non-CTO chat returns before the
+   * round-trip. Failures are swallowed — a slow PR refresh must not be able to
+   * block the user's turn.
+   */
+  const refreshCtoLiveStateForTurn = async (sessionId: string): Promise<void> => {
+    if (!ctoStateService) return;
+    const managed = managedSessions.get(sessionId);
+    if (!managed || managed.deleted || managed.session.identityKey !== "cto") return;
+    try {
+      await ctoStateService.refreshLiveState();
+      refreshReconstructionContext(managed);
+    } catch (error) {
+      logger.warn("agent_chat.cto_live_state_refresh_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const CURSOR_CONTINUITY_DISCLAIMER =
@@ -12285,11 +12527,7 @@ export function createAgentChatService(args: {
         0,
         budget - replay.length - separatorLength - reconstructionPrefix.length,
       );
-      if (reconstruction.length > reconstructionBudget) {
-        reconstruction = reconstructionBudget > 0
-          ? reconstruction.slice(-reconstructionBudget)
-          : "";
-      }
+      reconstruction = truncateTailToLineBoundary(reconstruction, reconstructionBudget);
     }
 
     if (hadReplay) managed.pendingTranscriptReplay = null;
@@ -14561,6 +14799,12 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      // Written from the live set ONLY — never carried forward from the previous
+      // record. The drain's whole job is to empty this, and a carry-forward
+      // would make an emptied set unpersistable.
+      ...(managed.answeredPlanApprovalItemIds.size
+        ? { answeredPlanApprovalItemIds: [...managed.answeredPlanApprovalItemIds].slice(-32) }
+        : {}),
       ...(managed.codexAutomaticRecoveryAttempted
         ? { codexAutomaticRecoveryAttempted: true }
         : {}),
@@ -14893,6 +15137,12 @@ export function createAgentChatService(args: {
             64,
           )
         : undefined;
+      const answeredPlanApprovalItemIds = Array.isArray(record.answeredPlanApprovalItemIds)
+        ? uniqueNonEmpty(
+            record.answeredPlanApprovalItemIds.map((itemId) => typeof itemId === "string" ? itemId : null),
+            32,
+          )
+        : undefined;
       const unprocessedMessageResolutionReceipts =
         normalizeUnprocessedMessageResolutionReceipts(
           record.unprocessedMessageResolutionReceipts,
@@ -15036,6 +15286,7 @@ export function createAgentChatService(args: {
             ? { idleSinceAt: null }
             : {}),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
+        ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
         ...(record.codexAutomaticRecoveryAttempted === true
           ? { codexAutomaticRecoveryAttempted: true }
           : {}),
@@ -18795,6 +19046,16 @@ export function createAgentChatService(args: {
   ): UniversalToolSetOptions => ({
     permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
     getDirtyFileTextForPath,
+    // Append-only hand-up to the project's CTO. The worker's own lane is
+    // stamped when it did not tag one, so an untagged finding is still
+    // findable from the lane it came out of.
+    onRecordDiscovery: ({ fact, tags }) => {
+      if (!ctoMemoryService) return { saved: false, fact };
+      return ctoMemoryService.recordDiscovery(fact, {
+        lane: resolveManagedExecutionLaneId(managed),
+        ...(tags ?? {}),
+      });
+    },
     getTodoItems: () => managed.todoItems,
     onTodoUpdate: (items) => {
       emitChatEvent(managed, {
@@ -19029,7 +19290,7 @@ export function createAgentChatService(args: {
     cto: {
       serverName: CTO_MCP_SERVER_NAME,
       codexNamespace: CTO_CODEX_TOOL_NAMESPACE,
-      buildTools: (managed: ManagedChatSession) => createCtoRuntimeToolMap(managed),
+      buildTools: (managed: ManagedChatSession) => createCtoAdvertisedToolMap(managed),
     },
   } as const;
 
@@ -19110,18 +19371,6 @@ export function createAgentChatService(args: {
   const codexDynamicToolKey = (namespace: string | null | undefined, name: string): string =>
     `${namespace ?? ""}\u0000${name}`;
 
-  const buildCodexDynamicToolSpecs = (
-    tools: OrchestrationToolMap,
-    namespace: string,
-  ): CodexDynamicToolSpec[] =>
-    Object.entries(tools).map(([name, toolDefinition]) => ({
-      namespace,
-      name,
-      description: toolDefinition.description,
-      inputSchema: jsonSchemaForExecutableTool(toolDefinition),
-      deferLoading: false,
-    }));
-
   /**
    * Rebuilds the whole dynamic-tool map for a Codex runtime.
    *
@@ -19143,7 +19392,13 @@ export function createAgentChatService(args: {
       for (const [name, toolDefinition] of Object.entries(tools)) {
         runtime.dynamicTools.set(codexDynamicToolKey(namespace, name), toolDefinition);
       }
-      specs.push(...buildCodexDynamicToolSpecs(tools, namespace));
+      specs.push(...buildCodexDynamicToolSpecs(
+        tools,
+        namespace,
+        toolSet === "cto"
+          ? (_name, toolDefinition) => codexDeferCtoTool(toolDefinition, managed.ctoToolPacks)
+          : undefined,
+      ));
     }
     runtime.dynamicToolSpecs = specs;
     return runtime.dynamicToolSpecs;
@@ -19240,17 +19495,119 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The shared body of the four `settle*` wrappers below: empty the map,
+   * answer each waiter, write its `pending_input_resolved` receipt, and
+   * persist ONCE at the end. Written once because the receipt is the half
+   * that kept being forgotten — with one implementation there is one answer
+   * to "did this path write a receipt?" instead of four.
+   *
+   * Nothing is persisted when the map was already empty: a second call (a
+   * teardown landing after an interrupt already settled) must be free.
+   */
+  const settlePendingWaiters = <W>(
+    managed: ManagedChatSession,
+    waiters: Map<string, W>,
+    cancel: (waiter: W) => void,
+    meta: (waiter: W) => { turnId: string | null; questions: readonly PendingInputQuestion[] },
+  ): void => {
+    if (!waiters.size) return;
+    for (const [itemId, waiter] of [...waiters]) {
+      waiters.delete(itemId);
+      cancel(waiter);
+      emitPendingInputResolved(managed, { itemId, decision: "cancel", ...meta(waiter) });
+    }
+    persistChatState(managed);
+  };
+
+  /**
    * Settle every Claude approval still waiting on the user.
    *
    * A Claude approval is a `canUseTool` callback promise: it can only be
    * answered on the query that raised it, so once that query is finished the
    * waiter would otherwise hang forever and hold the session's gates shut.
+   *
+   * Resolving the waiter is only half of it, and the missing half was a real
+   * stuck-"Needs you": the map was cleared with no `pending_input_resolved`
+   * receipt, so the summary's restart fallback
+   * (`latestPendingInputItemIdFromEvents`, which clears only on that event)
+   * went on naming a card nothing could answer, and the row stayed blocked.
+   * So this settles through the shared `settlePendingWaiters` helper: one
+   * receipt per item, then persist — so a reload re-derives a settled card,
+   * not a live one.
+   *
+   * The map is emptied as each entry settles, so a second call (a teardown
+   * landing after an interrupt already settled) finds nothing and cannot write
+   * a duplicate receipt for the same card.
    */
-  const settleClaudePendingApprovals = (runtime: ClaudeRuntime): void => {
-    for (const pending of runtime.approvals.values()) {
-      pending.resolve({ decision: "cancel" });
-    }
-    runtime.approvals.clear();
+  const settleClaudePendingApprovals = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): void => {
+    settlePendingWaiters(
+      managed,
+      runtime.approvals,
+      (pending) => pending.resolve({ decision: "cancel" }),
+      (pending) => ({
+        turnId: pending.request?.turnId ?? null,
+        questions: pending.request?.questions ?? [],
+      }),
+    );
+  };
+
+  /**
+   * The same contract as `settleClaudePendingApprovals` for the three runtimes
+   * whose waiter maps were also being cleared bare.
+   *
+   * Each one answers its own waiter (an OpenCode permission reply, a Cursor
+   * hook decision, a Droid decision) and then writes the one receipt the card
+   * needs to stop being redrawn. They are only used where the SESSION SURVIVES
+   * — teardown, turn failure, runtime restart, interrupt — because that is the
+   * only case where a card with no receipt becomes a stuck "Needs you". Dispose
+   * / delete / shutdown paths deliberately still clear bare: the row is going
+   * away with the transcript, and emitting into a transcript that is being torn
+   * down buys nothing.
+   */
+  const settleOpenCodePendingApprovals = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+  ): void => {
+    settlePendingWaiters(
+      managed,
+      runtime.pendingApprovals,
+      (pending) => {
+        rejectOpenCodePendingApproval(runtime.handle, pending).catch(() => {});
+      },
+      (pending) => ({
+        turnId: pending.request?.turnId ?? null,
+        questions: pending.request?.questions ?? [],
+      }),
+    );
+  };
+
+  const settleCursorPermissionWaiters = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    reason: string,
+  ): void => {
+    settlePendingWaiters(
+      managed,
+      runtime.permissionWaiters,
+      (waiter) => cancelCursorPermissionWaiter(waiter, reason),
+      () => ({ turnId: runtime.activeTurnId ?? null, questions: [] }),
+    );
+  };
+
+  const settleDroidPermissionWaiters = (
+    managed: ManagedChatSession,
+    runtime: DroidRuntime,
+    reason: string,
+  ): void => {
+    settlePendingWaiters(
+      managed,
+      runtime.permissionWaiters,
+      (waiter) => cancelDroidPermissionWaiter(waiter, reason),
+      () => ({ turnId: runtime.activeTurnId ?? null, questions: [] }),
+    );
   };
 
   /**
@@ -19354,6 +19711,7 @@ export function createAgentChatService(args: {
     }
     for (const followup of stagedFollowups) {
       resolveOnce(followup.itemId, followup.turnId);
+      managed.answeredPlanApprovalItemIds.delete(followup.itemId);
     }
     // A Codex turn owns the `ade` cards raised by ADE's own tools during it as
     // well as its own, and both block the next send.
@@ -19517,7 +19875,7 @@ export function createAgentChatService(args: {
       runtime.subagentLabelById.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
-      settleClaudePendingApprovals(runtime);
+      settleClaudePendingApprovals(managed, runtime);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "opencode") {
@@ -19525,10 +19883,7 @@ export function createAgentChatService(args: {
       managed.runtime.interrupted = true;
       managed.runtime.eventAbortController?.abort();
       managed.runtime.handle.setBusy(false);
-      for (const pending of managed.runtime.pendingApprovals.values()) {
-        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
-      }
-      managed.runtime.pendingApprovals.clear();
+      settleOpenCodePendingApprovals(managed, managed.runtime);
       managed.runtime.handle.setEvictionHandler(null);
       try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
       managed.runtime = null;
@@ -19536,20 +19891,22 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       clearCursorSdkSilenceWatch(rt);
-      for (const [, w] of rt.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, options?.cursorPermissionWaiterReason ?? CURSOR_PERMISSION_WAITER_CLOSED_REASON);
-      }
-      rt.permissionWaiters.clear();
+      settleCursorPermissionWaiters(
+        managed,
+        rt,
+        options?.cursorPermissionWaiterReason ?? CURSOR_PERMISSION_WAITER_CLOSED_REASON,
+      );
       if (preserveProviderResumeState) persistChatState(managed);
       releaseCursorSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
-      for (const [, w] of rt.permissionWaiters) {
-        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the session closed.");
-      }
-      rt.permissionWaiters.clear();
+      settleDroidPermissionWaiters(
+        managed,
+        rt,
+        "Droid tool approval was cancelled because the session closed.",
+      );
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
@@ -19936,6 +20293,7 @@ export function createAgentChatService(args: {
       ...(persisted?.usageLimitResume ? { usageLimitResume: persisted.usageLimitResume } : {}),
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
+      answeredPlanApprovalItemIds: new Set<string>(persisted?.answeredPlanApprovalItemIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
         normalizeUnprocessedMessageResolutionReceipts(
@@ -19956,6 +20314,7 @@ export function createAgentChatService(args: {
       })) ?? [],
       localPendingInputs: new Map(),
       httpMcpServers: {},
+      ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -28172,6 +28531,10 @@ export function createAgentChatService(args: {
         turnId: followup.turnId,
         questions: [],
       });
+      // The durable receipt now exists, so the stand-in marker must go: leaving
+      // it would permanently suppress a *later* card that reused the id.
+      managed.answeredPlanApprovalItemIds.delete(followup.itemId);
+      persistChatState(managed);
       void sendMessage({
         sessionId: managed.session.id,
         text: followup.followupText,
@@ -28230,6 +28593,13 @@ export function createAgentChatService(args: {
       turnId: args.request?.turnId ?? null,
       followupText: buildPlanApprovalFollowupText(args.decision, args.responseText),
     });
+    // Durable BEFORE the drain. `pendingPlanFollowups` lives on the runtime and
+    // dies with the process; the receipt that would settle this card is
+    // deliberately withheld until the drain, so between here and there a crash
+    // leaves an answered plan looking unanswered. This is the marker that says
+    // otherwise, and it survives the crash.
+    managed.answeredPlanApprovalItemIds.add(args.itemId);
+    persistChatState(managed);
     if (!runtime.activeTurnId) {
       drainPendingPlanFollowups(managed, runtime);
     }
@@ -33189,15 +33559,28 @@ export function createAgentChatService(args: {
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
-      // Enable provider tool search for non-CTO sessions with large tool catalogs.
-      // When enabled, the SDK defers tool definitions and loads them on demand
-      // via its ToolSearch capability, keeping the context window lean.
-      // CTO sessions disable deferral so operator tools (spawnChat, gitCommit, etc.)
-      // are always visible without needing ToolSearch.
+      // Enable provider tool search for every session, CTO included. When
+      // enabled, the SDK defers tool definitions and loads them on demand via
+      // its ToolSearch capability, keeping the context window lean.
+      //
+      // The CTO was pinned to "0" while its operator tools were a single flat
+      // catalog: deferring them risked a CTO that could not find spawnChat.
+      // Packs removed that risk on the ADE side — `createCtoOperatorTools`
+      // derives `alwaysLoad` from the pack rather than a hand-set flag, the tool
+      // map is registered identically whether or not optional services are
+      // wired, and `applyCtoToolPackVisibility` never adds or drops a key. Those
+      // three are asserted in `ctoToolPacks.test.ts`, which is the parity gate
+      // this flip is conditioned on.
+      //
+      // Note the remaining unknown, so a future reader does not have to
+      // rediscover it: "auto" hands the eager/deferred decision to the SDK, so
+      // this asserts ADE's map is self-consistent, NOT that the SDK keeps every
+      // core tool eagerly loaded. If a CTO is ever seen failing to find a core
+      // tool, put this ternary back — it is a one-line revert.
       opts.env = {
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
-        ENABLE_TOOL_SEARCH: managed.session.identityKey === "cto" ? "0" : "auto",
+        ENABLE_TOOL_SEARCH: "auto",
       };
     }
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
@@ -34434,6 +34817,7 @@ export function createAgentChatService(args: {
       claudeRateLimitWarningEmitted: false,
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
+      answeredPlanApprovalItemIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
@@ -34443,6 +34827,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       httpMcpServers: {},
+      ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -34873,7 +35258,21 @@ export function createAgentChatService(args: {
           const parent = ensureManagedSession(parentSessionId);
           if (parent.deleted) throw new Error("Parent session was deleted.");
           if (parentAlreadyHasCompletion(parent)) return;
-          if (!child.session.orchestrationRunId && !inlineEventEmitted) {
+          // The CTO thread takes one line per child turn and nothing else. The
+          // subagent_result card and the wake divider each restate the child's
+          // closing summary, which is the transcript dump a coordinator thread
+          // cannot afford; the notice below carries the same `spawnCompletion`
+          // so the delivery dedupe still anchors on it.
+          const parentIsCto = parent.session.identityKey === "cto";
+          const ctoReportLine = parentIsCto
+            ? formatCtoChildReportLine({
+                childTitle,
+                provider: child.session.provider,
+                status: resultStatus,
+                prNumber: readChildPullRequestNumber(child.session.completion, summary),
+              })
+            : null;
+          if (!child.session.orchestrationRunId && !inlineEventEmitted && !parentIsCto) {
             emitChatEvent(parent, {
               type: "subagent_result",
               taskId: `chat:${childSessionId}`,
@@ -34887,7 +35286,34 @@ export function createAgentChatService(args: {
             });
             inlineEventEmitted = true;
           }
-          if (parentShouldWake) {
+          if (ctoReportLine) {
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: resultStatus === "failed" ? "warning" : "info",
+              status: "spawn_completed",
+              message: ctoReportLine,
+              detail: { spawnCompletion: { ...spawnCompletion, summary: ctoReportLine } },
+            });
+            if (parentShouldWake) {
+              // A child report is the natural moment to drain the worker
+              // discovery log: the CTO is being woken anyway, and the findings
+              // are usually about the work that just finished. They ride the
+              // wake text, never the notice — the notice is a one-line channel
+              // by contract.
+              const discoveries = ctoMemoryService?.readNewDiscoveries() ?? null;
+              const wakeText = discoveries?.text.length
+                ? `${ctoReportLine}\n\nNew worker discoveries (unreviewed — save what is durable):\n${discoveries.text}`
+                : ctoReportLine;
+              // No `spawnCompletion` on the wake: the notice above already owns
+              // the completion row, and a second copy would draw the wake
+              // divider's header over the top of it.
+              await messageSession({
+                sessionId: parentSessionId,
+                kind: "wake",
+                text: wakeText,
+              }, { trustedSpawnCompletion: true });
+            }
+          } else if (parentShouldWake) {
             await messageSession({
               sessionId: parentSessionId,
               kind: "wake",
@@ -35509,6 +35935,7 @@ export function createAgentChatService(args: {
       claudeRateLimitWarningEmitted: false,
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
+      answeredPlanApprovalItemIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
@@ -35520,6 +35947,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       httpMcpServers: {},
+      ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -35618,7 +36046,7 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "done", turnId: interruptedTurnId, status: "interrupted" });
       }
       // Settle the canUseTool approvals so the gate below passes.
-      settleClaudePendingApprovals(runtime);
+      settleClaudePendingApprovals(managed, runtime);
       await clearClaudeSubagentStartIdsAfterSettlement(
         runtime,
         stopActiveClaudeSubagents(
@@ -40746,10 +41174,11 @@ export function createAgentChatService(args: {
         runtime.pendingDispatchAck?.turnId === turnId || args.onBackendDispatched != null;
       if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
-      for (const [, w] of runtime.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn failed.");
-      }
-      runtime.permissionWaiters.clear();
+      settleCursorPermissionWaiters(
+        managed,
+        runtime,
+        "Cursor tool approval was cancelled because the turn failed.",
+      );
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
@@ -42403,10 +42832,11 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       const existing = managed.runtime;
       if (existing.poolKey !== poolKey) {
-        for (const [, w] of existing.permissionWaiters) {
-          cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the runtime restarted.");
-        }
-        existing.permissionWaiters.clear();
+        settleDroidPermissionWaiters(
+          managed,
+          existing,
+          "Droid tool approval was cancelled because the runtime restarted.",
+        );
         releaseDroidSdkConnection(existing.poolKey, existing.poolGeneration);
         managed.runtime = null;
       } else {
@@ -42744,10 +43174,11 @@ export function createAgentChatService(args: {
         || msg.toLowerCase().includes("abort")
         || msg.toLowerCase().includes("interrupt");
 
-      for (const [, w] of runtime.permissionWaiters) {
-        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn failed.");
-      }
-      runtime.permissionWaiters.clear();
+      settleDroidPermissionWaiters(
+        managed,
+        runtime,
+        "Droid tool approval was cancelled because the turn failed.",
+      );
 
       cancelQueuedSteers(managed, runtime, treatAsInterrupt ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -43367,13 +43798,13 @@ export function createAgentChatService(args: {
     }
     // A user-originated message clears the lifecycle markers (settled /
     // attention / turn-failure) whether it starts a fresh turn OR steers an
-    // active one — the user has engaged either way. Scheduled wakes are NOT
-    // user activity (they must leave a declared settle intact so the session
-    // re-settles at rest after the wake), and empty no-op sends that never
-    // dispatch must not un-settle either — so this runs only on the two paths
-    // that actually deliver the message.
+    // active one — the user has engaged either way. Host-authored deliveries
+    // are NOT user activity and must not clear them; see
+    // `messageClearsAttentionMarkers`. Empty no-op sends that never dispatch
+    // must not un-settle either — so this runs only on the two paths that
+    // actually deliver the message.
     const clearUserTurnMarkers = (): void => {
-      if (!args.metadata?.scheduledWake) {
+      if (messageClearsAttentionMarkers(args.metadata)) {
         sessionService.clearTurnStartMarkers(args.sessionId);
       }
     };
@@ -43400,6 +43831,7 @@ export function createAgentChatService(args: {
       );
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
+    await refreshCtoLiveStateForTurn(args.sessionId);
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
     if (
@@ -43604,10 +44036,14 @@ export function createAgentChatService(args: {
       reasoningEffort,
       executionMode,
       interactionMode,
-      dispatchMode,
+      dispatchMode: requestedDispatchMode,
     } = expandedArgs;
-    if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
-      throw new Error(`Unsupported steer dispatch mode: ${String(dispatchMode)}`);
+    if (
+      requestedDispatchMode !== undefined
+      && requestedDispatchMode !== "inline"
+      && requestedDispatchMode !== "interrupt"
+    ) {
+      throw new Error(`Unsupported steer dispatch mode: ${String(requestedDispatchMode)}`);
     }
     const trimmed = text.trim();
     const steerId = randomUUID();
@@ -43619,6 +44055,17 @@ export function createAgentChatService(args: {
 
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
+    // The CTO thread has a steer queue cap of zero. Everything reaching it —
+    // child reports, scheduled wakes, peer notes — is context that is only
+    // useful now, so a delivery that would have been staged for the next turn
+    // is redirected into the live one instead. Its provider is constrained to
+    // ones that can do that (`CTO_LIVE_REDIRECT_PROVIDERS`), so there is always
+    // an atomic mode to fall back to.
+    const dispatchMode = requestedDispatchMode
+      ?? (managed.session.identityKey === "cto"
+        ? activeTurnDispatchModes(managed.session.provider).find((entry) => entry !== "queue") as
+            AgentChatDispatchSteerMode | undefined
+        : undefined);
     // One guard against the canonical per-provider table, rather than the rules
     // restated here. Reject rather than silently downgrading the user's choice.
     if (dispatchMode && !supportsActiveTurnDispatchMode(managed.session.provider, dispatchMode)) {
@@ -44216,7 +44663,7 @@ export function createAgentChatService(args: {
       if (
         markersCleared
         || !routableMessage
-        || args.metadata?.scheduledWake
+        || !messageClearsAttentionMarkers(args.metadata)
       ) {
         return;
       }
@@ -44229,7 +44676,7 @@ export function createAgentChatService(args: {
     if (
       routableMessage
       && result.reason !== "queue_full"
-      && !args.metadata?.scheduledWake
+      && messageClearsAttentionMarkers(args.metadata)
       && (!waitsForProviderDispatch || markersCleared)
     ) {
       clearAcceptedUserMarkers();
@@ -44353,11 +44800,19 @@ export function createAgentChatService(args: {
     // subagent completion is different: it is live context returning to the
     // parent and should join the active turn wherever the provider supports
     // that. Providers without inline steering still fall back to steer().
+    // The flag alone, not the metadata: `reportChildSpawnEnded` is its only
+    // caller, and the CTO's one-line report deliberately carries no
+    // `spawnCompletion` (its notice already owns that row) yet is still a child
+    // completion joining a live turn.
     const isSpawnCompletion = normalizedKind === "wake"
-      && options?.trustedSpawnCompletion === true
-      && metadata?.spawnCompletion != null;
+      && options?.trustedSpawnCompletion === true;
+    // The CTO thread never queues. Its steer queue cap is zero, so a wake that
+    // any other chat would park at the turn boundary is redirected into the
+    // live turn — and when the CTO is idle it simply starts a new one.
+    const ctoIdentityTarget = managed.session.identityKey === "cto";
     const wakeNeedsQueue = normalizedKind === "wake"
       && !isSpawnCompletion
+      && !ctoIdentityTarget
       && activeTarget;
 
     const steerTarget =
@@ -44365,9 +44820,10 @@ export function createAgentChatService(args: {
       ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
         && activeTarget);
     if (steerTarget) {
-      const dispatchMode = isSpawnCompletion && managed.session.provider === "claude"
+      const dispatchMode = isSpawnCompletion
+        && supportsActiveTurnDispatchMode(managed.session.provider, "inline")
         ? "inline" as const
-        : normalizedKind === "auto"
+        : normalizedKind === "auto" || ctoIdentityTarget
           ? defaultActiveTurnDispatchMode(managed.session.provider)
           : "queue";
       const result = await steerWithOptions({
@@ -44710,8 +45166,9 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
     // One guard against the canonical per-provider table (shared/types/chat.ts)
-    // instead of a per-provider ladder: Codex and every other queue-only
-    // provider reject here, and Cursor rejects "inline".
+    // instead of a per-provider ladder: queue-only providers reject both modes
+    // here, Cursor rejects "inline" and takes "interrupt", Codex takes
+    // "inline" only.
     if (!supportsActiveTurnDispatchMode(managed.session.provider, mode)) {
       throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, mode));
     }
@@ -44789,6 +45246,76 @@ export function createAgentChatService(args: {
         throw error;
       } finally {
         runtime.dispatchingSteerIds.delete(steerId);
+      }
+      return { dispatchedAt: Date.now() };
+    }
+    // Codex: the app-server folds a `turn/steer` request into the turn that is
+    // already running, so a staged row can be promoted into it. There is no
+    // interrupt-and-resend; the table guard above already rejected that mode.
+    if (runtime.kind === "codex") {
+      const codexQueue = runtime.pendingSteers;
+      const codexIdx = codexQueue.findIndex((s) => s.steerId === steerId);
+      if (codexIdx === -1) return { dispatchedAt: null };
+      // No live turn to fold into. Leave the row staged for the turn boundary
+      // rather than firing it at a thread that is not running.
+      if (!managed.session.threadId || !runtime.activeTurnId) return { dispatchedAt: null };
+      const [promoted] = codexQueue.splice(codexIdx, 1);
+      claimSteerSettlement(managed, steerId);
+      // Resolves the staged chip in the composer; without it the row stays
+      // parked there after the steer has already landed.
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Delivering your queued message...",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      try {
+        // Back through the one codex steer path rather than a second copy of
+        // the `turn/steer` request, so the expected-turn mismatch retry and the
+        // accepted-steer bookkeeping stay in a single place.
+        await steerWithOptions(markChatMentionsExpanded({
+          sessionId,
+          text: promoted.text,
+          ...(promoted.displayText != null && promoted.displayText !== promoted.text
+            ? { displayText: promoted.displayText }
+            : {}),
+          attachments: promoted.attachments,
+          contextAttachments: promoted.contextAttachments,
+          ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+          reasoningEffort: promoted.reasoningEffort,
+          executionMode: promoted.executionMode,
+          interactionMode: promoted.interactionMode,
+          dispatchMode: "inline",
+        }));
+      } catch (error) {
+        // Put the row back so the user's message is never silently lost.
+        if (!codexQueue.some((entry) => entry.steerId === steerId)) {
+          codexQueue.splice(Math.min(codexIdx, codexQueue.length), 0, promoted);
+          reopenSteerSettlement(managed, steerId);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: promoted.text,
+            ...(promoted.displayText && promoted.displayText !== promoted.text
+              ? { displayText: promoted.displayText }
+              : {}),
+            ...(promoted.attachments.length ? { attachments: promoted.attachments } : {}),
+            ...(promoted.contextAttachments.length ? { contextAttachments: promoted.contextAttachments } : {}),
+            ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+            steerId,
+            deliveryState: "queued",
+          });
+          persistChatState(managed);
+        }
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          provider: "codex",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       }
       return { dispatchedAt: Date.now() };
     }
@@ -44963,10 +45490,7 @@ export function createAgentChatService(args: {
       // `stop_and_clear`, so the Stop button is unaffected.
       if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
-      for (const pending of managed.runtime.pendingApprovals.values()) {
-        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
-      }
-      managed.runtime.pendingApprovals.clear();
+      settleOpenCodePendingApprovals(managed, managed.runtime);
       cancelPendingInputsFrom(managed, "opencode", "ade");
       return result;
     }
@@ -45003,10 +45527,11 @@ export function createAgentChatService(args: {
           // ignore
         }
       }
-      for (const [, w] of rt.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
-      }
-      rt.permissionWaiters.clear();
+      settleCursorPermissionWaiters(
+        managed,
+        rt,
+        "Cursor tool approval was cancelled because the turn was interrupted.",
+      );
       if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
@@ -45082,10 +45607,11 @@ export function createAgentChatService(args: {
       } catch {
         // ignore
       }
-      for (const [, w] of rt.permissionWaiters) {
-        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
-      }
-      rt.permissionWaiters.clear();
+      settleDroidPermissionWaiters(
+        managed,
+        rt,
+        "Droid tool approval was cancelled because the turn was interrupted.",
+      );
       if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
@@ -45352,7 +45878,7 @@ export function createAgentChatService(args: {
         result.recoveryExpiresAt = recovery.expiresAt;
       }
     }
-    settleClaudePendingApprovals(runtime);
+    settleClaudePendingApprovals(managed, runtime);
 
     persistChatState(managed);
     logger.info("agent_chat.turn_interrupt_completed", {
@@ -46297,7 +46823,18 @@ export function createAgentChatService(args: {
     }
   };
 
-  const latestPendingInputItemIdFromEvents = (events: AgentChatEventEnvelope[]): string | null => {
+  /**
+   * `answeredItemIds` are cards the user has already decided but whose durable
+   * receipt has not been written yet — today only staged plan approvals (see
+   * `PersistedChatState.answeredPlanApprovalItemIds`). They are subtracted
+   * here rather than at each call site because this is the ONE place a card is
+   * reconstructed from the transcript after a restart, and a resurrected card
+   * is indistinguishable from a live one at every point downstream.
+   */
+  const latestPendingInputItemIdFromEvents = (
+    events: AgentChatEventEnvelope[],
+    answeredItemIds?: ReadonlySet<string>,
+  ): string | null => {
     const pending = new Set<string>();
     for (const envelope of events) {
       const event = envelope.event;
@@ -46311,6 +46848,9 @@ export function createAgentChatService(args: {
       } else if (event.type === "auto_approval_review") {
         pending.delete(event.targetItemId);
       }
+    }
+    if (answeredItemIds) {
+      for (const id of answeredItemIds) pending.delete(id);
     }
     let latest: string | null = null;
     for (const id of pending) latest = id;
@@ -46378,8 +46918,14 @@ export function createAgentChatService(args: {
   ): Promise<string | null> => {
     const live = latestLivePendingInputItemId(managed);
     if (live) return live;
+    // Read from disk when there is no live session: after a restart there is no
+    // managed session to carry the set, and this path is exactly the one that
+    // would otherwise resurrect the card.
+    const answered = managed?.answeredPlanApprovalItemIds
+      ?? new Set<string>(readPersistedState(sessionId)?.answeredPlanApprovalItemIds ?? []);
     return latestPendingInputItemIdFromEvents(
       (await getChatEventHistory(sessionId, { maxEvents: 512 })).events,
+      answered,
     );
   };
 
@@ -46429,6 +46975,13 @@ export function createAgentChatService(args: {
         ?? persisted?.sdkSessionId
         ?? null
       : null;
+    // `awaitingInput` is deliberately NOT downgraded when no item id resolves.
+    // "Blocked with nothing to show" is a real state here — Cursor and Droid
+    // waiters carry no request object, and a transcript window can age out an
+    // old card — so the flag stays, and it is the ITEM ID that the
+    // answered-plan marker suppresses. A null item id is enough: the projection
+    // refuses to stamp `provider_structured` without one, so the row reads
+    // resting rather than "Needs you".
     const sessionHasPendingInput = hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true;
     const pendingInputItemId = sessionHasPendingInput
       ? await latestPendingInputItemIdForSession(row.id, liveManaged)
@@ -47540,6 +48093,60 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Arm the project's single nightly memory-gardening job on the CTO thread.
+   *
+   * Idempotent on the ONBOARDING STEP, not on the row's presence. That
+   * distinction is the whole feature: a presence check would re-create the job
+   * for a user who deliberately deleted it, and re-arm one they paused, every
+   * time the CTO thread was reopened. The step is written only after a
+   * successful upsert, so a runtime with no scheduler simply tries again later
+   * instead of recording a job that was never created.
+   */
+  const ensureCtoMemoryGardenerJob = async (managed: ManagedChatSession): Promise<void> => {
+    if (!ctoStateService) return;
+    try {
+      if (ctoStateService.getOnboardingState().completedSteps.includes(CTO_MEMORY_GARDENER_ONBOARDING_STEP)) {
+        return;
+      }
+      await scheduledWorkReady;
+      if (!scheduledWorkScheduler) return;
+      const createdAt = Date.now();
+      const fireAt = nextChatScheduledCronFireAt(CTO_MEMORY_GARDENER_CRON, createdAt);
+      if (fireAt == null) return;
+      await scheduledWorkScheduler.upsert({
+        id: `cto-memory-gardener:${managed.session.id}`,
+        sessionId: managed.session.id,
+        kind: "cron",
+        prompt: CTO_MEMORY_GARDENER_PROMPT,
+        reason: CTO_MEMORY_GARDENER_TITLE,
+        cron: CTO_MEMORY_GARDENER_CRON,
+        fireAt,
+        createdAt,
+        // Deliberately no `expiresAt`. The recurring-cron TTL applied by
+        // `createScheduledWork` bounds rows mirrored from a Claude provider
+        // schedule; this is an ADE-owned job with a stable id and no provider
+        // mirror, and one that cancelled itself after a week would be worse
+        // than none.
+        status: "scheduled",
+        lateFlag: false,
+        durable: true,
+      });
+      ctoStateService.completeOnboardingStep(CTO_MEMORY_GARDENER_ONBOARDING_STEP);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Scheduled "${CTO_MEMORY_GARDENER_TITLE}" nightly at 03:30. Pause or remove it under this chat's scheduled work.`,
+      });
+      logger.info("agent_chat.cto_memory_gardener_scheduled", { sessionId: managed.session.id });
+    } catch (error) {
+      logger.warn("agent_chat.cto_memory_gardener_schedule_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
    * Identity sessions for a key, newest activity first. Single source of truth
    * for "which session is the CTO thread" — `ensureIdentitySession` and the
    * attention probe must not answer that question differently.
@@ -47671,10 +48278,10 @@ export function createAgentChatService(args: {
         const prefs = ctoStateService.getIdentity().modelPreferences;
         const desiredModelId =
           (typeof args.modelId === "string" && args.modelId.trim().length ? args.modelId.trim() : null)
-          ?? prefs.modelId
+          ?? prefs?.modelId
           ?? null;
         const desiredReasoning = normalizeReasoningEffort(
-          args.reasoningEffort ?? prefs.reasoningEffort ?? managed.session.reasoningEffort ?? null,
+          args.reasoningEffort ?? prefs?.reasoningEffort ?? managed.session.reasoningEffort ?? null,
         ) ?? null;
         const modelDiffers = Boolean(desiredModelId && desiredModelId !== managed.session.modelId);
         const reasoningDiffers = desiredReasoning !== (managed.session.reasoningEffort ?? null);
@@ -47695,6 +48302,7 @@ export function createAgentChatService(args: {
           }
         }
       }
+      if (args.identityKey === "cto") await ensureCtoMemoryGardenerJob(managed);
       return ensureManagedSession(managed.session.id).session;
     }
 
@@ -47706,7 +48314,11 @@ export function createAgentChatService(args: {
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
       if (preferredProviderRaw.includes("droid") || preferredProviderRaw.includes("factory")) return "droid";
       if (preferredProviderRaw.includes("cursor")) return "cursor";
-      return "opencode";
+      // No silent OpenCode fallback for the CTO. OpenCode stages every mid-turn
+      // message, which is the single thing a coordinator thread cannot live
+      // with, so an unreadable or absent preference starts it on Claude — the
+      // identity default — rather than on a provider it could never steer.
+      return args.identityKey === "cto" ? "claude" : "opencode";
     })();
 
     const explicitModelId = typeof args.modelId === "string" && args.modelId.trim().length
@@ -47727,6 +48339,16 @@ export function createAgentChatService(args: {
       if (resolvedDescriptor.family === "factory") return "droid";
       return providerFromPreference;
     })();
+
+    // An explicit model that resolves to a queue-only provider — a non
+    // CLI-wrapped model (OpenCode) or a Droid one — is a real choice, not a
+    // missing preference, so it fails loudly here instead of quietly seating
+    // the CTO on a thread it can never steer.
+    if (args.identityKey === "cto" && !providerSupportsLiveRedirect(provider)) {
+      throw new Error(
+        "The CTO needs a model that can steer a live turn — Claude, Codex, or Cursor. Pick one in CTO settings.",
+      );
+    }
 
     const preferredModel = typeof pref?.model === "string" && pref.model.trim().length
       ? pref.model.trim()
@@ -47751,6 +48373,7 @@ export function createAgentChatService(args: {
     // opening turn belongs. Fire-and-forget: session creation must not block on
     // a model round-trip, and a failed intro is logged, not fatal.
     if (args.identityKey === "cto") {
+      await ensureCtoMemoryGardenerJob(managed);
       void seedCtoIntroTurn(managed.session.id).catch(() => {});
     }
     return managed.session;
@@ -47847,7 +48470,7 @@ export function createAgentChatService(args: {
         // provider interrupt that threw and was only logged.
         settleCodexPendingInputs(managed, runtime);
       } else if (runtime?.kind === "claude") {
-        settleClaudePendingApprovals(runtime);
+        settleClaudePendingApprovals(managed, runtime);
         runtime.busy = false;
         runtime.activeTurnId = null;
       } else if (runtime?.kind === "opencode") {
@@ -47958,7 +48581,15 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const respondToInput = async ({
+  /**
+   * Deliver one answer to whichever store owns the card, and settle it.
+   *
+   * Split from `respondToInput` only so the marker clear below has exactly one
+   * place to live: this function has a dozen early returns, one per provider
+   * and per "the asker is already gone" branch, and each of them settles a
+   * card. A clear per return is a clear that will be forgotten on the next one.
+   */
+  const deliverInputResponse = async ({
     sessionId,
     itemId,
     decision,
@@ -48237,6 +48868,33 @@ export function createAgentChatService(args: {
       decision: resolvedDecision,
     });
     settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+  };
+
+  /**
+   * Answer a card, then stop the row saying "Needs you".
+   *
+   * Settling the card clears `pending_input_item_id` (the projection stops
+   * reporting `awaitingInput`), but NOT the attention columns — and
+   * `canonicalSessionState` reads `attention_requested_at` and
+   * `attention_source` as needs-you triggers in their own right. So a chat
+   * whose card was raised by `ade chat ask`, or whose row still carries a
+   * stale `provider_structured` source, went on reading "Needs you" after the
+   * user answered it. That is the reported bug: "you answer a question but
+   * then it stays as needs you."
+   *
+   * Clearing runs only after the response was actually delivered — a throw
+   * (an unwritable Codex stdin, say) leaves the card and the markers alone,
+   * because the question really is still open.
+   *
+   * Columns cleared, by `sessionService.clearTurnStartMarkers`:
+   * `attention_requested_at`, `attention_message`, `attention_source`,
+   * `last_turn_failed_at`, plus the settle-lifecycle clear-on-activity.
+   * `pending_input_item_id` is NOT written here — it is owned by the card
+   * stores and their `pending_input_resolved` receipts.
+   */
+  const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
+    await deliverInputResponse(args);
+    sessionService.clearTurnStartMarkers(args.sessionId);
   };
 
   const approveToolUse = async ({

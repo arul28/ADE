@@ -7,12 +7,10 @@ import {
   ADE_ACTION_ALLOWLIST,
   getAdeActionInputContract,
   getAdeActionDomainServices,
-  isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
-  type AdeActionDomain,
 } from "./registry";
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
@@ -38,256 +36,6 @@ function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): 
     }
   }
 }
-
-describe("isAllowedAdeAction", () => {
-  it("accepts a canonical action from the allowlist", () => {
-    expect(isAllowedAdeAction("git", "commit")).toBe(true);
-    expect(isAllowedAdeAction("lane", "create")).toBe(true);
-    expect(isAllowedAdeAction("automations", "triggerManually")).toBe(true);
-    expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
-  });
-
-  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
-    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
-    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
-  });
-
-  it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
-    // CLI agents have no Linear creds; they write back through the daemon
-    // bridge, so these must be agent-reachable (not CTO-gated).
-    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueState")).toBe(true);
-    expect(isAllowedAdeAction("linear_issue_tracker", "createComment")).toBe(true);
-    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueAssignee")).toBe(true);
-    expect(isAllowedAdeAction("linear_issue_tracker", "addLabel")).toBe(true);
-    expect(isCtoOnlyAdeAction("linear_issue_tracker", "updateIssueState")).toBe(false);
-    expect(isCtoOnlyAdeAction("linear_issue_tracker", "addLabel")).toBe(false);
-  });
-
-  it("exposes CLI agent launch through the chat runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "launchCli")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
-  });
-
-  it("exposes caller lifecycle writes through the runtime session surface", () => {
-    expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
-    expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
-    expect(isAllowedAdeAction("session", "settleSession")).toBe(true);
-    // The residue read path. It was added to the CTO-only list but NOT to the
-    // allowlist, which silently refused every call — and left the settle design
-    // claiming a user-visible guarantee ("settled never quietly means something
-    // is still running") that nothing could actually reach.
-    expect(isAllowedAdeAction("session", "getSettleResidue")).toBe(true);
-    expect(isAllowedAdeAction("session", "unsettleSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "settleSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "unsettleSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "settleSessions")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "unsettleSessions")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "updateLifecycleSettings")).toBe(true);
-    expect(isAutomationAllowedAdeAction("session", "settleSession")).toBe(false);
-    expect(isAutomationAllowedAdeAction("session", "updateLifecycleSettings")).toBe(false);
-  });
-
-  // Regression guard for the 2026-07 removal of agent self-settlement: "is this
-  // work done" is a subjective call agents are unreliable at, so no settle
-  // writer may be reachable by a session-bound agent (role `agent`) or an
-  // automation. Only cto-role human surfaces and the deterministic PR-merge
-  // policy settle rows.
-  it("gives agents no way to settle or unsettle a session", () => {
-    expect(isAllowedAdeAction("session", "settleSelfSession")).toBe(false);
-    expect(isAllowedAdeAction("session", "unsettleSelfSession")).toBe(false);
-    for (const action of [
-      "settleSession",
-      "unsettleSession",
-      "settleSessions",
-      "unsettleSessions",
-      "setSettleOverride",
-    ]) {
-      expect(isCtoOnlyAdeAction("session", action)).toBe(true);
-      expect(isAutomationAllowedAdeAction("session", action)).toBe(false);
-    }
-  });
-
-  it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
-    expect(isAllowedAdeAction("session", "snoozeSession")).toBe(true);
-    expect(isAllowedAdeAction("session", "snoozeSessions")).toBe(true);
-    expect(isAllowedAdeAction("session", "wakeSession")).toBe(true);
-    expect(isAllowedAdeAction("session", "wakeSessions")).toBe(true);
-    expect(isAllowedAdeAction("session", "setSettleOverride")).toBe(true);
-    expect(isAllowedAdeAction("session", "clearWokeMarker")).toBe(true);
-    expect(isAllowedAdeAction("lane", "getBranchDrift")).toBe(true);
-    expect(isAllowedAdeAction("lane", "resolveBranchDrift")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "snoozeSession")).toBe(false);
-    expect(isCtoOnlyAdeAction("lane", "resolveBranchDrift")).toBe(false);
-  });
-
-  it("exposes iOS Preview Lab matching and workspace readiness to generic actions", () => {
-    expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
-    expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
-    expect(isAllowedAdeAction("ios_simulator", "renderCurrentPreview")).toBe(true);
-    expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
-    expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
-    expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
-  });
-
-  it("exposes subagent transcript reads through the chat runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscriptPage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscriptPage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
-  });
-
-  it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "setCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
-    expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
-    expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "stopTask")).toBe(true);
-    expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
-  });
-
-  it("rejects an unknown action on a known domain", () => {
-    expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
-    expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
-    expect(isAllowedAdeAction("automations", "__proto__")).toBe(false);
-  });
-
-  it("rejects an unknown domain outright", () => {
-    expect(isAllowedAdeAction("not-a-domain" as AdeActionDomain, "anything")).toBe(false);
-  });
-
-  it("is case-sensitive on the action name", () => {
-    // The allowlist is authored in the exact camelCase the service exposes.
-    // Case-insensitive matching would mask typos/mistakes in rules.
-    expect(isAllowedAdeAction("git", "Commit")).toBe(false);
-    expect(isAllowedAdeAction("git", "COMMIT")).toBe(false);
-  });
-
-  it("allowlists every chat action a caller invokes by string", () => {
-    // The inverse direction of the allowlist: not "is each entry valid" but
-    // "does each name someone actually calls have an entry". A name called by
-    // string with no entry fails at `run_ade_action` with "is not exposed
-    // through ADE actions", which no compiler or type sees.
-    //
-    // Two callers reach the chat domain by string, and BOTH have to be in this
-    // list — `chat.createAttachmentUpload` shipped unallowlisted precisely
-    // because it is called only from the second one, so a preload-only sweep
-    // would have passed:
-    //
-    //   perl -0777 -ne 'while(/"chat",\s*\n?\s*"([A-Za-z][A-Za-z0-9]*)"/g)
-    //     {print "$1\n"}' src/preload/preload.ts | sort -u
-    //   perl -0777 -ne 'while(/domain:\s*"chat",\s*\n?\s*action:\s*"([A-Za-z]
-    //     [A-Za-z0-9]*)"/g){print "$1\n"}' \
-    //     src/main/services/remoteRuntime/remoteConnectionService.ts | sort -u
-    //
-    // Re-run both when adding a chat action to either caller.
-    const CALLED_BY_STRING = [
-      // src/preload/preload.ts
-      "approveToolUse", "archiveSession", "cancelDispatchedSteer", "cancelScheduledWork",
-      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createPromptStash",
-      "createScheduledWork", "createSession", "deletePromptStash", "deleteSession",
-      "dispatchSteer", "editSteer", "ensureCtoSession", "fileSearch",
-      "generateAutoLaneIdentity", "getAvailableModels", "getChatEventHistory",
-      "getChatEventHistoryPage", "getClaudeSessionInfo", "getClaudeSessionMessages",
-      "getCodexGoal", "getContextUsage", "getImageDataUrl", "getMainTranscript",
-      "getParallelLaunchState", "getSessionCapabilities", "getSessionSummary",
-      "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
-      "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
-      "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
-      "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
-      "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
-      "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
-      "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
-      "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
-      "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
-      "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
-      "setScheduledWorkPaused", "steer", "stopTask", "suggestLaneNameFromPrompt",
-      "terminateCodexBackgroundTerminal", "unarchiveSession", "updateSession",
-      "validateCrossMachineSource", "warmupModel",
-      // src/main/services/remoteRuntime/remoteConnectionService.ts
-      "createAttachmentUpload",
-    ];
-
-    // A silently emptied list would make every assertion below vacuous.
-    expect(CALLED_BY_STRING.length).toBeGreaterThan(50);
-    for (const action of CALLED_BY_STRING) {
-      expect(ADE_ACTION_ALLOWLIST.chat, `chat.${action} is called by string but not allowlisted`)
-        .toContain(action);
-    }
-  });
-
-  it("implements the chat actions the registry owns rather than forwarding", () => {
-    // Allowlisting a name nothing implements is invisible in desktop-only
-    // builds (the renderer's own IPC handler answers) and fatal in
-    // runtime-backed ones: `callAction` rejects with "is not callable" and the
-    // feature is dead on every remote/brain-backed machine.
-    // `chat.createAttachmentUpload` was exactly that on this branch before the
-    // fix: `remoteConnectionService.uploadChatAttachment` called it by string,
-    // and it existed only on the sync command channel — never on this domain
-    // service — so remote-paired attach failed on every machine.
-    //
-    // These are the actions the chat domain service builds ITSELF from the
-    // runtime's project root rather than forwarding to `agentChatService`, so a
-    // bare stub is enough to catch one going missing.
-    const service = getAdeActionDomainServices({
-      projectRoot: "/tmp/ade-registry-test",
-      agentChatService: {},
-    } as never).chat as Record<string, unknown> | null;
-
-    expect(service).toBeTruthy();
-    for (const action of [
-      "saveTempAttachment",
-      "copyTempAttachment",
-      "createAttachmentUpload",
-      "getImageDataUrl",
-      "getTurnFileDiff",
-      "listMentionSuggestions",
-    ]) {
-      expect(ADE_ACTION_ALLOWLIST.chat).toContain(action);
-      expect(typeof service?.[action], `chat.${action} is not callable`).toBe("function");
-    }
-  });
-
-  it("keeps copyTempAttachment's remote reach tied to authority a paired peer already holds", () => {
-    // `chat.copyTempAttachment` takes an unconstrained absolute source path and
-    // is NOT local-only: `run_ade_action` is reachable over the sync runtime RPC
-    // channel, whose JSON-RPC handler is the same origin-blind factory the local
-    // unix socket gets, so a paired peer can read any file on this disk with it.
-    //
-    // That is acceptable only while the same peer already holds strictly greater
-    // authority through the same door. `chat.launchCli` runs arbitrary processes
-    // and is allowlisted and un-gated, which is the comparison the registry's
-    // comment makes. If that ever stops being true, the comparison is void and
-    // copyTempAttachment needs a real gate rather than a reassuring comment.
-    expect(ADE_ACTION_ALLOWLIST.chat).toContain("copyTempAttachment");
-    expect(isAllowedAdeAction("chat", "launchCli")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
-  });
-
-  it("each allowlist entry is marked allowed by the predicate", () => {
-    // Round-trip: whatever is in the data drives the predicate, so this
-    // guards against accidental mutations (e.g. a trailing space in a name).
-    for (const [domain, actions] of Object.entries(ADE_ACTION_ALLOWLIST) as Array<
-      [AdeActionDomain, readonly string[] | undefined]
-    >) {
-      for (const action of actions ?? []) {
-        expect(isAllowedAdeAction(domain, action)).toBe(true);
-      }
-    }
-  });
-});
 
 describe("work_tools runtime action domain", () => {
   it("exposes the lane tool-state reads plus the desktop's one publish", () => {
@@ -318,6 +66,7 @@ describe("work_tools runtime action domain", () => {
     expect(without.work_tools ?? null).toBeNull();
   });
 });
+
 
 describe("getAdeActionDomainServices feature gates", () => {
   it("keeps Automations domains available in packaged builds by default", () => {
@@ -379,170 +128,45 @@ describe("getAdeActionDomainServices feature gates", () => {
   });
 });
 
-describe("listAllowedAdeActionNames", () => {
-  it("returns only allowlisted names that the service actually implements as functions", () => {
-    const service = {
-      commit: () => undefined,
-      pull: () => undefined,
-      push: () => undefined,
-      stash: () => undefined,
-      // Extras that are NOT in the allowlist — must not leak through.
-      rmRf: () => undefined,
-      internalHelper: () => undefined,
-      // Key present but not callable — must be filtered out.
-      fetch: "not-a-function",
-    } as Record<string, unknown>;
+/**
+ * The rest of what was filed under "ADE_ACTION_ALLOWLIST shape": tests that
+ * assert an allowlisted name is actually implemented by the domain service a
+ * runtime builds. They need the registry; the pure table assertions they grew
+ * up next to do not, and live in `actionPolicy.test.ts`.
+ */
+describe("runtime domain services behind the allowlist", () => {
+  it("implements the chat actions the registry owns rather than forwarding", () => {
+    // Allowlisting a name nothing implements is invisible in desktop-only
+    // builds (the renderer's own IPC handler answers) and fatal in
+    // runtime-backed ones: `callAction` rejects with "is not callable" and the
+    // feature is dead on every remote/brain-backed machine.
+    // `chat.createAttachmentUpload` was exactly that on this branch before the
+    // fix: `remoteConnectionService.uploadChatAttachment` called it by string,
+    // and it existed only on the sync command channel — never on this domain
+    // service — so remote-paired attach failed on every machine.
+    //
+    // These are the actions the chat domain service builds ITSELF from the
+    // runtime's project root rather than forwarding to `agentChatService`, so a
+    // bare stub is enough to catch one going missing.
+    const service = getAdeActionDomainServices({
+      projectRoot: "/tmp/ade-registry-test",
+      agentChatService: {},
+    } as never).chat as Record<string, unknown> | null;
 
-    const names = listAllowedAdeActionNames("git", service);
-
-    expect(names).toContain("commit");
-    expect(names).toContain("pull");
-    expect(names).toContain("push");
-    expect(names).toContain("stash");
-    expect(names).not.toContain("rmRf");
-    expect(names).not.toContain("internalHelper");
-    // Present in allowlist but not a function on the service → drop.
-    expect(names).not.toContain("fetch");
-  });
-
-  it("returns names sorted alphabetically for a stable UI ordering", () => {
-    const service: Record<string, unknown> = {};
-    for (const name of ADE_ACTION_ALLOWLIST.git ?? []) {
-      service[name] = () => undefined;
-    }
-
-    const names = listAllowedAdeActionNames("git", service);
-    const sortedCopy = [...names].sort((a, b) => a.localeCompare(b));
-    expect(names).toEqual(sortedCopy);
-  });
-
-  it("returns an empty array when the domain has no allowlist entry", () => {
-    // A fabricated domain name hits the `?? []` fallback; the service is
-    // irrelevant because nothing is allowed.
-    const names = listAllowedAdeActionNames(
-      "made-up-domain" as AdeActionDomain,
-      { foo: () => undefined } as Record<string, unknown>,
-    );
-    expect(names).toEqual([]);
-  });
-
-  it("returns an empty array when the service implements none of the allowlisted names", () => {
-    const service = { someUnrelated: () => undefined } as Record<string, unknown>;
-    const names = listAllowedAdeActionNames("git", service);
-    expect(names).toEqual([]);
-  });
-});
-
-describe("isCtoOnlyAdeAction", () => {
-  it("keeps AI credential mutations CTO-only", () => {
-    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "cursorAuthLogin")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "cursorAuthLogout")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "cursorAuthCancel")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "cursorAuthStatus")).toBe(false);
-    expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
-  });
-
-  it("keeps plaintext project secret export CTO-only", () => {
-    expect(isCtoOnlyAdeAction("project_secret", "exportEnv")).toBe(true);
-    expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
-  });
-
-});
-
-describe("ADE_ACTION_ALLOWLIST shape", () => {
-  it("has no duplicate action names within any domain", () => {
-    // A duplicate would be a silent footgun: the sort would keep both,
-    // and the predicate would be correct but the UI would render the name twice.
-    for (const [domain, actions] of Object.entries(ADE_ACTION_ALLOWLIST)) {
-      if (!actions) continue;
-      const unique = new Set(actions);
-      expect(unique.size, `domain "${domain}" has duplicate action names`).toBe(actions.length);
-    }
-  });
-
-  it("exposes the automations domain with the full CRUD + trigger surface", () => {
-    // Automations self-management via ADE action is load-bearing — the /automations
-    // IPC handlers and the CLI both depend on these exact names.
-    const actions = ADE_ACTION_ALLOWLIST.automations ?? [];
-    for (const name of [
-      "list",
-      "get",
-      "saveRule",
-      "deleteRule",
-      "toggleRule",
-      "triggerManually",
-      "listRuns",
-      "getRunDetail",
-      "getIngressStatus",
-      "startIngress",
-      "refreshWebhookGatewayStatus",
-      "setWebhookGatewayPublicUrl",
-    ]) {
-      expect(actions).toContain(name);
-    }
-    expect(isCtoOnlyAdeAction("automations", "setWebhookGatewayPublicUrl")).toBe(true);
-    expect(isCtoOnlyAdeAction("automations", "refreshWebhookGatewayStatus")).toBe(false);
-  });
-
-  it("exposes the issue domain with GitHub issue mutation helpers", () => {
-    const actions = ADE_ACTION_ALLOWLIST.issue ?? [];
-    for (const name of ["addComment", "setLabels", "close", "reopen", "assign", "setTitle"]) {
-      expect(actions).toContain(name);
-    }
-  });
-
-  it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listSnapshots");
-  });
-
-  it("exposes lane.listDeleteProgress for runtime-backed lane delete progress recovery", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listDeleteProgress");
-  });
-
-  it("exposes runtime-backed PR reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("listPrsByLane");
-    expect(actions).toContain("getMobileGithubDetail");
-  });
-
-  it("exposes reconcileOnFocus + syncLanePr so the reconcile safety net works in the runtime-backed build", () => {
-    // Regression: in production a project is runtime-backed (local daemon RPC),
-    // so the desktop context's prService is null and these actions are dispatched
-    // to the daemon. If they are not allowlisted, the daemon rejects them —
-    // reconcile-on-focus becomes a no-op and the manual ⟳ sync silently fails.
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("reconcileOnFocus");
-    expect(actions).toContain("syncLanePr");
-  });
-
-  it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
-    const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
-    expect(actions).toContain("clearLocalData");
-  });
-
-  it("exposes session.getDelta for runtime-backed session delta reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.session ?? [];
-    expect(actions).toContain("getDelta");
-  });
-
-  it("exposes computer-use backend status and artifact preview reads for runtime-backed proof flows", () => {
-    const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
-    expect(actions).toContain("getBackendStatus");
-    expect(actions).toContain("readArtifactPreview");
+    expect(service).toBeTruthy();
     for (const action of [
-      "deleteArtifacts",
-      "listArtifacts",
-      "listBrokenArtifacts",
-      "pruneBrokenArtifacts",
-      "recoverArtifact",
+      "saveTempAttachment",
+      "copyTempAttachment",
+      "createAttachmentUpload",
+      "getImageDataUrl",
+      "getTurnFileDiff",
+      "listMentionSuggestions",
     ]) {
-      expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);
+      expect(ADE_ACTION_ALLOWLIST.chat).toContain(action);
+      expect(typeof service?.[action], `chat.${action} is not callable`).toBe("function");
     }
   });
+
 
   it("keeps proof ingestion off the action domain so owner and caller-root validation cannot be skipped", () => {
     // `ade actions call computer_use_artifacts.ingest` used to reach the broker
@@ -566,18 +190,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
 
     expect(artifactService.ingest).toBeUndefined();
     expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).not.toContain("ingest");
-  });
-
-  it("exposes prompt stashes through the project runtime for connected desktops", () => {
-    const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
-    expect(actions).toEqual(expect.arrayContaining([
-      "listPromptStashes",
-      "createPromptStash",
-      "deletePromptStash",
-    ]));
-    expect(isCtoOnlyAdeAction("chat", "listPromptStashes")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "createPromptStash")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
   });
 
   it("preserves prompt stash images through the runtime-backed action path", async () => {

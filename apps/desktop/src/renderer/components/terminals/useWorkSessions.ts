@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { WorkBoardColumn } from "../../../shared/types/chat";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -17,6 +18,7 @@ import {
   type WorkGridSet,
   type WorkProjectViewState,
   type WorkSessionListOrganization,
+  type WorkViewMode,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -27,7 +29,7 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
-import { laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
+import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import {
   EMPTY_WORK_SESSION_FILTERS,
@@ -185,6 +187,101 @@ function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
   if (bucket === "snoozed") return "Snoozed";
   if (bucket === "settled") return "Settled";
   return "Ended";
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   The Kanban board's four columns.
+
+   Derived from the SAME filtered buckets the list renders, never re-derived
+   from the raw roster: search, the lane filter and the chip filters have to
+   mean the same thing in both views, and a second derivation is a second place
+   for them to drift.
+
+   The columns are a PARTITION — every filtered session lands in exactly one —
+   which is the whole contract the board rests on. Two of them are the plain
+   status buckets (Needs you = awaiting-input, Done = ended + settled); the
+   interesting pair is Working/Waiting, because "Waiting" is the one column that
+   is not a status at all. It answers "this is blocked on something that is not
+   you and not the agent" — a snooze, or a PR whose CI is still running or whose
+   review has been asked for and not given. So it is assembled FIRST and Working
+   is what is left of `runningFiltered` afterwards, which is what makes the
+   partition true by construction rather than by two agreeing predicates.
+   ────────────────────────────────────────────────────────────────────────── */
+/**
+ * The board's four columns come from the shared vocabulary (`shared/types/chat`)
+ * rather than being respelled here. They were `needs-you` in the renderer and
+ * `needs_you` everywhere else, which cost a hand translation at the drop handler
+ * and a second validation behind it; one spelling is what keeps the bucket keys,
+ * the action's `to`, the chat divider and the CLI reading the same four strings.
+ */
+export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>;
+
+/** Why a running row was pulled out of Working. Rendered as the card's reason chip. */
+export type WorkBoardWaitingReason = "snoozed" | "ci" | "review";
+
+/**
+ * Does this lane's PR park a running session in Waiting?
+ *
+ * Only live PRs count: a merged or closed PR's last check state is history, and
+ * a lane whose PR landed hours ago is not "waiting on CI". `pending` is the
+ * only checks value that means work is in flight — `none`/`not_run` mean nobody
+ * looked, which is not the same claim (ADE-135), and `failing` is the agent's
+ * problem, not a wait.
+ */
+export function lanePrWaitingReason(prs: readonly PrSummary[]): WorkBoardWaitingReason | null {
+  let sawReviewRequest = false;
+  for (const pr of prs) {
+    if (pr.state !== "open" && pr.state !== "draft") continue;
+    if (pr.checksStatus === "pending") return "ci";
+    if (pr.reviewStatus === "requested") sawReviewRequest = true;
+  }
+  return sawReviewRequest ? "review" : null;
+}
+
+export type WorkBoardModel = {
+  buckets: WorkBoardBuckets;
+  /** Only populated for rows in Waiting; the card renders it as "why". */
+  waitingReasonBySessionId: Map<string, WorkBoardWaitingReason>;
+};
+
+export function buildWorkBoardModel(args: {
+  runningFiltered: readonly TerminalSessionSummary[];
+  awaitingInputFiltered: readonly TerminalSessionSummary[];
+  endedFiltered: readonly TerminalSessionSummary[];
+  settledFiltered: readonly TerminalSessionSummary[];
+  snoozedFiltered: readonly TerminalSessionSummary[];
+  /** Lane → the PR-derived wait, if any. Injected so the model stays pure. */
+  laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
+}): WorkBoardModel {
+  const waitingReasonBySessionId = new Map<string, WorkBoardWaitingReason>();
+  const waiting: TerminalSessionSummary[] = [];
+  const working: TerminalSessionSummary[] = [];
+
+  for (const session of args.snoozedFiltered) {
+    waitingReasonBySessionId.set(session.id, "snoozed");
+    waiting.push(session);
+  }
+  for (const session of args.runningFiltered) {
+    const reason = args.laneWaitingReason(session.laneId);
+    if (!reason) {
+      working.push(session);
+      continue;
+    }
+    waitingReasonBySessionId.set(session.id, reason);
+    waiting.push(session);
+  }
+
+  return {
+    buckets: {
+      needs_you: [...args.awaitingInputFiltered],
+      working,
+      waiting,
+      // Ended first, then settled: settled is the quieter tier, so it sinks —
+      // the same ordering the list's status grouping uses.
+      done: [...args.endedFiltered, ...args.settledFiltered],
+    },
+    waitingReasonBySessionId,
+  };
 }
 
 export function buildWorkTabGroupModel(args: {
@@ -575,6 +672,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
     projectViewState.sessionListOrganization ?? "by-lane";
+  const workViewMode: WorkViewMode = projectViewState.workViewMode ?? "list";
   const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? EMPTY_STRING_ARRAY;
   const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? EMPTY_STRING_ARRAY;
   const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? EMPTY_STRING_ARRAY;
@@ -756,6 +854,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     (org: WorkSessionListOrganization) => {
       clearDeeplinkViewOverride();
       setProjectViewState({ sessionListOrganization: org });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  /**
+   * List ↔ board. Mirrors `setSessionListOrganization` exactly, deeplink
+   * override included: switching the shape of the roster is the user taking
+   * over the framing a deeplink imposed, same as switching its grouping.
+   *
+   * It deliberately does NOT touch `sessionListOrganization` — see the type's
+   * comment in appStore: the grouping you left is the grouping you return to.
+   */
+  const setWorkViewMode = useCallback(
+    (mode: WorkViewMode) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState({ workViewMode: mode });
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
@@ -1645,6 +1759,35 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     };
   }, [chipFiltered, effectiveFilingBuckets]);
 
+  /**
+   * The board's four columns, layered on the list's buckets in the same style
+   * as `chipFiltered` is layered on `filtered`: one memo, one derivation, and
+   * the board can never disagree with the list about what is running.
+   *
+   * The PR lookup is the BOUND machine's, not the union: this hook only ever
+   * describes the active binding's roster (foreign rows are the pane's own
+   * cross-machine subscription), so a foreign lane's CI must not be able to
+   * park a local row in Waiting.
+   */
+  const workBoardModel = useMemo(
+    () => buildWorkBoardModel({
+      runningFiltered,
+      awaitingInputFiltered,
+      endedFiltered,
+      settledFiltered,
+      snoozedFiltered,
+      laneWaitingReason: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)),
+    }),
+    [
+      awaitingInputFiltered,
+      endedFiltered,
+      prsByLaneId,
+      runningFiltered,
+      settledFiltered,
+      snoozedFiltered,
+    ],
+  );
+
   // Exactly one timer, armed only while something is actually snoozed, firing at
   // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
   // overflow setTimeout). No polling and no document-level listener.
@@ -2147,6 +2290,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
     sessionListOrganization,
     setSessionListOrganization,
+    workViewMode,
+    setWorkViewMode,
+    workBoardBuckets: workBoardModel.buckets,
+    workBoardWaitingReasons: workBoardModel.waitingReasonBySessionId,
     workCollapsedLaneIds,
     toggleWorkLaneCollapsed,
     workCollapsedTabGroupIds,

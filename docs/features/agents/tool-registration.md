@@ -55,7 +55,15 @@ directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
   OpenCode. `buildCtoOperatorToolDeps` was shared with
   `previewSessionToolNames`, a name-enumeration helper removed for having no
   non-test caller; there is no prompt manifest to keep in step today, so the
-  runtime map is the single definition. See
+  runtime map is the single definition.
+  What the transports advertise is `createCtoAdvertisedToolMap` — the runtime
+  map passed through `applyCtoToolPackVisibility`, which trims an unloaded
+  pack's tool to a one-line description without ever adding or dropping a key.
+  Deferral is a description-level economy, never a capability gate: every CTO
+  tool stays registered and callable on every transport at all times. Claude
+  layers ToolSearch on top, Codex layers per-tool `deferLoading`, and the
+  providers with no native mechanism get the trimmed descriptions alone. See
+  [CTO › Tool packs](../cto/README.md#tool-packs) and
   [chat/tool-system.md](../chat/tool-system.md#cto-operator-tools).
 - **Orchestration sessions:** `interactionMode` selects
   `orchestrator-lead`, `orchestrator-worker`, or

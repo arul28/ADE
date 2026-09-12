@@ -1099,13 +1099,25 @@ extension WorkSessionDestinationView {
   /// its PR on a new lane), never on same-lane projection refreshes — clearing
   /// there collapses the header menu's PR section to the "no PR" branch for a
   /// frame and rebuilds the open liquid-glass menu mid-interaction. Final
-  /// assignments are equality-guarded for the same reason.
+  /// assignments are equality-guarded for the same reason. No-ops entirely when
+  /// this destination resolves no lane PR (`WorkChatLanePrPolicy`).
   @MainActor
   func resolveLaneOpenPr(
     for laneId: String,
     forceGithubRefresh: Bool = false,
     clearBeforeLoad: Bool = true
   ) async {
+    // Chats that own no lane PR (CTO) must not touch the PR projection at all:
+    // their lane id is synthetic, so a lookup would resolve the project's
+    // primary-lane PR and badge this chat with it. Bail before any network or
+    // IPC work and leave the badge state empty.
+    guard resolvesLanePr else {
+      if lastResolvedPrLaneId != nil { lastResolvedPrLaneId = nil }
+      if laneOpenPr != nil { laneOpenPr = nil }
+      if lanePrSummary != nil { lanePrSummary = nil }
+      if lanePrTag != nil { lanePrTag = nil }
+      return
+    }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let laneChanged = trimmed != lastResolvedPrLaneId
     if clearBeforeLoad, laneChanged {

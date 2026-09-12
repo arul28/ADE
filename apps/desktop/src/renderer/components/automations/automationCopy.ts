@@ -10,6 +10,7 @@ import type {
   AutomationRule,
   AutomationTrigger,
 } from "../../../shared/types";
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cronSentence } from "./cronDescribe";
 import { eventLabel } from "./triggerCatalog";
 import { DELETE_LANE_ACTION_TYPE, LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
@@ -31,7 +32,10 @@ export function triggerClause(trigger: AutomationTrigger): string {
 
   if (type === "schedule") return cronSentence(trigger.cron);
   if (type === "manual") return "Run manually";
-  if (type === "session-end") return "An agent session ends";
+  if (type === "session-end") return `${sessionSubject(trigger)} ends`;
+  if (type === "session.limit_reached") return `${sessionSubject(trigger)} hits its usage limit`;
+  if (type === "session.failed") return `${sessionSubject(trigger)} fails`;
+  if (type === "session.ended_without_pr") return `${sessionSubject(trigger)} ends with no PR`;
   if (type === "file.change") {
     const paths = (trigger.paths ?? []).filter(Boolean);
     return paths.length ? `A file changes in ${paths.join(", ")}` : "A file changes";
@@ -58,6 +62,18 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "cursor.cloud_error") return "A Cursor Cloud agent errors";
   // Fallback: humanize the event label.
   return eventLabel(type);
+}
+
+/**
+ * Who the session clause is about. A rule scoped to one chat says "This chat";
+ * otherwise the provider filter narrows it, and a rule with neither covers
+ * every session in the project.
+ */
+function sessionSubject(trigger: AutomationTrigger): string {
+  if (trigger.sessionId?.trim()) return "This chat";
+  const providers = (trigger.providers ?? []).map((p) => p.trim()).filter(Boolean);
+  if (providers.length) return `A ${providers.join(" or ")} session`;
+  return "An agent session";
 }
 
 function labelSuffix(labels: string[] | undefined): string {
@@ -113,6 +129,14 @@ function adeActionPhrase(action: AutomationAction): string {
   return ADE_ACTION_PHRASES[`${domain}.${name}`] ?? `run ${domain}.${name}`;
 }
 
+/** "hand off to Sonnet 5" — the model's display name, not its registry id. */
+function handoffPhrase(action: AutomationAction): string {
+  const target = action.targetModelId?.trim();
+  if (!target) return "hand off the chat";
+  const label = resolveModelDescriptor(target)?.displayName ?? target;
+  return action.handoffMode === "fork" ? `fork the chat to ${label}` : `hand off to ${label}`;
+}
+
 function stepClause(action: AutomationAction): string | null {
   switch (action.type) {
     case "agent-session":
@@ -127,6 +151,8 @@ function stepClause(action: AutomationAction): string | null {
       return "create a lane";
     case "ade-action":
       return adeActionPhrase(action);
+    case "handoff":
+      return handoffPhrase(action);
     case "lane-setup":
       return null;
     default:

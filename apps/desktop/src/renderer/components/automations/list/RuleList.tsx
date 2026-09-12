@@ -1,11 +1,76 @@
+import { useMemo, useState } from "react";
 import { ArrowClockwise, BookOpen, MagnifyingGlass, Plus } from "@phosphor-icons/react";
-import type { AutomationIngressDelivery, AutomationIngressStatus, AutomationRuleDraft, AutomationRuleSummary } from "../../../../shared/types";
+import type {
+  AutomationAction,
+  AutomationIngressDelivery,
+  AutomationIngressStatus,
+  AutomationRule,
+  AutomationRuleDraft,
+  AutomationRuleSummary,
+} from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
-import { AutomationsEmptyState } from "./AutomationsEmptyState";
-import { RuleRow } from "./RuleRow";
+import { AutomationsEmptyState, AutomationsFilterEmptyState } from "./AutomationsEmptyState";
+import { RuleRow, ruleOrigin } from "./RuleRow";
+
+/** Provenance axis for the list: everything, the CTO's rules, or handoffs. */
+export type RuleOriginFilter = "all" | "cto" | "handoff";
+
+export const RULE_ORIGIN_FILTERS: ReadonlyArray<{
+  key: RuleOriginFilter;
+  label: string;
+  hint: string;
+}> = [
+  { key: "all", label: "All", hint: "Every automation in this project." },
+  { key: "cto", label: "By CTO", hint: "Automations the CTO wrote for you." },
+  { key: "handoff", label: "Handoffs", hint: "Automations that hand a chat to another model." },
+];
+
+function ruleActions(rule: Pick<AutomationRule, "execution" | "actions" | "legacy">): AutomationAction[] {
+  return [
+    ...(rule.execution?.builtIn?.actions ?? []),
+    ...(rule.actions ?? []),
+    ...(rule.legacy?.actions ?? []),
+  ];
+}
+
+/**
+ * A handoff rule is one whose ACTIONS hand the chat over. Rule names are free
+ * text — a rule called "Handoff on limit" that only runs tests is not a
+ * handoff, and one called "Keep going" that hands off is.
+ */
+export function ruleHasHandoffAction(rule: Pick<AutomationRule, "execution" | "actions" | "legacy">): boolean {
+  return ruleActions(rule).some((action) => action.type === "handoff");
+}
+
+export function matchesRuleOriginFilter(
+  rule: AutomationRuleSummary,
+  filter: RuleOriginFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "cto") return ruleOrigin(rule) === "cto";
+  return ruleHasHandoffAction(rule);
+}
+
+export function ruleOriginFilterCounts(
+  rules: readonly AutomationRuleSummary[],
+): Record<RuleOriginFilter, number> {
+  const counts: Record<RuleOriginFilter, number> = { all: rules.length, cto: 0, handoff: 0 };
+  for (const rule of rules) {
+    if (matchesRuleOriginFilter(rule, "cto")) counts.cto += 1;
+    if (matchesRuleOriginFilter(rule, "handoff")) counts.handoff += 1;
+  }
+  return counts;
+}
+
+/**
+ * The Work tab's filter-chip idiom (`FILTER_OPTION_*` in SessionListPane), kept
+ * character-for-character so the two filter surfaces read as one control.
+ */
+const FILTER_CHIP_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
+const FILTER_CHIP_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
 export function RuleList({
   rules,
@@ -48,6 +113,16 @@ export function RuleList({
   onRefresh: () => void;
   onConfirmTrust: () => void;
 }) {
+  const [originFilter, setOriginFilter] = useState<RuleOriginFilter>("all");
+  // Counts come from the rules the list was handed, so they track the search
+  // box live rather than advertising matches the user cannot see.
+  const counts = useMemo(() => ruleOriginFilterCounts(rules), [rules]);
+  const visibleRules = useMemo(
+    () => (originFilter === "all" ? rules : rules.filter((rule) => matchesRuleOriginFilter(rule, originFilter))),
+    [originFilter, rules],
+  );
+  const activeFilterLabel = RULE_ORIGIN_FILTERS.find((f) => f.key === originFilter)?.label ?? "All";
+
   return (
     <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
       <div className="shrink-0 border-b border-white/[0.06] px-4 py-3.5">
@@ -76,6 +151,39 @@ export function RuleList({
             placeholder="Search automations"
           />
         </div>
+        {/* Provenance chips. A chip with nothing behind it goes inert instead
+            of handing back a blank list with no explanation. Hidden entirely
+            when there is nothing to filter, so a first-run project sees the
+            templates and not three zeroes. */}
+        {rules.length > 0 ? (
+          <div className="mt-2 flex items-start gap-1" role="group" aria-label="Filter automations">
+            <div className={FILTER_CHIP_GRID_CLASS}>
+              {RULE_ORIGIN_FILTERS.map(({ key, label, hint }) => {
+                const count = counts[key];
+                const active = originFilter === key;
+                const inert = count === 0 && !active;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    data-testid={`automations-filter-${key}`}
+                    aria-pressed={active}
+                    aria-label={`${label}, ${count}`}
+                    title={inert ? `${hint} None right now.` : hint}
+                    disabled={inert}
+                    data-active={active ? "true" : undefined}
+                    className={cn(FILTER_CHIP_CLASS, inert && "cursor-default opacity-40")}
+                    style={{ color: active ? "var(--color-fg)" : "var(--color-muted-fg)" }}
+                    onClick={() => setOriginFilter(key)}
+                  >
+                    {label}
+                    <span className="ml-1 tabular-nums text-muted-fg/50">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <IngressStatusStrip ingressStatus={ingressStatus} />
@@ -99,9 +207,14 @@ export function RuleList({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {rules.length === 0 ? (
           <AutomationsEmptyState onUseTemplate={onUseTemplate} onBrowseTemplates={onOpenTemplates} />
+        ) : visibleRules.length === 0 ? (
+          <AutomationsFilterEmptyState
+            filterLabel={activeFilterLabel}
+            onShowAll={() => setOriginFilter("all")}
+          />
         ) : (
           <div className="space-y-2">
-            {rules.map((rule) => (
+            {visibleRules.map((rule) => (
               <RuleRow
                 key={rule.id}
                 rule={rule}

@@ -11,13 +11,37 @@ import type {
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
-import { getDefaultModelDescriptor, listModelDescriptorsForProvider, type ModelProviderGroup } from "../../../shared/modelRegistry";
-import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../shared/types/chat";
+import {
+  getDefaultModelDescriptor,
+  getModelById,
+  listModelDescriptorsForProvider,
+  resolveChatProviderForDescriptor,
+  resolveModelDescriptor,
+  type ModelProviderGroup,
+} from "../../../shared/modelRegistry";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES, providerSupportsLiveRedirect } from "../../../shared/types/chat";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
 import type { CtoMemoryService } from "./ctoMemoryService";
+import type { CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
+
+/**
+ * Live project state sources for the per-turn block.
+ *
+ * A `Pick` of the operator tools' own dependency surface rather than a second
+ * declaration of the same services: the block the CTO reads and the tools it
+ * calls must be looking at one project, through one set of shapes.
+ *
+ * Every field the block needs is already here — chat summaries carry their own
+ * `scheduledWork`, `awaitingInput`, and lineage — so nothing had to be added to
+ * `CtoOperatorToolDeps` to build it.
+ */
+export type CtoLiveStateSources = Pick<
+  CtoOperatorToolDeps,
+  "laneService" | "prService" | "automationService" | "listChats"
+>;
 
 type CtoStateServiceArgs = {
   db: AdeDb;
@@ -32,6 +56,12 @@ type CtoStateServiceArgs = {
     CtoMemoryService,
     "buildMemoryContextSections"
   > | null;
+  /**
+   * Live project state, resolved lazily on every refresh. A thunk because this
+   * service is constructed long before the chat, PR, and automation services
+   * exist — holding the values directly would pin whatever was null at boot.
+   */
+  getLiveStateSources?: (() => CtoLiveStateSources | null) | null;
 };
 
 type AppendCtoSessionLogArgs = {
@@ -334,6 +364,59 @@ function resolvePersonalityOverlay(identity: CtoIdentity): string {
   return getCtoPersonalityPreset(presetId).systemOverlay;
 }
 
+/**
+ * The chat provider a stored preference would actually launch on. Resolved from
+ * the model id where there is one, because a registry family is not a provider:
+ * an OpenAI model that is not CLI-wrapped runs under OpenCode. The family fold
+ * is only the fallback for preferences written before `modelId` was stored.
+ */
+function resolvePreferredChatProvider(raw: Record<string, unknown>): string {
+  const modelId = typeof raw.modelId === "string" ? raw.modelId.trim() : "";
+  const descriptor = modelId ? getModelById(modelId) : undefined;
+  if (descriptor) return resolveChatProviderForDescriptor(descriptor).provider;
+  const family = typeof raw.provider === "string" ? raw.provider.trim().toLowerCase() : "";
+  if (family === "anthropic" || family.startsWith("claude")) return "claude";
+  if (family === "openai" || family.startsWith("codex")) return "codex";
+  if (family.startsWith("cursor")) return "cursor";
+  return family;
+}
+
+/**
+ * A stored preference is kept only when it names something the CTO can actually
+ * be seated on. Anything else — an incomplete record, a model on a queue-only
+ * provider that predates the rule, or a `modelId` that no longer resolves to a
+ * model — normalizes to null, which is what puts the CTO surface on its picker
+ * card instead of starting a thread that would stall on every child report or
+ * die on an id nothing can launch.
+ *
+ * The model check is scoped to `modelId` because that is the field the runtime
+ * launches from (`ensureIdentitySession` reads `prefs.modelId`), and because
+ * `resolveModelDescriptor` is not a catalog lookup: every dynamic provider —
+ * OpenCode, Pi, local, Cursor, Droid, ACP — SYNTHESIZES a descriptor from the
+ * shape of its id, so a model this build has never listed still resolves and is
+ * still kept. Only an id no rule can make sense of clears the pick. A
+ * preference written before `modelId` was stored has nothing to check and keeps
+ * the family fold above as its only gate, exactly as before — its `model` is a
+ * provider-side name, not a registry id, and failing it here would clear picks
+ * that work.
+ */
+function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["modelPreferences"] {
+  const provider = typeof raw.provider === "string" ? raw.provider.trim() : "";
+  const model = typeof raw.model === "string" ? raw.model.trim() : "";
+  if (!provider.length || !model.length) return null;
+  if (!providerSupportsLiveRedirect(resolvePreferredChatProvider(raw))) return null;
+  const modelId = typeof raw.modelId === "string" ? raw.modelId.trim() : "";
+  if (modelId.length && !resolveModelDescriptor(modelId)) return null;
+  return {
+    provider,
+    model,
+    ...(modelId.length ? { modelId } : {}),
+    ...(typeof raw.reasoningEffort === "string" || raw.reasoningEffort == null
+      ? { reasoningEffort: (raw.reasoningEffort as string | null | undefined) ?? null }
+      : {}),
+  };
+}
+
 function normalizeIdentity(input: unknown): CtoIdentity | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -396,20 +479,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ...(communicationStyle ? { communicationStyle } : {}),
     ...(constraints.length > 0 ? { constraints } : {}),
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
-    modelPreferences: {
-      provider: typeof modelPreferencesRaw.provider === "string" && modelPreferencesRaw.provider.trim().length
-        ? modelPreferencesRaw.provider.trim()
-        : "claude",
-      model: typeof modelPreferencesRaw.model === "string" && modelPreferencesRaw.model.trim().length
-        ? modelPreferencesRaw.model.trim()
-        : "sonnet",
-      ...(typeof modelPreferencesRaw.modelId === "string" && modelPreferencesRaw.modelId.trim().length
-        ? { modelId: modelPreferencesRaw.modelId.trim() }
-        : {}),
-      ...(typeof modelPreferencesRaw.reasoningEffort === "string" || modelPreferencesRaw.reasoningEffort == null
-        ? { reasoningEffort: (modelPreferencesRaw.reasoningEffort as string | null | undefined) ?? null }
-        : {}),
-    },
+    modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
     ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
   };
@@ -450,6 +520,190 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
     capabilityMode,
     createdAt,
   };
+}
+
+/* ── Live project state ── */
+
+/**
+ * The per-turn live block's total character cap.
+ *
+ * Measured, not guessed. Rendering this project's real state (11 lanes / 6
+ * active, 7 chat sessions, 16 open PRs, 37 recorded automation runs) produces
+ * 4591 characters. The absolute worst case the per-section row caps below
+ * permit — every row present with every string at its own clip limit — is
+ * 12578, so a cap is genuinely load-bearing rather than decorative.
+ *
+ * 6000 leaves this project ~1.4k of headroom and starts truncating only a
+ * project materially busier than this one, which is the case where the
+ * per-section overflow counts ("…and N more") carry the signal instead. The
+ * sections are ordered most- to least-urgent precisely so the cap eats the
+ * automation-run tail rather than the approvals at the top.
+ *
+ * It is not extra budget. The three memory sections came down by the same 6000
+ * (see `ctoMemoryService`), which measurement showed were nowhere near their
+ * caps, so the per-turn prefix is unchanged at 16000. `ctoState.test.ts`
+ * asserts both measured numbers, so a future section addition has to
+ * re-measure rather than silently start truncating.
+ */
+export const CTO_LIVE_STATE_MAX_CHARS = 6000;
+
+// Per-section row caps. A CTO with 200 lanes needs to know that, not to read
+// 200 lines about it — every section reports its own overflow count.
+const LIVE_STATE_MAX_LANES = 12;
+const LIVE_STATE_MAX_CHATS = 15;
+const LIVE_STATE_MAX_PRS = 12;
+const LIVE_STATE_MAX_APPROVALS = 10;
+const LIVE_STATE_MAX_SCHEDULED = 10;
+const LIVE_STATE_MAX_AUTOMATION_RUNS = 8;
+
+/**
+ * How wide a window the automation-run TOTAL is counted over.
+ *
+ * The sibling sections each count what their source hands back whole — every
+ * lane, every active chat, every open PR — and slice only for display.
+ * `listRuns` has no count API and caps its own window at 500, so "count them
+ * all" is not on offer here. This asks for that hard cap: a project with fewer
+ * runs than this gets a real total, and one with more gets a floor the block
+ * renders as "500+" rather than a precise number it cannot know.
+ */
+const LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW = 500;
+
+export type CtoLiveStateSnapshot = {
+  capturedAt: string;
+  lanes: Array<{ id: string; name: string; dirty: boolean; ahead: number; behind: number }>;
+  lanesTotal: number;
+  chats: Array<{
+    sessionId: string;
+    title: string;
+    laneId: string;
+    status: string;
+    note: string | null;
+    parentSessionId: string | null;
+    spawnKind: string | null;
+  }>;
+  chatsTotal: number;
+  pullRequests: Array<{
+    number: number;
+    title: string;
+    laneId: string;
+    checks: string;
+    review: string;
+  }>;
+  pullRequestsTotal: number;
+  approvals: Array<{ sessionId: string; title: string }>;
+  approvalsTotal: number;
+  scheduledWork: Array<{ sessionId: string; title: string; status: string; nextRunAt: string | null }>;
+  scheduledWorkTotal: number;
+  automationRuns: Array<{ name: string; status: string; at: string }>;
+  automationRunsTotal: number;
+  /**
+   * True when `automationRunsTotal` is a FLOOR, not a count: the counting
+   * window came back full, so there are at least that many runs and possibly
+   * more. Every other section counts its source whole and has no such doubt.
+   */
+  automationRunsTotalIsFloor: boolean;
+  /** Sources that threw while the snapshot was captured, by name. */
+  unavailable: string[];
+};
+
+function liveStateOverflowLine(
+  shown: number,
+  total: number,
+  noun: string,
+  totalIsFloor = false,
+): string[] {
+  if (total <= shown) return [];
+  const remainder = total - shown;
+  return [`- …and ${totalIsFloor ? "at least " : ""}${remainder} more ${noun}.`];
+}
+
+/**
+ * Render the live block. Pure: takes a captured snapshot and returns text, so
+ * the format is testable without a service graph behind it.
+ */
+export function renderCtoLiveStateBlock(
+  snapshot: CtoLiveStateSnapshot,
+  maxChars = CTO_LIVE_STATE_MAX_CHARS,
+): string {
+  const lines: string[] = [
+    `Live project state (captured ${snapshot.capturedAt} — this is current, do not re-derive it by shelling out)`,
+  ];
+
+  lines.push("", `Waiting on you (${snapshot.approvalsTotal})`);
+  if (!snapshot.approvals.length) lines.push("- none");
+  for (const approval of snapshot.approvals) {
+    lines.push(`- ${clipText(approval.title, 70)} [${approval.sessionId}]`);
+  }
+  lines.push(...liveStateOverflowLine(snapshot.approvals.length, snapshot.approvalsTotal, "chats"));
+
+  lines.push("", `Lanes (${snapshot.lanesTotal})`);
+  if (!snapshot.lanes.length) lines.push("- none");
+  for (const lane of snapshot.lanes) {
+    const flags = [
+      lane.dirty ? "dirty" : "clean",
+      lane.ahead > 0 ? `${lane.ahead} ahead` : null,
+      lane.behind > 0 ? `${lane.behind} behind` : null,
+    ].filter(Boolean).join(", ");
+    lines.push(`- ${lane.name} [${lane.id}] — ${flags}`);
+  }
+  lines.push(...liveStateOverflowLine(snapshot.lanes.length, snapshot.lanesTotal, "lanes"));
+
+  lines.push("", `Active chats (${snapshot.chatsTotal})`);
+  if (!snapshot.chats.length) lines.push("- none");
+  for (const chat of snapshot.chats) {
+    const lineage = chat.parentSessionId
+      ? ` ← ${chat.spawnKind ?? "child"} of ${chat.parentSessionId}`
+      : "";
+    const note = chat.note ? ` — ${clipText(chat.note, 120)}` : "";
+    lines.push(`- ${clipText(chat.title, 60)} [${chat.sessionId}] on ${chat.laneId}: ${chat.status}${lineage}${note}`);
+  }
+  lines.push(...liveStateOverflowLine(snapshot.chats.length, snapshot.chatsTotal, "chats"));
+
+  lines.push("", `Open PRs (${snapshot.pullRequestsTotal})`);
+  if (!snapshot.pullRequests.length) lines.push("- none");
+  for (const pr of snapshot.pullRequests) {
+    lines.push(`- #${pr.number} ${clipText(pr.title, 70)} [${pr.laneId}] — checks ${pr.checks}, review ${pr.review}`);
+  }
+  lines.push(...liveStateOverflowLine(snapshot.pullRequests.length, snapshot.pullRequestsTotal, "PRs"));
+
+  lines.push("", `Scheduled work (${snapshot.scheduledWorkTotal})`);
+  if (!snapshot.scheduledWork.length) lines.push("- none");
+  for (const item of snapshot.scheduledWork) {
+    lines.push(`- ${clipText(item.title, 60)} [${item.sessionId}] — ${item.status}${item.nextRunAt ? `, next ${item.nextRunAt}` : ""}`);
+  }
+  lines.push(...liveStateOverflowLine(snapshot.scheduledWork.length, snapshot.scheduledWorkTotal, "schedules"));
+
+  const runsTotal = snapshot.automationRunsTotalIsFloor
+    ? `${snapshot.automationRunsTotal}+`
+    : `${snapshot.automationRunsTotal}`;
+  lines.push("", `Recent automation runs (${runsTotal})`);
+  if (!snapshot.automationRuns.length) lines.push("- none");
+  for (const run of snapshot.automationRuns) {
+    lines.push(`- ${clipText(run.name, 60)} — ${run.status} at ${run.at}`);
+  }
+  lines.push(...liveStateOverflowLine(
+    snapshot.automationRuns.length,
+    snapshot.automationRunsTotal,
+    "runs",
+    snapshot.automationRunsTotalIsFloor,
+  ));
+
+  if (snapshot.unavailable.length) {
+    lines.push("", `Unavailable this turn: ${snapshot.unavailable.join(", ")}.`);
+  }
+
+  const rendered = lines.join("\n");
+  if (rendered.length <= maxChars) return rendered;
+  // Line-aligned head truncation: the block is ordered most- to least-urgent,
+  // so the tail is what goes, and a half-rendered row is never emitted.
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > maxChars) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  return `${kept.join("\n")}\n…(live state truncated)`;
 }
 
 function makeDefaultIdentity(): CtoIdentity {
@@ -735,6 +989,148 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return written;
   };
 
+  /* ── Live project state ── */
+
+  let liveStateCache: CtoLiveStateSnapshot | null = null;
+
+  /**
+   * Capture the live block's inputs. Every source is read behind its own
+   * try/catch: one unavailable service degrades to a named "unavailable" note
+   * rather than blanking the whole block, which is the failure mode that would
+   * quietly send the CTO back to shelling out for state.
+   */
+  const captureLiveState = async (): Promise<CtoLiveStateSnapshot | null> => {
+    const sources = args.getLiveStateSources?.() ?? null;
+    if (!sources) return null;
+    const unavailable: string[] = [];
+    const snapshot: CtoLiveStateSnapshot = {
+      capturedAt: nowIso(),
+      lanes: [],
+      lanesTotal: 0,
+      chats: [],
+      chatsTotal: 0,
+      pullRequests: [],
+      pullRequestsTotal: 0,
+      approvals: [],
+      approvalsTotal: 0,
+      scheduledWork: [],
+      scheduledWorkTotal: 0,
+      automationRuns: [],
+      automationRunsTotal: 0,
+      automationRunsTotalIsFloor: false,
+      unavailable,
+    };
+
+    try {
+      const lanes = await sources.laneService.list({ includeArchived: false });
+      snapshot.lanesTotal = lanes.length;
+      snapshot.lanes = lanes.slice(0, LIVE_STATE_MAX_LANES).map((lane) => ({
+        id: lane.id,
+        name: lane.name,
+        dirty: lane.status?.dirty === true,
+        ahead: lane.status?.ahead ?? 0,
+        behind: lane.status?.behind ?? 0,
+      }));
+    } catch {
+      unavailable.push("lanes");
+    }
+
+    try {
+      const chats = await sources.listChats(undefined, {
+        includeIdentity: false,
+        includeAutomation: true,
+      });
+      // "Active" means the chat is still a live concern: anything not ended or
+      // archived. A finished chat belongs in the daily log, not the live block.
+      const active = chats.filter((chat) => chat.status !== "ended" && !chat.archivedAt);
+      snapshot.chatsTotal = active.length;
+      snapshot.chats = active.slice(0, LIVE_STATE_MAX_CHATS).map((chat) => ({
+        sessionId: chat.sessionId,
+        title: chat.title?.trim() || chat.sessionId,
+        laneId: chat.laneId,
+        status: chat.status,
+        note: chat.summary?.trim() || chat.lastOutputPreview?.trim() || null,
+        parentSessionId: chat.orchestrationParentSessionId?.trim() || null,
+        spawnKind: chat.spawnKind ?? null,
+      }));
+
+      // Approvals and schedules come off the same summaries rather than a
+      // second round-trip — the chat summary is already the source of truth
+      // for both.
+      const waiting = active.filter((chat) => chat.awaitingInput === true || Boolean(chat.pendingInputItemId));
+      snapshot.approvalsTotal = waiting.length;
+      snapshot.approvals = waiting.slice(0, LIVE_STATE_MAX_APPROVALS).map((chat) => ({
+        sessionId: chat.sessionId,
+        title: chat.title?.trim() || chat.sessionId,
+      }));
+
+      const schedules = active.flatMap((chat) =>
+        (chat.scheduledWork ?? []).map((item) => ({
+          sessionId: chat.sessionId,
+          title: item.title,
+          status: item.status,
+          nextRunAt: item.nextRunAt ?? null,
+        })));
+      snapshot.scheduledWorkTotal = schedules.length;
+      snapshot.scheduledWork = schedules.slice(0, LIVE_STATE_MAX_SCHEDULED);
+    } catch {
+      unavailable.push("chats");
+    }
+
+    if (sources.prService) {
+      try {
+        const open = sources.prService.listAll().filter((pr) => pr.state === "open");
+        snapshot.pullRequestsTotal = open.length;
+        snapshot.pullRequests = open.slice(0, LIVE_STATE_MAX_PRS).map((pr) => ({
+          number: pr.githubPrNumber,
+          title: pr.title,
+          laneId: pr.laneId,
+          checks: pr.checksStatus,
+          review: pr.reviewStatus,
+        }));
+      } catch {
+        unavailable.push("pull requests");
+      }
+    }
+
+    if (sources.automationService) {
+      try {
+        const ruleNames = new Map(sources.automationService.list().map((rule) => [rule.id, rule.name]));
+        // Fetched over the counting window, not the display cap: a fetch
+        // limited to the eight rows shown can only ever report a total of
+        // eight, so the overflow line never fired and the CTO was told there
+        // are 8 runs however many there are.
+        const runs = sources.automationService.listRuns({
+          limit: LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW,
+        });
+        snapshot.automationRunsTotal = runs.length;
+        snapshot.automationRunsTotalIsFloor = runs.length >= LIVE_STATE_AUTOMATION_RUN_COUNT_WINDOW;
+        snapshot.automationRuns = runs.slice(0, LIVE_STATE_MAX_AUTOMATION_RUNS).map((run) => ({
+          name: ruleNames.get(run.automationId) ?? run.automationId,
+          status: run.status,
+          at: run.endedAt ?? run.startedAt,
+        }));
+      } catch {
+        unavailable.push("automations");
+      }
+    }
+
+    return snapshot;
+  };
+
+  /**
+   * Refresh the cached live snapshot. Async and separate from
+   * `buildReconstructionContext` on purpose: the reconstruction context is
+   * built from a dozen synchronous call sites, and the caller that actually
+   * knows a turn is starting awaits this first.
+   */
+  const refreshLiveState = async (): Promise<CtoLiveStateSnapshot | null> => {
+    liveStateCache = await captureLiveState();
+    return liveStateCache;
+  };
+
+  const getLiveStateSnapshot = (): CtoLiveStateSnapshot | null => liveStateCache;
+
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
@@ -749,7 +1145,12 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
     sections.push(`- Persona: ${snapshot.identity.persona}`);
-    sections.push(`- Preferred model: ${snapshot.identity.modelPreferences.provider}/${snapshot.identity.modelPreferences.model}`);
+    const preferredModel = snapshot.identity.modelPreferences;
+    sections.push(
+      preferredModel
+        ? `- Preferred model: ${preferredModel.provider}/${preferredModel.model}`
+        : "- Preferred model: not picked yet",
+    );
     sections.push("");
     sections.push("Current working context");
     sections.push(...buildCurrentContextLines(snapshot));
@@ -759,6 +1160,14 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       sections.push("");
       sections.push(section.title);
       sections.push(section.body);
+    }
+
+    // Last on purpose. The turn-context prefix truncates by keeping the TAIL,
+    // so the freshest and most perishable section is the one placed where a
+    // budgeted send cannot cut it.
+    if (liveStateCache) {
+      sections.push("");
+      sections.push(renderCtoLiveStateBlock(liveStateCache, CTO_LIVE_STATE_MAX_CHARS));
     }
 
     return sections.join("\n").trim();
@@ -822,7 +1231,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const candidate: CtoIdentity = {
       ...current,
       ...patch,
-      modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
+      // An explicit `null` clears the pick; an absent key leaves it alone. Only
+      // a real patch merges, so a partial write cannot half-fill a null record.
+      modelPreferences: patch.modelPreferences === null
+        ? null
+        : patch.modelPreferences
+          ? { ...current.modelPreferences, ...patch.modelPreferences }
+          : current.modelPreferences,
       version: current.version + 1,
       updatedAt: timestamp,
     };
@@ -896,6 +1311,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     updateIdentity,
     appendSessionLog,
     buildReconstructionContext,
+    refreshLiveState,
+    getLiveStateSnapshot,
     getOnboardingState,
     completeOnboardingStep,
     dismissOnboarding,

@@ -240,9 +240,16 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       : primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = !requiresProject || (!showWelcome && hasActiveProject);
     const navTarget = tabNavTarget(it.to, readStoredPrsRoute(activeProjectRoot), storedSettingsRoute);
+    // The Work tab's dot says "something needs you"; the tooltip says how many,
+    // so the board's Needs you column is readable without opening the tab.
+    const needsYouCount =
+      it.to === "/work" && isActiveAllowed ? terminalAttention.needsAttentionCount : 0;
     const tooltip: SmartTooltipContent = {
       label: it.label,
-      description: it.description,
+      description:
+        needsYouCount > 0
+          ? `${needsYouCount} need${needsYouCount === 1 ? "s" : ""} you. ${it.description}`
+          : it.description,
       effect: tabItemEffect(it, {
         hasActiveProject,
         showWelcome,

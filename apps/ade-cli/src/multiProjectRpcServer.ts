@@ -63,7 +63,7 @@ import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
-} from "../../desktop/src/main/services/adeActions/registry";
+} from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,

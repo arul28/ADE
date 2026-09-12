@@ -18,6 +18,8 @@ import type {
   AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
   AutomationRule,
+  AutomationRuleOrigin,
+  AutomationRuleScope,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -25,9 +27,11 @@ import type {
   AutomationRunQueueStatus,
   AutomationRunStatus,
   AutomationScheduledCleanup,
+  AutomationsEventPayload,
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
+  ModelId,
   NormalizedLinearIssue,
   PrSummary,
   RunAdeActionConfig,
@@ -294,6 +298,59 @@ export type TriggerContext = {
   pr?: TriggerPrContext;
   /** Structured Linear payload for `linear.*` triggers. */
   linear?: { issue: TriggerLinearIssueContext };
+  /** Structured chat-session payload for `session.*` triggers. */
+  session?: TriggerSessionContext;
+};
+
+/**
+ * Chat-session payload carried by `session.limit_reached`, `session.failed`,
+ * and `session.ended_without_pr`. Mirrored onto `trigger.sessionId` /
+ * `trigger.laneId` so lane-shaped filters and existing templates keep working,
+ * and readable from templates as `{{trigger.session.*}}`.
+ */
+export type TriggerSessionContext = {
+  sessionId: string;
+  provider?: string;
+  modelId?: string;
+  laneId?: string;
+  /** ISO timestamp the provider's usage window reopens. Limit triggers only. */
+  resetAt?: string;
+};
+
+/**
+ * The host-callback payload the chat runtime hands to
+ * `automationService.onSessionSignal` when a session reports a usage limit or a
+ * provider/API failure. `session.ended_without_pr` is not in here: the service
+ * derives that one itself from `onSessionEnded`.
+ */
+/**
+ * One built-in action's result. `handoffSessionId` is set only by the `handoff`
+ * action: `HandoffLaunchJob` is a renderer-only type, so main hands the new
+ * session id to the renderer on the `runs-updated` event and the renderer
+ * builds the job from it.
+ */
+/**
+ * What the service hands to `onEvent`. Same shape the renderer receives on
+ * `IPC.automationsEvent`, so the two cannot drift.
+ */
+export type AutomationServiceEvent = AutomationsEventPayload;
+
+export type AutomationActionOutcome = {
+  status: AutomationActionStatus;
+  output?: string;
+  handoffSessionId?: string;
+};
+
+export type AutomationSessionSignal = {
+  kind: "limit_reached" | "failed";
+  sessionId: string;
+  provider?: string | null;
+  modelId?: string | null;
+  laneId?: string | null;
+  /** Only meaningful for `limit_reached`; ignored otherwise. */
+  resetAt?: string | null;
+  /** Short human-readable reason, e.g. the provider error text. */
+  summary?: string | null;
 };
 
 export type LaneMergedNotification = {
@@ -314,6 +371,18 @@ export function summarizeTrigger(trigger: TriggerContext): string {
     const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
     const prNumber = trigger.pr?.number;
     return `Lane merged: ${lane}${typeof prNumber === "number" ? ` (PR #${prNumber})` : ""}`;
+  }
+  if (trigger.triggerType === "session.limit_reached") {
+    const model = trigger.session?.modelId ?? trigger.session?.provider ?? "session";
+    return `Usage limit reached: ${model}`;
+  }
+  if (trigger.triggerType === "session.failed") {
+    const model = trigger.session?.modelId ?? trigger.session?.provider ?? "session";
+    return `Session failed: ${model}`;
+  }
+  if (trigger.triggerType === "session.ended_without_pr") {
+    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
+    return `Session ended without a PR: ${lane}`;
   }
   if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
   if (trigger.triggerType === "lane.archived") return `Lane archived: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
@@ -653,6 +722,18 @@ export function triggerMatches(
     if (!matchesGlob(ruleTrigger.repo, repoCandidate)) return false;
   }
 
+  // Session scoping. A rule created from one chat's menu carries that chat's
+  // id and must never fire for another chat; `providers` narrows by provider.
+  if (ruleTrigger.sessionId?.trim()) {
+    const sessionCandidate = (trigger.session?.sessionId ?? trigger.sessionId ?? "").trim();
+    if (sessionCandidate !== ruleTrigger.sessionId.trim()) return false;
+  }
+  if (ruleTrigger.providers?.length) {
+    const expected = ruleTrigger.providers.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+    const actual = (trigger.session?.provider ?? "").trim().toLowerCase();
+    if (expected.length && (!actual || !expected.includes(actual))) return false;
+  }
+
   if (ruleTrigger.namePattern?.trim() && !matchesGlob(ruleTrigger.namePattern, laneName)) return false;
   if (ruleTrigger.project?.trim() && !matchesGlob(ruleTrigger.project, trigger.linear?.issue?.project ?? trigger.project)) return false;
   if (ruleTrigger.team?.trim() && !matchesGlob(ruleTrigger.team, trigger.linear?.issue?.team ?? trigger.team)) return false;
@@ -789,7 +870,7 @@ function computeConfidence(rule: AutomationRule): AutomationConfidenceScore {
   };
 }
 
-function normalizedRuleTriggers(rule: AutomationRule): AutomationTrigger[] {
+function normalizedRuleTriggers(rule: AutomationRuleInput): AutomationTrigger[] {
   if (Array.isArray(rule.triggers) && rule.triggers.length > 0) return rule.triggers;
   const legacyTrigger = (rule as AutomationRule & { trigger?: AutomationTrigger }).trigger;
   if (legacyTrigger) return [legacyTrigger];
@@ -802,7 +883,7 @@ function canonicalizeTriggerForRuntime(trigger: AutomationTrigger): AutomationTr
   return canonical === trigger.type ? trigger : { ...trigger, type: canonical };
 }
 
-function deriveIncludeProjectContext(rule: AutomationRule): boolean {
+function deriveIncludeProjectContext(rule: AutomationRuleInput): boolean {
   if (typeof rule.includeProjectContext === "boolean") return rule.includeProjectContext;
   if ((rule.contextSources ?? []).length > 0) return true;
   return false;
@@ -813,7 +894,64 @@ function normalizeAutomationLaneMode(mode: unknown): AutomationExecution["laneMo
   return mode === "create" || mode === "reuse" || mode === "require-on-trigger" ? mode : undefined;
 }
 
-export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
+/**
+ * Attempt budget for a one-shot rule that did not configure one. A one-shot
+ * rule on a repeating trigger would otherwise retry forever when its work keeps
+ * failing.
+ */
+export const ONE_SHOT_DEFAULT_MAX_RUNS = 3;
+
+/** A positive whole number, or undefined for "unlimited". */
+export function normalizeMaxRuns(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return Math.floor(parsed);
+}
+
+/**
+ * Coherence check for a `handoff` action's lane target. Returns an error
+ * message, or null when the action is well formed. Shared by the draft
+ * normalizer (the write path) and the action runner (which also sees
+ * hand-edited project configs), so both reject the same shapes with the same
+ * words instead of failing deep inside the chat service.
+ */
+export function validateHandoffLaneTarget(
+  action: Pick<AutomationAction, "handoffMode" | "targetLaneMode" | "targetLaneId">,
+): string | null {
+  const laneMode = action.targetLaneMode ?? "same";
+  if (laneMode === "explicit" && !action.targetLaneId?.trim()) {
+    return 'handoff with targetLaneMode "explicit" requires targetLaneId.';
+  }
+  if (laneMode !== "same" && action.handoffMode === "fork") {
+    return 'A fork handoff must stay in its source lane, so targetLaneMode must be "same". Use handoffMode "brief" to hand off into another lane.';
+  }
+  return null;
+}
+
+/** A rule with no recorded origin is a rule the user wrote themselves. */
+export function normalizeRuleOrigin(origin: unknown): AutomationRuleOrigin {
+  return origin === "cto" || origin === "chat-menu" ? origin : "user";
+}
+
+/**
+ * The scope's `sessionTitle` is stored on the rule, so the label survives the
+ * chat being deleted. A scope without a session id is dropped.
+ */
+export function normalizeRuleScope(scope: unknown): AutomationRuleScope | undefined {
+  if (!isRecord(scope)) return undefined;
+  const sessionId = typeof scope.sessionId === "string" ? scope.sessionId.trim() : "";
+  if (!sessionId) return undefined;
+  const sessionTitle = typeof scope.sessionTitle === "string" ? scope.sessionTitle.trim() : "";
+  return { sessionId, sessionTitle };
+}
+
+/**
+ * What the normalizer accepts: a stored rule, which may predate provenance and
+ * therefore carry no `origin`. The normalized output always has one.
+ */
+export type AutomationRuleInput = Omit<AutomationRule, "origin"> & { origin?: AutomationRuleOrigin };
+
+export function normalizeRuntimeRule(rule: AutomationRuleInput): AutomationRule {
   const triggers = normalizedRuleTriggers(rule).map(canonicalizeTriggerForRuntime);
   const legacyActions = Array.isArray(rule.legacy?.actions)
     ? rule.legacy.actions
@@ -860,9 +998,29 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   delete (sanitizedGuardrails as { budgetCapUsd?: number }).budgetCapUsd;
   delete (sanitizedGuardrails as { maxSpendUsd?: number }).maxSpendUsd;
   delete (sanitizedGuardrails as { budgetUsd?: number }).budgetUsd;
+  // Provenance is rebuilt rather than spread through, so a malformed stored
+  // value (unknown origin, scope with no session id) is dropped instead of
+  // surviving into the runtime rule.
+  const {
+    origin: rawOrigin,
+    scope: rawScope,
+    originRequest: rawOriginRequest,
+    oneShot: rawOneShot,
+    maxRuns: rawMaxRuns,
+    ...ruleWithoutProvenance
+  } = rule;
+  const scope = normalizeRuleScope(rawScope);
+  const originRequest = rawOriginRequest?.trim();
   return {
-    ...rule,
+    ...ruleWithoutProvenance,
     enabled: rule.enabled !== false,
+    // Rules written before provenance existed have no `origin`; they are the
+    // user's own rules.
+    origin: normalizeRuleOrigin(rawOrigin),
+    ...(scope ? { scope } : {}),
+    ...(originRequest ? { originRequest } : {}),
+    ...(rawOneShot === true ? { oneShot: true } : {}),
+    ...(normalizeMaxRuns(rawMaxRuns) ? { maxRuns: normalizeMaxRuns(rawMaxRuns)! } : {}),
     triggers: [primary],
     trigger: primary,
     executor: { mode: "automation-bot" },
@@ -1088,11 +1246,7 @@ export function createAutomationService({
   githubPollingAvailable?: () => boolean;
   /** Injectable only for deterministic scheduler tests. */
   cronScheduler?: CronScheduler;
-  onEvent?: (payload: {
-    type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
-    automationId?: string;
-    runId?: string;
-  }) => void;
+  onEvent?: (payload: AutomationServiceEvent) => void;
 }) {
   type AutomationIngressStatusPatch = {
     webhookGateway?: Partial<AutomationIngressStatus["webhookGateway"]>;
@@ -1138,6 +1292,37 @@ export function createAutomationService({
       lastError: null,
     },
   };
+  /**
+   * True when the lane still has a live open/draft PR in the local projection.
+   * Read-only and best-effort: an unreadable projection is treated as "has a
+   * PR" so a lookup failure can never fire `session.ended_without_pr` wrongly.
+   */
+  const laneHasOpenPullRequest = (laneId: string): boolean => {
+    const id = laneId?.trim();
+    if (!id) return false;
+    try {
+      const detachable = columnExists("pull_requests", "detached_at");
+      const row = db.get<{ count: number }>(
+        `
+          select count(1) as count
+            from pull_requests
+           where lane_id = ?
+             and project_id = ?
+             and state in ('open', 'draft')
+             ${detachable ? "and detached_at is null" : ""}
+        `,
+        [id, projectId],
+      );
+      return (row?.count ?? 0) > 0;
+    } catch (error) {
+      logger.warn("automations.lane_pr_lookup_failed", {
+        laneId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+  };
+
   const resolveLaneBranch = (laneId: string): string | undefined => {
     try { return laneService.getLaneBaseAndBranch(laneId).branchRef; }
     catch { return undefined; }
@@ -1156,11 +1341,7 @@ export function createAutomationService({
     reasons: Set<string>;
   }>();
 
-  const emit = (payload: {
-    type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
-    automationId?: string;
-    runId?: string;
-  }) => {
+  const emit = (payload: AutomationServiceEvent) => {
     try {
       onEvent?.(payload);
     } catch {
@@ -2477,6 +2658,280 @@ export function createAutomationService({
     };
   };
 
+  /**
+   * How many times a one-shot rule has run. Kept in `kv` rather than derived
+   * from `automation_runs` so run-history pruning cannot reset a rule's
+   * attempt budget. Only one-shot rules are counted, so ordinary automations
+   * pay nothing for this.
+   */
+  const runCountKey = (ruleId: string): string => `automations.run-count.v1:${projectId}:${ruleId}`;
+
+  const bumpRunCount = (ruleId: string): number => {
+    const key = runCountKey(ruleId);
+    const row = db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [key]);
+    const previous = Number.parseInt(row?.value ?? "0", 10);
+    const next = (Number.isFinite(previous) && previous > 0 ? previous : 0) + 1;
+    db.run(
+      `insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
+      [key, String(next)],
+    );
+    return next;
+  };
+
+  const clearRunCount = (ruleId: string): void => {
+    try {
+      db.run(`delete from kv where key = ?`, [runCountKey(ruleId)]);
+    } catch {
+      // A stale counter only shortens a future rule's budget; never fail a
+      // delete over it.
+    }
+  };
+
+  /**
+   * Hand an unspent attempt back.
+   *
+   * Compare-and-set against the value this reservation bumped TO, never a blind
+   * decrement: another trigger may have reserved in between, and refunding its
+   * attempt instead of ours is how a ceiling silently grows.
+   */
+  const releaseRunCount = (ruleId: string, reservedCount: number): void => {
+    if (reservedCount <= 0) return;
+    try {
+      db.run(
+        `update kv set value = ? where key = ? and value = ?`,
+        [String(reservedCount - 1), runCountKey(ruleId), String(reservedCount)],
+      );
+    } catch {
+      // A counter left high only shortens this rule's own budget, which is the
+      // safe direction; never fail a run over the refund.
+    }
+  };
+
+  /**
+   * Park the counter exactly at the ceiling.
+   *
+   * Used for the two cases that must not keep climbing: a denied reservation
+   * (the attempt was never spent) and a retired rule that could not be deleted
+   * because it is shared. Both are "this rule is finished" — the counter is the
+   * gate that keeps saying so, so it has to stop growing rather than run away.
+   */
+  const pinRunCountToCap = (ruleId: string, maxRuns: number): void => {
+    try {
+      db.run(
+        `insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
+        [runCountKey(ruleId), String(maxRuns)],
+      );
+    } catch {
+      // Same direction as above: a counter that stayed high still denies.
+    }
+  };
+
+  /**
+   * Chats a handoff rule created, so a rule can never be triggered by its own
+   * output. Keyed by the NEW session id because that is what the later
+   * `session.*` trigger carries, and kept in `kv` next to the run counters
+   * because an unscoped rule outlives the process that created the chat.
+   */
+  const handoffOriginKey = (sessionId: string): string =>
+    `automations.handoff-origin.v1:${projectId}:${sessionId}`;
+
+  /**
+   * Whether a rule listens for session events from ANY chat. That is the only
+   * shape whose own handoff output can trigger it again: a rule pinned to one
+   * session id never matches the chat the handoff created.
+   */
+  const listensToAnySession = (rule: AutomationRule): boolean =>
+    rule.triggers.some((trigger) => trigger.type.startsWith("session.") && !trimToNull(trigger.sessionId));
+
+  const recordHandoffOrigin = (ruleId: string, sessionId: string): void => {
+    try {
+      db.run(
+        `insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
+        [handoffOriginKey(sessionId), ruleId],
+      );
+    } catch (error) {
+      // The rule still has its `maxRuns` ceiling; losing the marker only means
+      // the chain spends attempts instead of being cut off at the first link.
+      logger.warn("automations.handoff_origin.record_failed", {
+        automationId: ruleId,
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const ruleCreatedSession = (ruleId: string, sessionId: string): boolean => {
+    try {
+      const row = db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [handoffOriginKey(sessionId)]);
+      return row?.value === ruleId;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * One claimed attempt from a rule's budget, settled when the run ends.
+   *
+   * `settle` is idempotent and `release` only refunds a reservation nothing
+   * settled, so the two can both be called on the same reservation — the run
+   * paths settle in a `finally`, and `runRuleNow` releases afterwards to catch
+   * the exits where the run never started at all.
+   */
+  type RunBudgetReservation = {
+    settle: (outcome: { succeeded: boolean }) => void;
+    release: () => void;
+  };
+
+  /** A rule with no budget pays nothing: no counter, no settle, no refund. */
+  const UNBOUNDED_RUN_BUDGET: RunBudgetReservation = { settle: () => {}, release: () => {} };
+
+  /**
+   * How many runs this rule gets in total, or `null` when it is unbounded.
+   * One-shot rules carry a default ceiling because their retries have to end
+   * somewhere even when the user never picked a number.
+   */
+  const runBudgetCap = (rule: AutomationRule): number | null => {
+    const configured = normalizeMaxRuns(rule.maxRuns);
+    if (rule.oneShot !== true && configured === undefined) return null;
+    return configured ?? ONE_SHOT_DEFAULT_MAX_RUNS;
+  };
+
+  /**
+   * Claim one attempt from a rule's budget BEFORE the run starts, or refuse the
+   * run when the budget is gone. Two independent bounds live here:
+   *
+   * - `oneShot`: the rule exists to get one job done, so it is deleted when
+   *   that job SUCCEEDS — a failed run keeps it, and the failure stays in run
+   *   history for the user to see.
+   * - `maxRuns`: a hard ceiling on how many times the rule may run at all,
+   *   success or failure. It is NOT gated on `oneShot`: the chat menu writes
+   *   `maxRuns` on every auto-handoff rule including the unscoped "every chat"
+   *   ones, and its Retries copy promises a bound, so the bound has to be real
+   *   for a rule that keeps succeeding into a chat that ends the same way.
+   *
+   * The claim is what makes the ceiling real. Recording the attempt after the
+   * run let two matching signals that arrived together both pass the check
+   * before either was written, so a `maxRuns: 1` rule could create two chats
+   * and two lanes; and it left a SHARED rule — which cannot be deleted — firing
+   * forever, because deletion was the only thing that stopped dispatch. Now the
+   * counter itself is the gate: a reservation past the ceiling is refused and
+   * rolled straight back, so the count never climbs past `maxRuns` either.
+   *
+   * Returns `null` when the run must not start. The counter lives in `kv` (see
+   * `runCountKey`) so pruning run history cannot hand a failing rule a fresh
+   * budget.
+   */
+  const reserveRunBudget = (rule: AutomationRule): RunBudgetReservation | null => {
+    const oneShot = rule.oneShot === true;
+    const maxRuns = runBudgetCap(rule);
+    if (maxRuns === null) return UNBOUNDED_RUN_BUDGET;
+    let runCount: number;
+    try {
+      runCount = bumpRunCount(rule.id);
+    } catch (error) {
+      // Without a trustworthy count we cannot bound the retries, so let the run
+      // through and keep the rule rather than refuse work — or delete a rule —
+      // on the strength of a counter we could not read.
+      logger.warn("automations.rule_budget.run_count_failed", {
+        automationId: rule.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return UNBOUNDED_RUN_BUDGET;
+    }
+    if (runCount > maxRuns) {
+      // The ceiling was spent before this trigger arrived. Give the attempt
+      // straight back — a denied run must not move the counter — and refuse.
+      pinRunCountToCap(rule.id, maxRuns);
+      logger.info("automations.rule_budget.exhausted", {
+        automationId: rule.id,
+        runCount: maxRuns,
+        maxRuns,
+      });
+      return null;
+    }
+    let done = false;
+    return {
+      settle: (outcome) => {
+        if (done) return;
+        done = true;
+        const retireForSuccess = oneShot && outcome.succeeded;
+        if (!retireForSuccess && runCount < maxRuns) {
+          logger.info("automations.rule_budget.retained", {
+            automationId: rule.id,
+            runCount,
+            maxRuns,
+            reason: outcome.succeeded ? "run-succeeded" : "run-failed",
+          });
+          return;
+        }
+        deleteRetiredRule(rule, {
+          reason: retireForSuccess ? "succeeded" : "max-runs",
+          runCount,
+          maxRuns,
+        });
+      },
+      release: () => {
+        if (done) return;
+        done = true;
+        releaseRunCount(rule.id, runCount);
+      },
+    };
+  };
+
+  /**
+   * Remove a rule that has spent its budget. The read of the config happens
+   * immediately before the write and the rule is only removed when it is still
+   * there, so a concurrent config write either already removed it (nothing to
+   * do) or is preserved by re-reading the latest snapshot.
+   *
+   * A shared rule is never deleted — that boundary is `deleteRule`'s and it is
+   * deliberate: `.ade/ade.yaml` belongs to the repo, not to this process. It
+   * still has to STOP. Its counter is pinned at the ceiling instead, and
+   * `reserveRunBudget` refuses every later trigger against it, so the rule goes
+   * quiet at exactly the bound the user configured without this process
+   * rewriting a shared file. It is retired, not deleted: a teammate who edits
+   * the rule (or clears the counter with it) gets a working rule back.
+   */
+  const deleteRetiredRule = (
+    rule: AutomationRule,
+    context: { reason: "succeeded" | "max-runs"; runCount: number; maxRuns: number },
+  ): void => {
+    try {
+      const snapshot = projectConfigService.get();
+      const sharedAutomations = Array.isArray(snapshot.shared?.automations) ? snapshot.shared.automations : [];
+      if (sharedAutomations.some((entry) => entry?.id === rule.id)) {
+        pinRunCountToCap(rule.id, context.maxRuns);
+        logger.warn("automations.rule_budget.shared_rule_retired", {
+          automationId: rule.id,
+          reason: context.reason,
+          runCount: context.runCount,
+          maxRuns: context.maxRuns,
+        });
+        return;
+      }
+      const local = { ...(snapshot.local ?? {}) };
+      const automations = Array.isArray(local.automations) ? [...local.automations] : [];
+      const remaining = automations.filter((entry) => entry?.id !== rule.id);
+      if (remaining.length === automations.length) return;
+      local.automations = remaining;
+      projectConfigService.save({ shared: snapshot.shared, local });
+      clearRunCount(rule.id);
+      syncFromConfig();
+      logger.info("automations.rule_budget.deleted", {
+        automationId: rule.id,
+        reason: context.reason,
+        runCount: context.runCount,
+        maxRuns: context.maxRuns,
+      });
+      emit({ type: "runs-updated", automationId: rule.id });
+    } catch (error) {
+      logger.warn("automations.rule_budget.delete_failed", {
+        automationId: rule.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const trimToNull = (value: unknown): string | null => {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -2566,7 +3021,7 @@ export function createAutomationService({
     action: AutomationAction,
     trigger: TriggerContext,
     runId: string,
-  ): Promise<{ status: AutomationActionStatus; output?: string }> => {
+  ): Promise<AutomationActionOutcome> => {
     const raw = (action.condition ?? "").trim();
     if (raw === "false") return { status: "skipped", output: "Condition evaluated false." };
     if (raw === "provider-enabled" && (projectConfigService.get().effective.providerMode ?? "guest") === "guest") {
@@ -2675,6 +3130,142 @@ export function createAutomationService({
       }
       return await dispatchAdeAction(config, trigger);
     }
+    if (action.type === "handoff") {
+      // Same call the ADE action registry allowlists as `chat.handoffSession`;
+      // the registry's `chat` domain service is this very agentChatService.
+      if (!agentChatServiceRef) {
+        return { status: "failed", output: "Agent chat service is unavailable." };
+      }
+      const sourceSessionId = trimToNull(trigger.session?.sessionId) ?? trimToNull(trigger.sessionId);
+      if (!sourceSessionId) {
+        return { status: "failed", output: "handoff requires a trigger that carries a chat session id." };
+      }
+      const targetModelId = trimToNull(action.targetModelId);
+      if (!targetModelId) {
+        return { status: "failed", output: "handoff requires targetModelId." };
+      }
+      const mode = action.handoffMode === "fork" ? "fork" : "brief";
+      // Hand-edited configs never pass through the draft normalizer, so the
+      // same coherence check runs here rather than failing inside the chat
+      // service with a less specific message.
+      const laneTargetError = validateHandoffLaneTarget(action);
+      if (laneTargetError) {
+        return { status: "failed", output: laneTargetError };
+      }
+      const rendered = resolvePlaceholders(action.promptTemplate ?? "", trigger);
+      const handoffNote = typeof rendered === "string" ? rendered.trim() : "";
+      let targetLaneId: string | null = null;
+      let createdLaneName: string | null = null;
+      // Only set when THIS branch created the lane, so the compensating delete
+      // below can never touch a lane the user chose.
+      let createdLaneId: string | null = null;
+      // `createLaneForRun` threads the new lane onto the SHARED trigger so a
+      // later step in the chain targets it. Deleting the lane has to put those
+      // back too, or a `continueOnFailure` / `alwaysRun` step resolves its
+      // default lane to one that no longer exists.
+      const triggerLaneBeforeCreate = {
+        laneId: trigger.laneId,
+        laneName: trigger.laneName,
+        branch: trigger.branch,
+      };
+      if (mode === "fork") {
+        // A fork's provider transcript is keyed to the source lane worktree, so
+        // main never steers it — `handoffSession` resolves the source lane and
+        // rejects anything else. The normalizer already forbids a non-"same"
+        // targetLaneMode here.
+        targetLaneId = null;
+      } else if ((action.targetLaneMode ?? "same") === "explicit") {
+        targetLaneId = trimToNull(action.targetLaneId);
+      } else if (action.targetLaneMode === "new") {
+        try {
+          // One creation path: the same helper `execution.laneMode: "create"`
+          // uses, so template resolution and name-collision suffixes behave
+          // identically. It also threads the new lane onto the trigger, so any
+          // later step in the chain targets it.
+          const created = await createLaneForRun(rule, trigger, {
+            template: action.laneNameTemplate,
+            // The chat's stored title is the readable label for this rule; it
+            // survives the chat being deleted.
+            fallbackName: rule.scope?.sessionTitle,
+          });
+          targetLaneId = created.laneId;
+          createdLaneName = created.laneName;
+          createdLaneId = created.laneId;
+        } catch (error) {
+          return {
+            status: "failed",
+            output: `handoff could not create a lane: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      } else {
+        // "same": for a session trigger this IS the source chat's lane, and it
+        // matches how every other action falls back to the trigger lane. When
+        // the trigger carries none, `handoffSession` resolves it from the
+        // source session.
+        targetLaneId = trimToNull(trigger.laneId);
+      }
+      try {
+        const result = await agentChatServiceRef.handoffSession({
+          sourceSessionId,
+          targetModelId: targetModelId as ModelId,
+          mode,
+          ...(targetLaneId ? { targetLaneId } : {}),
+          ...(handoffNote ? { handoffNote } : {}),
+          ...(action.reasoningEffort !== undefined ? { reasoningEffort: action.reasoningEffort } : {}),
+        });
+        const newSessionId = result.session.id;
+        // Surface the new chat on the run itself so history links to it.
+        updateRun(runId, { chat_session_id: newSessionId });
+        // A rule that listens to every chat would otherwise hear its own
+        // handoff end and hand THAT chat off in turn — an unbounded chain of
+        // chats, and of lanes when `targetLaneMode` is "new". Remember who
+        // made this chat so `dispatchTrigger` can refuse the second link.
+        if (listensToAnySession(rule)) {
+          recordHandoffOrigin(rule.id, newSessionId);
+        }
+        return {
+          status: "succeeded",
+          handoffSessionId: newSessionId,
+          output: JSON.stringify({
+            sessionId: newSessionId,
+            sourceSessionId,
+            mode,
+            targetModelId,
+            targetLaneMode: action.targetLaneMode ?? "same",
+            laneId: result.session.laneId ?? null,
+            ...(createdLaneName ? { createdLaneName } : {}),
+            usedFallbackSummary: result.usedFallbackSummary,
+          }),
+        };
+      } catch (error) {
+        // The lane above was created FOR this handoff. If the handoff never
+        // happened, the lane is an empty artefact of a failure — and a rule
+        // with a retry budget would leave one behind per attempt. Compensate:
+        // lane creation and the handoff are one operation, so unwind the half
+        // that landed. Only the lane this branch just made is ever removed;
+        // an "explicit" or "same" target is the user's lane and is left alone.
+        if (createdLaneId) {
+          // Undo the trigger mutation first, so a cleanup that itself fails
+          // still leaves the chain pointing at the lane it had before.
+          trigger.laneId = triggerLaneBeforeCreate.laneId;
+          trigger.laneName = triggerLaneBeforeCreate.laneName;
+          trigger.branch = triggerLaneBeforeCreate.branch;
+          try {
+            await laneService.delete({ laneId: createdLaneId });
+          } catch (cleanupError) {
+            // A failed cleanup must not replace the real failure below: the
+            // handoff error is what the user needs to see. Record the orphan
+            // so it is findable rather than silent.
+            logger.warn("automations.handoff.orphan_lane_kept", {
+              automationId: rule.id,
+              laneId: createdLaneId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          }
+        }
+        return { status: "failed", output: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (action.type === "agent-session") {
       // Spawn a scoped agent chat session as one step in a built-in chain.
       // The prompt on the action wins over the rule-level prompt; placeholders
@@ -2778,7 +3369,11 @@ export function createAutomationService({
     return { status: "skipped", output: `Unknown action type '${action.type}'` };
   };
 
-  const runLegacyRule = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
+  const runLegacyRule = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    budget: RunBudgetReservation,
+  ): Promise<AutomationRun> => {
     const actions = rule.execution?.kind === "built-in"
       ? rule.execution.builtIn?.actions ?? []
       : rule.legacy?.actions ?? [];
@@ -2796,6 +3391,9 @@ export function createAutomationService({
     let runError: string | null = null;
     let aborting = false;
     let finalQueueStatus: AutomationRunQueueStatus = "pending-review";
+    // Carried onto `runs-updated` so the renderer can build its own
+    // HandoffLaunchJob for the chat this run just created.
+    let handoffSessionId: string | null = null;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -2808,6 +3406,7 @@ export function createAutomationService({
             try {
               const result = await runLegacyAction(rule, action, trigger, run.id);
               lastOutput = result.output ?? null;
+              if (result.handoffSessionId) handoffSessionId = result.handoffSessionId;
               if (result.status === "failed") throw new Error(result.output ?? "Action failed");
               finishAction({ id: actionId, status: result.status, output: result.output ?? null });
               break;
@@ -2842,7 +3441,13 @@ export function createAutomationService({
         error_message: runError,
         queue_status: finalQueueStatus,
       });
-      emit({ type: "runs-updated", automationId: rule.id, runId: run.id });
+      emit({
+        type: "runs-updated",
+        automationId: rule.id,
+        runId: run.id,
+        ...(handoffSessionId ? { handoffSessionId } : {}),
+      });
+      budget.settle({ succeeded: runStatus === "succeeded" });
     }
     return toRun(loadRunRow(run.id) ?? {
       id: run.id,
@@ -2879,13 +3484,23 @@ export function createAutomationService({
    * Returns the new lane id. Throws on lane-service failure (caller marks
    * the run failed; no fallback to primary).
    */
-  const createLaneForRun = async (rule: AutomationRule, trigger: TriggerContext): Promise<{ laneId: string; laneName: string }> => {
+  const createLaneForRun = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    naming?: { template?: string; fallbackName?: string },
+  ): Promise<{ laneId: string; laneName: string }> => {
     const preset = rule.execution?.laneNamePreset;
-    const template = preset && preset !== "custom"
-      ? presetToTemplate(preset)
-      : (rule.execution?.laneNameTemplate ?? "");
+    const template = naming?.template?.trim()
+      ? naming.template
+      : preset && preset !== "custom"
+        ? presetToTemplate(preset)
+        : (rule.execution?.laneNameTemplate ?? "");
     const rendered = resolveLaneNameTemplate(template, trigger, rule.name);
-    const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
+    const fallbackName = naming?.fallbackName?.trim()
+      || trigger.issue?.title
+      || trigger.pr?.title
+      || trigger.summary
+      || rule.name;
     const baseName = (rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "").trim() || fallbackName.trim();
     if (!baseName) {
       throw new Error("Lane name template resolved to an empty string.");
@@ -3005,7 +3620,32 @@ export function createAutomationService({
     };
   };
 
+  /**
+   * Dispatch an agent-session run and settle the attempt `runRuleNow` already
+   * reserved for it on EVERY exit. The early failures inside — no chat service,
+   * lane resolution refused, no lane at all — are exactly the ones that repeat
+   * forever, so a rule that can never resolve a lane has to burn attempts and
+   * retire like any other failing rule rather than retry on every future
+   * trigger. They are failures of a run that STARTED, so they settle rather
+   * than release.
+   */
   const dispatchAgentSessionRun = async (args: {
+    rule: AutomationRule;
+    trigger: TriggerContext;
+    existingRunId?: string | null;
+    budget: RunBudgetReservation;
+  }): Promise<AutomationRun> => {
+    let succeeded = false;
+    try {
+      const run = await runAgentSessionDispatch(args);
+      succeeded = true;
+      return run;
+    } finally {
+      args.budget.settle({ succeeded });
+    }
+  };
+
+  const runAgentSessionDispatch = async (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
     existingRunId?: string | null;
@@ -3154,6 +3794,9 @@ export function createAutomationService({
         ...(sessionId ? { chat_session_id: sessionId } : {}),
       });
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      // The rule keeps its place: a failed run did not do the job. It still
+      // spends one of its attempts — `dispatchAgentSessionRun` does that for
+      // every exit from here, including the early throws above.
       throw error;
     }
 
@@ -3241,11 +3884,23 @@ export function createAutomationService({
     });
   };
 
+  /**
+   * Run one rule now, or answer `null` when its budget is spent.
+   *
+   * The attempt is claimed here, before either execution path starts, so the
+   * ceiling holds against triggers that arrive together — and is released again
+   * when the run never started, which is only the exits that throw before a run
+   * row exists (an unsupported execution kind). Both execution paths settle
+   * their own reservation in a `finally`, and settling wins over the release.
+   *
+   * A dry run reserves nothing: it starts no chat, spends no money, and must
+   * not spend a rule's real budget either.
+   */
   const runRuleNow = async (
     rule: AutomationRule,
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
-  ): Promise<AutomationRun> => {
+  ): Promise<AutomationRun | null> => {
     const snapshot = projectConfigService.get();
     const sharedAutomations = snapshot.shared?.automations;
     const isSharedRule = Array.isArray(sharedAutomations)
@@ -3256,10 +3911,32 @@ export function createAutomationService({
     if (options.dryRun) {
       return await simulateDryRun(rule, trigger);
     }
-    const executionKind = resolveExecutionKind(rule);
-    if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
-    if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
-    throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+    const budget = reserveRunBudget(rule);
+    if (!budget) {
+      logger.info("automations.trigger.suppressed", {
+        automationId: rule.id,
+        triggerType: trigger.triggerType,
+        reason: "budget-exhausted",
+      });
+      // A person pressed Run now: they get the real reason rather than the
+      // generic "changed before it could run" a null answer turns into.
+      if (trigger.triggerType === "manual") {
+        const cap = runBudgetCap(rule);
+        throw new Error(
+          `Automation '${rule.name}' has used all ${cap} of its configured runs. Raise its retry limit to run it again.`,
+        );
+      }
+      return null;
+    }
+    try {
+      const executionKind = resolveExecutionKind(rule);
+      if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger, budget });
+      if (executionKind === "built-in") return await runLegacyRule(rule, trigger, budget);
+      throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+    } finally {
+      // A no-op once either path settled; a refund when nothing ran at all.
+      budget.release();
+    }
   };
 
   const runRule = async (
@@ -3272,16 +3949,23 @@ export function createAutomationService({
       .catch(() => undefined)
       .then(() => {
         const isManualTrigger = trigger.triggerType === "manual";
-        const currentRule = isManualTrigger ? rule : findRule(rule.id);
+        const latestRule = findRule(rule.id);
+        // A manual run executes the rule the caller picked — running a DISABLED
+        // rule by hand is a supported flow — but never one that has LEFT the
+        // config while this call waited its turn in the queue. A rule that
+        // retired on the run ahead of it is gone, and its run counter went with
+        // it, so re-running the captured object would hand a spent budget a
+        // fresh chat and a fresh lane.
+        const currentRule = isManualTrigger ? (latestRule ? rule : null) : latestRule;
         const currentTrigger = typeof trigger.scheduleTriggerIndex === "number"
-          ? currentRule?.triggers[trigger.scheduleTriggerIndex]
+          ? latestRule?.triggers[trigger.scheduleTriggerIndex]
           : undefined;
         const staleSchedule = !isManualTrigger && trigger.triggerType === "schedule" && (
           !currentTrigger
           || currentTrigger.type !== "schedule"
           || (currentTrigger.cron ?? "").trim() !== (trigger.scheduleCronExpression ?? "").trim()
         );
-        if (!isManualTrigger && (!currentRule || !currentRule.enabled || staleSchedule)) {
+        if (!currentRule || (!isManualTrigger && (!currentRule.enabled || staleSchedule))) {
           logger.info("automations.trigger.suppressed", {
             automationId: rule.id,
             triggerType: trigger.triggerType,
@@ -3291,7 +3975,7 @@ export function createAutomationService({
           });
           return null;
         }
-        return runRuleNow(currentRule ?? rule, trigger, options);
+        return runRuleNow(currentRule, trigger, options);
       });
     runQueuesByAutomationId.set(rule.id, queued);
     try {
@@ -3331,9 +4015,20 @@ export function createAutomationService({
     const { laneBranch, laneName } = await resolveTriggerLaneInfo(trigger);
     trigger.branch = trigger.branch ?? laneBranch;
     trigger.laneName = trigger.laneName ?? laneName;
+    const triggerSessionId = trimToNull(trigger.session?.sessionId) ?? trimToNull(trigger.sessionId);
     for (const rule of rules) {
       const matches = rule.triggers.map((candidate) => triggerMatches(candidate, trigger, laneBranch, laneName));
       if (!matches.some(Boolean)) continue;
+      // A rule never reacts to the chat it created itself. Without this an
+      // unscoped "hand off when a chat ends" rule feeds on its own output.
+      if (triggerSessionId && ruleCreatedSession(rule.id, triggerSessionId)) {
+        logger.info("automations.run.skipped_own_handoff", {
+          automationId: rule.id,
+          triggerType: trigger.triggerType,
+          sessionId: triggerSessionId,
+        });
+        continue;
+      }
       void runRule(rule, trigger).catch((error) => {
         logger.warn("automations.run.failed", {
           automationId: rule.id,
@@ -3957,6 +4652,8 @@ export function createAutomationService({
       }
       local.automations = nextAutomations;
       projectConfigService.save({ shared: snapshot.shared, local });
+      // A later rule that reuses this id starts with a fresh attempt budget.
+      clearRunCount(id);
       syncFromConfig();
       emit({ type: "runs-updated", automationId: id });
       return this.list();
@@ -4160,14 +4857,66 @@ export function createAutomationService({
       return await dispatchIngressTrigger(args);
     },
 
-    onSessionEnded(args: { laneId: string; sessionId: string }) {
+    onSessionEnded(args: { laneId: string; sessionId: string; provider?: string | null; modelId?: string | null }) {
+      const session: TriggerSessionContext = {
+        sessionId: args.sessionId,
+        ...(args.provider?.trim() ? { provider: args.provider.trim() } : {}),
+        ...(args.modelId?.trim() ? { modelId: args.modelId.trim() } : {}),
+        ...(args.laneId ? { laneId: args.laneId } : {}),
+      };
       void dispatchTrigger({
         triggerType: "session-end",
         laneId: args.laneId,
         sessionId: args.sessionId,
         branch: resolveLaneBranch(args.laneId),
         reason: "session_end",
+        session,
       });
+      // Second, narrower signal: the session is over and the lane has nothing
+      // open to review. The PR lookup is local (the synced projection), so it
+      // costs nothing when no rule listens.
+      if (laneHasOpenPullRequest(args.laneId)) return;
+      const trigger: TriggerContext = {
+        triggerType: "session.ended_without_pr",
+        laneId: args.laneId,
+        sessionId: args.sessionId,
+        branch: resolveLaneBranch(args.laneId),
+        reason: "session_end_without_pr",
+        scheduledAt: nowIso(),
+        session,
+      };
+      trigger.summary = summarizeTrigger(trigger);
+      void dispatchTrigger(trigger);
+    },
+
+    /**
+     * Host callback for provider-reported session failures. The chat runtime
+     * calls this from `agentChatService.commitChatEvent` once it has decided a
+     * turn hit a usage limit or failed; automations never inspect chat events
+     * themselves.
+     */
+    onSessionSignal(signal: AutomationSessionSignal) {
+      const sessionId = signal.sessionId?.trim();
+      if (!sessionId) return;
+      const laneId = signal.laneId?.trim() || undefined;
+      const session: TriggerSessionContext = {
+        sessionId,
+        ...(signal.provider?.trim() ? { provider: signal.provider.trim() } : {}),
+        ...(signal.modelId?.trim() ? { modelId: signal.modelId.trim() } : {}),
+        ...(laneId ? { laneId } : {}),
+        ...(signal.kind === "limit_reached" && signal.resetAt?.trim() ? { resetAt: signal.resetAt.trim() } : {}),
+      };
+      const trigger: TriggerContext = {
+        triggerType: signal.kind === "limit_reached" ? "session.limit_reached" : "session.failed",
+        sessionId,
+        ...(laneId ? { laneId, branch: resolveLaneBranch(laneId) } : {}),
+        reason: signal.kind === "limit_reached" ? "session_limit_reached" : "session_failed",
+        scheduledAt: nowIso(),
+        ...(signal.summary?.trim() ? { summary: signal.summary.trim() } : {}),
+        session,
+      };
+      trigger.summary = summarizeTrigger(trigger);
+      void dispatchTrigger(trigger);
     },
 
     onHeadChanged(args: { laneId: string; preHeadSha: string | null; postHeadSha: string | null; reason: string }) {

@@ -55,6 +55,13 @@ export type WorkflowStep = {
   // delete-lane
   afterMinutes?: number;
   laneDeleteOptions?: LaneDeleteOptions;
+  // handoff
+  handoffMode?: "fork" | "brief";
+  targetModelId?: string;
+  targetLaneMode?: AutomationAction["targetLaneMode"];
+  laneNameTemplate?: string;
+  promptTemplate?: string;
+  reasoningEffort?: AutomationAction["reasoningEffort"];
 };
 
 const REQUIRE_LANE_MODES = new Set(["require-on-trigger", "provided", "prompt-at-run"]);
@@ -157,6 +164,19 @@ function actionToStep(action: AutomationAction): WorkflowStep | null {
         laneDeleteOptions: readLaneDeleteOptions(action),
         ...runtime,
       };
+    case "handoff":
+      // The builder has no handoff editor yet, but the step must survive a
+      // read/write round-trip or opening the rule would silently drop it.
+      return {
+        kind: "handoff",
+        ...(action.handoffMode ? { handoffMode: action.handoffMode } : {}),
+        ...(action.targetModelId ? { targetModelId: action.targetModelId } : {}),
+        ...(action.targetLaneMode ? { targetLaneMode: action.targetLaneMode } : {}),
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.promptTemplate ? { promptTemplate: action.promptTemplate } : {}),
+        ...(action.reasoningEffort ? { reasoningEffort: action.reasoningEffort } : {}),
+        ...runtime,
+      };
     default:
       return null;
   }
@@ -206,6 +226,17 @@ export function actionToDraftAction(action: AutomationAction): AutomationDraftAc
         ...(action.laneDeleteOptions ? { laneDeleteOptions: action.laneDeleteOptions } : {}),
         ...(Number.isFinite(action.afterMinutes) ? { afterMinutes: action.afterMinutes } : {}),
       };
+    case "handoff":
+      return {
+        ...base,
+        type: "handoff",
+        ...(action.handoffMode ? { handoffMode: action.handoffMode } : {}),
+        ...(action.targetModelId ? { targetModelId: action.targetModelId } : {}),
+        ...(action.targetLaneMode ? { targetLaneMode: action.targetLaneMode } : {}),
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.promptTemplate ? { promptTemplate: action.promptTemplate } : {}),
+        ...(action.reasoningEffort ? { reasoningEffort: action.reasoningEffort } : {}),
+      };
   }
 }
 
@@ -249,6 +280,17 @@ function stepToAction(step: WorkflowStep): AutomationAction {
         }),
         ...runtime,
         ...alwaysRun,
+      } as AutomationAction;
+    case "handoff":
+      return {
+        type: "handoff",
+        ...runtime,
+        ...(step.handoffMode ? { handoffMode: step.handoffMode } : {}),
+        ...(step.targetModelId ? { targetModelId: step.targetModelId } : {}),
+        ...(step.targetLaneMode ? { targetLaneMode: step.targetLaneMode } : {}),
+        ...(step.laneNameTemplate ? { laneNameTemplate: step.laneNameTemplate } : {}),
+        ...(step.promptTemplate ? { promptTemplate: step.promptTemplate } : {}),
+        ...(step.reasoningEffort ? { reasoningEffort: step.reasoningEffort } : {}),
       } as AutomationAction;
   }
 }
@@ -326,5 +368,8 @@ export function blankStep(kind: StepKind, defaultSuiteId?: string): WorkflowStep
       return { kind };
     case "delete-lane":
       return { kind, alwaysRun: true, laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } };
+    case "handoff":
+      // Not offered in the add-step menu; a blank one still needs a shape.
+      return { kind, handoffMode: "brief", targetModelId: "", targetLaneMode: "same" };
   }
 }

@@ -22,6 +22,7 @@ import {
   type AgentChatStopMode,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
+  type ChatSurfaceProfile,
   type AppControlContextItem,
   type BuiltInBrowserContextItem,
   type IosElementContextItem,
@@ -1289,11 +1290,28 @@ export type ActiveTurnSendCapability = {
  * are decided here. Cursor's interrupt continues the same thread (cancel +
  * resend on the same agent) rather than injecting into the live run, so its
  * button says "continue".
+ *
+ * `liveRedirectOnly` is the CTO identity session: the host rewrites a queued
+ * delivery on that session into the provider's first non-queue mode, so
+ * offering "queue" here would promise a wait the backend never honors. Hiding
+ * it is presentation only — the table itself is untouched.
  */
-export function activeTurnSendModesForProvider(provider: string | undefined): ActiveTurnSendCapability {
+export function activeTurnSendModesForProvider(
+  provider: string | undefined,
+  options?: { liveRedirectOnly?: boolean },
+): ActiveTurnSendCapability {
+  const providerModes = activeTurnDispatchModes(provider);
+  const liveRedirectModes = providerModes.filter((mode) => mode !== "queue");
+  // Every CTO-eligible provider has at least one live-redirect mode, so the
+  // filtered list is never empty there. If some other provider ever reaches
+  // this path queue-only, keep its real menu rather than render nothing.
+  const modes = options?.liveRedirectOnly && liveRedirectModes.length > 0
+    ? liveRedirectModes
+    : providerModes;
+  const providerDefault = defaultActiveTurnDispatchMode(provider);
   return {
-    modes: activeTurnDispatchModes(provider),
-    defaultMode: defaultActiveTurnDispatchMode(provider),
+    modes,
+    defaultMode: modes.includes(providerDefault) ? providerDefault : modes[0] ?? providerDefault,
     agentLabel: providerDisplayLabel(provider, "the agent"),
     interruptContinues: activeTurnInterruptContinues(provider),
   };
@@ -1303,8 +1321,9 @@ export function activeTurnSendModesForProvider(provider: string | undefined): Ac
  * What the staged-message strip offers, plus — when the provider has no
  * active-turn delivery at all — why waiting is the only option. The unsupported
  * half reads `capability.modes` (the shared per-provider table) rather than the
- * wired handlers, so a Codex chat says Codex cannot take a message mid-turn
- * while a Claude chat whose handler is merely unwired makes no such claim.
+ * wired handlers, so a Droid chat says Droid cannot take a message mid-turn
+ * while a Claude or Codex chat whose handler is merely unwired makes no such
+ * claim.
  *
  * Never mentions hovering: the controls are always visible on a touch pointer,
  * where an instruction to hover is simply wrong.
@@ -1633,6 +1652,7 @@ function ActiveTurnStopButton({
 
 export function AgentChatComposer({
   surfaceMode = "standard",
+  surfaceProfile = "standard",
   layoutVariant = "standard",
   composerMaxHeightPx = null,
   isActive = false,
@@ -1776,6 +1796,12 @@ export function AgentChatComposer({
   onToggleAppControl,
 }: {
   surfaceMode?: ChatSurfaceMode;
+  /**
+   * Which chat surface this composer belongs to. `persistent_identity` is the
+   * CTO: a steer-only session whose host redirects a queued delivery into the
+   * live turn, so the composer must not offer "queue" as a choice.
+   */
+  surfaceProfile?: ChatSurfaceProfile;
   layoutVariant?: "standard" | "grid-tile";
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
@@ -2075,9 +2101,12 @@ export function AgentChatComposer({
     () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
+  // The CTO identity session cannot queue: the host turns a queued delivery
+  // into an inline (or interrupt) one, so the menu must not offer the wait.
+  const liveRedirectOnlyDispatch = surfaceProfile === "persistent_identity";
   const activeTurnSendCapability = useMemo(
-    () => activeTurnSendModesForProvider(sessionProvider),
-    [sessionProvider],
+    () => activeTurnSendModesForProvider(sessionProvider, { liveRedirectOnly: liveRedirectOnlyDispatch }),
+    [liveRedirectOnlyDispatch, sessionProvider],
   );
   // Only the user's explicit pick is state; the effective mode is derived, so
   // it is never stale for a render. A pick the current provider cannot honor
@@ -2090,16 +2119,23 @@ export function AgentChatComposer({
     ? activeTurnSendModePick
     : activeTurnSendCapability.defaultMode;
   // A dispatch mode with no wired handler downgrades rather than dead-ending:
-  // interrupt prefers inline and falls back to queue, inline falls back to
-  // queue. Reachable whenever the picked model's provider (which drives
-  // `activeTurnSendCapability`) differs from the live session's provider (which
-  // drives the handlers).
+  // it falls through to the next offered mode this pane can actually dispatch,
+  // in menu order, and to queueing when none can. Reachable whenever the picked
+  // model's provider (which drives `activeTurnSendCapability`) differs from the
+  // live session's provider (which drives the handlers). On the CTO, where
+  // queue is not offered, that keeps the primary button inside the same menu
+  // the caret shows instead of silently labelling itself "send after turn".
+  const activeTurnSendModeDispatchable = (mode: ActiveTurnSendMode): boolean => (
+    mode === "inline"
+      ? Boolean(onSendSteerNow)
+      : mode === "interrupt"
+        ? Boolean(onSendSteerInterrupt)
+        : activeTurnSendCapability.modes.includes("queue")
+  );
   const effectiveActiveTurnSendMode: ActiveTurnSendMode =
-    selectedActiveTurnSendMode === "interrupt" && !onSendSteerInterrupt
-      ? (activeTurnSendCapability.modes.includes("inline") && onSendSteerNow ? "inline" : "queue")
-      : selectedActiveTurnSendMode === "inline" && !onSendSteerNow
-        ? "queue"
-        : selectedActiveTurnSendMode;
+    activeTurnSendModeDispatchable(selectedActiveTurnSendMode)
+      ? selectedActiveTurnSendMode
+      : activeTurnSendCapability.modes.find(activeTurnSendModeDispatchable) ?? "queue";
   // The split send affordance appears for any provider with at least one
   // atomic active-turn delivery mode (Claude: inline + interrupt; Cursor:
   // interrupt only). Everything else keeps the single queue button.
