@@ -408,9 +408,12 @@ device and keeps the rows in a ring of 500. It requires a `bundleId`, and there
 is no raw-predicate option, for the same reason: `log stream` reads the whole
 device, so a run with no scope hands the caller every other app's rows and the
 system's. There is also one log process per host, so `startEventLog` and `stopEventLog`
-refuse a chat that owns neither half of the simulator unless it passes `force`.
-Either claim counts, like `uninstallApp`: the common shape is a chat that ran
-`launch`, which holds an app session and no device session at all. A proof
+ask two questions. May this chat touch the simulator at all — either claim
+counts, like `uninstallApp`, because the common shape is a chat that ran
+`launch` and holds an app session with no device session. And did this chat
+start the log that is running: the two sessions can belong to different chats,
+so "has a stake" would let each of them stop the other's log. A log nobody
+started is free to take, and `force` takes one that is running. A proof
 bundle leaves out `log.json` when the log follows a different device from the
 one it captured, and records why in the metadata. `getEventLog` returns a page plus a
 `cursor`; pass the cursor back as `sinceId` to read only new rows. The page also

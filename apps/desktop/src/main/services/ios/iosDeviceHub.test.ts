@@ -570,6 +570,62 @@ describe("iosDeviceHub device sessions", () => {
     expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
   });
 
+  it("does not let ignore-ownership shut down a simulator another chat runs an app on", async () => {
+    // `--force` and `--ignore-ownership` are different claims. `--force` says
+    // "take this from another chat"; `--ignore-ownership` says only "step
+    // around the device-session guard in my own name", which is the
+    // lane-scoped drawer's intent. Only the first may end another chat's app.
+    const harness = createHarness({
+      appSessionOwner: "chat-app",
+      appSessionDeviceUdid: UDID,
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-device" });
+
+    const closed = await harness.hub.closeDevice({
+      chatSessionId: "chat-lane",
+      shutdownDevice: true,
+      ignoreOwnership: true,
+    });
+
+    expect(closed.released).toBe(true);
+    expect(closed.shutdown).toBe(false);
+    expect(harness.runArgs()).not.toContainEqual(["simctl", "shutdown", UDID]);
+  });
+
+  it("keeps the event log with the chat that started it, not either stakeholder", async () => {
+    // The device session and the app session can belong to different chats,
+    // and there is one log process per host. A guard that accepted either
+    // owner let each of them stop the other's log.
+    const harness = createHarness({
+      appSessionOwner: "chat-app",
+      appSessionDeviceUdid: UDID,
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-device" });
+    await harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.example.app",
+      chatSessionId: "chat-device",
+    });
+
+    // The app-session owner has a stake in the simulator and still cannot take
+    // the log the other chat started.
+    expect(() => harness.hub.stopEventLog({ chatSessionId: "chat-app" }))
+      .toThrow(expect.objectContaining({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE }));
+    await expect(harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.other.app",
+      chatSessionId: "chat-app",
+    })).rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
+
+    // Its own starter still owns it, and once stopped the log is free to take.
+    expect(harness.hub.stopEventLog({ chatSessionId: "chat-device" }).running).toBe(false);
+    await expect(harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.other.app",
+      chatSessionId: "chat-app",
+    })).resolves.toMatchObject({ running: true });
+  });
+
   it("still honours an explicit forced shutdown while another chat runs an app", async () => {
     // The guard protects implicit cleanup, not the human. `close-device
     // --force` says it closes a device another chat owns, and this release is

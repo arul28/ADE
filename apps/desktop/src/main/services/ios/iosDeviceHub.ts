@@ -159,6 +159,15 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
 
   let deviceSession: IosSimulatorDeviceSession | null = null;
   /**
+   * The chat that started the running event log.
+   *
+   * Owning "a stake in the simulator" is not enough to own the log. The device
+   * session and the app session can belong to DIFFERENT chats, and there is
+   * one log process per host, so a guard that accepted either owner let each
+   * of them stop the other's log. The chat that started it keeps it.
+   */
+  let eventLogOwner: string | null = null;
+  /**
    * Serializes the device-session transitions.
    *
    * `openDevice` checks ownership, then awaits a resolve and a boot before it
@@ -186,6 +195,25 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     if (!owner) return;
     if ((chatSessionId ?? null) === owner) return;
     throw new IosDeviceOwnedByOtherSessionError(owner);
+  };
+
+  /**
+   * Refuses a caller that did not start the running event log.
+   *
+   * Runs after `assertSimulatorOwner`, which answers "may this chat touch the
+   * simulator at all". This one answers the narrower question the shared log
+   * process actually poses: two chats can each hold a stake — one opened the
+   * device, the other launched the app — and only one of them started the log.
+   * A log nobody started is free to take.
+   */
+  const assertEventLogOwner = (
+    chatSessionId: string | null | undefined,
+    force: boolean | null | undefined,
+  ) => {
+    if (force === true) return;
+    if (!eventLog.isRunning() || eventLogOwner === null) return;
+    if ((chatSessionId ?? null) === eventLogOwner) return;
+    throw new IosDeviceOwnedByOtherSessionError(eventLogOwner);
   };
 
   /**
@@ -324,7 +352,10 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           });
         });
     }
-    if (eventLog.activeDeviceUdid() === previous.deviceUdid) eventLog.stop();
+    if (eventLog.activeDeviceUdid() === previous.deviceUdid) {
+      eventLog.stop();
+      eventLogOwner = null;
+    }
     deps.emit({ type: "device-session-released", previousDeviceSession: previous });
     return shutdown;
   };
@@ -425,9 +456,13 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           args.shutdownDevice ?? previous.bootedByAde,
           {
             releasedBy: args.chatSessionId ?? null,
-            // The explicit, human-initiated path. `close-device --force` says
-            // it closes a device another chat owns, so it shuts one down.
-            force: args.force === true || args.ignoreOwnership === true,
+            // `force` only, not `ignoreOwnership`. They are different claims:
+            // `--force` says "take this from another chat", while
+            // `--ignore-ownership` says only "step around the device-session
+            // guard in my own name" — the lane-scoped drawer's intent. Letting
+            // the softer one through here would shut down a simulator another
+            // chat is running an app on, which is what it never asked for.
+            force: args.force === true,
           },
         );
         return { released: true, shutdown, previousDeviceSession: previous };
@@ -658,6 +693,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      */
     async startEventLog(args: IosSimulatorStartEventLogArgs): Promise<IosSimulatorEventLogPage> {
       assertSimulatorOwner(args.chatSessionId, args.force);
+      assertEventLogOwner(args.chatSessionId, args.force);
       const bundleId = (args.bundleId ?? "").trim();
       if (bundleId.length === 0) {
         throw new Error(
@@ -666,12 +702,15 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       }
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       eventLog.start({ deviceUdid: udid, bundleId });
+      eventLogOwner = args.chatSessionId ?? null;
       return eventLog.read({});
     },
 
     stopEventLog(args: IosSimulatorStopEventLogArgs = {}): IosSimulatorEventLogPage {
       assertSimulatorOwner(args.chatSessionId, args.force);
+      assertEventLogOwner(args.chatSessionId, args.force);
       eventLog.stop();
+      eventLogOwner = null;
       return eventLog.read({});
     },
 

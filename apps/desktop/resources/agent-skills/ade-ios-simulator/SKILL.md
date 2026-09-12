@@ -122,7 +122,7 @@ ade --socket ios-sim log-stop --text
 
 One list holds the app's own `os_log` rows and ADE's own actions in order. Pass the returned `cursor` back as `--since` to read only new rows.
 
-`--bundle-id` is required. `log stream` reads the whole device, so a run with no app scope returns every other app's rows and the system's. There is one log process per host as well, so `log-start` and `log-stop` refuse a chat that owns neither the device session nor the app session — pass `--chat-session <id>` to name yourself, or `--force` to take the log.
+`--bundle-id` is required. `log stream` reads the whole device, so a run with no app scope returns every other app's rows and the system's. There is one log process per host as well, so `log-start` and `log-stop` refuse a chat that owns neither the device session nor the app session, and they also refuse a chat that did not start the log that is running — two chats can each hold a stake, and only one of them started it. Pass `--chat-session <id>` to name yourself, or `--force` to take a running log.
 
 ## Live view
 
