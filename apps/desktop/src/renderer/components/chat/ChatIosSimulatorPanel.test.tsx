@@ -2659,9 +2659,12 @@ describe("ChatIosSimulatorPanel", () => {
 
     fireEvent.click(within(column).getByRole("button", { name: "Start" }));
 
+    // The chat names itself, because the host refuses an event-log start from a
+    // chat that does not own the device session.
     await waitFor(() => expect(api.startEventLog).toHaveBeenCalledWith({
       deviceUdid: device.udid,
       bundleId: "com.example.app",
+      chatSessionId: expect.any(String),
     }, null));
     expect(await screen.findByText("Event log (2)")).toBeTruthy();
 

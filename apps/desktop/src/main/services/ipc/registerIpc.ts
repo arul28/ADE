@@ -9019,7 +9019,8 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
     ensureIosSimulator().startEventLog(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStopEventLog, async () => ensureIosSimulator().stopEventLog());
+  ipcMain.handle(IPC.iosSimulatorStopEventLog, async (_event, arg = {}) =>
+    ensureIosSimulator().stopEventLog(arg));
 
   ipcMain.handle(IPC.iosSimulatorGetEventLog, async (_event, arg = {}) => ensureIosSimulator().getEventLog(arg));
 

@@ -774,6 +774,7 @@ import type {
   IosSimulatorSetLocationArgs,
   IosSimulatorSetPermissionArgs,
   IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
@@ -7983,14 +7984,15 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.iosSimulatorGetAppState, args),
       ),
     startEventLog: (
-      args: IosSimulatorStartEventLogArgs = {},
+      args: IosSimulatorStartEventLogArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorEventLogPage> =>
       callIosSimulatorMutation(pin, "startEventLog", args, IPC.iosSimulatorStartEventLog),
     stopEventLog: (
+      args: IosSimulatorStopEventLogArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorEventLogPage> =>
-      callIosSimulatorMutation(pin, "stopEventLog", undefined, IPC.iosSimulatorStopEventLog),
+      callIosSimulatorMutation(pin, "stopEventLog", args, IPC.iosSimulatorStopEventLog),
     getEventLog: async (
       args: IosSimulatorEventLogArgs = {},
       pin?: OpenProjectBinding | null,

@@ -399,7 +399,12 @@ after a tap instead of a fixed sleep.
 
 `startEventLog` runs
 `xcrun simctl spawn <udid> log stream --style compact --level info` on the
-device and keeps the rows in a ring of 500. `getEventLog` returns a page plus a
+device and keeps the rows in a ring of 500. It requires a `bundleId`, and there
+is no raw-predicate option, for the same reason: `log stream` reads the whole
+device, so a run with no scope hands the caller every other app's rows and the
+system's. There is also one log process per host, so `startEventLog` and
+`stopEventLog` refuse a chat that does not own the device session unless it
+passes `force`. `getEventLog` returns a page plus a
 `cursor`; pass the cursor back as `sinceId` to read only new rows. The page also
 reports `dropped`, the number of rows the ring discarded since the last read, so
 a gap is stated rather than hidden. `stopEventLog` ends the stream and returns
@@ -477,8 +482,8 @@ SwiftUI screen from stale code.
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` (the caller's chat id comes from `$ADE_CHAT_SESSION_ID`) |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
 | `app-state` | `getAppState` | `--bundle-id`, `--device` |
-| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` |
-| `log-stop` (`logs-stop`) | `stopEventLog` | none |
+| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` (required), `--force` |
+| `log-stop` (`logs-stop`) | `stopEventLog` | `--force` |
 | `log` (`logs`) | `getEventLog` | `--device`, `--since`, `--limit` |
 | `find-element` (`find`) | `findElement` | `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, `--device`, `--lane`, `--project` |
 | `tap-element` | `tapElement` | the same element query |

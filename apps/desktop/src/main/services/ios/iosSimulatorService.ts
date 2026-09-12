@@ -69,6 +69,7 @@ import type {
   IosSimulatorSetLocationArgs,
   IosSimulatorSetPermissionArgs,
   IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
   IosSimulatorStatus,
   IosSimulatorStatusStream,
   IosSimulatorStatusBarArgs,
@@ -4948,8 +4949,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     getAppState: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().getAppState(toolArgs),
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
-    startEventLog: async (logArgs: IosSimulatorStartEventLogArgs = {}) => darwinHub().startEventLog(logArgs),
-    stopEventLog: async () => darwinHub().stopEventLog(),
+    startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub().startEventLog(logArgs),
+    stopEventLog: async (logArgs: IosSimulatorStopEventLogArgs = {}) => darwinHub().stopEventLog(logArgs),
     getEventLog: async (logArgs: IosSimulatorEventLogArgs = {}) => darwinHub().getEventLog(logArgs),
 
     /* Device hub: name an element instead of guessing a pixel. */

@@ -690,6 +690,7 @@ import type {
   IosSimulatorSetLocationArgs,
   IosSimulatorSetPermissionArgs,
   IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
@@ -2431,10 +2432,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
         startEventLog: (
-          args?: IosSimulatorStartEventLogArgs,
+          args: IosSimulatorStartEventLogArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorEventLogPage>;
         stopEventLog: (
+          args?: IosSimulatorStopEventLogArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorEventLogPage>;
         getEventLog: (

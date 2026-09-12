@@ -2052,6 +2052,7 @@ export function ChatIosSimulatorPanel({
   const deviceTools = useIosSimDeviceTools({
     activeDeviceUdid,
     bundleId: toolsBundleId,
+    chatSessionId: sessionId ?? null,
     visible: toolsVisible,
     requested: toolsOpen && Boolean(activeDeviceUdid),
     runtimePinRef,

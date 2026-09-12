@@ -11715,7 +11715,7 @@ describe("ADE CLI", () => {
       [["terminate", "--bundle-id", "com.example.app"], "terminateApp"],
       [["uninstall", "--bundle-id", "com.example.app"], "uninstallApp"],
       [["app-state", "--bundle-id", "com.example.app"], "getAppState"],
-      [["log-start"], "startEventLog"],
+      [["log-start", "--bundle-id", "com.example.app"], "startEventLog"],
       [["log-stop"], "stopEventLog"],
       [["log"], "getEventLog"],
       [["proof-bundle"], "captureProofBundle"],

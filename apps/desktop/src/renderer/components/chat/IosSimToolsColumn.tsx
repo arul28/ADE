@@ -539,10 +539,12 @@ export function IosSimToolsColumn({
             type="button"
             className={cn(BUTTON, "mr-0.5")}
             onClick={onToggleLog}
-            // Starting and stopping the log mutates one shared host process, and
-            // the service runs no ownership check of its own, so a chat that
-            // does not own the session could stop another chat's log.
-            disabled={locked}
+            // The log follows one app, because `log stream` otherwise reads the
+            // whole device. Stopping needs no bundle id, so only the start is
+            // gated on one. `locked` is here as well as in the service: the
+            // service rejects a chat that does not own the session, and this
+            // stops the control from offering a call that cannot succeed.
+            disabled={locked || (!logRunning && !bundleId)}
           >
             {logRunning ? "Stop" : "Start"}
           </button>

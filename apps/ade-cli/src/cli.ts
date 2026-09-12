@@ -1583,16 +1583,26 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade --socket ios-sim log-start --bundle-id com.example.app --text
 
+  The log follows one app. "log stream" reads the whole device, so a run with
+  no bundle id returns every other app's rows and the system's besides.
+
   Flags:
     --device, --udid <id>  Simulator device.
-    --bundle-id <id>       Keep only rows from this app.
+    --bundle-id <id>       Required. Keep only rows from this app.
+    --force                Take the log from the chat that owns the device.
 `,
   "log-stop": `${ADE_BANNER}
   iOS Simulator: log-stop
 
   Stops the device event log and returns the final page. Alias: logs-stop.
 
+  There is one log process per host, so a chat that does not own the device
+  session is refused rather than allowed to stop another chat's log.
+
     $ ade --socket ios-sim log-stop --text
+
+  Flags:
+    --force  Stop a log the chat that owns the device started.
 `,
   log: `${ADE_BANNER}
   iOS Simulator: log
@@ -11407,14 +11417,26 @@ function buildIosSimulatorPlan(
   }
   if (sub === "log-start" || sub === "logs-start") {
     const device = readValue(args, ["--device", "--udid"]);
-    const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
+    // Required. `log stream` reads the whole device, so a run with no scope
+    // returns every other app's rows and the system's.
+    const bundleId = requireValue(
+      readValue(args, ["--bundle-id", "--bundle"]),
+      "--bundle-id",
+    );
+    const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator event log start", "startEventLog", {
       deviceUdid: device,
-      ...(bundleId ? { bundleId } : {}),
+      bundleId,
+      chatSessionId: claimArgs.chatSessionId,
+      ...(force ? { force: true } : {}),
     });
   }
   if (sub === "log-stop" || sub === "logs-stop") {
-    return iosAction("iOS simulator event log stop", "stopEventLog");
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("iOS simulator event log stop", "stopEventLog", {
+      chatSessionId: claimArgs.chatSessionId,
+      ...(force ? { force: true } : {}),
+    });
   }
   if (sub === "log" || sub === "logs") {
     const device = readValue(args, ["--device", "--udid"]);

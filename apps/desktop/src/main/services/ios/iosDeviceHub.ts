@@ -31,6 +31,7 @@ import type {
   IosSimulatorSetLocationArgs,
   IosSimulatorSetPermissionArgs,
   IosSimulatorStartEventLogArgs,
+  IosSimulatorStopEventLogArgs,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
@@ -149,6 +150,24 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
   };
 
   let deviceSession: IosSimulatorDeviceSession | null = null;
+  /**
+   * Serializes the device-session transitions.
+   *
+   * `openDevice` checks ownership, then awaits a resolve and a boot before it
+   * assigns the session. Two overlapping calls both pass the check while the
+   * session is null, both boot a simulator, and the second assignment drops
+   * the first one with no release, which leaves a booted simulator that no
+   * `closeDevice` can reach. The queue makes the check, the boot, the release
+   * and the assignment one step.
+   */
+  let deviceSessionQueue: Promise<unknown> = Promise.resolve();
+  const serializeDeviceSession = <T,>(step: () => Promise<T>): Promise<T> => {
+    const next = deviceSessionQueue.then(step, step);
+    // The queue must survive a rejected step, so the chain keeps only the
+    // settled signal and the caller keeps the error.
+    deviceSessionQueue = next.then(() => undefined, () => undefined);
+    return next;
+  };
   /** `simctl location` is write-only, so ADE keeps its own record per device. */
   const lastLocationByDevice = new Map<string, { latitude: number; longitude: number }>();
   const statusBarOverridden = new Set<string>();
@@ -273,41 +292,42 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * `bootedByAde` records the difference, so closing the session never shuts
      * down a simulator the user started for something else.
      */
-    async openDevice(args: IosSimulatorOpenDeviceArgs = {}): Promise<IosSimulatorDeviceSession> {
-      assertDeviceOwner(args.chatSessionId, args.force);
-      const device = await deps.resolveDevice(args.deviceUdid ?? null);
-      const alreadyBooted = device.state === "Booted";
-      if (!alreadyBooted) {
-        await deps.run("xcrun", ["simctl", "boot", device.udid], { timeoutMs: 120_000 });
-        await deps.run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeoutMs: 120_000 })
-          .catch(() => undefined);
-      }
-      if (args.openWindow !== false) deps.openSimulatorApp();
-      const previous = deviceSession;
-      const isSameDevice = previous?.deviceUdid === device.udid;
-      // Re-opening the same device keeps the original answer to "did ADE boot
-      // this?". The device is booted by the second call, so reading the state
-      // alone would record `false` and leave `closeDevice` with no reason to
-      // shut down a simulator ADE started.
-      const bootedByAde = (isSameDevice && previous?.bootedByAde === true) || !alreadyBooted;
-      if (previous && !isSameDevice) {
-        // Opening another device ends the session on this one, so it is
-        // released here rather than left untracked. ADE shuts it down when ADE
-        // booted it, which is what `closeDevice` would have done; a simulator
-        // the user started stays running.
-        await releaseTrackedDevice(previous, previous.bootedByAde);
-      }
-      deviceSession = {
-        deviceUdid: device.udid,
-        deviceName: device.name,
-        chatSessionId: args.chatSessionId ?? null,
-        laneId: args.laneId ?? null,
-        openedAt: nowIso(),
-        bootedByAde,
-      };
-      deps.logger.info("ios_simulator.device_session_started", {
-        deviceUdid: device.udid,
-        bootedByAde,
+    openDevice(args: IosSimulatorOpenDeviceArgs = {}): Promise<IosSimulatorDeviceSession> {
+      return serializeDeviceSession(async () => {
+        assertDeviceOwner(args.chatSessionId, args.force);
+        const device = await deps.resolveDevice(args.deviceUdid ?? null);
+        const alreadyBooted = device.state === "Booted";
+        if (!alreadyBooted) {
+          await deps.run("xcrun", ["simctl", "boot", device.udid], { timeoutMs: 120_000 });
+          await deps.run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeoutMs: 120_000 })
+            .catch(() => undefined);
+        }
+        if (args.openWindow !== false) deps.openSimulatorApp();
+        const previous = deviceSession;
+        const isSameDevice = previous?.deviceUdid === device.udid;
+        // Re-opening the same device keeps the original answer to "did ADE boot
+        // this?". The device is booted by the second call, so reading the state
+        // alone would record `false` and leave `closeDevice` with no reason to
+        // shut down a simulator ADE started.
+        const bootedByAde = (isSameDevice && previous?.bootedByAde === true) || !alreadyBooted;
+        if (previous && !isSameDevice) {
+          // Opening another device ends the session on this one, so it is
+          // released here rather than left untracked. ADE shuts it down when ADE
+          // booted it, which is what `closeDevice` would have done; a simulator
+          // the user started stays running.
+          await releaseTrackedDevice(previous, previous.bootedByAde);
+        }
+        deviceSession = {
+          deviceUdid: device.udid,
+          deviceName: device.name,
+          chatSessionId: args.chatSessionId ?? null,
+          laneId: args.laneId ?? null,
+          openedAt: nowIso(),
+          bootedByAde,
+        };
+        deps.logger.info("ios_simulator.device_session_started", {
+          deviceUdid: device.udid,
+          bootedByAde,
       });
       recordAction(
         `Opened ${device.name}.`,
@@ -315,6 +335,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       );
       deps.emit({ type: "device-session-started", deviceSession });
       return deviceSession;
+      });
     },
 
     /**
@@ -326,29 +347,42 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * `close-device --device <udid>`, and "close a device that is not open" is
      * not a failure worth throwing over.
      */
-    async closeDevice(args: IosSimulatorCloseDeviceArgs = {}): Promise<IosSimulatorCloseDeviceResult> {
-      if (!deviceSession) {
-        return { released: false, shutdown: false, previousDeviceSession: null };
-      }
-      const requested = args.deviceUdid?.trim() || null;
-      if (requested && requested !== deviceSession.deviceUdid) {
-        return { released: false, shutdown: false, previousDeviceSession: null };
-      }
-      if (args.ignoreOwnership !== true) {
-        assertDeviceOwner(args.chatSessionId, args.force);
-      }
-      const previous = deviceSession;
-      deviceSession = null;
-      const shutdown = await releaseTrackedDevice(previous, args.shutdownDevice ?? previous.bootedByAde);
-      return { released: true, shutdown, previousDeviceSession: previous };
+    closeDevice(args: IosSimulatorCloseDeviceArgs = {}): Promise<IosSimulatorCloseDeviceResult> {
+      return serializeDeviceSession(async () => {
+        if (!deviceSession) {
+          return { released: false, shutdown: false, previousDeviceSession: null };
+        }
+        const requested = args.deviceUdid?.trim() || null;
+        if (requested && requested !== deviceSession.deviceUdid) {
+          return { released: false, shutdown: false, previousDeviceSession: null };
+        }
+        if (args.ignoreOwnership !== true) {
+          assertDeviceOwner(args.chatSessionId, args.force);
+        }
+        const previous = deviceSession;
+        deviceSession = null;
+        const shutdown = await releaseTrackedDevice(previous, args.shutdownDevice ?? previous.bootedByAde);
+        return { released: true, shutdown, previousDeviceSession: previous };
+      });
     },
 
-    /** Drops the device session a chat owns when that chat goes away. */
+    /**
+     * Drops the device session a chat owns when that chat goes away.
+     *
+     * The owner check runs inside the queue, not before it. Read outside, a
+     * chat that ended could release a session another chat opened in the gap
+     * between the check and the release.
+     */
     releaseDeviceIfOwnedBy(chatSessionId: string): Promise<IosSimulatorCloseDeviceResult> {
-      if (!deviceSession || deviceSession.chatSessionId !== chatSessionId) {
-        return Promise.resolve({ released: false, shutdown: false, previousDeviceSession: null });
-      }
-      return this.closeDevice({ chatSessionId, ignoreOwnership: true });
+      return serializeDeviceSession(async () => {
+        const previous = deviceSession;
+        if (!previous || previous.chatSessionId !== chatSessionId) {
+          return { released: false, shutdown: false, previousDeviceSession: null };
+        }
+        deviceSession = null;
+        const shutdown = await releaseTrackedDevice(previous, previous.bootedByAde);
+        return { released: true, shutdown, previousDeviceSession: previous };
+      });
     },
 
     /* ----------------------------------------------------------------- *
@@ -534,13 +568,31 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * Event log
      * ----------------------------------------------------------------- */
 
-    async startEventLog(args: IosSimulatorStartEventLogArgs = {}): Promise<IosSimulatorEventLogPage> {
+    /**
+     * Follows one app's `os_log` output on one device.
+     *
+     * Both halves of the guard matter. The bundle id is required because
+     * `log stream` reads the whole device, so an unscoped run hands the caller
+     * every other app's rows and the system's. The ownership check is here and
+     * not only in the drawer because there is one log process per host: a
+     * second chat that could start or stop it would take the first chat's log
+     * away, and a control disabled in one renderer stops nothing.
+     */
+    async startEventLog(args: IosSimulatorStartEventLogArgs): Promise<IosSimulatorEventLogPage> {
+      assertDeviceOwner(args.chatSessionId, args.force);
+      const bundleId = (args.bundleId ?? "").trim();
+      if (bundleId.length === 0) {
+        throw new Error(
+          "Refusing to start the event log without a bundle id: `log stream` reads the whole device, so an unscoped run returns every other app's rows and the system's.",
+        );
+      }
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
-      eventLog.start({ deviceUdid: udid, bundleId: args.bundleId ?? null });
+      eventLog.start({ deviceUdid: udid, bundleId });
       return eventLog.read({});
     },
 
-    stopEventLog(): IosSimulatorEventLogPage {
+    stopEventLog(args: IosSimulatorStopEventLogArgs = {}): IosSimulatorEventLogPage {
+      assertDeviceOwner(args.chatSessionId, args.force);
       eventLog.stop();
       return eventLog.read({});
     },

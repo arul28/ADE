@@ -983,11 +983,22 @@ export type IosSimulatorStartEventLogArgs = IosSimulatorDeviceArgs & {
   /**
    * Only keep rows whose `os_log` subsystem starts with this bundle id.
    *
-   * There is no raw-predicate option on purpose. `log stream` reads the whole
-   * device, so an arbitrary predicate returns every other app's rows and the
-   * system's besides.
+   * Required, and there is no raw-predicate option, for the same reason.
+   * `log stream` reads the whole device, so a missing scope returns every
+   * other app's rows and the system's besides — a chat that asks for one app's
+   * log must not be handed the device's.
    */
-  bundleId?: string | null;
+  bundleId: string;
+  /** The chat that owns the device session, when one is open. */
+  chatSessionId?: string | null;
+  /** Take the event log from a chat that owns the device session. */
+  force?: boolean | null;
+};
+
+/** The event log is one process per host, so stopping it is an ownership call. */
+export type IosSimulatorStopEventLogArgs = {
+  chatSessionId?: string | null;
+  force?: boolean | null;
 };
 
 /**

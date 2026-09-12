@@ -395,6 +395,66 @@ describe("iosDeviceHub device sessions", () => {
     expect(harness.hub.getDeviceSession()?.chatSessionId).toBe("chat-a");
   });
 
+  it("serializes two overlapping opens so the second sees the first chat's session", async () => {
+    // The ownership check ran before the resolve and the boot, so two calls
+    // that started together both read an empty session and both passed. Each
+    // booted a simulator, the second assignment dropped the first session, and
+    // the simulator it named stayed booted with no session left to close it.
+    const harness = createHarness({ otherDevices: [otherDevice()] });
+
+    const first = harness.hub.openDevice({ chatSessionId: "chat-a", deviceUdid: UDID });
+    const second = harness.hub.openDevice({ chatSessionId: "chat-b", deviceUdid: OTHER_UDID });
+
+    await expect(first).resolves.toMatchObject({ chatSessionId: "chat-a", deviceUdid: UDID });
+    await expect(second).rejects.toMatchObject({
+      code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+      ownerChatSessionId: "chat-a",
+    });
+    expect(harness.hub.getDeviceSession()?.deviceUdid).toBe(UDID);
+    // The device the losing call named was never booted, so nothing leaked.
+    expect(harness.runArgs()).not.toContainEqual(["simctl", "boot", OTHER_UDID]);
+  });
+
+  it("refuses an event log with no app scope", async () => {
+    // `log stream` reads the whole device. Without a bundle id the predicate is
+    // empty, so the rows handed back are every other app's and the system's.
+    const harness = createHarness();
+
+    await expect(harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "" }))
+      .rejects.toThrow(/without a bundle id/);
+    await expect(harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "   " }))
+      .rejects.toThrow(/without a bundle id/);
+    await expect(harness.hub.getEventLog({ deviceUdid: UDID })).resolves.toMatchObject({ running: false });
+  });
+
+  it("refuses an event-log start and stop from a chat that does not own the device", async () => {
+    // One log process serves the whole host, so a second chat that could start
+    // or stop it would take the first chat's log away. Disabling the drawer
+    // control is not the guard: the IPC method is callable on its own.
+    const harness = createHarness();
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+    await harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.example.app",
+      chatSessionId: "chat-a",
+    });
+
+    await expect(harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.other.app",
+      chatSessionId: "chat-b",
+    })).rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
+    expect(() => harness.hub.stopEventLog({ chatSessionId: "chat-b" }))
+      .toThrow(expect.objectContaining({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE }));
+
+    // The owner still reads its own rows, so the guard refused the other chat
+    // rather than killing the stream.
+    harness.emitLogLine("2026-09-11 11:24:03.512 Df MyApp[1:2] still here");
+    const page = await harness.hub.getEventLog({ deviceUdid: UDID });
+    expect(page.rows.at(-1)?.message).toContain("still here");
+    expect(harness.hub.stopEventLog({ chatSessionId: "chat-a" }).running).toBe(false);
+  });
+
   it("guards uninstall against the app-session owner, not only the device owner", async () => {
     // The common shape: a chat ran `launch`, so it holds an APP session and no
     // device session at all. A guard that only knew about device sessions
@@ -429,7 +489,7 @@ describe("iosDeviceHub device sessions", () => {
     // consumes the dropped-row counter, so the check has to happen first or the
     // legitimate reader silently loses a gap it was owed.
     const harness = createHarness();
-    await harness.hub.startEventLog({ deviceUdid: "DEVICE-A" });
+    await harness.hub.startEventLog({ deviceUdid: "DEVICE-A", bundleId: "com.example.app" });
     harness.emitLogLine("2026-09-11 11:24:03.512 Df MyApp[1:2] hello");
 
     const other = await harness.hub.getEventLog({ deviceUdid: "DEVICE-B" });

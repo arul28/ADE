@@ -23,6 +23,14 @@ export type UseIosSimDeviceToolsArgs = {
   activeDeviceUdid: string | null;
   /** The bundle id of the app in the active session, when there is one. */
   bundleId: string | null;
+  /**
+   * This chat, for the ownership check on the event log.
+   *
+   * The log is one process per host, so a chat that does not own the device
+   * session must not start or stop it. The service rejects that call; this is
+   * what lets it tell the two chats apart.
+   */
+  chatSessionId: string | null;
   /** True while the tools column is on screen. Nothing here runs otherwise. */
   visible: boolean;
   /**
@@ -81,6 +89,7 @@ export type IosSimDeviceTools = Omit<
 export function useIosSimDeviceTools({
   activeDeviceUdid,
   bundleId,
+  chatSessionId,
   visible,
   requested,
   runtimePinRef,
@@ -104,6 +113,16 @@ export function useIosSimDeviceTools({
    */
   const logRunningRef = useRef(false);
   logRunningRef.current = logRunning;
+  /**
+   * The owning chat, for the two teardown effects below.
+   *
+   * They stop the log when the column closes and when the panel unmounts, and
+   * neither may re-arm on a new identity: listing `chatSessionId` would make
+   * the unmount cleanup fire on a chat switch and stop a log nobody asked to
+   * stop.
+   */
+  const chatSessionIdRef = useRef(chatSessionId);
+  chatSessionIdRef.current = chatSessionId;
   /**
    * The device the host's log process currently follows.
    *
@@ -257,15 +276,26 @@ export function useIosSimDeviceTools({
         if (logRunning) {
           // The final page can name why the stream ended, so keep that even
           // though the rows already on screen are the last there will be.
-          const page = await window.ade.iosSimulator.stopEventLog(runtimePinRef.current);
+          const page = await window.ade.iosSimulator.stopEventLog(
+            { chatSessionId },
+            runtimePinRef.current,
+          );
           logDeviceRef.current = null;
           setLogError(page.lastError);
           setLogRunning(false);
           return;
         }
+        if (!bundleId) {
+          // `log stream` reads the whole device, so the log is scoped to one
+          // app or it does not run. The button is disabled without a bundle
+          // id; this is the guard that survives a stale render.
+          onError("Open an app in this drawer before you start the event log.");
+          return;
+        }
         const page = await window.ade.iosSimulator.startEventLog({
           deviceUdid: activeDeviceUdid ?? null,
           bundleId,
+          chatSessionId,
         }, runtimePinRef.current);
         logDeviceRef.current = activeDeviceUdid ?? null;
         // The start page already carries rows, so the cursor has to move with
@@ -281,7 +311,7 @@ export function useIosSimDeviceTools({
         onError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [activeDeviceUdid, bundleId, logRunning, onError, runtimePinRef]);
+  }, [activeDeviceUdid, bundleId, chatSessionId, logRunning, onError, runtimePinRef]);
 
   const handleCopyToolsText = useCallback((text: string) => {
     if (!text) return;
@@ -373,7 +403,7 @@ export function useIosSimDeviceTools({
    */
   useEffect(() => {
     const deviceUdid = activeDeviceUdid ?? null;
-    if (!visible || !logRunning || logDeviceRef.current === deviceUdid) return;
+    if (!visible || !logRunning || !bundleId || logDeviceRef.current === deviceUdid) return;
     logDeviceRef.current = deviceUdid;
     logCursorRef.current = 0;
     setLogDropped(0);
@@ -383,7 +413,7 @@ export function useIosSimDeviceTools({
     void (async () => {
       try {
         const page = await window.ade.iosSimulator.startEventLog(
-          { deviceUdid, bundleId },
+          { deviceUdid, bundleId, chatSessionId },
           runtimePinRef.current,
         );
         if (cancelled) return;
@@ -399,7 +429,7 @@ export function useIosSimDeviceTools({
     return () => {
       cancelled = true;
     };
-  }, [activeDeviceUdid, bundleId, logRunning, onError, runtimePinRef, visible]);
+  }, [activeDeviceUdid, bundleId, chatSessionId, logRunning, onError, runtimePinRef, visible]);
 
   // Closing the column stops the log: the process runs on the machine that owns
   // the simulator, and nothing else reads it. Keyed on `requested`, not
@@ -407,7 +437,9 @@ export function useIosSimDeviceTools({
   useEffect(() => {
     if (requested || !logRunning) return;
     logDeviceRef.current = null;
-    void window.ade.iosSimulator.stopEventLog(runtimePinRef.current).catch(() => {});
+    void window.ade.iosSimulator
+      .stopEventLog({ chatSessionId: chatSessionIdRef.current }, runtimePinRef.current)
+      .catch(() => {});
     setLogRunning(false);
   }, [logRunning, requested, runtimePinRef]);
 
@@ -424,7 +456,9 @@ export function useIosSimDeviceTools({
     if (!logRunningRef.current) return;
     logRunningRef.current = false;
     logDeviceRef.current = null;
-    void window.ade.iosSimulator.stopEventLog(runtimePinRef.current).catch(() => {});
+    void window.ade.iosSimulator
+      .stopEventLog({ chatSessionId: chatSessionIdRef.current }, runtimePinRef.current)
+      .catch(() => {});
   }, [runtimePinRef]);
 
   return {

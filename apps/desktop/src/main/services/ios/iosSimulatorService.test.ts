@@ -1886,7 +1886,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       await expect(service.closeDevice()).rejects.toThrow(/only available on macOS/);
       await expect(service.getDeviceSettings()).rejects.toThrow(/only available on macOS/);
       await expect(service.setAppearance({ appearance: "dark" })).rejects.toThrow(/only available on macOS/);
-      await expect(service.startEventLog()).rejects.toThrow(/only available on macOS/);
+      await expect(service.startEventLog({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
       await expect(service.relaunchApp({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
       await expect(service.uninstallApp({ bundleId: "com.example.app" })).rejects.toThrow(/only available on macOS/);
       await expect(service.tapElement({ query: { label: "Continue" } })).rejects.toThrow(/only available on macOS/);

@@ -108,7 +108,7 @@ ade --socket ios-sim settings --text
 
 - Set the status bar to 9:41 with full bars before a screenshot, so the shot stays stable between runs.
 - `relaunch` restarts the installed binary. It does not build. Use `launch` when the point is to see a code change.
-- `uninstall` removes the container, which is how you prove a first-run flow. It is the one guarded device tool: pass `--chat-session <id>` to name yourself, or `--force` to take it from another chat.
+- `uninstall` removes the container, which is how you prove a first-run flow. It is guarded, like the event log: pass `--chat-session <id>` to name yourself, or `--force` to take it from another chat. The other device tools are not guarded, in line with `tap` and `type`.
 - `location --clear` and `status-bar --clear` drop an override.
 - `settings` reads appearance, content size, and accessibility back from the device. It cannot read a location or a status bar back — those report what ADE last set, and reset when the runtime restarts.
 
@@ -121,6 +121,8 @@ ade --socket ios-sim log-stop --text
 ```
 
 One list holds the app's own `os_log` rows and ADE's own actions in order. Pass the returned `cursor` back as `--since` to read only new rows.
+
+`--bundle-id` is required. `log stream` reads the whole device, so a run with no app scope returns every other app's rows and the system's. There is one log process per host as well, so `log-start` and `log-stop` refuse a chat that does not own the device session — pass `--chat-session <id>` to name yourself, or `--force` to take the log.
 
 ## Live view
 
