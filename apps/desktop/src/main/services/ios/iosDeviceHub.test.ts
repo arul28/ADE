@@ -190,7 +190,10 @@ function createHarness(options: {
       if (!next) throw new Error("No snapshot queued.");
       return next;
     },
-    screenshot: async () => SCREENSHOT,
+    // The real screenshot follows the device it is given, so the fixture does
+    // too. A device-blind fixture hid every rule that compares the captured
+    // device with something else.
+    screenshot: async (args) => ({ ...SCREENSHOT, deviceUdid: args.deviceUdid ?? UDID }),
     tap: async ({ x, y }) => {
       interactions.push({ kind: "tap", detail: `${x},${y}` });
     },
@@ -453,6 +456,48 @@ describe("iosDeviceHub device sessions", () => {
     const page = await harness.hub.getEventLog({ deviceUdid: UDID });
     expect(page.rows.at(-1)?.message).toContain("still here");
     expect(harness.hub.stopEventLog({ chatSessionId: "chat-a" }).running).toBe(false);
+  });
+
+  it("guards the event log against the app-session owner, not only the device owner", async () => {
+    // The common shape is a chat that ran `launch`: it holds an APP session and
+    // no device session at all. A guard that only knew about device sessions
+    // returned early for every caller in exactly the case the log is most used,
+    // so a second chat could take the host's one log process.
+    const harness = createHarness({ appSessionOwner: "chat-app" });
+
+    await expect(harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.example.app",
+      chatSessionId: "chat-other",
+    })).rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
+    expect(() => harness.hub.stopEventLog({ chatSessionId: "chat-other" }))
+      .toThrow(expect.objectContaining({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE }));
+
+    // The lane-scoped surface drives a simulator it does not own on purpose.
+    await expect(harness.hub.startEventLog({
+      deviceUdid: UDID,
+      bundleId: "com.example.app",
+      chatSessionId: "chat-other",
+      force: true,
+    })).resolves.toMatchObject({ running: true });
+  });
+
+  it("leaves another device's rows out of a proof bundle", async () => {
+    // The log follows one device and a proof can name another. Rows from a
+    // device the screenshot did not come from are not evidence for it.
+    const harness = createHarness({ otherDevices: [otherDevice()] });
+    await harness.hub.startEventLog({ deviceUdid: UDID, bundleId: "com.example.app" });
+    harness.emitLogLine("2026-09-11 11:24:03.512 Df MyApp[1:2] hello");
+
+    const bundle = await harness.hub.captureProofBundle({ deviceUdid: OTHER_UDID });
+
+    expect(bundle.logPath).toBeNull();
+    const metadata = harness.writes.find((write) => write.filePath === bundle.metadataPath);
+    expect(JSON.parse(metadata?.contents ?? "{}").logOmittedReason).toContain(UDID);
+
+    // The device the log does follow still gets its rows.
+    const owned = await harness.hub.captureProofBundle({ deviceUdid: UDID });
+    expect(owned.logPath).not.toBeNull();
   });
 
   it("guards uninstall against the app-session owner, not only the device owner", async () => {

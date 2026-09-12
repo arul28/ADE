@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type {
   IosSimulatorAccessibilityOption,
   IosSimulatorAppearance,
@@ -31,6 +31,12 @@ export type UseIosSimDeviceToolsArgs = {
    * what lets it tell the two chats apart.
    */
   chatSessionId: string | null;
+  /**
+   * The lane-scoped surface drives a simulator it does not own on purpose, so
+   * it passes the same bypass `shutdown` already takes. Without it the event
+   * log would be the one control on that surface that refuses to run.
+   */
+  ignoreOwnership: boolean;
   /** True while the tools column is on screen. Nothing here runs otherwise. */
   visible: boolean;
   /**
@@ -90,6 +96,7 @@ export function useIosSimDeviceTools({
   activeDeviceUdid,
   bundleId,
   chatSessionId,
+  ignoreOwnership,
   visible,
   requested,
   runtimePinRef,
@@ -123,6 +130,12 @@ export function useIosSimDeviceTools({
    */
   const chatSessionIdRef = useRef(chatSessionId);
   chatSessionIdRef.current = chatSessionId;
+  const logOwnerArgs = useMemo(
+    () => ({ chatSessionId, ...(ignoreOwnership ? { force: true } : {}) }),
+    [chatSessionId, ignoreOwnership],
+  );
+  const logOwnerArgsRef = useRef(logOwnerArgs);
+  logOwnerArgsRef.current = logOwnerArgs;
   /**
    * The device the host's log process currently follows.
    *
@@ -277,7 +290,7 @@ export function useIosSimDeviceTools({
           // The final page can name why the stream ended, so keep that even
           // though the rows already on screen are the last there will be.
           const page = await window.ade.iosSimulator.stopEventLog(
-            { chatSessionId },
+            logOwnerArgs,
             runtimePinRef.current,
           );
           logDeviceRef.current = null;
@@ -295,7 +308,7 @@ export function useIosSimDeviceTools({
         const page = await window.ade.iosSimulator.startEventLog({
           deviceUdid: activeDeviceUdid ?? null,
           bundleId,
-          chatSessionId,
+          ...logOwnerArgs,
         }, runtimePinRef.current);
         logDeviceRef.current = activeDeviceUdid ?? null;
         // The start page already carries rows, so the cursor has to move with
@@ -311,7 +324,7 @@ export function useIosSimDeviceTools({
         onError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [activeDeviceUdid, bundleId, chatSessionId, logRunning, onError, runtimePinRef]);
+  }, [activeDeviceUdid, bundleId, logOwnerArgs, logRunning, onError, runtimePinRef]);
 
   const handleCopyToolsText = useCallback((text: string) => {
     if (!text) return;
@@ -413,7 +426,7 @@ export function useIosSimDeviceTools({
     void (async () => {
       try {
         const page = await window.ade.iosSimulator.startEventLog(
-          { deviceUdid, bundleId, chatSessionId },
+          { deviceUdid, bundleId, ...logOwnerArgs },
           runtimePinRef.current,
         );
         if (cancelled) return;
@@ -429,19 +442,27 @@ export function useIosSimDeviceTools({
     return () => {
       cancelled = true;
     };
-  }, [activeDeviceUdid, bundleId, chatSessionId, logRunning, onError, runtimePinRef, visible]);
+  }, [activeDeviceUdid, bundleId, logOwnerArgs, logRunning, onError, runtimePinRef, visible]);
 
   // Closing the column stops the log: the process runs on the machine that owns
   // the simulator, and nothing else reads it. Keyed on `requested`, not
   // `visible`, so expanding the video only pauses the poll.
   useEffect(() => {
     if (requested || !logRunning) return;
+    // The running state follows the host, not the intent. Clearing it before
+    // the stop returned left the drawer showing a stopped log while
+    // `log stream` still ran, with no control left to stop it. The device the
+    // log follows is restored on a refusal for the same reason.
+    const followed = logDeviceRef.current;
     logDeviceRef.current = null;
     void window.ade.iosSimulator
-      .stopEventLog({ chatSessionId: chatSessionIdRef.current }, runtimePinRef.current)
-      .catch(() => {});
-    setLogRunning(false);
-  }, [logRunning, requested, runtimePinRef]);
+      .stopEventLog(logOwnerArgsRef.current, runtimePinRef.current)
+      .then(() => setLogRunning(false))
+      .catch((error: unknown) => {
+        logDeviceRef.current = followed;
+        onError(error instanceof Error ? error.message : String(error));
+      });
+  }, [logRunning, onError, requested, runtimePinRef]);
 
   /**
    * Stops the log when the drawer goes away.
@@ -456,8 +477,11 @@ export function useIosSimDeviceTools({
     if (!logRunningRef.current) return;
     logRunningRef.current = false;
     logDeviceRef.current = null;
+    // Nothing is left to report to, so a refusal is swallowed here on purpose.
+    // The host still releases the log when the chat's session ends, and a log
+    // this chat is not allowed to stop is one it must leave running anyway.
     void window.ade.iosSimulator
-      .stopEventLog({ chatSessionId: chatSessionIdRef.current }, runtimePinRef.current)
+      .stopEventLog(logOwnerArgsRef.current, runtimePinRef.current)
       .catch(() => {});
   }, [runtimePinRef]);
 

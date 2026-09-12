@@ -577,9 +577,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * not only in the drawer because there is one log process per host: a
      * second chat that could start or stop it would take the first chat's log
      * away, and a control disabled in one renderer stops nothing.
+     *
+     * It checks BOTH halves, like `uninstallApp`. The common shape is a chat
+     * that ran `launch`: it holds an app session and no device session at all,
+     * so a guard that only knew about device sessions would wave through every
+     * caller in exactly the case the log is most used.
      */
     async startEventLog(args: IosSimulatorStartEventLogArgs): Promise<IosSimulatorEventLogPage> {
-      assertDeviceOwner(args.chatSessionId, args.force);
+      assertSimulatorOwner(args.chatSessionId, args.force);
       const bundleId = (args.bundleId ?? "").trim();
       if (bundleId.length === 0) {
         throw new Error(
@@ -592,7 +597,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     },
 
     stopEventLog(args: IosSimulatorStopEventLogArgs = {}): IosSimulatorEventLogPage {
-      assertDeviceOwner(args.chatSessionId, args.force);
+      assertSimulatorOwner(args.chatSessionId, args.force);
       eventLog.stop();
       return eventLog.read({});
     },
@@ -850,7 +855,15 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
 
       const limit = Math.max(0, Math.min(1000, Math.round(Number(args.logRowLimit ?? PROOF_LOG_ROW_DEFAULT))));
       let logPath: string | null = null;
-      if (limit > 0) {
+      // The log follows one device, and a proof can name another. Rows from a
+      // device the screenshot did not come from are not evidence for it, so a
+      // mismatch drops the file and says so in the metadata rather than
+      // pairing one device's screen with another's log. A log that follows no
+      // device holds only ADE's own action rows, which belong to the proof
+      // whichever device it captured.
+      const logDeviceUdid = eventLog.activeDeviceUdid();
+      const logFromAnotherDevice = logDeviceUdid !== null && logDeviceUdid !== shot.deviceUdid;
+      if (limit > 0 && !logFromAnotherDevice) {
         const page = eventLog.read({ limit });
         if (page.rows.length) {
           logPath = path.join(dir, "log.json");
@@ -864,6 +877,10 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         caption: args.caption ?? null,
         deviceUdid: shot.deviceUdid,
         deviceName: deviceSession?.deviceName ?? null,
+        logDeviceUdid,
+        logOmittedReason: limit > 0 && logFromAnotherDevice
+          ? `The event log follows ${logDeviceUdid}, not the device this proof captured.`
+          : null,
         deviceSession,
         buildRoot,
         laneId: args.laneId ?? null,

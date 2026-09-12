@@ -402,9 +402,12 @@ after a tap instead of a fixed sleep.
 device and keeps the rows in a ring of 500. It requires a `bundleId`, and there
 is no raw-predicate option, for the same reason: `log stream` reads the whole
 device, so a run with no scope hands the caller every other app's rows and the
-system's. There is also one log process per host, so `startEventLog` and
-`stopEventLog` refuse a chat that does not own the device session unless it
-passes `force`. `getEventLog` returns a page plus a
+system's. There is also one log process per host, so `startEventLog` and `stopEventLog`
+refuse a chat that owns neither half of the simulator unless it passes `force`.
+Either claim counts, like `uninstallApp`: the common shape is a chat that ran
+`launch`, which holds an app session and no device session at all. A proof
+bundle leaves out `log.json` when the log follows a different device from the
+one it captured, and records why in the metadata. `getEventLog` returns a page plus a
 `cursor`; pass the cursor back as `sinceId` to read only new rows. The page also
 reports `dropped`, the number of rows the ring discarded since the last read, so
 a gap is stated rather than hidden. `stopEventLog` ends the stream and returns

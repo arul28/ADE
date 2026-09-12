@@ -2641,6 +2641,66 @@ describe("ChatIosSimulatorPanel", () => {
     expect((screen.getByRole("switch", { name: "Reduce motion" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("keeps the event log running when closing the column fails to stop it", async () => {
+    // Closing the column stops the log on the host. The host checks ownership
+    // first, so that call can be refused — and clearing the running state
+    // anyway left the drawer offering "Start" for a `log stream` that was
+    // still running, with no control left that could stop it.
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const toolsToggle = await screen.findByTestId("ios-pane-tools");
+    fireEvent.click(toolsToggle);
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+    await within(column).findByRole("button", { name: "Stop" });
+
+    api.stopEventLog.mockRejectedValue(new Error("Another chat owns the simulator."));
+    fireEvent.click(toolsToggle);
+
+    expect(await screen.findByText("Another chat owns the simulator.")).toBeTruthy();
+    fireEvent.click(toolsToggle);
+    const reopened = await screen.findByTestId("ios-tools-column");
+    expect(within(reopened).getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("passes the lane-scoped ownership bypass to the event log", async () => {
+    // The lane surface drives a simulator it does not own on purpose, and
+    // `shutdown` already takes the same bypass. Without it the event log was
+    // the one control there that the host refused.
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, chatSessionId: "chat-2" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        ignoreChatOwnership
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("ios-pane-tools"));
+    const column = await screen.findByTestId("ios-tools-column");
+    fireEvent.click(within(column).getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(api.startEventLog).toHaveBeenCalledWith(
+      expect.objectContaining({ force: true }),
+      null,
+    ));
+  });
+
   // An `ade` row carries the command that reproduces what ADE did, which is the
   // whole reason the log interleaves ADE's own actions with the device's.
   it("starts the event log and copies an ade row's command", async () => {

@@ -2053,6 +2053,7 @@ export function ChatIosSimulatorPanel({
     activeDeviceUdid,
     bundleId: toolsBundleId,
     chatSessionId: sessionId ?? null,
+    ignoreOwnership: ignoreChatOwnership,
     visible: toolsVisible,
     requested: toolsOpen && Boolean(activeDeviceUdid),
     runtimePinRef,
