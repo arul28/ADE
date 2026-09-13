@@ -3847,7 +3847,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getMachineApiKeyStatus: async (provider: string) => ({
         provider,
         configured: false,
-        source: "none" as const,
+        source: null,
         envVar: "OPENAI_API_KEY",
       }),
       storeMachineApiKey: async (provider: string) => ({
@@ -3859,7 +3859,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deleteMachineApiKey: async (provider: string) => ({
         provider,
         configured: false,
-        source: "none" as const,
+        source: null,
         envVar: "OPENAI_API_KEY",
       }),
       verifyApiKey: resolvedArg({

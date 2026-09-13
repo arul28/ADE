@@ -6,7 +6,9 @@ import {
   CTO_VOICE_DEFAULT,
   CTO_VOICE_ENDPOINT,
   CTO_VOICE_MODEL,
+  CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_SAMPLE_RATE,
+  voiceCostUsd,
   type CtoVoiceCaption,
   type CtoVoiceName,
   type CtoVoicePhase,
@@ -65,6 +67,13 @@ export type CtoVoiceCallDeps = {
     intent: string;
     callId: string;
     signal: AbortSignal;
+    /**
+     * A window the user captured mid-call, base64 PNG. It goes to the CTO
+     * thread, never to the voice model: GPT Live's client-delegation appends
+     * carry a plain string, so the only place an image can actually be read is
+     * the backend that does the thinking.
+     */
+    imageBase64?: string | null;
   }) => Promise<CtoVoiceBackendResult>;
   /** Called once when the call ends, with the full transcript. */
   persistCall: (args: {
@@ -74,7 +83,16 @@ export type CtoVoiceCallDeps = {
     captions: CtoVoiceCaption[];
     costUsd: number;
   }) => Promise<void>;
+  /**
+   * Open and close the call's read-only window. A call shares the CTO's one
+   * session and there is no per-turn permission argument, so the guarantee that
+   * a spoken word cannot reach a writing tool has to be held open for the
+   * duration of the call and released on hang-up.
+   */
+  setCallReadOnly?: (readOnly: boolean) => Promise<void>;
   onState: (state: CtoVoiceState) => void;
+  /** One chunk of output audio, base64 PCM16, for the renderer to play. */
+  onOutputAudio?: (base64: string) => void;
   logger?: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void };
   /** Injected for tests; defaults to a real ws client. */
   createWebSocket?: (url: string, apiKey: string) => CtoVoiceSocket;
@@ -91,27 +109,44 @@ function defaultSocket(url: string, apiKey: string): CtoVoiceSocket {
 
 export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   let socket: CtoVoiceSocket | null = null;
+  /**
+   * True from the moment `start` commits to a call until `endCall` tears it
+   * down — NOT "is the socket open".
+   *
+   * Tearing down on the socket alone missed the window between `connecting` and
+   * the socket existing, which is exactly where a call dies most often: the
+   * renderer opens the microphone on `connecting`, and a denied microphone
+   * calls `end()` straight away. `endCall` returned at its socket check, the
+   * read-only hold was never released, and the CTO stayed unable to write for
+   * the life of the process.
+   */
+  let started = false;
   let abort: AbortController | null = null;
   let keepAlive: NodeJS.Timeout | null = null;
   let startedAtMs = 0;
   let startedAtIso = "";
 
-  let state: CtoVoiceState = {
-    callId: null,
-    phase: "idle",
-    elapsedMs: 0,
-    muted: false,
-    inputLevel: 0,
-    interrupted: false,
-    captions: [],
-    pendingConfirmation: null,
-    sceneSource: null,
-    error: null,
-  };
+  let state: CtoVoiceState = { ...CTO_VOICE_INITIAL_STATE };
 
-  /** The utterance currently being transcribed, and the text so far. */
-  let utteranceId = randomUUID();
-  let inputBuffer = "";
+  /**
+   * The utterance being transcribed right now.
+   *
+   * One record, because it is one thing. The id turns over when a NEW utterance
+   * opens, never when one finishes: `session.delegation.created` can land
+   * either side of `session.input_transcript.done`, and rotating on `done` made
+   * the identity depend on which arrived first. A confirmation raised after the
+   * transcript closed was then bound to the id the user's NEXT reply would
+   * carry, and the "same utterance" guard rejected every spoken yes forever.
+   *
+   * `text` survives `done` for the same reason — a delegation for this
+   * utterance may still be in flight — and is cleared when a turn consumes it
+   * or a new utterance opens, so an utterance the voice model answered by
+   * itself can never glue onto the front of a later intent.
+   */
+  let utterance = { id: randomUUID(), text: "", open: false, consumed: false };
+
+  /** Cleared as soon as it is handed to a turn — one capture, one delegation. */
+  let pendingImage: string | null = null;
 
   const emit = (patch: Partial<CtoVoiceState>) => {
     state = { ...state, ...patch };
@@ -146,21 +181,55 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   };
 
   async function handleDelegation(delegationId: string) {
-    const intent = inputBuffer.trim();
-    inputBuffer = "";
+    // A closed utterance may be delegated exactly once. Without this, a
+    // delegation that arrives before the NEXT utterance's first delta reads the
+    // previous one — asking the CTO the question it just answered, and binding
+    // any confirmation to an id the user's reply can no longer carry.
+    const intent = utterance.consumed ? "" : utterance.text.trim();
+    utterance.text = "";
+    utterance.consumed = true;
+
+    // Nothing was said — the delegation arrived before any transcript, or
+    // against an utterance a previous turn already consumed. Asking the thread
+    // an empty question would burn a turn and write a blank user message, but
+    // the delegation still has to be answered: every other path replies, and a
+    // delegation left hanging is a model waiting on a client that never speaks.
+    if (!intent.length) {
+      deps.logger?.warn("cto_voice.delegation_without_intent", { delegationId });
+      speak(delegationId, "Sorry — I didn't catch that.");
+      setPhase("listening");
+      return;
+    }
     setPhase("thinking");
 
     // Cover the gap immediately. The filler goes out before any backend work
     // starts, because the point of it is that the user never hears silence.
     speak(delegationId, "Let me check that.");
-    think(delegationId, `The user asked: ${intent || "(no transcript captured)"}`);
+    think(delegationId, `The user asked: ${intent}`);
 
+    // Held locally, not read back off `abort`. By the time this turn's await
+    // settles, `abort` names the controller of whatever turn SUPERSEDED it, so
+    // checking the module binding asks the wrong question: the superseded turn
+    // sees "not aborted" and speaks its answer over the one the user is
+    // actually waiting for.
+    const controller = new AbortController();
     abort?.abort();
-    abort = new AbortController();
-    const raisedBy = utteranceId;
+    abort = controller;
+    const raisedBy = utterance.id;
 
     try {
-      const result = await deps.runBackendTurn({ intent, callId: state.callId ?? "", signal: abort.signal });
+      const image = pendingImage;
+      pendingImage = null;
+      const result = await deps.runBackendTurn({
+        intent,
+        callId: state.callId ?? "",
+        signal: controller.signal,
+        imageBase64: image,
+      });
+
+      // Superseded while the backend was working: the answer is to a question
+      // the user has already moved on from, so it is dropped, not spoken.
+      if (controller.signal.aborted) return;
 
       if (result.confirmation) {
         const confirmation = buildConfirmation({
@@ -179,7 +248,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       speak(delegationId, result.spoken);
       setPhase("speaking");
     } catch (error) {
-      if (abort?.signal.aborted) return;
+      if (controller.signal.aborted) return;
       deps.logger?.warn("cto_voice.backend_failed", { error: String(error) });
       speak(delegationId, "That didn't work. I couldn't reach the project state just now.");
       setPhase("listening");
@@ -203,28 +272,42 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
 
     if (type === "session.input_transcript.delta") {
-      inputBuffer += String(event.delta ?? "");
+      if (!utterance.open) {
+        // A new utterance supersedes the last finished one, so a transcript
+        // nobody delegated cannot be picked up minutes later.
+        utterance = { id: randomUUID(), text: "", open: true, consumed: false };
+      }
+      utterance.text += String(event.delta ?? "");
       // Talking while the CTO speaks is a barge-in; show it landing.
       if (state.phase === "speaking") emit({ interrupted: true, phase: "listening" });
       return;
     }
 
     if (type === "session.input_transcript.done" || type === "session.input_transcript.completed") {
-      const text = String(event.text ?? inputBuffer);
+      // The final text replaces whatever the deltas built, and is kept rather
+      // than cleared: a delegation for THIS utterance may still be in flight.
+      const text = String(event.text ?? utterance.text);
+      utterance.text = text;
+      utterance.open = false;
       addCaption("user", text);
 
       // A spoken reply may be answering a pending confirmation.
       const outcome = resolveSpokenConfirmation({
         confirmation: state.pendingConfirmation,
-        utteranceId,
+        utteranceId: utterance.id,
         text,
         nowMs: Date.now(),
       });
       if (outcome.kind === "approved") approvePending("voice");
       else if (outcome.kind === "denied") denyPending();
 
-      utteranceId = randomUUID();
       emit({ interrupted: false });
+      return;
+    }
+
+    if (type === "session.output_audio.delta") {
+      const delta = typeof event.delta === "string" ? event.delta : null;
+      if (delta) deps.onOutputAudio?.(delta);
       return;
     }
 
@@ -270,13 +353,22 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   }
 
   async function endCall() {
-    if (!socket) return;
+    if (!started) return;
+    started = false;
     const closing = socket;
     socket = null;
     abort?.abort();
     abort = null;
     if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
-    try { closing.close(); } catch { /* already gone */ }
+    try { closing?.close(); } catch { /* already gone */ }
+
+    // Restore write access first: a call that ended must not leave the CTO
+    // read-only in the thread.
+    try {
+      await deps.setCallReadOnly?.(false);
+    } catch (error) {
+      deps.logger?.warn("cto_voice.read_only_restore_failed", { error: String(error) });
+    }
 
     const endedAt = new Date().toISOString();
     const elapsedMs = startedAtMs ? Date.now() - startedAtMs : 0;
@@ -289,7 +381,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         startedAt: startedAtIso || endedAt,
         endedAt,
         captions: state.captions,
-        costUsd: (elapsedMs / 60_000) * 0.05,
+        costUsd: voiceCostUsd(elapsedMs),
       });
     } catch (error) {
       deps.logger?.warn("cto_voice.persist_failed", { error: String(error) });
@@ -302,12 +394,21 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     getState: () => state,
 
     async start(): Promise<{ ok: boolean; error?: string }> {
-      if (socket) return { ok: true };
+      if (started) return { ok: true };
       const apiKey = await deps.getApiKey();
       if (!apiKey) {
         emit({ phase: "failed", error: "No OpenAI API key is configured." });
         return { ok: false, error: "missing-key" };
       }
+
+      // Set before the first await: everything after this point is torn down
+      // by `endCall`, including the read-only hold taken just below.
+      started = true;
+
+      // A second call on the same service must not inherit the first one's
+      // half-open utterance or its unsent transcript.
+      utterance = { id: randomUUID(), text: "", open: false, consumed: false };
+      pendingImage = null;
 
       const callId = randomUUID();
       emit({
@@ -320,8 +421,28 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         elapsedMs: 0,
       });
 
+      // Before the socket, not after: no audio may be in flight while the CTO
+      // can still write.
+      try {
+        await deps.setCallReadOnly?.(true);
+      } catch (error) {
+        deps.logger?.warn("cto_voice.read_only_failed", { error: String(error) });
+        started = false;
+        emit({ phase: "failed", error: "Could not put the CTO in read-only mode for the call." });
+        return { ok: false, error: "read-only" };
+      }
+
+      // The user can hang up while the await above is still running — the HUD
+      // is on screen from `connecting`. Without this the socket below would be
+      // opened for a call that is already over, and nothing would close it.
+      if (!started) return { ok: false, error: "ended" };
+
       socket = (deps.createWebSocket ?? defaultSocket)(CTO_VOICE_ENDPOINT, apiKey);
       socket.on("open", () => {
+        // The call can be ended, or fail, before the socket finishes opening.
+        // Without this the late handler arms a 10 Hz interval that nothing will
+        // ever clear, once per abandoned call.
+        if (!socket) return;
         send({
           type: "session.start",
           event_id: randomUUID(),
@@ -363,6 +484,17 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       if (!socket || state.muted) return;
       send({ type: "session.input_audio.append", audio: base64 });
       if (typeof level === "number") emit({ inputLevel: Math.max(0, Math.min(1, level)) });
+    },
+
+    /**
+     * Hand the call something the user is looking at. The image waits for the
+     * next delegation; the voice model is only told that it happened, because
+     * it cannot read one.
+     */
+    attachImage(args: { pngBase64: string; note: string }) {
+      if (!socket) return;
+      pendingImage = args.pngBase64;
+      think(null, args.note || "The user shared the window they are looking at. It is attached to the next backend request.");
     },
 
     setMuted(muted: boolean) {

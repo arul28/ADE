@@ -19330,14 +19330,14 @@ final class ADETests: XCTestCase {
         "name": "CTO",
         "onboardingState": [
           "completedSteps": ["intro", "memory_gardener"],
+          // A host that still sends the retired wizard fields must not break
+          // decoding; Swift ignores unknown keys and the markers survive.
           "dismissedAt": NSNull(),
           "completedAt": "2026-07-04T00:00:00Z",
         ],
       ])
     )
     XCTAssertEqual(identity.onboardingState?.completedSteps, ["intro", "memory_gardener"])
-    XCTAssertEqual(identity.onboardingState?.completedAt, "2026-07-04T00:00:00Z")
-    XCTAssertNil(identity.onboardingState?.dismissedAt)
 
     var patch = CtoIdentityPatch()
     patch.name = "Ada"

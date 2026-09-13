@@ -394,8 +394,21 @@ if (-not $SkipProtocolRemoval -and $normalizedPackageChannel -eq "stable" -and -
 # %TEMP%, when ADE was killed between a capture and the main process's own purge.
 # Removed by exact name, never by wildcard, and only when every remaining entry
 # is one of our own `capture-*.png` files.
-$captureTempDir = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { $null } else { Join-Path $env:TEMP "ade-capture" }
-if (-not [string]::IsNullOrWhiteSpace($captureTempDir) -and (Test-Path -LiteralPath $captureTempDir -PathType Container)) {
+# The directory is per channel (`ade-capture-stable`, `-beta`, `-alpha`), so
+# each known channel is checked by exact name. Still never a wildcard, and still
+# only when every remaining entry is one of our own `capture-*.png` files.
+$captureTempRoots = @()
+if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
+  foreach ($channel in @("stable", "beta", "alpha")) {
+    $captureTempRoots += (Join-Path $env:TEMP ("ade-capture-" + $channel))
+  }
+  # The helper's own last resort when the host passes no directory. The host
+  # always does, but a crash between launch and the first shot can leave this
+  # behind, and an uninstall that skips it leaves a directory nobody owns.
+  $captureTempRoots += (Join-Path $env:TEMP "ade-capture-fallback")
+}
+foreach ($captureTempDir in $captureTempRoots) {
+  if (-not (Test-Path -LiteralPath $captureTempDir -PathType Container)) { continue }
   $strayEntries = @(Get-ChildItem -LiteralPath $captureTempDir -Force -ErrorAction SilentlyContinue)
   $foreignEntries = @($strayEntries | Where-Object { $_.PSIsContainer -or $_.Name -notlike "capture-*.png" })
   if ($foreignEntries.Count -eq 0) {

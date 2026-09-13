@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { Microphone } from "@phosphor-icons/react";
 
 import { OpenAiKeySheet } from "../settings/OpenAiKeySheet";
+import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useCtoVoiceCall } from "./useCtoVoiceCall";
 
@@ -18,7 +19,9 @@ export function CtoTalkButton() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const live = state.phase !== "idle" && state.phase !== "ended";
+  // `isVoiceCallLive`, not "not idle": a failed call is over, and the old
+  // check left this button disabled forever after one.
+  const live = isVoiceCallLive(state.phase);
 
   const onClick = useCallback(async () => {
     if (live || starting) return;

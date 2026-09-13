@@ -11,6 +11,7 @@ import {
   type SceneTheme,
 } from "../../../shared/chatScene";
 import { COLORS } from "../lanes/laneDesignTokens";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { HighlightedCode } from "./CodeHighlighter";
 
 /**
@@ -60,7 +61,11 @@ export type SceneFrameProps = {
   source: string;
   /** True while the turn or call that produced this scene is still running. */
   live?: boolean;
-  /** Stable key for the transcript row, so two identical scenes stay distinct. */
+  /**
+   * Stable key for the transcript row. It feeds the document identity below so
+   * two byte-identical scenes at different positions get their own frame rather
+   * than sharing one.
+   */
   scopeKey?: string;
   onEmit?: (name: string, payload: unknown) => void;
 };
@@ -68,6 +73,12 @@ export type SceneFrameProps = {
 type Status = "loading" | "running" | "frozen" | "failed";
 
 export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFrameProps) {
+  // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
+  // artifact nobody can trace back to a conversation. Read from the chat scope
+  // rather than taken as a prop: the value is session-constant, and threading
+  // it here meant two components in between carrying a prop neither reads.
+  // Outside a chat — the voice HUD draws scenes too — the fallback is null.
+  const { sessionId } = useChatRuntimeScope();
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
 
@@ -82,8 +93,8 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
   const theme = useMemo(readSceneTheme, []);
   const doc = useMemo(() => {
     if (failed) return null;
-    return buildSceneDocument({ html: parsed.html, title: parsed.title, theme });
-  }, [failed, parsed, theme]);
+    return buildSceneDocument({ html: parsed.html, title: parsed.title, theme, scopeKey });
+  }, [failed, parsed, theme, scopeKey]);
 
   const [src, setSrc] = useState<string | null>(null);
 
@@ -93,7 +104,7 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
     if (!doc) return;
     let revoked: string | null = null;
     let cancelled = false;
-    const prepare = (window as unknown as { ade?: { scene?: { prepare?: (html: string) => Promise<string> } } }).ade?.scene?.prepare;
+    const prepare = window.ade?.scene?.prepare;
     if (typeof prepare === "function") {
       void prepare(doc)
         .then((url) => { if (!cancelled) setSrc(url); })
@@ -149,11 +160,12 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
   // Freeze: capture the frame's rect, then swap the image in and drop the frame
   // so nothing keeps executing in scrollback.
   useEffect(() => {
-    if (live || status === "frozen" || status === "failed" || !src) return;
+    // `status === "running"` is the draw gate: at `loading` the frame was
+    // handed its src on this very render and has painted nothing, so a capture
+    // here snapshots a blank rect.
+    if (live || status !== "running" || !src) return;
     let cancelled = false;
-    const capture = (window as unknown as {
-      ade?: { scene?: { snapshot?: (rect: { x: number; y: number; width: number; height: number }) => Promise<string | null> } };
-    }).ade?.scene?.snapshot;
+    const capture = window.ade?.scene?.snapshot;
     const rect = shellRef.current?.getBoundingClientRect();
     if (typeof capture !== "function" || !rect) {
       // No capture route (browser preview): leave the frame up rather than
@@ -171,15 +183,17 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
   }, [live, src, status]);
 
   const fileProof = useCallback(() => {
-    const attach = (window as unknown as {
-      ade?: { scene?: { attachProof?: (args: { dataUrl?: string | null; title: string }) => Promise<boolean> } };
-    }).ade?.scene?.attachProof;
+    const attach = window.ade?.scene?.attachProof;
     if (typeof attach !== "function") return;
     setProofState("saving");
-    void attach({ dataUrl: snapshot, title: (!failed && parsed.title) || "Generated view" })
+    void attach({
+      dataUrl: snapshot,
+      title: (!failed && parsed.title) || "Generated view",
+      sessionId: sessionId ?? null,
+    })
       .then((ok) => setProofState(ok ? "saved" : "idle"))
       .catch(() => setProofState("idle"));
-  }, [failed, parsed, snapshot]);
+  }, [failed, parsed, snapshot, sessionId]);
 
   if (failed) {
     return (
@@ -277,7 +291,6 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
           {proofState === "saved" ? "Saved" : proofState === "saving" ? "Saving…" : "Proof"}
         </button>
       </div>
-      {scopeKey ? <span className="hidden" data-scene-scope={scopeKey} /> : null}
     </div>
   );
 }

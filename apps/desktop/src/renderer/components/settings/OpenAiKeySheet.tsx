@@ -21,7 +21,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 export const OPENAI_VOICE_PROVIDER = "openai";
 
 /** Fallback for a status read that could not name the variable itself. */
-const OPENAI_ENV_VAR = "OPENAI_API_KEY";
+export const OPENAI_ENV_VAR = "OPENAI_API_KEY";
 
 export const OPENAI_KEY_URL = "https://platform.openai.com/api-keys";
 
@@ -75,30 +75,33 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
     const read = bridge?.getMachineApiKeyStatus;
     if (!read) {
       setLoading(false);
       setError(MISSING_BRIDGE_MESSAGE);
       return;
     }
+    // Two guards, because they answer different questions. `mounted` is one
+    // ref for the component's whole life and cannot tell one run of this effect
+    // from the next: change `provider` while a read is in flight and the old
+    // provider's answer still arrives, still passes `mounted`, and writes
+    // itself into the new provider's status. `stale` is per run.
+    let stale = false;
     void read(provider)
       .then((next) => {
-        if (cancelled || !mounted.current) return;
+        if (stale) return;
         setStatus(next);
         setError(null);
       })
       .catch(() => {
-        if (cancelled || !mounted.current) return;
+        if (stale) return;
         setError("ADE couldn't read the stored key.");
       })
       .finally(() => {
-        if (cancelled || !mounted.current) return;
+        if (stale) return;
         setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { stale = true; };
   }, [bridge, provider]);
 
   const save = useCallback(

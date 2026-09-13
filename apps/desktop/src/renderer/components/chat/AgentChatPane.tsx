@@ -14339,7 +14339,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
-    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId}>
+    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">

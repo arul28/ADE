@@ -2680,6 +2680,7 @@ function renderEvent(
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             mosaic={options?.mosaic}
             mosaicScopeKey={envelope.key}
+            sceneLive={Boolean(options?.sessionTurnActive)}
           />
         </div>
       </motion.div>

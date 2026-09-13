@@ -335,7 +335,9 @@ final class CaptureHelperApp: NSObject {
 
 let outputDirectory = URL(fileURLWithPath:
     ProcessInfo.processInfo.environment["ADE_CAPTURE_OUTPUT_DIR"]
-        ?? NSTemporaryDirectory().appending("ade-capture")
+        // Only reached when the host passed no directory. The host always does,
+        // and its path is per channel; this is a last resort, not a shared location.
+        ?? NSTemporaryDirectory().appending("ade-capture-fallback")
 )
 
 let application = NSApplication.shared

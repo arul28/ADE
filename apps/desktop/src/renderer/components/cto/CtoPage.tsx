@@ -398,12 +398,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 }
 
 /**
- * Shown in place of the thread while the CTO has no model preference — either a
- * fresh identity or one whose stored model was on a provider that cannot steer
- * a live turn. The session is deliberately untouched: picking here moves the
- * existing thread rather than starting a second one.
- */
-/**
  * The CTO's welcome screen, and the one decision first run asks for.
  *
  * There is no setup wizard: personality, work style and name are not choices

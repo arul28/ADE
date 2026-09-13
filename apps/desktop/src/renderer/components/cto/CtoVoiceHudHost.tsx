@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { SceneFrame } from "../chat/SceneFrame";
 import { CtoVoiceHud } from "./CtoVoiceHud";
-import { useCtoVoiceCall } from "./useCtoVoiceCall";
+import { useCtoVoiceAudioOwner, useCtoVoiceCall } from "./useCtoVoiceCall";
 
 /**
  * Mounts the call HUD once, at the shell level.
@@ -15,11 +16,15 @@ import { useCtoVoiceCall } from "./useCtoVoiceCall";
 export function CtoVoiceHudHost() {
   const { state, end, toggleMute, approve, deny } = useCtoVoiceCall();
 
+  // This host is mounted once, at the shell. It owns the microphone, the
+  // speaker, and the capture bridge for every surface that can start a call.
+  useCtoVoiceAudioOwner(state);
+
   // The main process owns the call; the visible timer is the renderer's, so it
   // keeps ticking between state pushes instead of jumping a second at a time.
   const startedAtRef = useRef<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const running = state.phase !== "idle" && state.phase !== "ended" && state.phase !== "failed";
+  const running = isVoiceCallLive(state.phase);
 
   useEffect(() => {
     if (!running) {

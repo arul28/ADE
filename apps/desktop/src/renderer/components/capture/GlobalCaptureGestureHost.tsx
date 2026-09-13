@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CTO_VOICE_CAPTURE_EVENT } from "../../../shared/types/ctoVoice";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import type {
@@ -11,13 +12,13 @@ import { readStoredProjectRoute } from "../app/projectRouteStorage";
 import { filesProjectSessionKey } from "../files/treeHelpers";
 import { useEditorGroupsStore } from "../files/v2/editorGroupsStore";
 import { supportsCaptureGesturePlatform } from "../../lib/platform";
+import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
+import { encodeUtf8Base64 } from "../../lib/base64";
 import {
   describeShot,
-  encodeUtf8Base64,
-  isVoiceCallLive,
+  isCallJoinable,
   planCaptureAttachments,
-  resolveCaptureDeliveryTarget,
 } from "./captureGestureDelivery";
 import {
   captureGestureBridgeAvailable,
@@ -39,42 +40,6 @@ import { CaptureFlyIn } from "./CaptureFlyIn";
  * ADE's own window is what got captured.
  */
 
-/**
- * A PROBE of the CTO voice bridge, not a contract this module owns.
- *
- * `window.ade.ctoVoice` belongs to the voice call feature and may be absent
- * entirely (web client, browser preview, any build without the main-process
- * half). Every member is optional and every call is optional-chained, so a
- * bridge that is missing — or that grows a different shape — degrades to the
- * composer path instead of throwing inside a capture the user is watching for.
- */
-type VoiceBridgeProbe = {
-  onState?: (handler: (state: { phase?: unknown; callId?: unknown }) => void) => () => void;
-  /**
-   * Hand the call an image. Not part of the voice bridge today; probed so the
-   * capture lands natively the moment it is. Until then the DOM event below is
-   * the delivery path.
-   */
-  attachImage?: (args: {
-    pngBase64: string;
-    filename: string;
-    note: string;
-  }) => unknown;
-};
-
-/**
- * Fallback delivery into a live call for a renderer-only call implementation.
- * The HUD owns the call state; this is how a capture reaches it without a
- * main-process round trip.
- */
-export const CTO_VOICE_CAPTURE_EVENT = "ade:cto-voice:attach-capture";
-
-function voiceBridge(): VoiceBridgeProbe | null {
-  if (typeof window === "undefined") return null;
-  const ade = (window as unknown as { ade?: { ctoVoice?: VoiceBridgeProbe } }).ade;
-  return ade?.ctoVoice ?? null;
-}
-
 function prefersReducedMotion(): boolean {
   if (typeof window === "undefined") return false;
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -93,19 +58,9 @@ export function GlobalCaptureGestureHost() {
   const locationRef = useRef(location);
   locationRef.current = location;
 
-  useEffect(() => {
-    const bridge = voiceBridge();
-    if (!bridge?.onState) return;
-    try {
-      return bridge.onState((state) => {
-        voiceLiveRef.current = isVoiceCallLive(state);
-      });
-    } catch {
-      // A bridge that refuses the subscription simply means "no live call".
-      voiceLiveRef.current = false;
-      return;
-    }
-  }, []);
+  useEffect(() => subscribeVoiceState((state) => {
+    voiceLiveRef.current = isCallJoinable(state);
+  }), []);
 
   /** Everything the view-state composer needs, read at capture time. */
   const readViewState = useCallback((): string | null => {
@@ -133,17 +88,17 @@ export function GlobalCaptureGestureHost() {
     }));
   }, []);
 
+  /**
+   * One delivery path, not two.
+   *
+   * This used to call `attachImage` directly AND dispatch the event the call
+   * hook listens for, so a single capture reached the live model two or three
+   * times over. The event is the path: the voice hook owns the bridge, and this
+   * host does not need to know whether a bridge method exists.
+   */
   const deliverToCall = useCallback((shot: CaptureGestureShot): void => {
-    const bridge = voiceBridge();
-    const note = describeShot(shot);
-    try {
-      bridge?.attachImage?.({ pngBase64: shot.pngBase64, filename: shot.filename, note });
-    } catch {
-      // Fall through to the DOM event; a bridge that throws must not swallow
-      // the capture.
-    }
     window.dispatchEvent(new CustomEvent(CTO_VOICE_CAPTURE_EVENT, {
-      detail: { shot, note },
+      detail: { shot, note: describeShot(shot) },
     }));
   }, []);
 
@@ -199,15 +154,15 @@ export function GlobalCaptureGestureHost() {
     if (typeof bridge?.onShot !== "function" || typeof bridge.onFailure !== "function") return;
 
     const offShot = bridge.onShot((shot) => {
-      const target = resolveCaptureDeliveryTarget({
-        voiceBridgePresent: voiceBridge() != null,
-        voiceCallLive: voiceLiveRef.current,
-      });
+      // No separate "is there a bridge" check: the store only ever leaves
+      // `idle` through the bridge's own state push, so a live phase already
+      // means a bridge existed.
+      const toLiveCall = voiceLiveRef.current;
       if (!prefersReducedMotion()) {
         setFlyIn({ id: Date.now(), dataUrl: `data:image/png;base64,${shot.pngBase64}` });
       }
       setNotice(null);
-      if (target.kind === "voice-call") {
+      if (toLiveCall) {
         deliverToCall(shot);
         return;
       }

@@ -7515,6 +7515,48 @@ function syncLegacyPermissionMode(session: Pick<
   }
 }
 
+/**
+ * The one way out of plan mode.
+ *
+ * Three paths leave plan mode — approving an `ExitPlanMode`, typing the
+ * approval, and the safety net that follows the SDK's own status report — and
+ * every one of them must re-assert the identity policy afterwards. As three
+ * separate `applyClaudePlanModeTransition` calls, the third was written without
+ * the re-assert and silently handed a CTO held read-only for a voice call its
+ * write access back.
+ */
+function exitPlanModeForSession(session: AgentChatSession): boolean {
+  applyClaudePlanModeTransition(session, "default");
+  reassertIdentityPermissionMode(session);
+  // True when the policy refused the exit — a CTO held read-only for a voice
+  // call is put straight back into plan. Callers must not then announce an exit
+  // that did not happen, or tell the live query the session is out of plan.
+  return session.permissionMode === "plan";
+}
+
+/**
+ * Put the identity policy back after a direct write to `permissionMode`.
+ *
+ * Plan approval and the `ExitPlanMode` interception both hand a session full
+ * access without going through `normalizeIdentityPermissionMode`. That is right
+ * for an ordinary chat, and wrong for an identity session that something is
+ * holding read-only: during a CTO voice call, one click on an approval card in
+ * the chat would give the call write access for the rest of the turn.
+ *
+ * A no-op whenever the policy agrees with what was just written, which is every
+ * session that is not a held identity.
+ */
+function reassertIdentityPermissionMode(session: AgentChatSession): void {
+  if (!session.identityKey) return;
+  const next = normalizeIdentityPermissionMode(
+    session.identityKey,
+    session.permissionMode,
+    session.provider,
+  );
+  if (next === session.permissionMode) return;
+  applyLegacyPermissionModeToNativeControls(session, next);
+}
+
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
@@ -9837,18 +9879,22 @@ export function createAgentChatService(args: {
         // Transition out of plan mode so the UI reflects the change,
         // matching the state update performed after manual approval.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          applyClaudePlanModeTransition(managed.session, "default");
+          const refused = exitPlanModeForSession(managed.session);
           persistChatState(managed);
           // Surface the transition so the composer's mode chip updates — parity
           // with the manual-approval branch below. Without this, full-auto plan
           // sessions exit plan mode on the backend but the UI stays on "plan".
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: "Session exited plan mode",
-            detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
-            turnId: runtime.activeTurnId ?? undefined,
-          });
+          // Skipped when the exit was refused: the chip would then show an
+          // access mode the session is not actually in.
+          if (!refused) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: "Session exited plan mode",
+              detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
+              turnId: runtime.activeTurnId ?? undefined,
+            });
+          }
         }
         return { behavior: "allow", updatedInput: input };
       }
@@ -9927,8 +9973,9 @@ export function createAgentChatService(args: {
           explicitApproval: true,
         });
         // Switch session out of plan mode so the UI reflects the transition.
+        let planExitRefused = false;
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          applyClaudePlanModeTransition(managed.session, "default");
+          planExitRefused = exitPlanModeForSession(managed.session);
           persistChatState(managed);
         }
 
@@ -9936,21 +9983,33 @@ export function createAgentChatService(args: {
         // native ExitPlanMode handler restores prePlanMode itself, but an
         // explicit setPermissionMode call ensures the SDK and ADE agree on
         // the target mode even if the SDK's restore path no-ops.
+        //
+        // When the exit was refused, the mode to agree on is `plan`: pushing
+        // the restored access mode would tell the running query the session is
+        // writable for the rest of this turn, which is exactly what the hold
+        // exists to prevent.
         try {
           const sessionControl = getClaudeQueryControl(runtime.query);
           if (typeof sessionControl.setPermissionMode === "function") {
-            await sessionControl.setPermissionMode(resolveSessionClaudePermissionMode(managed.session, "default"));
+            await sessionControl.setPermissionMode(
+              planExitRefused
+                ? "plan"
+                : resolveSessionClaudePermissionMode(managed.session, "default"),
+            );
           }
         } catch { /* best-effort — the SDK's own restore path is the source of truth */ }
 
-        // Emit permission mode change notice for UI sync.
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "Session exited plan mode",
-          detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
-          turnId: runtime.activeTurnId ?? undefined,
-        });
+        // Emit permission mode change notice for UI sync — unless the exit was
+        // refused, in which case there is no transition to announce.
+        if (!planExitRefused) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Session exited plan mode",
+            detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+        }
 
         // Allow the SDK's native ExitPlanMode handler to run. It restores the
         // pre-plan permission mode (toolPermissionContext.prePlanMode) — same
@@ -23643,18 +23702,28 @@ export function createAgentChatService(args: {
             const wasPlan = managed.session.permissionMode === "plan";
             const nowPlan = reportedMode === "plan";
             if (wasPlan !== nowPlan) {
-              applyClaudePlanModeTransition(managed.session, nowPlan ? "plan" : "default");
+              let refused = false;
+              if (nowPlan) applyClaudePlanModeTransition(managed.session, "plan");
+              else refused = exitPlanModeForSession(managed.session);
               persistChatState(managed);
-              emitChatEvent(managed, {
-                type: "system_notice",
-                noticeKind: "info",
-                message: nowPlan ? "Session entered plan mode" : "Session exited plan mode",
-                detail: buildClaudePlanModeNoticeDetail(
-                  nowPlan ? "entered_plan_mode" : "exited_plan_mode",
-                  managed.session.claudePermissionMode,
-                ),
-                turnId,
-              });
+              // A held identity is put straight back into plan by the
+              // re-assert, so the SDK's report was refused, not applied.
+              // Announcing "exited plan mode" would be a lie, and since the
+              // mode is still "plan" the very next status message satisfies
+              // this branch again — one false notice per message for the rest
+              // of the call.
+              if (!refused) {
+                emitChatEvent(managed, {
+                  type: "system_notice",
+                  noticeKind: "info",
+                  message: nowPlan ? "Session entered plan mode" : "Session exited plan mode",
+                  detail: buildClaudePlanModeNoticeDetail(
+                    nowPlan ? "entered_plan_mode" : "exited_plan_mode",
+                    managed.session.claudePermissionMode,
+                  ),
+                  turnId,
+                });
+              }
             }
           }
           if (statusMsg.status === "compacting") {
@@ -28716,9 +28785,9 @@ export function createAgentChatService(args: {
       // An approved plan hands the session straight to full access — the user
       // already reviewed exactly what will happen, so gating every file change
       // behind another approval round just relitigates the plan.
-      managed.session.permissionMode = "full-auto";
       applyLegacyPermissionModeToNativeControls(managed.session, "full-auto");
       managed.session.interactionMode = "default";
+      reassertIdentityPermissionMode(managed.session);
       runtime.threadResumed = false;
       runtime.canAttachResumedTurnStart = false;
       persistChatState(managed);

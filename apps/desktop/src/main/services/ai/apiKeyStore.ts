@@ -68,23 +68,50 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
 const SECURITY_TIMEOUT_MS = 5_000;
 const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
 
-let storePath: string | null = null;
-let legacyStorePath: string | null = null;
-let projectRootPath: string | null = null;
-let credentialStore: ApiKeyCredentialStore | null = null;
-let cache: StoredKeys | null = null;
-let decryptionFailed = false;
-let macosKeychainError: string | null = null;
-let missingMacosKeychainProviders = new Set<string>();
-let missingCredentialProviders = new Set<string>();
+/**
+ * Everything the store resolves from one root, held in one object.
+ *
+ * One object rather than nine separate `let`s because the machine-scoped reads
+ * below swap the whole set out and back. As separate globals that swap needed
+ * two hand-written nine-field mirror lists, and a tenth field added later would
+ * have been left out of both — the machine scope would then quietly read the
+ * project's value instead of the machine's.
+ */
+type ApiKeyScopeState = {
+  storePath: string | null;
+  legacyStorePath: string | null;
+  projectRootPath: string | null;
+  credentialStore: ApiKeyCredentialStore | null;
+  cache: StoredKeys | null;
+  decryptionFailed: boolean;
+  macosKeychainError: string | null;
+  missingMacosKeychainProviders: Set<string>;
+  missingCredentialProviders: Set<string>;
+};
+
+function emptyScopeState(): ApiKeyScopeState {
+  return {
+    storePath: null,
+    legacyStorePath: null,
+    projectRootPath: null,
+    credentialStore: null,
+    cache: null,
+    decryptionFailed: false,
+    macosKeychainError: null,
+    missingMacosKeychainProviders: new Set<string>(),
+    missingCredentialProviders: new Set<string>(),
+  };
+}
+
+let scope: ApiKeyScopeState = emptyScopeState();
 /** How the current ADE-stored Cursor key was written. Lost on process restart;
  *  cursorSdkAuth reconstructs from Cursor.auth.status() + the SDK auth file. */
 let cursorKeyOrigin: "oauth" | "pasted" | null = null;
 
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
-  cache = null;
-  missingMacosKeychainProviders = new Set<string>();
+  scope.cache = null;
+  scope.missingMacosKeychainProviders = new Set<string>();
 }
 
 function isSecureStorageAvailable(): boolean {
@@ -98,7 +125,7 @@ function isMacosKeychainAvailable(): boolean {
 }
 
 function isPersistentSecureStorageAvailable(): boolean {
-  if (credentialStore) return true;
+  if (scope.credentialStore) return true;
   return isSecureStorageAvailable();
 }
 
@@ -120,7 +147,7 @@ function normalizeStoredKeys(value: unknown): StoredKeys {
 }
 
 function ensureInitialized(): void {
-  if (!storePath || !legacyStorePath) {
+  if (!scope.storePath || !scope.legacyStorePath) {
     throw new Error("API key store not initialized. Call initApiKeyStore first.");
   }
 }
@@ -153,11 +180,11 @@ function securityMissing(result: SecurityResult): boolean {
 
 function rememberKeychainError(action: string, result: SecurityResult): void {
   const detail = result.stderr.trim().split(/\r?\n/)[0] || `status ${result.status ?? "unknown"}`;
-  macosKeychainError = `macOS Keychain ${action} failed: ${detail}`;
+  scope.macosKeychainError = `macOS Keychain ${action} failed: ${detail}`;
 }
 
 function clearKeychainError(): void {
-  macosKeychainError = null;
+  scope.macosKeychainError = null;
 }
 
 function trimTrailingNewline(value: string): string {
@@ -199,7 +226,7 @@ function deleteMacosKeychainSecret(account: string): void {
     return;
   }
   rememberKeychainError("delete", result);
-  throw new Error(macosKeychainError ?? "macOS Keychain delete failed.");
+  throw new Error(scope.macosKeychainError ?? "macOS Keychain delete failed.");
 }
 
 function normalizeProviderList(value: unknown): string[] {
@@ -218,7 +245,7 @@ function credentialProviderKey(provider: string): string {
 }
 
 function getSyncCredentialStore(): SyncCredentialStore | null {
-  return credentialStore;
+  return scope.credentialStore;
 }
 
 function readCredentialSecret(key: string): string | null {
@@ -226,12 +253,12 @@ function readCredentialSecret(key: string): string | null {
   if (!store) return null;
   try {
     const value = store.getSync(key);
-    decryptionFailed = false;
+    scope.decryptionFailed = false;
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length ? trimmed : null;
   } catch {
-    decryptionFailed = true;
+    scope.decryptionFailed = true;
     return null;
   }
 }
@@ -240,14 +267,14 @@ function writeCredentialSecret(key: string, value: string): void {
   const store = getSyncCredentialStore();
   if (!store) return;
   store.setSync(key, value);
-  decryptionFailed = false;
+  scope.decryptionFailed = false;
 }
 
 function deleteCredentialSecret(key: string): void {
   const store = getSyncCredentialStore();
   if (!store) return;
   store.deleteSync(key);
-  decryptionFailed = false;
+  scope.decryptionFailed = false;
 }
 
 function readCredentialProviderIndex(): { exists: boolean; providers: string[] } {
@@ -325,14 +352,14 @@ function mergeLegacyValuesIntoCredentialStore(
 }
 
 function migrateLegacyProjectStoreIntoCredentialStore(currentStore: StoredKeys): StoredKeys {
-  if (!projectRootPath) return currentStore;
+  if (!scope.projectRootPath) return currentStore;
   const migratedProjectRoots = readCredentialLegacyMigratedProjectRoots();
-  const normalizedProjectRoot = path.resolve(projectRootPath);
+  const normalizedProjectRoot = path.resolve(scope.projectRootPath);
   if (migratedProjectRoots.has(normalizedProjectRoot)) return currentStore;
 
-  const hadEncryptedStore = Boolean(storePath && fs.existsSync(storePath));
+  const hadEncryptedStore = Boolean(scope.storePath && fs.existsSync(scope.storePath));
   const legacyStore = loadEncryptedStore();
-  const migrationComplete = !hadEncryptedStore || !decryptionFailed;
+  const migrationComplete = !hadEncryptedStore || !scope.decryptionFailed;
   const nextStore = mergeLegacyValuesIntoCredentialStore(currentStore, legacyStore);
 
   if (migrationComplete) {
@@ -379,7 +406,7 @@ function readMacosKeychainProviderIndex(): { exists: boolean; providers: string[
   try {
     return { exists: true, providers: normalizeProviderList(JSON.parse(raw)) };
   } catch {
-    macosKeychainError = "macOS Keychain provider index is unreadable.";
+    scope.macosKeychainError = "macOS Keychain provider index is unreadable.";
     return { exists: true, providers: [] };
   }
 }
@@ -396,33 +423,33 @@ function readMacosKeychainStore(providerCandidates: Iterable<string>): StoredKey
 }
 
 function canPersistEncryptedStore(): boolean {
-  return Boolean(storePath) && isSecureStorageAvailable();
+  return Boolean(scope.storePath) && isSecureStorageAvailable();
 }
 
 function loadEncryptedStore(): StoredKeys {
   ensureInitialized();
 
-  if (!storePath || !legacyStorePath) {
+  if (!scope.storePath || !scope.legacyStorePath) {
     return {};
   }
 
-  if (!fs.existsSync(storePath)) {
-    decryptionFailed = false;
+  if (!fs.existsSync(scope.storePath)) {
+    scope.decryptionFailed = false;
     return {};
   }
 
   if (!isSecureStorageAvailable()) {
-    decryptionFailed = true;
+    scope.decryptionFailed = true;
     return {};
   }
 
   try {
-    const raw = fs.readFileSync(storePath);
+    const raw = fs.readFileSync(scope.storePath);
     const decrypted = safeStorage!.decryptString(raw);
-    decryptionFailed = false;
+    scope.decryptionFailed = false;
     return normalizeStoredKeys(JSON.parse(decrypted));
   } catch {
-    decryptionFailed = true;
+    scope.decryptionFailed = true;
     return {};
   }
 }
@@ -448,47 +475,47 @@ function migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore: StoredKeys
 
   const nextStore = { ...keychainStore, ...encryptedStore };
   persistEncryptedStore(nextStore);
-  decryptionFailed = false;
+  scope.decryptionFailed = false;
   return nextStore;
 }
 
 function ensureStore(): StoredKeys {
-  if (cache) return cache;
+  if (scope.cache) return scope.cache;
   ensureInitialized();
 
-  if (credentialStore) {
+  if (scope.credentialStore) {
     const index = readCredentialProviderIndex();
     const credentialValues = index.exists ? readCredentialStore(index.providers) : {};
-    cache = migrateLegacyStoresIntoCredentialStore(credentialValues);
-    return cache;
+    scope.cache = migrateLegacyStoresIntoCredentialStore(credentialValues);
+    return scope.cache;
   }
 
   const encryptedStore = loadEncryptedStore();
   if (isMacosKeychainAvailable()) {
     if (canPersistEncryptedStore()) {
-      cache = migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore);
-      return cache;
+      scope.cache = migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore);
+      return scope.cache;
     }
 
     const index = readMacosKeychainProviderIndex();
-    cache = index.exists ? readMacosKeychainStore(index.providers) : encryptedStore;
-    return cache;
+    scope.cache = index.exists ? readMacosKeychainStore(index.providers) : encryptedStore;
+    return scope.cache;
   }
 
-  cache = encryptedStore;
-  return cache;
+  scope.cache = encryptedStore;
+  return scope.cache;
 }
 
-function persistEncryptedStore(nextStore: StoredKeys = cache ?? {}): void {
-  if (!storePath) return;
+function persistEncryptedStore(nextStore: StoredKeys = scope.cache ?? {}): void {
+  if (!scope.storePath) return;
   if (!isSecureStorageAvailable()) {
     throw new Error("OS secure storage is unavailable. Cannot persist API keys.");
   }
-  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.mkdirSync(path.dirname(scope.storePath), { recursive: true });
   const encrypted = safeStorage!.encryptString(JSON.stringify(nextStore));
-  fs.writeFileSync(storePath, encrypted);
+  fs.writeFileSync(scope.storePath, encrypted);
   try {
-    fs.chmodSync(storePath, 0o600);
+    fs.chmodSync(scope.storePath, 0o600);
   } catch {
     // Best effort
   }
@@ -496,15 +523,15 @@ function persistEncryptedStore(nextStore: StoredKeys = cache ?? {}): void {
 
 export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOptions = {}): void {
   const layout = resolveAdeLayout(projectRoot);
-  projectRootPath = path.resolve(projectRoot);
-  storePath = layout.apiKeysPath;
-  legacyStorePath = layout.legacyApiKeysPath;
-  credentialStore = options.credentialStore ?? null;
-  cache = null;
-  decryptionFailed = false;
-  macosKeychainError = null;
-  missingMacosKeychainProviders = new Set<string>();
-  missingCredentialProviders = new Set<string>();
+  // Built from the factory rather than field by field, so a tenth field has one
+  // place to be added and not three.
+  scope = {
+    ...emptyScopeState(),
+    projectRootPath: path.resolve(projectRoot),
+    storePath: layout.apiKeysPath,
+    legacyStorePath: layout.legacyApiKeysPath,
+    credentialStore: options.credentialStore ?? null,
+  };
   cursorKeyOrigin = null;
   // A re-init can hand over a different credential store instance. The machine
   // scope borrows whichever one is current, so its cached view is dropped here
@@ -530,62 +557,20 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
 // share it deliberately: one provider key is one secret, whichever door it came
 // in by.
 
-type ApiKeyScopeState = {
-  storePath: string | null;
-  legacyStorePath: string | null;
-  projectRootPath: string | null;
-  credentialStore: ApiKeyCredentialStore | null;
-  cache: StoredKeys | null;
-  decryptionFailed: boolean;
-  macosKeychainError: string | null;
-  missingMacosKeychainProviders: Set<string>;
-  missingCredentialProviders: Set<string>;
-};
-
 let machineScopeState: ApiKeyScopeState | null = null;
 let machineScopeDepth = 0;
 
-function captureScopeState(): ApiKeyScopeState {
-  return {
-    storePath,
-    legacyStorePath,
-    projectRootPath,
-    credentialStore,
-    cache,
-    decryptionFailed,
-    macosKeychainError,
-    missingMacosKeychainProviders,
-    missingCredentialProviders,
-  };
-}
-
-function applyScopeState(next: ApiKeyScopeState): void {
-  storePath = next.storePath;
-  legacyStorePath = next.legacyStorePath;
-  projectRootPath = next.projectRootPath;
-  credentialStore = next.credentialStore;
-  cache = next.cache;
-  decryptionFailed = next.decryptionFailed;
-  macosKeychainError = next.macosKeychainError;
-  missingMacosKeychainProviders = next.missingMacosKeychainProviders;
-  missingCredentialProviders = next.missingCredentialProviders;
-}
-
 function createMachineScopeState(inherited: ApiKeyCredentialStore | null): ApiKeyScopeState {
   const { secretsDir } = resolveMachineAdeLayout();
+  // `projectRootPath` stays at the factory's null on purpose:
+  // `migrateLegacyProjectStoreIntoCredentialStore` is what pulls a project's
+  // `.ade/secrets` into the credential store, and a machine-scoped read must
+  // never touch a project directory.
   return {
+    ...emptyScopeState(),
     storePath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyStorePath: path.join(secretsDir, "api-keys.json"),
-    // Deliberately null: `migrateLegacyProjectStoreIntoCredentialStore` is what
-    // pulls a project's `.ade/secrets` into the credential store, and a
-    // machine-scoped read must never touch a project directory.
-    projectRootPath: null,
     credentialStore: inherited,
-    cache: null,
-    decryptionFailed: false,
-    macosKeychainError: null,
-    missingMacosKeychainProviders: new Set<string>(),
-    missingCredentialProviders: new Set<string>(),
   };
 }
 
@@ -598,20 +583,20 @@ function createMachineScopeState(inherited: ApiKeyCredentialStore | null): ApiKe
  */
 function withMachineScope<T>(run: () => T): T {
   if (machineScopeDepth > 0) return run();
-  const projectScope = captureScopeState();
+  const projectScope = scope;
   const machineScope = machineScopeState ?? createMachineScopeState(projectScope.credentialStore);
   // Adopt whatever `initApiKeyStore` registered last. The credential store is
   // machine-wide already, and holding a torn-down one here would silently drop
   // a stored key down to the environment-variable tier.
   machineScope.credentialStore = projectScope.credentialStore;
-  applyScopeState(machineScope);
+  scope = machineScope;
   machineScopeDepth += 1;
   try {
     return run();
   } finally {
     machineScopeDepth -= 1;
-    machineScopeState = captureScopeState();
-    applyScopeState(projectScope);
+    machineScopeState = scope;
+    scope = projectScope;
   }
 }
 
@@ -628,8 +613,8 @@ function invalidatePeerScopeCache(): void {
 }
 
 function invalidateProjectScopeCache(): void {
-  cache = null;
-  missingCredentialProviders = new Set<string>();
+  scope.cache = null;
+  scope.missingCredentialProviders = new Set<string>();
 }
 
 export function storeMachineApiKey(provider: string, key: string): void {
@@ -681,27 +666,27 @@ export function getMachineApiKeyStatus(provider: string): MachineApiKeyStatus {
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
-  if (!storePath || !legacyStorePath) {
+  if (!scope.storePath || !scope.legacyStorePath) {
     return {
       secureStorageAvailable: isPersistentSecureStorageAvailable(),
       macosKeychainAvailable: isMacosKeychainAvailable(),
       macosKeychainService: isMacosKeychainAvailable() ? MACOS_KEYCHAIN_SERVICE : null,
-      macosKeychainError,
+      macosKeychainError: scope.macosKeychainError,
       encryptedStorePath: null,
       legacyPlaintextDetected: false,
       legacyPlaintextPath: null,
-      decryptionFailed,
+      decryptionFailed: scope.decryptionFailed,
     };
   }
   return {
     secureStorageAvailable: isPersistentSecureStorageAvailable(),
     macosKeychainAvailable: isMacosKeychainAvailable(),
     macosKeychainService: isMacosKeychainAvailable() ? MACOS_KEYCHAIN_SERVICE : null,
-    macosKeychainError,
-    encryptedStorePath: credentialStore ? null : storePath,
-    legacyPlaintextDetected: Boolean(legacyStorePath && fs.existsSync(legacyStorePath)),
-    legacyPlaintextPath: legacyStorePath && fs.existsSync(legacyStorePath) ? legacyStorePath : null,
-    decryptionFailed,
+    macosKeychainError: scope.macosKeychainError,
+    encryptedStorePath: scope.credentialStore ? null : scope.storePath,
+    legacyPlaintextDetected: Boolean(scope.legacyStorePath && fs.existsSync(scope.legacyStorePath)),
+    legacyPlaintextPath: scope.legacyStorePath && fs.existsSync(scope.legacyStorePath) ? scope.legacyStorePath : null,
+    decryptionFailed: scope.decryptionFailed,
   };
 }
 
@@ -713,10 +698,10 @@ export function storeApiKey(provider: string, key: string): void {
   }
   invalidatePeerScopeCache();
   const store = ensureStore();
-  if (credentialStore) {
+  if (scope.credentialStore) {
     writeCredentialSecret(credentialProviderKey(normalizedProvider), normalizedKey);
     store[normalizedProvider] = normalizedKey;
-    missingCredentialProviders.delete(normalizedProvider);
+    scope.missingCredentialProviders.delete(normalizedProvider);
     const index = readCredentialProviderIndex();
     writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
     if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
@@ -725,8 +710,8 @@ export function storeApiKey(provider: string, key: string): void {
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
   persistEncryptedStore(nextStore);
   deleteMacosKeychainSecretBestEffort(normalizedProvider);
-  missingMacosKeychainProviders.add(normalizedProvider);
-  cache = nextStore;
+  scope.missingMacosKeychainProviders.add(normalizedProvider);
+  scope.cache = nextStore;
   if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
 }
 
@@ -736,7 +721,7 @@ export function getApiKey(provider: string): string | null {
   const store = ensureStore();
   const stored = store[normalizedProvider];
   if (stored) return stored;
-  if (credentialStore && !missingCredentialProviders.has(normalizedProvider)) {
+  if (scope.credentialStore && !scope.missingCredentialProviders.has(normalizedProvider)) {
     const credentialValue = readCredentialSecret(credentialProviderKey(normalizedProvider));
     if (credentialValue) {
       store[normalizedProvider] = credentialValue;
@@ -744,15 +729,15 @@ export function getApiKey(provider: string): string | null {
       writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
       return credentialValue;
     }
-    missingCredentialProviders.add(normalizedProvider);
+    scope.missingCredentialProviders.add(normalizedProvider);
   }
   const allowLegacyKeychainFallback =
-    !credentialStore || !isCredentialLegacyKeychainMigrated();
-  if (allowLegacyKeychainFallback && isMacosKeychainAvailable() && !missingMacosKeychainProviders.has(normalizedProvider)) {
+    !scope.credentialStore || !isCredentialLegacyKeychainMigrated();
+  if (allowLegacyKeychainFallback && isMacosKeychainAvailable() && !scope.missingMacosKeychainProviders.has(normalizedProvider)) {
     const keychainValue = readMacosKeychainSecret(normalizedProvider);
     if (keychainValue) {
       store[normalizedProvider] = keychainValue;
-      if (credentialStore) {
+      if (scope.credentialStore) {
         writeCredentialSecret(credentialProviderKey(normalizedProvider), keychainValue);
         const index = readCredentialProviderIndex();
         writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
@@ -761,7 +746,7 @@ export function getApiKey(provider: string): string | null {
       }
       return keychainValue;
     }
-    missingMacosKeychainProviders.add(normalizedProvider);
+    scope.missingMacosKeychainProviders.add(normalizedProvider);
   }
   const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
   if (envVar) {
@@ -777,10 +762,10 @@ export function deleteApiKey(provider: string): void {
   invalidatePeerScopeCache();
   const store = ensureStore();
   if (normalizedProvider === "cursor") cursorKeyOrigin = null;
-  if (credentialStore) {
+  if (scope.credentialStore) {
     deleteCredentialSecret(credentialProviderKey(normalizedProvider));
     delete store[normalizedProvider];
-    missingCredentialProviders.add(normalizedProvider);
+    scope.missingCredentialProviders.add(normalizedProvider);
     const index = readCredentialProviderIndex();
     writeCredentialProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
     return;
@@ -791,8 +776,8 @@ export function deleteApiKey(provider: string): void {
     persistEncryptedStore(nextStore);
   }
   deleteMacosKeychainSecretBestEffort(normalizedProvider);
-  missingMacosKeychainProviders.add(normalizedProvider);
-  cache = nextStore;
+  scope.missingMacosKeychainProviders.add(normalizedProvider);
+  scope.cache = nextStore;
 }
 
 export function listStoredProviders(): string[] {

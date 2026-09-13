@@ -331,7 +331,9 @@ std::wstring ResolveOutputDirectory() {
   wchar_t temp[MAX_PATH + 1] = {0};
   const DWORD temp_length = GetTempPathW(MAX_PATH, temp);
   std::wstring fallback(temp, temp_length);
-  fallback += L"ade-capture";
+  // Only reached when the host passed no directory. The host always does,
+  // and its path is per channel; this is a last resort, not a shared location.
+  fallback += L"ade-capture-fallback";
   return fallback;
 }
 

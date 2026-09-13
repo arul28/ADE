@@ -1494,11 +1494,10 @@ struct CtoModelPreferences: Codable, Hashable {
 /// `"intro"`, recording that the CTO's opening turn was already sent, and
 /// `"memory_gardener"`). `cto.updateIdentity` replaces `onboardingState`
 /// wholesale, so the phone has to round-trip whatever the host sent rather
-/// than drop it.
+/// than drop it. The old `dismissedAt` / `completedAt` went with their last
+/// writer on the host.
 struct CtoOnboardingState: Codable, Hashable {
   var completedSteps: [String]
-  var dismissedAt: String?
-  var completedAt: String?
 }
 
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we

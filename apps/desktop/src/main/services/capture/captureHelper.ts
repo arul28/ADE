@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { isPathInside } from "../shared/pathCompare";
 import fs from "node:fs";
 import path from "node:path";
 import { isCaptureGestureSupported } from "../../../shared/captureGesturePlatformSupport";
@@ -83,12 +84,12 @@ export class CaptureHelper {
 
   constructor(private readonly options: CaptureHelperOptions) {}
 
-  private get platform(): NodeJS.Platform | string {
+  private get platform(): NodeJS.Platform {
     return this.options.platform ?? process.platform;
   }
 
   private get supported(): boolean {
-    return isCaptureGestureSupported(String(this.platform));
+    return isCaptureGestureSupported(this.platform);
   }
 
   start(): boolean {
@@ -394,12 +395,12 @@ export class CaptureHelper {
       case "permission-denied":
         this.permissionDenied = true;
         this.settleCapture();
-        this.options.onFailure(captureFailureFor(output, this.pendingSource));
+        this.options.onFailure(captureFailureFor(output, this.pendingSource, this.platform));
         return;
       case "no-window":
       case "capture-failed":
         this.settleCapture();
-        this.options.onFailure(captureFailureFor(output, this.pendingSource));
+        this.options.onFailure(captureFailureFor(output, this.pendingSource, this.platform));
         return;
     }
   }
@@ -447,7 +448,10 @@ export class CaptureHelper {
     // read or delete, however the helper came to name it.
     const resolved = path.resolve(capturedPath);
     const root = path.resolve(this.options.outputDirectory);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    // `isPathInside`, not startsWith: Windows paths differ by case, separator
+    // and 8.3 form, and a hand-rolled compare rejects a perfectly good capture.
+    // It answers true for the directory itself, so no separate equality check.
+    if (!isPathInside(resolved, root)) {
       this.options.logger.warn("capture.helper_path_outside_output_dir", { path: resolved });
       this.options.onFailure({
         reason: "capture-failed",

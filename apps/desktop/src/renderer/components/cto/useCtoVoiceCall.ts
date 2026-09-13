@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
+import { bytesToBase64 } from "../../lib/base64";
 import {
+  CTO_VOICE_CAPTURE_EVENT,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_SAMPLE_RATE,
-  type CtoVoiceState,
+  isVoiceCallLive,
+  type CtoVoiceBridge,
+  type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
 
 /**
@@ -19,29 +23,8 @@ import {
  * uses for its own optional bridge.
  */
 
-/** Dispatched by the capture gesture when a shot lands during a live call. */
-export const CTO_VOICE_CAPTURE_EVENT = "ade:cto-voice:attach-capture";
-
-type VoiceBridge = {
-  start: () => Promise<{ ok: boolean; error?: string }>;
-  end: () => Promise<void>;
-  pushAudio: (base64: string, level: number) => void;
-  setMuted: (muted: boolean) => void;
-  approve: (id: string) => Promise<void>;
-  deny: (id: string) => Promise<void>;
-  /**
-   * Hand the live conversation something the user is looking at. Optional: an
-   * older main process may not have it, and the capture gesture must degrade
-   * rather than throw when it does not.
-   */
-  attachImage?: (args: { pngBase64: string; note: string }) => Promise<void>;
-  onState: (handler: (state: CtoVoiceState) => void) => () => void;
-  hasKey: () => Promise<boolean>;
-};
-
-function bridge(): VoiceBridge | null {
-  const ade = (window as unknown as { ade?: { ctoVoice?: VoiceBridge } }).ade;
-  return ade?.ctoVoice ?? null;
+function bridge(): CtoVoiceBridge | null {
+  return window.ade?.ctoVoice ?? null;
 }
 
 export function voiceAvailable(): boolean {
@@ -50,17 +33,47 @@ export function voiceAvailable(): boolean {
 
 /* ── store ── */
 
-let state: CtoVoiceState = CTO_VOICE_INITIAL_STATE;
+let state: CtoVoiceStatePayload = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: false };
 const listeners = new Set<() => void>();
 
-function setState(next: CtoVoiceState) {
+function setState(next: CtoVoiceStatePayload) {
   state = next;
   listeners.forEach((listener) => listener());
 }
 
+/**
+ * The bridge is subscribed once for the module, not once per mounted hook.
+ *
+ * Two components read this store — the shell-level HUD host and the Talk button
+ * on the CTO page — so a per-hook subscription registered the same IPC listener
+ * twice and delivered every state push twice.
+ */
+let bridgeSubscribed = false;
+
 function subscribe(listener: () => void) {
+  // Latched on SUCCESS, not on the attempt. Setting it first meant that a
+  // first subscriber mounting before the preload bridge existed turned the
+  // store off for the life of the process.
+  if (!bridgeSubscribed) {
+    bridgeSubscribed = Boolean(bridge()?.onState(setState));
+  }
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+/**
+ * Watch the call state without rendering on it.
+ *
+ * The capture host needs to know whether a call is live at the moment a shot
+ * lands, not on every phase change — re-rendering it mid-capture restarts the
+ * fly-in animation. It reads through the store rather than opening its own
+ * `bridge().onState`, because a second subscription delivers every push twice.
+ */
+export function subscribeVoiceState(handler: (state: CtoVoiceStatePayload) => void): () => void {
+  const listener = () => handler(state);
+  const unsubscribe = subscribe(listener);
+  listener();
+  return unsubscribe;
 }
 
 /* ── capture ── */
@@ -82,12 +95,6 @@ function floatToPcm16(input: Float32Array): Uint8Array {
   return out;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
 async function startCapture() {
   if (mediaStream) return;
   mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -103,7 +110,7 @@ async function startCapture() {
     const input = event.inputBuffer.getChannelData(0);
     let peak = 0;
     for (let i = 0; i < input.length; i += 1) peak = Math.max(peak, Math.abs(input[i]));
-    bridge()?.pushAudio(toBase64(floatToPcm16(input)), peak);
+    bridge()?.pushAudio(bytesToBase64(floatToPcm16(input)), peak);
   };
   source.connect(processor);
   processor.connect(audioContext.destination);
@@ -154,50 +161,16 @@ export function flushVoicePlayback() {
 export function useCtoVoiceCall() {
   const current = useSyncExternalStore(subscribe, () => state, () => state);
 
-  useEffect(() => bridge()?.onState(setState), []);
-
-  // The capture gesture dispatches this when a shot lands mid-call. Pointing at
-  // something while you talk about it is the reason the gesture and the call
-  // were designed together, so the call consumes it here rather than making the
-  // user drop the image into a composer they are not looking at.
-  useEffect(() => {
-    const onCapture = (event: Event) => {
-      const detail = (event as CustomEvent).detail as
-        | { shot?: { pngBase64?: string }; note?: string }
-        | undefined;
-      const pngBase64 = detail?.shot?.pngBase64;
-      if (!pngBase64) return;
-      const attach = bridge()?.attachImage;
-      if (typeof attach !== "function") return;
-      void attach({ pngBase64, note: detail?.note ?? "The user shared what they are looking at." });
-    };
-    window.addEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);
-    return () => window.removeEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);
-  }, []);
-
-  // A barge-in has to silence the speaker, not just re-label the pill.
-  useEffect(() => {
-    if (current.interrupted) flushVoicePlayback();
-  }, [current.interrupted]);
-
+  // Starting is a plain request; the microphone is started by the HUD host in
+  // response to the phase change, so it has exactly one owner no matter which
+  // surface pressed the button.
   const start = useCallback(async () => {
     const api = bridge();
     if (!api) return { ok: false, error: "unavailable" as const };
-    const result = await api.start();
-    if (result.ok) {
-      try {
-        await startCapture();
-      } catch {
-        await api.end();
-        return { ok: false, error: "microphone" as const };
-      }
-    }
-    return result;
+    return api.start();
   }, []);
 
   const end = useCallback(async () => {
-    stopCapture();
-    flushVoicePlayback();
     await bridge()?.end();
   }, []);
 
@@ -210,7 +183,68 @@ export function useCtoVoiceCall() {
   const approve = useCallback((id: string) => { void bridge()?.approve(id); }, []);
   const deny = useCallback((id: string) => { void bridge()?.deny(id); }, []);
 
-  useEffect(() => () => { stopCapture(); flushVoicePlayback(); }, []);
-
   return { state: current, start, end, toggleMute, approve, deny, available: voiceAvailable() };
+}
+
+/**
+ * Owns the microphone, the speaker, and the capture-event bridge.
+ *
+ * Mounted exactly once, by `CtoVoiceHudHost` at the shell level. The audio
+ * objects are module-scoped, so a per-component cleanup would tear down a live
+ * call when an unrelated route unmounted — which is precisely what happened
+ * when the Talk button on `/cto` also ran this lifecycle.
+ */
+export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
+  // Every window mounts this host, so a call is visible wherever the user is
+  // working. Only the window that started the call may open the microphone:
+  // two capturing windows put two interleaved PCM streams into one socket and
+  // play the CTO's voice twice. The main process decides which window that is.
+  const live = isVoiceCallLive(state.phase) && state.isCallOwner;
+
+  useEffect(() => {
+    if (!live) return;
+    return bridge()?.onAudio(playVoiceChunk);
+  }, [live]);
+
+  useEffect(() => {
+    if (!live) {
+      stopCapture();
+      flushVoicePlayback();
+      return;
+    }
+    let cancelled = false;
+    void startCapture().catch(() => {
+      if (!cancelled) void bridge()?.end();
+    });
+    return () => { cancelled = true; };
+  }, [live]);
+
+  // A barge-in has to silence the speaker, not just re-label the pill.
+  useEffect(() => {
+    if (live && state.interrupted) flushVoicePlayback();
+  }, [live, state.interrupted]);
+
+  // The capture gesture dispatches this when a shot lands mid-call. Pointing at
+  // something while you talk about it is why the gesture and the call were
+  // designed together.
+  //
+  // NOT gated on call ownership, unlike the audio above. The chord fires in
+  // whichever window is in front, the event is per-window, and `attachImage`
+  // reaches the one service in the main process — so a shot taken from a
+  // window that does not hold the microphone must still reach the call.
+  useEffect(() => {
+    const onCapture = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { shot?: { pngBase64?: string }; note?: string } | undefined;
+      const pngBase64 = detail?.shot?.pngBase64;
+      if (!pngBase64) return;
+      void bridge()?.attachImage({
+        pngBase64,
+        note: detail?.note ?? "The user shared what they are looking at.",
+      });
+    };
+    window.addEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);
+    return () => window.removeEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);
+  }, []);
+
+  useEffect(() => () => { stopCapture(); flushVoicePlayback(); }, []);
 }

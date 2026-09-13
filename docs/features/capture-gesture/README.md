@@ -24,7 +24,7 @@ The whole feature is one sentence of user intent — *ask the CTO about what I a
 ### Renderer (`apps/desktop/src/renderer/components/capture/`)
 
 - `GlobalCaptureGestureHost.tsx` — mounted once in `AppShell.tsx`, inside the router and above every tab. It subscribes to `captureGesture.onShot` / `onFailure`, resolves the delivery target, stages attachments, navigates to `/cto`, and renders the fly-in and the failure notice.
-- `captureGestureDelivery.ts` — the routing decision as pure functions: `isVoiceCallLive`, `resolveCaptureDeliveryTarget`, `planCaptureAttachments`, `describeShot`, `encodeUtf8Base64`.
+- `captureGestureDelivery.ts` — the routing decision as pure functions: `isCallJoinable`, `planCaptureAttachments`, `describeShot`. (Base64 lives in `renderer/lib/base64.ts`, shared with chat attachments and voice audio.)
 - `currentViewState.ts` — `CurrentViewState`, `composeCurrentViewState`, and `formatCurrentViewState`: "what is ADE showing right now", as a thing you can attach to a message.
 - `captureGestureLocalSettings.ts` — the machine-local on/off switch (`ade:capture-gesture:enabled`, default on) and `captureGestureBridgeAvailable()`.
 - `CaptureFlyIn.tsx` — the captured thumbnail flying into the composer. Two frames and a CSS transition, no animation library; `pointer-events: none` throughout, because a 420 ms overlay that eats a click is worse than no animation.
@@ -95,12 +95,12 @@ The helper writes the capture to a file under the OS temp root (`<temp>/ade-capt
 
 ## The target is always the CTO
 
-There is no "capture to clipboard" and no destination chooser. `resolveCaptureDeliveryTarget` answers one of two things:
+There is no "capture to clipboard" and no destination chooser. There are two destinations and no payload either way, so the decision is a boolean, not a tagged union:
 
 - **A call is live** → `deliverToCall`. The shot is spoken about, not filed: the host calls the optional `ctoVoice.attachImage` bridge and dispatches the `ade:cto-voice:attach-capture` DOM event, which `useCtoVoiceCall` listens for and forwards into the conversation with a note. Pointing at something while you talk about it is why the gesture and the call were designed together, so the call consumes the shot rather than making the user go find a composer they are not looking at. See [CTO › Voice calls](../cto/README.md#voice-calls).
 - **No call** → `deliverToComposer`. `cto.ensureSession()` resolves the thread, ADE navigates to `/cto` **before** the chips appear — so an attachment is never staged onto a composer nobody is looking at — and each file is staged through `agentChat.saveTempAttachment` and announced with the `ade:agent-chat:add-attachment` event, the same one `WorkSidebar` dispatches.
 
-"Live" is read from `phase`, not `callId`, and that distinction is load bearing: `callId` is set during `connecting` and survives into `ended`, so keying off it would route a capture into a call that has already hung up. `isVoiceCallLive` excludes `idle`, `ended`, and `failed` **by name**, so a phase added later defaults to live rather than silently dropping captures.
+`isCallJoinable` decides, and it asks two things. The phase must be live — `isVoiceCallLive` in `shared/types/ctoVoice.ts` excludes `idle`, `ended` and `failed` **by name**, so a phase added later defaults to live rather than silently dropping captures. The phase list is not repeated here; a second copy of it was the drift that helper was written to end. On top of it, the call must have an id: one the main process cannot address is not one a shot can reach.
 
 ### Over ADE's own window, the image travels with view state
 
@@ -136,7 +136,7 @@ The generated binaries are gitignored; `apps/desktop/resources/native/README.md`
 
 - **Linux ships nothing.** X11 and Wayland need different grabs, Wayland refuses foreign-window pixel capture outright without a portal handshake, and ADE has no Linux packaging target. The gesture is hidden there rather than shipped as a permanently dead switch.
 - **The Windows helper source ships but was not compiled on this machine.** `resources/native` holds no binaries here; both are produced at package time on their own platform.
-- **Voice delivery is probe-only today.** `window.ade.ctoVoice` has no preload bridge yet, so `resolveCaptureDeliveryTarget` currently resolves to the composer in a running build. Every call into the bridge is optional-chained and wrapped precisely so a missing or differently-shaped bridge degrades instead of throwing inside a capture the user is watching for.
+- **Voice delivery goes through the same store the HUD reads.** `GlobalCaptureGestureHost` subscribes via `subscribeVoiceState` rather than opening its own `onState` listener — a second subscription delivered every push twice — and decides with `isCallJoinable(state)`, which needs a live phase *and* a call id. With no bridge at all (the hosted web client, the browser preview) the store never leaves `idle`, so the shot goes to the composer. The delivery event is dispatched in whichever window is in front and reaches the one service in the main process, so a capture taken from a window that does not hold the microphone still lands in the call.
 
 ## Cross-links
 

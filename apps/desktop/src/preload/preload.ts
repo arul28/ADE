@@ -8,6 +8,7 @@ import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
+import type { CtoVoiceBridge, CtoVoiceStatePayload } from "../shared/types/ctoVoice";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
@@ -7603,6 +7604,36 @@ const adeBridge = {
     }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
   },
   /**
+   * CTO voice call. The renderer owns only the microphone and the speaker.
+   */
+  ctoVoice: {
+    start: () => ipcRenderer.invoke(IPC.ctoVoiceStart) as Promise<{ ok: boolean; error?: string }>,
+    end: () => ipcRenderer.invoke(IPC.ctoVoiceEnd) as Promise<void>,
+    // `send`, not `invoke`: audio frames arrive about ten times a second for the
+    // life of a call, and a round trip per frame would be pure overhead.
+    pushAudio: (audio: string, level: number) => ipcRenderer.send(IPC.ctoVoicePushAudio, { audio, level }),
+    setMuted: (muted: boolean) => ipcRenderer.invoke(IPC.ctoVoiceSetMuted, { muted }) as Promise<void>,
+    approve: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceApprove, { id }) as Promise<void>,
+    deny: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceDeny, { id }) as Promise<void>,
+    attachImage: (args: { pngBase64: string; note: string }) =>
+      ipcRenderer.invoke(IPC.ctoVoiceAttachImage, args) as Promise<void>,
+    hasKey: () => ipcRenderer.invoke(IPC.ctoVoiceHasKey) as Promise<boolean>,
+    onState: (handler: (state: CtoVoiceStatePayload) => void) => {
+      const listener = (_event: unknown, payload: unknown) => handler(payload as CtoVoiceStatePayload);
+      ipcRenderer.on(IPC.ctoVoiceState, listener);
+      return () => { ipcRenderer.removeListener(IPC.ctoVoiceState, listener); };
+    },
+    onAudio: (handler: (base64: string) => void) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        if (typeof payload === "string") handler(payload);
+      };
+      ipcRenderer.on(IPC.ctoVoiceAudio, listener);
+      return () => { ipcRenderer.removeListener(IPC.ctoVoiceAudio, listener); };
+    },
+    // Checked against the contract the renderer is promised, so the two halves
+    // of this bridge cannot drift the way the duplicated declaration did.
+  } satisfies CtoVoiceBridge,
+  /**
    * Scenes — agent-authored HTML rendered in a sandboxed frame.
    *
    * Strictly local: a scene is prepared, captured and filed on the machine that
@@ -7618,7 +7649,7 @@ const adeBridge = {
       rect: { x: number; y: number; width: number; height: number },
     ): Promise<string | null> => ipcRenderer.invoke(IPC.sceneSnapshot, rect),
     attachProof: (
-      args: { dataUrl?: string | null; title: string },
+      args: { dataUrl?: string | null; title: string; sessionId?: string | null },
     ): Promise<boolean> => ipcRenderer.invoke(IPC.sceneAttachProof, args),
   },
   orchestration: createOrchestrationBridge({

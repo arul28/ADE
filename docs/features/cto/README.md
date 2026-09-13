@@ -57,7 +57,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 
 ### iOS companion (`apps/ios/ADE/Views/Cto/`)
 
-- `CtoRootScreen.swift` — renders the CTO chat inline as the tab body (single thread, kind `.cto`) with a top-bar gear that opens settings as a sheet. No Team/Workflows navigation. It routes on the pure `ctoRootContent(identity:loadError:hostUnreachable:) -> CtoRootContent` (`.loading`, `.loadError`, `.onboarding`, `.modelPick`, `.thread`), mirroring desktop `CtoPage`'s order — `modelPick` sits *before* `thread`, and in that state the view deliberately does not build `CtoSessionDestinationView`, so nothing ensures a session on a provider the user has not chosen. `applyModelPick` writes identity preferences first, then `ensureCtoSession()`, then pins the exact model through `updateChatSession`, and only publishes the refreshed snapshot last so the picker cannot drop out mid-flight and let a second ensure run.
+- `CtoRootScreen.swift` — renders the CTO chat inline as the tab body (single thread, kind `.cto`) with a top-bar gear that opens settings as a sheet. No Team/Workflows navigation. It routes on the pure `ctoRootContent(identity:loadError:hostUnreachable:) -> CtoRootContent` (`.loading`, `.loadError`, `.modelPick`, `.thread`), mirroring desktop `CtoPage`'s order — `modelPick` sits *before* `thread`, and in that state the view deliberately does not build `CtoSessionDestinationView`, so nothing ensures a session on a provider the user has not chosen. `applyModelPick` writes identity preferences first, then `ensureCtoSession()`, then pins the exact model through `updateChatSession`, and only publishes the refreshed snapshot last so the picker cannot drop out mid-flight and let a second ensure run.
 - `CtoSessionDestinationView.swift` — resolves the always-on CTO session (`ensureCtoSession()`) and reuses the Work chat pipeline with a compact one-line voice/send composer. It passes `liveRedirectOnlySends: true` so the composer never offers *Send after turn* on the CTO thread.
 - `CtoSettingsScreen.swift` — sections: Model (live model/reasoning/Fast selection), Integrations (read-only Linear connection status), and Memory (durable facts + thread summary via `cto.getMemory`). With no stored preference the identity row reads "No model picked yet" rather than inventing a default.
 - `apps/ios/ADE/Views/Work/WorkModelPickerSheet.swift` — gained an optional `modelFilter`; both CTO surfaces pass `{ providerSupportsLiveRedirect($0.provider) }`. `applyModelFilter` prunes providers and groups that empty out, so the provider rail never shows a tab with nothing behind it. Every other caller passes nothing and is unchanged.
@@ -421,13 +421,25 @@ It also means permissions live in ADE's code rather than in a prompt the model i
 Both are load bearing and neither is obvious from the API shape.
 
 - **A real microphone never stops.** If the client stops sending input audio the session stalls mid-sentence. So `pushAudio` keeps the stream fed from the renderer's capture node, and a 100 ms `keepAlive` interval sends a buffer of PCM silence for as long as the user is muted. Mute is not "stop sending"; it is "send nothing, continuously."
-- **`session.delegation.created` carries an id and no task text.** The event names the delegation and says nothing about what was asked, so the intent has to be rebuilt on ADE's side: the service accumulates `session.input_transcript.delta` into `inputBuffer` and hands *that* to `runBackendTurn` when the delegation arrives, rather than waiting for a turn object that never comes.
+- **`session.delegation.created` carries an id and no task text.** The event names the delegation and says nothing about what was asked, so the intent has to be rebuilt on ADE's side: the service accumulates `session.input_transcript.delta` into `utterance.text` and hands *that* to `runBackendTurn` when the delegation arrives, rather than waiting for a turn object that never comes.
+
+  The utterance is one record — `{ id, text, open, consumed }` — because the two events are independent on the wire and either can arrive first. So the id turns over when a *new* utterance opens rather than when one finishes, the text survives `done` (a delegation for it may still be in flight) and is consumed exactly once. Rotating on `done` bound a confirmation to the id the user's *next* reply would carry, which made a spoken "yes" impossible to honour; reading a consumed utterance asked the CTO the question it had just answered.
 
 The filler goes out before any backend work starts — `speak(delegationId, "Let me check that.")` on the first line of `handleDelegation`, then `think(...)` with the reconstructed intent as silent context — because the entire point of the `thinking` phase is that the user does not hear silence while ADE works. `speak` posts `session.commentary.append` (paraphrased aloud); `think` posts `session.thinking.append` (usable, never read out).
+
+### A call cannot write
+
+While a call is up the CTO is held read-only, and that is enforced in code at the one point every writer passes.
+
+`setCallReadOnly(true)` takes a hold from `beginIdentityReadOnlyHold()` before the socket opens, and `normalizeIdentityPermissionMode` answers `plan` instead of `full-auto` for as long as any hold is up. The hold lives there rather than on the session because a session-level downgrade cannot hold: the CTO is pinned to `full-auto` by that same function, and `ensureIdentitySession` re-normalizes before every turn, so a mode written once is snapped back before the first word reaches a tool. Leaving plan mode goes through `exitPlanModeForSession`, so no approval path can hand the write access back mid-call.
+
+It is a counter, not a flag, so two overlapping calls cannot release each other early, and each call owns its own `releaseReadOnly`. A call that fails on the way in gives its hold back; a call whose window closes or reloads is ended by `watchOwner`, which is what stops a hold outliving the call that took it.
 
 ### Confirmation is code, not prompt
 
 Reads narrate freely: a turn that only looked something up comes back as `spoken` text and is said. A mutation stops and asks — `runBackendTurn` returns a `confirmation`, the service builds a `CtoVoiceConfirmation`, and the HUD moves to the `confirming` phase with a strip the user can tap.
+
+**This path is not reachable in this release.** The read-only hold above means a voice turn cannot request a mutation in the first place, so `runBackendTurn` never returns a `confirmation` today. The machinery is built, unit-tested and documented because the decision it encodes — what a spoken "yes" may and may not approve — has to be settled before a call is ever allowed to write, not after.
 
 A spoken "yes" is honoured only when `resolveSpokenConfirmation` can show it is genuinely an answer to a question the CTO actually asked. An open microphone is an open door — the CTO's own audio comes back through the speakers, a podcast says "yeah do it", someone walks past — so all four of these must hold:
 
@@ -449,7 +461,8 @@ The HUD renders nothing in the `idle` and `ended` phases, and the pill shows the
 ### Scope and limits
 
 - **Desktop only in this release.** There is no iOS voice-call surface and no hosted-web one; `window.ade.ctoVoice` is read optionally everywhere precisely so those clients degrade instead of throwing.
-- **The renderer bridge is not wired yet.** `useCtoVoiceCall` and `GlobalCaptureGestureHost` both probe `window.ade.ctoVoice`, and no preload bridge or IPC channel exposes it today. The main-process service, the confirmation rules, the HUD, and the capture delivery path all exist and are unit-tested; until the bridge lands, `voiceAvailable()` is false in a running build and the capture gesture resolves to the composer target rather than the call target.
+- **A call is read-only.** See above. A call can look at anything and change nothing; asking it to change something gets you a description of what it would do and an invitation to say it again in the chat.
+- **One window owns the microphone.** Every window shows the pill, so a call stays visible wherever you are working, but only the window that started it captures and plays audio — `isCallOwner` is decided per window by the main process. Two capturing windows would put two interleaved PCM streams into one socket.
 
 ## Tab model
 

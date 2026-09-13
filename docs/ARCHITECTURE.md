@@ -1290,7 +1290,8 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 | Secret | Location | Protection |
 |--------|----------|-----------|
 | GitHub PAT | `.ade/secrets/github/*.bin` | `safeStorage.encryptString` (OS-backed) |
-| API provider keys | `.ade/secrets/api-keys.json` | Plaintext `0600` |
+| API provider keys (project) | `.ade/secrets/api-keys.v1.bin` | Credential store, then the macOS Keychain, then the environment. The legacy plaintext `api-keys.json` is no longer read |
+| API provider keys (machine) | `~/.ade/secrets/` via `resolveMachineAdeLayout` | Same store, machine scope. Used by the CTO voice key, which follows the user rather than the project |
 | ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store sealed with its own machine key; also co-owned by the brain |
 | Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store sealed with the machine key. Read and written by the brain, the `ade` CLI, and desktop |
 | Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage.encryptString`; readable only by Electron |

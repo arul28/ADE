@@ -873,6 +873,8 @@ import type {
 } from "../../../shared/types/orchestration";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import { createCtoVoiceWiringDeps, registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
+import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureState";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -3307,13 +3309,6 @@ export function registerIpc({
     app.setBadgeCount(normalized);
     return { ok: true } as const;
   });
-
-  const UNAVAILABLE_CAPTURE_GESTURE_HEALTH = {
-    state: "unsupported",
-    title: "Screen capture gesture isn’t available here",
-    message: "This ADE build does not include the native capture helper.",
-    recovery: null,
-  } as const;
 
   ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
     const enabled = typeof input === "object" && input !== null
@@ -8944,9 +8939,32 @@ export function registerIpc({
    * throws — when there is no project, no broker, or no snapshot to file, so a
    * button press on a scene that was never captured is a no-op, not an error.
    */
+  /**
+   * The chat a scene snapshot may be filed against.
+   *
+   * One lookup, not a list. `listSessions` reads persisted state off disk
+   * synchronously for every row it returns and can materialize managed sessions
+   * as a side effect, so validating a single id by listing all of them blocked
+   * the main process on hundreds of file reads per press of a Proof button —
+   * and its 500-row window would have quietly failed a legitimate older chat.
+   * `getSessionSummary` answers the same question against one row, with no
+   * identity or automation filter to defeat: the CTO's own thread is an
+   * identity session and has to pass.
+   */
+  const resolveSceneProofOwner = async (
+    ctx: AppContext,
+    claimed: unknown,
+  ): Promise<string | null> => {
+    const id = typeof claimed === "string" ? claimed.trim() : "";
+    if (!id.length || !ctx.agentChatService) return null;
+    // `sessionService` is project-scoped, so an id from another project misses.
+    const found = await ctx.agentChatService.getSessionSummary(id).catch(() => null);
+    return found ? id : null;
+  };
+
   ipcMain.handle(
     IPC.sceneAttachProof,
-    async (_event, arg: { dataUrl?: string | null; title?: string | null }): Promise<boolean> => {
+    async (_event, arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null }): Promise<boolean> => {
       try {
         const ctx = getCtx();
         const broker = ctx.computerUseArtifactBrokerService;
@@ -8957,8 +8975,19 @@ export function registerIpc({
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
         const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
         fs.writeFileSync(artifactPath, bytes);
+        // Proof in ADE is chat-scoped. A snapshot filed with no owner cannot be
+        // shown against the conversation that drew it, and lane-root resolution
+        // is skipped entirely.
+        //
+        // The id comes from the renderer, so it is checked against this
+        // project's own sessions rather than trusted: an id naming another
+        // project's chat would file the artifact into that chat's drawer. A
+        // miss drops the owner, never the artifact — an unattributed snapshot
+        // is a smaller loss than a misattributed one.
+        const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
         broker.ingest({
           backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+          ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
           inputs: [{
             kind: "screenshot",
             title: title.slice(0, 200),
@@ -11895,6 +11924,17 @@ export function registerIpc({
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
   });
+
+  // -- CTO voice call --
+
+  registerCtoVoiceIpc(
+    ipcMain,
+    createCtoVoiceWiringDeps({
+      getCtx,
+      resolvePrimaryLaneId: () => resolvePrimaryLaneIdOnly(getCtx()),
+      saveTempAttachment: saveAgentChatTempAttachmentBuffer,
+    }),
+  );
 
   // -- Smart memory --
 

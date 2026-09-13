@@ -33,6 +33,17 @@
 
   --chat-radius-shell: 18px;
   --chat-radius-card: 16px;
+  /*
+   * Chat surfaces overwrite both of these per pane. They are declared here so a
+   * chat component rendered OUTSIDE a pane still computes: an undefined var in
+   * `calc(var(--chat-font-size) * 13 / 14)` makes the whole declaration invalid,
+   * which silently fell back to the document size, and an undefined
+   * `--chat-accent` fell back to the operating system's accent colour.
+   * 14px is the base every `* n / 14` ratio in the chat components is written
+   * against.
+   */
+  --chat-font-size: 14px;
+  --chat-accent: var(--color-accent);
   --chat-radius-pill: 9999px;
 }
 

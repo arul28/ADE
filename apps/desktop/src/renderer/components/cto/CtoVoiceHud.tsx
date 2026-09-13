@@ -5,6 +5,7 @@ import { Microphone, MicrophoneSlash, Phone, Warning } from "@phosphor-icons/rea
 import {
   formatVoiceCost,
   formatVoiceElapsed,
+  isVoiceCallVisible,
   type CtoVoiceConfirmation,
   type CtoVoicePhase,
   type CtoVoiceState,
@@ -160,10 +161,12 @@ export function CtoVoiceHud({
     return null;
   }, [state.captions]);
 
-  if (state.phase === "idle" || state.phase === "ended") return null;
+  if (!isVoiceCallVisible(state.phase)) return null;
 
   const failed = state.phase === "failed";
   const expanded = Boolean(canvas) || Boolean(state.pendingConfirmation);
+  // Hoisted so the JSX below narrows without a non-null assertion.
+  const pending = state.pendingConfirmation;
 
   return (
     <div
@@ -210,7 +213,7 @@ export function CtoVoiceHud({
         </AnimatePresence>
 
         <AnimatePresence>
-          {state.pendingConfirmation ? (
+          {pending ? (
             <motion.div
               key="confirm"
               initial={reduced ? false : { opacity: 0, y: 6 }}
@@ -220,9 +223,9 @@ export function CtoVoiceHud({
               style={{ boxShadow: "0 14px 36px rgba(0,0,0,0.40)" }}
             >
               <ConfirmationStrip
-                confirmation={state.pendingConfirmation}
-                onApprove={() => onApproveConfirmation(state.pendingConfirmation!.id)}
-                onDeny={() => onDenyConfirmation(state.pendingConfirmation!.id)}
+                confirmation={pending}
+                onApprove={() => onApproveConfirmation(pending.id)}
+                onDeny={() => onDenyConfirmation(pending.id)}
               />
             </motion.div>
           ) : null}

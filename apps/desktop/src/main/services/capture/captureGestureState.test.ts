@@ -139,10 +139,24 @@ describe("helper output parsing", () => {
 });
 
 describe("failure presentation", () => {
-  it("tells the user exactly where the permission lives", () => {
-    const failure = captureFailureFor({ type: "permission-denied" }, "chord");
-    expect(failure.reason).toBe("permission-denied");
-    expect(failure.message).toContain("Screen Recording");
+  it("tells the user exactly where the permission lives, per platform", () => {
+    // The platform is passed rather than read off the host: this is pure logic,
+    // and a test that says "Screen Recording" only because the developer is on
+    // a Mac is a test that goes red on a Windows contributor's machine.
+    const mac = captureFailureFor({ type: "permission-denied" }, "chord", "darwin");
+    expect(mac.reason).toBe("permission-denied");
+    expect(mac.message).toContain("Screen Recording");
+
+    // Windows has no Screen Recording pane, so sending a Windows user there is
+    // worse than saying nothing.
+    const win = captureFailureFor({ type: "permission-denied" }, "chord", "win32");
+    expect(win.message).toContain("keyboard hook");
+    expect(win.message).not.toContain("System Settings");
+
+    // A platform the gesture does not support yet gets neither story.
+    const other = captureFailureFor({ type: "permission-denied" }, "chord", "linux");
+    expect(other.message).not.toContain("Screen Recording");
+    expect(other.message).not.toContain("Windows");
   });
 
   it("keeps the source so the renderer can tell a chord from a palette run", () => {

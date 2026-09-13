@@ -68,10 +68,15 @@ export type CtoListSessionLogsArgs = {
 
 /* ── Onboarding ── */
 
+/**
+ * Durable per-project markers, not a setup wizard.
+ *
+ * The wizard is gone; what remains is `completedSteps`, which carries the
+ * non-user-facing `intro` and `memory_gardener` markers. The old `dismissedAt`
+ * and `completedAt` went with their last writer and their last reader.
+ */
 export type CtoOnboardingState = {
   completedSteps: string[];
-  dismissedAt?: string;
-  completedAt?: string;
 };
 
 export type CtoSystemPromptPreviewSection = {

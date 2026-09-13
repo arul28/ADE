@@ -32,6 +32,7 @@ logMachineEvent("info", "desktop.main_started", {
   platform: process.platform,
 });
 
+import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "./services/capture/captureGestureState";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -180,20 +181,6 @@ import type {
   CaptureGestureShot,
 } from "../shared/types/captureGesture";
 
-/**
- * What the capture-gesture IPC answers when no supervisor exists — a runtime
- * mode that never built one, or a platform with no helper. Deliberately the
- * same verdict `captureGestureHealth()` returns for an unsupported platform:
- * "there is no helper here" is the honest answer in both cases, and two
- * differently worded versions of it would be a bug a user reports as
- * inconsistent copy.
- */
-const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
-  state: "unsupported",
-  title: "Screen capture gesture isn’t available here",
-  message: "This ADE build does not include the native capture helper.",
-  recovery: null,
-};
 import {
   attentionNotchAppNavigation,
   attentionItemNavigationRequest,
@@ -8279,7 +8266,16 @@ app.whenReady().then(async () => {
     // between two processes that lasts milliseconds, and the supervisor deletes
     // each one as it reads it. `windows-uninstall-cleanup.ps1` sweeps the
     // directory for the case where ADE was killed in between.
-    outputDirectory: path.join(app.getPath("temp"), "ade-capture"),
+    // Per channel, not shared. os.tmpdir() is per-user, so Stable, Beta and
+    // Alpha all landed on one directory — and `dispose()` removes it, so
+    // quitting one channel broke captures in another that was still running.
+    outputDirectory: path.join(
+      app.getPath("temp"),
+      // `?? "stable"` alone put an unpackaged dev build in the installed
+      // Stable build's directory — and `CaptureHelper.dispose()` deletes that
+      // directory outright, so quitting one broke captures in the other.
+      `ade-capture-${normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) ?? (app.isPackaged ? "stable" : "dev")}`,
+    ),
     onShot: (shot: CaptureGestureShot) => {
       const target = captureGestureWindow();
       if (!target) return;

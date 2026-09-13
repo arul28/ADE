@@ -334,18 +334,8 @@ function normalizeOnboardingState(value: unknown): CtoOnboardingState | undefine
   if (!value || typeof value !== "object") return undefined;
   const source = value as Record<string, unknown>;
   const completedSteps = uniqueStrings(asStringArray(source.completedSteps));
-  const dismissedAt =
-    typeof source.dismissedAt === "string" && source.dismissedAt.trim().length
-      ? source.dismissedAt.trim()
-      : undefined;
-  const completedAt =
-    typeof source.completedAt === "string" && source.completedAt.trim().length
-      ? source.completedAt.trim()
-      : undefined;
   return {
     completedSteps,
-    ...(dismissedAt ? { dismissedAt } : {}),
-    ...(completedAt ? { completedAt } : {}),
   };
 }
 

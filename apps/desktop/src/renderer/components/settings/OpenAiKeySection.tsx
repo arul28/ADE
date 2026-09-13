@@ -18,6 +18,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 import { SettingsCard } from "./primitives";
 import { SourceBadge } from "./providers/providerUi";
 import {
+  OPENAI_ENV_VAR,
   OPENAI_VOICE_PROVIDER,
   OpenAiKeyCostLine,
   OpenAiKeyField,
@@ -26,8 +27,6 @@ import {
 
 /** Must match the `agents.openai-key` entry's anchor in `settingsManifest.ts`. */
 export const OPENAI_KEY_ANCHOR = "openai-api-key";
-
-const OPENAI_ENV_VAR = "OPENAI_API_KEY";
 
 export function OpenAiKeySection() {
   const { status, loading, supported, error, save, remove } = useMachineOpenAiKey(OPENAI_VOICE_PROVIDER);

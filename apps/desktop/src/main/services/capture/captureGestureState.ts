@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  captureGestureChordLabel,
   captureGestureUnavailableReason,
   isCaptureGestureSupported,
 } from "../../../shared/captureGesturePlatformSupport";
@@ -189,19 +190,54 @@ export function parseCaptureHelperOutput(line: string): CaptureHelperOutput | nu
 
 /* ────────────────────────── presentation ────────────────────────── */
 
+/**
+ * What the capture-gesture IPC answers when no supervisor exists — a runtime
+ * mode that never built one, or a platform with no helper. Deliberately the
+ * same verdict `captureGestureHealth()` returns for an unsupported platform.
+ *
+ * It lived in two files. They matched, and nothing kept them matching.
+ */
+export const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
+  state: "unsupported",
+  title: "Screen capture gesture isn’t available here",
+  message: "This ADE build does not include the native capture helper.",
+  recovery: null,
+};
+
+/**
+ * Why the capture was refused, in the terms of the platform that refused it.
+ *
+ * Three branches, not two: a `darwin`-or-else split sends a Linux user to a
+ * Windows group-policy explanation. The gesture is macOS and Windows only
+ * today, so the default is unreachable — but the day a third platform lands it
+ * is the difference between a vague message and a wrong one.
+ */
+function permissionDeniedMessageFor(platform: string): string {
+  if (platform === "darwin") {
+    return "ADE needs Screen Recording permission to capture a window. Grant it in System Settings › Privacy & Security › Screen Recording, then restart ADE.";
+  }
+  if (platform === "win32") {
+    return "Windows refused the keyboard hook the gesture needs. This is usually endpoint security or a group policy; ADE cannot grant it for you.";
+  }
+  return "This system refused the permission the capture gesture needs.";
+}
+
 export function captureFailureFor(
   output: Extract<
     CaptureHelperOutput,
     { type: "permission-denied" | "no-window" | "capture-failed" }
   >,
   source: CaptureGestureSource,
+  platform: string = process.platform,
 ): CaptureGestureFailure {
   if (output.type === "permission-denied") {
+    // The two platforms deny for different reasons and have different
+    // remedies. Windows has no Screen Recording pane, so sending a Windows
+    // user there is worse than saying nothing.
     return {
       reason: "permission-denied",
       source,
-      message:
-        "ADE needs Screen Recording permission to capture a window. Grant it in System Settings › Privacy & Security › Screen Recording, then restart ADE.",
+      message: permissionDeniedMessageFor(platform),
     };
   }
   if (output.type === "no-window") {
@@ -215,7 +251,7 @@ export function captureFailureFor(
 }
 
 export type CaptureHealthInput = {
-  platform: NodeJS.Platform | string;
+  platform: NodeJS.Platform;
   enabled: boolean;
   executableExists: boolean;
   running: boolean;
@@ -231,11 +267,11 @@ export type CaptureHealthInput = {
  * showing the disabled state there tells the user to do something impossible.
  */
 export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureHealth {
-  if (!isCaptureGestureSupported(String(input.platform))) {
+  if (!isCaptureGestureSupported(input.platform)) {
     return {
       state: "unsupported",
       title: "Screen capture gesture isn’t available here",
-      message: captureGestureUnavailableReason(String(input.platform))
+      message: captureGestureUnavailableReason(input.platform)
         ?? "This platform has no capture helper.",
       recovery: null,
     };
@@ -244,9 +280,7 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "disabled",
       title: "Capture gesture is off",
-      message: input.platform === "darwin"
-        ? "Turn it on to grab the window in front with both ⌘ keys."
-        : "Turn it on to grab the window in front with both Ctrl keys.",
+      message: `Turn it on to grab the window in front with ${captureGestureChordLabel(input.platform)}.`,
       recovery: null,
     };
   }
@@ -272,9 +306,7 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "running",
       title: "Capture gesture is active",
-      message: input.platform === "darwin"
-        ? "Press both ⌘ keys anywhere to send the window in front to the CTO."
-        : "Press both Ctrl keys anywhere to send the window in front to the CTO.",
+      message: `Press ${captureGestureChordLabel(input.platform)} anywhere to send the window in front to the CTO.`,
       recovery: null,
     };
   }

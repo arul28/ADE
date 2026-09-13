@@ -43,6 +43,47 @@ export type CtoVoicePhase =
   | "ended"
   | "failed";
 
+/**
+ * The two questions every surface asks about a call, answered once.
+ *
+ * They are NOT the same question, which is why three files had drifted into
+ * three answers. "Is a call running" decides whether a capture is spoken about
+ * or filed, and whether Talk is disabled. "Should the HUD be on screen" is a
+ * looser set, because a failed call still has something to say.
+ *
+ * Both exclude terminal phases by name rather than listing the live ones, so a
+ * phase added later defaults to live instead of silently disappearing.
+ */
+export function isVoiceCallLive(phase: CtoVoicePhase | string | null | undefined): boolean {
+  return phase !== "idle" && phase !== "ended" && phase !== "failed" && Boolean(phase);
+}
+
+export function isVoiceCallVisible(phase: CtoVoicePhase | string | null | undefined): boolean {
+  // Built on the predicate above rather than restating its exclusions, so a
+  // terminal phase added later has one place to be added, not two.
+  return isVoiceCallLive(phase) || phase === "failed";
+}
+
+export const CTO_VOICE_CAPTURE_EVENT = "ade:cto-voice:attach-capture";
+
+/**
+ * What the renderer may ask of a running call. Declared here rather than in a
+ * component so the voice surface and the capture surface cannot drift into two
+ * shapes of `attachImage`.
+ */
+export type CtoVoiceBridge = {
+  start: () => Promise<{ ok: boolean; error?: string }>;
+  end: () => Promise<void>;
+  pushAudio: (audio: string, level: number) => void;
+  setMuted: (muted: boolean) => Promise<void>;
+  approve: (id: string) => Promise<void>;
+  deny: (id: string) => Promise<void>;
+  attachImage: (args: { pngBase64: string; note: string }) => Promise<void>;
+  hasKey: () => Promise<boolean>;
+  onState: (handler: (state: CtoVoiceStatePayload) => void) => () => void;
+  onAudio: (handler: (base64: string) => void) => () => void;
+};
+
 export type CtoVoiceCaption = {
   role: "user" | "assistant";
   text: string;
@@ -111,6 +152,20 @@ export type CtoVoiceState = {
   sceneSource: string | null;
   error: string | null;
 };
+
+/**
+ * The call state as one window receives it.
+ *
+ * `isCallOwner` is not part of `CtoVoiceState` because the service does not
+ * know it and must not appear to: which window is holding the microphone is
+ * decided by the main process, per window, at send time.
+ *
+ * Every window shows the pill, so a call stays visible wherever the user is
+ * working. Only one may own the microphone and the speaker — ADE can have
+ * several windows open and they all mount the HUD, so without this each of them
+ * opened its own microphone and pushed a second PCM stream into one socket.
+ */
+export type CtoVoiceStatePayload = CtoVoiceState & { isCallOwner: boolean };
 
 export const CTO_VOICE_INITIAL_STATE: CtoVoiceState = {
   callId: null,

@@ -2259,8 +2259,21 @@ declare global {
           since?: string;
         }) => Promise<unknown>;
       };
-      /** Agent-authored scenes. Local-only; see `shared/chatScene.ts`. */
-      scene: {
+      /**
+       * CTO voice call. Absent on a build without the main-process half, which
+       * is how `voiceAvailable()` decides whether to offer the feature.
+       *
+       * The shape is NOT restated here. `CtoVoiceBridge` exists so the voice
+       * surface and the capture surface cannot drift into two shapes of
+       * `attachImage`, and a second copy of it in this file had already drifted
+       * — `onAudio` was required here and optional there.
+       */
+      ctoVoice?: import("../shared/types/ctoVoice").CtoVoiceBridge;
+      /**
+       * Agent-authored scenes. Local-only; see `shared/chatScene.ts`.
+       * Absent on a host without the scene protocol; SceneFrame falls back.
+       */
+      scene?: {
         /** Store a scene document; resolves an `ade-scene://view/<id>` URL. */
         prepare: (html: string) => Promise<string>;
         /** PNG data URL of the frame's rect, or null when it cannot be captured. */
@@ -2274,6 +2287,8 @@ declare global {
         attachProof: (args: {
           dataUrl?: string | null;
           title: string;
+          /** The chat that drew the scene; proof is chat-scoped. */
+          sessionId?: string | null;
         }) => Promise<boolean>;
       };
       computerUse: {

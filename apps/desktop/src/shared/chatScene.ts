@@ -317,7 +317,27 @@ export type SceneDocumentArgs = {
   title?: string | null;
   theme?: SceneTheme;
   data?: unknown;
+  /**
+   * Transcript-row key. It lands on `<body>` so two byte-identical scenes at
+   * different positions produce different documents — without it the host's
+   * memo yields the same string and both rows share one frame.
+   */
+  scopeKey?: string | null;
 };
+
+/**
+ * The scope key, made safe for an HTML attribute without losing identity.
+ *
+ * A plain strip of everything outside `[A-Za-z0-9_:-]` was lossy: two transcript
+ * keys differing only in stripped characters produced the same attribute, the
+ * same document, and therefore the same memoized frame — the exact bug the key
+ * exists to prevent. Percent-encoding is reversible, so every key stays
+ * distinct, and its output is already limited to the unreserved set plus `%` —
+ * none of which can close an attribute or open a tag.
+ */
+function sceneScopeAttribute(scopeKey: string): string {
+  return encodeURIComponent(scopeKey);
+}
 
 /**
  * Assemble the document served to the frame. The CSP meta is the FIRST element
@@ -342,7 +362,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     `window.__ADE_SCENE_THEME__ = ${escapeForScript(theme)};`,
     "</script>",
     `<script>${sdkSource()}</script>`,
-    "</head><body>",
+    `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
     args.html,
     "</body></html>",
   ].join("\n");

@@ -1,12 +1,11 @@
 /* @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
+import { encodeUtf8Base64 } from "../../lib/base64";
 import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
 import {
   describeShot,
-  encodeUtf8Base64,
-  isVoiceCallLive,
+  isCallJoinable,
   planCaptureAttachments,
-  resolveCaptureDeliveryTarget,
 } from "./captureGestureDelivery";
 
 function shot(overrides: Partial<CaptureGestureShot> = {}): CaptureGestureShot {
@@ -23,45 +22,32 @@ function shot(overrides: Partial<CaptureGestureShot> = {}): CaptureGestureShot {
   };
 }
 
-describe("isVoiceCallLive", () => {
+describe("isCallJoinable", () => {
   it("is false for a call that has not started or has finished", () => {
-    expect(isVoiceCallLive(null)).toBe(false);
-    expect(isVoiceCallLive({ phase: "idle", callId: null })).toBe(false);
+    expect(isCallJoinable(null)).toBe(false);
+    expect(isCallJoinable({ phase: "idle", callId: null })).toBe(false);
     // `callId` survives into ended/failed, which is exactly why the phase has
     // to be consulted: keying off the id alone routes captures into a call the
     // user already hung up.
-    expect(isVoiceCallLive({ phase: "ended", callId: "call-1" })).toBe(false);
-    expect(isVoiceCallLive({ phase: "failed", callId: "call-1" })).toBe(false);
+    expect(isCallJoinable({ phase: "ended", callId: "call-1" })).toBe(false);
+    expect(isCallJoinable({ phase: "failed", callId: "call-1" })).toBe(false);
   });
 
   it("is true for every on-air phase", () => {
     for (const phase of ["connecting", "listening", "thinking", "speaking", "confirming"]) {
-      expect(isVoiceCallLive({ phase, callId: "call-1" })).toBe(true);
+      expect(isCallJoinable({ phase, callId: "call-1" })).toBe(true);
     }
   });
 
   it("treats a phase this build has never heard of as live", () => {
     // Failing open here means a capture reaches a call; failing closed would
     // silently file it in a composer nobody is looking at mid-conversation.
-    expect(isVoiceCallLive({ phase: "transferring", callId: "call-1" })).toBe(true);
+    expect(isCallJoinable({ phase: "transferring", callId: "call-1" })).toBe(true);
   });
 
   it("needs a call id, not just a phase", () => {
-    expect(isVoiceCallLive({ phase: "listening", callId: null })).toBe(false);
-    expect(isVoiceCallLive({ phase: "listening" })).toBe(false);
-  });
-});
-
-describe("resolveCaptureDeliveryTarget", () => {
-  it("routes to the call only when a bridge exists and a call is live", () => {
-    expect(resolveCaptureDeliveryTarget({ voiceBridgePresent: true, voiceCallLive: true }))
-      .toEqual({ kind: "voice-call" });
-    expect(resolveCaptureDeliveryTarget({ voiceBridgePresent: true, voiceCallLive: false }))
-      .toEqual({ kind: "composer" });
-    // No bridge at all (web client, browser preview): the composer, never a
-    // call that cannot exist.
-    expect(resolveCaptureDeliveryTarget({ voiceBridgePresent: false, voiceCallLive: true }))
-      .toEqual({ kind: "composer" });
+    expect(isCallJoinable({ phase: "listening", callId: null })).toBe(false);
+    expect(isCallJoinable({ phase: "listening" })).toBe(false);
   });
 });
 

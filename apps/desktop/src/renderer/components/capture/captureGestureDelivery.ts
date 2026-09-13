@@ -1,4 +1,5 @@
 import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
+import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 
 /**
  * Where a capture goes once it reaches the renderer, and how it gets there.
@@ -9,37 +10,19 @@ import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
  */
 
 /**
- * A CTO voice call that is *actually* on air.
+ * A call a capture can actually be dropped into.
  *
- * `phase` is the only honest signal: `callId` is set during `connecting` and
- * survives into `ended`, so keying off it would route a capture into a call
- * that has hung up. The three terminal/absent phases are excluded by name so a
- * phase added later defaults to "live" rather than silently dropping captures.
+ * The phase list itself lives in `shared/types/ctoVoice` and is not repeated
+ * here — a second copy of it was exactly the drift that helper was written to
+ * end. What this adds is the identifier: a call with no id is one the main
+ * process cannot address, whatever its phase says.
  */
-export function isVoiceCallLive(
+export function isCallJoinable(
   state: { phase?: unknown; callId?: unknown } | null | undefined,
 ): boolean {
-  const phase = typeof state?.phase === "string" ? state.phase : "idle";
-  if (phase === "idle" || phase === "ended" || phase === "failed") return false;
+  const phase = typeof state?.phase === "string" ? state.phase : null;
+  if (!isVoiceCallLive(phase)) return false;
   return typeof state?.callId === "string" && state.callId.length > 0;
-}
-
-export type CaptureDeliveryTarget =
-  /** A call is live: the shot is spoken about, not filed. */
-  | { kind: "voice-call" }
-  /** No call: stage attachments on the CTO composer. */
-  | { kind: "composer" };
-
-export function resolveCaptureDeliveryTarget(input: {
-  voiceBridgePresent: boolean;
-  voiceCallLive: boolean;
-}): CaptureDeliveryTarget {
-  // A live call requires the bridge, so the second condition is not redundant
-  // defence — it is what makes the browser preview (no bridge at all) resolve
-  // to the composer instead of asking a bridge that does not exist.
-  return input.voiceBridgePresent && input.voiceCallLive
-    ? { kind: "voice-call" }
-    : { kind: "composer" };
 }
 
 export type CaptureAttachmentPlan = {
@@ -90,10 +73,3 @@ export function describeShot(shot: CaptureGestureShot): string {
   return "Screenshot of the window in front";
 }
 
-/** UTF-8 safe base64 for the markdown note. `btoa` alone throws above U+00FF. */
-export function encodeUtf8Base64(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
