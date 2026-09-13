@@ -4,6 +4,8 @@ import { spawnSync } from "node:child_process";
 import type { SafeStorage } from "electron";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 
 // electron.safeStorage is only available inside an Electron main process.
 // When this module is bundled into the ADE CLI headless runtime, `electron`
@@ -504,6 +506,178 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
   missingMacosKeychainProviders = new Set<string>();
   missingCredentialProviders = new Set<string>();
   cursorKeyOrigin = null;
+  // A re-init can hand over a different credential store instance. The machine
+  // scope borrows whichever one is current, so its cached view is dropped here
+  // rather than left pointing at the previous project's wiring.
+  machineScopeState = null;
+}
+
+// ─── Machine-scoped keys ─────────────────────────────────────────────────────
+//
+// Some keys are not the project's. `initApiKeyStore` resolves through
+// `resolveAdeLayout(projectRoot)`, so the encrypted fallback lands in
+// `<project>/.ade/secrets` and a key pasted once stops existing the moment the
+// user opens a different repo. The CTO voice key pays for calls THIS MACHINE
+// makes; scoping it to a project would mean asking the same person for the same
+// secret in every repo they open.
+//
+// This is the same store, read in the same three tiers (credential store →
+// macOS Keychain → env var), with two differences: the encrypted fallback lives
+// in the machine ADE home (`~/.ade/secrets`, or `$ADE_HOME`), and the
+// per-project legacy migration — the one step that makes a key follow a
+// project — never runs. The credential store itself is already machine-wide
+// (main.ts builds it from `machineAdeLayout.secretsDir`), so the two scopes
+// share it deliberately: one provider key is one secret, whichever door it came
+// in by.
+
+type ApiKeyScopeState = {
+  storePath: string | null;
+  legacyStorePath: string | null;
+  projectRootPath: string | null;
+  credentialStore: ApiKeyCredentialStore | null;
+  cache: StoredKeys | null;
+  decryptionFailed: boolean;
+  macosKeychainError: string | null;
+  missingMacosKeychainProviders: Set<string>;
+  missingCredentialProviders: Set<string>;
+};
+
+let machineScopeState: ApiKeyScopeState | null = null;
+let machineScopeDepth = 0;
+
+function captureScopeState(): ApiKeyScopeState {
+  return {
+    storePath,
+    legacyStorePath,
+    projectRootPath,
+    credentialStore,
+    cache,
+    decryptionFailed,
+    macosKeychainError,
+    missingMacosKeychainProviders,
+    missingCredentialProviders,
+  };
+}
+
+function applyScopeState(next: ApiKeyScopeState): void {
+  storePath = next.storePath;
+  legacyStorePath = next.legacyStorePath;
+  projectRootPath = next.projectRootPath;
+  credentialStore = next.credentialStore;
+  cache = next.cache;
+  decryptionFailed = next.decryptionFailed;
+  macosKeychainError = next.macosKeychainError;
+  missingMacosKeychainProviders = next.missingMacosKeychainProviders;
+  missingCredentialProviders = next.missingCredentialProviders;
+}
+
+function createMachineScopeState(inherited: ApiKeyCredentialStore | null): ApiKeyScopeState {
+  const { secretsDir } = resolveMachineAdeLayout();
+  return {
+    storePath: path.join(secretsDir, "api-keys.v1.bin"),
+    legacyStorePath: path.join(secretsDir, "api-keys.json"),
+    // Deliberately null: `migrateLegacyProjectStoreIntoCredentialStore` is what
+    // pulls a project's `.ade/secrets` into the credential store, and a
+    // machine-scoped read must never touch a project directory.
+    projectRootPath: null,
+    credentialStore: inherited,
+    cache: null,
+    decryptionFailed: false,
+    macosKeychainError: null,
+    missingMacosKeychainProviders: new Set<string>(),
+    missingCredentialProviders: new Set<string>(),
+  };
+}
+
+/**
+ * Run `run` against the machine-scoped store.
+ *
+ * Everything the store does is synchronous — `fs.*Sync`, `spawnSync`,
+ * `store.getSync` — so swapping the module state for the duration of one call
+ * cannot interleave with a project-scoped call on the same tick.
+ */
+function withMachineScope<T>(run: () => T): T {
+  if (machineScopeDepth > 0) return run();
+  const projectScope = captureScopeState();
+  const machineScope = machineScopeState ?? createMachineScopeState(projectScope.credentialStore);
+  // Adopt whatever `initApiKeyStore` registered last. The credential store is
+  // machine-wide already, and holding a torn-down one here would silently drop
+  // a stored key down to the environment-variable tier.
+  machineScope.credentialStore = projectScope.credentialStore;
+  applyScopeState(machineScope);
+  machineScopeDepth += 1;
+  try {
+    return run();
+  } finally {
+    machineScopeDepth -= 1;
+    machineScopeState = captureScopeState();
+    applyScopeState(projectScope);
+  }
+}
+
+/**
+ * Both scopes read one credential store, so a write through either must not
+ * leave the other holding a cached "no key for this provider". Called before
+ * the mutation — nothing can observe the gap, since the store is synchronous.
+ */
+function invalidatePeerScopeCache(): void {
+  // A machine-scoped write clears the project scope from its own wrapper, once
+  // the project state is back in the module globals.
+  if (machineScopeDepth > 0) return;
+  machineScopeState = null;
+}
+
+function invalidateProjectScopeCache(): void {
+  cache = null;
+  missingCredentialProviders = new Set<string>();
+}
+
+export function storeMachineApiKey(provider: string, key: string): void {
+  withMachineScope(() => storeApiKey(provider, key));
+  invalidateProjectScopeCache();
+}
+
+export function getMachineApiKey(provider: string): string | null {
+  return withMachineScope(() => getApiKey(provider));
+}
+
+export function deleteMachineApiKey(provider: string): void {
+  withMachineScope(() => deleteApiKey(provider));
+  invalidateProjectScopeCache();
+}
+
+export function listMachineStoredProviders(): string[] {
+  return withMachineScope(() => listStoredProviders());
+}
+
+/**
+ * What the UI needs to render without ever seeing the secret: whether a key
+ * resolves, and whether it is one ADE can replace (`store`) or one the machine's
+ * environment owns (`env`, read-only here).
+ */
+export function getMachineApiKeyStatus(provider: string): MachineApiKeyStatus {
+  const normalizedProvider = normalizeProvider(provider);
+  const envVar = ENV_KEY_PROVIDERS[normalizedProvider] ?? null;
+  if (!normalizedProvider.length) {
+    return { provider: normalizedProvider, configured: false, source: null, envVar };
+  }
+  return withMachineScope(() => {
+    let resolved: string | null = null;
+    try {
+      resolved = getApiKey(normalizedProvider);
+    } catch {
+      // An unreadable store is "no key", not a crash in a settings render.
+      return { provider: normalizedProvider, configured: false, source: null, envVar };
+    }
+    if (!resolved) {
+      return { provider: normalizedProvider, configured: false, source: null, envVar };
+    }
+    // `getApiKey` promotes a credential-store or Keychain hit into the in-memory
+    // map before returning it; only an env-var hit is absent from it.
+    const fromStore = Boolean(ensureStore()[normalizedProvider]?.trim());
+    const source: MachineApiKeySource = fromStore ? "store" : "env";
+    return { provider: normalizedProvider, configured: true, source, envVar };
+  });
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
@@ -537,6 +711,7 @@ export function storeApiKey(provider: string, key: string): void {
   if (!normalizedProvider.length || !normalizedKey.length) {
     throw new Error("Provider and key are required.");
   }
+  invalidatePeerScopeCache();
   const store = ensureStore();
   if (credentialStore) {
     writeCredentialSecret(credentialProviderKey(normalizedProvider), normalizedKey);
@@ -599,6 +774,7 @@ export function getApiKey(provider: string): string | null {
 export function deleteApiKey(provider: string): void {
   const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return;
+  invalidatePeerScopeCache();
   const store = ensureStore();
   if (normalizedProvider === "cursor") cursorKeyOrigin = null;
   if (credentialStore) {

@@ -629,6 +629,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -905,6 +906,13 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
+import {
+  clampSceneCaptureRect,
+  decodeScenePngDataUrl,
+  sceneDocumentStore,
+  type SceneCaptureRect,
+} from "../scenes/sceneDocumentStore";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -1698,6 +1706,10 @@ export function registerIpc({
   builtInBrowserService,
   productAnalyticsService,
   autoDiagnosticsService,
+  updateCaptureGestureSettings,
+  getCaptureGestureHealth,
+  retryCaptureGesture,
+  captureGestureNow,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1758,6 +1770,18 @@ export function registerIpc({
    * tests and in runtime modes that never built one; every call site guards.
    */
   autoDiagnosticsService?: AutoDiagnosticsService;
+  /**
+   * The global capture gesture supervisor, absent in runtime modes that never
+   * built one (tests, the headless brain). Every handler below guards, and the
+   * `unsupported` health it falls back to is the same sentence a Linux desktop
+   * gets — "there is no helper here" is true in both cases.
+   */
+  updateCaptureGestureSettings?: (
+    settings: import("../../../shared/types/captureGesture").CaptureGestureSettings,
+  ) => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  getCaptureGestureHealth?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  captureGestureNow?: () => boolean;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -3283,6 +3307,31 @@ export function registerIpc({
     app.setBadgeCount(normalized);
     return { ok: true } as const;
   });
+
+  const UNAVAILABLE_CAPTURE_GESTURE_HEALTH = {
+    state: "unsupported",
+    title: "Screen capture gesture isn’t available here",
+    message: "This ADE build does not include the native capture helper.",
+    recovery: null,
+  } as const;
+
+  ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
+    const enabled = typeof input === "object" && input !== null
+      && (input as { enabled?: unknown }).enabled === true;
+    return updateCaptureGestureSettings?.({ enabled })
+      ?? getCaptureGestureHealth?.()
+      ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
+  });
+
+  ipcMain.handle(IPC.captureGestureGetHealth, async () =>
+    getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureRetry, async () =>
+    retryCaptureGesture?.() ?? getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureCaptureNow, async () => ({
+    started: captureGestureNow?.() ?? false,
+  }));
 
   ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot(input);
@@ -5073,6 +5122,55 @@ export function registerIpc({
     const { listStoredProviders } = await import("../ai/apiKeyStore");
     return listStoredProviders();
   });
+
+  // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
+  // machine's install rather than to the bound project's runtime, so they are
+  // deliberately not routed through a project runtime action. Nothing here ever
+  // returns, logs, or echoes the key itself — only whether one resolves and
+  // where from.
+  ipcMain.handle(
+    IPC.aiGetMachineApiKeyStatus,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiStoreMachineApiKey,
+    async (_event, arg: { provider: string; key: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus, storeMachineApiKey } = await import("../ai/apiKeyStore");
+      storeMachineApiKey(arg.provider, arg.key);
+      try {
+        // The key store mutation already succeeded; invalidation is a freshness
+        // step so a saved key should not fail because a runtime cache is gone.
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiDeleteMachineApiKey,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { deleteMachineApiKey, getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      deleteMachineApiKey(arg.provider);
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
 
   ipcMain.handle(
     IPC.aiVerifyApiKey,
@@ -8779,6 +8877,104 @@ export function registerIpc({
     return ctx.computerUseArtifactBrokerService.readArtifactPreview(arg);
   });
 
+  // ── Scenes ─────────────────────────────────────────────────────────────────
+  // Agent-authored HTML, rendered in a sandboxed frame. See
+  // `shared/chatScene.ts` for why a scene never runs in ADE's own renderer.
+
+  // Scene work is best-effort by contract, so a failure is logged and swallowed
+  // — and the logging itself must not be what throws: these channels can be
+  // reached while the window has no project context to read a logger from.
+  const logSceneFailure = (event: string, error: unknown): void => {
+    try {
+      getCtx().logger.warn(event, { err: getErrorMessage(error) });
+    } catch {
+      // No context, no log. The caller still gets its honest false/null.
+    }
+  };
+
+  /**
+   * Store a scene document and hand back the URL the frame loads it from.
+   *
+   * Nothing is written to disk and nothing in the URL is a path — the id is a
+   * key into an in-memory map that the `ade-scene:` handler reads.
+   */
+  ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
+    const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
+    if (!html.length) throw new Error("A scene document is required.");
+    return sceneDocumentStore.put(html).url;
+  });
+
+  /**
+   * Freeze a drawn scene to a PNG so scrollback shows a picture instead of a
+   * frame that keeps executing.
+   *
+   * Captures the window that asked, not the focused one: by the time a long
+   * transcript settles, focus may have moved on. A window that is hidden or
+   * minimized captures empty (the known WebContentsView gotcha), so it answers
+   * null rather than filing a blank image.
+   */
+  ipcMain.handle(
+    IPC.sceneSnapshot,
+    async (event, arg: SceneCaptureRect | null): Promise<string | null> => {
+      try {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return null;
+        const [contentWidth, contentHeight] = win.getContentSize();
+        const rect = clampSceneCaptureRect(arg, { width: contentWidth, height: contentHeight });
+        if (!rect) return null;
+        // Capture the webContents that measured the rect, not the window: the
+        // renderer's `getBoundingClientRect()` is in its own client space.
+        const image = await event.sender.capturePage(rect);
+        if (image.isEmpty()) return null;
+        return image.toDataURL();
+      } catch (error) {
+        logSceneFailure("scene.snapshot_failed", error);
+        return null;
+      }
+    },
+  );
+
+  /**
+   * File a scene snapshot into the proof drawer.
+   *
+   * Reuses the computer-use artifact path rather than writing a second artifact
+   * store: the bytes land in `.ade/artifacts/computer-use/` via
+   * `createComputerUseArtifactPath` and the drawer record comes from the same
+   * broker `ingest` every other proof goes through. Answers false — never
+   * throws — when there is no project, no broker, or no snapshot to file, so a
+   * button press on a scene that was never captured is a no-op, not an error.
+   */
+  ipcMain.handle(
+    IPC.sceneAttachProof,
+    async (_event, arg: { dataUrl?: string | null; title?: string | null }): Promise<boolean> => {
+      try {
+        const ctx = getCtx();
+        const broker = ctx.computerUseArtifactBrokerService;
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!broker || !projectRoot) return false;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return false;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
+        fs.writeFileSync(artifactPath, bytes);
+        broker.ingest({
+          backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+          inputs: [{
+            kind: "screenshot",
+            title: title.slice(0, 200),
+            path: artifactPath,
+            mimeType: "image/png",
+            description: "Snapshot of an agent-authored scene.",
+          }],
+        });
+        return true;
+      } catch (error) {
+        logSceneFailure("scene.attach_proof_failed", error);
+        return false;
+      }
+    },
+  );
+
   ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
 
   ipcMain.handle(IPC.iosSimulatorListDevices, async () => ensureIosSimulator().listDevices());
@@ -11827,18 +12023,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.completeOnboardingStep(arg.stepId);
-  });
-
-  ipcMain.handle(IPC.ctoDismissOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.dismissOnboarding();
-  });
-
-  ipcMain.handle(IPC.ctoResetOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.resetOnboarding();
   });
 
   ipcMain.handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {

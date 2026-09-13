@@ -2,9 +2,9 @@ import SwiftUI
 import UIKit
 
 /// Top-level CTO tab. The tab body IS the CTO chat: one always-on agent thread
-/// embedded inline. A gear in the top bar opens settings as a sheet. When the
-/// CTO hasn't been set up yet, a first-run setup card takes over the tab until
-/// onboarding completes.
+/// embedded inline. A gear in the top bar opens settings as a sheet. Until a
+/// model that can steer a live turn has been picked, a picker card takes the
+/// thread's place.
 struct CtoRootScreen: View {
   @EnvironmentObject private var syncService: SyncService
   var isTabActive = true
@@ -55,25 +55,23 @@ struct CtoRootScreen: View {
 
   private var topBar: some View {
     ADERootTopBar(title: topBarTitle) {
-      if isOnboarded {
-        Button {
-          showingSettings = true
-        } label: {
-          Image(systemName: "gearshape")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 32, height: 32)
-            .background(ADEColor.surfaceBackground.opacity(0.6), in: Circle())
-            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("CTO settings")
+      Button {
+        showingSettings = true
+      } label: {
+        Image(systemName: "gearshape")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 32, height: 32)
+          .background(ADEColor.surfaceBackground.opacity(0.6), in: Circle())
+          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.5))
       }
+      .buttonStyle(.plain)
+      .accessibilityLabel("CTO settings")
     }
   }
 
   private var topBarTitle: String {
-    guard isOnboarded, let name = snapshot?.identity.name, !name.isEmpty else { return "CTO" }
+    guard let name = snapshot?.identity.name, !name.isEmpty else { return "CTO" }
     return name
   }
 
@@ -86,13 +84,6 @@ struct CtoRootScreen: View {
       loadError: snapshotLoadError,
       hostUnreachable: syncService.connectionState.isHostUnreachable
     ) {
-    case .onboarding:
-      if let snapshot {
-        CtoOnboardingScreen(snapshot: snapshot) { updated in
-          self.snapshot = updated
-        }
-        .environmentObject(syncService)
-      }
     case .modelPick:
       // No model the CTO can steer live has been picked yet. The picker takes
       // the thread's place — and `CtoSessionDestinationView` is deliberately
@@ -274,12 +265,6 @@ struct CtoRootScreen: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
-  private var isOnboarded: Bool {
-    // Dismissed-but-not-completed setup still unlocks the tab (desktop parity).
-    guard let identity = snapshot?.identity else { return false }
-    return !identity.isOnboardingBlocking
-  }
-
   // MARK: - Loading
 
   @MainActor
@@ -320,14 +305,13 @@ struct CtoRootScreen: View {
 enum CtoRootContent: Equatable {
   case loading
   case loadError(String)
-  case onboarding
   case modelPick
   case thread
 }
 
-/// Mirrors desktop `CtoPage`: setup first, then the model picker, then the
-/// thread. A load failure is only surfaced while the host is reachable — the
-/// offline case is owned by the top bar's connection dot.
+/// Mirrors desktop `CtoPage`: the model picker first, then the thread. A load
+/// failure is only surfaced while the host is reachable — the offline case is
+/// owned by the top bar's connection dot.
 func ctoRootContent(
   identity: CtoIdentity?,
   loadError: String?,
@@ -337,7 +321,6 @@ func ctoRootContent(
     if let loadError, !hostUnreachable { return .loadError(loadError) }
     return .loading
   }
-  if identity.isOnboardingBlocking { return .onboarding }
   if identity.needsModelPick { return .modelPick }
   return .thread
 }

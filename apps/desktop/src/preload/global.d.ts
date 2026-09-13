@@ -265,6 +265,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -1206,6 +1207,17 @@ declare global {
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
+        /**
+         * Machine-scoped keys: stored in this machine's ADE home, not the open
+         * project, so a key pasted once is still there in the next repo. Each
+         * returns the resulting status — never the key.
+         *
+         * Optional: shipped after this group did, so an older preload will not
+         * have it and callers must guard before reaching for it.
+         */
+        getMachineApiKeyStatus?: (provider: string) => Promise<MachineApiKeyStatus>;
+        storeMachineApiKey?: (provider: string, key: string) => Promise<MachineApiKeyStatus>;
+        deleteMachineApiKey?: (provider: string) => Promise<MachineApiKeyStatus>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
         /**
@@ -1509,6 +1521,37 @@ declare global {
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
+      };
+      /**
+       * The global capture gesture. Optional on the whole namespace, like
+       * `cto`: the hosted web client has no main process to run a native helper
+       * in, so every call site must optional-chain through it rather than
+       * assume a desktop bridge.
+       */
+      captureGesture?: {
+        updateSettings: (
+          settings: import("../shared/types/captureGesture").CaptureGestureSettings,
+        ) => Promise<import("../shared/types/captureGesture").CaptureGestureHealth>;
+        getHealth: () => Promise<
+          import("../shared/types/captureGesture").CaptureGestureHealth
+        >;
+        retry: () => Promise<
+          import("../shared/types/captureGesture").CaptureGestureHealth
+        >;
+        /**
+         * Take a shot now, without a chord. `started: false` means the request
+         * was refused (gesture off, helper not up, capture already running) and
+         * a `onFailure` event carries the reason.
+         */
+        captureNow: () => Promise<{ started: boolean }>;
+        onShot: (
+          cb: (shot: import("../shared/types/captureGesture").CaptureGestureShot) => void,
+        ) => () => void;
+        onFailure: (
+          cb: (
+            failure: import("../shared/types/captureGesture").CaptureGestureFailure,
+          ) => void,
+        ) => () => void;
       };
       attentionNotch: {
         publishSnapshot: (
@@ -2215,6 +2258,23 @@ declare global {
           limit?: number;
           since?: string;
         }) => Promise<unknown>;
+      };
+      /** Agent-authored scenes. Local-only; see `shared/chatScene.ts`. */
+      scene: {
+        /** Store a scene document; resolves an `ade-scene://view/<id>` URL. */
+        prepare: (html: string) => Promise<string>;
+        /** PNG data URL of the frame's rect, or null when it cannot be captured. */
+        snapshot: (rect: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        }) => Promise<string | null>;
+        /** File a snapshot in the proof drawer. False when there was nothing to file. */
+        attachProof: (args: {
+          dataUrl?: string | null;
+          title: string;
+        }) => Promise<boolean>;
       };
       computerUse: {
         listArtifacts: (
@@ -3591,8 +3651,6 @@ declare global {
         completeOnboardingStep: (args: {
           stepId: string;
         }) => Promise<CtoOnboardingState>;
-        dismissOnboarding: () => Promise<CtoOnboardingState>;
-        resetOnboarding: () => Promise<CtoOnboardingState>;
         previewSystemPrompt: (args?: {
           identityOverride?: Record<string, unknown>;
         }) => Promise<CtoSystemPromptPreview>;

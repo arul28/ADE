@@ -6,7 +6,7 @@ import { cardCls, recessedPanelCls } from "./shared/designTokens";
 export function CtoPromptPreview({
   identityOverride,
   title = "Effective CTO prompt",
-  subtitle = "ADE owns the doctrine. Personality is layered on top. Project continuity comes from current context, not from this immutable prompt.",
+  subtitle = "ADE owns the doctrine. Project continuity comes from current context, not from this immutable prompt.",
   compact = false,
 }: {
   identityOverride?: Partial<CtoIdentity>;

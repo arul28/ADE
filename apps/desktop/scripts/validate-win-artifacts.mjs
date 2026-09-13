@@ -254,9 +254,27 @@ function validatePreflight() {
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
   requireFile("scripts/windows-firewall-rules.ps1", "Windows firewall rule script");
   requireFile("build/installer.nsh", "Windows NSIS customization");
+  // The capture helper is compiled on the release box by
+  // `scripts/build-capture-helper-win.mjs`, so preflight can only assert the
+  // SOURCE is present - the .exe does not exist yet at this point in dist:win.
+  // The release-mode check below asserts the built binary actually shipped.
+  requireFile("native/ADECaptureHelperWin/src/main.cpp", "Windows capture helper source");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
+  // A top-level `extraResources` entry, not a `win.extraResources` one: the same
+  // directory carries the macOS helper, and splitting it per platform is how one
+  // of the two silently stops shipping.
+  const captureHelperResource = (Array.isArray(pkg.build?.extraResources) ? pkg.build.extraResources : [])
+    .find((entry) => entry?.to === "native");
+  if (!captureHelperResource
+    || !Array.isArray(captureHelperResource.filter)
+    || !captureHelperResource.filter.includes("ade-capture-helper.exe")) {
+    fail(
+      "package.json build.extraResources must ship resources/native -> native including ade-capture-helper.exe; "
+      + "without it the Windows package has no capture gesture.",
+    );
+  }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
   }
@@ -613,6 +631,7 @@ async function validatePackagedRuntime(appDir) {
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
+  const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -631,6 +650,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
+  await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
     console.warn(

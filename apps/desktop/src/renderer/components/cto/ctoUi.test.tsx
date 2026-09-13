@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
-import { CtoOnboardingCard } from "./CtoOnboardingCard";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
@@ -66,8 +65,6 @@ const IDENTITY = {
   version: 2,
   name: "CTO",
   persona: "Senior CTO",
-  personality: "strategic",
-  customPersonality: null,
   modelPreferences: {
     provider: "anthropic",
     model: "claude-sonnet-5",
@@ -111,11 +108,6 @@ describe("CtoPage settings", () => {
       agentChat: { ...((originalAde as { agentChat?: object })?.agentChat ?? {}), updateSession },
       cto: {
         getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
-        getOnboardingState: vi.fn().mockResolvedValue({
-          completedAt: "2026-05-01T00:00:00.000Z",
-          completedSteps: ["identity"],
-          dismissedAt: null,
-        }),
         ensureSession,
         updateIdentity: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
       },
@@ -147,7 +139,10 @@ describe("CtoPage settings", () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
 
     const card = await screen.findByTestId("cto-model-pick");
-    expect(card.textContent).toContain("Pick a model that can steer live turns");
+    // The welcome screen is the CTO speaking, not a settings form: it introduces
+    // itself and the picker is the reply affordance.
+    expect(card.textContent).toContain("I run point on this project");
+    expect(card.textContent).toContain("steer live turns");
     expect(screen.queryByTestId("cto-agent-chat-pane")).toBeNull();
     // The existing thread is never recreated to force a pick — ensureSession
     // simply does not run until there is a model it could run on.
@@ -164,11 +159,10 @@ describe("CtoPage settings", () => {
     expect(indicator.tagName).toBe("SPAN");
   });
 
-  it("keeps personality and model controls off the main chat header", async () => {
+  it("keeps model controls off the main chat header", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");
 
-    expect(screen.queryByText("Strategic")).toBeNull();
     expect(screen.queryByTestId("model-picker")).toBeNull();
   });
 
@@ -216,49 +210,6 @@ describe("CtoPage settings", () => {
       sessionId: "cto-session",
       fastMode: false,
     }));
-  });
-});
-
-describe("CtoOnboardingCard", () => {
-  const originalAde = globalThis.window.ade;
-  const updateIdentity = vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] });
-  const completeOnboardingStep = vi.fn().mockResolvedValue(undefined);
-
-  beforeEach(() => {
-    updateIdentity.mockClear();
-    completeOnboardingStep.mockClear();
-    globalThis.window.ade = {
-      ...(originalAde ?? {}),
-      cto: {
-        getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
-        updateIdentity,
-        completeOnboardingStep,
-      },
-    } as never;
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-    globalThis.window.ade = originalAde;
-  });
-
-  it("saves identity + completes the step when the user starts", async () => {
-    const onComplete = vi.fn();
-    render(<CtoOnboardingCard onComplete={onComplete} onSkip={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
-    await waitFor(() => expect(completeOnboardingStep).toHaveBeenCalledWith({ stepId: "identity" }));
-    expect(updateIdentity).toHaveBeenCalledTimes(1);
-    const patch = updateIdentity.mock.calls[0][0].patch;
-    expect(patch.personality).toBe("strategic");
-    expect(patch.communicationStyle).toEqual({
-      verbosity: "adaptive",
-      proactivity: "balanced",
-      escalationThreshold: "medium",
-    });
-    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
   });
 });
 

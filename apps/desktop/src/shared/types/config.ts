@@ -1128,6 +1128,28 @@ export type AcpProviderDiagnostics = {
   checkedAt: string;
 };
 
+/**
+ * Where a machine-scoped API key was resolved from.
+ *
+ * Only `store` is ADE's to replace or delete — an `env` key belongs to the
+ * machine's environment and the UI must present it read-only.
+ */
+export type MachineApiKeySource = "store" | "env";
+
+/**
+ * What a settings surface needs to render a machine-scoped key without ever
+ * receiving the secret itself.
+ */
+export type MachineApiKeyStatus = {
+  provider: string;
+  /** Whether ADE can resolve a key at all, from any tier. */
+  configured: boolean;
+  /** Where the resolved key came from, or null when there is none. */
+  source: MachineApiKeySource | null;
+  /** The environment variable checked as the last tier, so the UI can name it. */
+  envVar: string | null;
+};
+
 export type AiApiKeyVerificationResult = {
   provider: string;
   ok: boolean;

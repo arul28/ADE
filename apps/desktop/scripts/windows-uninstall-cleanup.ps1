@@ -387,3 +387,20 @@ Restore-FileAssociationDefaults $normalizedPackageChannel
 if (-not $SkipProtocolRemoval -and $normalizedPackageChannel -eq "stable" -and -not [string]::IsNullOrWhiteSpace($AppExecutableName)) {
   Remove-OwnedStableProtocolRegistration (Join-Path $resolvedInstallDir $AppExecutableName)
 }
+
+# The capture helper registers NOTHING that survives it: its WH_KEYBOARD_LL hook
+# dies with the process, and it writes no registry keys, no services and no
+# startup entries. The one thing it can leave behind is a directory of PNGs in
+# %TEMP%, when ADE was killed between a capture and the main process's own purge.
+# Removed by exact name, never by wildcard, and only when every remaining entry
+# is one of our own `capture-*.png` files.
+$captureTempDir = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { $null } else { Join-Path $env:TEMP "ade-capture" }
+if (-not [string]::IsNullOrWhiteSpace($captureTempDir) -and (Test-Path -LiteralPath $captureTempDir -PathType Container)) {
+  $strayEntries = @(Get-ChildItem -LiteralPath $captureTempDir -Force -ErrorAction SilentlyContinue)
+  $foreignEntries = @($strayEntries | Where-Object { $_.PSIsContainer -or $_.Name -notlike "capture-*.png" })
+  if ($foreignEntries.Count -eq 0) {
+    Remove-Item -LiteralPath $captureTempDir -Recurse -Force -ErrorAction SilentlyContinue
+  } else {
+    Write-Warning "Leaving $captureTempDir in place; it holds files ADE did not create."
+  }
+}

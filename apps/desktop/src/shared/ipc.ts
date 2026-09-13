@@ -59,6 +59,12 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
+  captureGestureGetHealth: "ade.captureGesture.getHealth",
+  captureGestureRetry: "ade.captureGesture.retry",
+  captureGestureCaptureNow: "ade.captureGesture.captureNow",
+  captureGestureShot: "ade.captureGesture.shot",
+  captureGestureFailed: "ade.captureGesture.failed",
   attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
   attentionNotchPublishToast: "ade.attentionNotch.publishToast",
   attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
@@ -382,6 +388,12 @@ export const IPC = {
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
   agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
   agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
+  // Scenes — agent-authored HTML rendered in a sandboxed frame. `prepare` mints
+  // an ade-scene:// URL, `snapshot` freezes the drawn frame, `attachProof`
+  // files that snapshot into the proof drawer.
+  scenePrepare: "ade.scene.prepare",
+  sceneSnapshot: "ade.scene.snapshot",
+  sceneAttachProof: "ade.scene.attachProof",
   orchestrationRunCreate: "ade.orchestration.runCreate",
   orchestrationBundleRead: "ade.orchestration.bundleRead",
   orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",
@@ -702,6 +714,14 @@ export const IPC = {
   aiStoreApiKey: "ade.ai.storeApiKey",
   aiDeleteApiKey: "ade.ai.deleteApiKey",
   aiListApiKeys: "ade.ai.listApiKeys",
+  /**
+   * Machine-scoped API keys — the key follows this machine's ADE home, not the
+   * open project, so these deliberately do NOT route through the project
+   * runtime action the way the `ai` calls above do.
+   */
+  aiGetMachineApiKeyStatus: "ade.ai.getMachineApiKeyStatus",
+  aiStoreMachineApiKey: "ade.ai.storeMachineApiKey",
+  aiDeleteMachineApiKey: "ade.ai.deleteMachineApiKey",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   /**
@@ -989,8 +1009,6 @@ export const IPC = {
   ctoClearLinearToken: "ade.cto.clearLinearToken",
   ctoGetOnboardingState: "ade.cto.getOnboardingState",
   ctoCompleteOnboardingStep: "ade.cto.completeOnboardingStep",
-  ctoDismissOnboarding: "ade.cto.dismissOnboarding",
-  ctoResetOnboarding: "ade.cto.resetOnboarding",
   ctoPreviewSystemPrompt: "ade.cto.previewSystemPrompt",
   ctoGetLinearProjects: "ade.cto.getLinearProjects",
   ctoGetLinearQuickView: "ade.cto.getLinearQuickView",

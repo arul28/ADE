@@ -10,7 +10,6 @@ import type {
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
-import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import {
   getDefaultModelDescriptor,
   getModelById,
@@ -81,7 +80,6 @@ type PersistedDoc<T> = {
 };
 
 const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
-const CTO_REQUIRED_ONBOARDING_STEPS = ["identity"] as const;
 
 const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
@@ -135,6 +133,19 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
+  "",
+  "How you speak:",
+  "- Lead with the state of things, then your read on it, then what you would do. Full sentences, not headlines.",
+  "- Explain the reasoning before the recommendation when the reasoning is what makes it make sense. Skip it when the answer is obvious.",
+  "- Stay level. No exclamation marks, no 'great question', no 'I'd be happy to', no congratulating the user for asking.",
+  "- When you do not know, say so plainly, say what you would check, and then check it.",
+  "- Disagree when you disagree, once, with the reason. If the user decides otherwise, do it their way and drop it.",
+  "- Never say something is done until you have verified it.",
+  "",
+  "Helping with ADE itself:",
+  "- You know this application, not only this repository. When the user is lost in ADE — where a setting lives, what a tab does, why a control is disabled — treat it as a question about the product and answer it.",
+  "- Consult ADE's own documentation before guessing about ADE's behavior, the same way you would read the repo before guessing about the code.",
+  "- When an answer points at a place in ADE, give the user a deeplink to that place rather than describing how to navigate there.",
   "ADE CLI operating guidance:",
   ADE_CLI_INLINE_GUIDANCE,
 ].join("\n");
@@ -201,7 +212,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
   "  /files — File explorer for browsing and editing project files.",
   "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
-  "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
+  "  /cto — CTO page: your persistent chat thread plus settings (identity, model, memory, Linear connection).",
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
@@ -338,32 +349,6 @@ function normalizeOnboardingState(value: unknown): CtoOnboardingState | undefine
   };
 }
 
-function normalizePersonalityPreset(value: unknown): CtoIdentity["personality"] | undefined {
-  return value === "strategic"
-    || value === "professional"
-    || value === "hands_on"
-    || value === "casual"
-    || value === "minimal"
-    || value === "custom"
-    ? value
-    : undefined;
-}
-
-function hasCompletedRequiredOnboardingSteps(state: CtoOnboardingState | null | undefined): boolean {
-  const completedSteps = state?.completedSteps ?? [];
-  return CTO_REQUIRED_ONBOARDING_STEPS.every((stepId) => completedSteps.includes(stepId));
-}
-
-function resolvePersonalityOverlay(identity: CtoIdentity): string {
-  const presetId = identity.personality ?? "strategic";
-  if (presetId === "custom") {
-    const custom = identity.customPersonality?.trim() || identity.persona?.trim();
-    if (custom?.length) return custom;
-    return getCtoPersonalityPreset("custom").systemOverlay;
-  }
-  return getCtoPersonalityPreset(presetId).systemOverlay;
-}
-
 /**
  * The chat provider a stored preference would actually launch on. Resolved from
  * the model id where there is one, because a registry family is not a provider:
@@ -432,39 +417,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.modelPreferences && typeof source.modelPreferences === "object"
       ? (source.modelPreferences as Record<string, unknown>)
       : {};
-  const communicationStyleRaw =
-    source.communicationStyle && typeof source.communicationStyle === "object"
-      ? (source.communicationStyle as Record<string, unknown>)
-      : {};
   const onboardingState = normalizeOnboardingState(source.onboardingState);
-  const personality = normalizePersonalityPreset(source.personality);
-  const customPersonality =
-    typeof source.customPersonality === "string" && source.customPersonality.trim().length
-      ? source.customPersonality.trim()
-      : undefined;
-  const communicationStyle: CtoIdentity["communicationStyle"] =
-    typeof communicationStyleRaw.verbosity === "string"
-    && typeof communicationStyleRaw.proactivity === "string"
-    && typeof communicationStyleRaw.escalationThreshold === "string"
-      ? {
-          verbosity:
-            communicationStyleRaw.verbosity === "detailed"
-            || communicationStyleRaw.verbosity === "adaptive"
-              ? communicationStyleRaw.verbosity
-              : "concise",
-          proactivity:
-            communicationStyleRaw.proactivity === "balanced"
-            || communicationStyleRaw.proactivity === "proactive"
-              ? communicationStyleRaw.proactivity
-              : "reactive",
-          escalationThreshold:
-            communicationStyleRaw.escalationThreshold === "low"
-            || communicationStyleRaw.escalationThreshold === "high"
-              ? communicationStyleRaw.escalationThreshold
-              : "medium",
-        }
-      : undefined;
-  const constraints = uniqueStrings(asStringArray(source.constraints));
   const systemPromptExtension =
     typeof source.systemPromptExtension === "string" && source.systemPromptExtension.trim().length
       ? source.systemPromptExtension.trim()
@@ -474,10 +427,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     name,
     version,
     persona,
-    ...(personality ? { personality } : {}),
-    ...(customPersonality ? { customPersonality } : {}),
-    ...(communicationStyle ? { communicationStyle } : {}),
-    ...(constraints.length > 0 ? { constraints } : {}),
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
     ...(onboardingState ? { onboardingState } : {}),
@@ -721,7 +670,6 @@ function makeDefaultIdentity(): CtoIdentity {
     name: "CTO",
     version: 1,
     persona: "Persistent project CTO for this ADE workspace.",
-    personality: "strategic",
     modelPreferences: null,
     updatedAt: timestamp,
   };
@@ -1199,33 +1147,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return next;
   };
 
-  const maybeMarkOnboardingComplete = (state: CtoOnboardingState): CtoOnboardingState => {
-    if (hasCompletedRequiredOnboardingSteps(state) && !state.completedAt) {
-      return { ...state, completedAt: nowIso() };
-    }
-    return state;
-  };
-
   const completeOnboardingStep = (stepId: string): CtoOnboardingState => {
     const current = getOnboardingState();
-    if (current.completedSteps.includes(stepId)) {
-      const patched = maybeMarkOnboardingComplete(current);
-      if (patched !== current) return persistOnboardingState(patched);
-      return current;
-    }
-    const next = maybeMarkOnboardingComplete({
+    if (current.completedSteps.includes(stepId)) return current;
+    return persistOnboardingState({
       ...current,
       completedSteps: [...current.completedSteps, stepId],
     });
-    return persistOnboardingState(next);
-  };
-
-  const dismissOnboarding = (): CtoOnboardingState => {
-    return persistOnboardingState({ ...getOnboardingState(), dismissedAt: nowIso() });
-  };
-
-  const resetOnboarding = (): CtoOnboardingState => {
-    return persistOnboardingState({ completedSteps: [] });
   };
 
   /* ── Identity update (full patch) ── */
@@ -1265,11 +1193,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         id: "doctrine",
         title: "Immutable ADE doctrine",
         content: IMMUTABLE_CTO_DOCTRINE,
-      },
-      {
-        id: "personality",
-        title: "Selected personality overlay",
-        content: resolvePersonalityOverlay(identity),
       },
       {
         id: "continuity",
@@ -1320,8 +1243,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     getLiveStateSnapshot,
     getOnboardingState,
     completeOnboardingStep,
-    dismissOnboarding,
-    resetOnboarding,
     previewSystemPrompt,
     syncDerivedContextDoc,
   };

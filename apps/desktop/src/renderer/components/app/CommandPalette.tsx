@@ -94,7 +94,12 @@ import {
 import { requestWorkTool } from "../terminals/workToolRequests";
 import type { WorkToolContext } from "../terminals/workTools";
 import { fadeScale } from "../../lib/motion";
-import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
+import {
+  captureGestureChord,
+  isMacPlatform,
+  modifierKeyLabel,
+  supportsCaptureGesturePlatform,
+} from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
@@ -584,6 +589,23 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/work"),
       },
+      // Present only where a native helper exists. The palette must not offer
+      // a command that resolves to "not available here" - the settings card is
+      // where that sentence belongs.
+      ...(supportsCaptureGesturePlatform() && !isWebClientMode()
+        ? [
+            {
+              id: "capture-screen-for-cto",
+              title: "Ask the CTO about this screen",
+              hint: `Capture the window in front and attach it (${captureGestureChord()})`,
+              keywords: ["screenshot", "capture", "screen", "cto", "window", "image", "attach"],
+              group: "Navigation",
+              run: () => {
+                void window.ade?.captureGesture?.captureNow();
+              },
+            },
+          ]
+        : []),
       {
         id: "go-cto",
         title: "Go to CTO",

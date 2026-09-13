@@ -66,7 +66,17 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail
   // button that hands off to the system browser (WelcomeVideoGate.tsx), so
   // no external frame-src is needed.
-  const cspFrameSources = `${cspSources}${cspLocalSources} about:`;
+  // `ade-scene:` is framed and nothing else: a scene is agent-authored code, so
+  // it is only ever loaded into a sandboxed iframe with its own origin. It is
+  // deliberately absent from img-src/media-src/connect-src — there is no
+  // legitimate reason for ADE's own document to fetch one.
+  // `ade-scene:` serves generated views with their own policy and origin.
+  // `blob:` is SceneFrame's fallback when the scheme is unavailable; it is safe
+  // here because every scene frame carries `sandbox="allow-scripts"` without
+  // `allow-same-origin`, so a blob frame gets an opaque origin exactly like the
+  // custom scheme does. Without it a failed prepare renders a blank frame
+  // instead of degrading.
+  const cspFrameSources = `${cspSources}${cspLocalSources} ade-scene: blob: about:`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
     `default-src ${cspSources}`,

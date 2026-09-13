@@ -300,7 +300,7 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
-  it("preserves onboarding state and extended identity fields across reloads", async () => {
+  it("preserves onboarding state and the prompt extension across reloads", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -309,16 +309,9 @@ describe("ctoStateService", () => {
     });
 
     service.updateIdentity({
-      personality: "casual",
-      constraints: ["no force push", "write tests"],
       systemPromptExtension: "Stay calm under pressure.",
-      communicationStyle: {
-        verbosity: "adaptive",
-        proactivity: "balanced",
-        escalationThreshold: "low",
-      },
     });
-    service.completeOnboardingStep("identity");
+    service.completeOnboardingStep("intro");
 
     const reloaded = createCtoStateService({
       db: fixture.db,
@@ -326,21 +319,13 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    expect(reloaded.getOnboardingState().completedSteps).toEqual(["identity"]);
-    expect(reloaded.getOnboardingState().completedAt).toBeTruthy();
-    expect(reloaded.getIdentity().personality).toBe("casual");
-    expect(reloaded.getIdentity().constraints).toEqual(["no force push", "write tests"]);
+    expect(reloaded.getOnboardingState().completedSteps).toEqual(["intro"]);
     expect(reloaded.getIdentity().systemPromptExtension).toBe("Stay calm under pressure.");
-    expect(reloaded.getIdentity().communicationStyle).toEqual({
-      verbosity: "adaptive",
-      proactivity: "balanced",
-      escalationThreshold: "low",
-    });
 
     fixture.db.close();
   });
 
-  it("builds a structured CTO prompt preview with immutable doctrine and preset overlay", async () => {
+  it("builds a structured CTO prompt preview around the single immutable doctrine", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -349,53 +334,32 @@ describe("ctoStateService", () => {
     });
 
     const preview = service.previewSystemPrompt();
-    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "continuity", "memory", "knowledge", "capabilities"]);
+    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "continuity", "memory", "knowledge", "capabilities"]);
     expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
-    expect(preview.sections[1]?.content).toContain("Operate as a strategic CTO.");
-    expect(preview.sections[2]?.content).toContain("Immutable doctrine");
-    expect(preview.sections[2]?.content).toContain("Do not write ephemeral turn-by-turn status");
+    // The doctrine is the only voice instruction there is — there is no
+    // per-user overlay to fall back on, so it has to carry the tone rules.
+    expect(preview.sections[0]?.content).toContain("How you speak:");
+    expect(preview.sections[0]?.content).toContain("Helping with ADE itself:");
+    expect(preview.sections[1]?.content).toContain("Immutable doctrine");
+    expect(preview.sections[1]?.content).toContain("Do not write ephemeral turn-by-turn status");
     // Memory section: teaches persistent memory + saveMemory/searchMemory usage
-    expect(preview.sections[3]?.content).toContain("persistent memory");
-    expect(preview.sections[3]?.content).toContain("saveMemory");
+    expect(preview.sections[2]?.content).toContain("persistent memory");
+    expect(preview.sections[2]?.content).toContain("saveMemory");
     // Knowledge section: ADE architecture, chat vs terminal disambiguation, task routing, model selection
-    expect(preview.sections[4]?.content).toContain("ADE Architecture");
-    expect(preview.sections[4]?.content).toContain("spawnChat");
-    expect(preview.sections[4]?.content).toContain("createTerminal");
-    expect(preview.sections[4]?.content).toContain("Model Selection");
-    expect(preview.sections[4]?.content).toContain("ade actions run <domain.action>");
-    expect(preview.sections[4]?.content).toContain("bundled `ade-*` skills");
+    expect(preview.sections[3]?.content).toContain("ADE Architecture");
+    expect(preview.sections[3]?.content).toContain("spawnChat");
+    expect(preview.sections[3]?.content).toContain("createTerminal");
+    expect(preview.sections[3]?.content).toContain("Model Selection");
+    expect(preview.sections[3]?.content).toContain("ade actions run <domain.action>");
+    expect(preview.sections[3]?.content).toContain("bundled `ade-*` skills");
     // Capabilities section: schema authority plus cross-tool operating rules
-    expect(preview.sections[5]?.content).toContain("ADE operator tools");
-    expect(preview.sections[5]?.content).toContain("registered ADE operator tool schemas");
-    expect(preview.sections[5]?.content).not.toContain("listLanes —");
-    expect(preview.sections[5]?.content).toContain("UI navigation is suggestion-only.");
+    expect(preview.sections[4]?.content).toContain("ADE operator tools");
+    expect(preview.sections[4]?.content).toContain("registered ADE operator tool schemas");
+    expect(preview.sections[4]?.content).not.toContain("listLanes —");
+    expect(preview.sections[4]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
-    expect(preview.prompt).toContain("Selected personality overlay");
     expect(preview.prompt).toContain("ADE environment knowledge");
     expect(preview.prompt).toContain("ADE operator tools");
-
-    fixture.db.close();
-  });
-
-  it("uses the custom personality overlay without removing the immutable doctrine", async () => {
-    const fixture = await createStateFixture();
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-
-    const snapshot = service.updateIdentity({
-      personality: "custom",
-      customPersonality: "Be sharp, skeptical, and deeply execution-focused.",
-      persona: "Legacy custom note",
-    });
-    const preview = service.previewSystemPrompt(snapshot.identity);
-
-    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
-    expect(preview.sections[1]?.content).toContain("Be sharp, skeptical, and deeply execution-focused.");
-    expect(preview.prompt).toContain("Immutable ADE doctrine");
-    expect(preview.prompt).toContain("Be sharp, skeptical, and deeply execution-focused.");
 
     fixture.db.close();
   });

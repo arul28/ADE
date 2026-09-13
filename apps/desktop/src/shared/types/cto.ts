@@ -8,22 +8,10 @@ import type {
 
 export type CtoCapabilityMode = "full_tooling" | "fallback";
 
-export type CtoPersonalityPreset = "strategic" | "professional" | "hands_on" | "casual" | "minimal" | "custom";
-
-export type CtoCommunicationStyle = {
-  verbosity: "concise" | "detailed" | "adaptive";
-  proactivity: "reactive" | "balanced" | "proactive";
-  escalationThreshold: "low" | "medium" | "high";
-};
-
 export type CtoIdentity = {
   name: string;
   version: number;
   persona: string;
-  personality?: CtoPersonalityPreset;
-  customPersonality?: string;
-  communicationStyle?: CtoCommunicationStyle;
-  constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
   /**
@@ -87,7 +75,7 @@ export type CtoOnboardingState = {
 };
 
 export type CtoSystemPromptPreviewSection = {
-  id: "doctrine" | "personality" | "continuity" | "memory" | "knowledge" | "capabilities";
+  id: "doctrine" | "continuity" | "memory" | "knowledge" | "capabilities";
   title: string;
   content: string;
 };
@@ -103,10 +91,6 @@ export type CtoGetOnboardingStateResult = CtoOnboardingState;
 export type CtoCompleteOnboardingStepArgs = {
   stepId: string;
 };
-
-export type CtoDismissOnboardingArgs = Record<string, never>;
-
-export type CtoResetOnboardingArgs = Record<string, never>;
 
 export type CtoPreviewSystemPromptArgs = {
   identityOverride?: Partial<CtoIdentity>;

@@ -83,6 +83,8 @@ import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifec
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { ActivityPane } from "../activity/ActivityPane";
+import { CtoVoiceHudHost } from "../cto/CtoVoiceHudHost";
+import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { isActivityRoute } from "../../lib/legacyRoutes";
 
@@ -1719,6 +1721,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <ActivityPane open={activityPaneOpen} onClose={() => setActivityPaneOpen(false)} />
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      {/* Shell level, beside the other overlays: a call must outlive tab and
+          project switches, because the whole point is talking while you work. */}
+      <CtoVoiceHudHost />
+      {/* Also shell level, and for a stronger version of the same reason: the
+          capture arrives from the main process while ADE is in the BACKGROUND,
+          so nothing mounted by a tab could be listening when it lands. */}
+      <GlobalCaptureGestureHost />
       <WorktreeOpenDialog />
     </div>
   );

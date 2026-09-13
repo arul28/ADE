@@ -171,6 +171,30 @@ import {
   type AttentionNotchOutput,
 } from "./services/attention/attentionNotchHelper";
 import {
+  CaptureHelper,
+  resolveCaptureHelperExecutablePath,
+} from "./services/capture/captureHelper";
+import type {
+  CaptureGestureFailure,
+  CaptureGestureHealth,
+  CaptureGestureShot,
+} from "../shared/types/captureGesture";
+
+/**
+ * What the capture-gesture IPC answers when no supervisor exists — a runtime
+ * mode that never built one, or a platform with no helper. Deliberately the
+ * same verdict `captureGestureHealth()` returns for an unsupported platform:
+ * "there is no helper here" is the honest answer in both cases, and two
+ * differently worded versions of it would be a bug a user reports as
+ * inconsistent copy.
+ */
+const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
+  state: "unsupported",
+  title: "Screen capture gesture isn’t available here",
+  message: "This ADE build does not include the native capture helper.",
+  recovery: null,
+};
+import {
   attentionNotchAppNavigation,
   attentionItemNavigationRequest,
   createAttentionNotchToastDeduper,
@@ -334,6 +358,7 @@ import { createLinearLiveStatusService, type LinearLiveStatusService } from "./s
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
@@ -1133,6 +1158,14 @@ protocol.registerSchemesAsPrivileged([
     scheme: "ade-artifact",
     privileges: { standard: false, supportFetchAPI: true, stream: true },
   },
+  {
+    // Agent-authored scenes. Non-standard on purpose: a non-standard scheme
+    // gives the frame an opaque origin, which is exactly what a document ADE
+    // did not write should get. It never streams because a scene is a single
+    // in-memory string, and it never touches the filesystem at all.
+    scheme: "ade-scene",
+    privileges: { standard: false, supportFetchAPI: true, stream: false },
+  },
 ]);
 
 // Only Stable claims `ade://` as the default handler. Beta and Alpha still
@@ -1294,6 +1327,15 @@ app.whenReady().then(async () => {
       normFile === normAllowed || normFile.startsWith(normAllowed + path.sep)
     );
   };
+
+  // Handle ade-scene:// requests — serves agent-authored scenes from memory.
+  // The id in `ade-scene://view/<id>` is a key into `sceneDocumentStore`, never
+  // a path: this scheme has no filesystem reach by construction, so there is no
+  // jail here to widen and none of `ade-artifact`'s allow-root applies to it.
+  protocol.handle("ade-scene", (request) => {
+    const { status, body, headers } = sceneDocumentStore.respond(request.url);
+    return new Response(body, { status, headers });
+  });
 
   // Handle ade-artifact:// requests — serves local files for proof drawer previews.
   // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
@@ -6698,6 +6740,7 @@ app.whenReady().then(async () => {
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
   let attentionNotchHelper: AttentionNotchHelper | null = null;
+  let captureHelper: CaptureHelper | null = null;
 
   const shutdownOpenCodeServersBestEffort = (): void => {
     try {
@@ -6761,6 +6804,12 @@ app.whenReady().then(async () => {
       // ignore
     }
     attentionNotchHelper = null;
+    try {
+      captureHelper?.dispose();
+    } catch {
+      // ignore
+    }
+    captureHelper = null;
     try {
       autoUpdateService?.dispose();
     } catch {
@@ -8203,6 +8252,53 @@ app.whenReady().then(async () => {
     onOutput: handleAttentionNotchOutput,
     onRefreshRequested: requestAttentionNotchRefresh,
   });
+
+  /**
+   * Where a capture lands. The focused ADE window when there is one, otherwise
+   * any live window — never a newly opened one, because the gesture must be
+   * able to fire while ADE is in the background without conjuring a window the
+   * user did not ask for.
+   */
+  const captureGestureWindow = (): BrowserWindow | null => {
+    const candidate =
+      BrowserWindow.getFocusedWindow()
+      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+      ?? null;
+    if (!candidate || candidate.isDestroyed() || candidate.webContents.isDestroyed()) return null;
+    return candidate;
+  };
+
+  captureHelper = new CaptureHelper({
+    executablePath: resolveCaptureHelperExecutablePath({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    }),
+    logger: getActiveContext().logger,
+    // Under the OS temp root rather than userData: these PNGs are a handoff
+    // between two processes that lasts milliseconds, and the supervisor deletes
+    // each one as it reads it. `windows-uninstall-cleanup.ps1` sweeps the
+    // directory for the case where ADE was killed in between.
+    outputDirectory: path.join(app.getPath("temp"), "ade-capture"),
+    onShot: (shot: CaptureGestureShot) => {
+      const target = captureGestureWindow();
+      if (!target) return;
+      // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
+      // pointless behind another app's window, and the whole gesture means
+      // "take me to the CTO with this".
+      activateAppForAttentionNotch();
+      foregroundAttentionWindow(target);
+      target.webContents.send(IPC.captureGestureShot, shot);
+    },
+    onFailure: (failure: CaptureGestureFailure) => {
+      const target = captureGestureWindow();
+      if (!target) return;
+      // A failure does NOT steal focus. The user pressed a chord over someone
+      // else's window; yanking them into ADE to read "there was no window in
+      // front" is worse than the failure.
+      target.webContents.send(IPC.captureGestureFailed, failure);
+    },
+  });
   // Sleep does not always lock the machine, so resume must clear suspension
   // without overriding the independent lock state.
   let notchScreenLocked = false;
@@ -8279,6 +8375,15 @@ app.whenReady().then(async () => {
     releaseRepository: packagedReleaseRepository,
     builtInBrowserService,
     productAnalyticsService,
+    updateCaptureGestureSettings: (settings): CaptureGestureHealth => {
+      captureHelper?.updateSettings(settings);
+      return captureHelper?.getHealth() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
+    },
+    getCaptureGestureHealth: (): CaptureGestureHealth =>
+      captureHelper?.getHealth() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
+    retryCaptureGesture: (): CaptureGestureHealth =>
+      captureHelper?.retry() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
+    captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
     publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
       latestAttentionNotchSnapshot = snapshot;
       attentionNotchHelper?.publishSnapshot(snapshot);

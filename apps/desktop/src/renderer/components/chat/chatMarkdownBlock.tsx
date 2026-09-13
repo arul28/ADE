@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
+import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
@@ -16,6 +17,7 @@ import {
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
+import { SceneFrame } from "./SceneFrame";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -120,6 +122,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath,
   mosaic,
   mosaicScopeKey,
+  sceneLive,
 }: {
   markdown: string;
   /**
@@ -132,6 +135,12 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   mosaic?: MosaicRenderContext;
   /** Stable transcript-row key scoping mosaic answered state per message. */
   mosaicScopeKey?: string;
+  /**
+   * True while the turn that produced this body is still streaming. A scene
+   * runs only while its own turn is live; afterwards it is snapshotted so
+   * scrollback never re-executes generated code.
+   */
+  sceneLive?: boolean;
 }) {
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
@@ -201,6 +210,11 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
         return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
       }
+      // Scenes are not gated on a render context: any agent may draw, and the
+      // sandbox rather than the caller is what makes that safe.
+      if (isBlock && language === SCENE_FENCE_LANGUAGE) {
+        return <SceneFrame source={text} scopeKey={mosaicScopeKey ?? undefined} live={sceneLive} />;
+      }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />
       ) : pathIsClickable ? (
@@ -247,7 +261,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath]);
+  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath, sceneLive]);
 
   return (
     <div

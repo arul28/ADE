@@ -1,8 +1,7 @@
 import React, { useState } from "react";
-import { ArrowCounterClockwise, CaretRight } from "@phosphor-icons/react";
-import type { CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import { CaretRight } from "@phosphor-icons/react";
+import type { CtoSessionLogEntry } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { IdentityEditor } from "./IdentityEditor";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 import { TimelineEntry } from "./shared/TimelineEntry";
@@ -29,7 +28,6 @@ function Section({
 }
 
 export function CtoSettingsPanel({
-  identity,
   sessionLogs,
   currentModelId,
   currentReasoningEffort,
@@ -37,13 +35,10 @@ export function CtoSettingsPanel({
   availableModelIds,
   loadingModels,
   switchingModel,
-  onSaveIdentity,
   onModelChange,
   onFastModeChange,
   onOpenProviderSettings,
-  onResetOnboarding,
 }: {
-  identity: CtoIdentity | null;
   sessionLogs: CtoSessionLogEntry[];
   currentModelId: string;
   currentReasoningEffort: string | null;
@@ -51,25 +46,15 @@ export function CtoSettingsPanel({
   availableModelIds: string[];
   loadingModels: boolean;
   switchingModel: boolean;
-  onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
   onModelChange: (modelId: string, reasoningEffort: string | null) => void;
   onFastModeChange: (enabled: boolean) => void;
   onOpenProviderSettings: () => void;
-  onResetOnboarding?: () => void;
 }) {
   const [promptOpen, setPromptOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <Section title="Identity" subtitle="How the CTO shows up and how it works with you.">
-        {identity ? (
-          <IdentityEditor identity={identity} onSave={onSaveIdentity} />
-        ) : (
-          <div className="text-[12px] text-muted-fg/45">Loading…</div>
-        )}
-      </Section>
-
       <Section title="Model" subtitle="Only models that can steer a live turn — the CTO is interrupted constantly.">
         <div className="flex flex-wrap items-center gap-2">
           <ModelPicker
@@ -125,53 +110,39 @@ export function CtoSettingsPanel({
         )}
       </Section>
 
-      <Section title="Setup">
-        <div className="space-y-3">
-          {onResetOnboarding && (
-            <button
-              type="button"
-              onClick={onResetOnboarding}
-              className="inline-flex h-8 items-center gap-2 rounded-lg border border-white/[0.08] px-3 text-[12px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
-            >
-              <ArrowCounterClockwise size={13} />
-              Re-run setup
-            </button>
+      <Section title="History">
+        <button
+          type="button"
+          onClick={() => setHistoryOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-[12.5px] font-medium text-fg/80 transition-colors hover:text-fg"
+        >
+          <CaretRight
+            size={12}
+            weight="bold"
+            className={cn("text-muted-fg/50 transition-transform", historyOpen && "rotate-90")}
+          />
+          Session history
+          {sessionLogs.length > 0 && (
+            <span className="font-normal text-muted-fg/40">· {sessionLogs.length}</span>
           )}
-          <div>
-            <button
-              type="button"
-              onClick={() => setHistoryOpen((v) => !v)}
-              className="flex items-center gap-1.5 text-[12.5px] font-medium text-fg/80 transition-colors hover:text-fg"
-            >
-              <CaretRight
-                size={12}
-                weight="bold"
-                className={cn("text-muted-fg/50 transition-transform", historyOpen && "rotate-90")}
-              />
-              Session history
-              {sessionLogs.length > 0 && (
-                <span className="font-normal text-muted-fg/40">· {sessionLogs.length}</span>
-              )}
-            </button>
-            {historyOpen && (
-              <div className="mt-2 space-y-1" data-testid="session-history-list">
-                {sessionLogs.length === 0 ? (
-                  <div className="py-1 text-[11px] text-muted-fg/40">No sessions yet.</div>
-                ) : (
-                  sessionLogs.map((session) => (
-                    <TimelineEntry
-                      key={session.id}
-                      timestamp={session.createdAt}
-                      title={session.summary}
-                      status={session.capabilityMode}
-                      statusVariant={session.capabilityMode === "full_tooling" ? "success" : "muted"}
-                    />
-                  ))
-                )}
-              </div>
+        </button>
+        {historyOpen && (
+          <div className="mt-2 space-y-1" data-testid="session-history-list">
+            {sessionLogs.length === 0 ? (
+              <div className="py-1 text-[11px] text-muted-fg/40">No sessions yet.</div>
+            ) : (
+              sessionLogs.map((session) => (
+                <TimelineEntry
+                  key={session.id}
+                  timestamp={session.createdAt}
+                  title={session.summary}
+                  status={session.capabilityMode}
+                  statusVariant={session.capabilityMode === "full_tooling" ? "success" : "muted"}
+                />
+              ))
             )}
           </div>
-        </div>
+        )}
       </Section>
     </div>
   );

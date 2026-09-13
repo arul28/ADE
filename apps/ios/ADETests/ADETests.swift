@@ -19317,32 +19317,40 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(emptyMemory.isEmpty)
   }
 
-  func testCtoOnboardingCompletionMirrorsDesktopRequiredStep() {
-    let incomplete = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(incomplete.isComplete)
-
-    let viaStep = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertTrue(viaStep.isComplete)
-
-    let viaTimestamp = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: "2026-07-04T00:00:00Z")
-    XCTAssertTrue(viaTimestamp.isComplete)
-  }
-
-  func testCtoSetupCompletionPreservesHostOnboardingMarkers() {
-    // The host records non-user steps here (e.g. "intro", meaning the CTO's
-    // opening turn was already sent) and updateIdentity replaces the whole
-    // object, so completing setup from iOS must not drop them.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["intro"]),
-      ["intro", "identity"]
+  func testCtoIdentityPatchPreservesHostOnboardingMarkers() throws {
+    // The host keeps its own non-user markers in `completedSteps` ("intro" =
+    // the CTO's opening turn was already sent, "memory_gardener" = the memory
+    // pass ran) and `cto.updateIdentity` replaces `onboardingState` wholesale.
+    // The phone has no setup flow of its own any more, so the only thing that
+    // keeps those markers alive is a lossless round-trip: whatever the host
+    // sent has to come back out of a patch unchanged.
+    let identity = try JSONDecoder().decode(
+      CtoIdentity.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "name": "CTO",
+        "onboardingState": [
+          "completedSteps": ["intro", "memory_gardener"],
+          "dismissedAt": NSNull(),
+          "completedAt": "2026-07-04T00:00:00Z",
+        ],
+      ])
     )
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: nil), ["identity"])
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: []), ["identity"])
-    // Idempotent: re-saving setup must not duplicate the required step.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["identity", "intro"]),
-      ["identity", "intro"]
-    )
+    XCTAssertEqual(identity.onboardingState?.completedSteps, ["intro", "memory_gardener"])
+    XCTAssertEqual(identity.onboardingState?.completedAt, "2026-07-04T00:00:00Z")
+    XCTAssertNil(identity.onboardingState?.dismissedAt)
+
+    var patch = CtoIdentityPatch()
+    patch.name = "Ada"
+    patch.onboardingState = identity.onboardingState
+
+    let encoded = try JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(patch)
+    ) as? [String: Any]
+    let state = encoded?["onboardingState"] as? [String: Any]
+    XCTAssertEqual(state?["completedSteps"] as? [String], ["intro", "memory_gardener"])
+    XCTAssertEqual(state?["completedAt"] as? String, "2026-07-04T00:00:00Z")
+    // Nothing on the phone injects a step of its own into the host's list.
+    XCTAssertFalse((state?["completedSteps"] as? [String] ?? []).contains("identity"))
   }
 
   func testCtoAttentionDecodesLegacyAndExplicitStatesAndRetainsUnknownProbe() throws {
@@ -19409,26 +19417,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.ctoAttention, .idle)
   }
 
-  func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
-    func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
-      CtoIdentity(
-        name: "CTO",
-        onboardingState: state,
-        modelPreferences: CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil)
-      )
-    }
-    // Never set up and never dismissed → setup blocks the tab.
-    XCTAssertTrue(identity(nil).isOnboardingBlocking)
-    XCTAssertTrue(identity(CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)).isOnboardingBlocking)
-    // Dismissed on desktop ("Set up later") → chat must open, not the setup card.
-    let dismissed = CtoOnboardingState(completedSteps: [], dismissedAt: "2026-07-05T00:00:00Z", completedAt: nil)
-    XCTAssertFalse(identity(dismissed).isOnboardingBlocking)
-    XCTAssertFalse(identity(dismissed).isOnboardingComplete)
-    // Completed → unlocked too.
-    let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(identity(complete).isOnboardingBlocking)
-  }
-
   /// The host writes `modelPreferences: null` whenever the stored pick is on a
   /// provider that cannot steer a live turn, so the decoder has to survive both
   /// a missing key and an explicit null — a force-unwrap here would crash the
@@ -19464,9 +19452,8 @@ final class ADETests: XCTestCase {
   /// the host defaults to, which is exactly what the null preference exists to
   /// prevent. Mirrors desktop `CtoPage`'s `needsModelPick` branch.
   func testCtoRootShowsModelPickerOnlyWhileNoModelIsPicked() {
-    let setUp = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
     func identity(_ preferences: CtoModelPreferences?) -> CtoIdentity {
-      CtoIdentity(name: "CTO", onboardingState: setUp, modelPreferences: preferences)
+      CtoIdentity(name: "CTO", modelPreferences: preferences)
     }
 
     let unpicked = identity(nil)
@@ -19486,14 +19473,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       ctoRootContent(identity: picked, loadError: nil, hostUnreachable: false),
       .thread
-    )
-
-    // Setup still comes first: an unpicked model behind blocking onboarding
-    // shows the setup card, not the picker.
-    let needsSetup = CtoIdentity(name: "CTO", onboardingState: nil, modelPreferences: nil)
-    XCTAssertEqual(
-      ctoRootContent(identity: needsSetup, loadError: nil, hostUnreachable: false),
-      .onboarding
     )
 
     // No identity yet: the offline case stays on the spinner (the top bar owns

@@ -106,34 +106,34 @@ export const MosaicCard = React.memo(function MosaicCard({
 
   const accentBorder = neu
     ? "border-white/14"
-    : "border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]";
+    : "border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_22%,transparent)]";
   const accentBorderStrong = neu
     ? "border-white/32"
-    : "border-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]";
+    : "border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_55%,transparent)]";
   const accentBg = neu
     ? "bg-white/[0.1]"
-    : "bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)]";
+    : "bg-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_14%,transparent)]";
   const accentBgHover = neu
     ? "hover:border-white/22 hover:bg-white/[0.06]"
-    : "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)]";
+    : "hover:border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_35%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_8%,transparent)]";
   const accentText = neu
     ? "text-white/88"
-    : "text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]";
+    : "text-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_82%,white_18%)]";
   const labelText = neu ? "text-white/62" : "text-fg/58";
   const mutedText = neu ? "text-white/45" : "text-fg/45";
   const bodyText = neu ? "text-white/85" : "text-fg/85";
   const indicatorActive = neu
     ? "border-white/70 bg-white/85 text-black"
-    : "border-[color:color-mix(in_srgb,var(--chat-accent)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_85%,transparent)] text-black";
+    : "border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_85%,transparent)] text-black";
   const indicatorIdle = neu
     ? "border-white/30 bg-transparent text-transparent"
-    : "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-transparent text-transparent";
+    : "border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_35%,transparent)] bg-transparent text-transparent";
   const fieldClass = cn(
-    "w-full rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border bg-black/20 px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] outline-none transition-colors disabled:pointer-events-none disabled:opacity-50",
+    "w-full rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border bg-black/20 px-3 py-2 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)] outline-none transition-colors disabled:pointer-events-none disabled:opacity-50",
     "border-[color:var(--chat-block-border)]",
     neu
       ? "text-white/90 placeholder:text-white/35 focus:border-white/25"
-      : "text-fg/90 placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]",
+      : "text-fg/90 placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_45%,transparent)]",
   );
   const optionRowClass = (active: boolean) =>
     cn(
@@ -143,7 +143,7 @@ export const MosaicCard = React.memo(function MosaicCard({
 
   const renderLabel = (label: string | undefined) =>
     label ? (
-      <div className={cn("mb-1.5 text-[length:calc(var(--chat-font-size)*11.5/14)] font-medium", labelText)}>
+      <div className={cn("mb-1.5 text-[length:calc(var(--chat-font-size, 14px)*11.5/14)] font-medium", labelText)}>
         {label}
       </div>
     ) : null;
@@ -168,7 +168,7 @@ export const MosaicCard = React.memo(function MosaicCard({
               return (
                 <p
                   key={index}
-                  className={cn("text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6]", bodyText)}
+                  className={cn("text-[length:calc(var(--chat-font-size, 14px)*13/14)] leading-[1.6]", bodyText)}
                 >
                   {element.text}
                 </p>
@@ -187,13 +187,13 @@ export const MosaicCard = React.memo(function MosaicCard({
                     >
                       <span
                         className={cn(
-                          "w-[34%] flex-none font-mono text-[length:calc(var(--chat-font-size)*11/14)] uppercase tracking-wide",
+                          "w-[34%] flex-none font-mono text-[length:calc(var(--chat-font-size, 14px)*11/14)] uppercase tracking-wide",
                           mutedText,
                         )}
                       >
                         {row.key}
                       </span>
-                      <span className={cn("min-w-0 flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)]", bodyText)}>
+                      <span className={cn("min-w-0 flex-1 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)]", bodyText)}>
                         {row.value}
                       </span>
                     </div>
@@ -229,7 +229,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                           </span>
                           <span
                             className={cn(
-                              "flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium",
+                              "flex-1 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)] font-medium",
                               neu ? "text-white/90" : "text-fg/90",
                             )}
                           >
@@ -271,7 +271,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                           </span>
                           <span
                             className={cn(
-                              "flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium",
+                              "flex-1 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)] font-medium",
                               neu ? "text-white/90" : "text-fg/90",
                             )}
                           >
@@ -303,11 +303,11 @@ export const MosaicCard = React.memo(function MosaicCard({
                         disabled={controlsDisabled}
                         onChange={(e) => setValue(element.id, Number(e.target.value))}
                         className="min-w-0 flex-1 disabled:opacity-50"
-                        style={{ accentColor: neu ? "#ffffff" : "var(--chat-accent)" }}
+                        style={{ accentColor: neu ? "#ffffff" : "var(--chat-accent, #a78bfa)" }}
                       />
                       <span
                         className={cn(
-                          "w-12 flex-none text-right font-mono text-[length:calc(var(--chat-font-size)*12/14)] tabular-nums",
+                          "w-12 flex-none text-right font-mono text-[length:calc(var(--chat-font-size, 14px)*12/14)] tabular-nums",
                           bodyText,
                         )}
                       >
@@ -360,7 +360,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                       type="button"
                       disabled={controlsDisabled}
                       className={cn(
-                        "inline-flex flex-1 items-center justify-center rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                        "inline-flex flex-1 items-center justify-center rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3 py-2 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
                         approveActive ? cn(accentBorderStrong, accentBg, accentText) : cn(accentBorder, accentText, accentBgHover),
                       )}
                       onClick={() => setValue(element.id, "approve")}
@@ -371,7 +371,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                       type="button"
                       disabled={controlsDisabled}
                       className={cn(
-                        "inline-flex flex-1 items-center justify-center rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                        "inline-flex flex-1 items-center justify-center rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3 py-2 text-[length:calc(var(--chat-font-size, 14px)*12.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
                         "border-[color:var(--chat-block-border)]",
                         denyActive
                           ? neu
@@ -396,7 +396,7 @@ export const MosaicCard = React.memo(function MosaicCard({
 
       <div className="mt-4 flex items-center">
         {submitted ? (
-          <span className={cn("inline-flex items-center gap-1.5 text-[length:calc(var(--chat-font-size)*11.5/14)] font-medium", mutedText)}>
+          <span className={cn("inline-flex items-center gap-1.5 text-[length:calc(var(--chat-font-size, 14px)*11.5/14)] font-medium", mutedText)}>
             <Check size={12} weight="bold" /> Answered
           </span>
         ) : (
@@ -405,13 +405,13 @@ export const MosaicCard = React.memo(function MosaicCard({
             disabled={controlsDisabled}
             onClick={() => void handleSubmit()}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 text-[length:calc(var(--chat-font-size)*12/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
+              "inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 text-[length:calc(var(--chat-font-size, 14px)*12/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
               accentBorderStrong,
               accentBg,
               accentText,
               neu
                 ? "hover:bg-white/[0.16]"
-                : "hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]",
+                : "hover:bg-[color:color-mix(in_srgb,var(--chat-accent, #a78bfa)_22%,transparent)]",
             )}
           >
             {spec.submitLabel ?? "Submit"}

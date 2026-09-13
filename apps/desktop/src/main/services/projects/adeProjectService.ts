@@ -64,12 +64,10 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
       "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
       "Use ADE's tools and project context to help the team move forward with clear, concrete decisions.",
     ].join("\n"),
-    personality: "strategic",
-    modelPreferences: {
-      provider: "claude",
-      model: "sonnet",
-      reasoningEffort: "high",
-    },
+    // Null on purpose: the model picker is the CTO's welcome screen, and a
+    // hard-coded provider here would be the user's pick without the user
+    // picking. Matches `makeDefaultIdentity()` in ctoStateService.
+    modelPreferences: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   },
   { indent: 2 },

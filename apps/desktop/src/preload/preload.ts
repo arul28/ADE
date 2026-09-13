@@ -174,6 +174,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -4623,6 +4624,22 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "listApiKeys", {}, () =>
         ipcRenderer.invoke(IPC.aiListApiKeys),
       ),
+    // Machine-scoped keys. Not routed through `callProjectRuntimeActionOr`: the
+    // key follows this machine's ADE home, so sending it to the bound project's
+    // runtime would be sending it to the wrong store. The key travels one way
+    // only — in, on `store` — and never comes back out of these calls.
+    getMachineApiKeyStatus: async (provider: string): Promise<MachineApiKeyStatus> =>
+      ipcRenderer.invoke(IPC.aiGetMachineApiKeyStatus, { provider }),
+    storeMachineApiKey: async (provider: string, key: string): Promise<MachineApiKeyStatus> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.aiStoreMachineApiKey, { provider, key }),
+      ),
+    deleteMachineApiKey: async (provider: string): Promise<MachineApiKeyStatus> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.aiDeleteMachineApiKey, { provider }),
+      ),
     verifyApiKey: async (
       provider: string,
     ): Promise<AiApiKeyVerificationResult> =>
@@ -5435,6 +5452,38 @@ const adeBridge = {
       }),
     openItem: async (item: AttentionItem): Promise<void> => {
       await ipcRenderer.invoke(IPC.attentionOpenItem, item);
+    },
+  },
+  captureGesture: {
+    updateSettings: async (
+      settings: import("../shared/types/captureGesture").CaptureGestureSettings,
+    ): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureUpdateSettings, settings),
+    getHealth: async (): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureGetHealth),
+    retry: async (): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureRetry),
+    captureNow: async (): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.captureGestureCaptureNow),
+    onShot: (
+      cb: (shot: import("../shared/types/captureGesture").CaptureGestureShot) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        shot: import("../shared/types/captureGesture").CaptureGestureShot,
+      ) => cb(shot);
+      ipcRenderer.on(IPC.captureGestureShot, listener);
+      return () => ipcRenderer.removeListener(IPC.captureGestureShot, listener);
+    },
+    onFailure: (
+      cb: (failure: import("../shared/types/captureGesture").CaptureGestureFailure) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        failure: import("../shared/types/captureGesture").CaptureGestureFailure,
+      ) => cb(failure);
+      ipcRenderer.on(IPC.captureGestureFailed, listener);
+      return () => ipcRenderer.removeListener(IPC.captureGestureFailed, listener);
     },
   },
   attentionNotch: {
@@ -7552,6 +7601,25 @@ const adeBridge = {
       limit?: number;
       since?: string;
     }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
+  },
+  /**
+   * Scenes — agent-authored HTML rendered in a sandboxed frame.
+   *
+   * Strictly local: a scene is prepared, captured and filed on the machine that
+   * is drawing it, so unlike the chat bridge there is no remote-runtime route
+   * here. `SceneFrame` treats every method as optional and falls back on its
+   * own (blob URL, no freeze, no proof button), so an older host simply loses
+   * the polish rather than the scene.
+   */
+  scene: {
+    prepare: (html: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.scenePrepare, { html }),
+    snapshot: (
+      rect: { x: number; y: number; width: number; height: number },
+    ): Promise<string | null> => ipcRenderer.invoke(IPC.sceneSnapshot, rect),
+    attachProof: (
+      args: { dataUrl?: string | null; title: string },
+    ): Promise<boolean> => ipcRenderer.invoke(IPC.sceneAttachProof, args),
   },
   orchestration: createOrchestrationBridge({
     callAction: (action, args, ipcChannel, pin) => {
@@ -11295,14 +11363,6 @@ const adeBridge = {
         "completeOnboardingStep",
         { arg: args.stepId },
         () => ipcRenderer.invoke(IPC.ctoCompleteOnboardingStep, args),
-      ),
-    dismissOnboarding: async (): Promise<CtoOnboardingState> =>
-      callProjectRuntimeActionOr("cto_state", "dismissOnboarding", {}, () =>
-        ipcRenderer.invoke(IPC.ctoDismissOnboarding),
-      ),
-    resetOnboarding: async (): Promise<CtoOnboardingState> =>
-      callProjectRuntimeActionOr("cto_state", "resetOnboarding", {}, () =>
-        ipcRenderer.invoke(IPC.ctoResetOnboarding),
       ),
     previewSystemPrompt: async (
       args: { identityOverride?: Record<string, unknown> } = {},

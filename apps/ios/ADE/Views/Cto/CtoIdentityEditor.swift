@@ -8,9 +8,6 @@ struct CtoIdentityEditor: View {
   @Environment(\.dismiss) private var dismiss
 
   @State private var localName: String = ""
-  @State private var localPersonality: String = "strategic"
-  @State private var localVerbosity: String = CtoWorkStyle.defaultStyle.verbosity
-  @State private var localProactivity: String = CtoWorkStyle.defaultStyle.proactivity
   @State private var localExtension: String = ""
 
   @State private var isSaving = false
@@ -34,30 +31,6 @@ struct CtoIdentityEditor: View {
             TextField("CTO", text: $localName)
               .textInputAutocapitalization(.words)
               .disableAutocorrection(false)
-          }
-
-          Section("Personality") {
-            VStack(spacing: 8) {
-              ForEach(ctoPersonalityPresetOptions) { option in
-                ADEOptionButton(
-                  title: option.label,
-                  subtitle: option.description,
-                  systemImage: option.systemImage,
-                  isSelected: localPersonality == option.id,
-                  tint: ADEColor.ctoAccent
-                ) {
-                  localPersonality = option.id
-                }
-              }
-            }
-          }
-
-          Section("Work style") {
-            VStack(alignment: .leading, spacing: 14) {
-              CtoSegmentedRow(title: "Verbosity", options: CtoWorkStyle.verbosityOptions, selection: $localVerbosity)
-              CtoSegmentedRow(title: "Proactivity", options: CtoWorkStyle.proactivityOptions, selection: $localProactivity)
-            }
-            .padding(.vertical, 4)
           }
 
           Section {
@@ -116,11 +89,6 @@ struct CtoIdentityEditor: View {
   private func hydrate() {
     guard let identity = snapshot?.identity else { return }
     localName = identity.name
-    localPersonality = identity.personality ?? "strategic"
-    if let style = identity.communicationStyle {
-      localVerbosity = style.verbosity
-      localProactivity = style.proactivity
-    }
     localExtension = identity.systemPromptExtension ?? ""
   }
 
@@ -145,18 +113,6 @@ struct CtoIdentityEditor: View {
 
     var patch = CtoIdentityPatch()
     if trimmedName != identity.name { patch.name = trimmedName }
-    if localPersonality != (identity.personality ?? "strategic") {
-      patch.personality = localPersonality
-    }
-
-    let existingStyle = identity.communicationStyle ?? CtoWorkStyle.defaultStyle
-    if localVerbosity != existingStyle.verbosity || localProactivity != existingStyle.proactivity {
-      patch.communicationStyle = CtoCommunicationStyle(
-        verbosity: localVerbosity,
-        proactivity: localProactivity,
-        escalationThreshold: existingStyle.escalationThreshold
-      )
-    }
 
     let trimmedExt = localExtension.trimmingCharacters(in: .whitespacesAndNewlines)
     let existingExt = (identity.systemPromptExtension ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

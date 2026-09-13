@@ -32,7 +32,22 @@ describe("buildRendererCspPolicy", () => {
   it("frames built-in browser content from local servers and about:blank in packaged builds", () => {
     const policy = buildRendererCspPolicy(false);
 
-    expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
+    expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* ade-scene: blob: about:");
+  });
+
+  it("frames agent-authored scenes over ade-scene:, and lets them in nowhere else", () => {
+    const policy = buildRendererCspPolicy(false);
+    const directives = Object.fromEntries(
+      policy.split("; ").map((directive) => {
+        const [name, ...tokens] = directive.split(/\s+/);
+        return [name, tokens];
+      }),
+    ) as Record<string, string[]>;
+
+    expect(directives["frame-src"]).toContain("ade-scene:");
+    for (const name of ["default-src", "img-src", "media-src", "connect-src", "script-src", "style-src", "font-src"]) {
+      expect(directives[name] ?? [], name).not.toContain("ade-scene:");
+    }
   });
 
   it("allows no external frame sources -- the welcome video is a thumbnail link, not an embed", () => {
