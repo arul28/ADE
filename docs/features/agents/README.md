@@ -8,7 +8,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, immutable doctrine, personality overlays, and system-prompt preview. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, the single immutable doctrine, and system-prompt preview. |
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, injection sections). |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
 | `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 13 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
@@ -28,14 +28,13 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, the CTO, and mobile-started runtime work. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
-| `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays. |
-| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, personality, onboarding, memory, and prompt-preview types. |
+| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, onboarding, memory, and prompt-preview types. |
 
 ## Agent surfaces
 
 ### CTO
 
-One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, personality preset, communication style, constraints, model preferences, onboarding state, optional prompt extension) plus a smart-memory system that survives sessions, compaction, and model switches. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
+One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, nullable model preferences, onboarding state, optional prompt extension) plus a smart-memory system that survives sessions, compaction, and model switches. Its voice is fixed by the immutable doctrine rather than chosen — there are no personality presets and no work-style settings. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
 
 ### Regular chat agents
 
@@ -272,13 +271,9 @@ type CtoIdentity = {
   name: string;
   version: number;
   persona: string;
-  personality?: CtoPersonalityPreset;
-  customPersonality?: string;
-  communicationStyle?: CtoCommunicationStyle;
-  constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
-  modelPreferences: CtoModelPreferences;
+  modelPreferences: CtoModelPreferences | null;
   updatedAt: string;
 };
 ```
@@ -305,7 +300,7 @@ Standalone chat sessions connected through the ADE CLI have elevated tools hidde
 
 The project surfaces use `buildCodingAgentSystemPrompt` with different identity/context prefixes; personal chat deliberately does not:
 
-- **CTO:** immutable CTO doctrine, active personality overlay, persona, continuity model, memory-system guidance, environment knowledge, recent session context, injected durable memory, and the user-defined prompt extension.
+- **CTO:** the immutable CTO doctrine (role, precision rules, how it speaks, and how it helps with ADE itself), persona, continuity model, memory-system guidance, environment knowledge, recent session context, injected durable memory, and the user-defined prompt extension.
 - **Regular chat:** lane context, workflow tool guidance, and permission-mode framing.
 - **Personal chat:** a compact general-assistant directive stating that no
   repository/project is attached and that explicit filesystem/shell work must
@@ -362,7 +357,7 @@ Representative channels:
 ## Fragile and tricky wiring
 
 - **Post-compaction identity re-injection.** The CTO identity session calls `refreshReconstructionContext()` after chat context compaction. Missing this path loses the persona and durable memory mid-session.
-- **Personality preset lookup.** `getCtoPersonalityPreset()` falls back to `strategic` on unknown input. Keep preset ids stable.
+- **Removed identity keys still appear on disk.** `normalizeIdentity` silently drops `personality`, `customPersonality`, `communicationStyle`, and `constraints` so an `identity.yaml` written by an older build still loads.
 - **Deterministic memory flush is the guarantee.** The LLM summary upgrade is best-effort; the durable write must never depend on it.
 - **Daily log integrity hashes.** Session log entries carry `prevHash`; manual row deletion breaks the chain and is detected by `logIntegrityService`.
 - **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize payload's identity.
@@ -374,7 +369,7 @@ Representative channels:
 
 ## Detail docs
 
-- [Identity and Personas](identity-and-personas.md) — identity storage, reconstruction, personality presets, immutable doctrine, and the memory system.
+- [Identity and Personas](identity-and-personas.md) — identity storage, reconstruction, the immutable doctrine, and the memory system.
 - [Tool Registration](tool-registration.md) — ADE CLI integration, action registration, role-based filtering, and capability fallback.
 
 ## Related docs

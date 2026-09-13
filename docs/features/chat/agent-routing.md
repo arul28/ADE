@@ -1114,9 +1114,10 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    `ChatSurfaceProfile` in the UI.
 2. Identity and recent context are reconstructed from `ctoStateService`
    on session start and re-injected via `buildReconstructionContext()`.
-3. The CTO system prompt includes the immutable CTO doctrine,
-   environment knowledge, and active personality overlay
-   (`CtoPersonalityPreset`). See `ctoStateService.ts`.
+3. The CTO system prompt is built from one immutable doctrine plus
+   environment knowledge. The doctrine carries the CTO's voice and its
+   ADE-product-help rules; there is no per-user personality overlay to
+   layer on top. See `ctoStateService.ts`.
 4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
    `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
    tools when connected. `createCtoRuntimeToolMap` registers them on the
