@@ -28885,6 +28885,49 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     )
   }
 
+  func testForeignChatWaitsWhenHostCannotScopeSubscribe() {
+    XCTAssertTrue(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: false,
+        supportsCrossProjectChat: true
+      )
+    )
+    XCTAssertTrue(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: true,
+        supportsCrossProjectChat: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: false,
+        supportsCrossProjectChat: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: false,
+        ownerIsActive: false,
+        supportsCrossProjectChat: true
+      )
+    )
+  }
+
+  func testActivationRebindStopsOnceTheDestinationIsGone() {
+    XCTAssertTrue(
+      hubChatShouldContinueActivationRebind(destinationVisible: true, taskCancelled: false)
+    )
+    XCTAssertFalse(
+      hubChatShouldContinueActivationRebind(destinationVisible: false, taskCancelled: false)
+    )
+    XCTAssertFalse(
+      hubChatShouldContinueActivationRebind(destinationVisible: true, taskCancelled: true)
+    )
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",

@@ -4546,9 +4546,9 @@ final class SyncService: ObservableObject {
     return projects.first { isActiveProject($0) }
   }
 
-  func isActiveProject(_ project: MobileProjectSummary) -> Bool {
+  func isActiveProject(id: String, rootPath: String?) -> Bool {
     if let activeProjectId {
-      if project.id == activeProjectId {
+      if id == activeProjectId {
         return true
       }
       if projects.contains(where: { $0.id == activeProjectId }) {
@@ -4556,25 +4556,13 @@ final class SyncService: ObservableObject {
       }
     }
     guard let activeProjectRootPath,
-          let projectRoot = normalizedProjectRoot(project.rootPath)
+          let projectRoot = normalizedProjectRoot(rootPath)
     else { return false }
     return projectRoot == activeProjectRootPath
   }
 
-  func isActiveProject(id: String, rootPath: String?) -> Bool {
-    if let project = projects.first(where: { $0.id == id }) {
-      return isActiveProject(project)
-    }
-    return isActiveProject(
-      MobileProjectSummary(
-        id: id,
-        displayName: id,
-        rootPath: rootPath,
-        laneCount: 0,
-        isAvailable: true,
-        isCached: true
-      )
-    )
+  func isActiveProject(_ project: MobileProjectSummary) -> Bool {
+    isActiveProject(id: project.id, rootPath: project.rootPath)
   }
 
   var isProjectSwitching: Bool {

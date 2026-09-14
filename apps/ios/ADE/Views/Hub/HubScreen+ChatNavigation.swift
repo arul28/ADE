@@ -4,7 +4,8 @@ import SwiftUI
 // the hub so Back returns to the all-projects list (the second entry point —
 // inside a project — pushes the same `WorkSessionDestinationView` onto the Work
 // tab's stack instead, where Back returns to Work). Chat rows render immediately
-// from the roster stub and subscribe in cross-project scope; the owning project
+// from the roster stub when the owner is active or the host supports
+// cross-project subscribe; older hosts wait on activation. The owning project
 // activates in the background so Send/approve are ready. Backing out cancels an
 // uncommitted switch so the next tap can start a different one.
 
@@ -125,6 +126,27 @@ func hubChatIsForeignProject(
   context != nil && !ownerIsActive
 }
 
+/// Instant Hub chat paint is only safe when the owner is already active, or
+/// the host can route `chat_subscribe` to a foreign project. Older hosts drop
+/// the scope and bind the stream to the *current* project, so those chats
+/// wait on activation the way CLI rows always do.
+func hubChatCanPaintFromRosterStub(
+  hasChatStub: Bool,
+  ownerIsActive: Bool,
+  supportsCrossProjectChat: Bool
+) -> Bool {
+  hasChatStub && (ownerIsActive || supportsCrossProjectChat)
+}
+
+/// Rebind after Hub activate must stop once the destination is gone, otherwise
+/// a late `retainChatEventSubscription` undoes leave.
+func hubChatShouldContinueActivationRebind(
+  destinationVisible: Bool,
+  taskCancelled: Bool
+) -> Bool {
+  destinationVisible && !taskCancelled
+}
+
 /// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
 /// can render immediately. A foreign session never enters the phone's active
 /// project DB; a same-project session may simply be ahead of CRDT replication.
@@ -153,7 +175,12 @@ private struct HubChatCover: View {
     self.syncService = syncService
     self.onClose = onClose
     let stub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
-    _mode = State(initialValue: stub == nil ? .deciding : .activated(stub))
+    let canPaint = hubChatCanPaintFromRosterStub(
+      hasChatStub: stub != nil,
+      ownerIsActive: syncService.isActiveProject(target.project),
+      supportsCrossProjectChat: syncService.supportsCrossProjectChat
+    )
+    _mode = State(initialValue: canPaint ? .activated(stub) : .deciding)
   }
 
   var body: some View {
@@ -198,36 +225,35 @@ private struct HubChatCover: View {
       abandoned = true
       activationWatchdog?.cancel()
       activationWatchdog = nil
-      if hubChatShouldAbandonActivationOnDismiss(
-        isSwitchingTargetProject: syncService.isSwitchingProject(target.project),
-        targetAlreadyActive: syncService.isActiveProject(target.project)
-      ) {
-        syncService.abandonInFlightHubProjectActivation(for: target.project)
-      }
+      syncService.abandonInFlightHubProjectActivation(for: target.project)
     }
   }
 
   private func decideAndOpen() async {
     let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
-    if sessionStub != nil, mode == .deciding {
+    let ownerIsActive = syncService.isActiveProject(target.project)
+    let canPaint = hubChatCanPaintFromRosterStub(
+      hasChatStub: sessionStub != nil,
+      ownerIsActive: ownerIsActive,
+      supportsCrossProjectChat: syncService.supportsCrossProjectChat
+    )
+    if canPaint, mode == .deciding {
       mode = .activated(sessionStub)
     }
-    guard hubChatRequiresProjectActivation(
-      isActiveProject: syncService.isActiveProject(target.project)
-    ) else { return }
+    guard hubChatRequiresProjectActivation(isActiveProject: ownerIsActive) else { return }
 
-    // Chat rows already painted. CLI rows still wait — they have no stub.
-    if sessionStub == nil {
+    // Painted chats (active owner, or foreign with host scope) keep streaming
+    // while activate runs. CLI rows and older-host foreign chats wait.
+    if !canPaint {
       startActivationWatchdog()
     }
     await syncService.openProjectForHubChat(target.project)
     activationWatchdog?.cancel()
     activationWatchdog = nil
     guard !abandoned else { return }
-    // Chat already rendered from the roster stub. A failed background switch
-    // must not tear that surface down into Retry — the transcript can keep
-    // streaming in cross-project scope.
-    guard sessionStub == nil, mode == .deciding else { return }
+    // A failed background switch must not tear down an already-painted chat.
+    // Waiting covers (CLI, or foreign without host scope) still take Retry.
+    guard mode == .deciding else { return }
     let outcome = hubChatActivationOutcome(
       projectName: target.project.displayName,
       isActiveProject: syncService.isActiveProject(target.project),
