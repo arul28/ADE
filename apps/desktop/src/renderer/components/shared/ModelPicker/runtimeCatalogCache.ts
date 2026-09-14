@@ -49,6 +49,9 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
  */
 export const DEFAULT_RUNTIME_CATALOG_SCOPE = "";
 
+/** Runtime catalog bucket for the machine-owned personal Chats composer. */
+export const PERSONAL_CHAT_CATALOG_SCOPE = "personal-chat";
+
 type RuntimeCatalogScopeState = {
   catalog: AgentChatModelCatalog | null;
   providerRefreshedAt: Map<AgentChatModelCatalogRefreshProvider, number>;

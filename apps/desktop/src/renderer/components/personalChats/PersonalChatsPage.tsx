@@ -46,7 +46,7 @@ import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
-import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
+import { descriptorsFromAgentChatModelCatalog, PERSONAL_CHAT_CATALOG_SCOPE } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
@@ -196,6 +196,15 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setSelectedId((current) => current && ordered.some((row) => row.sessionId === current) ? current : null);
   }, []);
 
+  const loadModelCatalog = useCallback(async (
+    mode: "cached" | "refresh-stale" | "force" = "refresh-stale",
+    generation = targetGenerationRef.current,
+  ) => {
+    const next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
+    if (generation !== targetGenerationRef.current) return;
+    setCatalog(next);
+  }, []);
+
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
     cursorRef.current = 0;
@@ -222,16 +231,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     }).finally(() => {
       if (generation === targetGenerationRef.current) setLoading(false);
     });
-    void callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "cached" })
-      .then((next) => {
-        if (generation === targetGenerationRef.current) setCatalog(next);
-      })
-      .catch((reason) => {
-        if (generation === targetGenerationRef.current) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      });
-  }, [refreshSessions, targetKey]);
+    void loadModelCatalog("refresh-stale", generation).catch((reason) => {
+      if (generation === targetGenerationRef.current) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    });
+  }, [loadModelCatalog, refreshSessions, targetKey]);
 
   useEffect(() => {
     const openPersonalBrowser = (rawEvent: Event) => {
@@ -493,7 +498,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     [],
   );
   const dynamicCatalog = useMemo(
-    () => catalog ? descriptorsFromAgentChatModelCatalog(catalog) : null,
+    () => catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, PERSONAL_CHAT_CATALOG_SCOPE) : null,
     [catalog],
   );
   const models = useMemo<readonly ModelDescriptor[]>(
@@ -763,6 +768,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       canStartSend={canStartSend}
       showInterrupt={turnActive && Boolean(selectedId)}
       onInterrupt={() => { if (selectedId) void callPersonal<void>("interrupt", { sessionId: selectedId }); }}
+      onRuntimeCatalogRefreshed={() => { void loadModelCatalog("force").catch(() => undefined); }}
       error={error}
       onDismissError={() => setError(null)}
       textareaRef={textareaRef}

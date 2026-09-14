@@ -28,6 +28,7 @@ const FAKE_MODEL = {
 // The catalog→descriptor transform is not the unit under test; a small stub lets
 // each case flip provider availability deterministically.
 vi.mock("../shared/ModelPicker/modelCatalog", () => ({
+  PERSONAL_CHAT_CATALOG_SCOPE: "personal-chat",
   descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
     models: [FAKE_MODEL],
     availableModelIds: catalog?.available === false ? [] : ["fake-model"],

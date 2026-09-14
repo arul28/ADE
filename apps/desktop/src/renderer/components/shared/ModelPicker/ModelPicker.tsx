@@ -16,6 +16,7 @@ import {
   descriptorsFromAgentChatModelCatalog,
   filterAcpFallbackModelsToRuntimeCatalog,
   mergeSelectorModels,
+  requestModelCatalog,
   resolveModelDescriptorWithRuntimeCatalog,
 } from "./modelCatalog";
 import { useModelRecents } from "./useModelRecents";
@@ -34,6 +35,7 @@ import {
   refreshProviderForFamily,
   reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
+  PERSONAL_CHAT_CATALOG_SCOPE,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
@@ -122,7 +124,10 @@ export const ModelPicker = memo(function ModelPicker({
   openRequestKey,
   onOpenRequestHandled,
 }: ModelPickerProps) {
-  const catalogScopeKey = runtimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const catalogScopeKey = runtimePin?.key
+    ?? (surfaceKey === PERSONAL_CHAT_CATALOG_SCOPE
+      ? PERSONAL_CHAT_CATALOG_SCOPE
+      : DEFAULT_RUNTIME_CATALOG_SCOPE);
   // The scope KEY is the reactive input; the binding object itself is only a
   // routing payload. Reading it through a ref keeps `loadRuntimeCatalog` stable
   // across renders even if a caller hands us a fresh object each time, so an
@@ -191,8 +196,11 @@ export const ModelPicker = memo(function ModelPicker({
       }
     }
 
-    const bridge = window.ade?.agentChat?.modelCatalog;
-    if (typeof bridge !== "function") return null;
+    if (catalogScopeKey === PERSONAL_CHAT_CATALOG_SCOPE) {
+      if (typeof window.ade?.personalChats?.call !== "function") return null;
+    } else if (typeof window.ade?.agentChat?.modelCatalog !== "function") {
+      return null;
+    }
     const requestKey = `${catalogScopeKey}|${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
     const existingRequest = getRuntimeCatalogRequest(requestKey);
     if (existingRequest) {
@@ -210,12 +218,8 @@ export const ModelPicker = memo(function ModelPicker({
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
         };
-        // Only pinned surfaces pass a second argument, so the bound path keeps
-        // the exact call shape (and the preload's local IPC fallback) it had.
         const pin = runtimePinRef.current;
-        const next = pin
-          ? await bridge(fetchArgs, pin)
-          : await bridge(fetchArgs);
+        const next = await requestModelCatalog(fetchArgs, { catalogScopeKey, pin });
         const visible = rememberRuntimeCatalog(next, {
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),

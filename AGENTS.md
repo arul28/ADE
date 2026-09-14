@@ -131,7 +131,11 @@ Desktop release:
 - Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
 - Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
 
-## Cursor Cloud specific instructions
+## Cursor Cloud agents only (ignore outside Cursor Cloud)
+
+**Scope:** The rest of this file applies to every ADE contributor and agent. **This section applies only to agents running in [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent)** (the remote VM environment). Claude Code, Codex, local Cursor IDE, and other harnesses must **not** treat these bullets as repo-wide requirements — skip this section unless you are on a Cursor Cloud VM.
+
+If your environment is not Cursor Cloud, use the general **Validation** section above and the normal desktop/macOS/Windows docs elsewhere in this file.
 
 ### Environment overview
 

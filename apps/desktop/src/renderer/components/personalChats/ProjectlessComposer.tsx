@@ -1,6 +1,6 @@
 import type { CSSProperties, RefObject } from "react";
 import { Info, PaperPlaneTilt, SpinnerGap, Stop, X } from "@phosphor-icons/react";
-import type { AgentChatPermissionMode } from "../../../shared/types";
+import type { AgentChatModelCatalogRefreshProvider, AgentChatPermissionMode } from "../../../shared/types";
 import { modelSupportsFastMode, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { chatAccentContrast } from "../chat/chatSurfaceTheme";
@@ -33,6 +33,7 @@ export function ProjectlessComposer({
   canStartSend,
   showInterrupt,
   onInterrupt,
+  onRuntimeCatalogRefreshed,
   error,
   onDismissError,
   textareaRef,
@@ -60,6 +61,7 @@ export function ProjectlessComposer({
   canStartSend: boolean;
   showInterrupt: boolean;
   onInterrupt: () => void;
+  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   error: string | null;
   onDismissError: () => void;
   textareaRef: RefObject<HTMLTextAreaElement>;
@@ -117,6 +119,7 @@ export function ProjectlessComposer({
             fastModeActive={fastMode}
             fastModeSupported={modelSupportsFastMode(selectedDescriptor)}
             onFastModeToggle={onFastModeToggle}
+            onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
           />
           <ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} compact disabled={controlsDisabled} onChange={onReasoningChange} />
           <select value={permissionMode} disabled={controlsDisabled} onChange={(event) => onPermissionChange(event.target.value as AgentChatPermissionMode)} className="h-7 max-w-[112px] rounded-md border border-white/[0.06] bg-white/[0.025] px-2 font-sans text-[10px] text-fg/60 outline-none" aria-label="Permission mode">
