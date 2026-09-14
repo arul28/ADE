@@ -35,11 +35,11 @@ const EDITOR_LOGO_SRC: Record<EditorTarget, string> = {
 function StaticEditorLogo({
   src,
   size,
-  invert,
+  invertInDarkTheme,
 }: {
   src: string;
   size: number;
-  invert?: boolean;
+  invertInDarkTheme?: boolean;
 }) {
   return (
     <img
@@ -48,8 +48,7 @@ function StaticEditorLogo({
       width={size}
       height={size}
       draggable={false}
-      className="shrink-0 object-contain"
-      style={invert ? { filter: "invert(1)" } : undefined}
+      className={`shrink-0 object-contain${invertInDarkTheme ? " editor-target-logo--invert-in-dark" : ""}`}
     />
   );
 }
@@ -72,7 +71,7 @@ export function EditorTargetLogo({
       <StaticEditorLogo
         src={src}
         size={size}
-        invert={
+        invertInDarkTheme={
           target === "cursor" || target === "windsurf" || target === "trae"
         }
       />
