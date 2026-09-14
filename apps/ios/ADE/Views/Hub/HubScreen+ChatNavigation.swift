@@ -158,7 +158,9 @@ func hubChatShouldContinueActivationRebind(
 
 /// After Hub activate commits, `isCrossProject` falls and the destination
 /// rebinds onto the active project. If that switch then rolls the previous
-/// project back, `isCrossProject` rises again and foreign scope must return.
+/// project back, `isCrossProject` rises again. Callers must install foreign
+/// command scope *synchronously* on `.restoreForeign` before any `await`, or a
+/// same-turn send routes to the restored active project.
 enum HubChatActivationScopeTransition: Equatable {
   case rebindToActive
   case restoreForeign

@@ -1479,9 +1479,16 @@ struct WorkSessionDestinationView: View {
         switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {
         case .rebindToActive:
           hubActivationRebindTask?.cancel()
+          // Drop foreign routing on this turn so Send/approve cannot keep
+          // targeting a project that is now the active one.
+          syncService.clearCrossProjectChatScope(sessionId: sessionId)
           hubActivationRebindTask = Task { await rebindChatAfterHubActivation() }
         case .restoreForeign:
           hubActivationRebindTask?.cancel()
+          // Register before any await. A send can land in the same turn as the
+          // rollback; without this, chatCommandScopeBySession is empty and the
+          // message routes to the restored active project instead of the owner.
+          registerChatCommandScope()
           hubActivationRebindTask = Task { await restoreForeignChatScopeAfterActivationRollback() }
         case .none:
           break
