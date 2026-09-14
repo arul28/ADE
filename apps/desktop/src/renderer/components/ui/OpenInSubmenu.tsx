@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { AppWindow } from "@phosphor-icons/react";
 
 import {
@@ -8,6 +14,7 @@ import {
 } from "../../../shared/editorTargets";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { EditorTargetLogo } from "./EditorTargetLogo";
 
 const MENU_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.07] focus-visible:bg-white/[0.07] outline-none";
@@ -49,7 +56,8 @@ export function OpenInSubmenu({
         if (!cancelled) setInstalled(targets);
       })
       .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled)
+          setError(reason instanceof Error ? reason.message : String(reason));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -60,11 +68,12 @@ export function OpenInSubmenu({
   }, []);
 
   const eligible = useMemo(
-    () => installed.filter((target) => {
-      const definition = editorTargetDefinition(target);
-      if (!definition) return false;
-      return !remote || definition.supportsRemote;
-    }),
+    () =>
+      installed.filter((target) => {
+        const definition = editorTargetDefinition(target);
+        if (!definition) return false;
+        return !remote || definition.supportsRemote;
+      }),
     [installed, remote],
   );
 
@@ -84,20 +93,32 @@ export function OpenInSubmenu({
   return (
     <MenuSubmenu
       label={label}
-      icon={icon ?? (
-        <span aria-hidden data-menu-icon="" className="inline-flex shrink-0 text-fg/45">
-          <AppWindow size={13} weight="duotone" />
-        </span>
-      )}
+      icon={
+        icon ?? (
+          <span
+            aria-hidden
+            data-menu-icon=""
+            className="inline-flex shrink-0 text-fg/45"
+          >
+            <AppWindow size={13} weight="duotone" />
+          </span>
+        )
+      }
       className={className}
       style={style}
       hoverBackground={hoverBackground}
       title="Open this lane in an installed editor"
-      panelStyle={{ border: `1px solid ${COLORS.outlineBorder}`, padding: "4px 0" }}
+      panelStyle={{
+        border: `1px solid ${COLORS.outlineBorder}`,
+        padding: "4px 0",
+      }}
       panelMinWidth={230}
     >
       {loading ? (
-        <div className="px-3 py-2 text-[11px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        <div
+          className="px-3 py-2 text-[11px]"
+          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+        >
           Detecting editors…
         </div>
       ) : eligible.length > 0 ? (
@@ -112,17 +133,27 @@ export function OpenInSubmenu({
               className={MENU_ITEM_CLASS}
               onClick={() => void open(target)}
             >
+              <EditorTargetLogo target={target} size={16} />
               {definition.label}
             </button>
           );
         })
       ) : (
-        <div className="px-3 py-2 text-[11px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-          {remote ? "No compatible remote editor detected" : "No installed editors detected"}
+        <div
+          className="px-3 py-2 text-[11px]"
+          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+        >
+          {remote
+            ? "No compatible remote editor detected"
+            : "No installed editors detected"}
         </div>
       )}
       {error ? (
-        <div className="px-3 py-2 text-[11px]" role="alert" style={{ color: COLORS.danger }}>
+        <div
+          className="px-3 py-2 text-[11px]"
+          role="alert"
+          style={{ color: COLORS.danger }}
+        >
           {error}
         </div>
       ) : null}
