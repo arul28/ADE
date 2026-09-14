@@ -1476,9 +1476,15 @@ struct WorkSessionDestinationView: View {
         }
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
-        if wasForeign && !isForeign {
+        switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {
+        case .rebindToActive:
           hubActivationRebindTask?.cancel()
           hubActivationRebindTask = Task { await rebindChatAfterHubActivation() }
+        case .restoreForeign:
+          hubActivationRebindTask?.cancel()
+          hubActivationRebindTask = Task { await restoreForeignChatScopeAfterActivationRollback() }
+        case .none:
+          break
         }
       }
       .task {
@@ -1706,6 +1712,49 @@ struct WorkSessionDestinationView: View {
       return
     }
     await syncLanePresence()
+  }
+
+  /// Activation committed, then `switchToDesktopProject` restored the previous
+  /// project. Foreign scope was cleared on the way in; put it back so send and
+  /// transcript stay on the chat's owner.
+  @MainActor
+  func restoreForeignChatScopeAfterActivationRollback() async {
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    registerChatCommandScope()
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    guard let currentSession = session ?? initialSession, isChatSession(currentSession) else {
+      return
+    }
+    syncService.retainChatEventSubscription(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    await loadTranscript(forceRemote: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
   }
 
   func registerChatCommandScope() {

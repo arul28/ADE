@@ -232,7 +232,11 @@ struct HubScreen: View {
                 isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
                 collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
                 collapsedLaneKeys: $collapsedLaneKeys,
-                onToggleCollapse: { withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) } },
+                allowsCollapse: honoursCollapse,
+                onToggleCollapse: {
+                  guard honoursCollapse else { return }
+                  withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
+                },
                 onOpenProject: { syncService.selectProject(project) },
                 onOpenChat: { chat, lane in
                   openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
