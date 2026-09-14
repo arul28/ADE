@@ -169,6 +169,7 @@ extension WorkChatSessionView {
       WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
       let activity = turnToolActivity.completedByTurnId[marker.turnId]
+      let files = turnToolActivity.completedFilesByTurnId[marker.turnId]
       let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
       let usageViewModel: WorkContextUsageViewModel? = isLatestTurnEnd
         ? contextUsageViewModelCache.value(
@@ -189,9 +190,10 @@ extension WorkChatSessionView {
       WorkTurnEndMarkerView(
         marker: marker,
         toolCount: activity?.count ?? 0,
-        onOpenActivity: activity.map { _ in
-          { toolActivitySheet = .completed(marker.turnId) }
-        },
+        fileCount: files?.files.count ?? 0,
+        onOpenActivity: (activity != nil || files != nil)
+          ? { toolActivitySheet = .completed(marker.turnId) }
+          : nil,
         usageViewModel: usageViewModel,
         modelLabel: chatSummaryContext.modelLabel,
         compact: compact,
@@ -403,6 +405,7 @@ extension WorkChatSessionView {
 
 struct WorkTurnToolActivityIndex {
   let completedByTurnId: [String: WorkToolGroupModel]
+  let completedFilesByTurnId: [String: WorkChangedFilesGroupModel]
   let active: WorkToolGroupModel?
 }
 
@@ -422,7 +425,9 @@ enum WorkToolActivitySheetSelection: Identifiable, Equatable {
 
 func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToolActivityIndex {
   var completed: [String: WorkToolGroupModel] = [:]
+  var completedFiles: [String: WorkChangedFilesGroupModel] = [:]
   var pendingMembers: [WorkToolGroupMember] = []
+  var pendingFiles: [WorkChangedFileEntry] = []
   var currentUserTurnId: String?
 
   func mergedGroup(id: String, members: [WorkToolGroupMember]) -> WorkToolGroupModel? {
@@ -430,6 +435,13 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
     let unique = members.filter { seen.insert($0.id).inserted }
     guard !unique.isEmpty else { return nil }
     return WorkToolGroupModel(id: id, members: unique)
+  }
+
+  func mergedFiles(id: String, files: [WorkChangedFileEntry]) -> WorkChangedFilesGroupModel? {
+    var seen = Set<String>()
+    let unique = files.filter { seen.insert($0.path).inserted }
+    guard !unique.isEmpty else { return nil }
+    return WorkChangedFilesGroupModel(id: id, files: unique)
   }
 
   for entry in entries {
@@ -441,21 +453,26 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
       let isFollowUp = steerId?.isEmpty == false
       if normalizedTurnId != currentUserTurnId || (normalizedTurnId == nil && !isFollowUp) {
         pendingMembers.removeAll(keepingCapacity: true)
+        pendingFiles.removeAll(keepingCapacity: true)
       }
       currentUserTurnId = normalizedTurnId
     case .toolGroup(let group):
       pendingMembers.append(contentsOf: group.members)
+    case .changedFiles(let group):
+      pendingFiles.append(contentsOf: group.files)
     case .turnEndMarker(let marker):
       if let group = mergedGroup(id: "turn-activity:\(marker.turnId)", members: pendingMembers) {
         completed[marker.turnId] = group
       }
+      if let files = mergedFiles(id: "turn-files:\(marker.turnId)", files: pendingFiles) {
+        completedFiles[marker.turnId] = files
+      }
       pendingMembers.removeAll(keepingCapacity: true)
+      pendingFiles.removeAll(keepingCapacity: true)
       currentUserTurnId = nil
     case .turnSeparator:
-      // Imported or interrupted transcripts can begin a new turn without a
-      // terminal marker for the previous one. Do not attribute that earlier
-      // provider's tools to the next turn's completion disclosure.
       pendingMembers.removeAll(keepingCapacity: true)
+      pendingFiles.removeAll(keepingCapacity: true)
       currentUserTurnId = nil
     default:
       continue
@@ -464,6 +481,7 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
 
   return WorkTurnToolActivityIndex(
     completedByTurnId: completed,
+    completedFilesByTurnId: completedFiles,
     active: mergedGroup(id: "turn-activity:active", members: pendingMembers)
   )
 }

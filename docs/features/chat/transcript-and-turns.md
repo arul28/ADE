@@ -261,10 +261,11 @@ implements a two-layer transform:
      `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
      state; the compact while-you-were-away card scrolls to these stable keys.
    - `subagent_started` / `subagent_progress` / `subagent_result`
-     events collapse per agent (keyed by `agentId ?? taskId`) into two
-     stable render rows — a `subagent_spawn_anchor` at the start
-     position (mutated in place as progress arrives) and a
-     `subagent_result_card` at the settle position — while backgrounded
+     events collapse per agent (keyed by `agentId ?? taskId`) into one
+     card: a `subagent_spawn_anchor` while the agent is running, replaced
+     by a `subagent_result_card` at the settle position when it completes,
+     fails, or stops. A mass interrupt still folds adjacent stopped cards
+     into one `subagent_stopped_group`. Backgrounded
      shell commands collapse to a single `background_job_line`, pushed on
      the job's first sighting (so a running job is visible in the thread)
      and mutated in place through to its terminal state, which is never
@@ -359,11 +360,12 @@ implements a two-layer transform:
 4. **Client presentation.** Grouping remains lossless, but normalized tool,
    command, hook, and web-search groups no longer occupy permanent transcript
    rows. During a live turn they are available from the expandable working
-   status; after `done` they move to the existing turn-finished / `Ran for`
-   status. On desktop the `work_log_group` envelopes are filtered out of the
+   status; after `done` they collapse into one `N tools · M files` summary
+   stacked immediately above the turn's existing time/usage line. Expanding
+   lists the tools and files below that line. On desktop the `work_log_group` envelopes are filtered out of the
    rendered timeline entirely rather than rendered empty, so they do not
-   consume row gaps. File changes are reported **once per turn**, at that
-   turn's done divider, instead of once per uninterrupted burst of tool
+   consume row gaps. File changes share that same combined summary (unless a
+   checkpoint `turn_diff_summary` already covers the turn), instead of once per uninterrupted burst of tool
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
    Desktop and hosted web share this

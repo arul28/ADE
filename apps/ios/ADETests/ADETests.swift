@@ -15873,13 +15873,10 @@ final class ADETests: XCTestCase {
     let transcript = parseWorkChatTranscript(raw)
     let rows = buildWorkSubagentTimelineRows(from: transcript)
 
-    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 1)
+    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 0)
     XCTAssertEqual(rows.filter { $0.kind == .result }.count, 1)
-    // Progress ticks NEVER produce rows.
-    XCTAssertEqual(rows.count, 2)
-    // Spawn row comes before the result row in timeline order.
-    XCTAssertEqual(rows.first?.kind, .spawn)
-    XCTAssertEqual(rows.last?.kind, .result)
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertEqual(rows.first?.kind, .result)
     // Richer summary wins over the "Task updated" placeholder.
     XCTAssertEqual(rows.last?.summary, "Found the routing bug in app/router.ts")
   }
@@ -15926,9 +15923,8 @@ final class ADETests: XCTestCase {
 
     let rows = buildWorkSubagentTimelineRows(from: parseWorkChatTranscript(raw))
     XCTAssertEqual(rows.filter { $0.kind == .backgroundCommand }.count, 0)
-    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 1)
+    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 0)
     XCTAssertEqual(rows.filter { $0.kind == .result }.count, 1)
-    XCTAssertTrue(rows.first { $0.kind == .spawn }?.snapshot.background == true)
   }
 
   func testHistoricalCommandShapedSubagentClassifiesAsBackgroundChip() {
