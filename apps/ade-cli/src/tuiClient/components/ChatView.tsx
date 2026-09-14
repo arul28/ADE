@@ -1307,30 +1307,47 @@ function turnEndRows(
   const duration = block.durationMs != null ? formatDurationMs(block.durationMs) : "";
   const status = block.status === "completed" ? "" : ` · ${block.status}`;
   const terminalReason = block.terminalReasonLabel ? ` · ${block.terminalReasonLabel}` : "";
-  const actionLabel = block.entries.length > 0
-    ? ` · ${block.entries.length} ${block.entries.length === 1 ? "action" : "actions"}`
-    : "";
-  const caret = block.entries.length > 0 ? `${expanded ? "▾" : "▸"} ` : "";
-  const text = `${caret}${time}${duration ? ` · Ran for ${duration}` : ""}${status}${terminalReason}${actionLabel}`;
-  const rows: RenderedChatRow[] = [{
-    id: block.id,
-    tone: "footer",
-    text,
-    color: theme.color.t4,
-    rail: null,
-    expandableGroupId: block.entries.length > 0 ? expandKey : undefined,
-  }];
-  if (expanded) {
-    for (const entry of block.entries) {
-      rows.push(toolCallEntryRow(block.id, entry, spinFrame));
-      rows.push(...webSearchResultRows(block.id, entry));
+  const toolCount = block.entries.length;
+  const fileCount = block.fileEntries.length;
+  const workParts: string[] = [];
+  if (toolCount > 0) workParts.push(`${toolCount} ${toolCount === 1 ? "tool" : "tools"}`);
+  if (fileCount > 0) workParts.push(`${fileCount} ${fileCount === 1 ? "file" : "files"}`);
+  const rows: RenderedChatRow[] = [];
+  if (workParts.length > 0) {
+    const caret = expanded ? "▾ " : "▸ ";
+    rows.push({
+      id: `${block.id}:work`,
+      tone: "footer",
+      text: `${caret}${workParts.join(" · ")}`,
+      color: theme.color.t4,
+      rail: null,
+      expandableGroupId: expandKey,
+    });
+    if (expanded) {
+      for (const entry of block.entries) {
+        rows.push(toolCallEntryRow(block.id, entry, spinFrame));
+        rows.push(...webSearchResultRows(block.id, entry));
+      }
+      const pathWidth = 40;
+      for (const file of block.fileEntries) {
+        rows.push(fileChangeEntryRow(block.id, file, pathWidth, spinFrame, "  "));
+      }
     }
   }
+  rows.push({
+    id: block.id,
+    tone: "footer",
+    text: `${time}${duration ? ` · Ran for ${duration}` : ""}${status}${terminalReason}`,
+    color: theme.color.t4,
+    rail: null,
+  });
   return rows;
 }
 
 function isTranscriptBlockVisible(block: AggregatedBlock): boolean {
-  return block.kind !== "tool-calls-group";
+  if (block.kind === "tool-calls-group") return false;
+  if (block.kind === "files-changed-group" && !block.live) return false;
+  return true;
 }
 
 function rowsForBlocks(

@@ -139,8 +139,9 @@ type SubagentCardTerminalStatus = Exclude<SubagentCardStatus, "running">;
 
 /**
  * Anchor row for a real subagent, pushed once where the agent started and then
- * mutated IN PLACE (new object, same key) as progress/result events arrive.
- * Renders the two-row spawn card. Row key: `subagent-spawn:${agentKey}`.
+ * mutated IN PLACE (new object, same key) as progress arrives. Dropped when the
+ * result card is appended so the thread keeps one card per agent.
+ * Row key: `subagent-spawn:${agentKey}`.
  */
 export type SubagentSpawnAnchorRenderEvent = {
   type: "subagent_spawn_anchor";
@@ -198,7 +199,7 @@ export type SubagentResultCardRenderEvent = {
 export type SubagentStoppedGroupItem = {
   agentKey: string;
   title: string;
-  /** Stable row key of this agent's spawn anchor (`subagent-spawn:${agentKey}`). */
+  /** Stable row key of this agent's remaining card (`subagent-result:${agentKey}`). */
   jumpToStartRowKey: string;
 };
 
@@ -1489,11 +1490,11 @@ function classificationInput(state: SubagentAnchorState) {
  * Handle one of the three subagent lifecycle events. Returns true if the event
  * was consumed (caller should stop). Mutates rows and context in place.
  *
- * INVARIANT: the ONLY splice is the stale background-job-line drop below, which
- * repairs every stored position through `repairIndexedTranscriptRowsAfterSplice`.
- * Card rows are never spliced — only pushed at the tail or replaced by their
- * stored index, and every replacement verifies the stable key and repairs a
- * stale position before mutating.
+ * INVARIANT: splices go through `repairIndexedTranscriptRowsAfterSplice`.
+ * The stale background-job-line drop is one; dropping a spawn card once the
+ * result card exists is the other. Remaining card rows are pushed at the tail
+ * or replaced by their stored index, and every replacement verifies the stable
+ * key and repairs a stale position before mutating.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -1602,6 +1603,11 @@ function handleSubagentLifecycleEvent(
       }
       return true;
     }
+    // A settled agent keeps its result card only. A late progress tick must not
+    // mint a second spawn row after the start card was dropped.
+    if (state.status !== "running" || state.endedAt != null) {
+      return true;
+    }
     if (state.rowIndex == null) {
       // First lifecycle → push the spawn anchor and record its index.
       state.status = "running";
@@ -1658,7 +1664,7 @@ function handleSubagentLifecycleEvent(
     return true;
   }
 
-  // Real subagent terminal: flip the anchor + push/mutate the result card.
+  // Real subagent terminal: drop the spawn card and keep one result card.
   state.status = terminalStatus;
   if (event.type === "subagent_result") {
     if (typeof event.totalTokens === "number") state.totalTokens = event.totalTokens;
@@ -1674,11 +1680,11 @@ function handleSubagentLifecycleEvent(
     state.error = state.resultSummary ?? state.error;
   }
 
-  // Flip the anchor terminal (freezes the live line) if it exists.
   if (state.rowIndex != null) {
     const expectedKey = subagentSpawnKey(state.renderKeyBase);
     const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
-    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: spawnAnchorEvent(state, anchors) };
+    if (rowIndex != null) removeCollapsedTranscriptRow(rows, context, rowIndex);
+    state.rowIndex = null;
   }
 
   const resultEvent: SubagentResultCardRenderEvent = {
@@ -3035,7 +3041,7 @@ function groupStoppedSubagentResultCards(
       return {
         agentKey: event.agentKey,
         title: event.description?.trim() || "Subagent task",
-        jumpToStartRowKey: subagentSpawnKey(event.agentKey),
+        jumpToStartRowKey: subagentResultKey(event.agentKey),
       };
     });
     const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;

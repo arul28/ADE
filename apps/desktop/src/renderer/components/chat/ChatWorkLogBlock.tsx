@@ -808,12 +808,22 @@ function FilesChangedPanel({
  * row's tooltip) and open in the Files tab, both via the chat's workspace-path
  * context.
  */
+export function formatTurnWorkSummaryLabel(toolCount: number, fileCount: number): string {
+  const parts: string[] = [];
+  if (toolCount > 0) parts.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+  if (fileCount > 0) parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
 export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChangedSummary({
   entries,
   onReviewInFiles,
+  embedded = false,
 }: {
   entries: ChatWorkLogEntry[];
   onReviewInFiles?: () => void;
+  /** Skip the standalone files header when nested inside the combined turn summary. */
+  embedded?: boolean;
 }) {
   // Opening and display-formatting are two halves of the same hook, so both ride
   // the chat's workspace-path context rather than being threaded as props.
@@ -831,10 +841,23 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
 
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
   const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  const listOpen = embedded || open;
   const Caret = open ? CaretDown : CaretRight;
 
   return (
     <div className="mt-2 w-full min-w-0 max-w-[var(--chat-content-width,52rem)] space-y-1.5 overflow-hidden">
+      {embedded && onReviewInFiles ? (
+        <div className="flex min-w-0 justify-end pl-[18px]">
+          <button
+            type="button"
+            onClick={onReviewInFiles}
+            className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40 transition-colors hover:text-fg/65"
+          >
+            Review in Files
+          </button>
+        </div>
+      ) : null}
+      {embedded ? null : (
       <div className="flex min-w-0 max-w-full items-center gap-2">
         <button
           type="button"
@@ -873,7 +896,8 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
           </button>
         ) : null}
       </div>
-      {open ? (
+      )}
+      {listOpen ? (
         <div className="min-w-0 max-w-full space-y-0.5 overflow-hidden pl-[18px]">
           {files.map((file) => {
             const display = formatDisplayPath ? formatDisplayPath(file.path) : file.path;
@@ -946,6 +970,83 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
     </div>
   );
 });
+
+export function ChatTurnWorkSummary({
+  toolEntries,
+  fileEntries,
+  hideFiles = false,
+  onReviewInFiles,
+  onNavigateSuggestion,
+  onInsertDraft,
+  onRevealChatTerminal,
+  sessionId,
+  chrome,
+}: {
+  toolEntries: ChatWorkLogEntry[];
+  fileEntries: ChatWorkLogEntry[];
+  hideFiles?: boolean;
+  onReviewInFiles?: () => void;
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  sessionId?: string | null;
+  /** Time/usage hairline rendered directly under the summary label. */
+  chrome?: React.ReactNode;
+}) {
+  const workspacePaths = useChatWorkspacePaths();
+  const [open, setOpen] = useState(false);
+  const tools = useMemo(() => dedupeChatToolActivityEntries(toolEntries), [toolEntries]);
+  const files = useMemo(
+    () => (hideFiles ? [] : aggregateFilesFromEntries(fileEntries.filter(isCodeChangeEntry))),
+    [fileEntries, hideFiles],
+  );
+  const label = formatTurnWorkSummaryLabel(tools.length, files.length);
+  if (!label && !chrome) return null;
+  const Caret = open ? CaretDown : CaretRight;
+
+  return (
+    <div className="w-full min-w-0">
+      {label ? (
+        <div className="mb-1 flex justify-center">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`${open ? "Hide" : "Show"} ${label} from this turn`}
+            onClick={() => {
+              if (!open) workspacePaths?.ensureWorkspacesLoaded?.();
+              setOpen((value) => !value);
+            }}
+            className="flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-center font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+          >
+            <Caret size={10} weight="bold" className="shrink-0 text-fg/35" />
+            <span className="font-medium">{label}</span>
+          </button>
+        </div>
+      ) : null}
+      {chrome}
+      {label && open ? (
+        <div className="mt-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+          {tools.length > 0 ? (
+            <ChatToolActivityDetails
+              entries={tools}
+              onNavigateSuggestion={onNavigateSuggestion}
+              onInsertDraft={onInsertDraft}
+              onRevealChatTerminal={onRevealChatTerminal}
+              sessionId={sessionId}
+            />
+          ) : null}
+          {files.length > 0 ? (
+            <ChatTurnFilesChangedSummary
+              entries={fileEntries}
+              onReviewInFiles={onReviewInFiles}
+              embedded
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function LocalhostServersStrip({
   entries,

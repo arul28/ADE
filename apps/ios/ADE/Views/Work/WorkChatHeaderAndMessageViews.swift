@@ -858,6 +858,7 @@ struct WorkModelHandoffDivider: View {
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var toolCount: Int = 0
+  var fileCount: Int = 0
   var onOpenActivity: (() -> Void)? = nil
   var usageViewModel: WorkContextUsageViewModel? = nil
   var modelLabel: String? = nil
@@ -886,6 +887,17 @@ struct WorkTurnEndMarkerView: View {
   /// A turn that ended at a usage limit is a pause, not a failure: one muted
   /// line, no FAILED, no red. The turn's usage numbers move behind the details
   /// toggle below rather than sitting in their own row beside it.
+  private var workSummaryLabel: String? {
+    var parts: [String] = []
+    if toolCount > 0 {
+      parts.append("\(toolCount) \(toolCount == 1 ? "tool" : "tools")")
+    }
+    if fileCount > 0 {
+      parts.append("\(fileCount) \(fileCount == 1 ? "file" : "files")")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
   private var usageLimitLine: String {
     "Paused · usage limit · \(marker.workedDurationLabel)"
   }
@@ -894,9 +906,7 @@ struct WorkTurnEndMarkerView: View {
     if marker.usageLimitPaused {
       return "Turn paused at the usage limit after \(marker.workedDurationLabel)."
     }
-    let activityLabel = toolCount > 0
-      ? "\(toolCount) \(toolCount == 1 ? "action" : "actions"). Opens activity details."
-      : nil
+    let activityLabel = workSummaryLabel.map { "\($0). Opens activity details." }
     if completed {
       return [
         "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Ran for \(marker.workedDurationLabel)",
@@ -967,49 +977,63 @@ struct WorkTurnEndMarkerView: View {
 
   private var usageLimitDetails: Bool { marker.usage != nil }
 
-  private var standardBody: some View {
-    HStack(spacing: 10) {
-      hairline
-      if let onOpenActivity, toolCount > 0 {
-        Button(action: onOpenActivity) {
-          HStack(spacing: 5) {
-            content
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.system(size: 8, weight: .semibold))
-              .opacity(0.55)
-          }
+  @ViewBuilder
+  private var workSummaryRow: some View {
+    if let workSummaryLabel, let onOpenActivity {
+      Button(action: onOpenActivity) {
+        HStack(spacing: 5) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 8, weight: .semibold))
+            .opacity(0.55)
+          Text(workSummaryLabel)
+            .font(.caption2.weight(.medium))
         }
-        .buttonStyle(.plain)
-        .frame(minHeight: 44)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(minHeight: 28)
         .contentShape(Rectangle())
-        .accessibilityHint("Opens activity details.")
-      } else {
-        content
       }
-      hairline
-      if let usageViewModel {
-        WorkContextUsageMeter(
-          usage: usageViewModel,
-          isPresented: $contextUsagePresented
-        )
-        .popover(
-          isPresented: $contextUsagePresented,
-          attachmentAnchor: .rect(.bounds),
-          arrowEdge: .bottom
-        ) {
-          WorkContextUsagePopover(
-            usage: usageViewModel,
-            modelLabel: modelLabel ?? marker.modelLabel,
-            compact: compact,
-            onCompact: {
-              contextUsagePresented = false
-              onCompact?()
-            }
-          )
-          .presentationCompactAdaptation(.popover)
-          .presentationBackground(ADEColor.surfaceBackground)
+      .buttonStyle(.plain)
+      .accessibilityHint("Opens activity details.")
+    } else if let workSummaryLabel {
+      Text(workSummaryLabel)
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+
+  private var standardBody: some View {
+    VStack(spacing: 6) {
+      HStack(spacing: 10) {
+        hairline
+        VStack(spacing: 4) {
+          workSummaryRow
+          content
         }
-        .layoutPriority(2)
+        hairline
+        if let usageViewModel {
+          WorkContextUsageMeter(
+            usage: usageViewModel,
+            isPresented: $contextUsagePresented
+          )
+          .popover(
+            isPresented: $contextUsagePresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+          ) {
+            WorkContextUsagePopover(
+              usage: usageViewModel,
+              modelLabel: modelLabel ?? marker.modelLabel,
+              compact: compact,
+              onCompact: {
+                contextUsagePresented = false
+                onCompact?()
+              }
+            )
+            .presentationCompactAdaptation(.popover)
+            .presentationBackground(ADEColor.surfaceBackground)
+          }
+          .layoutPriority(2)
+        }
       }
     }
     .frame(maxWidth: .infinity)

@@ -581,29 +581,49 @@ struct WorkToolCallsPanelView: View {
 }
 
 struct WorkTurnActivitySheet: View {
-  let group: WorkToolGroupModel
+  let group: WorkToolGroupModel?
+  let files: WorkChangedFilesGroupModel?
   @State private var expanded = true
-  /// The panel's member expansion moved out to its caller, so the sheet has to
-  /// hold it: without this every call in the sheet rendered permanently shut and
-  /// tapping one did nothing — and the sheet is the whole-turn view of the work.
+  @State private var filesExpanded = true
   @State private var expandedMemberIds: Set<String> = []
+  @State private var expandedFileIds: Set<String> = []
 
   var body: some View {
     NavigationStack {
       ScrollView {
-        WorkToolCallsPanelView(
-          group: group,
-          isExpanded: expanded,
-          onToggle: { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } },
-          expandedMemberIds: expandedMemberIds,
-          onToggleMember: { memberId in
-            if expandedMemberIds.contains(memberId) {
-              expandedMemberIds.remove(memberId)
-            } else {
-              expandedMemberIds.insert(memberId)
-            }
+        VStack(alignment: .leading, spacing: 16) {
+          if let group {
+            WorkToolCallsPanelView(
+              group: group,
+              isExpanded: expanded,
+              onToggle: { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } },
+              expandedMemberIds: expandedMemberIds,
+              onToggleMember: { memberId in
+                if expandedMemberIds.contains(memberId) {
+                  expandedMemberIds.remove(memberId)
+                } else {
+                  expandedMemberIds.insert(memberId)
+                }
+              }
+            )
           }
-        )
+          if let files {
+            WorkChangedFilesPanelView(
+              group: files,
+              isExpanded: filesExpanded,
+              onToggle: { withAnimation(.easeInOut(duration: 0.18)) { filesExpanded.toggle() } },
+              expandedFileIds: expandedFileIds,
+              onToggleFile: { fileId in
+                if expandedFileIds.contains(fileId) {
+                  expandedFileIds.remove(fileId)
+                } else {
+                  expandedFileIds.insert(fileId)
+                }
+              },
+              onUndo: nil
+            )
+          }
+        }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
       }

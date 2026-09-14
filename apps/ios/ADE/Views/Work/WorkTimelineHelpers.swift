@@ -1069,7 +1069,7 @@ func buildWorkSubagentTimelineRows(
       continue
     }
 
-    if let firstStarted {
+    if let firstStarted, firstResult == nil {
       positionedRows.append((
         firstStarted.index,
         WorkSubagentTimelineRow(
@@ -1952,7 +1952,17 @@ func workPresentedTimelineEntries(
   provider: String? = nil
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
+  let liveIds = workEntryIdsAfterLatestTurnEnd(in: timeline)
+  let hasTurnEnd = timeline.contains { if case .turnEndMarker = $0.payload { return true }; return false }
   return timeline.filter { entry in
+    if hasTurnEnd {
+      switch entry.payload {
+      case .toolGroup, .changedFiles:
+        return liveIds.contains(entry.id)
+      default:
+        break
+      }
+    }
     guard case .eventCard(let card) = entry.payload else { return true }
     switch card.kind {
     case "activity", "activityBundle", "todo":

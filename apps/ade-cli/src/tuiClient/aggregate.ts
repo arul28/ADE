@@ -100,7 +100,7 @@ export type AggregatedBlock =
   | { kind: "conversation-reset"; id: string }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
-  | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[] }
+  | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[]; fileEntries: FileChangeEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
   | { kind: "error"; id: string; line: RenderedChatLine }
   | { kind: "notice"; id: string; line: RenderedChatLine };
@@ -753,12 +753,27 @@ function appendRuntimeActivityBlock(
   if (block.entries.length > 8) block.entries.splice(0, block.entries.length - 8);
 }
 
+function removeFoldedActivityEntry(blocks: AggregatedBlock[], foldKey: string): void {
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const block = blocks[blockIndex];
+    if (!block || block.kind !== "activity-bundle") continue;
+    const entryIndex = block.entries.findIndex((entry) => entry.foldKey === foldKey);
+    if (entryIndex < 0) continue;
+    block.entries.splice(entryIndex, 1);
+    if (block.entries.length === 0) blocks.splice(blockIndex, 1);
+    return;
+  }
+}
+
 function appendActivityBundleBlock(
   blocks: AggregatedBlock[],
   id: string,
   turnId: string | null,
   entry: ActivityBundleEntry,
 ): void {
+  if (entry.foldKey && entry.status !== "running") {
+    removeFoldedActivityEntry(blocks, entry.foldKey);
+  }
   const last = blocks[blocks.length - 1];
   let block: Extract<AggregatedBlock, { kind: "activity-bundle" }>;
   if (last && last.kind === "activity-bundle" && last.turnId === turnId) {
@@ -1338,6 +1353,14 @@ export function aggregateChatBlocks(args: {
         ))
         .flatMap((block) => block.entries);
       const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
+      const fileEntries = blocks
+        .slice(toolActivitySegmentStart)
+        .filter((block): block is Extract<AggregatedBlock, { kind: "files-changed-group" }> => (
+          block.kind === "files-changed-group"
+          && (!turnId || !block.turnId || block.turnId === turnId)
+        ))
+        .flatMap((block) => block.entries);
+      const uniqueFileEntries = Array.from(new Map(fileEntries.map((fileEntry) => [fileEntry.path, fileEntry])).values());
       const endedAt = safeMs(envelope.timestamp);
       const startedAt = turnStartedAt.get(turnKey);
       const turnEndBlock: Extract<AggregatedBlock, { kind: "turn-end" }> = {
@@ -1349,6 +1372,7 @@ export function aggregateChatBlocks(args: {
         terminalReasonLabel: terminalReasonLabel(event.terminalReason) ?? undefined,
         durationMs: startedAt !== undefined && endedAt >= startedAt ? endedAt - startedAt : undefined,
         entries: uniqueEntries,
+        fileEntries: uniqueFileEntries,
       };
       if (interruptedTerminusCluster) {
         const existing = interruptedTerminusCluster.turnEndBlock;
@@ -1363,6 +1387,9 @@ export function aggregateChatBlocks(args: {
           existing.durationMs = Math.max(existing.durationMs ?? 0, turnEndBlock.durationMs ?? 0) || undefined;
           existing.entries = Array.from(new Map(
             [...existing.entries, ...turnEndBlock.entries].map((toolEntry) => [toolEntry.itemId, toolEntry]),
+          ).values());
+          existing.fileEntries = Array.from(new Map(
+            [...existing.fileEntries, ...turnEndBlock.fileEntries].map((fileEntry) => [fileEntry.path, fileEntry]),
           ).values());
         } else {
           blocks.splice(interruptedTerminusCluster.startBlockIndex);
