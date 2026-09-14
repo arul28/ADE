@@ -1485,6 +1485,10 @@ struct WorkSessionDestinationView: View {
           hubActivationRebindTask = Task { await rebindChatAfterHubActivation() }
         case .restoreForeign:
           hubActivationRebindTask?.cancel()
+          if let announcedLaneId {
+            syncService.releaseLaneOpen(laneId: announcedLaneId)
+            self.announcedLaneId = nil
+          }
           // Register before any await. A send can land in the same turn as the
           // rollback; without this, chatCommandScopeBySession is empty and the
           // message routes to the restored active project instead of the owner.
@@ -1730,6 +1734,10 @@ struct WorkSessionDestinationView: View {
       destinationVisible: chatDestinationVisible,
       taskCancelled: Task.isCancelled
     ) else { return }
+    if let announcedLaneId {
+      syncService.releaseLaneOpen(laneId: announcedLaneId)
+      self.announcedLaneId = nil
+    }
     registerChatCommandScope()
     guard hubChatShouldContinueActivationRebind(
       destinationVisible: chatDestinationVisible,
