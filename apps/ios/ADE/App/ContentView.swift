@@ -377,7 +377,9 @@ struct ContentView: View {
         // lifts .tabItem/.badge out of the content view, but an
         // .accessibilityLabel applied outside would stay on the content and
         // never reach the tab-bar button VoiceOver actually focuses.
-        Label("CTO", systemImage: "brain")
+        // `location.north.circle` is the SF Symbol nearest the desktop
+        // CtoMark — a needle in a ring. One identity across both clients.
+        Label("CTO", systemImage: "location.north.circle")
           .accessibilityLabel(
             syncService.ctoAttention.isAwaitingInput ? "CTO, waiting on you" : "CTO"
           )

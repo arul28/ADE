@@ -9,16 +9,23 @@ export function isPrimaryPinnedIdentity(identityKey: AgentChatIdentityKey | unde
 }
 
 /**
- * A live voice call holds the CTO read-only.
+ * A live voice call holds the CTO in confirm-first mode.
  *
  * The CTO is pinned to full-auto everywhere else on purpose, and callers must
- * not be able to layer a stricter mode on top casually. A voice call is the one
- * case that inverts the pin: an open microphone is an open door, and a misheard
- * sentence must not reach a tool that writes.
+ * not be able to layer a different mode on top casually. A voice call is the
+ * one case that changes the pin, and `"default"` is precisely the mode it
+ * needs: reads run free and narrate, mutations raise an approval through
+ * `canUseTool` (see `claudeToolNeedsApproval`). A call can therefore do
+ * everything the chat can do — it just has to ask out loud first.
  *
- * The hold lives here rather than on the session because a session-level
- * downgrade cannot hold. Every writer of an identity session's permission mode
- * routes through `normalizeIdentityPermissionMode` — including the
+ * Not `"plan"`, which refuses writes outright: that made a call read-only and
+ * left the whole spoken-confirmation system unreachable. Not `"full-auto"`
+ * either — an open microphone is an open door, and a misheard sentence must not
+ * reach a tool that writes without a word from the user.
+ *
+ * The hold lives here rather than on the session because a session-level change
+ * cannot hold. Every writer of an identity session's permission mode routes
+ * through `normalizeIdentityPermissionMode` — including the
  * `ensureIdentitySession` path that re-normalizes a reused session before every
  * turn — so a mode written once is snapped back on the next turn. This is the
  * single point all of them pass.
@@ -26,20 +33,20 @@ export function isPrimaryPinnedIdentity(identityKey: AgentChatIdentityKey | unde
  * A counter, not a boolean, so overlapping holds cannot release each other
  * early. Each `begin` answers its own release, and a release is idempotent.
  */
-let identityReadOnlyHolds = 0;
+let identityConfirmHolds = 0;
 
-export function beginIdentityReadOnlyHold(): () => void {
-  identityReadOnlyHolds += 1;
+export function beginIdentityConfirmHold(): () => void {
+  identityConfirmHolds += 1;
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    identityReadOnlyHolds = Math.max(0, identityReadOnlyHolds - 1);
+    identityConfirmHolds = Math.max(0, identityConfirmHolds - 1);
   };
 }
 
-export function isIdentityReadOnlyHeld(): boolean {
-  return identityReadOnlyHolds > 0;
+export function isIdentityConfirmHeld(): boolean {
+  return identityConfirmHolds > 0;
 }
 
 export function normalizeIdentityPermissionMode(
@@ -48,7 +55,7 @@ export function normalizeIdentityPermissionMode(
   provider: AgentChatProvider,
 ): AgentChatSession["permissionMode"] {
   if (isPrimaryPinnedIdentity(identityKey)) {
-    return isIdentityReadOnlyHeld() ? "plan" : "full-auto";
+    return isIdentityConfirmHeld() ? "default" : "full-auto";
   }
   return mode === "plan" ? "plan" : guardedIdentityPermissionModeForProvider(provider);
 }

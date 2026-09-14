@@ -427,19 +427,27 @@ Both are load bearing and neither is obvious from the API shape.
 
 The filler goes out before any backend work starts — `speak(delegationId, "Let me check that.")` on the first line of `handleDelegation`, then `think(...)` with the reconstructed intent as silent context — because the entire point of the `thinking` phase is that the user does not hear silence while ADE works. `speak` posts `session.commentary.append` (paraphrased aloud); `think` posts `session.thinking.append` (usable, never read out).
 
-### A call cannot write
+### A call can do anything the chat can — it just has to ask
 
-While a call is up the CTO is held read-only, and that is enforced in code at the one point every writer passes.
+A call is not read-only. It runs every tool the CTO runs; what changes is that the ones which write stop and ask you out loud first.
 
-`setCallReadOnly(true)` takes a hold from `beginIdentityReadOnlyHold()` before the socket opens, and `normalizeIdentityPermissionMode` answers `plan` instead of `full-auto` for as long as any hold is up. The hold lives there rather than on the session because a session-level downgrade cannot hold: the CTO is pinned to `full-auto` by that same function, and `ensureIdentitySession` re-normalizes before every turn, so a mode written once is snapped back before the first word reaches a tool. Leaving plan mode goes through `exitPlanModeForSession`, so no approval path can hand the write access back mid-call.
+`setCallConfirmMode(true)` takes a hold from `beginIdentityConfirmHold()` before the socket opens, and `normalizeIdentityPermissionMode` answers `default` instead of `full-auto` for as long as any hold is up. `default` is exactly the mode that gate wants: `claudeToolNeedsApproval` lets reads through untouched and raises an approval for anything that writes. Not `plan`, which refuses writes outright — that made the call read-only and left this whole confirmation system unreachable. Not `full-auto` either: an open microphone is an open door, and a misheard sentence must not reach a tool that writes unasked.
 
-It is a counter, not a flag, so two overlapping calls cannot release each other early, and each call owns its own `releaseReadOnly`. A call that fails on the way in gives its hold back; a call whose window closes or reloads is ended by `watchOwner`, which is what stops a hold outliving the call that took it.
+The hold lives in the policy rather than on the session because a session-level change cannot hold. The CTO is pinned to `full-auto` by that same function, and `ensureIdentitySession` re-normalizes before every turn, so a mode written once is snapped back before the first word reaches a tool. Leaving plan mode goes through `exitPlanModeForSession`, so no approval path can hand full access back mid-call.
+
+It is a counter, not a flag, so two overlapping calls cannot release each other early, and each call owns its own `releaseConfirmHold`. A call that fails on the way in gives its hold back; a call whose window closes or reloads is ended by `watchOwner`, which is what stops a hold outliving the call that took it.
+
+### How a blocked turn reaches your ears
+
+The gate is a promise parked inside `canUseTool`, so a turn waiting on it has not returned — nothing comes back through `runBackendTurn` to say the CTO is stuck. Without a second channel the call simply goes quiet mid-sentence and you have to go find the chat to unblock it, which is the one thing a call exists to avoid.
+
+So for the life of a call the wiring subscribes to the CTO thread's own events (`watchApprovals`). An `approval_request` on that session becomes a `CtoVoiceConfirmation`, the HUD moves to `confirming`, and the question is spoken with no `delegation_id` — this is ADE asking, not an answer to something the voice model delegated. Your answer goes back through `approveToolUse`, the same call the approval card in the chat makes: a spoken yes and a tap land on one code path, because the call is a second mouth on the CTO thread and not a second permission system.
+
+`describeApprovalTool` bridges the two vocabularies. A Claude approval names the SDK tool (`Bash`, `Write`); `CTO_VOICE_DESTRUCTIVE_TOOLS` names ADE's operations (`gitForcePush`, `mergePr`). The description is searched for the latter, so a force-push reaches the card path whichever layer raised it.
 
 ### Confirmation is code, not prompt
 
 Reads narrate freely: a turn that only looked something up comes back as `spoken` text and is said. A mutation stops and asks — `runBackendTurn` returns a `confirmation`, the service builds a `CtoVoiceConfirmation`, and the HUD moves to the `confirming` phase with a strip the user can tap.
-
-**This path is not reachable in this release.** The read-only hold above means a voice turn cannot request a mutation in the first place, so `runBackendTurn` never returns a `confirmation` today. The machinery is built, unit-tested and documented because the decision it encodes — what a spoken "yes" may and may not approve — has to be settled before a call is ever allowed to write, not after.
 
 A spoken "yes" is honoured only when `resolveSpokenConfirmation` can show it is genuinely an answer to a question the CTO actually asked. An open microphone is an open door — the CTO's own audio comes back through the speakers, a podcast says "yeah do it", someone walks past — so all four of these must hold:
 
@@ -461,7 +469,7 @@ The HUD renders nothing in the `idle` and `ended` phases, and the pill shows the
 ### Scope and limits
 
 - **Desktop only in this release.** There is no iOS voice-call surface and no hosted-web one; `window.ade.ctoVoice` is read optionally everywhere precisely so those clients degrade instead of throwing.
-- **A call is read-only.** See above. A call can look at anything and change nothing; asking it to change something gets you a description of what it would do and an invitation to say it again in the chat.
+- **A call asks before it writes.** See above. Reads run and narrate; anything that writes stops for a spoken yes, and the eleven operations whose blast radius is other people's work stop for a tap no matter what you say.
 - **One window owns the microphone.** Every window shows the pill, so a call stays visible wherever you are working, but only the window that started it captures and plays audio — `isCallOwner` is decided per window by the main process. Two capturing windows would put two interleaved PCM streams into one socket.
 
 ## Tab model

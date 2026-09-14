@@ -275,6 +275,111 @@ describe("createCtoVoiceCallService", () => {
     expect(latest().pendingConfirmation?.toolName).toBe("openPr");
   });
 
+  /**
+   * The whole point of the call being able to act.
+   *
+   * The CTO's turn parks inside `canUseTool` when it reaches a tool that
+   * writes. Nothing comes back through `runBackendTurn` to say so, so the call
+   * learns about it from the chat's own approval event — and a spoken yes has
+   * to reach that waiter, or the user hears "doing that now" and nothing runs.
+   */
+  describe("acting on a call", () => {
+    function createCallWithApprovals(overrides: Record<string, unknown> = {}) {
+      let raise: ((a: { itemId: string; toolName: string; prompt: string }) => void) | null = null;
+      const resolved: Array<{ itemId: string; approved: boolean }> = [];
+      let watcherReleased = false;
+      const harness = createService({
+        watchApprovals: (onApproval: (a: { itemId: string; toolName: string; prompt: string }) => void) => {
+          raise = onApproval;
+          return () => { watcherReleased = true; };
+        },
+        resolveApproval: async (args: { itemId: string; approved: boolean }) => { resolved.push(args); },
+        ...overrides,
+      } as never);
+      return {
+        ...harness,
+        resolved,
+        raise: (a: { itemId: string; toolName: string; prompt: string }) => raise?.(a),
+        wasWatcherReleased: () => watcherReleased,
+      };
+    }
+
+    it("asks out loud, then lets the blocked turn through on a spoken yes", async () => {
+      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
+      await service.start();
+      fake.open();
+      fake.receive({ type: "session.started" });
+      fake.receive({ type: "session.input_transcript.delta", delta: "open a pr for the sync lane" });
+      fake.receive({ type: "session.input_transcript.done", text: "open a pr for the sync lane" });
+
+      raise({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+      expect(latest().phase).toBe("confirming");
+      expect(latest().pendingConfirmation?.prompt).toContain("pull request");
+      // The user has to HEAR the question, not find it in the chat.
+      const asked = fake.lastOfType("session.commentary.append") as Record<string, unknown>;
+      expect(String(asked.content)).toContain("pull request");
+
+      fake.receive({ type: "session.input_transcript.delta", delta: "yes" });
+      fake.receive({ type: "session.input_transcript.done", text: "yes" });
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(latest().pendingConfirmation).toBeNull();
+      expect(resolved).toEqual([{ itemId: "item-1", approved: true }]);
+    });
+
+    it("turns the tool away on a spoken no", async () => {
+      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
+      await service.start();
+      fake.open();
+      fake.receive({ type: "session.started" });
+      fake.receive({ type: "session.input_transcript.delta", delta: "clean up the branch" });
+      fake.receive({ type: "session.input_transcript.done", text: "clean up the branch" });
+
+      raise({ itemId: "item-2", toolName: "openPr", prompt: "Open a pull request?" });
+      fake.receive({ type: "session.input_transcript.delta", delta: "no, don't" });
+      fake.receive({ type: "session.input_transcript.done", text: "no, don't" });
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(latest().pendingConfirmation).toBeNull();
+      expect(resolved).toEqual([{ itemId: "item-2", approved: false }]);
+    });
+
+    it("will not let a voice approve a force-push, however clearly it is said", async () => {
+      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
+      await service.start();
+      fake.open();
+      fake.receive({ type: "session.started" });
+      fake.receive({ type: "session.input_transcript.delta", delta: "force push it" });
+      fake.receive({ type: "session.input_transcript.done", text: "force push it" });
+
+      raise({ itemId: "item-3", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
+      expect(latest().pendingConfirmation?.destructive).toBe(true);
+
+      fake.receive({ type: "session.input_transcript.delta", delta: "yes do it" });
+      fake.receive({ type: "session.input_transcript.done", text: "yes do it" });
+      await new Promise((r) => setTimeout(r, 0));
+
+      // Still waiting on a tap, and nothing was released.
+      expect(latest().pendingConfirmation?.id).toBeTruthy();
+      expect(resolved).toEqual([]);
+
+      // The card is the only way through.
+      service.approve(latest().pendingConfirmation!.id);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(resolved).toEqual([{ itemId: "item-3", approved: true }]);
+    });
+
+    it("stops watching the chat when the call ends", async () => {
+      const { service, fake, wasWatcherReleased } = createCallWithApprovals();
+      await service.start();
+      fake.open();
+      fake.receive({ type: "session.started" });
+      expect(wasWatcherReleased()).toBe(false);
+      await service.end();
+      expect(wasWatcherReleased()).toBe(true);
+    });
+  });
+
   it("marks a history-rewriting tool destructive, so voice cannot approve it", async () => {
     const { service, fake, latest } = createService({
       runBackendTurn: async () => ({
@@ -303,14 +408,14 @@ describe("createCtoVoiceCallService", () => {
     expect(latest().phase).toBe("listening");
   });
 
-  it("gives write access back when the call is ended before its socket opens", async () => {
+  it("restores the CTO's mode when the call is ended before its socket opens", async () => {
     // The renderer opens the microphone as soon as the phase is `connecting`,
     // and a denied microphone hangs up immediately. Tearing down on the socket
     // alone missed that window and left the CTO unable to write for the life of
     // the process.
     const readOnly: boolean[] = [];
     const { service, fake } = createService({
-      setCallReadOnly: async (value: boolean) => { readOnly.push(value); },
+      setCallConfirmMode: async (value: boolean) => { readOnly.push(value); },
     });
     await service.start();
     // No `fake.open()`: the socket exists but has never opened.
@@ -322,7 +427,7 @@ describe("createCtoVoiceCallService", () => {
   it("refuses to open a socket for a call that was ended while connecting", async () => {
     let ended = false;
     const { service } = createService({
-      setCallReadOnly: async (value: boolean) => {
+      setCallConfirmMode: async (value: boolean) => {
         // Hang up from inside the await `start` is blocked on.
         if (value && !ended) { ended = true; await service.end(); }
       },
@@ -393,9 +498,9 @@ describe("createCtoVoiceCallService", () => {
    * guarantee can live is a window held open for the call. If this test ever
    * goes red, a spoken sentence can reach a tool that writes.
    */
-  it("holds the CTO read-only for the life of the call, and releases it after", async () => {
+  it("puts the CTO in confirm-first mode for the life of the call, and restores it after", async () => {
     const calls: boolean[] = [];
-    const { service, fake } = createService({ setCallReadOnly: async (v) => { calls.push(v); } });
+    const { service, fake } = createService({ setCallConfirmMode: async (v) => { calls.push(v); } });
 
     await service.start();
     // Read-only is on BEFORE the socket exists — no audio may be in flight
@@ -408,9 +513,9 @@ describe("createCtoVoiceCallService", () => {
     expect(calls).toEqual([true, false]);
   });
 
-  it("refuses to start a call it cannot make read-only", async () => {
+  it("refuses to start a call whose permissions it cannot set", async () => {
     const { service, latest } = createService({
-      setCallReadOnly: async () => { throw new Error("session is busy"); },
+      setCallConfirmMode: async () => { throw new Error("session is busy"); },
     });
     const result = await service.start();
     expect(result.ok).toBe(false);

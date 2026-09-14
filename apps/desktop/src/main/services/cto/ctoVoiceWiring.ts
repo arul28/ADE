@@ -1,9 +1,14 @@
 import { BrowserWindow, type IpcMain } from "electron";
 
 import { IPC } from "../../../shared/ipc";
-import { CTO_VOICE_USD_PER_MINUTE, isVoiceCallLive, type CtoVoiceState } from "../../../shared/types/ctoVoice";
+import {
+  CTO_VOICE_DESTRUCTIVE_TOOLS,
+  CTO_VOICE_USD_PER_MINUTE,
+  isVoiceCallLive,
+  type CtoVoiceState,
+} from "../../../shared/types/ctoVoice";
 import { getMachineApiKey } from "../ai/apiKeyStore";
-import { beginIdentityReadOnlyHold } from "../chat/identitySessionPolicy";
+import { beginIdentityConfirmHold } from "../chat/identitySessionPolicy";
 // Type-only, so it is erased at compile time and no import cycle exists at
 // runtime even though `registerIpc` imports this module.
 import type { AppContext } from "../ipc/registerIpc";
@@ -74,12 +79,14 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
     /**
      * Released when this call hangs up; null when it holds nothing.
      *
-     * Per call, not per factory. `beginIdentityReadOnlyHold` counts precisely so
+     * Per call, not per factory. `beginIdentityConfirmHold` counts precisely so
      * two overlapping calls cannot release each other early, and a single hold
      * shared across calls threw that away: a failed call's late socket close
      * would release the hold a live call was relying on.
      */
-    let releaseReadOnly: (() => void) | null = null;
+    let releaseConfirmHold: (() => void) | null = null;
+    /** The CTO session this call is driving, once confirm mode is on. */
+    let callSessionId: string | null = null;
 
     /**
      * The interrupt fired by the last barge-in, still unwinding.
@@ -91,50 +98,51 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
     let inFlightInterrupt: Promise<unknown> = Promise.resolve();
 
     /**
-     * A call holds the CTO read-only, and gives write access back when it
+     * A call puts the CTO in confirm-first mode, and restores full-auto when it
      * hangs up.
      *
-     * The hold is what enforces it — see `beginIdentityReadOnlyHold`. Writing
-     * `plan` onto the session alone does nothing: the CTO is pinned to
-     * full-auto by `normalizeIdentityPermissionMode`, and every path that sets
-     * an identity session's permission mode re-runs that normalizer, including
-     * the `ensureIdentitySession` call before each turn. A session-level
-     * downgrade is snapped back before the first word reaches a tool.
+     * The hold is what enforces it — see `beginIdentityConfirmHold`. Writing a
+     * mode onto the session alone does nothing: the CTO is pinned to full-auto
+     * by `normalizeIdentityPermissionMode`, and every path that sets an identity
+     * session's permission mode re-runs that normalizer, including the
+     * `ensureIdentitySession` call before each turn. A session-level change is
+     * snapped back before the first word reaches a tool.
      *
      * The session write still happens, after the hold, so a session already in
      * memory flips now rather than at its next `ensureIdentitySession` and the
      * chat shows the right mode while the call runs.
      *
      * It is enforced in code rather than asked for in the prompt because a
-     * misheard sentence must not be able to reach a tool that writes.
+     * misheard sentence must not be able to reach a tool that writes unasked.
      */
-    const setCallReadOnly = async (readOnly: boolean): Promise<void> => {
-      if (!readOnly) {
-        releaseReadOnly?.();
-        releaseReadOnly = null;
+    const setCallConfirmMode = async (confirmFirst: boolean): Promise<void> => {
+      if (!confirmFirst) {
+        releaseConfirmHold?.();
+        releaseConfirmHold = null;
       }
       // Take the hold BEFORE resolving the lane: resolution can fail, and a
-      // call must never reach the socket with the CTO still writable.
-      if (readOnly && !releaseReadOnly) releaseReadOnly = beginIdentityReadOnlyHold();
+      // call must never reach the socket with the CTO still on full-auto.
+      if (confirmFirst && !releaseConfirmHold) releaseConfirmHold = beginIdentityConfirmHold();
       try {
         const laneId = await host.resolvePrimaryLaneId();
         if (!laneId) {
           // Only fail on the way in. On the way out a missing lane means there
           // is no session left to restore, which is not an error.
-          if (readOnly) throw new Error("No primary lane is available to host the CTO chat session.");
+          if (confirmFirst) throw new Error("No primary lane is available to host the CTO chat session.");
           return;
         }
         const session = await agentChatService.ensureIdentitySession({ identityKey: "cto", laneId });
+        callSessionId = confirmFirst ? session.id : null;
         await agentChatService.updateSession({
           sessionId: session.id,
-          permissionMode: readOnly ? "plan" : "full-auto",
+          permissionMode: confirmFirst ? "default" : "full-auto",
         });
       } catch (error) {
-        // A hold nobody will release leaves the CTO read-only for the life of
-        // the app, so a failure on the way in gives it back.
-        if (readOnly) {
-          releaseReadOnly?.();
-          releaseReadOnly = null;
+        // A hold nobody will release leaves the CTO asking forever, so a failure
+        // on the way in gives it back.
+        if (confirmFirst) {
+          releaseConfirmHold?.();
+          releaseConfirmHold = null;
         }
         throw error;
       }
@@ -152,7 +160,47 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
           return null;
         }
       },
-      setCallReadOnly,
+      setCallConfirmMode,
+
+      /**
+       * Let a blocked turn through, or turn it away.
+       *
+       * `approveToolUse` is the same call the approval card in the chat makes,
+       * so a spoken yes and a tap land on one code path — the call is a second
+       * mouth on the CTO thread, not a second permission system.
+       */
+      resolveApproval: async ({ itemId, approved }) => {
+        if (!callSessionId) return;
+        await agentChatService.approveToolUse({
+          sessionId: callSessionId,
+          itemId,
+          decision: approved ? "accept" : "decline",
+        });
+      },
+
+      /**
+       * Watch the CTO thread for approvals while a call is up.
+       *
+       * The gate lives in `canUseTool`, which parks the turn on a promise — so
+       * nothing comes back through `runBackendTurn` to tell the call it is
+       * waiting. Without this the user would hear the CTO go quiet mid-sentence
+       * and have to find the chat to unblock it, which is the whole thing a
+       * call exists to avoid.
+       */
+      watchApprovals: (onApproval: (a: { itemId: string; toolName: string; prompt: string }) => void) =>
+        agentChatService.subscribeToEvents((envelope) => {
+          if (!callSessionId || envelope.sessionId !== callSessionId) return;
+          const event = envelope.event;
+          if (event.type !== "approval_request") return;
+          // `requestKind` distinguishes "approve this tool" from "answer this
+          // question"; only the former is a yes/no a voice can carry.
+          if (event.requestKind && event.requestKind !== "approval") return;
+          onApproval({
+            itemId: event.itemId,
+            toolName: describeApprovalTool(event),
+            prompt: event.description.trim() || "Go ahead?",
+          });
+        }),
       ctoName: () => ctoStateService.getIdentity().name || "CTO",
       // ProjectInfo carries no display name; the folder name is what the user
       // calls this project everywhere else in ADE.
@@ -211,9 +259,10 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
             text: [
               "[voice call] The user is speaking with you right now and will hear your reply.",
               "Answer in at most three sentences, in plain spoken language, with no markdown, no lists and no code.",
-              // Telling the CTO it is read-only is not what makes it so — the
-              // hold in `setCallReadOnly` is. This only saves it from offering.
-              "You are read-only for the duration of this call. If the user asks you to change something, say what you would do and that they should tell you again in the chat, where you can act.",
+              // The sentence below does not create the gate — the hold in
+              // `setCallConfirmMode` does. It only tells the CTO what is about
+              // to happen, so the pause reads as deliberate rather than broken.
+              "You can do anything here that you can do in the chat. Before anything that writes, ADE will stop you and ask the user out loud — say what you are about to do in one short sentence and wait for their answer.",
               "",
               intent,
             ].join("\n"),
@@ -257,6 +306,21 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
  * working. Audio is different: two windows capturing means two PCM streams
  * interleaved into one socket, and two copies of the CTO's voice played back.
  */
+/**
+ * The tool name a voice confirmation should be judged against.
+ *
+ * `CTO_VOICE_DESTRUCTIVE_TOOLS` names ADE's own operations (`gitForcePush`,
+ * `mergePr`), while a Claude approval names the SDK tool (`Bash`, `Write`). The
+ * description is where the ADE operation actually appears, so it is searched
+ * too — a force-push must reach the card path whichever layer raised it.
+ */
+function describeApprovalTool(event: { kind: string; description: string; detail?: unknown }): string {
+  const haystack = `${event.description} ${typeof event.detail === "string" ? event.detail : ""}`;
+  const named = (CTO_VOICE_DESTRUCTIVE_TOOLS as readonly string[])
+    .find((tool) => haystack.toLowerCase().includes(tool.toLowerCase()));
+  return named ?? event.kind;
+}
+
 function broadcastState(state: CtoVoiceState, ownerWebContentsId: number | null): void {
   for (const win of BrowserWindow.getAllWindows()) {
     try {

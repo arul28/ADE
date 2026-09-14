@@ -9,11 +9,11 @@ import {
   MagnifyingGlass,
   ClockCounterClockwise,
   Robot,
-  Brain,
   ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
 import { UserCircle } from "@phosphor-icons/react";
+import { CtoMark } from "../cto/CtoMark";
 import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
@@ -85,7 +85,7 @@ const mainItems: TabNavItem[] = [
   {
     to: "/cto",
     label: "CTO",
-    icon: Brain,
+    icon: CtoMark,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },

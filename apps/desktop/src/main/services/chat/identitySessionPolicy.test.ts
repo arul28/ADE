@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  beginIdentityReadOnlyHold,
-  isIdentityReadOnlyHeld,
+  beginIdentityConfirmHold,
+  isIdentityConfirmHeld,
   isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
@@ -13,34 +13,36 @@ describe("identitySessionPolicy", () => {
     expect(normalizeIdentityPermissionMode("cto", undefined, "codex")).toBe("full-auto");
   });
 
-  it("holds the CTO read-only while a voice call is up", () => {
+  it("makes the CTO ask before it writes while a voice call is up", () => {
     // The whole safety story for voice rests on this. Without the hold the CTO
-    // is full-auto, and `updateSession({permissionMode:"plan"})` is discarded
-    // by this very function — so a misheard sentence reaches a tool that writes.
+    // is full-auto, and a mode written onto the session is discarded by this
+    // very function — so a misheard sentence reaches a tool that writes with
+    // nobody asked. `default` is the mode where reads run free and mutations
+    // raise an approval; see `claudeToolNeedsApproval`.
     expect(normalizeIdentityPermissionMode("cto", "plan", "claude")).toBe("full-auto");
-    const release = beginIdentityReadOnlyHold();
+    const release = beginIdentityConfirmHold();
     try {
-      expect(isIdentityReadOnlyHeld()).toBe(true);
-      // Read-only wins over every requested mode, including the full-auto that
-      // `ensureIdentitySession` re-normalizes with before each turn.
-      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("plan");
-      expect(normalizeIdentityPermissionMode("cto", undefined, "codex")).toBe("plan");
+      expect(isIdentityConfirmHeld()).toBe(true);
+      // Confirm-first wins over every requested mode, including the full-auto
+      // that `ensureIdentitySession` re-normalizes with before each turn.
+      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("default");
+      expect(normalizeIdentityPermissionMode("cto", undefined, "codex")).toBe("default");
     } finally {
       release();
     }
-    expect(isIdentityReadOnlyHeld()).toBe(false);
+    expect(isIdentityConfirmHeld()).toBe(false);
     expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("full-auto");
   });
 
   it("needs every hold released before the CTO can write again", () => {
-    const first = beginIdentityReadOnlyHold();
-    const second = beginIdentityReadOnlyHold();
+    const first = beginIdentityConfirmHold();
+    const second = beginIdentityConfirmHold();
     first();
     // A second call still running must not be let out by the first hanging up.
-    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("plan");
+    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("default");
     // Releasing twice must not credit the counter for a hold nobody took.
     first();
-    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("plan");
+    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("default");
     second();
     expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("full-auto");
   });
@@ -52,31 +54,15 @@ describe("identitySessionPolicy", () => {
     // the CTO's answer and leaves everyone else's exactly as it was.
     const ctoBefore = normalizeIdentityPermissionMode("cto", "full-auto", "claude");
     const otherBefore = normalizeIdentityPermissionMode(undefined, "full-auto", "claude");
-    const release = beginIdentityReadOnlyHold();
+    const release = beginIdentityConfirmHold();
     try {
       expect(normalizeIdentityPermissionMode(undefined, "full-auto", "claude")).toBe(otherBefore);
       expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).not.toBe(ctoBefore);
       // Not merely "different" — a mutation answering "edit" would pass that.
-      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("plan");
+      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("default");
     } finally {
       release();
     }
-  });
-
-  it("refuses to let a held CTO leave plan mode", () => {
-    // This is what `exitPlanModeForSession` reports to its callers: approving a
-    // plan card mid-call must not announce an exit, and must not tell the live
-    // query the session is writable again.
-    const release = beginIdentityReadOnlyHold();
-    try {
-      // Whatever an exit path asks for, the policy answers "plan".
-      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("plan");
-      expect(normalizeIdentityPermissionMode("cto", "edit", "claude")).toBe("plan");
-    } finally {
-      release();
-    }
-    // And once the call is over, the same request is honoured.
-    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude")).toBe("full-auto");
   });
 
   it("pins CTO execution to the canonical lane", () => {

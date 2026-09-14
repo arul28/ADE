@@ -92,6 +92,7 @@ export function buildConfirmation(args: {
   prompt: string;
   utteranceId: string | null;
   nowMs: number;
+  approvalItemId?: string | null;
 }): CtoVoiceConfirmation {
   return {
     id: args.id,
@@ -100,5 +101,6 @@ export function buildConfirmation(args: {
     destructive: isDestructiveVoiceTool(args.toolName),
     utteranceId: args.utteranceId,
     expiresAtMs: args.nowMs + CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS,
+    ...(args.approvalItemId ? { approvalItemId: args.approvalItemId } : {}),
   };
 }

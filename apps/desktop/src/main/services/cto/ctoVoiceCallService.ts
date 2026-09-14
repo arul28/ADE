@@ -89,7 +89,26 @@ export type CtoVoiceCallDeps = {
    * a spoken word cannot reach a writing tool has to be held open for the
    * duration of the call and released on hang-up.
    */
-  setCallReadOnly?: (readOnly: boolean) => Promise<void>;
+  /** Put the CTO in confirm-first mode for the life of the call. */
+  setCallConfirmMode?: (confirmFirst: boolean) => Promise<void>;
+  /**
+   * Answer an approval the CTO's turn is blocked on.
+   *
+   * The turn is still running when the user says yes — the gate is a promise
+   * inside `canUseTool`, not a return value — so the decision has to go back
+   * out of band and let the same turn carry on.
+   */
+  resolveApproval?: (args: { itemId: string; approved: boolean }) => Promise<void>;
+  /**
+   * Subscribe to the CTO thread's approvals for the life of the call.
+   *
+   * Returns its own unsubscribe. The service owns the subscription's lifetime
+   * because a watcher outliving its call would raise confirmations into a HUD
+   * that is no longer on screen.
+   */
+  watchApprovals?: (
+    onApproval: (args: { itemId: string; toolName: string; prompt: string }) => void,
+  ) => () => void;
   onState: (state: CtoVoiceState) => void;
   /** One chunk of output audio, base64 PCM16, for the renderer to play. */
   onOutputAudio?: (base64: string) => void;
@@ -121,6 +140,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * the life of the process.
    */
   let started = false;
+  /** Detaches the approval watcher when the call ends. */
+  let releaseApprovalWatch: (() => void) | null = null;
   let abort: AbortController | null = null;
   let keepAlive: NodeJS.Timeout | null = null;
   let startedAtMs = 0;
@@ -338,6 +359,32 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
   }
 
+  /**
+   * The CTO's turn hit a tool that writes and is waiting to be let through.
+   *
+   * Raised from the chat's own approval event rather than from a turn's return
+   * value, because the turn has not returned — it is parked inside
+   * `canUseTool`. Speaking the question here is what turns "the call went
+   * quiet" into "the CTO asked you something".
+   */
+  function raiseApproval(args: { itemId: string; toolName: string; prompt: string }) {
+    if (!started) return;
+    const confirmation = buildConfirmation({
+      id: randomUUID(),
+      toolName: args.toolName,
+      prompt: args.prompt,
+      utteranceId: utterance.id,
+      nowMs: Date.now(),
+      approvalItemId: args.itemId,
+    });
+    emit({ pendingConfirmation: confirmation, phase: "confirming" });
+    // Spoken with no delegation id: this is ADE asking, not an answer to a
+    // question the voice model delegated.
+    speak(null, confirmation.destructive
+      ? `${confirmation.prompt} That one needs a tap — I have put a card on screen.`
+      : confirmation.prompt);
+  }
+
   function approvePending(source: "voice" | "tap") {
     const confirmation = state.pendingConfirmation;
     if (!confirmation) return;
@@ -345,11 +392,24 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // Echo the commitment before acting: it gives the user a beat to say no.
     speak(null, `Doing that now — ${confirmation.prompt.replace(/\?$/, "")}.`);
     emit({ pendingConfirmation: null, phase: "thinking" });
+    // The turn is still blocked inside `canUseTool`. Releasing it is what
+    // actually runs the tool; everything above is only what the user hears.
+    if (confirmation.approvalItemId) {
+      void deps
+        .resolveApproval?.({ itemId: confirmation.approvalItemId, approved: true })
+        .catch((error) => deps.logger?.warn("cto_voice.approve_failed", { error: String(error) }));
+    }
   }
 
   function denyPending() {
-    if (!state.pendingConfirmation) return;
+    const confirmation = state.pendingConfirmation;
+    if (!confirmation) return;
     emit({ pendingConfirmation: null, phase: "listening" });
+    if (confirmation.approvalItemId) {
+      void deps
+        .resolveApproval?.({ itemId: confirmation.approvalItemId, approved: false })
+        .catch((error) => deps.logger?.warn("cto_voice.deny_failed", { error: String(error) }));
+    }
   }
 
   async function endCall() {
@@ -360,14 +420,16 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     abort?.abort();
     abort = null;
     if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
+    releaseApprovalWatch?.();
+    releaseApprovalWatch = null;
     try { closing?.close(); } catch { /* already gone */ }
 
-    // Restore write access first: a call that ended must not leave the CTO
-    // read-only in the thread.
+    // Restore full-auto first: a call that ended must not leave the CTO asking
+    // for confirmation in the thread.
     try {
-      await deps.setCallReadOnly?.(false);
+      await deps.setCallConfirmMode?.(false);
     } catch (error) {
-      deps.logger?.warn("cto_voice.read_only_restore_failed", { error: String(error) });
+      deps.logger?.warn("cto_voice.confirm_mode_restore_failed", { error: String(error) });
     }
 
     const endedAt = new Date().toISOString();
@@ -392,6 +454,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
   return {
     getState: () => state,
+
+    raiseApproval,
 
     async start(): Promise<{ ok: boolean; error?: string }> {
       if (started) return { ok: true };
@@ -422,15 +486,22 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       });
 
       // Before the socket, not after: no audio may be in flight while the CTO
-      // can still write.
+      // can still write without asking.
       try {
-        await deps.setCallReadOnly?.(true);
+        await deps.setCallConfirmMode?.(true);
       } catch (error) {
-        deps.logger?.warn("cto_voice.read_only_failed", { error: String(error) });
+        deps.logger?.warn("cto_voice.confirm_mode_failed", { error: String(error) });
         started = false;
-        emit({ phase: "failed", error: "Could not put the CTO in read-only mode for the call." });
-        return { ok: false, error: "read-only" };
+        emit({ phase: "failed", error: "Could not set the CTO's permissions for the call." });
+        return { ok: false, error: "confirm-mode" };
       }
+
+      // After confirm mode, not before: the watcher filters on the session id
+      // that `setCallConfirmMode` resolves, so subscribing earlier would watch
+      // nothing. Attached even if no tool ever asks — it costs one listener.
+      releaseApprovalWatch = deps.watchApprovals?.((approval) => {
+        raiseApproval(approval);
+      }) ?? null;
 
       // The user can hang up while the await above is still running — the HUD
       // is on screen from `connecting`. Without this the socket below would be

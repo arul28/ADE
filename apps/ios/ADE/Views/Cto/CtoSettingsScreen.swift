@@ -437,8 +437,10 @@ private struct IdentityCard: View {
             )
           RoundedRectangle(cornerRadius: 13, style: .continuous)
             .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
-          Text(initials)
-            .font(.system(size: 20, weight: .heavy))
+          // The mark, not a letter: matches the desktop CtoMark and the tab
+          // icon, and does not change when the CTO is renamed.
+          Image(systemName: "location.north.circle")
+            .font(.system(size: 21, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
         }
         .frame(width: 44, height: 44)
@@ -480,12 +482,6 @@ private struct IdentityCard: View {
         )
     }
     .adeListCard()
-  }
-
-  private var initials: String {
-    let name = identity.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let first = name.first else { return "C" }
-    return String(first).uppercased()
   }
 
   private var providerModelText: String {

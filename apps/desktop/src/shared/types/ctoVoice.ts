@@ -108,6 +108,14 @@ export type CtoVoiceConfirmation = {
    */
   utteranceId: string | null;
   expiresAtMs: number;
+  /**
+   * The chat approval this answer releases.
+   *
+   * A voice confirmation is not a thing on its own — it is the spoken face of a
+   * CTO turn parked inside `canUseTool`. Saying yes has to reach that waiter,
+   * or the call sounds like it agreed and the turn sits blocked forever.
+   */
+  approvalItemId?: string | null;
 };
 
 /** A spoken yes is only honoured inside this window after the CTO asked. */

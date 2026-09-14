@@ -10,6 +10,7 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { CtoMark } from "./CtoMark";
 import { CtoTalkButton } from "./CtoTalkButton";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
@@ -255,7 +256,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const bridgeMissing = active && typeof window !== "undefined" && !window.ade?.cto;
 
-  const avatarInitial = ctoDisplayName.charAt(0).toUpperCase();
   const sessionReady = Boolean(session) && Boolean(primaryLaneId);
 
   return (
@@ -263,16 +263,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold"
-            style={{
-              background: `rgba(${CTO_ACCENT_RGB}, 0.14)`,
-              border: `1px solid rgba(${CTO_ACCENT_RGB}, 0.32)`,
-              color: CTO_ACCENT,
-            }}
-          >
-            {avatarInitial}
-          </div>
+          {/* The mark, not a letter in a box: the CTO is named, so it gets the
+              same glyph here as in the tab rail rather than the first character
+              of whatever the user renamed it to. No chip around it — the ring
+              is already a frame, and two were one too many. */}
+          <CtoMark size={22} className="shrink-0" style={{ color: CTO_ACCENT }} />
           <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
         </div>
 
