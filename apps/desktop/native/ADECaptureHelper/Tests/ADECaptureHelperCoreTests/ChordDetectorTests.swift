@@ -61,6 +61,27 @@ final class ChordDetectorTests: XCTestCase {
                 bounds: nil
             ).encoded()
         )
-        XCTAssertEqual(encoded, "{\"path\":\"/tmp/x.png\",\"type\":\"captured\"}\n")
+
+        // One NDJSON line: the host splits the stream on newlines.
+        XCTAssertTrue(encoded.hasSuffix("\n"))
+
+        // Asserted through a parser rather than against an exact string.
+        // `JSONEncoder` escapes forward slashes as `\/` on some toolchains and
+        // not others — both are valid JSON and both parse to the same path, so
+        // a byte-for-byte assertion pinned the encoder's mood rather than the
+        // contract, and went red on Swift 6.2 for no defect. The host reads
+        // this with `JSON.parse`, so this reads it the same way.
+        let parsed = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(encoded.utf8),
+                options: []
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(parsed["type"] as? String, "captured")
+        XCTAssertEqual(parsed["path"] as? String, "/tmp/x.png")
+
+        // The point of the test: absent, not null. A null would reach the host
+        // as an explicitly empty app name rather than "the helper did not know".
+        XCTAssertEqual(Set(parsed.keys), ["type", "path"])
     }
 }
