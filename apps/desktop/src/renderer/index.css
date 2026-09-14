@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+[data-theme="dark"] .editor-target-logo--invert-in-dark {
+  filter: invert(1);
+}
+
 /* Font @font-face declarations are injected from main.tsx via Vite ?url imports
    so the dev server resolves them correctly (CSS-relative ../../node_modules
    paths fall outside Vite's served root and 403). */
