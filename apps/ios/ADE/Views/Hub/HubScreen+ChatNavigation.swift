@@ -3,8 +3,10 @@ import SwiftUI
 // Opening a chat FROM THE HUB. The chat is presented as a full-screen cover over
 // the hub so Back returns to the all-projects list (the second entry point —
 // inside a project — pushes the same `WorkSessionDestinationView` onto the Work
-// tab's stack instead, where Back returns to Work). Before the chat renders we
-// activate its project (without leaving the hub) so the transcript can stream.
+// tab's stack instead, where Back returns to Work). Chat rows render immediately
+// from the roster stub and subscribe in cross-project scope; the owning project
+// activates in the background so Send/approve are ready. Backing out cancels an
+// uncommitted switch so the next tap can start a different one.
 
 extension View {
   func hubChatCover(target: Binding<HubChatTarget?>) -> some View {
@@ -49,8 +51,8 @@ enum HubChatActivationOutcome: Equatable {
   case failed(String)
 }
 
-/// How long the cover waits for an in-place project activation before giving up
-/// and offering Retry.
+/// How long a CLI hub row waits for in-place project activation before Retry.
+/// Chat rows do not wait on this — they paint immediately from the roster stub.
 ///
 /// `SyncService.openProjectForHubChat` already bounds its own internal wait for
 /// fresh work hydration at 6s, but that wait only begins *after* the
@@ -91,11 +93,37 @@ func hubChatActivationOutcome(
   return .failed("The machine could not switch to \(projectName). Check that it is online, then try again.")
 }
 
-/// Hub chat taps are project navigation. A non-active owner always activates
-/// before the destination renders, even when the host could serve a
-/// cross-project transcript quick look.
+/// A non-active owner still needs a background activate so Send/approve land
+/// on the right project. Chat rows no longer wait for that activate to paint.
 func hubChatRequiresProjectActivation(isActiveProject: Bool) -> Bool {
   !isActiveProject
+}
+
+func hubChatCrossProjectContext(
+  project: MobileProjectSummary,
+  isActiveProject: Bool
+) -> WorkChatCrossProjectContext? {
+  guard !isActiveProject else { return nil }
+  return WorkChatCrossProjectContext(
+    projectId: project.id,
+    projectRootPath: project.rootPath,
+    displayName: project.displayName
+  )
+}
+
+func hubChatIsForeignProject(
+  context: WorkChatCrossProjectContext?,
+  activeProjectId: String?,
+  activeProjectRootPath: String?
+) -> Bool {
+  guard let context else { return false }
+  if let activeProjectId, activeProjectId == context.projectId { return false }
+  if let activeRoot = activeProjectRootPath,
+     let contextRoot = context.projectRootPath,
+     activeRoot == contextRoot {
+    return false
+  }
+  return true
 }
 
 /// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
@@ -115,17 +143,26 @@ private struct HubChatCover: View {
   let target: HubChatTarget
   let syncService: SyncService
   let onClose: () -> Void
-  @State private var mode: HubChatOpenMode = .deciding
-  /// Bounds the activation wait. Cancelled as soon as activation resolves, on
-  /// Retry, and when the cover goes away.
+  @State private var mode: HubChatOpenMode
+  /// Bounds the CLI activation wait. Cancelled as soon as activation resolves,
+  /// on Retry, and when the cover goes away.
   @State private var activationWatchdog: Task<Void, Never>?
+  @State private var abandoned = false
+
+  init(target: HubChatTarget, syncService: SyncService, onClose: @escaping () -> Void) {
+    self.target = target
+    self.syncService = syncService
+    self.onClose = onClose
+    let stub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
+    _mode = State(initialValue: stub == nil ? .deciding : .activated(stub))
+  }
 
   var body: some View {
     NavigationStack {
       Group {
         switch mode {
         case .deciding:
-          HubChatActivatingView(projectName: target.project.displayName, onClose: onClose)
+          HubChatOpeningPlaceholder(projectName: target.project.displayName, onClose: onClose)
         case .activated(let sessionStub):
           WorkSessionDestinationView(
             sessionId: target.chat.id,
@@ -139,8 +176,12 @@ private struct HubChatCover: View {
             transitionNamespace: nil,
             isLive: true,
             navigationChrome: .pushedDetail,
-            forceFreshTranscriptOnOpen: true,
-            lanes: target.lane.map { [$0.asLaneSummary()] } ?? []
+            forceFreshTranscriptOnOpen: false,
+            lanes: target.lane.map { [$0.asLaneSummary()] } ?? [],
+            crossProjectContext: hubChatCrossProjectContext(
+              project: target.project,
+              isActiveProject: syncService.isActiveProject(target.project)
+            )
           )
           .id(target.id)
         case .failed(let message):
@@ -155,33 +196,39 @@ private struct HubChatCover: View {
     }
     .task { await decideAndOpen() }
     .onDisappear {
+      abandoned = true
       activationWatchdog?.cancel()
       activationWatchdog = nil
+      if hubChatShouldAbandonActivationOnDismiss(
+        isSwitchingTargetProject: syncService.isSwitchingProject(target.project),
+        targetAlreadyActive: syncService.isActiveProject(target.project)
+      ) {
+        syncService.abandonInFlightHubProjectActivation(for: target.project)
+      }
     }
   }
 
   private func decideAndOpen() async {
     let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
-    // Already the active project → the full-detail path (existing infra).
-    if !hubChatRequiresProjectActivation(
-      isActiveProject: syncService.isActiveProject(target.project)
-    ) {
+    if sessionStub != nil, mode == .deciding {
       mode = .activated(sessionStub)
-      return
     }
-    // A Hub row is navigation, not a quick-look read: activate the owning
-    // project first (keeping the Hub mounted under this cover), show the
-    // switch/hydration state, then open the requested chat. This guarantees a
-    // non-active project's row is never a silent no-op and leaves the phone in
-    // the project the user explicitly chose.
-    startActivationWatchdog()
+    guard hubChatRequiresProjectActivation(
+      isActiveProject: syncService.isActiveProject(target.project)
+    ) else { return }
+
+    // Chat rows already painted. CLI rows still wait — they have no stub.
+    if sessionStub == nil {
+      startActivationWatchdog()
+    }
     await syncService.openProjectForHubChat(target.project)
     activationWatchdog?.cancel()
     activationWatchdog = nil
-    // The watchdog may have already given up and moved us to `.failed` while
-    // this call was still parked; leave its verdict (and the user's Retry
-    // button) alone rather than resolving a wait nobody is watching anymore.
-    guard mode == .deciding else { return }
+    guard !abandoned else { return }
+    // Chat already rendered from the roster stub. A failed background switch
+    // must not tear that surface down into Retry — the transcript can keep
+    // streaming in cross-project scope.
+    guard sessionStub == nil, mode == .deciding else { return }
     let outcome = hubChatActivationOutcome(
       projectName: target.project.displayName,
       isActiveProject: syncService.isActiveProject(target.project),
@@ -196,13 +243,13 @@ private struct HubChatCover: View {
     }
   }
 
-  /// Fail the cover if activation has not resolved within the timeout, so the
-  /// spinner can never run forever. Sleeping in a task keeps the MainActor free.
+  /// Fail the CLI cover if activation has not resolved within the timeout, so
+  /// the spinner can never run forever. Sleeping in a task keeps the MainActor free.
   private func startActivationWatchdog() {
     activationWatchdog?.cancel()
     activationWatchdog = Task { @MainActor in
       try? await Task.sleep(for: .seconds(hubChatActivationTimeoutSeconds))
-      guard !Task.isCancelled, mode == .deciding else { return }
+      guard !Task.isCancelled, !abandoned, mode == .deciding else { return }
       let outcome = hubChatActivationOutcome(
         projectName: target.project.displayName,
         isActiveProject: syncService.isActiveProject(target.project),
@@ -216,6 +263,7 @@ private struct HubChatCover: View {
   }
 
   private func retryOpen() async {
+    abandoned = false
     activationWatchdog?.cancel()
     activationWatchdog = nil
     mode = .deciding
@@ -223,19 +271,24 @@ private struct HubChatCover: View {
   }
 }
 
-private struct HubChatActivatingView: View {
+/// Chat-shaped opening chrome for CLI hub rows that still have to wait on
+/// project activation. Replaces the old spinner-in-a-blank-box.
+private struct HubChatOpeningPlaceholder: View {
   let projectName: String
   let onClose: () -> Void
 
   var body: some View {
     ZStack {
       ADEColor.pageBackground.ignoresSafeArea()
-      VStack(spacing: 14) {
-        ProgressView().controlSize(.large)
-        Text("Opening \(projectName)…")
+      VStack(alignment: .leading, spacing: 14) {
+        Text("Opening \(projectName)")
           .font(.system(.subheadline, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
+        WorkChatTranscriptSkeleton()
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 12)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
     .safeAreaInset(edge: .top, spacing: 0) {
       HubChatBackBar(onClose: onClose)

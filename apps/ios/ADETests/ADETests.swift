@@ -28853,6 +28853,40 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     XCTAssertFalse(hubChatRequiresProjectActivation(isActiveProject: true))
   }
 
+  func testForeignChatDropsCrossProjectScopeOnceTheOwnerIsActive() {
+    let context = WorkChatCrossProjectContext(
+      projectId: "p-ade",
+      projectRootPath: "/tmp/ADE",
+      displayName: "ADE"
+    )
+    XCTAssertTrue(
+      hubChatIsForeignProject(
+        context: context,
+        activeProjectId: "p-other",
+        activeProjectRootPath: "/tmp/other"
+      )
+    )
+    XCTAssertFalse(
+      hubChatIsForeignProject(
+        context: context,
+        activeProjectId: "p-ade",
+        activeProjectRootPath: "/tmp/other"
+      )
+    )
+    XCTAssertNil(
+      hubChatCrossProjectContext(
+        project: MobileProjectSummary(
+          id: "p-ade",
+          displayName: "ADE",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        isActiveProject: true
+      )
+    )
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",

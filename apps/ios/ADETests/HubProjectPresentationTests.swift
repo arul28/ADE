@@ -168,6 +168,100 @@ final class HubProjectPresentationTests: XCTestCase {
         XCTAssertEqual(hubChatStateGroup(merged), .idle)
     }
 
+    // MARK: - Roster filter cards
+
+    func testRosterFilterMapsPlanningIntoWorkingAndFailedIntoFinished() {
+        XCTAssertTrue(hubRosterFilterContains(.working, .working))
+        XCTAssertTrue(hubRosterFilterContains(.planning, .working))
+        XCTAssertFalse(hubRosterFilterContains(.needsYou, .working))
+        XCTAssertTrue(hubRosterFilterContains(.needsYou, .needsYou))
+        XCTAssertTrue(hubRosterFilterContains(.done, .finished))
+        XCTAssertTrue(hubRosterFilterContains(.failed, .finished))
+        XCTAssertFalse(hubRosterFilterContains(.idle, .finished))
+        XCTAssertTrue(hubRosterFilterContains(.idle, .all))
+    }
+
+    func testRosterFilterHidesProjectsWithNoMatchingChats() {
+        let working = HubChatRowPresentation.make(
+            chat: chat(id: "c-run", status: .running, awaitingInput: false)
+        )
+        let waiting = HubChatRowPresentation.make(
+            chat: chat(id: "c-wait", status: .awaiting, awaitingInput: true)
+        )
+        let failed = HubChatRowPresentation.make(
+            chat: chat(id: "c-fail", status: .failed, awaitingInput: false)
+        )
+        let presentation = HubProjectPresentation(
+            project: project(),
+            isActive: false,
+            isSwitching: false,
+            isLoading: false,
+            laneCount: 1,
+            chatCount: 3,
+            lanes: [
+                HubLanePresentation(
+                    lane: RemoteRosterLane(
+                        id: "lane-1",
+                        name: "activity-revamp",
+                        color: nil,
+                        icon: nil,
+                        laneType: nil,
+                        branchRef: nil
+                    ),
+                    rows: [working, waiting, failed],
+                    totalCount: 3
+                ),
+            ],
+            attentionCount: 1,
+            runningCount: 1
+        )
+
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .all), 3)
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .working), 1)
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .needsYou), 1)
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .finished), 1)
+
+        XCTAssertEqual(
+            hubProjectPresentation(presentation, matching: .working)?.lanes.first?.rows.map(\.id),
+            ["c-run"]
+        )
+        XCTAssertEqual(
+            hubProjectPresentation(presentation, matching: .needsYou)?.lanes.first?.rows.map(\.id),
+            ["c-wait"]
+        )
+        XCTAssertEqual(
+            hubProjectPresentation(presentation, matching: .finished)?.lanes.first?.rows.map(\.id),
+            ["c-fail"]
+        )
+    }
+
+    func testFinishedFilterUsesDoneGlyphNotFailed() {
+        XCTAssertEqual(HubRosterFilter.finished.systemImage, ActivityStateGroup.done.glyph.systemImage)
+        XCTAssertEqual(HubRosterFilter.working.systemImage, ActivityStateGroup.working.glyph.systemImage)
+        XCTAssertEqual(HubRosterFilter.needsYou.systemImage, ActivityStateGroup.needsYou.glyph.systemImage)
+    }
+
+    func testAbandonOnlyCancelsUncommittedSwitches() {
+        XCTAssertTrue(
+            hubChatShouldAbandonActivationOnDismiss(
+                isSwitchingTargetProject: true,
+                targetAlreadyActive: false
+            )
+        )
+        XCTAssertFalse(
+            hubChatShouldAbandonActivationOnDismiss(
+                isSwitchingTargetProject: true,
+                targetAlreadyActive: true
+            )
+        )
+        XCTAssertFalse(
+            hubChatShouldAbandonActivationOnDismiss(
+                isSwitchingTargetProject: false,
+                targetAlreadyActive: false
+            )
+        )
+    }
+
     // MARK: - Fixtures
 
     private func project() -> MobileProjectSummary {
