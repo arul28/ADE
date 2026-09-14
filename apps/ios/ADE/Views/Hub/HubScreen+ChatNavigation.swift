@@ -140,6 +140,15 @@ func hubChatCanPaintFromRosterStub(
 
 /// CLI rows have no stub. If activation is not required they must still leave
 /// `.deciding` so the destination hydrates instead of spinning forever.
+func hubChatLeavesDecidingWithoutActivationWait(
+  canPaintFromStub: Bool,
+  requiresActivation: Bool
+) -> Bool {
+  canPaintFromStub || !requiresActivation
+}
+
+/// Watchdog Retry must not apply the first `openProjectForHubChat` wait after a
+/// newer attempt has started.
 func hubChatActivationAttemptIsCurrent(started: UInt64, current: UInt64) -> Bool {
   started == current
 }
