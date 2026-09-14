@@ -777,7 +777,15 @@ struct WorkSessionDestinationView: View {
   }
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
-  var isCrossProject: Bool { crossProjectContext != nil }
+  /// Becomes false once the background Hub activate commits, so Send/approve
+  /// and history paging switch to the active-project path without remounting.
+  var isCrossProject: Bool {
+    hubChatIsForeignProject(
+      context: crossProjectContext,
+      activeProjectId: syncService.activeProjectId,
+      activeProjectRootPath: syncService.activeProjectRootPath
+    )
+  }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
   var resolvesLanePr: Bool {
@@ -1463,6 +1471,11 @@ struct WorkSessionDestinationView: View {
           syncService.retainChatEventSubscription(sessionId: sessionId)
         }
       }
+      .onChange(of: isCrossProject) { wasForeign, isForeign in
+        if wasForeign && !isForeign {
+          syncService.clearCrossProjectChatScope(sessionId: sessionId)
+        }
+      }
       .task {
         // Cross-project "quick look": register the foreign scope BEFORE load()
         // so every transcript/summary/send routes to that project without
@@ -1646,7 +1659,7 @@ struct WorkSessionDestinationView: View {
   func registerChatCommandScope() {
     if personalChat {
       syncService.setPersonalChatScope(sessionId: sessionId)
-    } else if let crossProjectContext {
+    } else if isCrossProject, let crossProjectContext {
       syncService.setCrossProjectChatScope(
         sessionId: sessionId,
         projectId: crossProjectContext.projectId,
@@ -1673,10 +1686,7 @@ struct WorkSessionDestinationView: View {
         )
         .adeScreenBackground()
       } else {
-        ProgressView()
-          .controlSize(.large)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .adeScreenBackground()
+        WorkChatOpeningSessionPlaceholder()
           .accessibilityLabel("Opening session")
       }
     }

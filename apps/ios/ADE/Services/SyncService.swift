@@ -5038,6 +5038,17 @@ final class SyncService: ObservableObject {
     await awaitFreshActiveProjectWorkHydration(selectionGeneration: selectionGeneration)
   }
 
+  /// Cancel a Hub-chat project switch that has not committed `activeProjectId`
+  /// yet. A committed switch is left running so the next tap in that project
+  /// does not pay for another reconnect. Safe to call from cover dismiss.
+  func abandonInFlightHubProjectActivation(for project: MobileProjectSummary) {
+    guard hubChatShouldAbandonActivationOnDismiss(
+      isSwitchingTargetProject: isSwitchingProject(project),
+      targetAlreadyActive: isActiveProject(project)
+    ) else { return }
+    _ = beginProjectSelection()
+  }
+
   /// Wait until the active project's work domain reports a *fresh* successful
   /// hydration (a `lastHydratedAt` newer than when the caller started), or the
   /// connection settles into a terminal non-hydrating state, or `timeout`
