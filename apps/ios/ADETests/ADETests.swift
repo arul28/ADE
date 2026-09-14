@@ -28958,6 +28958,11 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     )
   }
 
+  func testStaleActivationAttemptDoesNotApply() {
+    XCTAssertTrue(hubChatActivationAttemptIsCurrent(started: 2, current: 2))
+    XCTAssertFalse(hubChatActivationAttemptIsCurrent(started: 2, current: 3))
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",

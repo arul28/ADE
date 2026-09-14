@@ -140,11 +140,8 @@ func hubChatCanPaintFromRosterStub(
 
 /// CLI rows have no stub. If activation is not required they must still leave
 /// `.deciding` so the destination hydrates instead of spinning forever.
-func hubChatLeavesDecidingWithoutActivationWait(
-  canPaintFromStub: Bool,
-  requiresActivation: Bool
-) -> Bool {
-  canPaintFromStub || !requiresActivation
+func hubChatActivationAttemptIsCurrent(started: UInt64, current: UInt64) -> Bool {
+  started == current
 }
 
 /// Rebind after Hub activate must stop once the destination is gone, otherwise
@@ -198,6 +195,7 @@ private struct HubChatCover: View {
   /// on Retry, and when the cover goes away.
   @State private var activationWatchdog: Task<Void, Never>?
   @State private var abandoned = false
+  @State private var activationGeneration: UInt64 = 0
 
   init(target: HubChatTarget, syncService: SyncService, onClose: @escaping () -> Void) {
     self.target = target
@@ -259,6 +257,7 @@ private struct HubChatCover: View {
     .task { await decideAndOpen() }
     .onDisappear {
       abandoned = true
+      activationGeneration &+= 1
       activationWatchdog?.cancel()
       activationWatchdog = nil
       syncService.abandonInFlightHubProjectActivation(for: target.project)
@@ -266,6 +265,7 @@ private struct HubChatCover: View {
   }
 
   private func decideAndOpen() async {
+    let generation = beginActivationAttempt()
     let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
     let ownerIsActive = syncService.isActiveProject(target.project)
     let canPaint = hubChatCanPaintFromRosterStub(
@@ -285,13 +285,17 @@ private struct HubChatCover: View {
     // Painted chats (active owner, or foreign with host scope) keep streaming
     // while activate runs. CLI rows and older-host foreign chats wait.
     if !canPaint {
-      startActivationWatchdog()
+      startActivationWatchdog(generation: generation)
     }
-    guard !abandoned, !Task.isCancelled else { return }
+    guard !abandoned, !Task.isCancelled,
+          hubChatActivationAttemptIsCurrent(started: generation, current: activationGeneration)
+    else { return }
     await syncService.openProjectForHubChat(target.project)
     activationWatchdog?.cancel()
     activationWatchdog = nil
-    guard !abandoned else { return }
+    guard !abandoned,
+          hubChatActivationAttemptIsCurrent(started: generation, current: activationGeneration)
+    else { return }
     // A failed background switch must not tear down an already-painted chat.
     // Waiting covers (CLI, or foreign without host scope) still take Retry.
     guard mode == .deciding else { return }
@@ -311,11 +315,14 @@ private struct HubChatCover: View {
 
   /// Fail the CLI cover if activation has not resolved within the timeout, so
   /// the spinner can never run forever. Sleeping in a task keeps the MainActor free.
-  private func startActivationWatchdog() {
+  private func startActivationWatchdog(generation: UInt64) {
     activationWatchdog?.cancel()
     activationWatchdog = Task { @MainActor in
       try? await Task.sleep(for: .seconds(hubChatActivationTimeoutSeconds))
-      guard !Task.isCancelled, !abandoned, mode == .deciding else { return }
+      guard !Task.isCancelled, !abandoned,
+            hubChatActivationAttemptIsCurrent(started: generation, current: activationGeneration),
+            mode == .deciding
+      else { return }
       let outcome = hubChatActivationOutcome(
         projectName: target.project.displayName,
         isActiveProject: syncService.isActiveProject(target.project),
@@ -326,6 +333,11 @@ private struct HubChatCover: View {
         mode = .failed(message)
       }
     }
+  }
+
+  private func beginActivationAttempt() -> UInt64 {
+    activationGeneration &+= 1
+    return activationGeneration
   }
 
   private func retryOpen() async {
