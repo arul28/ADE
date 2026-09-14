@@ -6,6 +6,10 @@ set -euo pipefail
 export DISPLAY="${DISPLAY:-:1}"
 export ADE_DISABLE_HARDWARE_ACCEL="${ADE_DISABLE_HARDWARE_ACCEL:-1}"
 
-mkdir -p "$HOME/.ade/sock" "$HOME/.ade/runtime" 2>/dev/null || true
+if ! mkdir -p "$HOME/.ade/sock"; then
+  echo "[cloud-agent-start] failed to create $HOME/.ade/sock" >&2
+  exit 1
+fi
+mkdir -p "$HOME/.ade/runtime" 2>/dev/null || true
 
 echo "[cloud-agent-start] DISPLAY=$DISPLAY ADE_DISABLE_HARDWARE_ACCEL=$ADE_DISABLE_HARDWARE_ACCEL"

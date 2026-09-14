@@ -46,7 +46,13 @@ import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
-import { descriptorsFromAgentChatModelCatalog, PERSONAL_CHAT_CATALOG_SCOPE } from "../shared/ModelPicker/modelCatalog";
+import {
+  agentChatModelCatalogHasAvailableModels,
+  descriptorsFromAgentChatModelCatalog,
+  personalChatCatalogScopeKey,
+  PERSONAL_CHAT_CATALOG_SCOPE,
+} from "../shared/ModelPicker/modelCatalog";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
@@ -153,6 +159,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const chatChromeTint = useAppStore((state) => state.chatChromeTint);
   const chatShellGeometry = useAppStore((state) => state.chatShellGeometry);
   const targetKey = projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
+  const personalCatalogScopeKey = personalChatCatalogScopeKey(targetKey);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -186,6 +193,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   eventsBySessionRef.current = eventsBySession;
   olderHistoryCursorBySessionRef.current = olderHistoryCursorBySession;
 
+  const catalogRequestSeqRef = useRef(0);
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
     if (generation !== targetGenerationRef.current) return;
@@ -200,13 +208,27 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     mode: "cached" | "refresh-stale" | "force" = "refresh-stale",
     generation = targetGenerationRef.current,
   ) => {
-    const next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
-    if (generation !== targetGenerationRef.current) return;
-    setCatalog(next);
+    const requestId = ++catalogRequestSeqRef.current;
+    const publish = (next: AgentChatModelCatalog) => {
+      if (generation !== targetGenerationRef.current) return;
+      if (requestId !== catalogRequestSeqRef.current) return;
+      setCatalog(next);
+    };
+    let next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
+    publish(next);
+    if (generation !== targetGenerationRef.current || requestId !== catalogRequestSeqRef.current) return;
+    if (
+      mode === "refresh-stale"
+      && (next.stale === true || !agentChatModelCatalogHasAvailableModels(next))
+    ) {
+      next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "force" });
+      publish(next);
+    }
   }, []);
 
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
+    catalogRequestSeqRef.current += 1;
     cursorRef.current = 0;
     setSessions([]);
     setSelectedId(null);
@@ -498,8 +520,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     [],
   );
   const dynamicCatalog = useMemo(
-    () => catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, PERSONAL_CHAT_CATALOG_SCOPE) : null,
-    [catalog],
+    () => catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, personalCatalogScopeKey) : null,
+    [catalog, personalCatalogScopeKey],
   );
   const models = useMemo<readonly ModelDescriptor[]>(
     () => dynamicCatalog?.models ?? [],
@@ -758,6 +780,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       modelId={modelId}
       onModelChange={handleModelChange}
       catalogReady={catalog !== null}
+      catalogScopeKey={personalCatalogScopeKey}
       reasoningEffort={reasoningEffort}
       onReasoningChange={(next) => { setReasoningEffort(next); void updateSelected({ reasoningEffort: next }); }}
       permissionMode={permissionMode}
@@ -768,7 +791,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       canStartSend={canStartSend}
       showInterrupt={turnActive && Boolean(selectedId)}
       onInterrupt={() => { if (selectedId) void callPersonal<void>("interrupt", { sessionId: selectedId }); }}
-      onRuntimeCatalogRefreshed={() => { void loadModelCatalog("force").catch(() => undefined); }}
+      onRuntimeCatalogRefreshed={() => {
+        const cached = getSharedRuntimeCatalog(personalCatalogScopeKey);
+        if (cached) setCatalog(cached);
+      }}
       error={error}
       onDismissError={() => setError(null)}
       textareaRef={textareaRef}

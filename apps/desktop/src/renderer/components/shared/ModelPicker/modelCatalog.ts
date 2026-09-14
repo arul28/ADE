@@ -22,12 +22,30 @@ import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
   PERSONAL_CHAT_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
 
-export { PERSONAL_CHAT_CATALOG_SCOPE };
+export { PERSONAL_CHAT_CATALOG_SCOPE, personalChatCatalogScopeKey, isPersonalChatCatalogScopeKey } from "./runtimeCatalogCache";
+
+/** True when the runtime catalog lists at least one model marked available. */
+export function agentChatModelCatalogHasAvailableModels(
+  catalog: AgentChatModelCatalog | null | undefined,
+): boolean {
+  if (!catalog) return false;
+  for (const group of catalog.groups ?? []) {
+    for (const provider of group.providers ?? []) {
+      for (const subsection of provider.subsections ?? []) {
+        for (const model of subsection.models ?? []) {
+          if (model.isAvailable) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 function unwrapPersonalChatResult<T>(response: PersonalChatCallResponse | T): T {
   if (response && typeof response === "object" && "result" in response) {
@@ -48,7 +66,7 @@ export async function requestModelCatalog(
     pin?: OpenProjectBinding | null;
   },
 ): Promise<AgentChatModelCatalog> {
-  if (options.catalogScopeKey === PERSONAL_CHAT_CATALOG_SCOPE) {
+  if (isPersonalChatCatalogScopeKey(options.catalogScopeKey)) {
     const bridge = window.ade?.personalChats?.call;
     if (typeof bridge !== "function") {
       throw new Error("Personal chats are not available in this ADE runtime.");

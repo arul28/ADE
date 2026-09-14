@@ -29,6 +29,12 @@ const FAKE_MODEL = {
 // each case flip provider availability deterministically.
 vi.mock("../shared/ModelPicker/modelCatalog", () => ({
   PERSONAL_CHAT_CATALOG_SCOPE: "personal-chat",
+  personalChatCatalogScopeKey: (machineTargetKey: string) => {
+    const trimmed = typeof machineTargetKey === "string" ? machineTargetKey.trim() : "";
+    return `personal-chat|${trimmed || "local-machine"}`;
+  },
+  agentChatModelCatalogHasAvailableModels: (catalog: { available?: boolean } | null | undefined) =>
+    catalog != null && catalog.available !== false,
   descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
     models: [FAKE_MODEL],
     availableModelIds: catalog?.available === false ? [] : ["fake-model"],

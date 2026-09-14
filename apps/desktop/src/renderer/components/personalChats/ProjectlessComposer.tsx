@@ -23,6 +23,7 @@ export function ProjectlessComposer({
   modelId,
   onModelChange,
   catalogReady,
+  catalogScopeKey,
   reasoningEffort,
   onReasoningChange,
   permissionMode,
@@ -51,6 +52,7 @@ export function ProjectlessComposer({
   modelId: string;
   onModelChange: (id: string) => void;
   catalogReady: boolean;
+  catalogScopeKey: string;
   reasoningEffort: string | null;
   onReasoningChange: (next: string | null) => void;
   permissionMode: AgentChatPermissionMode;
@@ -111,6 +113,7 @@ export function ProjectlessComposer({
             value={modelId}
             onChange={onModelChange}
             surfaceKey="personal-chat"
+            catalogScopeKey={catalogScopeKey}
             models={models}
             availableModelIds={availableModelIds}
             constrainToAvailableModelIds

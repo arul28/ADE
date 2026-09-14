@@ -36,6 +36,7 @@ import {
   reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
   PERSONAL_CHAT_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
@@ -60,6 +61,12 @@ export type ModelPickerProps = {
    * list. `null`/omitted is only for surfaces with no composer machine
    * (Settings), which still use the window's bound runtime.
    */
+  /**
+   * Optional override for the runtime catalog cache bucket. Personal Chats pass
+   * a machine-scoped key so switching remote targets does not reuse another
+   * machine's inventory.
+   */
+  catalogScopeKey?: string;
   runtimePin?: OpenProjectBinding | null;
   constrainToAvailableModelIds?: boolean;
   /**
@@ -123,8 +130,10 @@ export const ModelPicker = memo(function ModelPicker({
   triggerClassName,
   openRequestKey,
   onOpenRequestHandled,
+  catalogScopeKey: catalogScopeKeyOverride,
 }: ModelPickerProps) {
-  const catalogScopeKey = runtimePin?.key
+  const catalogScopeKey = catalogScopeKeyOverride
+    ?? runtimePin?.key
     ?? (surfaceKey === PERSONAL_CHAT_CATALOG_SCOPE
       ? PERSONAL_CHAT_CATALOG_SCOPE
       : DEFAULT_RUNTIME_CATALOG_SCOPE);
@@ -196,7 +205,7 @@ export const ModelPicker = memo(function ModelPicker({
       }
     }
 
-    if (catalogScopeKey === PERSONAL_CHAT_CATALOG_SCOPE) {
+    if (isPersonalChatCatalogScopeKey(catalogScopeKey)) {
       if (typeof window.ade?.personalChats?.call !== "function") return null;
     } else if (typeof window.ade?.agentChat?.modelCatalog !== "function") {
       return null;
