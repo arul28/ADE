@@ -187,6 +187,8 @@ func workChatTranscriptFailureMessage(_ message: String) -> String {
 /// Chat-shaped loading chrome. Replaces the old spinner inside a glass card,
 /// which read as a blank sheet with a throbber in the middle.
 struct WorkChatTranscriptSkeleton: View {
+  var accessibilityLabelText = "Loading transcript"
+
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       HStack {
@@ -207,6 +209,9 @@ struct WorkChatTranscriptSkeleton: View {
       }
     }
     .padding(.top, 8)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(accessibilityLabelText)
+    .accessibilityAddTraits(.updatesFrequently)
   }
 }
 
@@ -1610,9 +1615,6 @@ struct WorkChatSessionView: View {
     case .loading:
       WorkChatTranscriptSkeleton()
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading transcript")
-        .accessibilityAddTraits(.updatesFrequently)
         .adeInspectable("Work.Chat.Transcript.Loading")
     case .failed(let message):
       ADEEmptyStateView(

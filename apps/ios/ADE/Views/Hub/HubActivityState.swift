@@ -248,8 +248,7 @@ func hubRosterFilterCount(
 }
 
 func hubChatRowFilterCount(_ row: HubChatRowPresentation, filter: HubRosterFilter) -> Int {
-  let selfCount = hubRosterFilterContains(row.stateGroup, filter) ? 1 : 0
-  return selfCount + row.childRows.reduce(0) { $0 + hubChatRowFilterCount($1, filter: filter) }
+  hubRosterFilterContains(row.stateGroup, filter) ? 1 : 0
 }
 
 func hubProjectPresentation(
@@ -264,16 +263,22 @@ func hubProjectPresentation(
   }
   guard !lanes.isEmpty else { return nil }
   let chatCount = lanes.reduce(0) { $0 + $1.rows.count }
+  let attentionCount = lanes.reduce(0) { partial, lane in
+    partial + lane.rows.filter { $0.stateGroup == .needsYou }.count
+  }
+  let runningCount = lanes.reduce(0) { partial, lane in
+    partial + lane.rows.filter { $0.stateGroup == .working || $0.stateGroup == .planning }.count
+  }
   return HubProjectPresentation(
     project: presentation.project,
     isActive: presentation.isActive,
     isSwitching: presentation.isSwitching,
     isLoading: presentation.isLoading,
-    laneCount: presentation.laneCount,
+    laneCount: lanes.count,
     chatCount: chatCount,
     lanes: lanes,
-    attentionCount: presentation.attentionCount,
-    runningCount: presentation.runningCount
+    attentionCount: attentionCount,
+    runningCount: runningCount
   )
 }
 
@@ -281,20 +286,8 @@ func hubChatRow(
   _ row: HubChatRowPresentation,
   matching filter: HubRosterFilter
 ) -> HubChatRowPresentation? {
-  let matchingChildren = row.childRows.compactMap { hubChatRow($0, matching: filter) }
-  if hubRosterFilterContains(row.stateGroup, filter) {
-    return HubChatRowPresentation.make(chat: row.chat, childRows: row.childRows)
-  }
-  guard !matchingChildren.isEmpty else { return nil }
-  return HubChatRowPresentation.make(chat: row.chat, childRows: matchingChildren)
-}
-
-/// Backing out of a Hub chat should cancel a switch that has not committed
-/// locally yet. A switch that already flipped `activeProjectId` is left alone
-/// so the next tap in that project is cheap.
-func hubChatShouldAbandonActivationOnDismiss(
-  isSwitchingTargetProject: Bool,
-  targetAlreadyActive: Bool
-) -> Bool {
-  isSwitchingTargetProject && !targetAlreadyActive
+  // Children are tally-only on Hub — they are not drawn — so a nested CLI
+  // must not promote its parent into Working/Needs you/Finished.
+  guard hubRosterFilterContains(row.stateGroup, filter) else { return nil }
+  return HubChatRowPresentation.make(chat: row.chat, childRows: [])
 }

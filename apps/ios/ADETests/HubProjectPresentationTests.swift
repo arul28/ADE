@@ -235,6 +235,52 @@ final class HubProjectPresentationTests: XCTestCase {
         )
     }
 
+    func testFilterDoesNotPromoteAParentForAnUndrawnChild() {
+        let parent = HubChatRowPresentation.make(
+            chat: chat(id: "c-parent", status: .running, awaitingInput: false),
+            childRows: [
+                HubChatRowPresentation.make(
+                    chat: {
+                        var child = chat(id: "c-cli", status: .failed, awaitingInput: false)
+                        child.toolType = "shell"
+                        child.chatSessionId = "c-parent"
+                        return child
+                    }()
+                ),
+            ]
+        )
+        let presentation = HubProjectPresentation(
+            project: project(),
+            isActive: false,
+            isSwitching: false,
+            isLoading: false,
+            laneCount: 1,
+            chatCount: 1,
+            lanes: [
+                HubLanePresentation(
+                    lane: RemoteRosterLane(
+                        id: "lane-1",
+                        name: "activity-revamp",
+                        color: nil,
+                        icon: nil,
+                        laneType: nil,
+                        branchRef: nil
+                    ),
+                    rows: [parent],
+                    totalCount: 1
+                ),
+            ]
+        )
+
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .working), 1)
+        XCTAssertEqual(hubRosterFilterCount([presentation], filter: .finished), 0)
+        XCTAssertNil(hubProjectPresentation(presentation, matching: .finished))
+        XCTAssertEqual(
+            hubProjectPresentation(presentation, matching: .working)?.lanes.first?.rows.map(\.id),
+            ["c-parent"]
+        )
+    }
+
     func testFinishedFilterUsesDoneGlyphNotFailed() {
         XCTAssertEqual(HubRosterFilter.finished.systemImage, ActivityStateGroup.done.glyph.systemImage)
         XCTAssertEqual(HubRosterFilter.working.systemImage, ActivityStateGroup.working.glyph.systemImage)

@@ -377,8 +377,9 @@ apps/ios/
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
 │   │   │                            # HubActivityState (canonical six-group
-│   │   │                            #   glyphs/tallies for the project→lane→chat
-│   │   │                            #   tree; snoozed running chats file as idle),
+│   │   │                            #   glyphs/tallies plus Hub roster filter
+│   │   │                            #   All/Working/Needs you/Finished),
+│   │   │                            # HubRosterFilterBar (compact status cards),
 │   │   │                            # HubComponents (project/lane/chat cards,
 │   │   │                            #   HubNoMachineState), HubQuickConnect
 │   │   │                            #   (HubQuickConnectSection — one-tap connect

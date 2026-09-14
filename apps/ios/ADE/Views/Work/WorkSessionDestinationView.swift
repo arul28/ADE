@@ -782,8 +782,9 @@ struct WorkSessionDestinationView: View {
   var isCrossProject: Bool {
     hubChatIsForeignProject(
       context: crossProjectContext,
-      activeProjectId: syncService.activeProjectId,
-      activeProjectRootPath: syncService.activeProjectRootPath
+      ownerIsActive: crossProjectContext.map {
+        syncService.isActiveProject(id: $0.projectId, rootPath: $0.projectRootPath)
+      } ?? false
     )
   }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
@@ -1473,7 +1474,7 @@ struct WorkSessionDestinationView: View {
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
         if wasForeign && !isForeign {
-          syncService.clearCrossProjectChatScope(sessionId: sessionId)
+          Task { await rebindChatAfterHubActivation() }
         }
       }
       .task {
@@ -1654,6 +1655,21 @@ struct WorkSessionDestinationView: View {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }
+  }
+
+  /// Foreign Hub open → owning project committed. The switch tears the socket
+  /// and clears chat subscriptions; clearing the scope map alone would leave
+  /// this session unsubscribed. Rebind onto the active-project stream.
+  @MainActor
+  func rebindChatAfterHubActivation() async {
+    syncService.clearCrossProjectChatScope(sessionId: sessionId)
+    guard let currentSession = session ?? initialSession, isChatSession(currentSession) else {
+      return
+    }
+    syncService.retainChatEventSubscription(sessionId: sessionId)
+    _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+    await loadTranscript(forceRemote: true)
+    await syncLanePresence()
   }
 
   func registerChatCommandScope() {
