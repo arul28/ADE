@@ -2232,14 +2232,19 @@ opens its detailed tabbed view; tapping a chat opens that chat immediately over
 the Hub (the Hub stays mounted underneath so Back returns to it, parked as a
 blank presenter while the cover is up). A chat roster row renders from
 `makeRosterSessionStub` and streams in cross-project scope without waiting for
-a project switch. The owning project still activates in the background so Send
-and approve are ready. Backing out of the cover cancels an uncommitted switch
-(`abandonInFlightHubProjectActivation`) so the next tap can start a different
-one; a switch that already committed `activeProjectId` is left running. CLI
-(terminal) rows still wait on activation, then use the terminal destination (a
-CLI session has no chat JSONL; routing it through the chat transcript surface
-would render permanently blank). A failed or unresponsive CLI switch resolves
-to concrete error copy with Retry and Back to Hub. The
+a project switch when the host advertises `crossProjectChat`. Older hosts drop
+that scope and would bind the stream to the currently active project, so those
+chats wait on activation the same way CLI rows do. The owning project still
+activates in the background so Send and approve are ready. Backing out of the
+cover always asks `abandonInFlightHubProjectActivation`, which cancels only an
+uncommitted switch so the next tap can start a different one; a switch that
+already committed `activeProjectId` is left running. CLI (terminal) rows still
+wait on activation, then use the terminal destination (a CLI session has no
+chat JSONL; routing it through the chat transcript surface would render
+permanently blank). A failed or unresponsive wait (CLI, or a foreign chat on a
+host without cross-project scope) resolves to concrete error copy with Retry
+and Back to Hub. A chat that already painted must not be replaced by Retry if
+the background switch fails. The
 empty transcript loading state is a chat-shaped skeleton
 (`WorkChatTranscriptSkeleton`), not a spinner inside a glass card. The
 hub row context menu also narrows for CLI rows: only "Open session" is

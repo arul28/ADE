@@ -834,6 +834,8 @@ struct WorkSessionDestinationView: View {
   /// rather than fire-and-forget: two quick sends must not interleave two
   /// transcript loads.
   @State var postSendRefreshTask: Task<Void, Never>?
+  @State private var hubActivationRebindTask: Task<Void, Never>?
+  @State private var chatDestinationVisible = false
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var subagentSnapshotsRenderSignature = 0
@@ -1462,6 +1464,7 @@ struct WorkSessionDestinationView: View {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .onAppear {
+        chatDestinationVisible = true
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
@@ -1474,7 +1477,8 @@ struct WorkSessionDestinationView: View {
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
         if wasForeign && !isForeign {
-          Task { await rebindChatAfterHubActivation() }
+          hubActivationRebindTask?.cancel()
+          hubActivationRebindTask = Task { await rebindChatAfterHubActivation() }
         }
       }
       .task {
@@ -1629,6 +1633,9 @@ struct WorkSessionDestinationView: View {
         Task { await refreshRemoteSubagentSnapshots() }
       }
       .onDisappear {
+        chatDestinationVisible = false
+        hubActivationRebindTask?.cancel()
+        hubActivationRebindTask = nil
         if let announcedLaneId {
           syncService.releaseLaneOpen(laneId: announcedLaneId)
           self.announcedLaneId = nil
@@ -1662,13 +1669,42 @@ struct WorkSessionDestinationView: View {
   /// this session unsubscribed. Rebind onto the active-project stream.
   @MainActor
   func rebindChatAfterHubActivation() async {
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
     syncService.clearCrossProjectChatScope(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
     guard let currentSession = session ?? initialSession, isChatSession(currentSession) else {
       return
     }
     syncService.retainChatEventSubscription(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
     _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
     await loadTranscript(forceRemote: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
     await syncLanePresence()
   }
 

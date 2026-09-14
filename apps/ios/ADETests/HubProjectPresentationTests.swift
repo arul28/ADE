@@ -225,14 +225,20 @@ final class HubProjectPresentationTests: XCTestCase {
             hubProjectPresentation(presentation, matching: .working)?.lanes.first?.rows.map(\.id),
             ["c-run"]
         )
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .working)?.runningCount, 1)
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .working)?.attentionCount, 0)
         XCTAssertEqual(
             hubProjectPresentation(presentation, matching: .needsYou)?.lanes.first?.rows.map(\.id),
             ["c-wait"]
         )
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .needsYou)?.attentionCount, 1)
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .needsYou)?.runningCount, 0)
         XCTAssertEqual(
             hubProjectPresentation(presentation, matching: .finished)?.lanes.first?.rows.map(\.id),
             ["c-fail"]
         )
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .finished)?.runningCount, 0)
+        XCTAssertEqual(hubProjectPresentation(presentation, matching: .finished)?.attentionCount, 0)
     }
 
     func testFilterDoesNotPromoteAParentForAnUndrawnChild() {

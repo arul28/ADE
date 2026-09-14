@@ -241,14 +241,10 @@ func hubRosterFilterCount(
   presentations.reduce(0) { partial, presentation in
     partial + presentation.lanes.reduce(0) { lanePartial, lane in
       lanePartial + lane.rows.reduce(0) { rowPartial, row in
-        rowPartial + hubChatRowFilterCount(row, filter: filter)
+        rowPartial + (hubRosterFilterContains(row.stateGroup, filter) ? 1 : 0)
       }
     }
   }
-}
-
-func hubChatRowFilterCount(_ row: HubChatRowPresentation, filter: HubRosterFilter) -> Int {
-  hubRosterFilterContains(row.stateGroup, filter) ? 1 : 0
 }
 
 func hubProjectPresentation(
@@ -264,10 +260,10 @@ func hubProjectPresentation(
   guard !lanes.isEmpty else { return nil }
   let chatCount = lanes.reduce(0) { $0 + $1.rows.count }
   let attentionCount = lanes.reduce(0) { partial, lane in
-    partial + lane.rows.filter { $0.stateGroup == .needsYou }.count
+    partial + lane.rows.filter { hubRosterFilterContains($0.stateGroup, .needsYou) }.count
   }
   let runningCount = lanes.reduce(0) { partial, lane in
-    partial + lane.rows.filter { $0.stateGroup == .working || $0.stateGroup == .planning }.count
+    partial + lane.rows.filter { hubRosterFilterContains($0.stateGroup, .working) }.count
   }
   return HubProjectPresentation(
     project: presentation.project,

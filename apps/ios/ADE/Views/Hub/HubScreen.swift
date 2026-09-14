@@ -226,10 +226,11 @@ struct HubScreen: View {
           } else {
             ForEach(filteredHubProjectPresentations) { presentation in
               let project = presentation.project
+              let honoursCollapse = rosterFilter == .all
               HubProjectCard(
                 presentation: presentation,
-                isCollapsed: rosterFilter == .all && collapsedProjectIds.contains(project.id),
-                collapsedLaneKeysSnapshot: rosterFilter == .all ? collapsedLaneKeys : [],
+                isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
+                collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
                 collapsedLaneKeys: $collapsedLaneKeys,
                 onToggleCollapse: { withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) } },
                 onOpenProject: { syncService.selectProject(project) },
