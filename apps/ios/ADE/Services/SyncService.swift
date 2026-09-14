@@ -4561,6 +4561,22 @@ final class SyncService: ObservableObject {
     return projectRoot == activeProjectRootPath
   }
 
+  func isActiveProject(id: String, rootPath: String?) -> Bool {
+    if let project = projects.first(where: { $0.id == id }) {
+      return isActiveProject(project)
+    }
+    return isActiveProject(
+      MobileProjectSummary(
+        id: id,
+        displayName: id,
+        rootPath: rootPath,
+        laneCount: 0,
+        isAvailable: true,
+        isCached: true
+      )
+    )
+  }
+
   var isProjectSwitching: Bool {
     projectSwitchInFlightRootPath != nil
   }

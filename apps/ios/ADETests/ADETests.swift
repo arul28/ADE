@@ -28862,15 +28862,13 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     XCTAssertTrue(
       hubChatIsForeignProject(
         context: context,
-        activeProjectId: "p-other",
-        activeProjectRootPath: "/tmp/other"
+        ownerIsActive: false
       )
     )
     XCTAssertFalse(
       hubChatIsForeignProject(
         context: context,
-        activeProjectId: "p-ade",
-        activeProjectRootPath: "/tmp/other"
+        ownerIsActive: true
       )
     )
     XCTAssertNil(

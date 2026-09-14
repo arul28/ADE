@@ -99,6 +99,13 @@ func hubChatRequiresProjectActivation(isActiveProject: Bool) -> Bool {
   !isActiveProject
 }
 
+func hubChatShouldAbandonActivationOnDismiss(
+  isSwitchingTargetProject: Bool,
+  targetAlreadyActive: Bool
+) -> Bool {
+  isSwitchingTargetProject && !targetAlreadyActive
+}
+
 func hubChatCrossProjectContext(
   project: MobileProjectSummary,
   isActiveProject: Bool
@@ -113,17 +120,9 @@ func hubChatCrossProjectContext(
 
 func hubChatIsForeignProject(
   context: WorkChatCrossProjectContext?,
-  activeProjectId: String?,
-  activeProjectRootPath: String?
+  ownerIsActive: Bool
 ) -> Bool {
-  guard let context else { return false }
-  if let activeProjectId, activeProjectId == context.projectId { return false }
-  if let activeRoot = activeProjectRootPath,
-     let contextRoot = context.projectRootPath,
-     activeRoot == contextRoot {
-    return false
-  }
-  return true
+  context != nil && !ownerIsActive
 }
 
 /// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
@@ -280,15 +279,20 @@ private struct HubChatOpeningPlaceholder: View {
   var body: some View {
     ZStack {
       ADEColor.pageBackground.ignoresSafeArea()
-      VStack(alignment: .leading, spacing: 14) {
+      VStack(alignment: .leading, spacing: 12) {
         Text("Opening \(projectName)")
           .font(.system(.subheadline, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
-        WorkChatTranscriptSkeleton()
+        ADESkeletonView(height: 14, cornerRadius: 8)
+        ADESkeletonView(width: 220, height: 14, cornerRadius: 8)
+        ADESkeletonView(width: 160, height: 14, cornerRadius: 8)
       }
       .padding(.horizontal, 16)
       .padding(.top, 12)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Opening \(projectName)")
+      .accessibilityAddTraits(.updatesFrequently)
     }
     .safeAreaInset(edge: .top, spacing: 0) {
       HubChatBackBar(onClose: onClose)
