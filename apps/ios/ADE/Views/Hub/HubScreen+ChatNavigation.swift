@@ -138,6 +138,15 @@ func hubChatCanPaintFromRosterStub(
   hasChatStub && (ownerIsActive || supportsCrossProjectChat)
 }
 
+/// CLI rows have no stub. If activation is not required they must still leave
+/// `.deciding` so the destination hydrates instead of spinning forever.
+func hubChatLeavesDecidingWithoutActivationWait(
+  canPaintFromStub: Bool,
+  requiresActivation: Bool
+) -> Bool {
+  canPaintFromStub || !requiresActivation
+}
+
 /// Rebind after Hub activate must stop once the destination is gone, otherwise
 /// a late `retainChatEventSubscription` undoes leave.
 func hubChatShouldContinueActivationRebind(
@@ -145,6 +154,24 @@ func hubChatShouldContinueActivationRebind(
   taskCancelled: Bool
 ) -> Bool {
   destinationVisible && !taskCancelled
+}
+
+/// After Hub activate commits, `isCrossProject` falls and the destination
+/// rebinds onto the active project. If that switch then rolls the previous
+/// project back, `isCrossProject` rises again and foreign scope must return.
+enum HubChatActivationScopeTransition: Equatable {
+  case rebindToActive
+  case restoreForeign
+  case none
+}
+
+func hubChatActivationScopeTransition(
+  wasForeign: Bool,
+  isForeign: Bool
+) -> HubChatActivationScopeTransition {
+  if wasForeign && !isForeign { return .rebindToActive }
+  if !wasForeign && isForeign { return .restoreForeign }
+  return .none
 }
 
 /// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
@@ -175,12 +202,19 @@ private struct HubChatCover: View {
     self.syncService = syncService
     self.onClose = onClose
     let stub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
+    let ownerIsActive = syncService.isActiveProject(target.project)
     let canPaint = hubChatCanPaintFromRosterStub(
       hasChatStub: stub != nil,
-      ownerIsActive: syncService.isActiveProject(target.project),
+      ownerIsActive: ownerIsActive,
       supportsCrossProjectChat: syncService.supportsCrossProjectChat
     )
-    _mode = State(initialValue: canPaint ? .activated(stub) : .deciding)
+    let requiresActivation = hubChatRequiresProjectActivation(isActiveProject: ownerIsActive)
+    _mode = State(
+      initialValue: hubChatLeavesDecidingWithoutActivationWait(
+        canPaintFromStub: canPaint,
+        requiresActivation: requiresActivation
+      ) ? .activated(stub) : .deciding
+    )
   }
 
   var body: some View {
@@ -237,16 +271,21 @@ private struct HubChatCover: View {
       ownerIsActive: ownerIsActive,
       supportsCrossProjectChat: syncService.supportsCrossProjectChat
     )
-    if canPaint, mode == .deciding {
+    let requiresActivation = hubChatRequiresProjectActivation(isActiveProject: ownerIsActive)
+    if hubChatLeavesDecidingWithoutActivationWait(
+      canPaintFromStub: canPaint,
+      requiresActivation: requiresActivation
+    ), mode == .deciding {
       mode = .activated(sessionStub)
     }
-    guard hubChatRequiresProjectActivation(isActiveProject: ownerIsActive) else { return }
+    guard requiresActivation else { return }
 
     // Painted chats (active owner, or foreign with host scope) keep streaming
     // while activate runs. CLI rows and older-host foreign chats wait.
     if !canPaint {
       startActivationWatchdog()
     }
+    guard !abandoned, !Task.isCancelled else { return }
     await syncService.openProjectForHubChat(target.project)
     activationWatchdog?.cancel()
     activationWatchdog = nil

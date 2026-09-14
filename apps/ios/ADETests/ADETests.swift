@@ -28928,6 +28928,36 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     )
   }
 
+  func testActivationRollbackRestoresForeignScope() {
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: true, isForeign: false),
+      .rebindToActive
+    )
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: false, isForeign: true),
+      .restoreForeign
+    )
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: true, isForeign: true),
+      .none
+    )
+  }
+
+  func testActiveCliRowLeavesDecidingWithoutWaiting() {
+    XCTAssertTrue(
+      hubChatLeavesDecidingWithoutActivationWait(
+        canPaintFromStub: false,
+        requiresActivation: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatLeavesDecidingWithoutActivationWait(
+        canPaintFromStub: false,
+        requiresActivation: true
+      )
+    )
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",

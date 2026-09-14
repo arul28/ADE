@@ -2244,7 +2244,10 @@ chat JSONL; routing it through the chat transcript surface would render
 permanently blank). A failed or unresponsive wait (CLI, or a foreign chat on a
 host without cross-project scope) resolves to concrete error copy with Retry
 and Back to Hub. A chat that already painted must not be replaced by Retry if
-the background switch fails. The
+the background switch fails. If a bundled switch then rolls the previous
+project back, the open chat restores foreign scope so send and transcript stay
+on the owner. An already-active CLI row opens the destination immediately
+instead of waiting on a spinner. The
 empty transcript loading state is a chat-shaped skeleton
 (`WorkChatTranscriptSkeleton`), not a spinner inside a glass card. The
 hub row context menu also narrows for CLI rows: only "Open session" is
