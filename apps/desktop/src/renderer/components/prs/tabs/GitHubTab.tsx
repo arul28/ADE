@@ -4,6 +4,7 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   GitHubPrListItem,
   GitHubPrSnapshot,
+  GitHubStackMutationResult,
   LaneSummary,
   MergeMethod,
   PrEventPayload,
@@ -581,29 +582,39 @@ export function GitHubTab({
     await loadSnapshot({ silent: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
-  const handleMergeStack = React.useCallback(async (mergeMethod: MergeMethod) => {
-    if (!selectedStack || !snapshot?.repo) return;
+  const handleMergeStack = React.useCallback(async (mergeMethod: MergeMethod): Promise<GitHubStackMutationResult> => {
+    if (!selectedStack || !snapshot?.repo) {
+      return {
+        ok: false,
+        stack: null,
+        method: "stack_api",
+        error: "Select a GitHub stack to merge.",
+      };
+    }
     const result = await window.ade.prs.mergeGitHubStack({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
       mergeMethod,
     });
     await loadSnapshot({ silent: true });
-    if (!result.ok) {
-      throw new Error(result.disabledReason || result.error || "GitHub could not merge this stack.");
-    }
+    return result;
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
-  const handleRebaseStack = React.useCallback(async () => {
-    if (!selectedStack || !snapshot?.repo) return;
+  const handleRebaseStack = React.useCallback(async (): Promise<GitHubStackMutationResult> => {
+    if (!selectedStack || !snapshot?.repo) {
+      return {
+        ok: false,
+        stack: null,
+        method: "stack_api",
+        error: "Select a GitHub stack to rebase.",
+      };
+    }
     const result = await window.ade.prs.rebaseGitHubStack({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
     });
     await loadSnapshot({ silent: true });
-    if (!result.ok) {
-      throw new Error(result.disabledReason || result.error || "GitHub could not rebase this stack.");
-    }
+    return result;
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
   const handleLoadOlderHistory = React.useCallback(async () => {

@@ -674,7 +674,8 @@ describe("PR chat cards", () => {
     });
 
     expect(count).toBe(2);
-    expect(listSessions).toHaveBeenCalledWith(undefined, { includeArchived: false });
+    expect(listSessions).toHaveBeenCalledWith("lane-1", { includeArchived: false });
+    expect(listSessions).toHaveBeenCalledWith("lane-2", { includeArchived: false });
     const land = emitAdeCard.mock.calls
       .map(([call]) => call.card)
       .find((card) => card.variant === "pr_stack_land");

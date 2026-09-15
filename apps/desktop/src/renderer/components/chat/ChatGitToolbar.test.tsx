@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat } from "../../../shared/prChatScope";
 import type { PrSummary } from "../../../shared/types";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 

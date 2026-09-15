@@ -4,6 +4,7 @@ import type {
   PrMobileSnapshot,
   PrSummary,
   PrWithConflicts,
+  StackLinkOffer,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
@@ -320,6 +321,34 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       const result = await call("prs.unlinkChatSession", args, { ok: false }, false);
       invalidatePrsReads();
       return result;
+    },
+    linkChatStack: async (args: unknown) => {
+      if (commands.hasAction("prs.linkChatStack")) {
+        const result = await call("prs.linkChatStack", args, { ok: false, linked: 0 }, false);
+        invalidatePrsReads();
+        return result;
+      }
+      const record = asRecord(args);
+      const sessionId = String(record.sessionId ?? "");
+      const stackNumber = Number(record.stackNumber);
+      const offer = await read<StackLinkOffer | null>(
+        "prs.getStackLinkOffer",
+        { sessionId, prId: record.prId },
+        null,
+      );
+      if (!offer || offer.stackNumber !== stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      let linked = 0;
+      for (const sibling of unclaimed) {
+        const result = await call<{ ok: boolean }>("prs.linkChatSession", {
+          prId: sibling.prId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        }, { ok: false }, false);
+        if (result.ok) linked += 1;
+      }
+      invalidatePrsReads();
+      return { ok: linked === unclaimed.length, linked };
     },
     listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),

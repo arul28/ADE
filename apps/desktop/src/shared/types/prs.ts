@@ -329,6 +329,8 @@ export type UnstackGitHubPrStackArgs = {
   stackNumber: number;
 };
 
+export const DEFAULT_GITHUB_STACK_MERGE_METHOD: MergeMethod = "squash";
+
 export type MergeGitHubPrStackArgs = {
   repo?: GitHubRepoRef | null;
   stackNumber: number;
@@ -358,6 +360,12 @@ export type LinkPrChatSessionArgs = {
 export type UnlinkPrChatSessionArgs = {
   prId: string;
   sessionId: string;
+};
+
+export type LinkPrChatStackArgs = {
+  sessionId: string;
+  stackNumber: number;
+  prId?: string | null;
 };
 
 export type ListPrChatSessionsArgs = {

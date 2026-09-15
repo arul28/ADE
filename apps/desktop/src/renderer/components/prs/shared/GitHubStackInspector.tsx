@@ -12,7 +12,7 @@ import {
   Stack,
   Warning,
 } from "@phosphor-icons/react";
-import type { GitHubPrListItem, GitHubPrStack, MergeMethod } from "../../../../shared/types";
+import type { GitHubPrListItem, GitHubPrStack, GitHubStackMutationResult, MergeMethod } from "../../../../shared/types";
 import {
   COLORS,
   MONO_FONT,
@@ -59,16 +59,14 @@ export function GitHubStackInspector({
   onSync: () => void;
   onAddPullRequests: (pullRequests: number[]) => Promise<void>;
   onUnstack: () => Promise<void>;
-  onMerge: (mergeMethod: MergeMethod) => Promise<void>;
-  onRebase: () => Promise<void>;
+  onMerge: (mergeMethod: MergeMethod) => Promise<GitHubStackMutationResult>;
+  onRebase: () => Promise<GitHubStackMutationResult>;
 }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(true);
   const [manageOpen, setManageOpen] = React.useState(false);
   const [pullInput, setPullInput] = React.useState("");
   const [busyAction, setBusyAction] = React.useState<"add" | "unstack" | "merge" | "rebase" | null>(null);
-  const [confirmUnstack, setConfirmUnstack] = React.useState(false);
-  const [confirmMerge, setConfirmMerge] = React.useState(false);
-  const [confirmRebase, setConfirmRebase] = React.useState(false);
+  const [pendingConfirm, setPendingConfirm] = React.useState<"unstack" | "merge" | "rebase" | null>(null);
   const [mergeMethod, setMergeMethod] = React.useState<MergeMethod>("squash");
   const [error, setError] = React.useState<string | null>(null);
   const [unavailableReason, setUnavailableReason] = React.useState<string | null>(null);
@@ -100,17 +98,15 @@ export function GitHubStackInspector({
   };
 
   const unstack = async () => {
-    if (!confirmUnstack) {
-      setConfirmUnstack(true);
-      setConfirmMerge(false);
-      setConfirmRebase(false);
+    if (pendingConfirm !== "unstack") {
+      setPendingConfirm("unstack");
       return;
     }
     setBusyAction("unstack");
     setError(null);
     try {
       await onUnstack();
-      setConfirmUnstack(false);
+      setPendingConfirm(null);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not update this stack.");
     } finally {
@@ -118,53 +114,54 @@ export function GitHubStackInspector({
     }
   };
 
+  const applyMutationResult = (
+    result: GitHubStackMutationResult,
+    fallback: string,
+  ): boolean => {
+    if (result.ok) {
+      setUnavailableReason(null);
+      setError(null);
+      setPendingConfirm(null);
+      return true;
+    }
+    if (result.method === "unavailable") {
+      setUnavailableReason(result.disabledReason || result.error || fallback);
+      setError(null);
+      return false;
+    }
+    setError(result.error || result.disabledReason || fallback);
+    return false;
+  };
+
   const mergeStack = async () => {
-    if (!confirmMerge) {
-      setConfirmMerge(true);
-      setConfirmUnstack(false);
-      setConfirmRebase(false);
+    if (pendingConfirm !== "merge") {
+      setPendingConfirm("merge");
       return;
     }
     setBusyAction("merge");
     setError(null);
     try {
-      await onMerge(mergeMethod);
-      setConfirmMerge(false);
-      setUnavailableReason(null);
+      const result = await onMerge(mergeMethod);
+      applyMutationResult(result, "GitHub could not merge this stack.");
     } catch (actionError) {
-      const message = actionError instanceof Error ? actionError.message : "GitHub could not merge this stack.";
-      if (/does not expose stack merge|cannot merge GitHub stacks/i.test(message)) {
-        setUnavailableReason(message);
-        setError(null);
-      } else {
-        setError(message);
-      }
+      setError(actionError instanceof Error ? actionError.message : "GitHub could not merge this stack.");
     } finally {
       setBusyAction(null);
     }
   };
 
   const rebaseStack = async () => {
-    if (!confirmRebase) {
-      setConfirmRebase(true);
-      setConfirmUnstack(false);
-      setConfirmMerge(false);
+    if (pendingConfirm !== "rebase") {
+      setPendingConfirm("rebase");
       return;
     }
     setBusyAction("rebase");
     setError(null);
     try {
-      await onRebase();
-      setConfirmRebase(false);
-      setUnavailableReason(null);
+      const result = await onRebase();
+      applyMutationResult(result, "GitHub could not rebase this stack.");
     } catch (actionError) {
-      const message = actionError instanceof Error ? actionError.message : "GitHub could not rebase this stack.";
-      if (/does not expose stack rebase|cannot rebase GitHub stacks/i.test(message)) {
-        setUnavailableReason(message);
-        setError(null);
-      } else {
-        setError(message);
-      }
+      setError(actionError instanceof Error ? actionError.message : "GitHub could not rebase this stack.");
     } finally {
       setBusyAction(null);
     }
@@ -289,9 +286,7 @@ export function GitHubStackInspector({
                 type="button"
                 onClick={() => {
                   setManageOpen((value) => !value);
-                  setConfirmUnstack(false);
-                  setConfirmMerge(false);
-                  setConfirmRebase(false);
+                  setPendingConfirm(null);
                   setError(null);
                 }}
                 style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11 })}
@@ -309,7 +304,7 @@ export function GitHubStackInspector({
                 style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || unavailableReason ? 0.6 : 1 })}
               >
                 <ArrowsClockwise size={12} />
-                {busyAction === "rebase" ? "Rebasing..." : confirmRebase ? "Confirm rebase" : "Rebase stack"}
+                {busyAction === "rebase" ? "Rebasing..." : pendingConfirm === "rebase" ? "Confirm rebase" : "Rebase stack"}
               </button>
               <button
                 type="button"
@@ -322,11 +317,11 @@ export function GitHubStackInspector({
                 style={primaryButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || unavailableReason ? 0.6 : 1 })}
               >
                 <GitMerge size={12} />
-                {busyAction === "merge" ? "Merging..." : confirmMerge ? "Confirm merge" : "Merge stack"}
+                {busyAction === "merge" ? "Merging..." : pendingConfirm === "merge" ? "Confirm merge" : "Merge stack"}
               </button>
             </div>
 
-            {confirmMerge ? (
+            {pendingConfirm === "merge" ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
                 {(["squash", "merge", "rebase"] as MergeMethod[]).map((method) => (
                   <button
@@ -350,7 +345,7 @@ export function GitHubStackInspector({
               </div>
             ) : null}
 
-            {confirmRebase ? (
+            {pendingConfirm === "rebase" ? (
               <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>
                 GitHub rebases each open layer onto the layer below it, keeping expected head SHAs.
               </div>
@@ -409,7 +404,7 @@ export function GitHubStackInspector({
                       opacity: busyAction ? 0.6 : 1,
                     })}
                   >
-                    {busyAction === "unstack" ? "Updating..." : confirmUnstack ? "Confirm unstack" : "Unstack"}
+                    {busyAction === "unstack" ? "Updating..." : pendingConfirm === "unstack" ? "Confirm unstack" : "Unstack"}
                   </button>
                 </div>
               </div>

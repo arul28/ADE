@@ -8,6 +8,7 @@ import {
   laneHasAnyPr,
   lanePrCompositeKey,
   lanePrsForMachine,
+  machineCatalogPrs,
 } from "./useLanePrs";
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -229,5 +230,21 @@ describe("lane PR key namespaces", () => {
     expect(laneHasAnyPr(byLane, "lane-1")).toBe(true);
     expect(laneHasAnyPr(byLane, "lane-unknown")).toBe(false);
     expect(boundMachineLanePrs(byLane, "lane-unknown")).toEqual([]);
+  });
+
+  it("flattens every bound-machine lane for chat scoping", () => {
+    const byLane = new Map<string, PrSummary[]>([
+      [laneBoundMachineKey("lane-1"), [mappedPr({ id: "pr-local" })]],
+      [laneBoundMachineKey("lane-2"), [mappedPr({ id: "pr-stack", laneId: "lane-2" })]],
+      [lanePrCompositeKey("machine-b", "lane-1"), [mappedPr({ id: "pr-foreign" })]],
+    ]);
+
+    expect(machineCatalogPrs(byLane, { bound: true }).map((pr) => pr.id).sort()).toEqual([
+      "pr-local",
+      "pr-stack",
+    ]);
+    expect(machineCatalogPrs(byLane, { machineId: "machine-b" }).map((pr) => pr.id)).toEqual([
+      "pr-foreign",
+    ]);
   });
 });

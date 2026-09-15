@@ -856,6 +856,7 @@ export const IPC = {
   prsRebaseGitHubStack: "ade.prs.rebaseGitHubStack",
   prsLinkChatSession: "ade.prs.linkChatSession",
   prsUnlinkChatSession: "ade.prs.unlinkChatSession",
+  prsLinkChatStack: "ade.prs.linkChatStack",
   prsListChatSessionsForPr: "ade.prs.listChatSessionsForPr",
   prsGetStackLinkOffer: "ade.prs.getStackLinkOffer",
   prsSimulateIntegration: "ade.prs.simulateIntegration",

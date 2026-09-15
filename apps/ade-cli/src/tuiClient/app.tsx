@@ -9352,15 +9352,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {
       try {
-        // ADE-135: `PrLaneSummary` now carries the service's canonical
-        // `checksStatus`, so consumers gate on that instead of inferring a pass
-        // from `checksPassed === checksTotal`.
-        // An earlier revision joined a second unscoped `pr listAll` call for the
-        // same field: redundant, an extra whole-history serialization on a 30s
-        // refresh, and strictly less correct — projection-backed and detached
-        // lanes are absent from `pull_requests`, so their status came back
-        // undefined and fell through to exactly the producer-blind green this
-        // ticket exists to remove.
+        // Chat-scoped peek needs the full PR catalog so cross-lane stack edges
+        // survive `selectPrsForChat`. Lane-header badges still use `prs` from
+        // `listPrsByLane` only — an unscoped `listAll` must not feed checksStatus.
         const prs = await listPrsByLane(connection);
         const listed = await connection.action<Array<Record<string, unknown>>>("pr", "listAll", {}).catch(() => [] as Array<Record<string, unknown>>);
         if (cancelled) return;
@@ -11561,7 +11555,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           body: "",
           draft: false,
           sessionId,
-          source: "user",
+          source: "human",
         });
         setRightPane({ kind: "details", title: "PR open", body: formatPrSummary(created) });
         return;
@@ -12909,7 +12903,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         body,
         draft: false,
         sessionId: activeSession?.sessionId ?? activeSessionId ?? null,
-        source: "user",
+        source: "human",
       });
       setRightPane({ kind: "details", title: "PR open", body: renderObject(created, 24) });
       addNotice("Created PR.", "success");

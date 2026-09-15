@@ -469,6 +469,7 @@ import type {
   RebaseGitHubPrStackArgs,
   GitHubStackMutationResult,
   LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
   UnlinkPrChatSessionArgs,
   ListPrChatSessionsArgs,
   PrChatSessionLink,
@@ -3432,6 +3433,7 @@ declare global {
         ) => Promise<GitHubStackMutationResult>;
         linkChatSession: (args: LinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
         unlinkChatSession: (args: UnlinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
+        linkChatStack: (args: LinkPrChatStackArgs) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,
         ) => Promise<PrChatSessionLink[]>;

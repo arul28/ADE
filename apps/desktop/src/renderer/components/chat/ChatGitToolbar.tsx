@@ -31,7 +31,7 @@ import {
   pickPrimaryPr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat } from "../../../shared/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,34 @@ type ChatGitToolbarProps = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function extraLinkedPrsAction(args: {
+  count: number;
+  onTogglePrPane?: () => void;
+  runtimePin: OpenProjectBinding | null | undefined;
+  onOpenPrimary: () => void;
+  onOpenLaneTab: () => void;
+}): { title: string; "aria-label": string; onClick: () => void } {
+  if (args.onTogglePrPane) {
+    return {
+      title: `Show ${args.count} linked pull requests`,
+      "aria-label": `Show ${args.count} linked pull requests`,
+      onClick: args.onTogglePrPane,
+    };
+  }
+  if (args.runtimePin) {
+    return {
+      title: "Open the primary pull request on its owning machine; hover for all",
+      "aria-label": "Open the primary pull request on its owning machine",
+      onClick: args.onOpenPrimary,
+    };
+  }
+  return {
+    title: `Show all ${args.count} pull requests for this lane`,
+    "aria-label": `Show all ${args.count} pull requests for this lane`,
+    onClick: args.onOpenLaneTab,
+  };
+}
 
 function dirtyFileCount(changes: DiffChanges): number {
   // Distinct paths, not the sum of the two lists. `git status` reports a file
@@ -515,35 +543,20 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           <button
             type="button"
             className={cn(btnBase, "px-1.5 font-mono text-[9px] tabular-nums")}
-            onClick={() => {
-              if (onTogglePrPane) {
-                onTogglePrPane();
-                return;
-              }
-              if (runtimePin) {
-                // The local PR tab cannot resolve a foreign machine's rows.
-                // The hover list still exposes every PR; the counter opens the
-                // owning machine's primary PR instead of a misleading empty tab.
-                openPr(linkedPr);
-                return;
-              }
-              navigate(`/prs${buildPrsRouteSearch({
-                activeTab: "normal",
-                selectedPrId: null,
-                selectedLaneId: laneId,
-                selectedRebaseItemId: null,
-              })}`);
-            }}
-            title={onTogglePrPane
-              ? `Show ${allPrs.length} linked pull requests`
-              : runtimePin
-                ? "Open the primary pull request on its owning machine; hover for all"
-                : `Show all ${allPrs.length} pull requests for this lane`}
-            aria-label={onTogglePrPane
-              ? `Show ${allPrs.length} linked pull requests`
-              : runtimePin
-                ? "Open the primary pull request on its owning machine"
-                : `Show all ${allPrs.length} pull requests for this lane`}
+            {...extraLinkedPrsAction({
+              count: allPrs.length,
+              onTogglePrPane,
+              runtimePin,
+              onOpenPrimary: () => openPr(linkedPr),
+              onOpenLaneTab: () => {
+                navigate(`/prs${buildPrsRouteSearch({
+                  activeTab: "normal",
+                  selectedPrId: null,
+                  selectedLaneId: laneId,
+                  selectedRebaseItemId: null,
+                })}`);
+              },
+            })}
           >
             +{allPrs.length - 1}
           </button>

@@ -110,6 +110,7 @@
 		E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */; };
 		E10000000000000000000028 /* WorkSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000028 /* WorkSessionDestinationView.swift */; };
 		E10000000000000000000029 /* WorkSessionDestinationView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */; };
+		E1000000000000000000003D /* WorkSessionDestinationView+ChatPr.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003D /* WorkSessionDestinationView+ChatPr.swift */; };
 		E1000000000000000000002A /* WorkChatSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002A /* WorkChatSessionView.swift */; };
 		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
@@ -433,6 +434,7 @@
 		D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionSettingsSheet+Actions.swift"; path = "ADE/Views/Work/WorkSessionSettingsSheet+Actions.swift"; sourceTree = "<group>"; };
 		D10000000000000000000028 /* WorkSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionDestinationView.swift; path = ADE/Views/Work/WorkSessionDestinationView.swift; sourceTree = "<group>"; };
 		D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionDestinationView+Actions.swift"; path = "ADE/Views/Work/WorkSessionDestinationView+Actions.swift"; sourceTree = "<group>"; };
+		D1000000000000000000003D /* WorkSessionDestinationView+ChatPr.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionDestinationView+ChatPr.swift"; path = "ADE/Views/Work/WorkSessionDestinationView+ChatPr.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002A /* WorkChatSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSessionView.swift; path = ADE/Views/Work/WorkChatSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
@@ -940,6 +942,7 @@
 				D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */,
 				D10000000000000000000028 /* WorkSessionDestinationView.swift */,
 				D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */,
+				D1000000000000000000003D /* WorkSessionDestinationView+ChatPr.swift */,
 				D1000000000000000000002A /* WorkChatSessionView.swift */,
 				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
 				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
@@ -1692,6 +1695,7 @@
 				E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */,
 				E10000000000000000000028 /* WorkSessionDestinationView.swift in Sources */,
 				E10000000000000000000029 /* WorkSessionDestinationView+Actions.swift in Sources */,
+				E1000000000000000000003D /* WorkSessionDestinationView+ChatPr.swift in Sources */,
 				E1000000000000000000002A /* WorkChatSessionView.swift in Sources */,
 				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
 				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,

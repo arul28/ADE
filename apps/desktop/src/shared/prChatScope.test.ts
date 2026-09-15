@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { PrSummary } from "./types";
 import {
   chatHasExplicitPrEdges,
-  githubHttpStatusFromError,
   isGithubStackFullyLanded,
   parsePrNumberQuery,
   rankPrFilesByChurn,
@@ -122,12 +121,5 @@ describe("isGithubStackFullyLanded", () => {
       pr({ id: "a", state: "merged", mergedAt: "2026-01-01T00:00:00.000Z" }),
       pr({ id: "b", state: "merged", mergedAt: "2026-01-02T00:00:00.000Z" }),
     ])).toBe(true);
-  });
-});
-
-describe("githubHttpStatusFromError", () => {
-  it("reads GitHub Not Found copy", () => {
-    expect(githubHttpStatusFromError(new Error("Not Found"))).toBe(404);
-    expect(githubHttpStatusFromError(new Error("GitHub API request failed (HTTP 403)"))).toBe(403);
   });
 });

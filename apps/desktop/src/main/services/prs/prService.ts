@@ -113,6 +113,7 @@ import type {
   RebaseGitHubPrStackArgs,
   GitHubStackMutationResult,
   LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
   UnlinkPrChatSessionArgs,
   ListPrChatSessionsArgs,
   PrChatSessionLink,
@@ -198,6 +199,8 @@ import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
+import { selectStackSiblings } from "../../../shared/prChatScope";
+import { DEFAULT_GITHUB_STACK_MERGE_METHOD } from "../../../shared/types/prs";
 import {
   buildLinearPrTitle,
   dedupeLinearPrIssueReferences,
@@ -1726,7 +1729,7 @@ export function createPrService({
       );
       return String(session?.id ?? "").trim() || null;
     } catch {
-      return trimmed;
+      return null;
     }
   };
 
@@ -1778,47 +1781,41 @@ export function createPrService({
     }
   };
 
-  const isGithubStackMember = (prId: string): boolean => {
-    const row = db.get<{ repo_owner: string; repo_name: string; github_pr_number: number }>(
-      "select repo_owner, repo_name, github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
-      [prId, projectId],
-    );
-    if (!row) return false;
-    try {
-      const stacked = db.get<{ github_stack_number: number }>(
-        `select github_stack_number
-           from github_pr_stack_entries
-          where project_id = ?
-            and lower(repo_owner) = lower(?)
-            and lower(repo_name) = lower(?)
-            and github_pr_number = ?
-          limit 1`,
-        [projectId, row.repo_owner, row.repo_name, Number(row.github_pr_number)],
-      );
-      return stacked != null;
-    } catch {
-      return false;
-    }
-  };
-
   const linkPrToChatSession = (args: {
     prId: string;
     laneId: string;
     sessionId?: string | null;
     allowCrossLane?: boolean;
-  }): void => {
+  }): boolean => {
     const sessionId = String(args.sessionId ?? "").trim();
-    if (!sessionId) return;
+    if (!sessionId) return false;
 
     try {
-      const pr = db.get<{ id: string; lane_id: string }>(
-        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+      const pr = db.get<{
+        id: string;
+        lane_id: string;
+        repo_owner: string;
+        repo_name: string;
+        github_pr_number: number;
+      }>(
+        "select id, lane_id, repo_owner, repo_name, github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
         [args.prId, projectId],
       );
-      if (!pr) return;
+      if (!pr) return false;
       const crossLane = pr.lane_id !== args.laneId;
-      if (crossLane && !args.allowCrossLane && !isGithubStackMember(args.prId)) {
-        return;
+      if (crossLane && !args.allowCrossLane) {
+        try {
+          if (
+            githubStackStore.knownStackNumberForPr(
+              { owner: pr.repo_owner, name: pr.repo_name },
+              Number(pr.github_pr_number),
+            ) == null
+          ) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
       }
 
       const canonicalSessionId = resolveCanonicalChatSessionId(sessionId);
@@ -1828,7 +1825,7 @@ export function createPrService({
           laneId: args.laneId,
           sessionId,
         });
-        return;
+        return false;
       }
       const now = nowIso();
       const existing = db.get<{ id: string }>(
@@ -1856,6 +1853,7 @@ export function createPrService({
         );
       }
       clearChatSessionDismissal(args.prId, canonicalSessionId);
+      return true;
     } catch (error) {
       logger.warn("prs.chat_session_link_write_failed", {
         prId: args.prId,
@@ -1863,6 +1861,7 @@ export function createPrService({
         sessionId,
         error: getErrorMessage(error),
       });
+      return false;
     }
   };
 
@@ -1900,17 +1899,11 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return;
-      const stack = db.get<{ github_stack_number: number }>(
-        `select github_stack_number
-           from github_pr_stack_entries
-          where project_id = ?
-            and lower(repo_owner) = lower(?)
-            and lower(repo_name) = lower(?)
-            and github_pr_number = ?
-          limit 1`,
-        [projectId, pr.repo_owner, pr.repo_name, Number(pr.github_pr_number)],
+      const stackNumber = githubStackStore.knownStackNumberForPr(
+        { owner: pr.repo_owner, name: pr.repo_name },
+        Number(pr.github_pr_number),
       );
-      if (!stack) return;
+      if (stackNumber == null) return;
       const parentSessions = db.all<{ session_id: string }>(
         `
           select distinct pcs.session_id as session_id
@@ -1928,7 +1921,7 @@ export function createPrService({
              and entry.github_stack_number = ?
              and pcs.pr_id <> ?
         `,
-        [projectId, parentLaneId, Number(stack.github_stack_number), args.prId],
+        [projectId, parentLaneId, stackNumber, args.prId],
       );
       for (const row of parentSessions) {
         linkPrToChatSession({
@@ -7674,7 +7667,9 @@ export function createPrService({
     });
     markHotRefresh([prId]);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
-    attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    if (args.source === "agent") {
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
 
     await publishLinearPrCardsForLane({
       lane,
@@ -7810,7 +7805,6 @@ export function createPrService({
     });
     markHotRefresh([prId]);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
-    attachNewStackLayerToParentChats({ prId, laneId: lane.id });
 
     await publishLinearPrCardsForLane({
       lane,
@@ -11956,6 +11950,33 @@ export function createPrService({
     }
   };
 
+  const getStackLinkOffer = (args: { sessionId: string; prId?: string | null }): StackLinkOffer | null => {
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return null;
+    const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
+    const focus = args.prId
+      ? summaries.find((pr) => pr.id === args.prId)
+      : summaries.find((pr) => (pr.chatSessionIds ?? []).includes(sessionId) && pr.stack);
+    if (!focus?.stack) return null;
+    const siblings = selectStackSiblings(summaries, focus).filter((pr) => (
+      pr.id !== focus.id
+      && !(pr.chatSessionIds ?? []).includes(sessionId)
+    ));
+    if (siblings.length === 0) return null;
+    return {
+      sessionId,
+      prId: focus.id,
+      stackNumber: focus.stack.number,
+      siblings: siblings.map((pr) => ({
+        prId: pr.id,
+        githubPrNumber: pr.githubPrNumber,
+        title: pr.title,
+        laneId: pr.laneId,
+        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+      })),
+    };
+  };
+
   return {
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
@@ -12303,7 +12324,7 @@ export function createPrService({
 
     async mergeGithubStack(args: MergeGitHubPrStackArgs): Promise<GitHubStackMutationResult> {
       const repo = await resolveGithubStackRepo(args.repo);
-      const result = await githubStackStore.merge(repo, args.stackNumber, args.mergeMethod ?? "merge");
+      const result = await githubStackStore.merge(repo, args.stackNumber, args.mergeMethod ?? DEFAULT_GITHUB_STACK_MERGE_METHOD);
       emitPrsUpdated();
       return result;
     },
@@ -12321,20 +12342,38 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return { ok: false };
-      linkPrToChatSession({
+      const ok = linkPrToChatSession({
         prId: pr.id,
         laneId: pr.lane_id,
         sessionId: args.sessionId,
-        allowCrossLane: args.allowCrossLane === true || isGithubStackMember(pr.id),
+        allowCrossLane: args.allowCrossLane === true,
       });
-      emitPrsUpdated();
-      return { ok: true };
+      if (ok) emitPrsUpdated();
+      return { ok };
     },
 
     unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {
       const ok = unlinkPrFromChatSession(args);
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    linkChatStack(args: LinkPrChatStackArgs): { ok: boolean; linked: number } {
+      const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
+      if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      let linked = 0;
+      for (const sibling of unclaimed) {
+        const ok = linkPrToChatSession({
+          prId: sibling.prId,
+          laneId: sibling.laneId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        });
+        if (ok) linked += 1;
+      }
+      if (linked > 0) emitPrsUpdated();
+      return { ok: linked === unclaimed.length, linked };
     },
 
     listChatSessionsForPr(args: ListPrChatSessionsArgs): PrChatSessionLink[] {
@@ -12361,35 +12400,7 @@ export function createPrService({
       }
     },
 
-    getStackLinkOffer(args: { sessionId: string; prId?: string | null }): StackLinkOffer | null {
-      const sessionId = resolveCanonicalChatSessionId(args.sessionId);
-      if (!sessionId) return null;
-      const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
-      const focus = args.prId
-        ? summaries.find((pr) => pr.id === args.prId)
-        : summaries.find((pr) => (pr.chatSessionIds ?? []).includes(sessionId) && pr.stack);
-      if (!focus?.stack) return null;
-      const siblings = summaries.filter((pr) => (
-        pr.id !== focus.id
-        && pr.stack?.number === focus.stack?.number
-        && pr.repoOwner.toLowerCase() === focus.repoOwner.toLowerCase()
-        && pr.repoName.toLowerCase() === focus.repoName.toLowerCase()
-        && !(pr.chatSessionIds ?? []).includes(sessionId)
-      ));
-      if (siblings.length === 0) return null;
-      return {
-        sessionId,
-        prId: focus.id,
-        stackNumber: focus.stack.number,
-        siblings: siblings.map((pr) => ({
-          prId: pr.id,
-          githubPrNumber: pr.githubPrNumber,
-          title: pr.title,
-          laneId: pr.laneId,
-          claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
-        })),
-      };
-    },
+    getStackLinkOffer,
 
     async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
       return await githubStackStore.reconcile(repo, stackNumber);

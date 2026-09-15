@@ -103,29 +103,3 @@ export function isGithubStackFullyLanded(prs: readonly PrSummary[]): boolean {
   if (prs.length === 0) return false;
   return prs.every((pr) => pr.state === "merged" || Boolean(pr.mergedAt));
 }
-
-export function githubHttpStatusFromError(error: unknown): number | null {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  const http = message.match(/HTTP (\d{3})/i);
-  if (http) return Number(http[1]);
-  if (/^not found$/i.test(message.trim()) || /\bnot found\b/i.test(message)) return 404;
-  if (/\bmethod not allowed\b/i.test(message) || /\b405\b/.test(message)) return 405;
-  if (/\bforbidden\b/i.test(message) || /resource not accessible/i.test(message)) return 403;
-  return null;
-}
-
-export function githubStackApiUnavailableReason(error: unknown, action: "merge" | "rebase"): string {
-  const status = githubHttpStatusFromError(error);
-  if (status === 404 || status === 405) {
-    return action === "merge"
-      ? "GitHub does not expose stack merge for this repository yet."
-      : "GitHub does not expose stack rebase for this repository yet.";
-  }
-  if (status === 403) {
-    return action === "merge"
-      ? "This credential cannot merge GitHub stacks."
-      : "This credential cannot rebase GitHub stacks.";
-  }
-  const message = error instanceof Error ? error.message.trim() : String(error ?? "").trim();
-  return message || (action === "merge" ? "GitHub could not merge this stack." : "GitHub could not rebase this stack.");
-}

@@ -415,6 +415,7 @@ import type {
   RebaseGitHubPrStackArgs,
   GitHubStackMutationResult,
   LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
   UnlinkPrChatSessionArgs,
   ListPrChatSessionsArgs,
   PrChatSessionLink,
@@ -11010,6 +11011,16 @@ export function registerIpc({
     async (_event, arg: UnlinkPrChatSessionArgs): Promise<{ ok: boolean }> => {
       const ctx = ensurePrMutationContext();
       const result = ctx.prService.unlinkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatStack,
+    async (_event, arg: LinkPrChatStackArgs): Promise<{ ok: boolean; linked: number }> => {
+      const ctx = ensurePrMutationContext();
+      const result = ctx.prService.linkChatStack(arg);
       ctx.prPollingService.poke();
       return result;
     },

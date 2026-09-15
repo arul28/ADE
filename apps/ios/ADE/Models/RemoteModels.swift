@@ -4737,6 +4737,14 @@ struct GitHubPrStack: Codable, Identifiable, Equatable {
   var lastError: String?
 }
 
+struct GitHubStackMutationResult: Codable, Equatable {
+  var ok: Bool
+  var stack: GitHubPrStack?
+  var method: String
+  var disabledReason: String?
+  var error: String?
+}
+
 struct PrSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String

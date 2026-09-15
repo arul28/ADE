@@ -616,6 +616,7 @@ import type {
   RebaseGitHubPrStackArgs,
   GitHubStackMutationResult,
   LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
   UnlinkPrChatSessionArgs,
   ListPrChatSessionsArgs,
   PrChatSessionLink,
@@ -10567,6 +10568,13 @@ const adeBridge = {
         "unlinkChatSession",
         { args },
         () => ipcRenderer.invoke(IPC.prsUnlinkChatSession, args),
+      ),
+    linkChatStack: (args: LinkPrChatStackArgs): Promise<{ ok: boolean; linked: number }> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "linkChatStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLinkChatStack, args),
       ),
     listChatSessionsForPr: (args: ListPrChatSessionsArgs): Promise<PrChatSessionLink[]> =>
       callPrReadRuntimeActionOr(

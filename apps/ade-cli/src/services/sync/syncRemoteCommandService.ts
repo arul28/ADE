@@ -176,6 +176,7 @@ import type {
   RebaseGitHubPrStackArgs,
   GitHubStackMutationResult,
   LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
   UnlinkPrChatSessionArgs,
   ListPrChatSessionsArgs,
   ExternalSessionImportArgs,
@@ -3336,6 +3337,18 @@ function parseLinkPrChatSessionArgs(value: Record<string, unknown>): LinkPrChatS
   };
 }
 
+function parseLinkPrChatStackArgs(value: Record<string, unknown>): LinkPrChatStackArgs {
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "prs.linkChatStack requires sessionId."),
+    stackNumber,
+    ...(asTrimmedString(value.prId) ? { prId: asTrimmedString(value.prId) } : {}),
+  };
+}
+
 function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrChatSessionArgs {
   return {
     prId: requireString(value.prId, "prs.unlinkChatSession requires prId."),
@@ -5966,6 +5979,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.linkChatSession(parseLinkPrChatSessionArgs(payload)));
   register("prs.unlinkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.unlinkChatSession(parseUnlinkPrChatSessionArgs(payload)));
+  register("prs.linkChatStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatStack(parseLinkPrChatStackArgs(payload)));
   register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
   register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>

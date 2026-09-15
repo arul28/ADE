@@ -5,10 +5,10 @@ import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat } from "../../../shared/prChatScope";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
-import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
+import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, machineCatalogPrs, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -2031,8 +2031,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, session.laneId)
           : boundMachineLanePrs(prsByLaneId, session.laneId))
       : [];
+    const chatCatalog = sessionLane
+      ? (foreignRow
+          ? machineCatalogPrs(prsByLaneId, { machineId: foreignRow.machineId })
+          : machineCatalogPrs(prsByLaneId, { bound: true }))
+      : [];
     const chatPrs = sessionLane && isChatToolType(session.toolType)
-      ? selectPrsForChat(sessionLanePrs, session.id, { currentBranch: sessionLane.branchRef })
+      ? selectPrsForChat(chatCatalog, session.id, { currentBranch: sessionLane.branchRef })
       : sessionLanePrs;
     const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, chatPrs) : null;
     const lanePrimary = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;

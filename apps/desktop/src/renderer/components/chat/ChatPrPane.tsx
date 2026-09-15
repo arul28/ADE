@@ -15,7 +15,6 @@ import {
   MinusCircle,
   Plus,
   Sparkle,
-  Stack,
   X,
   XCircle,
 } from "@phosphor-icons/react";
@@ -38,10 +37,11 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { rankPrFilesByChurn, selectPrsForChat } from "../../lib/prChatScope";
+import { rankPrFilesByChurn, selectPrsForChat } from "../../../shared/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+import { ChatPrStackOffer } from "./ChatPrStackOffer";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -394,6 +394,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [filesRemaining, setFilesRemaining] = useState(0);
   const [stackOffer, setStackOffer] = useState<StackLinkOffer | null>(null);
   const [dismissedOfferKey, setDismissedOfferKey] = useState<string | null>(null);
+  const [stackLinkError, setStackLinkError] = useState<string | null>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
   // Manual title-bar ↻ sync in flight.
@@ -746,17 +747,21 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const linkStack = useCallback(async () => {
     if (!visibleOffer) return;
     setLinkBusy(true);
+    setStackLinkError(null);
     try {
-      for (const sibling of visibleOffer.siblings) {
-        if (sibling.claimedByOtherChat) continue;
-        await window.ade.prs.linkChatSession({
-          prId: sibling.prId,
-          sessionId: visibleOffer.sessionId,
-          allowCrossLane: true,
-        });
+      const result = await window.ade.prs.linkChatStack({
+        sessionId: visibleOffer.sessionId,
+        stackNumber: visibleOffer.stackNumber,
+        prId: visibleOffer.prId,
+      });
+      if (!result?.ok) {
+        setStackLinkError("Could not link this GitHub stack.");
+        return;
       }
       setDismissedOfferKey(`${visibleOffer.sessionId}:${visibleOffer.stackNumber}`);
       await refresh({ live: true });
+    } catch (error) {
+      setStackLinkError(error instanceof Error ? error.message : "Could not link this GitHub stack.");
     } finally {
       setLinkBusy(false);
     }
@@ -855,39 +860,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         ) : pr ? (
           <div className="space-y-3">
             {visibleOffer ? (
-              <div className="rounded-lg border border-violet-400/20 bg-violet-500/[0.08] px-2.5 py-2">
-                <div className="flex items-start gap-2">
-                  <Stack size={13} weight="fill" className="mt-0.5 shrink-0 text-violet-200/80" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[12px] font-medium text-fg/85">
-                      Also in GitHub Stack #{visibleOffer.stackNumber}
-                    </p>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-fg/50">
-                      {visibleOffer.siblings
-                        .filter((sibling) => !sibling.claimedByOtherChat)
-                        .map((sibling) => `#${sibling.githubPrNumber}`)
-                        .join(", ")}
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      <button
-                        type="button"
-                        disabled={linkBusy}
-                        onClick={() => void linkStack()}
-                        className="rounded-md bg-violet-500/20 px-2 py-1 text-[11px] font-medium text-violet-100/90 hover:bg-violet-500/30 disabled:opacity-50"
-                      >
-                        Link stack
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDismissedOfferKey(offerKey)}
-                        className="rounded-md px-2 py-1 text-[11px] font-medium text-fg/50 hover:text-fg/75"
-                      >
-                        Not now
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <ChatPrStackOffer
+                offer={visibleOffer}
+                busy={linkBusy}
+                error={stackLinkError}
+                onLink={() => void linkStack()}
+                onDismiss={() => setDismissedOfferKey(offerKey)}
+              />
             ) : null}
             <PrDetails
               pr={pr}

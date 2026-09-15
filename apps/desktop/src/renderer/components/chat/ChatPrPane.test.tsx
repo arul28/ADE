@@ -76,6 +76,7 @@ function installAde(over?: {
   listAll?: unknown;
   getFiles?: PrFile[];
   getStackLinkOffer?: unknown;
+  linkChatStack?: unknown;
 }) {
   (globalThis.window as { ade?: unknown }).ade = {
     prs: {
@@ -91,6 +92,8 @@ function installAde(over?: {
       getStackLinkOffer: vi.fn().mockResolvedValue(over?.getStackLinkOffer ?? null),
       linkChatSession: vi.fn().mockResolvedValue({ ok: true }),
       unlinkChatSession: vi.fn().mockResolvedValue({ ok: true }),
+      linkChatStack: over?.linkChatStack
+        ?? vi.fn().mockResolvedValue({ ok: true, linked: 1 }),
     },
     github: {
       getAppInstallationStatus: vi.fn().mockResolvedValue({
@@ -541,7 +544,55 @@ describe("ChatPrPane title bar", () => {
     expect(screen.getByRole("button", { name: "Show pull request #12" })).toBeTruthy();
     expect(await screen.findByText(/Also in GitHub Stack #3/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
+    const ade = (globalThis.window as { ade: { prs: { linkChatStack: ReturnType<typeof vi.fn> } } }).ade;
+    await waitFor(() => {
+      expect(ade.prs.linkChatStack).toHaveBeenCalledWith({
+        sessionId: "chat-1",
+        stackNumber: 3,
+        prId: "pr-1",
+      });
+    });
     fireEvent.click(screen.getByRole("button", { name: "Show pull request #12" }));
     expect(await screen.findByText("Top layer")).toBeTruthy();
+  });
+
+  it("keeps the stack offer visible when linkChatStack fails", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+      stack: { id: "stack-3", number: 3, size: 2, position: 1, baseBranch: "main" },
+    });
+    const sibling = makePr({
+      id: "pr-3",
+      githubPrNumber: 13,
+      title: "Unlinked sibling",
+      laneId: "lane-3",
+      chatSessionIds: [],
+      stack: { id: "stack-3", number: 3, size: 2, position: 2, baseBranch: "main" },
+    });
+    installAde({
+      listAll: vi.fn().mockResolvedValue([first, sibling]),
+      linkChatStack: vi.fn().mockResolvedValue({ ok: false, linked: 0 }),
+      getStackLinkOffer: {
+        sessionId: "chat-1",
+        prId: "pr-1",
+        stackNumber: 3,
+        siblings: [{
+          prId: "pr-3",
+          githubPrNumber: 13,
+          title: "Unlinked sibling",
+          laneId: "lane-3",
+          claimedByOtherChat: false,
+        }],
+      },
+    });
+    renderPane({ sessionId: "chat-1" });
+    expect(await screen.findByText(/Also in GitHub Stack #3/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
+    expect(await screen.findByText("Could not link this GitHub stack.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
   });
 });

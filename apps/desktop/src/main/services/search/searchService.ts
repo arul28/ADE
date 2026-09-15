@@ -1399,6 +1399,49 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
+  const delegatedPrNumberChatCandidates = async (args: {
+    parsed: ParsedSearchQuery;
+    kinds: SearchDocKind[];
+    laneId: string | null;
+    scopeChatSessionId: string | null;
+    excludeSessionContent: boolean;
+    queryText: string;
+  }): Promise<Candidate[]> => {
+    if (args.excludeSessionContent || !args.kinds.includes("chat") || !deps.prs) return [];
+    const prNumber = parsePrNumberQuery(args.queryText)
+      ?? (args.parsed.terms.length === 1 ? parsePrNumberQuery(args.parsed.terms[0] ?? "") : null);
+    if (!prNumber) return [];
+    const summaries = await deps.prs.listAll();
+    const matches = summaries.filter((pr) => pr.githubPrNumber === prNumber);
+    const out: Candidate[] = [];
+    for (const summary of matches) {
+      for (const sessionId of summary.chatSessionIds ?? []) {
+        const session = await resolveSession(sessionId);
+        if (!session || !isChatSession(session)) continue;
+        const scopeAllowsSession = !args.scopeChatSessionId
+          || session.id === args.scopeChatSessionId
+          || session.chatSessionId === args.scopeChatSessionId;
+        if (!scopeAllowsSession) continue;
+        if (args.laneId && session.laneId !== args.laneId) continue;
+        out.push({
+          docId: `chat:${session.id}:pr:${summary.id}`,
+          kind: "chat",
+          title: session.title || `PR #${prNumber}`,
+          rankTitle: `${session.title} #${prNumber} ${summary.title}`,
+          laneId: session.laneId || summary.laneId || null,
+          laneName: session.laneName || null,
+          sessionId: session.id,
+          deepLink: sessionDeepLink(session, await envelopeForLane(session.laneId)),
+          updatedAt: sessionUpdatedAt(session) || summary.updatedAt,
+          bm25: 0,
+          snippet: `Linked to PR #${prNumber} ${summary.title}`.slice(0, 240),
+          matchRanges: [],
+        });
+      }
+    }
+    return out;
+  };
+
   const decodeCursor = (cursor: string | undefined): number => {
     if (!cursor) return 0;
     try {
@@ -1483,39 +1526,14 @@ export function createSearchService(deps: SearchServiceDeps) {
       if (kinds.includes("linear") && !matchAll) {
         delegated.push(...(await delegatedLinearCandidates(parsed)));
       }
-      const prNumber = parsePrNumberQuery(args.query ?? "")
-        ?? (parsed.terms.length === 1 ? parsePrNumberQuery(parsed.terms[0] ?? "") : null);
-      if (prNumber && deps.prs && (kinds.includes("chat") || kinds.length === 0 || kinds.includes("pr"))) {
-        const summaries = await deps.prs.listAll();
-        const matches = summaries.filter((pr) => pr.githubPrNumber === prNumber);
-        for (const summary of matches) {
-          for (const sessionId of summary.chatSessionIds ?? []) {
-            if (parsed.sessionId && parsed.sessionId !== sessionId) continue;
-            const session = await resolveSession(sessionId);
-            if (!session || !isChatSession(session)) continue;
-            const scopeAllowsSession = !scopeChatSessionId
-              || session.id === scopeChatSessionId
-              || session.chatSessionId === scopeChatSessionId;
-            if (!scopeAllowsSession) continue;
-            if (laneId && session.laneId !== laneId) continue;
-            if (excludeSessionContent) continue;
-            delegated.push({
-              docId: `chat:${session.id}:pr:${summary.id}`,
-              kind: "chat",
-              title: session.title || `PR #${prNumber}`,
-              rankTitle: `${session.title} #${prNumber} ${summary.title}`,
-              laneId: session.laneId || summary.laneId || null,
-              laneName: session.laneName || null,
-              sessionId: session.id,
-              deepLink: sessionDeepLink(session, await envelopeForLane(session.laneId)),
-              updatedAt: sessionUpdatedAt(session) || summary.updatedAt,
-              bm25: 0,
-              snippet: `Linked to PR #${prNumber} ${summary.title}`.slice(0, 240),
-              matchRanges: [],
-            });
-          }
-        }
-      }
+      delegated.push(...(await delegatedPrNumberChatCandidates({
+        parsed,
+        kinds,
+        laneId,
+        scopeChatSessionId,
+        excludeSessionContent,
+        queryText: args.query ?? "",
+      })));
     }
 
     const candidatesById = new Map<string, Candidate>();

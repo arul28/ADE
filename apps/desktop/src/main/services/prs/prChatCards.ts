@@ -446,30 +446,6 @@ export function buildPrConflictCard(args: {
   };
 }
 
-export function buildPrStackOfferCard(args: {
-  pr: PrSummary;
-  stackNumber: number;
-  siblings: Array<{ githubPrNumber: number; title: string }>;
-}): AdeCardPayload {
-  const { pr, stackNumber, siblings } = args;
-  const numbers = siblings.map((sibling) => `#${sibling.githubPrNumber}`).join(", ");
-  return {
-    cardId: `pr-stack-offer:${args.pr.id}:${stackNumber}`,
-    variant: "pr_stack_offer",
-    state: "live",
-    title: `Link GitHub Stack #${stackNumber}?`,
-    subtitle: `PR #${pr.githubPrNumber} sits with ${numbers || "other stacked pull requests"}`,
-    rows: siblings.slice(0, 5).map((sibling) => ({
-      icon: "info" as const,
-      text: `#${sibling.githubPrNumber} ${sibling.title}`,
-    })),
-    rowsTruncated: Math.max(0, siblings.length - 5),
-    navTarget: prNavTarget(pr, "overview"),
-    actions: [{ id: "open", label: "Review stack", kind: "primary" }],
-    fallbackText: `PR #${pr.githubPrNumber} is in GitHub Stack #${stackNumber} with ${numbers || "other pull requests"}. Link them from the PR peek.`,
-  };
-}
-
 export function buildPrStackLandCard(args: {
   pr: PrSummary;
   stackNumber: number;
@@ -531,9 +507,8 @@ export async function emitPrCardsForChange(args: {
   const becameMergeReady = !wasMergeReady && isMergeReady;
   const merged = change.previousState !== "merged" && pr.state === "merged";
   const stackSiblings = args.relatedPrs ? selectStackSiblings(args.relatedPrs, pr) : [];
-  const stackLanded = merged && pr.stack != null && isGithubStackFullyLanded(
-    stackSiblings.length > 0 ? stackSiblings : [pr],
-  );
+  const stackLayers = stackSiblings.length > 0 ? stackSiblings : [pr];
+  const stackLanded = merged && pr.stack != null && isGithubStackFullyLanded(stackLayers);
 
   if (
     !checksChanged
@@ -551,10 +526,12 @@ export async function emitPrCardsForChange(args: {
   for (const sibling of stackSiblings) {
     for (const sessionId of sibling.chatSessionIds ?? []) linkedIds.add(sessionId);
   }
-  // Linked chats can live on another lane (GitHub stack parents). Listing the
-  // PR's lane alone would drop those sessions and the stack-land card with them.
+  const laneIds = new Set<string>([pr.laneId]);
+  for (const sibling of stackSiblings) {
+    if (sibling.laneId) laneIds.add(sibling.laneId);
+  }
   const listed = linkedIds.size > 0
-    ? await chat.listSessions(undefined, { includeArchived: false })
+    ? (await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat()
     : await chat.listSessions(pr.laneId, { includeArchived: false });
   const sessions = selectPrCardSessions(listed, [...linkedIds]);
   if (sessions.length === 0) return 0;
@@ -599,7 +576,7 @@ export async function emitPrCardsForChange(args: {
     cards.push(buildPrStackLandCard({
       pr,
       stackNumber: pr.stack.number,
-      layers: (stackSiblings.length > 0 ? stackSiblings : [pr]).map((layer) => ({
+      layers: stackLayers.map((layer) => ({
         githubPrNumber: layer.githubPrNumber,
         title: layer.title,
         state: layer.state,

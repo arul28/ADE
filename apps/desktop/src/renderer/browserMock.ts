@@ -6571,6 +6571,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       linkChatSession: async () => ({ ok: true }),
       unlinkChatSession: async () => ({ ok: true }),
+      linkChatStack: async () => ({ ok: true, linked: 0 }),
       listChatSessionsForPr: async () => [],
       getStackLinkOffer: async () => null,
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
