@@ -1308,6 +1308,7 @@ describe("ChatView", () => {
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
     expect(frame).toContain("Ran for 8.3s");
+    expect(frame.indexOf("npm test")).toBeLessThan(frame.indexOf("Ran for 8.3s"));
   });
 
   it("hides missing and zero tool durations while preserving valid per-call durations", () => {

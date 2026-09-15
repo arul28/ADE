@@ -988,6 +988,7 @@ struct WorkTurnEndMarkerView: View {
           Text(workSummaryLabel)
             .font(.caption2.weight(.medium))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(ADEColor.textMuted)
         .frame(minHeight: 28)
         .contentShape(Rectangle())
@@ -1002,13 +1003,12 @@ struct WorkTurnEndMarkerView: View {
   }
 
   private var standardBody: some View {
-    VStack(spacing: 6) {
+    VStack(alignment: .leading, spacing: 6) {
+      workSummaryRow
+        .frame(maxWidth: .infinity, alignment: .leading)
       HStack(spacing: 10) {
         hairline
-        VStack(spacing: 4) {
-          workSummaryRow
-          content
-        }
+        content
         hairline
         if let usageViewModel {
           WorkContextUsageMeter(
