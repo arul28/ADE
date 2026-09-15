@@ -277,12 +277,17 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshingProvider(refreshProvider);
         try {
           const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
-          if (immediate?.stale === true) {
-            await loadRuntimeCatalog({ mode: "force", refreshProvider });
+          if (!immediate) return;
+          if (immediate.stale === true) {
+            const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
+            if (!forced) return;
           }
+          // Only notify after a successful fetch. `finally` used to fire on
+          // failure too, which made Personal Chats bump its request seq and
+          // discard an in-flight page force while the cache was still stale.
+          onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         } finally {
           setRefreshingProvider((current) => current === refreshProvider ? null : current);
-          onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         }
       })();
     }

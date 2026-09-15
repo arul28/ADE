@@ -367,6 +367,45 @@ describe("PersonalChatsPage", () => {
     await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
   });
 
+  it("lets a delayed page force finish when the picker refresh never succeeds", async () => {
+    let releaseForce: (() => void) | undefined;
+    const forceGate = new Promise<void>((resolve) => {
+      releaseForce = resolve;
+    });
+    const { call } = installBridge();
+    call.mockImplementation(async ({ action, args }: CallArgs) => {
+      if (action === "list") return { result: state.sessions };
+      if (action === "modelCatalog") {
+        if (args?.mode === "force") {
+          await forceGate;
+          return { result: { groups: [], fetchedAt: "force", available: true } };
+        }
+        return { result: { groups: [], fetchedAt: "stale", available: false } };
+      }
+      return { result: undefined };
+    });
+
+    await renderPage();
+    await waitFor(() => {
+      const modes = call.mock.calls
+        .filter((entry) => entry[0]?.action === "modelCatalog")
+        .map((entry) => entry[0]?.args?.mode);
+      expect(modes).toContain("force");
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("true"));
+
+    rememberRuntimeCatalog({
+      fetchedAt: "stale-cache",
+      groups: [],
+      available: false,
+    } as never, { mode: "cached", scopeKey: pickerHarness.catalogScopeKey });
+
+    await act(async () => {
+      releaseForce?.();
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
+  });
+
   it("pre-fills the draft when a suggestion chip is clicked", async () => {
     await renderPage();
 

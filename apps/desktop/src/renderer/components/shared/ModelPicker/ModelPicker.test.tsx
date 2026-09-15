@@ -1396,6 +1396,31 @@ describe("ModelPicker", () => {
     });
   });
 
+  it("does not notify the parent when a provider rail refresh fails", async () => {
+    const user = userEvent.setup();
+    const onRuntimeCatalogRefreshed = vi.fn();
+    const modelCatalog = vi.fn(async () => {
+      throw new Error("catalog unavailable");
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    renderPicker({ onRuntimeCatalogRefreshed });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    const opencodeRail = document.querySelector(
+      '[data-rail-selection="provider:opencode"]',
+    ) as HTMLButtonElement;
+    await user.click(opencodeRail);
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalled();
+    });
+    expect(onRuntimeCatalogRefreshed).not.toHaveBeenCalled();
+  });
+
   it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {
     const user = userEvent.setup();
     providerAuthStatusInternal = { anthropic: "unauthed", openai: "unauthed" };

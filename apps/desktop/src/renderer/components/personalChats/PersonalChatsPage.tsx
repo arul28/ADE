@@ -816,9 +816,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         if (generation !== targetGenerationRef.current) return;
         const cached = getSharedRuntimeCatalog(scopeKey);
         if (!cached) return;
-        // A picker refresh writes the shared cache first. Bump the page request
-        // id so an in-flight loadModelCatalog (refresh-stale → force) cannot
-        // publish afterwards and replace this catalog.
+        // Invoked only after a successful picker fetch. Bump the page request
+        // id so an in-flight loadModelCatalog cannot publish afterwards and
+        // replace this catalog.
         catalogRequestSeqRef.current += 1;
         setCatalog(cached);
       }}
