@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
+import {
+  chatInfoPrFromSummaries,
+  deriveChatInfoSnapshot,
+  formatChatPrHeaderLabel,
+  formatMcpCapabilityNote,
+} from "../chatInfo";
+import type { PrSummary } from "../../../../desktop/src/shared/types/prs";
 import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
@@ -454,6 +460,23 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.title).toBe("Subagent Takeover Ownership UX");
     expect(snapshot.laneIcon).toBe("star");
     expect(snapshot.snapshots).toHaveLength(1);
+  });
+});
+
+describe("chat-linked PR header helpers", () => {
+  it("formats a compact header chip and chat-info rollup from linked summaries", () => {
+    const linked = [
+      { githubPrNumber: 42, state: "open", checksStatus: "passing" },
+      { githubPrNumber: 43, state: "open", checksStatus: "pending" },
+    ] as PrSummary[];
+    expect(formatChatPrHeaderLabel(linked)).toBe("#42 +1");
+    expect(formatChatPrHeaderLabel(linked.slice(0, 1))).toBe("#42");
+    expect(formatChatPrHeaderLabel([])).toBeNull();
+    expect(chatInfoPrFromSummaries(linked)).toMatchObject({
+      number: 42,
+      state: "open",
+      linkedNumbers: [43],
+    });
   });
 });
 

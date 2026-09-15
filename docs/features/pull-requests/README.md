@@ -149,7 +149,7 @@ CLI and agent entry points:
 
 | File | Responsibility |
 |------|---------------|
-| `apps/ade-cli/src/cli.ts` | User-facing `ade prs` commands and text formatters. `ade prs create --text` prints both the GitHub PR URL and the ADE HTTPS PR URL when repo owner/name and PR number are available. |
+| `apps/ade-cli/src/cli.ts` | User-facing `ade prs` commands and text formatters. `ade prs create --text` prints both the GitHub PR URL and the ADE HTTPS PR URL when repo owner/name and PR number are available. `ade prs stacks merge` / `ade prs stacks rebase` land or rebase a GitHub stack through the same service path as the PRs tab. `ade prs link-chat` / `unlink-chat` write the hybrid PR↔chat edge and dismissal tombstone. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private action/RPC wrapper for PR tools. `create_pr_from_lane` returns `{ pr, githubUrl, adeUrl }` so agents can include both links in closeout. Its `summarizePrChecks` delegates to the shared `rollupPrChecks` rather than carrying its own pass/fail rule, so the agent-facing `overall` is the full `PrChecksStatus` (including `not_run`) and a PR with zero checks no longer reads green. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | Managed chat/CTO PR creation tools return both `githubUrl` and `adeUrl` alongside the PR object. |
 
@@ -166,8 +166,8 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
 | `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` stamps `detached_at` + the frozen lane identity and provenance when a lane is deleted, lifts `commit_count` / `changed_files` off the snapshot, nulls the bulky snapshot JSON columns, drops lane-scoped group membership, and removes live PR↔chat routing edges. `detachPullRequestRowsByIds` remains an explicit cleanup helper for callers that truly need to detach selected rows; ordinary branch switching retains previous-branch PRs as live lane history. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for genuinely destructive paths. See [Multi-PR lane ownership](#multi-pr-lane-ownership-and-chat-edges) and [Detached PR rows](#detached-pr-rows). |
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
-| `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. The single exception is a chat turn that is running *right now* — see [Active-turn deferral](#active-turn-deferral). **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
-| `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
+| `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. It defers when a chat turn is running *right now* — see [Active-turn deferral](#active-turn-deferral) — and also when the session still has other open or draft **linked** PRs (`sessionHasOpenLinkedPrs`; unedged current-branch fallbacks do not count). **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
+| `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, merged, and `pr_stack_land` when every GitHub stack sibling is merged. Stack-land cards use a stable `pr-stack-land:{owner}:{repo}:{stackNumber}` id so later layers merge in place, and they fan out to every linked chat even when those chats live on another lane. Humans link remaining stack siblings from the Work peek banner; agents silent-expand the next layer without a `pr_stack_offer` card. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
 | `prSummaryService.ts` | Unused by current PR UI. Cached `PrAiSummary` generator remains in-process for the old IPC; desktop and iOS no longer fetch or show it. |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
 | `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `selectStepSection` returns the section **and** how it chose it (`named-step` / `errored-step` / `whole-log`); when neither a step name nor an `##[error]` identifies one it returns no section, because the previous "last section" fallback resolved to the `Post Run …` cleanup group on any job that passed. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
@@ -852,15 +852,26 @@ set so branch switching does not erase merged/closed history.
 Chat ownership is a separate optional edge in
 `pull_request_chat_sessions`. Creating or linking a PR from a chat records the
 canonical `terminal_sessions.id` when that session is available. One chat can
-therefore be linked to multiple PRs, and a PR can retain links to multiple
-chats in the same lane. PR cards and merge auto-settlement use those explicit
-edges; rows created before this table existed fall back to the lane's recent
-eligible Work chat so old data stays useful. Deleting a lane or retiring a
-session removes its live routing edges while preserving the PR row/history.
+therefore be linked to multiple PRs, including GitHub stack members on other
+lanes, and a PR can retain links to multiple chats. Unlink deletes the live
+edge and writes a PK-only CRR tombstone in
+`pull_request_chat_session_dismissals` so the current-branch fallback cannot
+revive it. `selectPrsForChat` is edges-first: a zero-edge chat may display
+unedged current-branch PRs with no silent write, and it never shows a PR
+another chat claimed. PR cards, Work peek, TUI `/pr`, iOS peek, and merge
+auto-settlement all use those explicit edges; rows created before this table
+existed fall back to the lane's recent eligible Work chat so old data stays
+useful. Deleting a lane or retiring a session removes its live routing edges
+while preserving the PR row/history.
 
 The edge table is a CRR table with a primary-key-only uniqueness contract and
 is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.
-Do not add a unique secondary index; CRR conversion rejects it.
+Do not add a unique secondary index; CRR conversion rejects it. The dismissal
+table uses the same PK-only contract.
+
+Creating a new GitHub stack layer from a child lane also attaches that PR to
+parent chats that already linked an earlier layer of the same stack. Child
+chats do not receive the parent's base PR.
 
 ### Merge settlement scope
 
@@ -870,8 +881,8 @@ before it settles anything:
 
 | Scope | When | What it files |
 |---|---|---|
-| `linked` | The PR declares `chatSessionIds`. | Exactly those sessions, even if a sibling PR claims them too. A declaration always wins. |
-| `sweep` | The PR declares none, and every other PR in the lane is already closed or merged. | Every eligible session in the lane **minus** the ones another PR explicitly claims. |
+| `linked` | The PR declares `chatSessionIds`. | Exactly those sessions, even if they live on another lane or a sibling PR claims them too. A declaration always wins. Settlement still waits until the session has no other open/draft **linked** PRs. |
+| `sweep` | The PR declares none, and every other PR in the lane is already closed or merged. | Eligible non-chat sessions in the lane **minus** the ones another PR explicitly claims. Chats are not swept; they settle only through edges. |
 | `ambiguous` | The PR declares none, and another PR in the lane is still `open` or `draft`. | Nothing. |
 
 The lane-wide sweep has to stay, because a PR only carries `chatSessionIds` when
@@ -885,10 +896,10 @@ another PR explicitly claims belongs to that PR's lifecycle.
 
 Declared sessions are resolved **by id** (`sessionService.get`), not found
 inside a paged lane listing: the PR named them, so a long-lived lane whose
-session list runs past the page size must not silently drop them. A declared
-link that outlived a lane move is then filtered back to the PR's own lane. The
-sweep keeps the bounded 500-row listing — it is a guess, and a guess should stay
-bounded.
+session list runs past the page size must not silently drop them. Linked chats
+may live on another lane (GitHub stack members) and are not filtered back to
+the PR's own lane. The sweep keeps the bounded 500-row listing — it is a guess,
+and a guess should stay bounded.
 
 ### Active-turn deferral
 
@@ -898,10 +909,11 @@ now, because settle teardown refuses to interrupt one for a machine-initiated
 settle (see
 [`settle-teardown-design.md`](../terminals-and-sessions/settle-teardown-design.md)
 — `mayInterruptActiveTurn`). Attempting anyway would just abort on every poll
-for as long as the turn runs.
+for as long as the turn runs. It also does not settle a chat that still has
+other open or draft linked PRs — fallback unedged PRs do not count.
 
-So `hasActiveChatTurn(sessionId)` is checked before each `settleSessions…` call
-and is the *only* reason the service defers. It is deliberately narrow:
+So `hasActiveChatTurn(sessionId)` and `sessionHasOpenLinkedPrs` are checked
+before each `settleSessions…` call. The active-turn gate is deliberately narrow:
 
 - Liveness comes from the chat service, through the injected
   `getChatLiveness` callback built by the exported `chatLivenessReader(agentChatService)`.

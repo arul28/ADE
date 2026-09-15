@@ -172,6 +172,13 @@ import type {
   StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
+  MergeGitHubPrStackArgs,
+  RebaseGitHubPrStackArgs,
+  GitHubStackMutationResult,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
@@ -3294,6 +3301,67 @@ function parseUnstackGithubStackArgs(
   };
 }
 
+function parseMergeGithubStackArgs(value: Record<string, unknown>): MergeGitHubPrStackArgs {
+  const repo = parseGithubStackRepo(value, "prs.mergeGithubStack");
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.mergeGithubStack requires a positive integer stackNumber.");
+  }
+  const mergeMethod = asTrimmedString(value.mergeMethod);
+  return {
+    ...(repo ? { repo } : {}),
+    stackNumber,
+    ...(mergeMethod === "merge" || mergeMethod === "squash" || mergeMethod === "rebase"
+      ? { mergeMethod }
+      : {}),
+  };
+}
+
+function parseRebaseGithubStackArgs(value: Record<string, unknown>): RebaseGitHubPrStackArgs {
+  const repo = parseGithubStackRepo(value, "prs.rebaseGithubStack");
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.rebaseGithubStack requires a positive integer stackNumber.");
+  }
+  return {
+    ...(repo ? { repo } : {}),
+    stackNumber,
+  };
+}
+
+function parseLinkPrChatSessionArgs(value: Record<string, unknown>): LinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.linkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.linkChatSession requires sessionId."),
+    ...(value.allowCrossLane === true ? { allowCrossLane: true } : {}),
+  };
+}
+
+function parseLinkPrChatStackArgs(value: Record<string, unknown>): LinkPrChatStackArgs {
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "prs.linkChatStack requires sessionId."),
+    stackNumber,
+    ...(asTrimmedString(value.prId) ? { prId: asTrimmedString(value.prId) } : {}),
+  };
+}
+
+function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.unlinkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.unlinkChatSession requires sessionId."),
+  };
+}
+
+function parseListPrChatSessionsArgs(value: Record<string, unknown>): ListPrChatSessionsArgs {
+  return {
+    prId: requireString(value.prId, "prs.listChatSessionsForPr requires prId."),
+  };
+}
+
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
   const laneId = asTrimmedString(value.laneId);
   const title = asTrimmedString(value.title);
@@ -3314,6 +3382,7 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
     ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
     ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
     ...(strategy ? { strategy } : {}),
+    ...(value.source === "agent" || value.source === "human" ? { source: value.source } : {}),
   };
 }
 
@@ -5902,6 +5971,23 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.addGithubStackPullRequests(parseAddGithubStackPullRequestsArgs(payload)));
   register("prs.unstackGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.unstackGithubStack(parseUnstackGithubStackArgs(payload)));
+  register("prs.mergeGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.mergeGithubStack(parseMergeGithubStackArgs(payload)));
+  register("prs.rebaseGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.rebaseGithubStack(parseRebaseGithubStackArgs(payload)));
+  register("prs.linkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatSession(parseLinkPrChatSessionArgs(payload)));
+  register("prs.unlinkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.unlinkChatSession(parseUnlinkPrChatSessionArgs(payload)));
+  register("prs.linkChatStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatStack(parseLinkPrChatStackArgs(payload)));
+  register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
+  register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getStackLinkOffer({
+      sessionId: requireString(payload.sessionId, "prs.getStackLinkOffer requires sessionId."),
+      prId: asTrimmedString(payload.prId) || null,
+    }));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));

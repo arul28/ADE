@@ -612,6 +612,15 @@ import type {
   GitHubPrSnapshot,
   GitHubPrStack,
   UnstackGitHubPrStackArgs,
+  MergeGitHubPrStackArgs,
+  RebaseGitHubPrStackArgs,
+  GitHubStackMutationResult,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -10528,6 +10537,62 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.prsUnstackGitHubStack, args),
       ),
+    mergeGitHubStack: (
+      args: MergeGitHubPrStackArgs,
+    ): Promise<GitHubStackMutationResult> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "mergeGithubStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsMergeGitHubStack, args),
+      ),
+    rebaseGitHubStack: (
+      args: RebaseGitHubPrStackArgs,
+    ): Promise<GitHubStackMutationResult> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "rebaseGithubStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsRebaseGitHubStack, args),
+      ),
+    linkChatSession: (args: LinkPrChatSessionArgs): Promise<{ ok: boolean }> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "linkChatSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLinkChatSession, args),
+      ),
+    unlinkChatSession: (args: UnlinkPrChatSessionArgs): Promise<{ ok: boolean }> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "unlinkChatSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsUnlinkChatSession, args),
+      ),
+    linkChatStack: (args: LinkPrChatStackArgs): Promise<{ ok: boolean; linked: number }> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "linkChatStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLinkChatStack, args),
+      ),
+    listChatSessionsForPr: (args: ListPrChatSessionsArgs): Promise<PrChatSessionLink[]> =>
+      callPrReadRuntimeActionOr(
+        null,
+        "listChatSessionsForPr",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsListChatSessionsForPr, args),
+      ),
+    getStackLinkOffer: (args: {
+      sessionId: string;
+      prId?: string | null;
+    }): Promise<StackLinkOffer | null> =>
+      callPrReadRuntimeActionOr(
+        null,
+        "getStackLinkOffer",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsGetStackLinkOffer, args),
+      ),
     listIntegrationWorkflows: (
       args: ListIntegrationWorkflowsArgs = {},
     ): Promise<IntegrationProposal[]> =>
@@ -10627,8 +10692,11 @@ const adeBridge = {
       callPrReadRuntimeActionOr(null, "getDetail", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
       ),
-    getFiles: async (prId: string): Promise<PrFile[]> =>
-      callPrReadRuntimeActionOr(null, "getFiles", { arg: prId }, () =>
+    getFiles: async (
+      prId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrFile[]> =>
+      callPrReadRuntimeActionOr(pin, "getFiles", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
       ),
     getCommits: async (prId: string): Promise<PrCommit[]> =>

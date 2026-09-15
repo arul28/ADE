@@ -173,7 +173,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       const resolvedTitle = title.trim() || defaultTitle;
       const created = await window.ade.prs.createFromLane({
         laneId,
-        ...(sessionId ? { sessionId } : {}),
+        ...(sessionId ? { sessionId, source: "human" } : {}),
         title: resolvedTitle,
         body,
         draft: false,

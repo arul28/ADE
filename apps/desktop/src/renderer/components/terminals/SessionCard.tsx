@@ -389,6 +389,8 @@ export const SessionCard = React.memo(function SessionCard({
   runtimePin = null,
   deltaEnabled = true,
   githubStack = null,
+  chatPr = null,
+  chatPrExtraCount = 0,
   showLaneIdentity = false,
   lanePr = null,
   lanePrs = [],
@@ -421,6 +423,10 @@ export const SessionCard = React.memo(function SessionCard({
   deltaEnabled?: boolean;
   /** Native GitHub stack context for chats running in this lane. */
   githubStack?: GitHubPrStackMembership | null;
+  /** Chat-scoped PR when it differs from the lane header badge. */
+  chatPr?: PrSummary | null;
+  /** Extra chat-linked PRs beyond `chatPr`. Lane headers stay lane-scoped. */
+  chatPrExtraCount?: number;
   /**
    * Lane has exactly one session, so no lane divider renders above it — the
    * card carries the lane identity instead.
@@ -716,6 +722,27 @@ export const SessionCard = React.memo(function SessionCard({
   if (githubStack) {
     whereParts.push(
       <GitHubStackBadge key="github-stack" stack={githubStack} compact bare />,
+    );
+  }
+  if (chatPr && !showLaneIdentity) {
+    whereParts.push(
+      <button
+        key="chat-pr"
+        type="button"
+        className="inline-flex shrink-0 items-center rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px font-mono text-[10px] font-medium leading-none text-muted-fg/80"
+        title={`${chatPr.title} — open pull request #${chatPr.githubPrNumber}`}
+        aria-label={`Open pull request #${chatPr.githubPrNumber}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openLanePr(chatPr, { foreign: lanePrForeign, navigate });
+        }}
+      >
+        #{chatPr.githubPrNumber}
+        {chatPrExtraCount > 0 ? (
+          <span className="pl-0.5 text-[9px] text-muted-fg/55">+{chatPrExtraCount}</span>
+        ) : null}
+      </button>,
     );
   }
   if (showLaneIdentity && lane) {

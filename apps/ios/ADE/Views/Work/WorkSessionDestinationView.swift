@@ -872,6 +872,11 @@ struct WorkSessionDestinationView: View {
   @State var laneOpenPr: PullRequestListItem?
   @State var lanePrSummary: PrSummary?
   @State var lanePrTag: LanePrTag?
+  @State var chatLinkedPrs: [PullRequestListItem] = []
+  @State var chatPrCatalog: [PullRequestListItem] = []
+  @State var selectedChatPrId: String?
+  @State var dismissedStackOfferKey: String?
+  @State var chatPrLinkBusy = false
   /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
   /// keep showing the current PR instead of clearing it first.
   @State var lastResolvedPrLaneId: String?
@@ -1159,6 +1164,15 @@ struct WorkSessionDestinationView: View {
     return resolvedWorkNavigationLaneId(for: session, lanes: lanes)
   }
 
+  var visibleChatStackOffer: WorkChatStackOffer? {
+    guard let selected = laneOpenPr else { return nil }
+    guard let offer = workChatStackOffer(selected: selected, catalog: chatPrCatalog, sessionId: sessionId) else {
+      return nil
+    }
+    if dismissedStackOfferKey == "\(sessionId):\(offer.stackNumber)" { return nil }
+    return offer
+  }
+
   var headerMenuPrLookupKey: String {
     let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let githubKey = syncService.laneGithubPrItems
@@ -1427,6 +1441,16 @@ struct WorkSessionDestinationView: View {
           pr: laneOpenPr,
           summary: lanePrSummary,
           snapshot: prDetailsSnapshot,
+          linkedPrs: chatLinkedPrs,
+          selectedPrId: selectedChatPrId ?? laneOpenPr?.id,
+          stackOffer: visibleChatStackOffer,
+          linkablePrs: workChatLinkableCatalog(
+            catalog: chatPrCatalog,
+            linked: chatLinkedPrs,
+            sessionId: sessionId
+          ),
+          canLink: hostReachable && !sessionId.isEmpty,
+          linkBusy: chatPrLinkBusy,
           laneColor: headerMenuLaneColor,
           canCreate: canCreatePullRequestForHeaderLane,
           createBlockedReason: createPullRequestBlockedReason,
@@ -1438,6 +1462,12 @@ struct WorkSessionDestinationView: View {
           onCreate: {
             presentCreateLanePr()
           },
+          onSelectPr: { prId in
+            selectChatLinkedPr(prId)
+          },
+          onOpenFiles: {
+            openLaneOpenPr(detailTab: .files)
+          },
           onOpenPrsTab: {
             if lanePrTag == nil {
               openPrCreationInPrsTab()
@@ -1445,7 +1475,21 @@ struct WorkSessionDestinationView: View {
               openLaneOpenPr()
             }
           },
-          onOpenGitHub: openLanePrOnGitHub
+          onOpenGitHub: openLanePrOnGitHub,
+          onLinkStack: {
+            Task { await linkChatStackOffer() }
+          },
+          onDismissStackOffer: {
+            if let offer = visibleChatStackOffer {
+              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+            }
+          },
+          onLinkPr: { prId, allowCrossLane in
+            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+          },
+          onUnlink: {
+            Task { await unlinkCurrentChatPr() }
+          }
         )
         .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)

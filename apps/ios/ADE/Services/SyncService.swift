@@ -6311,6 +6311,7 @@ final class SyncService: ObservableObject {
       "pr_groups",
       "pr_group_members",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "integration_proposals",
       "lanes",
       "lane_list_snapshots",
@@ -10947,6 +10948,48 @@ final class SyncService: ObservableObject {
     )
   }
 
+  @discardableResult
+  func mergeGitHubStack(
+    stackNumber: Int,
+    mergeMethod: String = "squash",
+    repoOwner: String? = nil,
+    repoName: String? = nil
+  ) async throws -> GitHubStackMutationResult {
+    guard supportsRemoteAction("prs.mergeGithubStack") else {
+      throw sessionLifecycleUnsupportedError("prs.mergeGithubStack")
+    }
+    var args: [String: Any] = [
+      "stackNumber": stackNumber,
+      "mergeMethod": mergeMethod,
+    ]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: "prs.mergeGithubStack",
+      args: args,
+      as: GitHubStackMutationResult.self
+    )
+  }
+
+  @discardableResult
+  func rebaseGitHubStack(
+    stackNumber: Int,
+    repoOwner: String? = nil,
+    repoName: String? = nil
+  ) async throws -> GitHubStackMutationResult {
+    guard supportsRemoteAction("prs.rebaseGithubStack") else {
+      throw sessionLifecycleUnsupportedError("prs.rebaseGithubStack")
+    }
+    var args: [String: Any] = ["stackNumber": stackNumber]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: "prs.rebaseGithubStack",
+      args: args,
+      as: GitHubStackMutationResult.self
+    )
+  }
+
   func fetchPullRequestForLane(laneId: String) async throws -> PrSummary? {
     try await sendDecodableCommand(
       action: "prs.getForLane",
@@ -14795,7 +14838,8 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     labels: [String] = [],
     reviewers: [String],
-    strategy: String? = nil
+    strategy: String? = nil,
+    sessionId: String? = nil
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -14815,7 +14859,69 @@ final class SyncService: ObservableObject {
     if let strategy, !strategy.isEmpty {
       args["strategy"] = strategy
     }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
+    }
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
+  }
+
+  func linkPullRequestChatSession(prId: String, sessionId: String, allowCrossLane: Bool = false) async throws {
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatSession")
+    }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if allowCrossLane {
+      args["allowCrossLane"] = true
+    }
+    _ = try await sendCommand(action: "prs.linkChatSession", args: args)
+  }
+
+  func unlinkPullRequestChatSession(prId: String, sessionId: String) async throws {
+    guard supportsRemoteAction("prs.unlinkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.unlinkChatSession")
+    }
+    _ = try await sendCommand(action: "prs.unlinkChatSession", args: [
+      "prId": prId,
+      "sessionId": sessionId,
+    ])
+  }
+
+  func linkPullRequestChatStack(
+    sessionId: String,
+    stackNumber: Int,
+    prId: String? = nil,
+    siblingPrIds: [String] = []
+  ) async throws {
+    if supportsRemoteAction("prs.linkChatStack") {
+      var args: [String: Any] = [
+        "sessionId": sessionId,
+        "stackNumber": stackNumber,
+      ]
+      if let prId, !prId.isEmpty { args["prId"] = prId }
+      let raw = try await sendCommand(action: "prs.linkChatStack", args: args)
+      if let record = raw as? [String: Any], (record["ok"] as? Bool) == false {
+        let message = (record["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        throw NSError(
+          domain: "ADE",
+          code: 8,
+          userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Could not link this GitHub stack." : message]
+        )
+      }
+      return
+    }
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatStack")
+    }
+    for siblingPrId in siblingPrIds {
+      try await linkPullRequestChatSession(
+        prId: siblingPrId,
+        sessionId: sessionId,
+        allowCrossLane: true
+      )
+    }
   }
 
   func mergePullRequest(

@@ -842,6 +842,12 @@ struct PrOverviewGitHubStackCard: View {
   let stack: GitHubPrStackMembership
   let prNumber: Int
   let onOpenGitHub: () -> Void
+  var canMutateStack = false
+  var stackUnavailableReason: String? = nil
+  var stackBusy = false
+  var pendingConfirm: String? = nil
+  var onMerge: (() -> Void)? = nil
+  var onRebase: (() -> Void)? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -874,18 +880,49 @@ struct PrOverviewGitHubStackCard: View {
           Text("PR #\(prNumber) is position \(stack.position) of \(stack.size), based on \(stack.baseBranch).")
             .font(.subheadline.weight(.medium))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("GitHub manages stack-wide review, rebase, and merge. Open the pull request to preview or merge the stack.")
+          Text(
+            canMutateStack
+              ? "Merge and rebase this stack here. GitHub still owns review."
+              : "GitHub manages stack-wide review, rebase, and merge. Open the pull request to preview or merge the stack."
+          )
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
 
-      Button(action: onOpenGitHub) {
-        Label("Review and merge on GitHub", systemImage: "arrow.up.right.square")
-          .frame(maxWidth: .infinity)
+      if canMutateStack {
+        HStack(spacing: 8) {
+          Button(action: { onRebase?() }) {
+            Text(stackBusy && pendingConfirm == "rebase" ? "Rebasing..." : pendingConfirm == "rebase" ? "Confirm rebase" : "Rebase stack")
+              .frame(maxWidth: .infinity)
+          }
+          .buttonStyle(.glass)
+          .disabled(stackBusy || stackUnavailableReason != nil)
+          Button(action: { onMerge?() }) {
+            Text(stackBusy && pendingConfirm == "merge" ? "Merging..." : pendingConfirm == "merge" ? "Confirm merge" : "Merge stack")
+              .frame(maxWidth: .infinity)
+          }
+          .buttonStyle(.glassProminent)
+          .disabled(stackBusy || stackUnavailableReason != nil)
+        }
+        Button(action: onOpenGitHub) {
+          Label("Review on GitHub", systemImage: "arrow.up.right.square")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glass)
+        if let stackUnavailableReason, !stackUnavailableReason.isEmpty {
+          Text(stackUnavailableReason)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      } else {
+        Button(action: onOpenGitHub) {
+          Label("Review and merge on GitHub", systemImage: "arrow.up.right.square")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
       }
-      .buttonStyle(.glassProminent)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 12)

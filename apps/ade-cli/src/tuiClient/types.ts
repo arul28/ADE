@@ -192,6 +192,8 @@ export type ChatInfoPrSummary = {
   checksTotal: number;
   /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
   checksStatus?: PrChecksStatus;
+  /** Additional chat-linked PR numbers, shown as a compact switcher. */
+  linkedNumbers?: number[];
 };
 
 export type ChatInfoSnapshot = {
@@ -230,7 +232,7 @@ export type ChatInfoSnapshot = {
   usageLimitResumeNotice?: string | null;
   /** Background command tasks (kind background_task). */
   backgroundWork: ChatScheduledWorkSnapshot[];
-  /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */
+  /** Open/merged/closed PR linked to this chat (desktop ChatPrPane parity). */
   pr: ChatInfoPrSummary | null;
   /** Session title shown as the pane identity (not the provider/model). */
   title: string | null;

@@ -52,6 +52,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.createGithubStack",
   "prs.addGithubStackPullRequests",
   "prs.unstackGithubStack",
+  "prs.mergeGithubStack",
+  "prs.rebaseGithubStack",
+  "prs.linkChatSession",
+  "prs.unlinkChatSession",
+  "prs.linkChatStack",
+  "prs.listChatSessionsForPr",
+  "prs.getStackLinkOffer",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.

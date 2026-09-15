@@ -30,7 +30,7 @@ vi.mock("framer-motion", () => {
 });
 
 import { ChatPrPane } from "./ChatPrPane";
-import type { PrCheck, PrEventPayload, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type { PrCheck, PrEventPayload, PrFile, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
 
@@ -73,6 +73,10 @@ function installAde(over?: {
   getStatus?: PrStatus | null;
   relayConfigured?: boolean;
   webhookState?: string;
+  listAll?: unknown;
+  getFiles?: PrFile[];
+  getStackLinkOffer?: unknown;
+  linkChatStack?: unknown;
 }) {
   (globalThis.window as { ade?: unknown }).ade = {
     prs: {
@@ -83,6 +87,13 @@ function installAde(over?: {
       getReviews: vi.fn().mockResolvedValue(over?.getReviews ?? []),
       getStatus: vi.fn().mockResolvedValue(over?.getStatus ?? null),
       syncLanePr: vi.fn().mockResolvedValue(null),
+      listAll: over?.listAll,
+      getFiles: vi.fn().mockResolvedValue(over?.getFiles ?? []),
+      getStackLinkOffer: vi.fn().mockResolvedValue(over?.getStackLinkOffer ?? null),
+      linkChatSession: vi.fn().mockResolvedValue({ ok: true }),
+      unlinkChatSession: vi.fn().mockResolvedValue({ ok: true }),
+      linkChatStack: over?.linkChatStack
+        ?? vi.fn().mockResolvedValue({ ok: true, linked: 1 }),
     },
     github: {
       getAppInstallationStatus: vi.fn().mockResolvedValue({
@@ -267,7 +278,7 @@ describe("ChatPrPane", () => {
     renderPane();
 
     expect(await screen.findByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
-    expect(screen.getByText(/Review rebases and merge the stack on GitHub/)).toBeTruthy();
+    expect(screen.getByText(/Merge and rebase this stack on the PRs tab/)).toBeTruthy();
     expect(screen.queryByText("Ready to merge")).toBeNull();
   });
 
@@ -465,5 +476,123 @@ describe("ChatPrPane title bar", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Close pull request panel" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the PR number in the peek header and ranks three files by churn", async () => {
+    const files: PrFile[] = [
+      { filename: "apps/a.ts", additions: 1, deletions: 0, status: "modified", patch: null, previousFilename: null },
+      { filename: "apps/b.ts", additions: 40, deletions: 4, status: "modified", patch: null, previousFilename: null },
+      { filename: "apps/c.ts", additions: 8, deletions: 2, status: "modified", patch: null, previousFilename: null },
+      { filename: "apps/d.ts", additions: 3, deletions: 1, status: "added", patch: null, previousFilename: null },
+    ];
+    const pr = makePr();
+    installAde({
+      listAll: vi.fn().mockResolvedValue([pr]),
+      getFiles: files,
+    });
+    renderPane({ sessionId: "chat-1" });
+
+    expect(await screen.findByText("#42")).toBeTruthy();
+    expect(await screen.findByText("apps/b.ts")).toBeTruthy();
+    expect(screen.getByText("+40")).toBeTruthy();
+    expect(screen.getByText("+1 more files")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Open files on PRs tab/ })).toBeTruthy();
+  });
+
+  it("switches between linked PRs and offers unclaimed stack siblings", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+      stack: { id: "stack-3", number: 3, size: 2, position: 1, baseBranch: "main" },
+    });
+    const second = makePr({
+      id: "pr-2",
+      githubPrNumber: 12,
+      title: "Top layer",
+      laneId: "lane-2",
+      chatSessionIds: ["chat-1"],
+      stack: { id: "stack-3", number: 3, size: 2, position: 2, baseBranch: "main" },
+    });
+    const sibling = makePr({
+      id: "pr-3",
+      githubPrNumber: 13,
+      title: "Unlinked sibling",
+      laneId: "lane-3",
+      chatSessionIds: [],
+      stack: { id: "stack-3", number: 3, size: 3, position: 3, baseBranch: "main" },
+    });
+    installAde({
+      listAll: vi.fn().mockResolvedValue([first, second, sibling]),
+      getStackLinkOffer: {
+        sessionId: "chat-1",
+        prId: "pr-1",
+        stackNumber: 3,
+        siblings: [{
+          prId: "pr-3",
+          githubPrNumber: 13,
+          title: "Unlinked sibling",
+          laneId: "lane-3",
+          claimedByOtherChat: false,
+        }],
+      },
+    });
+    renderPane({ sessionId: "chat-1" });
+
+    expect(await screen.findByRole("button", { name: "Show pull request #11" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show pull request #12" })).toBeTruthy();
+    expect(await screen.findByText(/Also in GitHub Stack #3/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
+    const ade = (globalThis.window as { ade: { prs: { linkChatStack: ReturnType<typeof vi.fn> } } }).ade;
+    await waitFor(() => {
+      expect(ade.prs.linkChatStack).toHaveBeenCalledWith({
+        sessionId: "chat-1",
+        stackNumber: 3,
+        prId: "pr-1",
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Show pull request #12" }));
+    expect(await screen.findByText("Top layer")).toBeTruthy();
+  });
+
+  it("keeps the stack offer visible when linkChatStack fails", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+      stack: { id: "stack-3", number: 3, size: 2, position: 1, baseBranch: "main" },
+    });
+    const sibling = makePr({
+      id: "pr-3",
+      githubPrNumber: 13,
+      title: "Unlinked sibling",
+      laneId: "lane-3",
+      chatSessionIds: [],
+      stack: { id: "stack-3", number: 3, size: 2, position: 2, baseBranch: "main" },
+    });
+    installAde({
+      listAll: vi.fn().mockResolvedValue([first, sibling]),
+      linkChatStack: vi.fn().mockResolvedValue({ ok: false, linked: 0 }),
+      getStackLinkOffer: {
+        sessionId: "chat-1",
+        prId: "pr-1",
+        stackNumber: 3,
+        siblings: [{
+          prId: "pr-3",
+          githubPrNumber: 13,
+          title: "Unlinked sibling",
+          laneId: "lane-3",
+          claimedByOtherChat: false,
+        }],
+      },
+    });
+    renderPane({ sessionId: "chat-1" });
+    expect(await screen.findByText(/Also in GitHub Stack #3/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
+    expect(await screen.findByText("Could not link this GitHub stack.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
   });
 });

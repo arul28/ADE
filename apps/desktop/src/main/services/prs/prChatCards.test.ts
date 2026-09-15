@@ -10,6 +10,7 @@ import {
   buildPrConflictCard,
   buildPrMergeReadyCard,
   buildPrReviewCard,
+  buildPrStackLandCard,
   emitPrCardsForChange,
   selectPrCardSession,
   selectPrCardSessions,
@@ -614,5 +615,76 @@ describe("PR chat cards", () => {
       },
     })).rejects.toThrow(/1 of 2/);
     expect(emitAdeCard).toHaveBeenCalledTimes(2);
+  });
+
+  it("keys a stack-land card on owner/repo/stack so later layers merge in place", () => {
+    expect(buildPrStackLandCard({
+      pr: pr({
+        stack: { id: "stack-4", number: 4, size: 2, position: 1, baseBranch: "main" },
+      }),
+      stackNumber: 4,
+      layers: [
+        { githubPrNumber: 7, title: "Make checks useful", state: "merged" },
+        { githubPrNumber: 8, title: "Top layer", state: "merged" },
+      ],
+    }).cardId).toBe("pr-stack-land:ade:desktop:4");
+  });
+
+  it("emits a stack-land card to every linked chat when the last GitHub stack member merges", async () => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const listSessions = vi.fn().mockResolvedValue([
+      session("parent", "2026-07-27T12:00:00.000Z"),
+      session("child", "2026-07-27T12:01:00.000Z", { laneId: "lane-2" }),
+    ]);
+    const membership = { id: "stack-4", number: 4, size: 2, position: 1, baseBranch: "main" };
+    const bottom = pr({
+      state: "merged",
+      mergedAt: "2026-07-27T12:00:00.000Z",
+      stack: membership,
+      chatSessionIds: ["parent"],
+    });
+    const top = pr({
+      id: "pr-8",
+      githubPrNumber: 8,
+      title: "Top layer",
+      laneId: "lane-2",
+      state: "merged",
+      checksStatus: "passing",
+      mergedAt: "2026-07-27T12:01:00.000Z",
+      stack: { ...membership, position: 2 },
+      chatSessionIds: ["child"],
+    });
+    const count = await emitPrCardsForChange({
+      change: {
+        pr: top,
+        previousState: "open",
+        previousChecksStatus: "passing",
+        previousReviewStatus: "approved",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      relatedPrs: [bottom, top],
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: { listSessions, emitAdeCard },
+    });
+
+    expect(count).toBe(2);
+    expect(listSessions).toHaveBeenCalledWith("lane-1", { includeArchived: false });
+    expect(listSessions).toHaveBeenCalledWith("lane-2", { includeArchived: false });
+    const land = emitAdeCard.mock.calls
+      .map(([call]) => call.card)
+      .find((card) => card.variant === "pr_stack_land");
+    expect(land).toMatchObject({
+      cardId: "pr-stack-land:ade:desktop:4",
+      title: "GitHub Stack #4 landed",
+    });
+    expect(new Set(emitAdeCard.mock.calls.map(([call]) => call.sessionId))).toEqual(
+      new Set(["parent", "child"]),
+    );
   });
 });

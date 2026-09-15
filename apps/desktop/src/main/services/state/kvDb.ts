@@ -1388,6 +1388,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   if (rawHasTable(db, "pull_request_chat_sessions")) {
     runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
   }
+  if (rawHasTable(db, "pull_request_chat_session_dismissals")) {
+    runStatement(db, `delete from pull_request_chat_session_dismissals where session_id in (${placeholders})`, retiredSessionIds);
+  }
   if (rawHasTable(db, "session_deltas")) {
     runStatement(db, `delete from session_deltas where session_id in (${placeholders})`, retiredSessionIds);
   }
@@ -2729,6 +2732,23 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)");
   db.run("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)");
   db.run("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)");
+
+  // Unlink is a tombstone, not a missing edge: a zero-edge chat may display
+  // unedged current-branch PRs, and a deleted edge would otherwise revive.
+  // CRR-friendly PK-only table; tuple uniqueness is enforced by the service.
+  db.run(`
+    create table if not exists pull_request_chat_session_dismissals (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      session_id text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)");
+  db.run("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)");
   safeAddColumn(db, "alter table pull_requests add column last_polled_at text");
   safeAddColumn(db, "alter table pull_requests add column head_sha text");
   safeAddColumn(db, "alter table pull_requests add column creation_strategy text");

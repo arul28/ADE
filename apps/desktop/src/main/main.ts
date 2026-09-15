@@ -3589,7 +3589,7 @@ app.whenReady().then(async () => {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementServiceRef?.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.
@@ -3621,6 +3621,7 @@ app.whenReady().then(async () => {
                 change,
                 dataSource: prService,
                 chat: chatService,
+                relatedPrs: prs,
               });
             } catch (error) {
               logger.warn("prs.chat_card_emit_failed", {
