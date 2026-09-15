@@ -12,14 +12,75 @@ import {
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
 import type { ProviderGroupKey } from "../../../../shared/modelCatalog";
-import type { AgentChatModelCatalog } from "../../../../shared/types";
+import type {
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
+  OpenProjectBinding,
+  PersonalChatCallResponse,
+} from "../../../../shared/types";
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
+  PERSONAL_CHAT_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
+
+export { PERSONAL_CHAT_CATALOG_SCOPE, personalChatCatalogScopeKey, isPersonalChatCatalogScopeKey } from "./runtimeCatalogCache";
+
+/** True when the runtime catalog lists at least one model marked available. */
+export function agentChatModelCatalogHasAvailableModels(
+  catalog: AgentChatModelCatalog | null | undefined,
+): boolean {
+  if (!catalog) return false;
+  for (const group of catalog.groups ?? []) {
+    for (const provider of group.providers ?? []) {
+      for (const subsection of provider.subsections ?? []) {
+        for (const model of subsection.models ?? []) {
+          if (model.isAvailable) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function unwrapPersonalChatResult<T>(response: PersonalChatCallResponse | T): T {
+  if (response && typeof response === "object" && "result" in response) {
+    return (response as PersonalChatCallResponse).result as T;
+  }
+  return response as T;
+}
+
+/**
+ * Fetch a model catalog from the runtime that owns the surface: personal Chats
+ * reads the hidden machine chat runtime; every other surface reads the bound
+ * project runtime (optionally via a foreign pin).
+ */
+export async function requestModelCatalog(
+  args: AgentChatModelCatalogArgs,
+  options: {
+    catalogScopeKey: string;
+    pin?: OpenProjectBinding | null;
+  },
+): Promise<AgentChatModelCatalog> {
+  if (isPersonalChatCatalogScopeKey(options.catalogScopeKey)) {
+    const bridge = window.ade?.personalChats?.call;
+    if (typeof bridge !== "function") {
+      throw new Error("Personal chats are not available in this ADE runtime.");
+    }
+    const response = await bridge({ action: "modelCatalog", args: args ?? {} });
+    return unwrapPersonalChatResult<AgentChatModelCatalog>(response);
+  }
+  const bridge = window.ade?.agentChat?.modelCatalog;
+  if (typeof bridge !== "function") {
+    throw new Error("Agent chat model catalog is not available in this ADE runtime.");
+  }
+  const pin = options.pin ?? null;
+  return pin ? await bridge(args ?? {}, pin) : await bridge(args ?? {});
+}
 
 export function resetRuntimeCatalogDescriptorCacheForTests(): void {
   clearRuntimeCatalogScopeDescriptors();

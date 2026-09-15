@@ -49,6 +49,20 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
  */
 export const DEFAULT_RUNTIME_CATALOG_SCOPE = "";
 
+/** Runtime catalog bucket for the machine-owned personal Chats composer. */
+export const PERSONAL_CHAT_CATALOG_SCOPE = "personal-chat";
+
+/** Runtime catalog bucket for personal Chats on one machine target (local or remote pin). */
+export function personalChatCatalogScopeKey(machineTargetKey: string): string {
+  const trimmed = typeof machineTargetKey === "string" ? machineTargetKey.trim() : "";
+  return `${PERSONAL_CHAT_CATALOG_SCOPE}|${trimmed || "local-machine"}`;
+}
+
+export function isPersonalChatCatalogScopeKey(scopeKey: string): boolean {
+  return scopeKey === PERSONAL_CHAT_CATALOG_SCOPE
+    || scopeKey.startsWith(`${PERSONAL_CHAT_CATALOG_SCOPE}|`);
+}
+
 type RuntimeCatalogScopeState = {
   catalog: AgentChatModelCatalog | null;
   providerRefreshedAt: Map<AgentChatModelCatalogRefreshProvider, number>;

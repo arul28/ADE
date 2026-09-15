@@ -12,7 +12,9 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 
 function fallbackFor(action: PersonalChatAction): unknown {
   if (action === "list" || action === "models") return [];
-  if (action === "modelCatalog") return { providers: [], models: [] };
+  if (action === "modelCatalog") {
+    return { groups: [], fetchedAt: new Date(0).toISOString(), stale: true };
+  }
   if (action === "getEventHistory") {
     // Reached only when the host command is unreachable/undispatchable, so mark
     // it `unavailable`: `sessionFound: false` alone reads as an authoritative
