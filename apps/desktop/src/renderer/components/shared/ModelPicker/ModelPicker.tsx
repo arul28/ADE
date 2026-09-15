@@ -51,7 +51,10 @@ export type ModelPickerProps = {
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
-  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  onRuntimeCatalogRefreshed?: (
+    provider: AgentChatModelCatalogRefreshProvider,
+    catalogScopeKey?: string,
+  ) => void;
   /**
    * The machine whose catalog this picker describes. A runtime catalog is a
    * machine fact (local ollama/LM Studio endpoints, installed cursor-agent,
@@ -260,6 +263,7 @@ export const ModelPicker = memo(function ModelPicker({
     const refreshProvider = refreshProviderForFamily(family);
     if (refreshProvider) {
       void (async () => {
+        const scopeAtRefresh = catalogScopeKey;
         const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
         const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
@@ -278,7 +282,7 @@ export const ModelPicker = memo(function ModelPicker({
           }
         } finally {
           setRefreshingProvider((current) => current === refreshProvider ? null : current);
-          onRuntimeCatalogRefreshed?.(refreshProvider);
+          onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         }
       })();
     }

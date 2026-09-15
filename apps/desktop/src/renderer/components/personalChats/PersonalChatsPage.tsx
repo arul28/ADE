@@ -50,11 +50,10 @@ import {
   agentChatModelCatalogHasAvailableModels,
   descriptorsFromAgentChatModelCatalog,
   personalChatCatalogScopeKey,
-  PERSONAL_CHAT_CATALOG_SCOPE,
 } from "../shared/ModelPicker/modelCatalog";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
+import { useWebChatsMachines, type WebChatsMachinePicker } from "../../webclient/workspace/useWebChatsMachines";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
@@ -146,6 +145,18 @@ function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEvent
   return next;
 }
 
+/** Machine identity for personal Chats catalog scope and target-scoped reload effects. */
+export function resolvePersonalChatsCatalogTargetKey(
+  projectBinding: OpenProjectBinding | null | undefined,
+  webMachines: WebChatsMachinePicker | null,
+): string {
+  if (webMachines) {
+    const webKey = webMachines.machineId?.trim();
+    return webKey ? `web:${webKey}` : "web:pending";
+  }
+  return projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
+}
+
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
   const projectBinding = useAppStore((state) => state.projectBinding);
@@ -158,8 +169,14 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const chatTranscriptDensity = useAppStore((state) => state.chatTranscriptDensity);
   const chatChromeTint = useAppStore((state) => state.chatChromeTint);
   const chatShellGeometry = useAppStore((state) => state.chatShellGeometry);
-  const targetKey = projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
+  const webMachines = useWebChatsMachines();
+  const targetKey = useMemo(
+    () => resolvePersonalChatsCatalogTargetKey(projectBinding, webMachines),
+    [projectBinding, webMachines, webMachines?.machineId],
+  );
   const personalCatalogScopeKey = personalChatCatalogScopeKey(targetKey);
+  const personalCatalogScopeKeyRef = useRef(personalCatalogScopeKey);
+  personalCatalogScopeKeyRef.current = personalCatalogScopeKey;
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -209,9 +226,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     generation = targetGenerationRef.current,
   ) => {
     const requestId = ++catalogRequestSeqRef.current;
+    const scopeKey = personalCatalogScopeKeyRef.current;
     const publish = (next: AgentChatModelCatalog) => {
       if (generation !== targetGenerationRef.current) return;
       if (requestId !== catalogRequestSeqRef.current) return;
+      if (scopeKey !== personalCatalogScopeKeyRef.current) return;
       setCatalog(next);
     };
     let next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
@@ -687,7 +706,6 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   // In the browser the same picker rebinds the same page, but there is no
   // "This computer" to offer: every option is one of the account's machines, and picking
   // one points the federated adapter's chats surface at it.
-  const webMachines = useWebChatsMachines();
   const machineLabel = webMachines
     ? webMachines.machineLabel ?? "No machine connected"
     : isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
@@ -791,8 +809,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       canStartSend={canStartSend}
       showInterrupt={turnActive && Boolean(selectedId)}
       onInterrupt={() => { if (selectedId) void callPersonal<void>("interrupt", { sessionId: selectedId }); }}
-      onRuntimeCatalogRefreshed={() => {
-        const cached = getSharedRuntimeCatalog(personalCatalogScopeKey);
+      onRuntimeCatalogRefreshed={(_provider, refreshedScopeKey) => {
+        const generation = targetGenerationRef.current;
+        const scopeKey = refreshedScopeKey ?? personalCatalogScopeKeyRef.current;
+        if (scopeKey !== personalCatalogScopeKeyRef.current) return;
+        if (generation !== targetGenerationRef.current) return;
+        const cached = getSharedRuntimeCatalog(scopeKey);
         if (cached) setCatalog(cached);
       }}
       error={error}

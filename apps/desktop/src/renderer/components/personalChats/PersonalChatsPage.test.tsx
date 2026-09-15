@@ -27,18 +27,28 @@ const FAKE_MODEL = {
 
 // The catalog→descriptor transform is not the unit under test; a small stub lets
 // each case flip provider availability deterministically.
-vi.mock("../shared/ModelPicker/modelCatalog", () => ({
-  PERSONAL_CHAT_CATALOG_SCOPE: "personal-chat",
-  personalChatCatalogScopeKey: (machineTargetKey: string) => {
-    const trimmed = typeof machineTargetKey === "string" ? machineTargetKey.trim() : "";
-    return `personal-chat|${trimmed || "local-machine"}`;
+vi.mock("../shared/ModelPicker/modelCatalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/ModelPicker/modelCatalog")>();
+  return {
+    ...actual,
+    descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
+      models: [FAKE_MODEL],
+      availableModelIds: catalog?.available === false ? [] : ["fake-model"],
+    }),
+  };
+});
+
+const webChatsState = vi.hoisted(() => ({
+  picker: null as null | {
+    machineId: string | null;
+    machineLabel: string | null;
+    options: Array<{ id: string; name: string }>;
+    select: ReturnType<typeof vi.fn>;
   },
-  agentChatModelCatalogHasAvailableModels: (catalog: { available?: boolean } | null | undefined) =>
-    catalog != null && catalog.available !== false,
-  descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
-    models: [FAKE_MODEL],
-    availableModelIds: catalog?.available === false ? [] : ["fake-model"],
-  }),
+}));
+
+vi.mock("../../webclient/workspace/useWebChatsMachines", () => ({
+  useWebChatsMachines: () => webChatsState.picker,
 }));
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
@@ -224,6 +234,7 @@ describe("PersonalChatsPage", () => {
     cleanup();
     vi.clearAllMocks();
     delete window.__adeWebClient;
+    webChatsState.picker = null;
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
@@ -248,6 +259,30 @@ describe("PersonalChatsPage", () => {
     // Composer lives in the hero canvas (variant "hero"), not in the docked footer.
     expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("hero");
     expect(screen.getByText("Think through a decision")).toBeTruthy();
+  });
+
+  it("keys catalog reload off the hosted web machine catalog id", async () => {
+    webChatsState.picker = {
+      machineId: "catalog-machine-a",
+      machineLabel: "Studio A",
+      options: [{ id: "catalog-machine-a", name: "Studio A" }],
+      select: vi.fn(async () => null),
+    };
+    await renderPage();
+    const page = await screen.findByTestId("personal-chats-page");
+    expect(page.getAttribute("data-target")).toBe("web:catalog-machine-a");
+  });
+
+  it("forces a personal catalog refresh when refresh-stale returns no available models", async () => {
+    const { call } = installBridge();
+    await renderPage();
+    await waitFor(() => {
+      const modes = call.mock.calls
+        .filter((entry) => entry[0]?.action === "modelCatalog")
+        .map((entry) => entry[0]?.args?.mode);
+      expect(modes).toContain("refresh-stale");
+      expect(modes).toContain("force");
+    });
   });
 
   it("pre-fills the draft when a suggestion chip is clicked", async () => {

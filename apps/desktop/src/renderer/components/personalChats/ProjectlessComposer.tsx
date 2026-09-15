@@ -63,7 +63,10 @@ export function ProjectlessComposer({
   canStartSend: boolean;
   showInterrupt: boolean;
   onInterrupt: () => void;
-  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  onRuntimeCatalogRefreshed?: (
+    provider: AgentChatModelCatalogRefreshProvider,
+    catalogScopeKey?: string,
+  ) => void;
   error: string | null;
   onDismissError: () => void;
   textareaRef: RefObject<HTMLTextAreaElement>;
