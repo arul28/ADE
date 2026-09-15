@@ -1,0 +1,11 @@
+{
+  "name": "ADE (Linux desktop dev)",
+  "install": "bash .cursor/scripts/cloud-agent-install.sh",
+  "start": "bash .cursor/scripts/cloud-agent-start.sh",
+  "terminals": [
+    {
+      "name": "ade-dev-desktop",
+      "command": "cd /workspace && source .cursor/scripts/cloud-agent-start.sh && ADE_PROJECT_ROOT=/workspace npm run dev:desktop -- --skip-runtime-build"
+    }
+  ]
+}

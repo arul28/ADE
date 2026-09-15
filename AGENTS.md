@@ -131,7 +131,11 @@ Desktop release:
 - Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
 - Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
 
-## Cursor Cloud specific instructions
+## Cursor Cloud agents only (ignore outside Cursor Cloud)
+
+**Scope:** The rest of this file applies to every ADE contributor and agent. **This section applies only to agents running in [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent)** (the remote VM environment). Claude Code, Codex, local Cursor IDE, and other harnesses must **not** treat these bullets as repo-wide requirements — skip this section unless you are on a Cursor Cloud VM.
+
+If your environment is not Cursor Cloud, use the general **Validation** section above and the normal desktop/macOS/Windows docs elsewhere in this file.
 
 ### Environment overview
 
@@ -176,6 +180,10 @@ Desktop release:
 
 ### Running the Electron desktop app on Linux
 
+Cursor’s own desktop IDE does not ship for Linux; Cloud Agents run on Linux VMs, so agents exercise ADE through the **headless `ade` CLI/TUI** or the **Electron dev app** built from this repo (there is still no published Linux `.deb`/AppImage — `electron-builder` only packages macOS and, when enabled, Windows).
+
+- **Canonical Cloud Agent / Linux VM flow:** after `npm run setup`, run `ADE_PROJECT_ROOT=<project> npm run dev:desktop -- --skip-runtime-build`. That rebuilds the lane CLI when needed, points desktop at `/tmp/ade-runtime-dev.sock`, and launches Electron against Vite. Do not start Electron with bare `npx electron .` — without `ADE_RUNTIME_SOCKET_PATH` the app tries `~/.ade/sock/ade.sock`, refuses to spawn a brain there, and project open fails. Renderer-only work can use `cd apps/desktop && npm run dev:vite` (mock `window.ade`) or `npm run dev:code -- --skip-runtime-build --attach` for the TUI.
+- **Repository-managed Cloud Agent bootstrap:** `.cursor/environment.json` runs `.cursor/scripts/cloud-agent-install.sh` (deps + CLI build + native rebuild + desktop prebuild) and starts the `ade-dev-desktop` terminal with the command above.
 - Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.
 - `node-pty` ships only macOS/Windows prebuilds. After `npm install`, run `npm --prefix apps/desktop run rebuild:native` to compile `pty.node` for Electron on Linux. Then manually compile the spawn-helper: `cd apps/desktop/node_modules/node-pty && g++ -o build/Release/spawn-helper src/unix/spawn-helper.cc`.
 - The `npm run dev` script has a race condition: `predev` clears `dist/`, then tsup + Electron start in parallel, so the first Electron launch fails with "Cannot find module main.cjs" and auto-restarts. To avoid this, pre-build first (`npm run build`) then run the dev launcher directly: `node scripts/normalize-runtime-binaries.cjs && node scripts/ensure-electron.cjs && node scripts/dev.cjs`.
