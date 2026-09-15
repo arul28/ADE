@@ -649,6 +649,7 @@ describe("PR chat cards", () => {
       title: "Top layer",
       laneId: "lane-2",
       state: "merged",
+      checksStatus: "passing",
       mergedAt: "2026-07-27T12:01:00.000Z",
       stack: { ...membership, position: 2 },
       chatSessionIds: ["child"],

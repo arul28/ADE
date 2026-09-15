@@ -47,7 +47,7 @@ describe("Header", () => {
 
   it("shows the compact linked PR chip next to the chat title", () => {
     const result = render(
-      <Header projectName="Project" lane={lane()} chatTitle="Design pass" prLabel="#42 +1" />,
+      <Header projectName="ADE" lane={null} prLabel="#42 +1" />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
