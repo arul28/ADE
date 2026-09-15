@@ -395,7 +395,8 @@ describe("ChatView", () => {
       },
     ], { expanded: true, width: 100 });
 
-    expect(frame).toContain("1 action");
+    expect(frame).toContain("1 tool");
+    expect(frame.indexOf("1 tool")).toBeLessThan(frame.search(/Ran for|Turn finished|\d{1,2}:\d{2}/));
     expect(frame).toContain("Codex docs — example.com");
   });
 
@@ -1254,13 +1255,14 @@ describe("ChatView", () => {
     ];
     const frame = renderEvents(events, { width: 100, expanded: true });
     // Expanded group: ok/failed status lives on each call's glyph.
-    expect(frame).toContain("4 actions");
+    expect(frame).toContain("4 tools");
     expect(frame.match(/✓/g)).toHaveLength(3);
     expect(frame.match(/✗/g)).toHaveLength(1);
     // Every shell command is visible when expanded.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
     expect(frame).toContain("Ran for 8.3s");
+    expect(frame.indexOf("npm test")).toBeLessThan(frame.indexOf("Ran for 8.3s"));
   });
 
   it("hides missing and zero tool durations while preserving valid per-call durations", () => {
@@ -1345,8 +1347,8 @@ describe("ChatView", () => {
 
     const frame = renderEvents(events, { width: 100, expanded: true });
 
-    expect(frame.match(/1 action/g)).toHaveLength(2);
-    expect(frame).not.toContain("2 actions");
+    expect(frame.match(/1 tool/g)).toHaveLength(2);
+    expect(frame).not.toContain("2 tools");
     expect(frame).toContain("first");
     expect(frame).toContain("second");
   });
@@ -1378,9 +1380,10 @@ describe("ChatView", () => {
 
     const frame = renderEvents(events, { width: 100, expanded: true, streaming: true });
 
-    expect(frame).toContain("2 actions");
+    expect(frame).toContain("2 tools");
     expect(frame).toContain("1 action");
     expect(frame).not.toContain("3 actions");
+    expect(frame).not.toContain("3 tools");
     expect(frame).toContain("tagged-command");
     expect(frame).toContain("untagged-command");
     expect(frame).toContain("active-command");
@@ -1436,10 +1439,10 @@ describe("ChatView", () => {
     const frame = renderEvents([
       { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text } },
     ], { width: 80 });
-    expect(frame).toMatch(/┌.*┬.*┐/);
-    expect(frame).toMatch(/├.*┼.*┤/);
-    expect(frame).toMatch(/└.*┴.*┘/);
-    expect(frame).toMatch(/│/);
+    expect(frame).toMatch(/\u250c.*\u252c/);
+    expect(frame).toMatch(/\u251c.*\u253c.*\u2524/);
+    expect(frame).toMatch(/\u2514.*\u2534.*\u2518/);
+    expect(frame).toMatch(/\u2502/);
     expect(frame).toContain("tool");
     expect(frame).toContain("duration");
     expect(frame).toContain("status");
